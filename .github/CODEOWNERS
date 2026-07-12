@@ -1,0 +1,10 @@
+# Default ownership until the dedicated LayerDraw maintainer teams are created.
+* @Dencyuman
+
+# Repository governance and legal boundaries require explicit owner review.
+/.github/ @Dencyuman
+/OWNERS.yaml @Dencyuman
+/LICENSE @Dencyuman
+/NOTICE @Dencyuman
+/docs/legal/ @Dencyuman
+

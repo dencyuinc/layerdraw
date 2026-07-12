@@ -1,0 +1,32 @@
+name: Repository Guardrails
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-guardrails-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-policy:
+    name: Repository policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate repository policy
+        env:
+          LAYERDRAW_BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          LAYERDRAW_EVENT_NAME: ${{ github.event_name }}
+        run: ./tools/check-repository.sh
