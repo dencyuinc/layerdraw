@@ -1,7 +1,7 @@
 name: Design issue
 description: Discuss product, language, architecture, boundary, or governance design.
 title: "[Design]: "
-labels: ["type: design", "status: triage"]
+labels: ["type: design"]
 body:
   - type: textarea
     id: problem
@@ -18,8 +18,23 @@ body:
     validations:
       required: false
   - type: textarea
-    id: affected
+    id: alternatives
     attributes:
-      label: Affected documents or packages
+      label: Alternatives considered
+      description: What other approaches were considered, and why are they insufficient?
     validations:
       required: false
+  - type: textarea
+    id: affected
+    attributes:
+      label: Affected contracts
+      description: Identify affected requirements, documents, packages, protocols, file formats, delivery surfaces, or license boundaries.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Decision criteria
+      description: What evidence or constraints should determine the decision?
+    validations:
+      required: true

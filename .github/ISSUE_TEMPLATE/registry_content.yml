@@ -1,0 +1,49 @@
+name: Registry content proposal
+description: Propose a reusable .ldpack pack or .layerdraw template for a LayerDraw registry.
+title: "[Registry]: "
+labels: ["type: feature", "area: registry"]
+body:
+  - type: dropdown
+    id: artifact
+    attributes:
+      label: Artifact type
+      options:
+        - .ldpack pack
+        - .layerdraw template
+    validations:
+      required: true
+  - type: input
+    id: identity
+    attributes:
+      label: Proposed identity
+      description: Provide the proposed publisher, name, and namespace.
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case and audience
+      description: What can users or agents build with this content?
+    validations:
+      required: true
+  - type: textarea
+    id: contents
+    attributes:
+      label: Included definitions or project structure
+      description: Summarize included EntityTypes, RelationTypes, Views, References, modules, assets, or template structure.
+    validations:
+      required: true
+  - type: textarea
+    id: provenance
+    attributes:
+      label: Asset provenance and licensing
+      description: Identify every external asset, source, trademark constraint, and redistributable license.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation and maintenance
+      description: Describe fixtures, compatibility range, ownership, update policy, and deprecation expectations.
+    validations:
+      required: true

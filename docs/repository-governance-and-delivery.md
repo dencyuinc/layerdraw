@@ -249,6 +249,30 @@ ADRは採用した実装選択と根拠を記録する。RFCの代わりにissue
 
 Issue formは少なくとも Bug、Feature、RFC、Storage Provider、Registry Content、Security Guidance に分ける。security vulnerabilityはpublic issueに誘導せず、GitHub private vulnerability reportingへ送る。
 
+Organization Project `LayerDraw Development`をpublic development workflowの正本とする。repositoryがprivateの間はProjectもprivateとし、repositoryをpublicへ切り替えるrelease gateでProjectもpublicへ切り替える。
+
+管理情報のownerを次のように一意にする。
+
+| Concern | Source of truth |
+| --- | --- |
+| workflow state | Project `Status` (`Triage` / `Ready` / `In progress` / `In review` / `Blocked` / `Done`) |
+| implementation size | Project `Size` (`XS` / `S` / `M` / `L` / `XL`) |
+| priority | `priority: p0`から`priority: p3`までのlabel |
+| issue / change kind | `type:*` label |
+| component ownership | `area:*` label |
+| community suitability | `contribution:*` label |
+| terminal resolution | `resolution:*` label |
+| shippable target | GitHub Milestone |
+| decomposition | Parent Issue / Sub-issue |
+
+同じconcernをProject fieldとlabelへ重複保存しない。特に`status:*` labelは作らず、workflow stateはProject `Status`だけで表現する。`XL`はそのまま着手可能という意味ではなく、着手前にSub-issueへ分解すべき項目を表す。
+
+Projectは少なくとも`Triage`、`Ready`、`Active`、`Roadmap`、`Community`、`Done`のViewを持つ。`Roadmap`はGitHub Milestoneでgroup化し、実際の出荷対象を単位として表示する。LayerDraw repositoryのIssueとPull RequestはProjectへ自動追加し、新規項目とreopenされた項目は`Triage`、closeまたはmergeされた項目は`Done`とする。Pull RequestをIssueへlinkした場合は対象Issueを`In review`とする。closeまたはmergeによって`Done`となった項目は、最終更新から30日後に自動archiveする。自動化できない状態遷移をlabelで代替しない。
+
+Milestoneは実際に出荷可能な成果を表す場合だけ作成する。`V1`、`V2`等の曖昧なphase名、根拠のないdue date、単なるcomponent groupingには使用しない。Sprint / Iterationは明確なdelivery cadenceを採用するまで作成しない。
+
+blank issueは無効化し、外部Contributorを構造化Issue Formへ誘導する。open-ended questionと初期ideaはDiscussionsで扱う。Issue Formの`projects:`指定は起票者のProject write権限を要求するためpublic contributor向け経路には使わず、Project側のauto-addを使用する。
+
 pull requestは次を必須とする。
 
 - problemとbehavior change

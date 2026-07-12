@@ -1,0 +1,37 @@
+name: Security guidance
+description: Discuss public hardening guidance, threat assumptions, or security design without vulnerability details.
+title: "[Security Guidance]: "
+labels: ["type: design", "area: governance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not disclose an exploitable vulnerability, credential, customer environment, or proof of concept here. Use the private Security report path instead.
+  - type: textarea
+    id: topic
+    attributes:
+      label: Public security topic
+      description: Describe the hardening question or threat-model assumption without sensitive exploit details.
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Trust boundary and affected components
+      description: Identify actors, assets, entry points, host ports, packages, or delivery surfaces involved.
+    validations:
+      required: true
+  - type: textarea
+    id: guidance
+    attributes:
+      label: Guidance requested
+      description: What public decision, documentation, or defense-in-depth behavior should be clarified?
+    validations:
+      required: true
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Disclosure confirmation
+      options:
+        - label: This issue contains no secret, customer data, exploit instructions, or privately exploitable vulnerability details.
+          required: true
