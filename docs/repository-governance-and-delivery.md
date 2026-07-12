@@ -267,7 +267,7 @@ Organization Project `LayerDraw Development`をpublic development workflowの正
 
 同じconcernをProject fieldとlabelへ重複保存しない。特に`status:*` labelは作らず、workflow stateはProject `Status`だけで表現する。`XL`はそのまま着手可能という意味ではなく、着手前にSub-issueへ分解すべき項目を表す。
 
-Projectは少なくとも`Triage`、`Ready`、`Active`、`Roadmap`、`Community`、`Done`のViewを持つ。LayerDraw repositoryのIssueとPull RequestはProjectへ自動追加し、新規項目は`Triage`、closeまたはmergeされた項目は`Done`とする。`Done`の項目は30日後に自動archiveする。自動化できない状態遷移をlabelで代替しない。
+Projectは少なくとも`Triage`、`Ready`、`Active`、`Roadmap`、`Community`、`Done`のViewを持つ。`Roadmap`はGitHub Milestoneでgroup化し、実際の出荷対象を単位として表示する。LayerDraw repositoryのIssueとPull RequestはProjectへ自動追加し、新規項目とreopenされた項目は`Triage`、closeまたはmergeされた項目は`Done`とする。Pull RequestをIssueへlinkした場合は対象Issueを`In review`とする。closeまたはmergeによって`Done`となった項目は、最終更新から30日後に自動archiveする。自動化できない状態遷移をlabelで代替しない。
 
 Milestoneは実際に出荷可能な成果を表す場合だけ作成する。`V1`、`V2`等の曖昧なphase名、根拠のないdue date、単なるcomponent groupingには使用しない。Sprint / Iterationは明確なdelivery cadenceを採用するまで作成しない。
 
