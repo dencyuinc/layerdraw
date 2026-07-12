@@ -34,6 +34,23 @@ The project may still accept issues, discussions, documentation suggestions, pac
 
 External contributors should fork the repository, create a focused branch in that fork, and open a pull request against `dencyuinc/layerdraw:main`. Maintainers may use branches in the upstream repository, but changes still enter `main` through pull requests.
 
+Branch names describe the change, not the contributor or tool that created it. Use one of these forms:
+
+- `feat/<description>`
+- `fix/<description>`
+- `docs/<description>`
+- `refactor/<description>`
+- `test/<description>`
+- `build/<description>`
+- `ci/<description>`
+- `chore/<description>`
+- `perf/<description>`
+- `security/<description>`
+- `revert/<description>`
+- `release/<description>`
+
+Descriptions must use lowercase kebab case, for example `chore/repository-guardrails`. Personal names and agent names such as `user/`, `agent/`, `codex/`, or `claude/` are not branch categories. Dependabot's generated `dependabot/` branches are allowed. The required repository-policy check validates this rule for upstream and fork-based pull requests.
+
 Every pull request should explain:
 
 - what behavior or document boundary changed

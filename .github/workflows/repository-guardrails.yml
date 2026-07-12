@@ -26,5 +26,6 @@ jobs:
           persist-credentials: false
 
       - name: Validate repository policy
+        env:
+          LAYERDRAW_BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
         run: ./tools/check-repository.sh
-

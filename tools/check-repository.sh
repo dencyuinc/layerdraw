@@ -4,6 +4,9 @@ set -euo pipefail
 
 failed=0
 
+branch_name="${LAYERDRAW_BRANCH_NAME:-}"
+branch_name_pattern='^(feat|fix|docs|refactor|test|build|ci|chore|perf|security|revert|release)/[a-z0-9]+(-[a-z0-9]+)*$'
+
 fail() {
   printf 'ERROR: %s\n' "$1" >&2
   failed=1
@@ -27,6 +30,10 @@ for path in "${required_files[@]}"; do
     fail "required public repository file is missing: $path"
   fi
 done
+
+if [[ -n "$branch_name" && "$branch_name" != "main" && ! "$branch_name" =~ $branch_name_pattern && ! "$branch_name" =~ ^dependabot/ ]]; then
+  fail "branch name '$branch_name' must use an approved prefix and a lowercase kebab-case description"
+fi
 
 forbidden_paths="$({
   git ls-files | grep -E '(^|/)(\.DS_Store|\.env|\.codex|\.idea|node_modules)(/|$)|(^|/)\.env\.(local|development|production|test)$|\.(pem|key)$' || true
@@ -61,4 +68,3 @@ if (( failed != 0 )); then
 fi
 
 printf 'Repository policy checks passed.\n'
-
