@@ -5,6 +5,7 @@ set -euo pipefail
 failed=0
 
 branch_name="${LAYERDRAW_BRANCH_NAME:-}"
+event_name="${LAYERDRAW_EVENT_NAME:-}"
 branch_name_pattern='^(feat|fix|docs|refactor|test|build|ci|chore|perf|security|revert|release)/[a-z0-9]+(-[a-z0-9]+)*$'
 
 fail() {
@@ -31,7 +32,12 @@ for path in "${required_files[@]}"; do
   fi
 done
 
-if [[ -n "$branch_name" && "$branch_name" != "main" && ! "$branch_name" =~ $branch_name_pattern && ! "$branch_name" =~ ^dependabot/ ]]; then
+default_branch_event=false
+if [[ "$branch_name" == "main" && ( "$event_name" == "push" || "$event_name" == "workflow_dispatch" ) ]]; then
+  default_branch_event=true
+fi
+
+if [[ -n "$branch_name" && "$default_branch_event" != true && ! "$branch_name" =~ $branch_name_pattern && ! "$branch_name" =~ ^dependabot/ ]]; then
   fail "branch name '$branch_name' must use an approved prefix and a lowercase kebab-case description"
 fi
 
