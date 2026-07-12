@@ -1,13 +1,17 @@
 name: Bug report
 description: Report incorrect behavior, broken documentation, or an implementation defect.
 title: "[Bug]: "
-labels: ["type: bug", "status: triage"]
+labels: ["type: bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, customer data, or exploitable vulnerability details. Use the Security report link for sensitive reports.
   - type: textarea
     id: summary
     attributes:
       label: Summary
-      description: What is wrong?
+      description: What happened, and what user-visible or agent-visible behavior is incorrect?
     validations:
       required: true
   - type: textarea
@@ -16,17 +20,25 @@ body:
       label: Reproduction
       description: Provide the smallest reproducible case, command, LDL snippet, or workflow.
     validations:
-      required: false
+      required: true
   - type: textarea
     id: expected
     attributes:
       label: Expected behavior
+      description: State the expected result and the contract or documentation that defines it, if known.
     validations:
-      required: false
+      required: true
   - type: textarea
     id: context
     attributes:
-      label: Context
-      description: Version, surface, package, browser, OS, storage adapter, or relevant docs.
+      label: Environment and scope
+      description: Version, commit, delivery surface, package, browser, OS, storage adapter, or relevant documentation.
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Sanitized diagnostics, screenshots, logs, or fixture output that help isolate the problem.
     validations:
       required: false

@@ -1,0 +1,56 @@
+name: Request for comments
+description: Propose a normative change to language, protocol, container, package, runtime, or release boundaries.
+title: "[RFC]: "
+labels: ["type: design"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when a decision changes a public or cross-component contract. Exploratory ideas belong in Discussions or a Design issue.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: State the proposed normative decision in concrete terms.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Which concrete problem cannot be solved within the current contract?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed contract
+      description: Define inputs, outputs, ownership, invariants, failure behavior, and compatibility expectations.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and migration
+      description: Describe source, state, protocol, SDK, container, or deployment migration impact.
+    validations:
+      required: true
+  - type: textarea
+    id: affected
+    attributes:
+      label: Affected components and documents
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: State the evidence required before this RFC can be accepted.
+    validations:
+      required: true

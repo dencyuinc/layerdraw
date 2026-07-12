@@ -1,7 +1,7 @@
 name: Feature request
 description: Propose a product capability, package, integration, pack, template, or workflow.
 title: "[Feature]: "
-labels: ["type: feature", "status: triage"]
+labels: ["type: feature"]
 body:
   - type: textarea
     id: use_case
@@ -18,9 +18,23 @@ body:
     validations:
       required: false
   - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What observable behavior would make this capability complete?
+    validations:
+      required: true
+  - type: textarea
     id: constraints
     attributes:
       label: Constraints
       description: Compatibility, licensing, storage, realtime, export, or host constraints.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and workarounds
+      description: How is the use case handled today, and why is that insufficient?
     validations:
       required: false

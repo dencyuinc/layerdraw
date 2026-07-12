@@ -1,0 +1,50 @@
+name: Storage provider proposal
+description: Propose or scope a DocumentStore, StateBackend, AssetStore, or HistoryStore adapter.
+title: "[Storage]: "
+labels: ["type: feature", "area: runtime"]
+body:
+  - type: input
+    id: provider
+    attributes:
+      label: Provider or backend
+      placeholder: Amazon S3, Azure Blob Storage, Google Drive, local filesystem, or another backend
+    validations:
+      required: true
+  - type: checkboxes
+    id: ports
+    attributes:
+      label: Required ports
+      description: Select every LayerDraw storage port this proposal must implement.
+      options:
+        - label: DocumentStore
+        - label: StateBackend
+        - label: AssetStore
+        - label: HistoryStore
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Deployment use case
+      description: Which delivery surface and deployment model require this adapter?
+    validations:
+      required: true
+  - type: textarea
+    id: auth
+    attributes:
+      label: Authentication and credential boundary
+      description: Describe credential acquisition, refresh, delegation, and the component allowed to receive credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: semantics
+    attributes:
+      label: Consistency and concurrency semantics
+      description: Describe versioning, conditional writes, locking or leases, conflict detection, and listing behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Operational and licensing constraints
+      description: Include API limits, object size, latency, SDK/license constraints, emulator availability, and test strategy.
+    validations:
+      required: true
