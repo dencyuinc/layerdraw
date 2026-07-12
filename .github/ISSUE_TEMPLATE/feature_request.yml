@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a product capability, package, integration, pack, template, or workflow.
+title: "[Feature]: "
+labels: ["type: feature", "status: triage"]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What should a user or agent be able to do?
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: Suggested shape
+      description: API, UI, LDL, MCP, package, view, export, or integration shape if known.
+    validations:
+      required: false
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Compatibility, licensing, storage, realtime, export, or host constraints.
+    validations:
+      required: false

@@ -1,0 +1,11 @@
+.DS_Store
+/test-results/
+
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+.layerdraw-data/
+.layerdraw-data*/
+tmp/

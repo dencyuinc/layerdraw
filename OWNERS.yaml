@@ -1,0 +1,61 @@
+version: 1
+
+defaults:
+  reviewers: []
+  approvers: []
+
+components:
+  docs:
+    paths:
+      - docs/**
+      - README.md
+      - CONTRIBUTING.md
+      - SECURITY.md
+      - NOTICE
+      - LICENSE
+    reviewers: []
+    approvers: []
+
+  governance:
+    paths:
+      - .github/**
+      - OWNERS.yaml
+    reviewers: []
+    approvers: []
+
+  engine:
+    paths:
+      - internal/engine/**
+      - cmd/layerdraw-engine/**
+      - schemas/**
+      - gen/**
+      - tests/conformance/**
+    reviewers: []
+    approvers: []
+
+  runtime:
+    paths:
+      - internal/runtime/**
+      - internal/access/**
+      - internal/application/**
+      - internal/adapter/**
+      - deploy/**
+    reviewers: []
+    approvers: []
+
+  web-and-sdk:
+    paths:
+      - packages/**
+      - apps/**
+      - extensions/**
+      - integrations/**
+    reviewers: []
+    approvers: []
+
+  registry:
+    paths:
+      - internal/registry/**
+      - cmd/layerdraw-registry/**
+      - docs/registry-and-templates.md
+    reviewers: []
+    approvers: []

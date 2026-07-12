@@ -1,0 +1,25 @@
+name: Design issue
+description: Discuss product, language, architecture, boundary, or governance design.
+title: "[Design]: "
+labels: ["type: design", "status: triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What design gap or ambiguity should be resolved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the proposed decision or direction.
+    validations:
+      required: false
+  - type: textarea
+    id: affected
+    attributes:
+      label: Affected documents or packages
+    validations:
+      required: false

@@ -1,0 +1,32 @@
+name: Bug report
+description: Report incorrect behavior, broken documentation, or an implementation defect.
+title: "[Bug]: "
+labels: ["type: bug", "status: triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide the smallest reproducible case, command, LDL snippet, or workflow.
+    validations:
+      required: false
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Version, surface, package, browser, OS, storage adapter, or relevant docs.
+    validations:
+      required: false
