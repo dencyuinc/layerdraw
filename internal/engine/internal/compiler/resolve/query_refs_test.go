@@ -146,6 +146,52 @@ query q "Q" {
 	}
 }
 
+func TestQueryReferencesFollowEffectiveDocumentSelection(t *testing.T) {
+	t.Run("private query is ignored", func(t *testing.T) {
+		got := Resolve(Input{Mode: CompileProject, EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{
+			"document.ldl": parse(`import { record } from "./schema.ldl"
+project p "P" {}`),
+			"schema.ldl": parse(`entity_type record "Record" {
+  representation shape rect
+}
+query private_query "Private" {
+  select {
+    roots [missing]
+  }
+}
+export { record }`),
+		}}})
+		if got.HasErrors || len(got.Diagnostics) != 0 {
+			t.Fatalf("private query references rejected the document: %+v", got.Diagnostics)
+		}
+		if hasAddress(got, "ldl:project:p:query:private_query") {
+			t.Fatalf("private query entered selected declarations: %v", addresses(got))
+		}
+	})
+
+	t.Run("selected query validates and closes over bindings", func(t *testing.T) {
+		got := Resolve(Input{Mode: CompileProject, EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{
+			"document.ldl": parse(`import { selected_query } from "./schema.ldl"
+project p "P" {}`),
+			"schema.ldl": parse(`entity_type record "Record" {
+  representation shape rect
+}
+query selected_query "Selected" {
+  select {
+    entity_types [record]
+  }
+}
+export { selected_query }`),
+		}}})
+		if got.HasErrors {
+			t.Fatalf("diagnostics=%+v", got.Diagnostics)
+		}
+		if !hasAddress(got, "ldl:project:p:query:selected_query") || !hasAddress(got, "ldl:project:p:entity-type:record") {
+			t.Fatalf("query binding closure is incomplete: %v", addresses(got))
+		}
+	})
+}
+
 func TestQueryReferenceHelpersPreserveMalformedAbsence(t *testing.T) {
 	t.Parallel()
 	source := `project p "P" {}

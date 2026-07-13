@@ -10,25 +10,25 @@ import (
 
 // resolveQueryRefs resolves every semantic name in a Query body. Downstream
 // Query compilation deliberately has no raw-text name lookup fallback.
-func (r *resolver) resolveQueryRefs(st *moduleState, raw rawDecl, sourceAddress string) {
+func (r *resolver) resolveQueryRefs(st *moduleState, raw rawDecl, sourceAddress string, bind, diagnose bool) {
 	body := firstNode(raw.node, syntax.NodeBlock)
 	for _, member := range nodeChildren(body) {
 		head := queryHead(member)
 		switch head {
 		case "select":
-			r.resolveQuerySelect(st, member, sourceAddress)
+			r.resolveQuerySelect(st, member, sourceAddress, bind, diagnose)
 		case "where":
-			r.resolveQueryPredicate(st, member, KindEntity, sourceAddress)
+			r.resolveQueryPredicate(st, member, KindEntity, sourceAddress, bind, diagnose)
 		case "relation_where":
-			r.resolveQueryPredicate(st, member, KindRelation, sourceAddress)
+			r.resolveQueryPredicate(st, member, KindRelation, sourceAddress, bind, diagnose)
 		case "traverse":
-			r.resolveQueryRelationList(st, member, sourceAddress, "query:traverse.relation_types")
+			r.resolveQueryRelationList(st, member, sourceAddress, "query:traverse.relation_types", bind, diagnose)
 		}
 	}
-	r.resolveQueryParameterRefs(st, raw, sourceAddress)
+	r.resolveQueryParameterRefs(st, raw, sourceAddress, bind, diagnose)
 }
 
-func (r *resolver) resolveQuerySelect(st *moduleState, selectNode *syntax.Node, sourceAddress string) {
+func (r *resolver) resolveQuerySelect(st *moduleState, selectNode *syntax.Node, sourceAddress string, bind, diagnose bool) {
 	block := firstNode(selectNode, syntax.NodeBlock)
 	for _, member := range nodeChildren(block) {
 		var kind SubjectKind
@@ -50,26 +50,26 @@ func (r *resolver) resolveQuerySelect(st *moduleState, selectNode *syntax.Node, 
 			continue
 		}
 		for _, value := range queryListValues(args[0].node) {
-			r.resolveQueryTop(st, kind, value.text, value.span, via, sourceAddress)
+			r.resolveQueryTop(st, kind, value.text, value.span, via, sourceAddress, bind, diagnose)
 		}
 	}
 }
 
-func (r *resolver) resolveQueryPredicate(st *moduleState, node *syntax.Node, ownerKind SubjectKind, sourceAddress string) {
+func (r *resolver) resolveQueryPredicate(st *moduleState, node *syntax.Node, ownerKind SubjectKind, sourceAddress string, bind, diagnose bool) {
 	block := firstNode(node, syntax.NodeBlock)
 	for _, child := range nodeChildren(block) {
 		switch queryHead(child) {
 		case "all", "any", "not":
-			r.resolveQueryPredicate(st, child, ownerKind, sourceAddress)
+			r.resolveQueryPredicate(st, child, ownerKind, sourceAddress, bind, diagnose)
 		case "field":
-			r.resolveQueryField(st, child, ownerKind, sourceAddress)
+			r.resolveQueryField(st, child, ownerKind, sourceAddress, bind, diagnose)
 		case "rows":
-			r.resolveQueryRows(st, child, ownerKind, sourceAddress)
+			r.resolveQueryRows(st, child, ownerKind, sourceAddress, bind, diagnose)
 		}
 	}
 }
 
-func (r *resolver) resolveQueryField(st *moduleState, node *syntax.Node, ownerKind SubjectKind, sourceAddress string) {
+func (r *resolver) resolveQueryField(st *moduleState, node *syntax.Node, ownerKind SubjectKind, sourceAddress string, bind, diagnose bool) {
 	args := queryArgumentValues(node)
 	if len(args) < 2 {
 		return
@@ -103,11 +103,11 @@ func (r *resolver) resolveQueryField(st *moduleState, node *syntax.Node, ownerKi
 		if value.parameter {
 			continue
 		}
-		r.resolveQueryTop(st, kind, value.text, value.span, "query:predicate.field."+field, sourceAddress)
+		r.resolveQueryTop(st, kind, value.text, value.span, "query:predicate.field."+field, sourceAddress, bind, diagnose)
 	}
 }
 
-func (r *resolver) resolveQueryRows(st *moduleState, node *syntax.Node, ownerKind SubjectKind, sourceAddress string) {
+func (r *resolver) resolveQueryRows(st *moduleState, node *syntax.Node, ownerKind SubjectKind, sourceAddress string, bind, diagnose bool) {
 	typeKind := KindEntityType
 	if ownerKind == KindRelation {
 		typeKind = KindRelationType
@@ -119,20 +119,20 @@ func (r *resolver) resolveQueryRows(st *moduleState, node *syntax.Node, ownerKin
 			continue
 		}
 		for _, value := range queryListValues(args[i+1].node) {
-			if target, ok := r.resolveQueryTop(st, typeKind, value.text, value.span, "query:rows.types", sourceAddress); ok {
+			if target, ok := r.resolveQueryTop(st, typeKind, value.text, value.span, "query:rows.types", sourceAddress, bind, diagnose); ok {
 				owners = append(owners, target)
 			}
 		}
 		break
 	}
-	r.resolveQueryRowPredicate(st, firstNode(node, syntax.NodeBlock), owners, sourceAddress)
+	r.resolveQueryRowPredicate(st, firstNode(node, syntax.NodeBlock), owners, sourceAddress, bind, diagnose)
 }
 
-func (r *resolver) resolveQueryRowPredicate(st *moduleState, block *syntax.Node, owners []DeclarationSymbol, sourceAddress string) {
+func (r *resolver) resolveQueryRowPredicate(st *moduleState, block *syntax.Node, owners []DeclarationSymbol, sourceAddress string, bind, diagnose bool) {
 	for _, child := range nodeChildren(block) {
 		switch queryHead(child) {
 		case "all", "any", "not":
-			r.resolveQueryRowPredicate(st, firstNode(child, syntax.NodeBlock), owners, sourceAddress)
+			r.resolveQueryRowPredicate(st, firstNode(child, syntax.NodeBlock), owners, sourceAddress, bind, diagnose)
 		case "cell":
 			args := queryArgumentValues(child)
 			if len(args) == 0 || args[0].text == "" {
@@ -146,30 +146,32 @@ func (r *resolver) resolveQueryRowPredicate(st *moduleState, block *syntax.Node,
 				if !ok || column.Kind != KindColumn {
 					continue
 				}
-				st.addBinding(KindColumn, columnID, args[0].span, "query:row.cell", column, sourceAddress)
+				if bind {
+					st.addBinding(KindColumn, columnID, args[0].span, "query:row.cell", column, sourceAddress)
+				}
 				found++
 			}
-			if found == 0 {
+			if found == 0 && diagnose {
 				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "query row column is unknown for its owner types", st.key, args[0].span)
 			}
 		}
 	}
 }
 
-func (r *resolver) resolveQueryRelationList(st *moduleState, node *syntax.Node, sourceAddress, via string) {
+func (r *resolver) resolveQueryRelationList(st *moduleState, node *syntax.Node, sourceAddress, via string, bind, diagnose bool) {
 	args := queryArgumentValues(node)
 	for i := 0; i+1 < len(args); i++ {
 		if args[i].text != "relations" || !args[i+1].list {
 			continue
 		}
 		for _, value := range queryListValues(args[i+1].node) {
-			r.resolveQueryTop(st, KindRelationType, value.text, value.span, via, sourceAddress)
+			r.resolveQueryTop(st, KindRelationType, value.text, value.span, via, sourceAddress, bind, diagnose)
 		}
 		return
 	}
 }
 
-func (r *resolver) resolveQueryParameterRefs(st *moduleState, raw rawDecl, sourceAddress string) {
+func (r *resolver) resolveQueryParameterRefs(st *moduleState, raw rawDecl, sourceAddress string, bind, diagnose bool) {
 	owner, ok := st.findTop(raw.id, KindQuery)
 	if !ok {
 		return
@@ -186,20 +188,28 @@ func (r *resolver) resolveQueryParameterRefs(st *moduleState, raw rawDecl, sourc
 		address := reservationAddress(owner.Symbol, KindParameter, id)
 		parameter, exists := r.symbols[address]
 		if !exists || parameter.Kind != KindParameter {
-			r.diag("LDL1301", "unknown_or_ambiguous_symbol", "query parameter reference is unknown", st.key, node.Span)
+			if diagnose {
+				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "query parameter reference is unknown", st.key, node.Span)
+			}
 			return
 		}
-		st.addBinding(KindParameter, "$"+id, node.Span, "query:parameter", parameter, sourceAddress)
+		if bind {
+			st.addBinding(KindParameter, "$"+id, node.Span, "query:parameter", parameter, sourceAddress)
+		}
 	})
 }
 
-func (r *resolver) resolveQueryTop(st *moduleState, kind SubjectKind, text string, span syntax.Span, via, sourceAddress string) (DeclarationSymbol, bool) {
+func (r *resolver) resolveQueryTop(st *moduleState, kind SubjectKind, text string, span syntax.Span, via, sourceAddress string, bind, diagnose bool) (DeclarationSymbol, bool) {
 	target, ok := r.resolveText(st, kind, text)
 	if !ok {
-		r.diag("LDL1301", "unknown_or_ambiguous_symbol", "query source binding is unknown or ambiguous", st.key, span)
+		if diagnose {
+			r.diag("LDL1301", "unknown_or_ambiguous_symbol", "query source binding is unknown or ambiguous", st.key, span)
+		}
 		return DeclarationSymbol{}, false
 	}
-	st.addBinding(kind, text, span, via, target, sourceAddress)
+	if bind {
+		st.addBinding(kind, text, span, via, target, sourceAddress)
+	}
 	return target, true
 }
 
