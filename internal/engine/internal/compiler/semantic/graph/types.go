@@ -14,9 +14,16 @@ type Input struct {
 }
 
 type Result struct {
-	Graph       *MasterGraph
-	Diagnostics []resolve.Diagnostic
-	HasErrors   bool
+	stageGeneration resolve.StageGeneration
+	Graph           *MasterGraph
+	Diagnostics     []resolve.Diagnostic
+	HasErrors       bool
+}
+
+// MatchesResolve reports whether this graph result belongs to the supplied
+// Resolve invocation, including for rejected compilations.
+func (r Result) MatchesResolve(resolved resolve.Result) bool {
+	return r.stageGeneration.Matches(resolved.Generation())
 }
 
 // MasterGraph is the canonical typed graph fact collection. Every slice uses

@@ -187,7 +187,7 @@ project order_platform "Order Platform" {}
 func TestReviewRowsResolveOrderIndependentlyAndProjectMoveUsesRoot(t *testing.T) {
 	t.Parallel()
 	got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{"document.ldl": parse(`project p "P" {}
-rows order_api [environment] {
+rows service [environment] {
   order_api production: prod
 }
 entity_type service "Service" {

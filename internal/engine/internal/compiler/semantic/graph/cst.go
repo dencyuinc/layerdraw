@@ -16,8 +16,18 @@ type sourceKey struct {
 	span   syntax.Span
 }
 
-type rowGroup struct {
-	header []headerColumn
+type factGroup struct {
+	kind        string
+	module      resolve.ModuleKey
+	span        syntax.Span
+	refs        []groupRef
+	header      []headerColumn
+	typeAddress string
+}
+
+type groupRef struct {
+	kind resolve.SubjectKind
+	span syntax.Span
 }
 
 type headerColumn struct {
@@ -32,27 +42,56 @@ type authoredCell struct {
 	span   syntax.Span
 }
 
-func inspectRowGroups(modules []resolve.ResolvedModule) map[sourceKey]rowGroup {
-	out := map[sourceKey]rowGroup{}
+func inspectFactGroups(modules []resolve.ResolvedModule) ([]*factGroup, map[sourceKey]*factGroup) {
+	var groups []*factGroup
+	rows := map[sourceKey]*factGroup{}
 	for _, module := range modules {
 		for _, decl := range nodeChildren(module.File.Root) {
 			if decl.Kind != syntax.NodeDeclaration {
 				continue
 			}
 			toks := directTokens(decl)
-			if len(toks) == 0 || toks[0].Raw != "rows" && toks[0].Raw != "relation_rows" {
+			if len(toks) == 0 || toks[0].Raw != "entities" && toks[0].Raw != "relations" && toks[0].Raw != "rows" && toks[0].Raw != "relation_rows" {
 				continue
 			}
-			header := readHeader(firstNode(decl, syntax.NodeColumnHeader))
+			group := &factGroup{
+				kind:   toks[0].Raw,
+				module: resolve.ModuleKey{Origin: module.Origin, Path: module.Path},
+				span:   decl.Span,
+				header: readHeader(firstNode(decl, syntax.NodeColumnHeader)),
+			}
+			refs := directSymbolRefs(decl)
+			switch group.kind {
+			case "entities":
+				if len(refs) > 0 {
+					group.refs = append(group.refs, groupRef{kind: resolve.KindEntityType, span: refs[0].Span})
+				}
+				if len(refs) > 1 {
+					group.refs = append(group.refs, groupRef{kind: resolve.KindLayer, span: refs[1].Span})
+				}
+			case "relations":
+				if len(refs) > 0 {
+					group.refs = append(group.refs, groupRef{kind: resolve.KindRelationType, span: refs[0].Span})
+				}
+			case "rows":
+				if len(refs) > 0 {
+					group.refs = append(group.refs, groupRef{kind: resolve.KindEntityType, span: refs[0].Span})
+				}
+			case "relation_rows":
+				if len(refs) > 0 {
+					group.refs = append(group.refs, groupRef{kind: resolve.KindRelationType, span: refs[0].Span})
+				}
+			}
+			groups = append(groups, group)
 			block := firstNode(decl, syntax.NodeItemBlock)
 			for _, item := range nodeChildren(block) {
 				if item.Kind == syntax.NodeRowItem {
-					out[sourceKey{module: resolve.ModuleKey{Origin: module.Origin, Path: module.Path}, span: item.Span}] = rowGroup{header: header}
+					rows[sourceKey{module: group.module, span: item.Span}] = group
 				}
 			}
 		}
 	}
-	return out
+	return groups, rows
 }
 
 func readHeader(n *syntax.Node) []headerColumn {
@@ -67,6 +106,16 @@ func readHeader(n *syntax.Node) []headerColumn {
 }
 
 func relationEndpointRefs(n *syntax.Node) []*syntax.Node {
+	var out []*syntax.Node
+	for _, child := range nodeChildren(n) {
+		if child.Kind == syntax.NodeSymbolRef {
+			out = append(out, child)
+		}
+	}
+	return out
+}
+
+func directSymbolRefs(n *syntax.Node) []*syntax.Node {
 	var out []*syntax.Node
 	for _, child := range nodeChildren(n) {
 		if child.Kind == syntax.NodeSymbolRef {
@@ -146,6 +195,16 @@ func nodeChildren(n *syntax.Node) []*syntax.Node {
 			out = append(out, node)
 		}
 	}
+	return out
+}
+
+func descendants(n *syntax.Node, kind syntax.NodeKind) []*syntax.Node {
+	var out []*syntax.Node
+	syntax.Walk(n, func(node *syntax.Node) {
+		if node.Kind == kind {
+			out = append(out, node)
+		}
+	})
 	return out
 }
 

@@ -13,6 +13,7 @@ type moduleAST struct {
 	imports            []ImportDecl
 	exports            []ExportDecl
 	declarations       []rawDecl
+	factGroups         []rawFactGroup
 	reservations       []rawReservation
 	reservationBlocks  []rawReservationBlock
 	moves              []rawMove
@@ -33,10 +34,16 @@ type rawDecl struct {
 }
 
 type rawRef struct {
-	kind     SubjectKind
-	text     string
-	span     syntax.Span
-	optional bool
+	kind SubjectKind
+	text string
+	span syntax.Span
+}
+
+type rawFactGroup struct {
+	kind    string
+	span    syntax.Span
+	refs    []rawRef
+	members []rawDecl
 }
 
 type rawReservation struct {
@@ -196,43 +203,59 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		if len(refs) > 1 {
 			layer = refs[1]
 		}
+		group := rawFactGroup{kind: "entities", span: n.Span, refs: []rawRef{{kind: KindEntityType, text: ownerType.text, span: ownerType.span}, {kind: KindLayer, text: layer.text, span: layer.span}}}
 		for _, item := range descendants(n, syntax.NodeEntityItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) > 0 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindEntity, id: itoks[0].Raw, span: item.Span, refs: []rawRef{{kind: KindEntityType, text: ownerType.text, span: ownerType.span}, {kind: KindLayer, text: layer.text, span: layer.span}}})
+				d := rawDecl{kind: KindEntity, id: itoks[0].Raw, span: item.Span}
+				ast.declarations = append(ast.declarations, d)
+				group.members = append(group.members, d)
 				extractRowReservations(item, KindEntity, itoks[0].Raw, ast)
 			}
 		}
+		ast.factGroups = append(ast.factGroups, group)
 	case "rows":
 		groupType := firstDirectSymbolRef(n)
+		group := rawFactGroup{kind: "rows", span: n.Span, refs: []rawRef{{kind: KindEntityType, text: groupType.text, span: groupType.span}}}
 		for _, item := range descendants(n, syntax.NodeRowItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) >= 2 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindEntity, span: item.Span, refs: []rawRef{{kind: KindEntityType, text: groupType.text, span: groupType.span, optional: true}}})
+				d := rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindEntity, span: item.Span}
+				ast.declarations = append(ast.declarations, d)
+				group.members = append(group.members, d)
 			}
 		}
+		ast.factGroups = append(ast.factGroups, group)
 	case "relations":
 		relType := firstDirectSymbolRef(n)
+		group := rawFactGroup{kind: "relations", span: n.Span, refs: []rawRef{{kind: KindRelationType, text: relType.text, span: relType.span}}}
 		for _, item := range descendants(n, syntax.NodeRelationItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) > 0 {
-				refs := []rawRef{{kind: KindRelationType, text: relType.text, span: relType.span}}
+				var refs []rawRef
 				srefs := directSymbolRefs(item)
 				for _, ref := range srefs {
 					refs = append(refs, rawRef{kind: KindEntity, text: ref.text, span: ref.span})
 				}
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRelation, id: itoks[0].Raw, span: item.Span, refs: refs})
+				d := rawDecl{kind: KindRelation, id: itoks[0].Raw, span: item.Span, refs: refs}
+				ast.declarations = append(ast.declarations, d)
+				group.members = append(group.members, d)
 				extractRowReservations(item, KindRelation, itoks[0].Raw, ast)
 			}
 		}
+		ast.factGroups = append(ast.factGroups, group)
 	case "relation_rows":
 		groupType := firstDirectSymbolRef(n)
+		group := rawFactGroup{kind: "relation_rows", span: n.Span, refs: []rawRef{{kind: KindRelationType, text: groupType.text, span: groupType.span}}}
 		for _, item := range descendants(n, syntax.NodeRowItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) >= 2 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindRelation, span: item.Span, refs: []rawRef{{kind: KindRelationType, text: groupType.text, span: groupType.span, optional: true}}})
+				d := rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindRelation, span: item.Span}
+				ast.declarations = append(ast.declarations, d)
+				group.members = append(group.members, d)
 			}
 		}
+		ast.factGroups = append(ast.factGroups, group)
 	case "query":
 		d := rawDecl{kind: KindQuery, span: n.Span}
 		if len(toks) > 1 {

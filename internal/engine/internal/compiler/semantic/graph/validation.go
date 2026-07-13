@@ -3,8 +3,17 @@
 package graph
 
 import (
+	"sort"
+
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/resolve"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/syntax"
 )
+
+type relationSpans struct {
+	from syntax.Span
+	to   syntax.Span
+}
 
 func (c *compiler) validateRelations() {
 	valid := make([]bool, len(c.relations))
@@ -23,11 +32,11 @@ func (c *compiler) validateRelations() {
 			valid[i] = false
 		}
 		if !endpointAllows(typeDefinition.From, from) {
-			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", c.sources[relation.Address], c.sources[relation.Address].Range, "from endpoint violates relation type restrictions", relation.Address, "")
+			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", c.sources[relation.Address], c.endpointSpans[relation.Address].from, "from endpoint violates relation type restrictions", relation.Address, "")
 			valid[i] = false
 		}
 		if !endpointAllows(typeDefinition.To, to) {
-			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", c.sources[relation.Address], c.sources[relation.Address].Range, "to endpoint violates relation type restrictions", relation.Address, "")
+			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", c.sources[relation.Address], c.endpointSpans[relation.Address].to, "to endpoint violates relation type restrictions", relation.Address, "")
 			valid[i] = false
 		}
 	}
@@ -86,6 +95,11 @@ func (c *compiler) duplicateConflict(firstType, secondType string) bool {
 }
 
 func (c *compiler) validateCardinality(valid []bool) {
+	type violationKey struct {
+		entityAddress       string
+		relationTypeAddress string
+	}
+	violations := map[violationKey][]cardinalityViolation{}
 	for _, relationType := range c.input.Definition.RelationTypes {
 		toByFrom := map[string]map[string]bool{}
 		fromByTo := map[string]map[string]bool{}
@@ -104,20 +118,81 @@ func (c *compiler) validateCardinality(valid []bool) {
 		}
 		for _, entity := range c.entities {
 			if endpointAllows(relationType.From, entity) {
-				c.validateBound(relationType.Address, entity, len(toByFrom[entity.Address]), relationType.Cardinality.ToPerFrom, "to_per_from")
+				if violatesBound(len(toByFrom[entity.Address]), relationType.Cardinality.ToPerFrom) {
+					key := violationKey{entityAddress: entity.Address, relationTypeAddress: relationType.Address}
+					violations[key] = append(violations[key], cardinalityViolation{direction: "to_per_from"})
+				}
 			}
 			if endpointAllows(relationType.To, entity) {
-				c.validateBound(relationType.Address, entity, len(fromByTo[entity.Address]), relationType.Cardinality.FromPerTo, "from_per_to")
+				if violatesBound(len(fromByTo[entity.Address]), relationType.Cardinality.FromPerTo) {
+					key := violationKey{entityAddress: entity.Address, relationTypeAddress: relationType.Address}
+					violations[key] = append(violations[key], cardinalityViolation{direction: "from_per_to"})
+				}
 			}
 		}
 	}
+	keys := make([]violationKey, 0, len(violations))
+	for key := range violations {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].entityAddress != keys[j].entityAddress {
+			return keys[i].entityAddress < keys[j].entityAddress
+		}
+		return keys[i].relationTypeAddress < keys[j].relationTypeAddress
+	})
+	for _, key := range keys {
+		entity := c.entities[c.entityIndex[key.entityAddress]]
+		c.emitCardinality(entity, key.relationTypeAddress, violations[key])
+	}
 }
 
-func (c *compiler) validateBound(relationTypeAddress string, entity Entity, count int, bound definition.CardinalityBound, direction string) {
-	violates := count < bound.Min || bound.Max == definition.CardinalityMaximumOne && count > 1
-	if !violates {
-		return
-	}
+func violatesBound(count int, bound definition.CardinalityBound) bool {
+	return count < bound.Min || bound.Max == definition.CardinalityMaximumOne && count > 1
+}
+
+type cardinalityViolation struct {
+	direction string
+}
+
+func (c *compiler) emitCardinality(entity Entity, relationTypeAddress string, violations []cardinalityViolation) {
 	src := c.sources[entity.Address]
-	c.diag("LDL1503", "relation_cardinality_violation", src, src.Range, direction+" cardinality violation for "+relationTypeAddress, entity.Address, "")
+	span := src.Range
+	if toks := directTokens(src.Node); len(toks) > 0 {
+		span = toks[0].Span
+	}
+	c.diag("LDL1503", "relation_cardinality_violation", src, span, "relation cardinality violation", entity.Address, relationTypeAddress)
+	diagnostic := &c.diagnostics[len(c.diagnostics)-1]
+	typeSource := c.sources[relationTypeAddress]
+	for _, violation := range violations {
+		diagnostic.Related = append(diagnostic.Related, resolve.DiagnosticRelated{
+			Relation:       "cause",
+			Message:        violation.direction + " cardinality bound",
+			Range:          sourceRange(typeSource, cardinalityBoundSpan(typeSource, violation.direction)),
+			SubjectAddress: entity.Address,
+			OwnerAddress:   relationTypeAddress,
+		})
+	}
+}
+
+func cardinalityBoundSpan(src resolve.DeclarationSource, direction string) syntax.Span {
+	for _, nested := range descendants(src.Node, syntax.NodeNestedBlock) {
+		toks := directTokens(nested)
+		if len(toks) == 0 || toks[0].Raw != "cardinality" {
+			continue
+		}
+		for _, statement := range nodeChildren(firstNode(nested, syntax.NodeBlock)) {
+			head := directTokens(statement)
+			if statement.Kind != syntax.NodeStatement || len(head) == 0 || head[0].Raw != direction {
+				continue
+			}
+			for _, child := range nodeChildren(statement) {
+				if child.Kind == syntax.NodeValue {
+					return child.Span
+				}
+			}
+			return head[0].Span
+		}
+	}
+	return src.Range
 }

@@ -13,6 +13,7 @@ import (
 )
 
 func (c *compiler) compileRows() {
+	c.validateFactGroups()
 	for _, decl := range c.declarations {
 		if decl.Kind != resolve.KindRow {
 			continue
@@ -45,16 +46,15 @@ func (c *compiler) compileRows() {
 			if ownerSource.Module != src.Module {
 				c.diag("LDL1402", "invalid_or_duplicate_row", src, src.Range, "entity row owner must be declared in the same module", decl.Address, ownerAddress)
 			}
-			groupType, groupOK := c.singleBinding(decl.Address, resolve.KindEntityType, src)
 			entity := &c.entities[index]
-			if groupOK && groupType != entity.TypeAddress {
+			if group.typeAddress != "" && group.typeAddress != entity.TypeAddress {
 				c.diag("LDL1402", "invalid_or_duplicate_row", src, src.Range, "entity row group type does not match its owner", decl.Address, ownerAddress)
 			}
 			typeDefinition, exists := c.entityTypes[entity.TypeAddress]
 			if !exists {
 				continue
 			}
-			row := c.compileRow(decl, src, group, typeDefinition.Columns, ownerAddress)
+			row := c.compileRow(decl, src, group.header, typeDefinition.Columns, ownerAddress)
 			entity.Rows = append(entity.Rows, row)
 		case resolve.KindRelation:
 			index, exists := c.relationIndex[ownerAddress]
@@ -66,16 +66,15 @@ func (c *compiler) compileRows() {
 			if ownerSource.Module != src.Module {
 				c.diag("LDL1402", "invalid_or_duplicate_row", src, src.Range, "relation row owner must be declared in the same module", decl.Address, ownerAddress)
 			}
-			groupType, groupOK := c.singleBinding(decl.Address, resolve.KindRelationType, src)
 			relation := &c.relations[index]
-			if groupOK && groupType != relation.TypeAddress {
+			if group.typeAddress != "" && group.typeAddress != relation.TypeAddress {
 				c.diag("LDL1402", "invalid_or_duplicate_row", src, src.Range, "relation row group type does not match its owner", decl.Address, ownerAddress)
 			}
 			typeDefinition, exists := c.relationTypes[relation.TypeAddress]
 			if !exists {
 				continue
 			}
-			row := c.compileRow(decl, src, group, typeDefinition.Columns, ownerAddress)
+			row := c.compileRow(decl, src, group.header, typeDefinition.Columns, ownerAddress)
 			relation.Rows = append(relation.Rows, row)
 		default:
 			c.diag("LDL1402", "invalid_or_duplicate_row", src, src.Range, "row owner must be an entity or relation", decl.Address, ownerAddress)
@@ -93,27 +92,112 @@ func (c *compiler) compileRows() {
 	}
 }
 
-func (c *compiler) compileRow(decl resolve.DeclarationSymbol, src resolve.DeclarationSource, group rowGroup, columns []definition.Column, ownerAddress string) AttributeRow {
-	row := AttributeRow{ID: decl.ID, Address: decl.Address, Values: []Cell{}}
-	cells := rowCells(src.Node)
-	if len(cells) != len(group.header) {
-		c.diag("LDL1402", "invalid_or_duplicate_row", src, src.Range, "row cell count does not match its declared header", decl.Address, ownerAddress)
+func (c *compiler) validateFactGroups() {
+	if c.groupsChecked {
+		return
 	}
-	columnByID := map[string]definition.Column{}
+	c.groupsChecked = true
+	for _, group := range c.factGroups {
+		src := resolve.DeclarationSource{Module: group.module, Range: group.span}
+		switch group.kind {
+		case "entities":
+			typeAddress, typeOK := c.validateGroupRef(group, 0, resolve.KindEntityType, src)
+			if typeOK {
+				group.typeAddress = typeAddress
+				if _, exists := c.entityTypes[typeAddress]; !exists {
+					c.diag("LDL1301", "unknown_or_ambiguous_symbol", src, group.refs[0].span, "entity group type is not in the typed definition", typeAddress, "")
+				}
+			}
+			layerAddress, layerOK := c.validateGroupRef(group, 1, resolve.KindLayer, src)
+			if layerOK {
+				if _, exists := c.layers[layerAddress]; !exists {
+					c.diag("LDL1301", "unknown_or_ambiguous_symbol", src, group.refs[1].span, "entity group layer is not in the typed definition", layerAddress, "")
+				}
+			}
+		case "relations":
+			typeAddress, typeOK := c.validateGroupRef(group, 0, resolve.KindRelationType, src)
+			if typeOK {
+				group.typeAddress = typeAddress
+				if _, exists := c.relationTypes[typeAddress]; !exists {
+					c.diag("LDL1301", "unknown_or_ambiguous_symbol", src, group.refs[0].span, "relation group type is not in the typed definition", typeAddress, "")
+				}
+			}
+		case "rows":
+			typeAddress, typeOK := c.validateGroupRef(group, 0, resolve.KindEntityType, src)
+			if typeOK {
+				group.typeAddress = typeAddress
+				if schema, exists := c.entityTypes[typeAddress]; exists {
+					c.validateGroupHeader(group, schema.Columns, src)
+				} else {
+					c.diag("LDL1301", "unknown_or_ambiguous_symbol", src, group.refs[0].span, "row group type is not in the typed definition", typeAddress, "")
+				}
+			}
+		case "relation_rows":
+			typeAddress, typeOK := c.validateGroupRef(group, 0, resolve.KindRelationType, src)
+			if typeOK {
+				group.typeAddress = typeAddress
+				if schema, exists := c.relationTypes[typeAddress]; exists {
+					c.validateGroupHeader(group, schema.Columns, src)
+				} else {
+					c.diag("LDL1301", "unknown_or_ambiguous_symbol", src, group.refs[0].span, "relation row group type is not in the typed definition", typeAddress, "")
+				}
+			}
+		}
+	}
+}
+
+func (c *compiler) validateGroupRef(group *factGroup, index int, kind resolve.SubjectKind, src resolve.DeclarationSource) (string, bool) {
+	if index >= len(group.refs) || group.refs[index].kind != kind {
+		c.diag("LDL1301", "unknown_or_ambiguous_symbol", src, group.span, "fact group is missing a required header reference", "", "")
+		return "", false
+	}
+	span := group.refs[index].span
+	targets := map[string]bool{}
+	for _, binding := range c.input.Resolve.Bindings {
+		if binding.Module == group.module && binding.ExpectedKind == kind && binding.Range == span {
+			targets[binding.TargetAddress] = true
+		}
+	}
+	if len(targets) != 1 {
+		c.diag("LDL1301", "unknown_or_ambiguous_symbol", src, span, "fact group header must have exactly one resolved binding", "", "")
+		return "", false
+	}
+	for address := range targets {
+		return address, true
+	}
+	return "", false
+}
+
+func (c *compiler) validateGroupHeader(group *factGroup, columns []definition.Column, src resolve.DeclarationSource) {
+	columnByID := map[string]bool{}
 	for _, column := range columns {
-		columnByID[column.ID] = column
+		columnByID[column.ID] = true
 	}
-	positions := map[string]int{}
-	for position, header := range group.header {
-		if previous, duplicate := positions[header.id]; duplicate {
-			c.diag("LDL1402", "invalid_or_duplicate_row", src, header.span, "duplicate row header column", decl.Address, ownerAddress)
-			_ = previous
+	seen := map[string]bool{}
+	for _, header := range group.header {
+		if seen[header.id] {
+			c.diag("LDL1402", "invalid_or_duplicate_row", src, header.span, "duplicate row header column", group.typeAddress, "")
 			continue
 		}
-		positions[header.id] = position
-		if _, exists := columnByID[header.id]; !exists {
-			c.diag("LDL1402", "invalid_or_duplicate_row", src, header.span, "unknown row header column", decl.Address, ownerAddress)
+		seen[header.id] = true
+		if !columnByID[header.id] {
+			c.diag("LDL1402", "invalid_or_duplicate_row", src, header.span, "unknown row header column", group.typeAddress, "")
 		}
+	}
+}
+
+func (c *compiler) compileRow(decl resolve.DeclarationSymbol, src resolve.DeclarationSource, header []headerColumn, columns []definition.Column, ownerAddress string) AttributeRow {
+	row := AttributeRow{ID: decl.ID, Address: decl.Address, Values: []Cell{}}
+	cells := rowCells(src.Node)
+	if len(cells) != len(header) {
+		c.diag("LDL1402", "invalid_or_duplicate_row", src, src.Range, "row cell count does not match its declared header", decl.Address, ownerAddress)
+	}
+	positions := map[string]int{}
+	for position, column := range header {
+		if _, duplicate := positions[column.id]; duplicate {
+			continue
+		}
+		positions[column.id] = position
 	}
 	for _, column := range columns {
 		position, specified := positions[column.ID]

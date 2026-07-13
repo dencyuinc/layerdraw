@@ -78,7 +78,9 @@ func Resolve(input Input) Result {
 		selected: map[string]bool{},
 	}
 	r.resolve()
-	return r.result()
+	result := r.result()
+	result.stageGeneration = newStageGeneration()
+	return result
 }
 
 func (r *resolver) resolve() {
@@ -709,6 +711,7 @@ func (r *resolver) finalizeModule(st *moduleState) {
 		}
 	}
 	r.resolveDeclarationRefs(st)
+	r.resolveFactGroupRefs(st)
 	st.exports = r.computeExports(st)
 	st.finalState = evalDone
 }
@@ -877,13 +880,32 @@ func (r *resolver) resolveDeclarationRefs(st *moduleState) {
 			}
 			target, ok := r.resolveText(st, ref.kind, ref.text)
 			if !ok {
-				if ref.optional {
-					continue
-				}
 				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "source binding is unknown or ambiguous", st.key, ref.span)
 				continue
 			}
 			st.addBinding(ref.kind, ref.text, ref.span, "reference", target, sourceAddress)
+		}
+	}
+}
+
+func (r *resolver) resolveFactGroupRefs(st *moduleState) {
+	for _, group := range st.ast.factGroups {
+		for _, ref := range group.refs {
+			if ref.text == "" {
+				continue
+			}
+			target, ok := r.resolveText(st, ref.kind, ref.text)
+			if !ok {
+				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "fact group header binding is unknown or ambiguous", st.key, ref.span)
+				continue
+			}
+			if len(group.members) == 0 {
+				st.addBinding(ref.kind, ref.text, ref.span, "group-header", target, "")
+				continue
+			}
+			for _, member := range group.members {
+				st.addBinding(ref.kind, ref.text, ref.span, "group-header", target, st.declarationAddress(member))
+			}
 		}
 	}
 }
@@ -1566,17 +1588,8 @@ func (r *resolver) selectDecl(decl DeclarationSymbol) {
 	st := r.modules[decl.Module]
 	if st != nil {
 		for _, b := range st.bindings {
-			if b.Module == decl.Module && b.TargetAddress != decl.Address {
-				continue
-			}
-		}
-		for _, raw := range st.ast.declarations {
-			if raw.id != decl.ID || raw.kind != decl.Kind {
-				continue
-			}
-			for _, ref := range raw.refs {
-				target, ok := r.resolveText(st, ref.kind, ref.text)
-				if ok {
+			if b.Module == decl.Module && b.SourceAddress == decl.Address {
+				if target, ok := r.symbols[b.TargetAddress]; ok {
 					r.selectDecl(target)
 				}
 			}

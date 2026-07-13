@@ -140,7 +140,7 @@ func TestMalformedRowBoundaryBranches(t *testing.T) {
 	})
 	t.Run("missing header", func(t *testing.T) {
 		c := newCompilerWithFacts(t)
-		c.rowGroups = map[sourceKey]rowGroup{}
+		c.rowGroups = map[sourceKey]*factGroup{}
 		c.compileRows()
 		if !hasCompilerCode(c, "LDL1402") {
 			t.Fatalf("diagnostics = %+v", c.diagnostics)

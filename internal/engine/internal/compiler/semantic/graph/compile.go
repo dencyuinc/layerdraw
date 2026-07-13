@@ -18,7 +18,10 @@ type compiler struct {
 	entityTypes   map[string]definition.EntityType
 	relationTypes map[string]definition.RelationType
 	layers        map[string]definition.Layer
-	rowGroups     map[sourceKey]rowGroup
+	factGroups    []*factGroup
+	rowGroups     map[sourceKey]*factGroup
+	groupsChecked bool
+	endpointSpans map[string]relationSpans
 	entities      []Entity
 	relations     []Relation
 	entityIndex   map[string]int
@@ -30,19 +33,23 @@ type compiler struct {
 // graph is returned only when resolve, definition, row, and graph constraints
 // all succeed.
 func Compile(input Input) Result {
+	result := Result{stageGeneration: input.Definition.Generation()}
 	diagnostics := append([]resolve.Diagnostic{}, input.Definition.Diagnostics...)
 	if len(diagnostics) == 0 {
 		diagnostics = append(diagnostics, input.Resolve.Diagnostics...)
 	}
 	resolve.SortDiagnostics(diagnostics)
 	if input.Resolve.HasErrors || input.Definition.HasErrors {
-		return Result{Diagnostics: diagnostics, HasErrors: true}
+		result.Diagnostics = diagnostics
+		result.HasErrors = true
+		return result
 	}
 
 	c := newCompiler(input)
-	if input.Definition.Root.Mode != input.Resolve.Mode || input.Definition.Root.Address != input.Resolve.RootAddress {
+	if input.Definition.Root.Mode != input.Resolve.Mode || input.Definition.Root.Address != input.Resolve.RootAddress || !input.Definition.MatchesResolve(input.Resolve) {
 		c.diag("LDL1301", "unknown_or_ambiguous_symbol", resolve.DeclarationSource{}, syntax.Span{}, "definition result does not match resolve result", input.Resolve.RootAddress, "")
 	}
+	c.validateFactGroups()
 	c.compileEntities()
 	c.compileRelations()
 	c.compileRows()
@@ -51,15 +58,20 @@ func Compile(input Input) Result {
 	diagnostics = append(diagnostics, c.diagnostics...)
 	resolve.SortDiagnostics(diagnostics)
 	if len(c.diagnostics) > 0 {
-		return Result{Diagnostics: diagnostics, HasErrors: true}
+		result.Diagnostics = diagnostics
+		result.HasErrors = true
+		return result
 	}
 	graph := c.masterGraph()
-	return Result{Graph: &graph, Diagnostics: diagnostics}
+	result.Graph = &graph
+	result.Diagnostics = diagnostics
+	return result
 }
 
 func newCompiler(input Input) *compiler {
 	declarations := append([]resolve.DeclarationSymbol{}, input.Resolve.Declarations...)
 	resolve.SortDeclarations(declarations)
+	factGroups, rowGroups := inspectFactGroups(input.Resolve.Modules)
 	c := &compiler{
 		input:         input,
 		declarations:  declarations,
@@ -68,7 +80,9 @@ func newCompiler(input Input) *compiler {
 		entityTypes:   map[string]definition.EntityType{},
 		relationTypes: map[string]definition.RelationType{},
 		layers:        map[string]definition.Layer{},
-		rowGroups:     inspectRowGroups(input.Resolve.Modules),
+		factGroups:    factGroups,
+		rowGroups:     rowGroups,
+		endpointSpans: map[string]relationSpans{},
 		entityIndex:   map[string]int{},
 		relationIndex: map[string]int{},
 	}
@@ -169,6 +183,7 @@ func (c *compiler) compileRelations() {
 		}
 		fromAddress, fromOK := c.bindingAt(decl.Address, resolve.KindEntity, refs[0].Span, src)
 		toAddress, toOK := c.bindingAt(decl.Address, resolve.KindEntity, refs[1].Span, src)
+		c.endpointSpans[decl.Address] = relationSpans{from: refs[0].Span, to: refs[1].Span}
 		if fromOK {
 			if _, exists := c.entityIndex[fromAddress]; !exists {
 				c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", src, refs[0].Span, "from endpoint is not a compiled entity", decl.Address, "")

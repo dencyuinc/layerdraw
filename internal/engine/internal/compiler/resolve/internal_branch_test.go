@@ -185,7 +185,7 @@ relation_type r "R" dependency {}
 relations r {
   rel: a -> a
 }
-relation_rows rel [x] {
+relation_rows r [x] {
   rel old: 1
 }
 export { remote } from "./remote.ldl"

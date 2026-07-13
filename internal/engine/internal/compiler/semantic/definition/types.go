@@ -10,17 +10,30 @@ type Input struct {
 }
 
 type Result struct {
-	Root          Root
-	Project       *Project
-	Pack          *Pack
-	EntityTypes   []EntityType
-	RelationTypes []RelationType
-	Layers        []Layer
-	References    []Reference
-	Dependencies  []resolve.ResolvedPackSummary
-	Identity      IdentityHistory
-	Diagnostics   []resolve.Diagnostic
-	HasErrors     bool
+	stageGeneration resolve.StageGeneration
+	Root            Root
+	Project         *Project
+	Pack            *Pack
+	EntityTypes     []EntityType
+	RelationTypes   []RelationType
+	Layers          []Layer
+	References      []Reference
+	Dependencies    []resolve.ResolvedPackSummary
+	Identity        IdentityHistory
+	Diagnostics     []resolve.Diagnostic
+	HasErrors       bool
+}
+
+// MatchesResolve reports whether this result was compiled from exactly the
+// supplied resolve generation.
+func (r Result) MatchesResolve(resolved resolve.Result) bool {
+	return r.stageGeneration.Matches(resolved.Generation())
+}
+
+// Generation returns the opaque token for propagation to the next internal
+// compiler stage.
+func (r Result) Generation() resolve.StageGeneration {
+	return r.stageGeneration
 }
 
 type Root struct {
