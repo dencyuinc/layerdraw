@@ -21,12 +21,13 @@ type moduleAST struct {
 }
 
 type rawDecl struct {
-	kind    SubjectKind
-	id      string
-	owner   string
-	childOf *rawDecl
-	span    syntax.Span
-	refs    []rawRef
+	kind      SubjectKind
+	id        string
+	owner     string
+	ownerKind SubjectKind
+	childOf   *rawDecl
+	span      syntax.Span
+	refs      []rawRef
 }
 
 type rawRef struct {
@@ -194,7 +195,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		for _, item := range descendants(n, syntax.NodeRowItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) >= 2 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, span: item.Span})
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindEntity, span: item.Span})
 			}
 		}
 	case "relations":
@@ -215,7 +216,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		for _, item := range descendants(n, syntax.NodeRowItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) >= 2 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, span: item.Span})
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindRelation, span: item.Span})
 			}
 		}
 	case "query":

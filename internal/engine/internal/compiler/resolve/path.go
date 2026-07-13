@@ -23,6 +23,9 @@ func normalizePortablePath(raw string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	if !norm.NFC.IsNormalString(decoded) || strings.Count(decoded, "/") != strings.Count(raw, "/") {
+		return "", false
+	}
 	if strings.HasPrefix(decoded, "/") || strings.Contains(decoded, "\\") || strings.ContainsRune(decoded, 0) {
 		return "", false
 	}

@@ -596,10 +596,7 @@ func (r *resolver) collectDeclarations(st *moduleState) {
 			continue
 		}
 		if d.kind == KindRow {
-			owner, ok := st.findTop(d.owner, KindEntity)
-			if !ok {
-				owner, ok = st.findTop(d.owner, KindRelation)
-			}
+			owner, ok := st.findTop(d.owner, d.ownerKind)
 			if !ok {
 				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "row owner is not declared in the same module", st.key, d.span)
 				continue
@@ -888,10 +885,7 @@ func (st *moduleState) declarationAddress(raw rawDecl) string {
 		return reservationAddress(owner.Symbol, raw.kind, raw.id)
 	}
 	if raw.kind == KindRow {
-		owner, ok := st.findTop(raw.owner, KindEntity)
-		if !ok {
-			owner, ok = st.findTop(raw.owner, KindRelation)
-		}
+		owner, ok := st.findTop(raw.owner, raw.ownerKind)
 		if !ok {
 			return ""
 		}
@@ -912,10 +906,16 @@ func (r *resolver) validateAllIdentity() {
 	for _, key := range sortedModuleKeys(r.modules) {
 		st := r.modules[key]
 		r.validateRootAndOwnerBlocks(st)
-		r.validateReservations(st)
-		r.validateMoves(st)
-		r.validateReservationMoveDisjointness(st)
 	}
+	for _, key := range sortedModuleKeys(r.modules) {
+		st := r.modules[key]
+		r.validateReservations(st)
+	}
+	for _, key := range sortedModuleKeys(r.modules) {
+		st := r.modules[key]
+		r.validateMoves(st)
+	}
+	r.validateOriginIdentityDisjointness()
 }
 
 func (r *resolver) validateRootAndOwnerBlocks(st *moduleState) {
@@ -1200,17 +1200,40 @@ func appendMoveClosureUnique(out *[]MoveClosure, item MoveClosure) {
 	*out = append(*out, item)
 }
 
-func (r *resolver) validateReservationMoveDisjointness(st *moduleState) {
-	reserved := map[string]syntax.Span{}
-	for _, res := range st.reservations {
-		reserved[res.Address] = res.Range
-	}
-	for _, mv := range st.moves {
-		if span, ok := reserved[mv.FromAddress]; ok {
-			r.diag("LDL1302", "duplicate_or_reserved_identity", "move source is also explicitly reserved", st.key, mv.Range)
-			r.diagnostics[len(r.diagnostics)-1].Related = append(r.diagnostics[len(r.diagnostics)-1].Related, DiagnosticRelated{Relation: "conflict", Range: &SourceRange{Origin: sourceOrigin(st.key.Origin), ModulePath: st.key.Path, StartByte: span.Start, EndByte: span.End}, SubjectAddress: mv.FromAddress})
+type identityReservationRef struct {
+	module ModuleKey
+	item   Reservation
+}
+
+func (r *resolver) validateOriginIdentityDisjointness() {
+	reserved := map[string]identityReservationRef{}
+	for _, key := range sortedModuleKeys(r.modules) {
+		st := r.modules[key]
+		for _, res := range st.reservations {
+			if prev, exists := reserved[res.Address]; exists {
+				r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate reservation", key, res.Range)
+				r.addIdentityRelatedConflict(&r.diagnostics[len(r.diagnostics)-1], prev.module, prev.item.Range, res.Address)
+				continue
+			}
+			reserved[res.Address] = identityReservationRef{module: key, item: res}
 		}
 	}
+	for _, key := range sortedModuleKeys(r.modules) {
+		st := r.modules[key]
+		for _, mv := range st.moves {
+			if ref, ok := reserved[mv.FromAddress]; ok {
+				r.diag("LDL1302", "duplicate_or_reserved_identity", "move source is also explicitly reserved", key, mv.Range)
+				r.addIdentityRelatedConflict(&r.diagnostics[len(r.diagnostics)-1], ref.module, ref.item.Range, mv.FromAddress)
+			}
+		}
+	}
+}
+
+func (r *resolver) addIdentityRelatedConflict(d *Diagnostic, mod ModuleKey, span syntax.Span, address string) {
+	if d == nil {
+		return
+	}
+	d.Related = append(d.Related, DiagnosticRelated{Relation: "conflict", Range: &SourceRange{Origin: sourceOrigin(mod.Origin), ModulePath: mod.Path, StartByte: span.Start, EndByte: span.End}, SubjectAddress: address})
 }
 
 func (r *resolver) materializeMove(st *moduleState, raw rawMove) (Move, bool) {
@@ -1241,20 +1264,26 @@ func (r *resolver) materializeMove(st *moduleState, raw rawMove) (Move, bool) {
 func (r *resolver) moveOwner(st *moduleState, raw rawMove) (DeclarationSymbol, bool) {
 	switch raw.variant {
 	case "entity_type_column", "entity_type_constraint":
-		return st.findTop(raw.ownerID, KindEntityType)
+		return r.findOriginTop(st.key.Origin, raw.ownerID, KindEntityType)
 	case "relation_type_column", "relation_type_constraint":
-		return st.findTop(raw.ownerID, KindRelationType)
+		return r.findOriginTop(st.key.Origin, raw.ownerID, KindRelationType)
 	case "entity_row":
-		return st.findTop(raw.ownerID, KindEntity)
+		return r.findOriginTop(st.key.Origin, raw.ownerID, KindEntity)
 	case "relation_row":
-		return st.findTop(raw.ownerID, KindRelation)
+		return r.findOriginTop(st.key.Origin, raw.ownerID, KindRelation)
 	case "query_parameter":
-		return st.findTop(raw.ownerID, KindQuery)
+		return r.findOriginTop(st.key.Origin, raw.ownerID, KindQuery)
 	case "view_table_column", "view_export":
-		return st.findTop(raw.ownerID, KindView)
+		return r.findOriginTop(st.key.Origin, raw.ownerID, KindView)
 	default:
 		return DeclarationSymbol{}, false
 	}
+}
+
+func (r *resolver) findOriginTop(origin Origin, id string, kind SubjectKind) (DeclarationSymbol, bool) {
+	addr := addressOf(StableSymbol{Origin: origin, Path: []SymbolSegment{{Kind: kind, ID: id}}})
+	decl, ok := r.symbols[addr]
+	return decl, ok
 }
 
 func moveScope(m Move) string {
@@ -1296,6 +1325,9 @@ func (r *resolver) selectProject(entry *moduleState) {
 }
 
 func (r *resolver) selectPack(entry *moduleState) {
+	if root, ok := entry.localByAddress[addressOf(StableSymbol{Origin: entry.key.Origin})]; ok {
+		r.selectDecl(root)
+	}
 	for _, name := range sortedExportNames(entry.exports) {
 		r.selectDecl(entry.exports[name])
 	}
