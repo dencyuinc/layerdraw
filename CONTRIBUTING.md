@@ -2,6 +2,8 @@
 
 LayerDraw is planned as a public source-available project. The product source is visible and contributions are welcome, but the project is not licensed as OSI-approved Open Source.
 
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Questions and support requests should follow [SUPPORT.md](SUPPORT.md).
+
 ## Contribution Scope
 
 Good public contributions include:
@@ -17,9 +19,9 @@ SaaS production configuration, credentials, private deployment policy, customer 
 
 ## Contributor License Agreement
 
-Before external code contributions are merged, contributors must agree to the LayerDraw CLA described in [docs/legal/contributor-license-agreement.md](docs/legal/contributor-license-agreement.md). The CLA is intended to preserve the ability to offer Commercial / OEM licensing and future relicensing while contributors retain their own copyright.
+Before an external pull request is merged, its author must agree to the [LayerDraw Contributor License Agreement 1.0](docs/legal/contributor-license-agreement.md) by selecting the Contributor Agreement checkbox in the pull request template. The pull request and its GitHub metadata record the account, CLA version, acceptance, time, commits, and covered Contribution. The author confirms the rights and any employer authorization required to submit the Contribution. A legal entity contributing in its own name must separately accept through an authorized representative using a process designated by DENCYU.
 
-The project may still accept issues, discussions, documentation suggestions, packs, templates, and design feedback before automated CLA tooling is enabled.
+Contributor information is handled under the [LayerDraw Contributor Privacy Notice](docs/legal/contributor-privacy-notice.md). Issues, Discussions, and feedback that are not submitted for inclusion as a Contribution do not require CLA acceptance. Dependency update pull requests created by an approved bot are exempt because the bot does not claim authorship of the upstream changes.
 
 ## Development Rules
 

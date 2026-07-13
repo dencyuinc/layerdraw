@@ -148,6 +148,13 @@ Start with these documents:
 
 The complete index is in [docs/README.md](docs/README.md).
 
+## Community
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+- Use [SUPPORT.md](SUPPORT.md) to choose the correct support or reporting channel.
+- Participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- Report vulnerabilities according to [SECURITY.md](SECURITY.md), never through a public issue.
+
 ## License
 
 LayerDraw uses a mixed-license source-available model.

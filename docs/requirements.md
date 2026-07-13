@@ -941,13 +941,14 @@ generated schemaはLDL syntax versionと独立したmajor versionを持ち、未
 - public release artifactは一度buildして署名し、同じdigestをSelf-host配布とmanaged deploymentへpromoteする
 - managed service固有の商用・流通機能はPublic Coreの現行要件に含めず、コア完成後に別途要件化する
 
-公開前の必須gate:
+Public repository公開前の必須gate:
 
-- root `LICENSE`、`docs/legal/README.md`、Trademark Policyの株式会社DENCYUによる正式approval。外部弁護士reviewは法定要件またはOSI要件として固定しない
-- Commercial / OEM agreement、SaaS Terms、Marketplace Termsとの用語整合
-- CLAの準拠法、裁判管轄、同意証拠、法人Contributor手続とacceptance workflowの確定
-- Registry artifact license metadataとthird-party asset review運用
-- security response teamとprivate vulnerability reporting運用
+- root `LICENSE`、`docs/legal/README.md`、Trademark Policy、CLA 1.0を株式会社DENCYUの正式な公開文書として固定する。外部弁護士reviewは法定要件またはOSI要件として固定しない
+- CLA 1.0は日本法を準拠法、福岡地方裁判所を法令上の専属管轄を除く第一審の専属的合意管轄とし、Pull Request checkbox、GitHub metadata、required checkで個人Contributorの同意、権利、勤務先承認を記録する。法人自身をContributorとする場合は権限ある代表者の同意記録を別途保持する
+- Contributor Privacy Notice、Code of Conduct、Support、security response経路を公開し、private vulnerability reportingを有効にする
+- Git履歴、secret scanning、push protection、branch protection、required checksを検証する
+
+Commercial / OEM agreement、SaaS Terms、Marketplace Termsとの用語整合は各offeringの提供開始条件であり、Public repository自体の公開を停止しない。Registry artifact license metadataとthird-party asset reviewはRegistry content公開時に必須とする。
 
 licenseの法的適用範囲は[legal/README.md](legal/README.md)、repository topology、governance、CI、release、配布、SaaS CD、license enforcementは[repository-governance-and-delivery.md](repository-governance-and-delivery.md)を規範とする。
 

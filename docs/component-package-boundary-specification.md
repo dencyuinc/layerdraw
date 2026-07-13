@@ -200,14 +200,20 @@ package.json
 pnpm-workspace.yaml
 turbo.json
 Makefile
+README.md
 LICENSE
 NOTICE
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md
+SUPPORT.md
 docs/
   legal/
     README.md
     use-cases.md
     trademarks.md
     contributor-license-agreement.md
+    contributor-privacy-notice.md
     licenses/
       Apache-2.0.txt
 OWNERS.yaml

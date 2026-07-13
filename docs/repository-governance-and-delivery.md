@@ -282,7 +282,9 @@ pull requestは次を必須とする。
 - release note要否
 - license / dependency impact
 
-CLAを採用し、個人と法人のcontributionを追跡できるようにする。CLAは著作権を不必要に譲渡させるためではなく、source-available commercial distribution、relicensing、patent grantの法的権限を明確にするために使う。
+CLAを採用し、個人と法人のcontributionを追跡できるようにする。CLAは著作権を不必要に譲渡させるためではなく、source-available commercial distribution、relicensing、patent grantの法的権限を明確にするために使う。個人ContributorはPull Request templateのCLA 1.0 checkboxへ明示同意し、required `Repository policy` checkが未同意を拒否する。法人自身をContributorとする場合は権限ある代表者の同意記録を別途保持する。
+
+Community participationにはroot `CODE_OF_CONDUCT.md`を適用し、違反報告は`conduct@dencyu.co.jp`へ非公開で送る。質問、bug、security、commercial inquiryの経路はroot `SUPPORT.md`で分離し、行動規範窓口へproduct supportまたは脆弱性報告を混在させない。
 
 ### 6.5 Branch policy
 

@@ -4,6 +4,12 @@
 
 - Closes #
 
+## Contributor Agreement
+
+- [ ] I have read and agree to the LayerDraw Contributor License Agreement 1.0 and confirm that I have the rights and any employer authorization required to submit this Contribution.
+
+See the [Contributor License Agreement](https://github.com/dencyuinc/layerdraw/blob/main/docs/legal/contributor-license-agreement.md) and [Contributor Privacy Notice](https://github.com/dencyuinc/layerdraw/blob/main/docs/legal/contributor-privacy-notice.md).
+
 ## Scope
 
 - [ ] Documentation only

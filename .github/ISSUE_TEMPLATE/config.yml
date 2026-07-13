@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/dencyuinc/layerdraw/discussions
     about: Use Discussions for open-ended questions, early ideas, and community conversation.
   - name: Security report
-    url: https://dencyu.co.jp/
+    url: https://github.com/dencyuinc/layerdraw/security/policy
     about: Please do not file public issues for vulnerabilities with exploit details.

@@ -6,6 +6,8 @@ failed=0
 
 branch_name="${LAYERDRAW_BRANCH_NAME:-}"
 event_name="${LAYERDRAW_EVENT_NAME:-}"
+pr_author="${LAYERDRAW_PR_AUTHOR:-}"
+pr_body="${LAYERDRAW_PR_BODY:-}"
 branch_name_pattern='^(feat|fix|docs|refactor|test|build|ci|chore|perf|security|revert|release)/[a-z0-9]+(-[a-z0-9]+)*$'
 
 fail() {
@@ -19,11 +21,16 @@ required_files=(
   NOTICE
   CONTRIBUTING.md
   SECURITY.md
+  CODE_OF_CONDUCT.md
+  SUPPORT.md
   OWNERS.yaml
   .github/CODEOWNERS
   .github/PULL_REQUEST_TEMPLATE.md
   docs/README.md
   docs/legal/README.md
+  docs/legal/contributor-license-agreement.md
+  docs/legal/contributor-privacy-notice.md
+  docs/legal/trademarks.md
 )
 
 for path in "${required_files[@]}"; do
@@ -39,6 +46,13 @@ fi
 
 if [[ -n "$branch_name" && "$default_branch_event" != true && ! "$branch_name" =~ $branch_name_pattern && ! "$branch_name" =~ ^dependabot/ ]]; then
   fail "branch name '$branch_name' must use an approved prefix and a lowercase kebab-case description"
+fi
+
+if [[ "$event_name" == "pull_request" && "$pr_author" != 'dependabot[bot]' ]]; then
+  cla_statement='I have read and agree to the LayerDraw Contributor License Agreement 1.0 and confirm that I have the rights and any employer authorization required to submit this Contribution.'
+  if ! grep -Fq -- "- [x] $cla_statement" <<< "$pr_body" && ! grep -Fq -- "- [X] $cla_statement" <<< "$pr_body"; then
+    fail 'pull request author must accept the LayerDraw Contributor License Agreement 1.0'
+  fi
 fi
 
 forbidden_paths="$({
@@ -68,6 +82,10 @@ check_forbidden_text 'language_version' 'removed LDL source language_version fie
 check_forbidden_text '@layerdraw/core' 'removed legacy TypeScript core package name was found'
 check_forbidden_text '@gmail\.com' 'personal Gmail address was found in tracked content'
 check_forbidden_text 'layerdraw-private-history|/private/layerdraw' 'private-history repository reference was found'
+
+if grep -Eiq 'pre-release draft|承認前draft' docs/legal/contributor-license-agreement.md docs/legal/trademarks.md; then
+  fail 'normative contributor or trademark policy is still marked as a pre-release draft'
+fi
 
 if (( failed != 0 )); then
   exit 1
