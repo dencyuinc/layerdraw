@@ -935,7 +935,11 @@ func (r *resolver) bindFactGroupRefs(st *moduleState) {
 				continue
 			}
 			for _, member := range group.members {
-				st.addBinding(ref.kind, ref.text, ref.span, "group-header", target, st.declarationAddress(member))
+				sourceAddress := st.declarationAddress(member)
+				if sourceAddress == "" {
+					continue
+				}
+				st.addBinding(ref.kind, ref.text, ref.span, "group-header", target, sourceAddress)
 			}
 		}
 	}
@@ -954,7 +958,7 @@ func (r *resolver) validateFactGroupRefs(st *moduleState, selectedOnly bool) {
 		}
 		if selectedOnly {
 			for _, member := range group.members {
-				if member.kind == KindRow && st.declarationAddress(member) == "" {
+				if member.kind == KindRow && st.declarationAddress(member) == "" && (st.kind == ModuleProjectEntry || st.kind == ModulePackEntry) {
 					r.diag("LDL1301", "unknown_or_ambiguous_symbol", "row owner is not declared in the same module", st.key, member.span)
 				}
 			}
@@ -1646,6 +1650,13 @@ func (r *resolver) selectPack(entry *moduleState) {
 	}
 	for _, name := range sortedExportNames(entry.exports) {
 		r.selectDecl(entry.exports[name])
+	}
+	for _, binding := range entry.bindings {
+		if binding.SourceAddress == "" && binding.Via == "group-header" {
+			if target, ok := r.symbols[binding.TargetAddress]; ok {
+				r.selectDecl(target)
+			}
+		}
 	}
 }
 
