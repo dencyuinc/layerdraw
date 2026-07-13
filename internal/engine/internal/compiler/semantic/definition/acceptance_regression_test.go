@@ -70,6 +70,12 @@ func TestAnnotationSafetyRejectsCommonEmbeddedSourceForms(t *testing.T) {
     named_handler: "function named() { return 1; }",
     implementation_note: "func main() {}",
     module_example: "(module (func))",
+    empty_module_example: "(module)",
+    class_extends_example: "class Widget extends Base {}",
+    class_expression_example: "const Widget = class {};",
+    side_effect_import_example: "import \"polyfill\";",
+    export_list_example: "export { widget };",
+    generic_function_example: "func Generic[T any](value T) {}",
     arrow_notation: "A => B",
     constellation_note: "constellation map",
     functional_note: "functional design",
@@ -79,8 +85,8 @@ func TestAnnotationSafetyRejectsCommonEmbeddedSourceForms(t *testing.T) {
 `
 	got := compileProject(t, map[string]string{"document.ldl": source})
 	forbidden := diagnosticsByCode(got.Diagnostics, "LDL1901")
-	if len(forbidden) != 7 {
-		t.Fatalf("forbidden diagnostics = %+v, want 7; annotations=%+v", forbidden, got.Project.Annotations)
+	if len(forbidden) != 13 {
+		t.Fatalf("forbidden diagnostics = %+v, want 13; annotations=%+v", forbidden, got.Project.Annotations)
 	}
 	for _, diagnostic := range forbidden {
 		if diagnostic.Range == nil || diagnostic.Range.StartByte < 0 || diagnostic.Range.EndByte > len(source) || diagnostic.Range.StartByte >= diagnostic.Range.EndByte {

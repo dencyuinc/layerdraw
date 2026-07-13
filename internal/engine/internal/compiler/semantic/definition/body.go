@@ -248,10 +248,10 @@ var javascriptParenthesizedArrowPattern = regexp.MustCompile(`(?s)^(?:async\s*)?
 var javascriptSingleParameterArrowPattern = regexp.MustCompile(`(?s)^(?:async\s+[A-Za-z_$][A-Za-z0-9_$]*|[a-z_$][A-Za-z0-9_$]*)\s*=>`)
 var javascriptFunctionPattern = regexp.MustCompile(`(?s)^\(?\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
 var javascriptVariableFunctionPattern = regexp.MustCompile(`(?s)^(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
-var javascriptClassPattern = regexp.MustCompile(`(?s)^(?:export\s+)?(?:default\s+)?class(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\{`)
-var javascriptModulePattern = regexp.MustCompile(`(?s)^(?:import\s+.+\s+from\s+|export\s+(?:default\s+)?(?:function|class|const|let|var)\b)`)
-var goSourcePrefixPattern = regexp.MustCompile(`(?s)^(?:package\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:\n|$)|func\s+(?:\([^)]*\)\s*)?[A-Za-z_][A-Za-z0-9_]*\s*\()`)
-var wasmTextPattern = regexp.MustCompile(`(?s)^\(module(?:\s|\()`)
+var javascriptClassPattern = regexp.MustCompile(`(?s)^(?:(?:export\s+)?(?:default\s+)?class(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?|(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*class(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?)(?:\s+extends\s+[^\{]+)?\s*\{`)
+var javascriptModulePattern = regexp.MustCompile(`(?s)^(?:import\s*(?:\(|["'\{\*]|[A-Za-z_$][A-Za-z0-9_$]*\s*(?:,|from\b))|export\s*(?:default\b|\{|\*|(?:async\s+)?(?:function|class)\b|(?:const|let|var)\b))`)
+var goSourcePrefixPattern = regexp.MustCompile(`(?s)^(?:package\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:\n|$)|func\s+(?:\([^)]*\)\s*)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?\s*\()`)
+var wasmTextPattern = regexp.MustCompile(`(?s)^\(module(?:\s|\(|\))`)
 
 func forbiddenAnnotationKey(key string) bool {
 	name := canonicalAnnotationName(key)
