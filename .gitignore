@@ -4,8 +4,11 @@
 node_modules/
 dist/
 coverage/
+reports/
 *.tsbuildinfo
 .vite/
+.turbo/
+.pnpm-store/
 .layerdraw-data/
 .layerdraw-data*/
 tmp/

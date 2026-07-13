@@ -41,7 +41,7 @@ Go source、schema、generated binding、TS package、application shellは同じ
 
 ### 3.2 Goは単一module
 
-Goはrepository rootの単一module `github.com/layerdraw/layerdraw`として管理する。
+Goはrepository rootの単一module `github.com/dencyuinc/layerdraw`として管理する。
 
 理由:
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 set -euo pipefail
 

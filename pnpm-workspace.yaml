@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "extensions/*"
+  - "integrations/*"
+  - "packages/*"
+
+minimumReleaseAge: 1440
+
+onlyBuiltDependencies: []
