@@ -203,6 +203,14 @@ func TestFinalAcceptanceLayerTieUsesStructuredStableSymbolOrder(t *testing.T) {
 		t.Fatalf("layer tie order = %+v", layers)
 	}
 
+	constructed := LayersByDisplayOrder([]Layer{
+		{ID: "pack", Address: "ldl:pack:acme:shared:layer:pack_layer", Order: 0},
+		{ID: "project", Address: "ldl:project:z:layer:project_layer", Order: 0},
+	})
+	if constructed[0].ID != "project" || constructed[1].ID != "pack" {
+		t.Fatalf("caller-constructed layer tie order = %+v", constructed)
+	}
+
 	compiled := compileProject(t, map[string]string{"document.ldl": `project p "P" {}
 layers {
   z_layer "Z" @0

@@ -84,9 +84,27 @@ func LayersByDisplayOrder(layers []Layer) []Layer {
 				return compared
 			}
 		}
+		// Compiled layers retain their StableSymbol. The rank fallback preserves
+		// the same origin order for caller-constructed Layer values.
+		if aRank, aOK := layerOriginRank(a.Address); aOK {
+			if bRank, bOK := layerOriginRank(b.Address); bOK && aRank != bRank {
+				return aRank - bRank
+			}
+		}
 		return strings.Compare(a.Address, b.Address)
 	})
 	return out
+}
+
+func layerOriginRank(address string) (int, bool) {
+	switch {
+	case strings.HasPrefix(address, "ldl:project:"):
+		return 0, true
+	case strings.HasPrefix(address, "ldl:pack:"):
+		return 1, true
+	default:
+		return 0, false
+	}
 }
 
 type compiler struct {
