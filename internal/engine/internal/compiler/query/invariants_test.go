@@ -31,6 +31,15 @@ func TestCorruptStageArtifactsFailTransactionally(t *testing.T) {
 		}
 	})
 
+	t.Run("missing parameter source", func(t *testing.T) {
+		input := projectInput(t, map[string]string{"document.ldl": minimalSchema + "query q \"Q\" {\n  parameters {\n    name string\n  }\n  select {}\n}\n"})
+		input.Resolve.DeclarationSources = withoutSourceKind(input.Resolve.DeclarationSources, resolve.KindParameter)
+		got := Compile(input)
+		if !got.HasErrors || got.Recipes != nil || !diagnosticCode(got, "LDL1101") {
+			t.Fatalf("missing parameter CST was not rejected transactionally: %+v", got)
+		}
+	})
+
 	t.Run("invalid identity token", func(t *testing.T) {
 		input := base
 		for index := range input.Resolve.DeclarationSources {

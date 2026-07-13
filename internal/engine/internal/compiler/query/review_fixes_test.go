@@ -4,6 +4,7 @@ package query
 
 import (
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -68,6 +69,43 @@ query nested "Nested" {
 	}
 }
 
+func TestQueryBlockHeadersRejectArguments(t *testing.T) {
+	for _, block := range []string{"reserve", "parameters", "select"} {
+		t.Run(block, func(t *testing.T) {
+			got := compileProject(t, map[string]string{"document.ldl": minimalSchema + `
+query invalid_header "Invalid header" {
+  ` + block + ` ignored {}
+  select {}
+}
+`})
+			if !got.HasErrors || got.Recipes != nil || !diagnosticCode(got, "LDL1102") {
+				t.Fatalf("%s block argument was ignored: %+v", block, got)
+			}
+		})
+	}
+}
+
+func TestTagContainsAcceptsStringParameter(t *testing.T) {
+	got := compileProject(t, map[string]string{"document.ldl": minimalSchema + `
+query parameterized_tag "Parameterized tag" {
+  parameters {
+    tag string
+  }
+  select {}
+  where all {
+    field tags contains $tag
+  }
+}
+`})
+	if got.HasErrors || len(got.Recipes) != 1 || len(got.Recipes[0].Where.Children) != 1 {
+		t.Fatalf("parameterized tag predicate failed: recipes=%+v diagnostics=%+v", got.Recipes, got.Diagnostics)
+	}
+	value := got.Recipes[0].Where.Children[0].Value
+	if value == nil || value.Kind != ValueParameter || value.ParameterAddress != "ldl:project:p:query:parameterized_tag:parameter:tag" {
+		t.Fatalf("tag predicate value = %+v", value)
+	}
+}
+
 func TestInvalidStatePredicateDoesNotReportUnusedStatePolicy(t *testing.T) {
 	got := compileProject(t, map[string]string{"document.ldl": minimalSchema + `
 query invalid_state "Invalid state" {
@@ -83,6 +121,58 @@ query invalid_state "Invalid state" {
 	}
 	if hasDiagnosticMessage(got, "state_input is forbidden without a state predicate") {
 		t.Fatalf("authored state predicate was treated as absent: %+v", got.Diagnostics)
+	}
+}
+
+func TestMalformedPredicateAncestorStillCountsAuthoredStatePredicate(t *testing.T) {
+	got := compileProject(t, map[string]string{"document.ldl": minimalSchema + `
+query invalid_group "Invalid group" {
+  state_input optional
+  select {}
+  where all {
+    all extra {
+      state system.created_at exists
+    }
+  }
+}
+`})
+	if !got.HasErrors || !hasDiagnosticMessage(got, "boolean predicate group requires only a block") {
+		t.Fatalf("malformed group was accepted: %+v", got)
+	}
+	if hasDiagnosticMessage(got, "state_input is forbidden without a state predicate") {
+		t.Fatalf("nested authored state predicate was treated as absent: %+v", got.Diagnostics)
+	}
+}
+
+func TestQueryDiagnosticsUseMinimumAuthoredRange(t *testing.T) {
+	source := minimalSchema + `
+query ranges "Ranges" {
+  state_input optional
+  select {}
+}
+`
+	got := compileProject(t, map[string]string{"document.ldl": source})
+	diagnostic := diagnosticWithMessage(got, "state_input is forbidden without a state predicate")
+	wantStart := strings.Index(source, "state_input optional")
+	wantEnd := wantStart + len("state_input optional")
+	if diagnostic == nil || diagnostic.Range == nil || diagnostic.Range.StartByte != wantStart || diagnostic.Range.EndByte != wantEnd {
+		t.Fatalf("state policy range = %+v, want [%d,%d)", diagnostic, wantStart, wantEnd)
+	}
+
+	source = minimalSchema + `
+query ranges "Ranges" {
+  select {}
+  where all {
+    field id ==
+  }
+}
+`
+	got = compileProject(t, map[string]string{"document.ldl": source})
+	diagnostic = diagnosticWithMessage(got, "predicate operator requires exactly one value")
+	wantStart = strings.Index(source, "field id ==")
+	wantEnd = wantStart + len("field id ==")
+	if diagnostic == nil || diagnostic.Range == nil || diagnostic.Range.StartByte != wantStart || diagnostic.Range.EndByte != wantEnd {
+		t.Fatalf("missing value range = %+v, want [%d,%d)", diagnostic, wantStart, wantEnd)
 	}
 }
 
@@ -148,4 +238,13 @@ func hasDiagnosticMessage(result Result, message string) bool {
 		}
 	}
 	return false
+}
+
+func diagnosticWithMessage(result Result, message string) *resolve.Diagnostic {
+	for index := range result.Diagnostics {
+		if result.Diagnostics[index].Message == message {
+			return &result.Diagnostics[index]
+		}
+	}
+	return nil
 }

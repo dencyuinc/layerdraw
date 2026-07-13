@@ -24,6 +24,19 @@ func (c *compiler) compilePredicateRoot(source resolve.DeclarationSource, member
 	return c.compilePredicateMember(source, root, ownerKind, subject)
 }
 
+func (c *compiler) recordAuthoredStatePredicates(member authoredMember) {
+	if member.head == string(PredicateState) {
+		c.statePredicates++
+		if c.statePredicate == nil {
+			span := member.span
+			c.statePredicate = &span
+		}
+	}
+	for _, child := range readMembers(member.block) {
+		c.recordAuthoredStatePredicates(child)
+	}
+}
+
 func (c *compiler) compilePredicateMember(source resolve.DeclarationSource, member authoredMember, ownerKind resolve.SubjectKind, subject string) Predicate {
 	switch PredicateKind(member.head) {
 	case PredicateAll, PredicateAny:
@@ -78,12 +91,11 @@ func (c *compiler) compileFieldPredicate(source resolve.DeclarationSource, membe
 		return predicate
 	}
 	predicate.Operator = operator
-	predicate.Value = c.compilePredicateValue(source, subject, operator, operand, member.args[2:])
+	predicate.Value = c.compilePredicateValue(source, subject, operator, operand, member.args[2:], member.span)
 	return predicate
 }
 
 func (c *compiler) compileStatePredicate(source resolve.DeclarationSource, member authoredMember, stateSubjectKind StateSubjectKind, subject string) Predicate {
-	c.statePredicates++
 	predicate := Predicate{Kind: PredicateState}
 	if member.block != nil || len(member.args) < 2 {
 		c.diag("LDL1601", "invalid_query_or_arguments", source, member.span, "state predicate requires field path and operator", subject, "")
@@ -102,7 +114,7 @@ func (c *compiler) compileStatePredicate(source resolve.DeclarationSource, membe
 		return predicate
 	}
 	predicate.Operator = operator
-	predicate.Value = c.compilePredicateValue(source, subject, operator, predicateOperand{typeInfo: predicate.OperandType, columns: []definition.Column{field.column}}, member.args[2:])
+	predicate.Value = c.compilePredicateValue(source, subject, operator, predicateOperand{typeInfo: predicate.OperandType, columns: []definition.Column{field.column}}, member.args[2:], member.span)
 	c.stateReads = append(c.stateReads, StateReadDependency{SubjectKind: stateSubjectKind, FieldPath: field.path, ValueType: field.column.ValueType})
 	return predicate
 }
@@ -216,7 +228,7 @@ func (c *compiler) compileCellPredicate(source resolve.DeclarationSource, member
 		return predicate
 	}
 	predicate.Operator = operator
-	predicate.Value = c.compilePredicateValue(source, subject, operator, predicateOperand{typeInfo: predicate.OperandType, columns: columns}, member.args[2:])
+	predicate.Value = c.compilePredicateValue(source, subject, operator, predicateOperand{typeInfo: predicate.OperandType, columns: columns}, member.args[2:], member.span)
 	return predicate
 }
 
@@ -288,7 +300,7 @@ func operatorCompatible(operator Operator, operand OperandType) bool {
 	}
 }
 
-func (c *compiler) compilePredicateValue(source resolve.DeclarationSource, subject string, operator Operator, operand predicateOperand, values []authoredValue) *PredicateValue {
+func (c *compiler) compilePredicateValue(source resolve.DeclarationSource, subject string, operator Operator, operand predicateOperand, values []authoredValue, missingValueSpan syntax.Span) *PredicateValue {
 	if operator == OperatorExists || operator == OperatorMissing {
 		if len(values) != 0 {
 			c.diag("LDL1601", "invalid_query_or_arguments", source, values[0].span, "exists and missing forbid a predicate value", subject, "")
@@ -296,7 +308,7 @@ func (c *compiler) compilePredicateValue(source resolve.DeclarationSource, subje
 		return nil
 	}
 	if len(values) != 1 {
-		span := source.Range
+		span := missingValueSpan
 		if len(values) > 1 {
 			span = values[1].span
 		}
@@ -320,7 +332,9 @@ func (c *compiler) compilePredicateValue(source resolve.DeclarationSource, subje
 }
 
 func (c *compiler) compileParameterValue(source resolve.DeclarationSource, subject string, operator Operator, operand predicateOperand, value authoredValue) *PredicateValue {
-	if operator == OperatorIn || operator == OperatorNotIn || operand.typeInfo.Kind != OperandScalar {
+	scalarOperand := operand.typeInfo.Kind == OperandScalar
+	stringSetContains := operand.typeInfo.Kind == OperandStringSet && operator == OperatorContains
+	if operator == OperatorIn || operator == OperatorNotIn || !scalarOperand && !stringSetContains {
 		c.diag("LDL1601", "invalid_query_or_arguments", source, value.span, "scalar parameters are incompatible with this predicate operand", subject, "")
 		return nil
 	}

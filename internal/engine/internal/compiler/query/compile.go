@@ -24,6 +24,7 @@ type compiler struct {
 	diagnostics     []resolve.Diagnostic
 	stateReads      []StateReadDependency
 	statePredicates int
+	statePredicate  *syntax.Span
 }
 
 // Compile validates and compiles every selected Query transactionally. If any
@@ -167,8 +168,9 @@ func (c *compiler) compileRecipe(declaration resolve.DeclarationSymbol) Recipe {
 	}
 	recipe.Parameters = c.compileParameters(declaration)
 	recipe.ReservedParameterIDs = c.reservedParameters(declaration.Symbol)
-	if state := oneMember(members, "state_input"); state != nil {
-		recipe.StateInput = c.compileStatePolicy(source, *state, declaration.Address)
+	stateMember := oneMember(members, "state_input")
+	if stateMember != nil {
+		recipe.StateInput = c.compileStatePolicy(source, *stateMember, declaration.Address)
 	}
 	if selectMember := oneMember(members, "select"); selectMember != nil {
 		recipe.Select = c.compileSelect(source, *selectMember, declaration.Address)
@@ -176,9 +178,11 @@ func (c *compiler) compileRecipe(declaration resolve.DeclarationSymbol) Recipe {
 		c.diag("LDL1601", "invalid_query_or_arguments", source, source.Range, "query requires one select block", declaration.Address, "")
 	}
 	if where := oneMember(members, "where"); where != nil {
+		c.recordAuthoredStatePredicates(*where)
 		recipe.Where = c.compilePredicateRoot(source, *where, resolve.KindEntity, declaration.Address)
 	}
 	if where := oneMember(members, "relation_where"); where != nil {
+		c.recordAuthoredStatePredicates(*where)
 		recipe.RelationWhere = c.compilePredicateRoot(source, *where, resolve.KindRelation, declaration.Address)
 	}
 	if traversal := oneMember(members, "traverse"); traversal != nil {
@@ -187,7 +191,7 @@ func (c *compiler) compileRecipe(declaration resolve.DeclarationSymbol) Recipe {
 	if result := oneMember(members, "result"); result != nil {
 		recipe.Result = c.compileResult(source, *result, declaration.Address)
 	}
-	c.validateStatePolicy(source, declaration.Address, recipe.StateInput)
+	c.validateStatePolicy(source, declaration.Address, recipe.StateInput, stateMember)
 	recipe.Dependencies = c.dependencies(declaration.Address)
 	return recipe
 }
@@ -204,11 +208,16 @@ func (c *compiler) validateRecipeMembers(source resolve.DeclarationSource, membe
 	for _, member := range members {
 		rule, known := rules[member.head]
 		validShape := known && (member.block != nil) == rule.block
+		diagnosticSpan := member.span
 		if member.head == "annotations" && known {
 			validShape = true
 		}
+		if validShape && member.block != nil && (member.head == "reserve" || member.head == "parameters" || member.head == "select") && len(member.args) != 0 {
+			validShape = false
+			diagnosticSpan = member.args[0].span
+		}
 		if !validShape {
-			c.diag("LDL1102", "unknown_or_duplicate_schema_member", source, member.span, "unknown or invalid query member", source.Address, "")
+			c.diag("LDL1102", "unknown_or_duplicate_schema_member", source, diagnosticSpan, "unknown or invalid query member", source.Address, "")
 			continue
 		}
 		if previous, duplicate := seen[member.head]; duplicate {
@@ -238,7 +247,12 @@ func (c *compiler) compileParameters(query resolve.DeclarationSymbol) []Paramete
 	resolve.SortDeclarations(declarations)
 	parameters := make([]Parameter, 0, len(declarations))
 	for _, declaration := range declarations {
-		source := c.sources[declaration.Address]
+		source, ok := c.sources[declaration.Address]
+		if !ok || source.Node == nil {
+			ownerAddress := resolve.StableAddress(query.Symbol)
+			c.diag("LDL1101", "invalid_structure_syntax", c.sources[ownerAddress], declaration.Range, "missing query parameter declaration source", declaration.Address, ownerAddress)
+			continue
+		}
 		column, diagnostics := definition.CompileScalarSchema(declaration, source)
 		c.diagnostics = append(c.diagnostics, diagnostics...)
 		c.parameters[column.Address] = column
@@ -428,13 +442,19 @@ func (c *compiler) compileResult(source resolve.DeclarationSource, member author
 	return result
 }
 
-func (c *compiler) validateStatePolicy(source resolve.DeclarationSource, subject string, policy StatePolicy) {
+func (c *compiler) validateStatePolicy(source resolve.DeclarationSource, subject string, policy StatePolicy, member *authoredMember) {
 	hasPredicates := c.statePredicates != 0
+	span := source.Range
+	if member != nil {
+		span = member.span
+	} else if c.statePredicate != nil {
+		span = *c.statePredicate
+	}
 	if hasPredicates && policy == StateNone {
-		c.diag("LDL1601", "invalid_query_or_arguments", source, source.Range, "state predicates require optional or required state_input", subject, "")
+		c.diag("LDL1601", "invalid_query_or_arguments", source, span, "state predicates require optional or required state_input", subject, "")
 	}
 	if !hasPredicates && policy != StateNone {
-		c.diag("LDL1601", "invalid_query_or_arguments", source, source.Range, "state_input is forbidden without a state predicate", subject, "")
+		c.diag("LDL1601", "invalid_query_or_arguments", source, span, "state_input is forbidden without a state predicate", subject, "")
 	}
 }
 
@@ -464,6 +484,7 @@ func (c *compiler) dependencies(sourceAddress string) Dependencies {
 	dep.StateReads = dedupeStateReads(dep.StateReads)
 	c.stateReads = nil
 	c.statePredicates = 0
+	c.statePredicate = nil
 	return dep
 }
 
