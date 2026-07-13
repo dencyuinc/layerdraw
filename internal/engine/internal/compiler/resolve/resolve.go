@@ -1136,9 +1136,18 @@ func (st *moduleState) historicalAddressesFor(current StableSymbol) []string {
 
 func (st *moduleState) historicalOrigins(current Origin) []Origin {
 	out := []Origin{current}
-	for _, mv := range st.moves {
-		if mv.Kind == KindProject && current.Kind == OriginProject && mv.To == current.ProjectID {
-			out = append(out, Origin{Kind: OriginProject, ProjectID: mv.From})
+	if current.Kind != OriginProject {
+		return out
+	}
+	seen := map[string]bool{current.ProjectID: true}
+	for changed := true; changed; {
+		changed = false
+		for _, mv := range st.moves {
+			if mv.Kind == KindProject && seen[mv.To] && !seen[mv.From] {
+				seen[mv.From] = true
+				out = append(out, Origin{Kind: OriginProject, ProjectID: mv.From})
+				changed = true
+			}
 		}
 	}
 	sort.SliceStable(out[1:], func(i, j int) bool { return out[i+1].ProjectID < out[j+1].ProjectID })
@@ -1147,9 +1156,15 @@ func (st *moduleState) historicalOrigins(current Origin) []Origin {
 
 func (st *moduleState) historicalTopIDs(kind SubjectKind, currentID string) []string {
 	out := []string{currentID}
-	for _, mv := range st.moves {
-		if !isChildKind(mv.Kind) && mv.Kind == kind && mv.To == currentID {
-			out = append(out, mv.From)
+	seen := map[string]bool{currentID: true}
+	for changed := true; changed; {
+		changed = false
+		for _, mv := range st.moves {
+			if !isChildKind(mv.Kind) && mv.Kind == kind && seen[mv.To] && !seen[mv.From] {
+				seen[mv.From] = true
+				out = append(out, mv.From)
+				changed = true
+			}
 		}
 	}
 	sort.Strings(out[1:])
@@ -1161,9 +1176,15 @@ func (st *moduleState) historicalChildIDs(current StableSymbol, currentID string
 	owner := StableSymbol{Origin: current.Origin, Path: append([]SymbolSegment{}, current.Path[:1]...)}
 	ownerAddress := addressOf(owner)
 	childKind := current.Path[1].Kind
-	for _, mv := range st.moves {
-		if mv.Kind == childKind && mv.To == currentID && mv.Owner != nil && addressOf(*mv.Owner) == ownerAddress {
-			out = append(out, mv.From)
+	seen := map[string]bool{currentID: true}
+	for changed := true; changed; {
+		changed = false
+		for _, mv := range st.moves {
+			if mv.Kind == childKind && mv.Owner != nil && addressOf(*mv.Owner) == ownerAddress && seen[mv.To] && !seen[mv.From] {
+				seen[mv.From] = true
+				out = append(out, mv.From)
+				changed = true
+			}
 		}
 	}
 	sort.Strings(out[1:])
@@ -1413,10 +1434,19 @@ func (r *resolver) result() Result {
 	sort.SliceStable(result.Identity.Reservations, func(i, j int) bool {
 		return result.Identity.Reservations[i].Address < result.Identity.Reservations[j].Address
 	})
+	sort.SliceStable(result.CandidateIdentity.Reservations, func(i, j int) bool {
+		return result.CandidateIdentity.Reservations[i].Address < result.CandidateIdentity.Reservations[j].Address
+	})
 	sort.SliceStable(result.Identity.Moves, func(i, j int) bool {
 		return result.Identity.Moves[i].FromAddress < result.Identity.Moves[j].FromAddress
 	})
+	sort.SliceStable(result.CandidateIdentity.Moves, func(i, j int) bool {
+		return result.CandidateIdentity.Moves[i].FromAddress < result.CandidateIdentity.Moves[j].FromAddress
+	})
 	sort.SliceStable(result.Identity.MoveClosure, func(i, j int) bool { return result.Identity.MoveClosure[i].From < result.Identity.MoveClosure[j].From })
+	sort.SliceStable(result.CandidateIdentity.MoveClosure, func(i, j int) bool {
+		return result.CandidateIdentity.MoveClosure[i].From < result.CandidateIdentity.MoveClosure[j].From
+	})
 	sortDiagnostics(r.diagnostics)
 	result.Diagnostics = r.diagnostics
 	result.HasErrors = r.hasErrors()
@@ -1430,7 +1460,7 @@ func (r *resolver) bindingSelected(binding SourceBinding) bool {
 	if !r.selected[binding.SourceAddress] {
 		return false
 	}
-	return strings.HasPrefix(binding.Via, "import:")
+	return r.selected[binding.TargetAddress]
 }
 
 func (r *resolver) reservationSelected(res Reservation) bool {

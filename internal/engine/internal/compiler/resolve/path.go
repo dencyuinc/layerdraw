@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"path"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/cases"
@@ -73,16 +72,7 @@ func normalizePath(raw string) (string, bool) {
 }
 
 func validPortablePathSegment(segment string) bool {
-	if segment == "" || segment == "." || segment == ".." {
-		return false
-	}
-	for _, r := range segment {
-		if r == '-' || r == '_' || r == '.' || unicode.IsLetter(r) || unicode.IsDigit(r) {
-			continue
-		}
-		return false
-	}
-	return true
+	return segment != "" && segment != "." && segment != ".."
 }
 
 func resolveRelative(base, spec string) (string, bool) {

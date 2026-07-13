@@ -136,12 +136,36 @@ export { application_service }
 	requireClosure(t, got, "ldl:project:old_p:entity-type:old_service:column:old_env", "ldl:project:p:entity-type:application_service:column:environment")
 }
 
+func TestSupplementalComposedMoveClosureIncludesTransitiveHistoricalSources(t *testing.T) {
+	t.Parallel()
+	got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{"document.ldl": parse(`project p "P" {}
+entity_type application_service "Application Service" {
+  columns {
+    environment "Environment" string
+  }
+}
+moves {
+  project old_project -> p
+  entity_type old_service_a -> old_service_b
+  entity_type old_service_b -> application_service
+  entity_type_column application_service old_env_a -> old_env_b
+  entity_type_column application_service old_env_b -> environment
+}
+export { application_service }
+`)}}})
+	if got.HasErrors {
+		t.Fatalf("diagnostics=%+v", got.Diagnostics)
+	}
+	requireClosure(t, got, "ldl:project:old_project:entity-type:old_service_a:column:old_env_a", "ldl:project:p:entity-type:application_service:column:environment")
+}
+
 func TestSupplementalPackGenericAssetPathsAndSourceModulePaths(t *testing.T) {
 	t.Parallel()
 	pack := baseInput().Packs.Installs["aws"]
 	pack.Files["manifest.json"] = testDigest("e")
 	pack.Files["assets/application-service.png"] = testDigest("a")
 	pack.Files["assets/café.png"] = testDigest("c")
+	pack.Files["assets/application @ service/file name.png"] = testDigest("f")
 	got := Resolve(Input{Mode: CompilePack, RootPackID: "layerdraw/aws-complete", EntryPath: "pack.ldl", Packs: ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1, Installs: map[string]ResolvedPack{"aws": pack}}})
 	if got.HasErrors {
 		t.Fatalf("generic asset paths rejected: %+v", got.Diagnostics)
@@ -158,12 +182,12 @@ func TestSupplementalPackGenericAssetPathsAndSourceModulePaths(t *testing.T) {
 
 func TestSupplementalPortablePathAndRootSelectorValidation(t *testing.T) {
 	t.Parallel()
-	for _, valid := range []string{"manifest.json", "assets/application-service.png", "assets/café.png"} {
+	for _, valid := range []string{"manifest.json", "assets/application-service.png", "assets/café.png", "assets/application @ service/file name.png"} {
 		if norm, ok := normalizePortablePath(valid); !ok || norm != valid {
 			t.Fatalf("portable path %q rejected as %q,%v", valid, norm, ok)
 		}
 	}
-	for _, invalid := range []string{"assets/../secret.png", "assets/%2e%2e/secret.png", "assets/bad:name.png", "assets/cafe\u0301.png"} {
+	for _, invalid := range []string{"assets/../secret.png", "assets/%2e%2e/secret.png", "assets/cafe\u0301.png"} {
 		if norm, ok := normalizePortablePath(invalid); ok {
 			t.Fatalf("invalid portable path %q normalized to %q", invalid, norm)
 		}
@@ -274,8 +298,77 @@ export { public_entity }
 		}
 	}
 	for _, binding := range got.Bindings {
-		if binding.TargetAddress == "ldl:project:p:entity-type:private_type" || binding.TargetAddress == "ldl:project:p:layer:application" {
+		if binding.SourceAddress == "ldl:project:p:entity:private_entity" || binding.TargetAddress == "ldl:project:p:entity-type:private_type" {
 			t.Fatalf("private/nonselected binding published: %+v", got.Bindings)
+		}
+	}
+}
+
+func TestSupplementalSelectedReferenceBindingsArePublished(t *testing.T) {
+	t.Parallel()
+	got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{"document.ldl": parse(`project p "P" {}
+entity_type public_type "Public" {}
+layers {
+  application "Application" @0
+}
+entities public_type @application {
+  public_entity "Public"
+}
+export { public_entity }
+`)}}})
+	if got.HasErrors {
+		t.Fatalf("diagnostics=%+v", got.Diagnostics)
+	}
+	requireBinding(t, got, "public_type", "ldl:project:p:entity-type:public_type")
+	requireBinding(t, got, "application", "ldl:project:p:layer:application")
+}
+
+func TestSupplementalCandidateIdentityIsCanonicallySorted(t *testing.T) {
+	t.Parallel()
+	got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{"document.ldl": parse(`project p "P" {}
+entity_type zeta "Zeta" {}
+entity_type alpha "Alpha" {}
+reserved {
+  entity_types [z_old]
+  entity_types [a_old]
+}
+moves {
+  entity_type z_older -> zeta
+  entity_type a_older -> alpha
+}
+export { zeta }
+`)}}})
+	if got.HasErrors {
+		t.Fatalf("diagnostics=%+v", got.Diagnostics)
+	}
+	assertSortedReservations(t, got.CandidateIdentity.Reservations)
+	assertSortedMoves(t, got.CandidateIdentity.Moves)
+	assertSortedClosures(t, got.CandidateIdentity.MoveClosure)
+}
+
+func assertSortedReservations(t *testing.T, items []Reservation) {
+	t.Helper()
+	for i := 1; i < len(items); i++ {
+		if items[i-1].Address > items[i].Address {
+			t.Fatalf("candidate reservations not sorted: %+v", items)
+		}
+	}
+}
+
+func assertSortedMoves(t *testing.T, items []Move) {
+	t.Helper()
+	for i := 1; i < len(items); i++ {
+		if items[i-1].FromAddress > items[i].FromAddress {
+			t.Fatalf("candidate moves not sorted: %+v", items)
+		}
+	}
+}
+
+func assertSortedClosures(t *testing.T, items []MoveClosure) {
+	t.Helper()
+	for i := 1; i < len(items); i++ {
+		if items[i-1].From > items[i].From {
+			t.Fatalf("candidate move closures not sorted: %+v", items)
 		}
 	}
 }
