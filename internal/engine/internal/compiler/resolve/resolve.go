@@ -887,6 +887,9 @@ func (r *resolver) bindDeclarationRefs(st *moduleState) {
 			}
 			st.addBinding(ref.kind, ref.text, ref.span, "reference", target, sourceAddress)
 		}
+		if decl.kind == KindQuery && decl.node != nil && sourceAddress != "" {
+			r.resolveQueryRefs(st, decl, sourceAddress, true, false)
+		}
 	}
 }
 
@@ -909,6 +912,9 @@ func (r *resolver) validateDeclarationRefs(st *moduleState, selectedOnly bool) {
 			if _, ok := r.resolveText(st, ref.kind, ref.text); !ok {
 				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "source binding is unknown or ambiguous", st.key, ref.span)
 			}
+		}
+		if decl.kind == KindQuery && decl.node != nil && sourceAddress != "" {
+			r.resolveQueryRefs(st, decl, sourceAddress, false, true)
 		}
 	}
 }
@@ -1008,7 +1014,11 @@ func single(found []DeclarationSymbol) (DeclarationSymbol, bool) {
 }
 
 func (st *moduleState) addBinding(kind SubjectKind, text string, span syntax.Span, via string, target DeclarationSymbol, sourceAddress string) {
-	st.bindings = append(st.bindings, SourceBinding{Module: st.key, ExpectedKind: kind, SourceText: text, Range: span, Target: target.Symbol, TargetAddress: target.Address, Via: via, SourceAddress: sourceAddress})
+	owner := ""
+	if target.Owner != nil {
+		owner = addressOf(*target.Owner)
+	}
+	st.bindings = append(st.bindings, SourceBinding{Module: st.key, ExpectedKind: kind, SourceText: text, Range: span, Target: target.Symbol, TargetAddress: target.Address, TargetOwnerAddress: owner, Via: via, SourceAddress: sourceAddress})
 }
 
 func (st *moduleState) declarationAddress(raw rawDecl) string {
@@ -1677,6 +1687,11 @@ func (r *resolver) selectDecl(decl DeclarationSymbol) {
 			if b.Module == decl.Module && b.SourceAddress == decl.Address {
 				if target, ok := r.symbols[b.TargetAddress]; ok {
 					r.selectDecl(target)
+					if decl.Kind == KindQuery && target.Owner != nil {
+						if owner, exists := r.symbols[addressOf(*target.Owner)]; exists {
+							r.selectDecl(owner)
+						}
+					}
 				}
 			}
 		}

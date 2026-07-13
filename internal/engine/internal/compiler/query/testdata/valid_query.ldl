@@ -1,0 +1,111 @@
+project p "Project" {}
+
+layers {
+  app "Application" @10
+  data "Data" @20
+}
+
+entity_type service "Service" {
+  representation shape rect
+  columns {
+    environment "Environment" enum [prod, stg] required default prod
+    capacity "Capacity" number min 0 max 100
+    hostname "Hostname" string format hostname
+  }
+}
+
+relation_type calls "Calls" data_flow {
+  duplicate_policy allow
+  from caller types [service] layers [app, data]
+  to callee types [service] layers [app, data]
+  label "calls"
+  columns {
+    protocol "Protocol" enum [http, grpc] required
+    latency "Latency" number min 0
+  }
+}
+
+entities service @app {
+  alpha "Alpha" {
+    tags [critical, api]
+  }
+  beta "Beta"
+}
+
+entities service @data {
+  gamma "Gamma"
+}
+
+rows service [environment, capacity, hostname] {
+  alpha primary: prod, 75, "API.EXAMPLE.COM."
+  beta primary: stg, 25, "beta.example.com"
+  gamma primary: prod, 50, "gamma.example.com"
+}
+
+relations calls {
+  alpha_beta: alpha -> beta
+  beta_gamma: beta -> gamma
+}
+
+relation_rows calls [protocol, latency] {
+  alpha_beta primary: http, 2.5
+  beta_gamma primary: grpc, 4
+}
+
+query production_scope "Production scope" {
+  description "Typed recipe"
+  tags [saved, topology]
+  annotations { owner: "platform" }
+  state_input required
+
+  parameters {
+    environment enum [prod, stg] required default prod
+    minimum_capacity number default 0 min 0 max 100
+    updated_since datetime required
+    prefix string default "A"
+  }
+
+  select {
+    layers [data, app]
+    entity_types [service]
+    relation_types [calls]
+    roots [alpha]
+  }
+
+  where all {
+    field display_name starts_with $prefix
+    field tags contains critical
+    field address == alpha
+    field type in [service]
+    field layer != data
+    state system.updated_at >= $updated_since
+    rows any types [service] {
+      all {
+        cell environment == $environment
+        cell capacity >= $minimum_capacity
+        cell hostname ends_with ".com"
+        state provenance.verified_at exists
+      }
+    }
+  }
+
+  relation_where all {
+    field address == alpha_beta
+    field type == calls
+    field from == alpha
+    field to in [beta, gamma]
+    rows any types [calls] {
+      any {
+        cell protocol in [http, grpc]
+        cell latency < 10
+      }
+    }
+  }
+
+  traverse both 0..3 include_cycle_ref relations [calls]
+  result [induced_relations, seed_entities, path_relations, traversed_entities]
+
+  reserve {
+    parameters [legacy_environment]
+  }
+}

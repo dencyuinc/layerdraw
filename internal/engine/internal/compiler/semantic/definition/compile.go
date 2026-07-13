@@ -40,7 +40,7 @@ func Compile(input Input) Result {
 		Root:            Root{Mode: input.Resolve.Mode, Address: input.Resolve.RootAddress},
 		Dependencies:    append([]resolve.ResolvedPackSummary{}, input.Resolve.Dependencies...),
 		Identity:        semanticIdentity(input.Resolve),
-		Diagnostics:     append([]resolve.Diagnostic{}, input.Resolve.Diagnostics...),
+		Diagnostics:     resolve.CloneDiagnostics(input.Resolve.Diagnostics),
 		HasErrors:       input.Resolve.HasErrors,
 		EntityTypes:     []EntityType{},
 		RelationTypes:   []RelationType{},

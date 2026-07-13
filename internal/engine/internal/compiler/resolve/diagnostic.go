@@ -67,6 +67,42 @@ func SortDiagnostics(ds []Diagnostic) {
 	sortDiagnostics(ds)
 }
 
+// CloneDiagnostics returns a fully independent diagnostic snapshot suitable
+// for sorting and publication by a downstream compiler stage.
+func CloneDiagnostics(diagnostics []Diagnostic) []Diagnostic {
+	out := make([]Diagnostic, len(diagnostics))
+	for i, diagnostic := range diagnostics {
+		out[i] = diagnostic
+		out[i].Arguments = cloneStringMap(diagnostic.Arguments)
+		out[i].Range = cloneSourceRange(diagnostic.Range)
+		out[i].Related = make([]DiagnosticRelated, len(diagnostic.Related))
+		for j, related := range diagnostic.Related {
+			out[i].Related[j] = related
+			out[i].Related[j].Range = cloneSourceRange(related.Range)
+		}
+	}
+	return out
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneSourceRange(source *SourceRange) *SourceRange {
+	if source == nil {
+		return nil
+	}
+	out := *source
+	return &out
+}
+
 func canonicalArgs(args map[string]string) string {
 	if len(args) == 0 {
 		return ""
