@@ -13,40 +13,51 @@ import (
 )
 
 type compiler struct {
-	input         Input
-	declarations  []resolve.DeclarationSymbol
-	sources       map[string]resolve.DeclarationSource
-	bindings      map[string][]resolve.SourceBinding
-	symbols       map[string]resolve.StableSymbol
-	columns       map[string]definition.Column
-	parameters    map[string]definition.Column
-	graphEntities map[string]bool
-	diagnostics   []resolve.Diagnostic
-	stateReads    []StateReadDependency
+	input           Input
+	declarations    []resolve.DeclarationSymbol
+	sources         map[string]resolve.DeclarationSource
+	bindings        map[string][]resolve.SourceBinding
+	symbols         map[string]resolve.StableSymbol
+	columns         map[string]definition.Column
+	parameters      map[string]definition.Column
+	graphEntities   map[string]bool
+	diagnostics     []resolve.Diagnostic
+	stateReads      []StateReadDependency
+	statePredicates int
 }
 
 // Compile validates and compiles every selected Query transactionally. If any
 // upstream or Query diagnostic is an error, no recipe is returned.
 func Compile(input Input) Result {
 	diagnostics := upstreamDiagnostics(input)
-	resolve.SortDiagnostics(diagnostics)
-	if input.Resolve.HasErrors || input.Definition.HasErrors || input.Graph.HasErrors {
-		return Result{Diagnostics: diagnostics, HasErrors: true}
+	definitionCoherent := input.Definition.MatchesResolve(input.Resolve)
+	graphCoherent := input.Graph.MatchesResolve(input.Resolve)
+	result := Result{}
+	if definitionCoherent && graphCoherent {
+		result.stageGeneration = input.Resolve.Generation()
 	}
 	gate := &compiler{}
-	if matches, available := definitionMatchesResolve(input); available && !matches {
+	if !definitionCoherent {
 		gate.diag("LDL1801", "stale_revision_or_semantic_hash", resolve.DeclarationSource{}, syntax.Span{}, "definition result generation does not match resolve result", input.Resolve.RootAddress, "")
 	}
-	if matches, available := graphMatchesResolve(input); available && !matches {
+	if !graphCoherent {
 		gate.diag("LDL1801", "stale_revision_or_semantic_hash", resolve.DeclarationSource{}, syntax.Span{}, "graph result generation does not match resolve result", input.Resolve.RootAddress, "")
 	}
-	if input.Graph.Graph == nil {
-		gate.diag("LDL1601", "invalid_query_or_arguments", resolve.DeclarationSource{}, syntax.Span{}, "typed graph result is unavailable", input.Resolve.RootAddress, "")
+	diagnostics = append(diagnostics, gate.diagnostics...)
+	resolve.SortDiagnostics(diagnostics)
+	if input.Resolve.HasErrors || input.Definition.HasErrors || input.Graph.HasErrors || !definitionCoherent || !graphCoherent {
+		result.Diagnostics = diagnostics
+		result.HasErrors = true
+		return result
 	}
-	if hasError(gate.diagnostics) {
+	if input.Graph.Graph == nil {
+		gate.diagnostics = nil
+		gate.diag("LDL1601", "invalid_query_or_arguments", resolve.DeclarationSource{}, syntax.Span{}, "typed graph result is unavailable", input.Resolve.RootAddress, "")
 		diagnostics = append(diagnostics, gate.diagnostics...)
 		resolve.SortDiagnostics(diagnostics)
-		return Result{Diagnostics: diagnostics, HasErrors: true}
+		result.Diagnostics = diagnostics
+		result.HasErrors = true
+		return result
 	}
 	c := newCompiler(input)
 	var recipes []Recipe
@@ -59,46 +70,23 @@ func Compile(input Input) Result {
 	diagnostics = append(diagnostics, c.diagnostics...)
 	resolve.SortDiagnostics(diagnostics)
 	if hasError(diagnostics) {
-		return Result{Diagnostics: diagnostics, HasErrors: true}
+		result.Diagnostics = diagnostics
+		result.HasErrors = true
+		return result
 	}
-	return Result{Recipes: recipes, Diagnostics: diagnostics}
-}
-
-type resolveGenerationMatcher interface {
-	MatchesResolve(resolve.Result) bool
-}
-
-// The required stacked parent predates the generation API. On repaired #14,
-// both concrete stage Results implement this contract and Compile rejects a
-// mismatch before reading either stage payload.
-func definitionMatchesResolve(input Input) (bool, bool) {
-	if matcher, ok := any(input.Definition).(resolveGenerationMatcher); ok {
-		return matcher.MatchesResolve(input.Resolve), true
-	}
-	if matcher, ok := any(&input.Definition).(resolveGenerationMatcher); ok {
-		return matcher.MatchesResolve(input.Resolve), true
-	}
-	return true, false
-}
-
-func graphMatchesResolve(input Input) (bool, bool) {
-	if matcher, ok := any(input.Graph).(resolveGenerationMatcher); ok {
-		return matcher.MatchesResolve(input.Resolve), true
-	}
-	if matcher, ok := any(&input.Graph).(resolveGenerationMatcher); ok {
-		return matcher.MatchesResolve(input.Resolve), true
-	}
-	return true, false
+	result.Recipes = recipes
+	result.Diagnostics = diagnostics
+	return result
 }
 
 func upstreamDiagnostics(input Input) []resolve.Diagnostic {
 	if len(input.Graph.Diagnostics) != 0 {
-		return append([]resolve.Diagnostic{}, input.Graph.Diagnostics...)
+		return resolve.CloneDiagnostics(input.Graph.Diagnostics)
 	}
 	if len(input.Definition.Diagnostics) != 0 {
-		return append([]resolve.Diagnostic{}, input.Definition.Diagnostics...)
+		return resolve.CloneDiagnostics(input.Definition.Diagnostics)
 	}
-	return append([]resolve.Diagnostic{}, input.Resolve.Diagnostics...)
+	return resolve.CloneDiagnostics(input.Resolve.Diagnostics)
 }
 
 func newCompiler(input Input) *compiler {
@@ -174,6 +162,9 @@ func (c *compiler) compileRecipe(declaration resolve.DeclarationSymbol) Recipe {
 
 	members := queryBody(source.Node)
 	c.validateRecipeMembers(source, members)
+	if parameters := oneMember(members, "parameters"); parameters != nil {
+		c.validateParameterMembers(source, *parameters, declaration.Address)
+	}
 	recipe.Parameters = c.compileParameters(declaration)
 	recipe.ReservedParameterIDs = c.reservedParameters(declaration.Symbol)
 	if state := oneMember(members, "state_input"); state != nil {
@@ -225,6 +216,14 @@ func (c *compiler) validateRecipeMembers(source resolve.DeclarationSource, membe
 			continue
 		}
 		seen[member.head] = member
+	}
+}
+
+func (c *compiler) validateParameterMembers(source resolve.DeclarationSource, member authoredMember, subject string) {
+	for _, child := range nodeChildren(member.block) {
+		if child.Kind != syntax.NodeStatement {
+			c.diag("LDL1102", "unknown_or_duplicate_schema_member", source, child.Span, "query parameter declarations must be scalar statements", subject, "")
+		}
 	}
 }
 
@@ -388,6 +387,7 @@ func (c *compiler) compileTraversal(source resolve.DeclarationSource, member aut
 }
 
 func finiteRange(value authoredValue) (int64, int64, bool) {
+	const maxJSONSafeInteger int64 = 1<<53 - 1
 	rangeNode := firstNode(value.node, syntax.NodeRange)
 	if rangeNode == nil {
 		return 0, 0, false
@@ -398,7 +398,7 @@ func finiteRange(value authoredValue) (int64, int64, bool) {
 	}
 	minimum, minErr := strconv.ParseInt(tokens[0].Raw, 10, 64)
 	maximum, maxErr := strconv.ParseInt(tokens[2].Raw, 10, 64)
-	return minimum, maximum, minErr == nil && maxErr == nil && minimum >= 0 && maximum >= 0
+	return minimum, maximum, minErr == nil && maxErr == nil && minimum >= 0 && maximum >= 0 && minimum <= maxJSONSafeInteger && maximum <= maxJSONSafeInteger
 }
 
 func (c *compiler) compileResult(source resolve.DeclarationSource, member authoredMember, subject string) []ResultMember {
@@ -429,11 +429,11 @@ func (c *compiler) compileResult(source resolve.DeclarationSource, member author
 }
 
 func (c *compiler) validateStatePolicy(source resolve.DeclarationSource, subject string, policy StatePolicy) {
-	hasReads := len(c.stateReads) != 0
-	if hasReads && policy == StateNone {
+	hasPredicates := c.statePredicates != 0
+	if hasPredicates && policy == StateNone {
 		c.diag("LDL1601", "invalid_query_or_arguments", source, source.Range, "state predicates require optional or required state_input", subject, "")
 	}
-	if !hasReads && policy != StateNone {
+	if !hasPredicates && policy != StateNone {
 		c.diag("LDL1601", "invalid_query_or_arguments", source, source.Range, "state_input is forbidden without a state predicate", subject, "")
 	}
 }
@@ -463,6 +463,7 @@ func (c *compiler) dependencies(sourceAddress string) Dependencies {
 	sortStateReads(dep.StateReads)
 	dep.StateReads = dedupeStateReads(dep.StateReads)
 	c.stateReads = nil
+	c.statePredicates = 0
 	return dep
 }
 

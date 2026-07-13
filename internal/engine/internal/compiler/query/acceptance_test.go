@@ -416,21 +416,15 @@ func TestSameSourceSeparatelyCompiledHybridIsRejected(t *testing.T) {
 	source := minimalSchema + "query q \"Q\" {\n  select {}\n}\n"
 	first := projectInput(t, map[string]string{"document.ldl": source})
 	second := projectInput(t, map[string]string{"document.ldl": source})
-	if _, available := definitionMatchesResolve(first); !available {
-		t.Skip("Issue #14 generation matching API is not present on the required parent yet")
-	}
-	if _, available := graphMatchesResolve(first); !available {
-		t.Skip("Issue #14 graph generation matching API is not present on the required parent yet")
-	}
 
 	definitionHybrid := Input{Resolve: first.Resolve, Definition: second.Definition, Graph: first.Graph}
 	got := Compile(definitionHybrid)
-	if !got.HasErrors || got.Recipes != nil || !diagnosticCode(got, "LDL1801") {
+	if !got.HasErrors || got.Recipes != nil || !diagnosticCode(got, "LDL1801") || got.MatchesResolve(first.Resolve) {
 		t.Fatalf("same-source Definition hybrid was accepted: %+v", got)
 	}
 	graphHybrid := Input{Resolve: first.Resolve, Definition: first.Definition, Graph: second.Graph}
 	got = Compile(graphHybrid)
-	if !got.HasErrors || got.Recipes != nil || !diagnosticCode(got, "LDL1801") {
+	if !got.HasErrors || got.Recipes != nil || !diagnosticCode(got, "LDL1801") || got.MatchesResolve(first.Resolve) {
 		t.Fatalf("same-source Graph hybrid was accepted: %+v", got)
 	}
 }

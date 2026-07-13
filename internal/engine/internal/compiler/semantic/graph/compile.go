@@ -34,9 +34,9 @@ type compiler struct {
 // all succeed.
 func Compile(input Input) Result {
 	result := Result{stageGeneration: input.Definition.Generation()}
-	diagnostics := cloneDiagnostics(input.Definition.Diagnostics)
+	diagnostics := resolve.CloneDiagnostics(input.Definition.Diagnostics)
 	if len(diagnostics) == 0 {
-		diagnostics = cloneDiagnostics(input.Resolve.Diagnostics)
+		diagnostics = resolve.CloneDiagnostics(input.Resolve.Diagnostics)
 	}
 	coherent := input.Definition.Root.Mode == input.Resolve.Mode &&
 		input.Definition.Root.Address == input.Resolve.RootAddress &&
@@ -113,40 +113,6 @@ func newCompiler(input Input) *compiler {
 		c.layers[layer.Address] = layer
 	}
 	return c
-}
-
-func cloneDiagnostics(diagnostics []resolve.Diagnostic) []resolve.Diagnostic {
-	out := make([]resolve.Diagnostic, len(diagnostics))
-	for i, diagnostic := range diagnostics {
-		out[i] = diagnostic
-		out[i].Arguments = cloneStringMap(diagnostic.Arguments)
-		out[i].Range = cloneSourceRange(diagnostic.Range)
-		out[i].Related = make([]resolve.DiagnosticRelated, len(diagnostic.Related))
-		for j, related := range diagnostic.Related {
-			out[i].Related[j] = related
-			out[i].Related[j].Range = cloneSourceRange(related.Range)
-		}
-	}
-	return out
-}
-
-func cloneStringMap(values map[string]string) map[string]string {
-	if values == nil {
-		return nil
-	}
-	out := make(map[string]string, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
-	return out
-}
-
-func cloneSourceRange(source *resolve.SourceRange) *resolve.SourceRange {
-	if source == nil {
-		return nil
-	}
-	out := *source
-	return &out
 }
 
 func (c *compiler) compileEntities() {

@@ -270,10 +270,26 @@ func queryPredicateLiteralValues(node *syntax.Node) []queryValue {
 	if len(args) < 2 {
 		return nil
 	}
-	value := args[len(args)-1]
-	if value.text == "exists" || value.text == "missing" || value.text == args[0].text {
-		return nil
+	hasSymbolOperator := false
+	for _, token := range directTokens(node) {
+		switch token.Kind {
+		case syntax.TokenEqualEqual, syntax.TokenBangEqual, syntax.TokenLess, syntax.TokenLessEqual, syntax.TokenGreater, syntax.TokenGreaterEqual:
+			hasSymbolOperator = true
+		}
 	}
+	if !hasSymbolOperator {
+		switch args[1].text {
+		case "exists", "missing":
+			return nil
+		case "in", "not_in", "contains", "starts_with", "ends_with":
+			if len(args) < 3 {
+				return nil
+			}
+		default:
+			return nil
+		}
+	}
+	value := args[len(args)-1]
 	if !value.list {
 		return []queryValue{value}
 	}

@@ -18,9 +18,22 @@ type Input struct {
 }
 
 type Result struct {
-	Recipes     []Recipe
-	Diagnostics []resolve.Diagnostic
-	HasErrors   bool
+	stageGeneration resolve.StageGeneration
+	Recipes         []Recipe
+	Diagnostics     []resolve.Diagnostic
+	HasErrors       bool
+}
+
+// MatchesResolve reports whether this result was compiled from the supplied
+// Resolve invocation.
+func (r Result) MatchesResolve(resolved resolve.Result) bool {
+	return r.stageGeneration.Matches(resolved.Generation())
+}
+
+// Generation returns the opaque token for propagation to the next internal
+// compiler stage.
+func (r Result) Generation() resolve.StageGeneration {
+	return r.stageGeneration
 }
 
 type Recipe struct {

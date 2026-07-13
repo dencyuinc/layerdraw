@@ -83,6 +83,7 @@ func (c *compiler) compileFieldPredicate(source resolve.DeclarationSource, membe
 }
 
 func (c *compiler) compileStatePredicate(source resolve.DeclarationSource, member authoredMember, stateSubjectKind StateSubjectKind, subject string) Predicate {
+	c.statePredicates++
 	predicate := Predicate{Kind: PredicateState}
 	if member.block != nil || len(member.args) < 2 {
 		c.diag("LDL1601", "invalid_query_or_arguments", source, member.span, "state predicate requires field path and operator", subject, "")
