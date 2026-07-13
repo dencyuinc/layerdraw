@@ -14,6 +14,8 @@ func Parse(src []byte) ParseResult {
 	lexed := Lex(src)
 	p := parser{tokens: lexed.Tokens, diagnostics: append([]Diagnostic{}, lexed.Diagnostics...)}
 	root := p.parseFile()
+	root.Span = Span{Start: 0, End: len(src)}
+	sortDiagnostics(p.diagnostics)
 	return ParseResult{Root: root, Tokens: lexed.Tokens, Diagnostics: p.diagnostics}
 }
 
@@ -26,6 +28,7 @@ type parser struct {
 func (p *parser) parseFile() *Node {
 	file := newNode(NodeFile)
 	sawContent := false
+	sawDeclaration := false
 	for !p.at(TokenEOF) {
 		switch {
 		case p.at(TokenModuleDoc):
@@ -36,6 +39,9 @@ func (p *parser) parseFile() *Node {
 		case p.at(TokenNewline) || p.at(TokenLineComment):
 			file.append(p.parseTriviaToken())
 		case p.atKeyword("import"):
+			if sawDeclaration {
+				p.diagnostics = append(p.diagnostics, invalidStructure(p.peek().Span, "imports must appear before declarations"))
+			}
 			file.append(p.parseImportDecl())
 			sawContent = true
 		case p.at(TokenDocComment):
@@ -43,9 +49,9 @@ func (p *parser) parseFile() *Node {
 		case p.atDeclarationStart():
 			file.append(p.parseDeclaration())
 			sawContent = true
+			sawDeclaration = true
 		default:
-			file.append(p.errorNode("expected import or declaration"))
-			p.recoverTopLevel()
+			file.append(p.errorNodeUntil("expected import or declaration", p.isTopLevelBoundary))
 		}
 	}
 	file.append(p.consume())
@@ -67,7 +73,7 @@ func (p *parser) parseImportDecl() *Node {
 }
 
 func (p *parser) parseImportItems() *Node {
-	return p.parseDelimited(NodeImportItems, NodeImportItem, TokenRBrace, func(item *Node) {
+	return p.parseDelimited(NodeImportItems, NodeImportItem, TokenRBrace, true, func(item *Node) {
 		p.expectInto(item, TokenIdentifier)
 		if p.atKeyword("as") {
 			item.append(p.consume())
@@ -135,7 +141,7 @@ func (p *parser) parseExportDecl() *Node {
 }
 
 func (p *parser) parseExportItems() *Node {
-	return p.parseDelimited(NodeExportItems, NodeExportItem, TokenRBrace, func(item *Node) {
+	return p.parseDelimited(NodeExportItems, NodeExportItem, TokenRBrace, true, func(item *Node) {
 		p.expectInto(item, TokenIdentifier)
 		if p.atKeyword("as") {
 			item.append(p.consume())
@@ -151,8 +157,12 @@ func (p *parser) parseItemBlock(item string) *Node {
 		n.append(p.consume())
 		return n
 	}
+	p.expectNewlineInto(n)
 	for !p.at(TokenEOF) && !p.at(TokenRBrace) {
 		if p.atTriviaToken() || p.at(TokenDocComment) {
+			if p.at(TokenModuleDoc) {
+				p.diagnostics = append(p.diagnostics, invalidStructure(p.peek().Span, "module documentation is only valid at the start of a file"))
+			}
 			n.append(p.parseTriviaToken())
 			continue
 		}
@@ -168,7 +178,7 @@ func (p *parser) parseItemBlock(item string) *Node {
 		case "move":
 			n.append(p.parseMoveItem())
 		}
-		p.consumeLineEnd(n)
+		p.expectLineEndInto(n)
 	}
 	p.expectInto(n, TokenRBrace)
 	return n
@@ -218,7 +228,14 @@ func (p *parser) parseMoveItem() *Node {
 func (p *parser) parseColumnHeader() *Node {
 	n := newNode(NodeColumnHeader)
 	p.expectInto(n, TokenLBracket)
+	if p.at(TokenRBracket) {
+		n.append(p.errorAtCurrent("expected column header item"))
+	}
 	for !p.at(TokenEOF) && !p.at(TokenRBracket) {
+		if p.atTriviaToken() {
+			n.append(p.parseTriviaToken())
+			continue
+		}
 		n.append(p.parseSymbolRef())
 		if p.at(TokenComma) {
 			n.append(p.consume())
@@ -232,17 +249,26 @@ func (p *parser) parseColumnHeader() *Node {
 
 func (p *parser) parseCells() *Node {
 	n := newNode(NodeCells)
+	sawCell := false
 	for !p.at(TokenEOF) && !p.at(TokenNewline) && !p.at(TokenRBrace) {
 		if p.at(TokenUnderscore) {
 			n.append(p.consume())
 		} else {
 			n.append(p.parseValue())
 		}
+		sawCell = true
 		if p.at(TokenComma) {
 			n.append(p.consume())
+			if p.at(TokenNewline) || p.at(TokenRBrace) || p.at(TokenEOF) {
+				n.append(p.errorAtCurrent("expected cell after comma"))
+				break
+			}
 		} else {
 			break
 		}
+	}
+	if !sawCell {
+		n.append(p.errorAtCurrent("expected row cell"))
 	}
 	return n
 }
@@ -254,17 +280,21 @@ func (p *parser) parseBlock() *Node {
 		n.append(p.consume())
 		return n
 	}
+	p.expectNewlineInto(n)
 	for !p.at(TokenEOF) && !p.at(TokenRBrace) {
 		if p.atTriviaToken() || p.at(TokenDocComment) {
+			if p.at(TokenModuleDoc) {
+				p.diagnostics = append(p.diagnostics, invalidStructure(p.peek().Span, "module documentation is only valid at the start of a file"))
+			}
 			n.append(p.parseTriviaToken())
 			continue
 		}
 		if p.at(TokenIdentifier) {
 			n.append(p.parseStatementOrNestedBlock())
+			p.expectLineEndInto(n)
 			continue
 		}
-		n.append(p.errorNode("expected statement or nested block"))
-		p.recoverLineOrBlock()
+		n.append(p.errorNodeUntil("expected statement or nested block", p.isLineOrBlockBoundary))
 	}
 	p.expectInto(n, TokenRBrace)
 	return n
@@ -298,6 +328,8 @@ func (p *parser) looksObject() bool {
 
 func (p *parser) parseStatementArg() Element {
 	switch {
+	case p.at(TokenLBracket):
+		return p.parseColumnHeader()
 	case isValueStart(p.peek().Kind):
 		return p.parseValue()
 	case p.at(TokenEqualEqual) || p.at(TokenBangEqual) || p.at(TokenLess) || p.at(TokenLessEqual) || p.at(TokenGreater) || p.at(TokenGreaterEqual) || p.at(TokenArrow):
@@ -326,8 +358,6 @@ func (p *parser) parseValue() *Node {
 		n.append(p.parseList())
 	case TokenLBrace:
 		n.append(p.parseObject())
-	case TokenUnderscore:
-		n.append(p.consume())
 	default:
 		n.append(p.errorNode("expected value"))
 	}
@@ -367,14 +397,28 @@ func (p *parser) parseQualifiedToken() *Node {
 
 func (p *parser) parseList() *Node {
 	n := newNode(NodeList)
+	multiline := false
+	trailingComma := false
 	p.expectInto(n, TokenLBracket)
 	for !p.at(TokenEOF) && !p.at(TokenRBracket) {
+		if p.atTriviaToken() {
+			if p.at(TokenNewline) {
+				multiline = true
+			}
+			n.append(p.parseTriviaToken())
+			continue
+		}
 		n.append(p.parseValue())
 		if p.at(TokenComma) {
 			n.append(p.consume())
+			trailingComma = true
 		} else {
+			trailingComma = false
 			break
 		}
+	}
+	if trailingComma && !multiline {
+		n.append(p.errorAtCurrent("trailing comma requires multiline list"))
 	}
 	p.expectInto(n, TokenRBracket)
 	return n
@@ -382,8 +426,17 @@ func (p *parser) parseList() *Node {
 
 func (p *parser) parseObject() *Node {
 	n := newNode(NodeObject)
+	multiline := false
+	trailingComma := false
 	p.expectInto(n, TokenLBrace)
 	for !p.at(TokenEOF) && !p.at(TokenRBrace) {
+		if p.atTriviaToken() {
+			if p.at(TokenNewline) {
+				multiline = true
+			}
+			n.append(p.parseTriviaToken())
+			continue
+		}
 		item := newNode(NodeObjectItem)
 		if p.at(TokenIdentifier) || p.at(TokenString) {
 			item.append(p.consume())
@@ -395,17 +448,30 @@ func (p *parser) parseObject() *Node {
 		n.append(item)
 		if p.at(TokenComma) {
 			n.append(p.consume())
+			trailingComma = true
 		} else {
+			trailingComma = false
 			break
 		}
+	}
+	if trailingComma && !multiline {
+		n.append(p.errorAtCurrent("trailing comma requires multiline object"))
 	}
 	p.expectInto(n, TokenRBrace)
 	return n
 }
 
-func (p *parser) parseDelimited(listKind NodeKind, itemKind NodeKind, stop TokenKind, parseItem func(*Node)) *Node {
+func (p *parser) parseDelimited(listKind NodeKind, itemKind NodeKind, stop TokenKind, requireNonEmpty bool, parseItem func(*Node)) *Node {
 	list := newNode(listKind)
+	if requireNonEmpty && p.at(stop) {
+		list.append(p.errorAtCurrent("expected list item"))
+		return list
+	}
 	for !p.at(TokenEOF) && !p.at(stop) {
+		if p.atTriviaToken() {
+			list.append(p.parseTriviaToken())
+			continue
+		}
 		item := newNode(itemKind)
 		parseItem(item)
 		list.append(item)
@@ -423,6 +489,35 @@ func (p *parser) parseTriviaToken() *Node {
 }
 
 func (p *parser) consumeLineEnd(n *Node) {
+	if p.at(TokenNewline) {
+		n.append(p.consume())
+	}
+}
+
+func (p *parser) expectNewlineInto(n *Node) {
+	if p.at(TokenNewline) {
+		n.append(p.consume())
+		return
+	}
+	n.append(p.errorAtCurrent("expected newline"))
+}
+
+func (p *parser) expectLineEndInto(n *Node) {
+	if p.at(TokenNewline) {
+		n.append(p.consume())
+		return
+	}
+	if p.at(TokenLineComment) {
+		n.append(p.consume())
+		if p.at(TokenNewline) {
+			n.append(p.consume())
+		}
+		return
+	}
+	if p.at(TokenRBrace) || p.at(TokenEOF) {
+		return
+	}
+	n.append(p.errorNodeUntil("expected line terminator", p.isLineOrBlockBoundary))
 	if p.at(TokenNewline) {
 		n.append(p.consume())
 	}
@@ -470,16 +565,28 @@ func (p *parser) errorNode(message string) *Node {
 	return newNode(NodeError, p.consume())
 }
 
-func (p *parser) recoverTopLevel() {
-	for !p.at(TokenEOF) && !p.atDeclarationStart() && !p.atKeyword("import") {
-		p.pos++
-	}
+func (p *parser) errorAtCurrent(message string) *Node {
+	tok := p.peek()
+	p.diagnostics = append(p.diagnostics, invalidStructure(tok.Span, message))
+	return &Node{Kind: NodeError, Span: tok.Span}
 }
 
-func (p *parser) recoverLineOrBlock() {
-	for !p.at(TokenEOF) && !p.at(TokenNewline) && !p.at(TokenRBrace) {
-		p.pos++
+func (p *parser) errorNodeUntil(message string, stop func() bool) *Node {
+	start := p.peek().Span
+	p.diagnostics = append(p.diagnostics, invalidStructure(start, message))
+	n := &Node{Kind: NodeError, Span: start}
+	for !p.at(TokenEOF) && !stop() {
+		n.append(p.consume())
 	}
+	return n
+}
+
+func (p *parser) isTopLevelBoundary() bool {
+	return p.atDeclarationStart() || p.atKeyword("import")
+}
+
+func (p *parser) isLineOrBlockBoundary() bool {
+	return p.at(TokenNewline) || p.at(TokenRBrace)
 }
 
 func (p *parser) at(kind TokenKind) bool {

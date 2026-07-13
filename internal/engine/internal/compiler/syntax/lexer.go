@@ -3,7 +3,6 @@
 package syntax
 
 import (
-	"bytes"
 	"unicode/utf8"
 )
 
@@ -16,7 +15,9 @@ type LexResult struct {
 // Lex tokenizes LDL source bytes without requiring a language header.
 func Lex(src []byte) LexResult {
 	l := lexer{src: src}
+	l.scanInvalidUTF8()
 	l.lex()
+	sortDiagnostics(l.diagnostics)
 	return LexResult{Tokens: l.tokens, Diagnostics: l.diagnostics}
 }
 
@@ -36,6 +37,18 @@ type lexer struct {
 	leading     []Trivia
 	tokens      []Token
 	diagnostics []Diagnostic
+}
+
+func (l *lexer) scanInvalidUTF8() {
+	for pos := 0; pos < len(l.src); {
+		r, width := utf8.DecodeRune(l.src[pos:])
+		if r == utf8.RuneError && width == 1 {
+			l.diagnostics = append(l.diagnostics, invalidUTF8(Span{Start: pos, End: pos + 1}))
+			pos++
+			continue
+		}
+		pos += width
+	}
 }
 
 func (l *lexer) lex() {
@@ -78,7 +91,7 @@ func (l *lexer) lex() {
 
 func (l *lexer) consumeTrivia() bool {
 	start := l.pos
-	if l.pos == 0 && bytes.HasPrefix(l.src, []byte{0xEF, 0xBB, 0xBF}) {
+	if l.pos == 0 && len(l.src) >= 3 && l.src[0] == 0xEF && l.src[1] == 0xBB && l.src[2] == 0xBF {
 		l.pos += 3
 		l.addTrivia(TriviaBOM, start, l.pos)
 		return true
@@ -114,7 +127,15 @@ func (l *lexer) emit(kind TokenKind, start, end int) {
 }
 
 func (l *lexer) match(s string) bool {
-	return bytes.HasPrefix(l.src[l.pos:], []byte(s))
+	if len(l.src)-l.pos < len(s) {
+		return false
+	}
+	for i := range len(s) {
+		if l.src[l.pos+i] != s[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *lexer) scanLineComment(kind TokenKind) {
@@ -158,6 +179,12 @@ func (l *lexer) scanNumber() {
 		}
 		l.diagnostics = append(l.diagnostics, invalidStructure(Span{Start: start, End: l.pos}, "exponent notation is not valid LDL syntax"))
 	}
+	if l.pos < len(l.src) && (isIdentStart(l.src[l.pos]) || l.src[l.pos] == '_') {
+		for l.pos < len(l.src) && !isDelimiter(l.src[l.pos]) {
+			l.pos++
+		}
+		l.diagnostics = append(l.diagnostics, invalidStructure(Span{Start: start, End: l.pos}, "malformed numeric adjacency"))
+	}
 	l.emit(kind, start, l.pos)
 }
 
@@ -167,7 +194,6 @@ func (l *lexer) scanString() {
 	for l.pos < len(l.src) {
 		r, width := utf8.DecodeRune(l.src[l.pos:])
 		if r == utf8.RuneError && width == 1 {
-			l.diagnostics = append(l.diagnostics, invalidUTF8(Span{Start: l.pos, End: l.pos + 1}))
 			l.pos++
 			continue
 		}
@@ -181,13 +207,35 @@ func (l *lexer) scanString() {
 			l.emit(TokenString, start, l.pos)
 			return
 		}
+		if l.src[l.pos] < 0x20 {
+			l.diagnostics = append(l.diagnostics, invalidStructure(Span{Start: l.pos, End: l.pos + 1}, "unescaped control character in string literal"))
+			l.pos++
+			continue
+		}
 		if l.src[l.pos] == '\\' {
+			escapeStart := l.pos
 			l.pos++
 			if l.pos >= len(l.src) {
 				break
 			}
 			if !isJSONEscape(l.src[l.pos]) {
-				l.diagnostics = append(l.diagnostics, invalidStructure(Span{Start: l.pos - 1, End: l.pos + 1}, "malformed string escape"))
+				l.diagnostics = append(l.diagnostics, invalidStructure(Span{Start: escapeStart, End: l.pos + 1}, "malformed string escape"))
+			}
+			if l.src[l.pos] == 'u' {
+				hexStart := l.pos + 1
+				hexEnd := hexStart + 4
+				if hexEnd > len(l.src) {
+					hexEnd = len(l.src)
+				}
+				if hexStart+4 > len(l.src) || !isFourHex(l.src[hexStart:hexStart+4]) {
+					for hexEnd < len(l.src) && l.src[hexEnd] != '"' && l.src[hexEnd] != '\n' && l.src[hexEnd] != '\r' && l.src[hexEnd] != '\\' {
+						hexEnd++
+					}
+					l.diagnostics = append(l.diagnostics, invalidStructure(Span{Start: escapeStart, End: hexEnd}, "malformed unicode escape"))
+					l.pos = hexEnd
+					continue
+				}
+				l.pos += 4
 			}
 		}
 		l.pos += width
@@ -209,8 +257,15 @@ func (l *lexer) scanHeredoc() {
 		l.pos++
 	}
 	marker := string(l.src[markerStart:l.pos])
-	for l.pos < len(l.src) && l.src[l.pos] != '\n' && l.src[l.pos] != '\r' {
+	for l.pos < len(l.src) && isHorizontalSpace(l.src[l.pos]) {
 		l.pos++
+	}
+	if l.pos < len(l.src) && l.src[l.pos] != '\n' && l.src[l.pos] != '\r' {
+		badStart := l.pos
+		for l.pos < len(l.src) && l.src[l.pos] != '\n' && l.src[l.pos] != '\r' {
+			l.pos++
+		}
+		l.diagnostics = append(l.diagnostics, invalidStructure(Span{Start: badStart, End: l.pos}, "unexpected text after heredoc marker"))
 	}
 	if l.pos < len(l.src) {
 		if l.match("\r\n") {
@@ -226,16 +281,9 @@ func (l *lexer) scanHeredoc() {
 		for lineEnd < len(l.src) && l.src[lineEnd] != '\n' && l.src[lineEnd] != '\r' {
 			lineEnd++
 		}
-		if string(bytes.TrimSpace(l.src[lineStart:lineEnd])) == marker {
+		if heredocCloseMatches(l.src[lineStart:lineEnd], marker) {
 			closed = true
 			l.pos = lineEnd
-			if l.pos < len(l.src) {
-				if l.match("\r\n") {
-					l.pos += 2
-				} else {
-					l.pos++
-				}
-			}
 			break
 		}
 		l.pos = lineEnd
@@ -302,12 +350,39 @@ func (l *lexer) scanPunctuation() {
 	default:
 		r, width := utf8.DecodeRune(l.src[l.pos:])
 		if r == utf8.RuneError && width == 1 {
-			l.diagnostics = append(l.diagnostics, invalidUTF8(Span{Start: start, End: start + 1}))
 		} else {
 			l.diagnostics = append(l.diagnostics, invalidStructure(Span{Start: start, End: start + width}, "unexpected character"))
 		}
 		l.emit(TokenInvalid, start, start+width)
 	}
+}
+
+func isFourHex(bytes []byte) bool {
+	if len(bytes) < 4 {
+		return false
+	}
+	for _, b := range bytes[:4] {
+		if !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHorizontalSpace(b byte) bool {
+	return b == ' ' || b == '\t'
+}
+
+func heredocCloseMatches(line []byte, marker string) bool {
+	start := 0
+	for start < len(line) && isHorizontalSpace(line[start]) {
+		start++
+	}
+	end := len(line)
+	for end > start && isHorizontalSpace(line[end-1]) {
+		end--
+	}
+	return string(line[start:end]) == marker
 }
 
 func isIdentStart(b byte) bool {

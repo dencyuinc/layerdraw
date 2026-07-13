@@ -2,7 +2,10 @@
 
 package syntax
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 const validStructuralFixture = `//! LayerDraw module docs
 import aws from "aws_complete"
@@ -11,7 +14,7 @@ import { subnet as private_subnet, vpc } from "aws_complete.network"
 project order_platform "Order Platform" {
   description "Production order platform"
   tags [prod, stg]
-  annotations { owner: "platform", critical: true }
+  annotations { owner: "platform", critical: true, environments: [prod, stg] }
 }
 
 layers {
@@ -87,6 +90,7 @@ func TestParseValidStructuralFixture(t *testing.T) {
 	t.Parallel()
 
 	got := Parse([]byte(validStructuralFixture))
+	assertParseInvariants(t, []byte(validStructuralFixture), got)
 	if len(got.Diagnostics) != 0 {
 		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
 	}
@@ -114,6 +118,7 @@ func TestParseInvalidFixtureRecoversToLaterDeclarations(t *testing.T) {
 
 	src := "project p \"P\" {\n  description\n  @\n}\nquery q \"Q\" {}\n"
 	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
 	if len(got.Diagnostics) == 0 {
 		t.Fatal("Diagnostics empty, want structure errors")
 	}
@@ -133,6 +138,7 @@ func TestParseModuleDocAfterDeclarationDiagnostic(t *testing.T) {
 
 	src := "project p \"P\" {}\n//! late\n"
 	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
 	if len(got.Diagnostics) != 1 {
 		t.Fatalf("Diagnostics = %+v, want one", got.Diagnostics)
 	}
@@ -147,6 +153,7 @@ func TestParseObjectValueVersusNestedBlock(t *testing.T) {
 
 	src := "query q \"Q\" {\n  metadata { owner: \"platform\" }\n  shape diagram {\n    layout layered\n  }\n}\n"
 	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
 	if len(got.Diagnostics) != 0 {
 		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
 	}
@@ -162,8 +169,9 @@ func TestParseObjectValueVersusNestedBlock(t *testing.T) {
 func TestCSTReferencesConcreteSeparatorTokens(t *testing.T) {
 	t.Parallel()
 
-	src := "import { subnet as private_subnet, vpc } from \"aws.network\"\nrows order_api [aws.environment, critical,] {\n  order_api production: prod, true,\n}\n"
+	src := "import { subnet as private_subnet, vpc } from \"aws.network\"\nrows order_api [aws.environment, critical,] {\n  order_api production: prod, true\n}\n"
 	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
 	if len(got.Diagnostics) != 0 {
 		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
 	}
@@ -183,6 +191,7 @@ func TestParseTopLevelRecoveryAndExpectedKeyword(t *testing.T) {
 
 	src := "@@@\nimport aws \"missing_from\"\nproject p \"P\" {}\n"
 	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
 	if len(got.Diagnostics) < 2 {
 		t.Fatalf("Diagnostics = %+v, want recovery and expected keyword diagnostics", got.Diagnostics)
 	}
@@ -195,10 +204,11 @@ func TestParseTopLevelRecoveryAndExpectedKeyword(t *testing.T) {
 func TestParseEmptyCollectionsAndMissingRangeBound(t *testing.T) {
 	t.Parallel()
 
-	src := "query q \"Q\" {\n  empty_list []\n  empty_object {}\n  bad_range 0..\n}\n"
+	src := "query q \"Q\" {\n  empty_list []\n  empty_object { values: [] }\n  bad_range 0..\n}\n"
 	got := Parse([]byte(src))
-	if len(got.Diagnostics) != 1 {
-		t.Fatalf("Diagnostics = %+v, want one missing range bound diagnostic", got.Diagnostics)
+	assertParseInvariants(t, []byte(src), got)
+	if len(got.Diagnostics) != 2 {
+		t.Fatalf("Diagnostics = %+v, want empty column header and missing range bound diagnostics", got.Diagnostics)
 	}
 	counts := countNodes(got.Root)
 	if counts[NodeList] != 1 || counts[NodeObject] != 1 || counts[NodeRange] != 1 {
@@ -211,6 +221,7 @@ func TestParseUnknownDeclarationAndEOFExpectation(t *testing.T) {
 
 	src := "nonsense\nproject"
 	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
 	if len(got.Diagnostics) < 2 {
 		t.Fatalf("Diagnostics = %+v, want unknown declaration and EOF expectation errors", got.Diagnostics)
 	}
@@ -227,12 +238,158 @@ func TestParseObjectInvalidKeyAndStatementInvalidArgument(t *testing.T) {
 
 	src := "query q \"Q\" {\n  metadata { 1: true }\n  compare id < value\n  broken !\n}\n"
 	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
 	if len(got.Diagnostics) == 0 {
 		t.Fatal("Diagnostics empty, want invalid object key/statement argument")
 	}
 	counts := countNodes(got.Root)
 	if counts[NodeError] == 0 {
 		t.Fatalf("counts = %v, want error node", counts)
+	}
+}
+
+func TestParseEBNFNegativeMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"project p \"P\" {}\nimport late from \"x\"\n",
+		"import {} from \"x\"\n",
+		"export {} from \"x\"\n",
+		"rows owner [] {}\n",
+		"rows owner [col] {\n  owner row:\n}\n",
+		"rows owner [col] {\n  owner row: value,\n}\n",
+		"query q \"Q\" {\n  bad _\n}\n",
+		"query q \"Q\" { statement \"compact\" }\n",
+		"query q \"Q\" {\n  list [a,]\n  object { owner: \"platform\", }\n}\n",
+		"query q \"Q\" {\n  //! nested module doc\n}\n",
+	}
+	for _, src := range tests {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+			if len(got.Diagnostics) == 0 {
+				t.Fatalf("Diagnostics empty for malformed source %q", src)
+			}
+		})
+	}
+}
+
+func TestParseEBNFPositiveMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"import aws from \"aws_complete\"\n",
+		"import {\n  subnet as private_subnet,\n  vpc,\n} from \"aws_complete.network\"\n",
+		"import {\n  // ordinary comment\n  subnet,\n  vpc,\n} from \"aws_complete.network\"\n",
+		"export { subnet as network_segment } from \"./network.ldl\"\n",
+		"export {\n  // ordinary comment\n  subnet,\n} from \"./network.ldl\"\n",
+		"layers {}\n",
+		"moves {\n  project old_project -> new_project\n  entity_row order_api old_snapshot -> production\n}\n",
+		"moves {\n  project old_project -> new_project\n  entity_type old_entity_type -> new_entity_type\n  relation_type old_relation_type -> new_relation_type\n  layer old_layer -> new_layer\n  entity old_entity -> new_entity\n  relation old_relation -> new_relation\n  query old_query -> new_query\n  view old_view -> new_view\n  reference old_reference -> new_reference\n  entity_type_column owner old_column -> new_column\n  entity_type_constraint owner old_constraint -> new_constraint\n  relation_type_column owner old_column -> new_column\n  relation_type_constraint owner old_constraint -> new_constraint\n  entity_row owner old_row -> new_row\n  relation_row owner old_row -> new_row\n  query_parameter owner old_parameter -> new_parameter\n  view_table_column owner old_column -> new_column\n  view_export owner old_export -> new_export\n}\n",
+		"rows owner [\n  aws.environment,\n  critical,\n] {\n  owner production: prod, true\n}\n",
+		"query q \"Q\" {\n  values [\n    prod,\n  ]\n  metadata { owner: \"platform\",\n  }\n}\n",
+		"reference r <<-TEXT\nbody\nTEXT\nquery q \"Q\" {}\n",
+	}
+	for _, src := range tests {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+			if len(got.Diagnostics) != 0 {
+				t.Fatalf("Diagnostics = %+v, want none for %q", got.Diagnostics, src)
+			}
+		})
+	}
+}
+
+func TestParseBOMLineEndingAndByteOffsetMatrix(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		src          []byte
+		wantDiag     bool
+		wantDiagSpan Span
+	}{
+		{name: "bom only", src: []byte{0xEF, 0xBB, 0xBF}},
+		{name: "mid file bom", src: []byte("project p \"P\" {}\n\xef\xbb\xbf\n"), wantDiag: true, wantDiagSpan: Span{Start: 17, End: 20}},
+		{name: "bare cr", src: []byte("project p \"P\" {}\rquery q \"Q\" {}\r")},
+		{name: "crlf", src: []byte("project p \"P\" {}\r\nquery q \"Q\" {}\r\n")},
+		{name: "multibyte before invalid string", src: []byte("project p \"日本語"), wantDiag: true, wantDiagSpan: Span{Start: 10, End: 20}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Parse(tt.src)
+			assertParseInvariants(t, tt.src, got)
+			if tt.wantDiag {
+				found := false
+				for _, diag := range got.Diagnostics {
+					if diag.Span == tt.wantDiagSpan {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("Diagnostics = %+v, want span %+v", got.Diagnostics, tt.wantDiagSpan)
+				}
+			}
+		})
+	}
+}
+
+func TestParseDiagnosticsDeterministicAcrossRuns(t *testing.T) {
+	t.Parallel()
+
+	src := []byte("project p \"P\" {\n  @\n  bad _\n}\n//! late\n")
+	first := Parse(src)
+	assertParseInvariants(t, src, first)
+	for range 10 {
+		next := Parse(src)
+		assertParseInvariants(t, src, next)
+		if len(next.Diagnostics) != len(first.Diagnostics) {
+			t.Fatalf("diagnostic count changed: first=%+v next=%+v", first.Diagnostics, next.Diagnostics)
+		}
+		for i := range first.Diagnostics {
+			if next.Diagnostics[i] != first.Diagnostics[i] {
+				t.Fatalf("diagnostic %d changed:\nfirst=%+v\n next=%+v", i, first.Diagnostics[i], next.Diagnostics[i])
+			}
+		}
+	}
+}
+
+func TestParseLineTerminatorBranches(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"query q \"Q\" {\n  description \"ok\" // trailing\n}\n",
+		"query q \"Q\" {\n  description \"ok\"}",
+		"query q \"Q\" {\n  description \"ok\"",
+		"query q \"Q\" {\n  compact \"no\" extra\n}\n",
+	}
+	for _, src := range tests {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+		})
+	}
+}
+
+func TestParseListAndObjectBranchMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"query q \"Q\" {\n  metadata { owner: [], }\n}\n",
+		"query q \"Q\" {\n  metadata { owner: [\n  ], }\n}\n",
+		"query q \"Q\" {\n  metadata { owner: { nested: [] } }\n}\n",
+	}
+	for _, src := range tests {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+		})
 	}
 }
 
@@ -249,9 +406,24 @@ func FuzzParseDoesNotPanic(f *testing.F) {
 		if got.Root == nil {
 			t.Fatal("nil root")
 		}
-		if ReconstructTokens(got.Tokens) != src {
-			t.Fatal("parse did not preserve source")
-		}
+		assertParseInvariants(t, []byte(src), got)
+	})
+}
+
+func FuzzParseBytesCSTInvariants(f *testing.F) {
+	for _, seed := range [][]byte{
+		[]byte(validStructuralFixture),
+		[]byte{0xff, '@', '\n'},
+		[]byte("\xef\xbb\xbf"),
+		[]byte("project p \"P\" {\r  bad _\r}\r"),
+		[]byte("reference r <<-TEXT\n\xff\nTEXT\n"),
+		[]byte("query q \"Q\" {\n  list [a,\n  ]\n}\n"),
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, src []byte) {
+		got := Parse(src)
+		assertParseInvariants(t, src, got)
 	})
 }
 
@@ -270,6 +442,63 @@ func walkTokens(root *Node, visit func(Token)) {
 			visit(v.Token)
 		case *Node:
 			walkTokens(v, visit)
+		}
+	}
+}
+
+func assertParseInvariants(t *testing.T, src []byte, got ParseResult) {
+	t.Helper()
+	if got.Root == nil {
+		t.Fatal("nil root")
+	}
+	if got.Root.Span != (Span{Start: 0, End: len(src)}) {
+		t.Fatalf("root span = %+v, want [0,%d)", got.Root.Span, len(src))
+	}
+	if reconstructed := ReconstructTokens(got.Tokens); reconstructed != string(src) {
+		t.Fatalf("token reconstruction mismatch\n got: %q\nwant: %q", reconstructed, string(src))
+	}
+	owners := make([]int, len(got.Tokens))
+	var ordered []TokenElement
+	var walk func(*Node)
+	walk = func(n *Node) {
+		for _, child := range n.Children {
+			switch v := child.(type) {
+			case TokenElement:
+				if v.Index < 0 || v.Index >= len(got.Tokens) {
+					t.Fatalf("token index out of bounds: %d len=%d", v.Index, len(got.Tokens))
+				}
+				owners[v.Index]++
+				ordered = append(ordered, v)
+				if !reflect.DeepEqual(v.Token, got.Tokens[v.Index]) {
+					t.Fatalf("token element mismatch at %d: %+v != %+v", v.Index, v.Token, got.Tokens[v.Index])
+				}
+			case *Node:
+				if v.Span.Start < 0 || v.Span.End < v.Span.Start || v.Span.End > len(src) {
+					t.Fatalf("node %s has invalid span %+v for source len %d", v.Kind, v.Span, len(src))
+				}
+				walk(v)
+			default:
+				t.Fatalf("unknown CST child %T", child)
+			}
+		}
+	}
+	walk(got.Root)
+	for i, count := range owners {
+		if count != 1 {
+			t.Fatalf("token %d %s %q owned %d times; owners=%v", i, got.Tokens[i].Kind, got.Tokens[i].Raw, count, owners)
+		}
+	}
+	for i := 1; i < len(ordered); i++ {
+		if ordered[i-1].Index >= ordered[i].Index {
+			t.Fatalf("CST token order is not increasing around %d then %d", ordered[i-1].Index, ordered[i].Index)
+		}
+	}
+	for _, diag := range got.Diagnostics {
+		if diag.Span.Start < 0 || diag.Span.End < diag.Span.Start || diag.Span.End > len(src) {
+			t.Fatalf("diagnostic out of bounds: %+v for len %d", diag, len(src))
+		}
+		if diag.Code != "LDL1001" && diag.Code != "LDL1101" {
+			t.Fatalf("unexpected diagnostic identity: %+v", diag)
 		}
 	}
 }

@@ -2,10 +2,7 @@
 
 package syntax
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 func TestLexRoundTripAndTokenKinds(t *testing.T) {
 	t.Parallel()
@@ -166,13 +163,134 @@ func TestLexInvalidUTF8InsideStringAndEOFBackslash(t *testing.T) {
 	if len(got.Diagnostics) != 2 {
 		t.Fatalf("Diagnostics = %+v, want invalid UTF-8 and unclosed string", got.Diagnostics)
 	}
-	if got.Diagnostics[0].Code != "LDL1001" {
-		t.Fatalf("first diagnostic = %+v, want LDL1001", got.Diagnostics[0])
+	if got.Diagnostics[1].Code != "LDL1001" || got.Diagnostics[1].Span != (Span{Start: 5, End: 6}) {
+		t.Fatalf("UTF-8 diagnostic = %+v, want LDL1001 at 5..6", got.Diagnostics[1])
 	}
 
 	backslash := Lex([]byte("\"abc\\"))
 	if len(backslash.Diagnostics) == 0 || backslash.Diagnostics[len(backslash.Diagnostics)-1].Message != "unclosed string literal" {
 		t.Fatalf("backslash EOF diagnostics = %+v", backslash.Diagnostics)
+	}
+}
+
+func TestLexInvalidUTF8EveryContextWithoutDuplicates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  []byte
+		span Span
+	}{
+		{name: "line comment", src: []byte{'/', '/', ' ', 0xff, '\n'}, span: Span{Start: 3, End: 4}},
+		{name: "doc comment", src: []byte{'/', '/', '/', ' ', 0xff, '\n'}, span: Span{Start: 4, End: 5}},
+		{name: "module doc", src: []byte{'/', '/', '!', ' ', 0xff, '\n'}, span: Span{Start: 4, End: 5}},
+		{name: "heredoc body", src: []byte("reference r <<-TEXT\nbad \xff\nTEXT\n"), span: Span{Start: 24, End: 25}},
+		{name: "heredoc close line", src: []byte("reference r <<-TEXT\nbody\nTE\xffXT\n"), span: Span{Start: 27, End: 28}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Lex(tt.src)
+			matches := 0
+			for _, diag := range got.Diagnostics {
+				if diag.Code == "LDL1001" {
+					matches++
+					if diag.Span != tt.span {
+						t.Fatalf("UTF-8 span = %+v, want %+v; diagnostics=%+v", diag.Span, tt.span, got.Diagnostics)
+					}
+				}
+			}
+			if matches != 1 {
+				t.Fatalf("LDL1001 count = %d, want 1; diagnostics=%+v", matches, got.Diagnostics)
+			}
+			if ReconstructTokens(got.Tokens) != string(tt.src) {
+				t.Fatal("invalid UTF-8 source did not round trip")
+			}
+		})
+	}
+}
+
+func TestLexJSONCompatibleStringEscapes(t *testing.T) {
+	t.Parallel()
+
+	valid := `"\"\\\/\b\f\n\r\t\u0000\u12Af"`
+	if got := Lex([]byte(valid)); len(got.Diagnostics) != 0 {
+		t.Fatalf("valid JSON escapes diagnostics = %+v", got.Diagnostics)
+	}
+
+	tests := []string{`"\u"`, `"\u1"`, `"\u12xz"`, "\"raw\tcontrol\"", "\"raw\x00control\""}
+	for _, src := range tests {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Lex([]byte(src))
+			found := false
+			for _, diag := range got.Diagnostics {
+				if diag.Code == "LDL1101" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("Diagnostics = %+v, want LDL1101", got.Diagnostics)
+			}
+			if ReconstructTokens(got.Tokens) != src {
+				t.Fatal("malformed string source did not round trip")
+			}
+		})
+	}
+}
+
+func TestLexHeredocPinnedRules(t *testing.T) {
+	t.Parallel()
+
+	valid := "reference r <<-TEXT\t \nTEXT\t \nnext\n"
+	got := Lex([]byte(valid))
+	if len(got.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
+	}
+	assertTokenKinds(t, got.Tokens, TokenIdentifier, TokenIdentifier, TokenHeredoc, TokenNewline, TokenIdentifier)
+
+	notClosedByPrefix := "reference r <<-TEXT\nTEXT_suffix\n"
+	if got := Lex([]byte(notClosedByPrefix)); len(got.Diagnostics) == 0 {
+		t.Fatal("prefix/suffix close marker diagnosed as closed; want unclosed heredoc")
+	}
+	badOpen := "reference r <<-TEXT // nope\nTEXT\n"
+	if got := Lex([]byte(badOpen)); len(got.Diagnostics) == 0 {
+		t.Fatal("opening marker trailing text accepted; want diagnostic")
+	}
+}
+
+func TestLexLongestMatchAndMalformedNumericRuns(t *testing.T) {
+	t.Parallel()
+
+	src := "... .... ->> --1 1..2 1...2 <== !== <<-X\nX\n1abc 3.14foo"
+	got := Lex([]byte(src))
+	want := []TokenKind{
+		TokenDotDot, TokenDot, TokenDotDot, TokenDotDot, TokenArrow, TokenGreater,
+		TokenInvalid, TokenInteger, TokenInteger, TokenDotDot, TokenInteger,
+		TokenInteger, TokenDotDot, TokenDot, TokenInteger, TokenLessEqual,
+		TokenInvalid, TokenBangEqual, TokenInvalid, TokenHeredoc, TokenNewline,
+		TokenInteger, TokenNumber, TokenEOF,
+	}
+	gotKinds := make([]TokenKind, len(got.Tokens))
+	for i, tok := range got.Tokens {
+		gotKinds[i] = tok.Kind
+	}
+	if len(gotKinds) != len(want) {
+		t.Fatalf("token kinds len = %d, want %d: %v", len(gotKinds), len(want), gotKinds)
+	}
+	for i := range want {
+		if gotKinds[i] != want[i] {
+			t.Fatalf("token %d = %s raw=%q, want %s; all=%v", i, got.Tokens[i].Kind, got.Tokens[i].Raw, want[i], gotKinds)
+		}
+	}
+	numericDiagnostics := 0
+	for _, diag := range got.Diagnostics {
+		if diag.Message == "malformed numeric adjacency" {
+			numericDiagnostics++
+		}
+	}
+	if numericDiagnostics != 2 {
+		t.Fatalf("numeric adjacency diagnostics = %d, want 2; diagnostics=%+v", numericDiagnostics, got.Diagnostics)
 	}
 }
 
@@ -203,22 +321,50 @@ func TestTokenKindStringFallback(t *testing.T) {
 }
 
 func FuzzLexRoundTrip(f *testing.F) {
-	seeds := []string{
-		"project p \"P\" {}\n",
-		"entities application_service @application {\n  order_api \"Order API\" {}\n}\n",
-		"reference r <<-TEXT\nbody\nTEXT\n",
-		"rows order_api [environment, critical] {\n  order_api production: prod, true\n}\n",
+	seeds := [][]byte{
+		[]byte("project p \"P\" {}\n"),
+		[]byte("entities application_service @application {\n  order_api \"Order API\" {}\n}\n"),
+		[]byte("reference r <<-TEXT\nbody\nTEXT\n"),
+		[]byte("rows order_api [environment, critical] {\n  order_api production: prod, true\n}\n"),
+		{0, 0xff, '\n', '/', '/', 0xfe},
 	}
 	for _, seed := range seeds {
 		f.Add(seed)
 	}
-	f.Fuzz(func(t *testing.T, src string) {
-		if strings.ContainsRune(src, 0) {
-			t.Skip("NUL is outside LDL source fixtures")
+	f.Fuzz(func(t *testing.T, src []byte) {
+		got := Lex(src)
+		if ReconstructTokens(got.Tokens) != string(src) {
+			t.Fatalf("round trip failed for %q", string(src))
 		}
-		got := Lex([]byte(src))
-		if ReconstructTokens(got.Tokens) != src {
-			t.Fatalf("round trip failed for %q", src)
+		lastEnd := 0
+		for i, tok := range got.Tokens {
+			for _, tr := range tok.Leading {
+				if tr.Span.Start != lastEnd || tr.Span.End < tr.Span.Start || tr.Raw != string(src[tr.Span.Start:tr.Span.End]) {
+					t.Fatalf("bad trivia at token %d: %+v lastEnd=%d", i, tr, lastEnd)
+				}
+				lastEnd = tr.Span.End
+			}
+			if tok.Span.Start != lastEnd || tok.Span.End < tok.Span.Start || tok.Span.End > len(src) || tok.Raw != string(src[tok.Span.Start:tok.Span.End]) {
+				t.Fatalf("bad token %d: %+v lastEnd=%d len=%d", i, tok, lastEnd, len(src))
+			}
+			lastEnd = tok.Span.End
+		}
+		if lastEnd != len(src) {
+			t.Fatalf("token coverage ended at %d, want %d", lastEnd, len(src))
+		}
+		seenInvalid := map[Span]int{}
+		for _, diag := range got.Diagnostics {
+			if diag.Span.Start < 0 || diag.Span.End < diag.Span.Start || diag.Span.End > len(src) {
+				t.Fatalf("diagnostic out of bounds: %+v len=%d", diag, len(src))
+			}
+			if diag.Code == "LDL1001" {
+				seenInvalid[diag.Span]++
+			}
+		}
+		for span, count := range seenInvalid {
+			if count != 1 {
+				t.Fatalf("duplicate LDL1001 for %+v: %d", span, count)
+			}
 		}
 	})
 }
