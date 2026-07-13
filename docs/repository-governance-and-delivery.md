@@ -267,9 +267,82 @@ Organization Project `LayerDraw Development`をpublic development workflowの正
 
 同じconcernをProject fieldとlabelへ重複保存しない。特に`status:*` labelは作らず、workflow stateはProject `Status`だけで表現する。`XL`はそのまま着手可能という意味ではなく、着手前にSub-issueへ分解すべき項目を表す。
 
-Projectは少なくとも`Triage`、`Ready`、`Active`、`Roadmap`、`Community`、`Done`のViewを持つ。`Roadmap`はGitHub Milestoneでgroup化し、実際の出荷対象を単位として表示する。LayerDraw repositoryのIssueとPull RequestはProjectへ自動追加し、新規項目とreopenされた項目は`Triage`、closeまたはmergeされた項目は`Done`とする。Pull RequestをIssueへlinkした場合は対象Issueを`In review`とする。closeまたはmergeによって`Done`となった項目は、最終更新から30日後に自動archiveする。自動化できない状態遷移をlabelで代替しない。
+Projectは少なくとも`Triage`、`Ready`、`Active`、`Roadmap`、`Community`、`Done`のViewを持つ。`Active`は`In progress`、`In review`、`Blocked`を表示する。`Roadmap`はGitHub Milestoneでgroup化し、実際の出荷対象を単位として表示する。LayerDraw repositoryのIssueとPull RequestはProjectへ自動追加し、新規項目とreopenされた項目は`Triage`、closeまたはmergeされた項目は`Done`とする。linked Pull Requestがdraftなら対象IssueとPull Requestを`In progress`、ready for reviewなら両方を`In review`とする。closeまたはmergeによって`Done`となった項目は、最終更新から30日後に自動archiveする。自動化できない状態遷移をlabelで代替しない。
 
 Milestoneは実際に出荷可能な成果を表す場合だけ作成する。`V1`、`V2`等の曖昧なphase名、根拠のないdue date、単なるcomponent groupingには使用しない。Sprint / Iterationは明確なdelivery cadenceを採用するまで作成しない。
+
+#### 6.4.1 Work item lifecycle
+
+本repositoryではGitHub Issueを唯一のTicket / Work Itemとして扱う。別のTicket体系、Project draft item、Pull Request、口頭依頼を実装scopeの正本にしない。未整理のidea、質問、選択肢の探索はDiscussionsで扱い、実装または規範変更へ進める時点でIssueへ変換する。
+
+MaintainerはIssueを`Triage`から移す前に次を設定する。
+
+- `type:*`を正確に1件
+- owning componentを表す`area:*`を正確に1件。関連componentはIssue本文のimpactへ記載し、複数ownerをlabelで曖昧に表さない
+- `priority:*`を正確に1件
+- Project `Size`を正確に1件
+- 実装責任を引き受けたActorがいる場合はAssignee
+- 既に出荷対象へcommitした場合はGitHub Milestone
+
+External Contributorはlabel、Milestone、Project fieldを設定できない場合があるため、不足を起票者の責任にしない。Maintainerがtriageで補完する。`XL` Issueはそのまま`Ready`へ移さず、独立してmerge・検証できるSub-issueへ分解する。Parent Issueは複数PRを直接束ねる成果追跡に使い、各実装PRは原則として対応Sub-issueをcloseする。
+
+Project `Status`の遷移条件を次に固定する。
+
+| Status | Entry condition | Exit condition |
+| --- | --- | --- |
+| `Triage` | 新規またはreopenされたIssue / Pull Request | scope、acceptance criteria、owner metadata、重複有無を確認した |
+| `Ready` | 実装判断が完了し、依存、受入条件、type、area、priority、Sizeが明確 | Assigneeが着手する、またはblocking conditionが発生する |
+| `In progress` | Assigneeが存在し、branch、draft Pull Request、または確認可能な作業が開始済み | Pull Requestをready for reviewにする、またはblockされる |
+| `In review` | linked Pull Requestがready for reviewで、required validationが提示済み | merge、changes requestedによる再作業、またはblockされる |
+| `Blocked` | 外部decision、dependency、security、法務、環境等の具体的なblocking conditionをcommentへ記録済み | condition解消後、直前の実作業statusへ戻す |
+| `Done` | 実装がmergeされた、またはIssueを明示的なresolution付きでcloseした | reopen時は`Triage`へ戻す |
+
+単に作業予定がないことを`Blocked`で表さず、`Triage`または`Ready`に残す。Pull Requestをdraftへ戻した場合、対象Issueは`In progress`へ戻す。closeした未実装Issueには`resolution: duplicate`、`resolution: invalid`、`resolution: declined`のいずれかを付け、完了実装と区別する。
+
+IssueとPull RequestはProject上で別itemとして扱い、状態を次のように同期する。Issueへlinked draft Pull Requestが作成された時点でIssueとPull Requestを`In progress`、Pull Requestがready for reviewになった時点で両方を`In review`、mergeされた時点でPull Requestとclosing keywordでcloseされたIssueを`Done`にする。Pull RequestをcloseしてもIssueが未完了なら、Issueを`Ready`または`In progress`へ戻す。Issueの状態だけを更新してPull Request itemを`Triage`へ放置しない。
+
+#### 6.4.2 Milestone
+
+Milestone titleは利用者またはMaintainerが検証できる出荷成果を表し、descriptionへ完了条件を記載する。component名だけのbucket、`V1` / `V2`、無期限backlog、単一Issueの見せ替えには使わない。due dateは外部commitmentまたは現実のrelease計画がある場合だけ設定する。
+
+Issueは将来候補であるだけならMilestoneを持たなくてよい。Milestoneへ追加することは、その成果へ含めるmaintainer decisionを意味する。Milestoneは完了条件を満たした時だけcloseし、未完了Issueを無言で次のMilestoneへ繰り越さない。scopeから外す、別成果へ移す、Issueをcloseする、またはMilestoneの完了条件を変更するdecisionを記録する。
+
+#### 6.4.3 Pull Request linkage and labels
+
+実装または規範変更のPull Requestは、原則として本文の`Closes #<issue>`で1件以上のIssueへ接続する。1件のPull Requestで複数Issueをcloseするのは、変更がatomicで分離するとcontractまたは検証が壊れる場合に限る。
+
+type、area、priority、Size、Milestoneはlinked Issueを正本とし、Pull Requestへ手動複製しない。Pull Request固有のcompatibility impactには`breaking change`を直接付ける。IssueなしPull Requestでは、Project上で分類できるよう`type:*`と`area:*`をPull Request自身へ設定する。
+
+IssueなしPull Requestを許可するのは次だけとする。
+
+- approved dependency botによるdependency update
+- release automationが生成するversion / changelog / provenance update
+- public behavior、contract、dependency、license、security postureを変えないMaintainer所有のXS typoまたは機械的metadata修正
+
+例外を広げて、設計判断や実装scopeをPull Request本文だけに閉じ込めない。Pull Request merge時はlinked IssueをGitHubのclosing keywordでcloseし、Projectを`Done`へ遷移させる。
+
+#### 6.4.4 Community labels
+
+`contribution: help wanted`は、次をすべて満たす`Ready` Issueだけに付ける。
+
+- taskとhigh-level approachについてMaintainer間の合意があり、追加のarchitectureまたはproduct decisionをContributorへ委ねない
+- Issueが現在も必要かつ最新で、既存実装、前提、priority、acceptance criteriaと矛盾しない
+- Maintainerが自ら直ちに処理すべき緊急度ではなく、同時にreviewと支援へ時間を使う価値がある
+- 期待behavior、validation、関連する公開資料が明確
+- Maintainerが質問対応、review、mergeまでのshepherdingを引き受けられる
+
+`contribution: good first issue`は`contribution: help wanted`の部分集合とし、必ず両方のlabelを付ける。さらに次をすべて満たすIssueだけに付ける。
+
+- `Size`が`XS`または`S`
+- 未解決のarchitecture、language、license、security decisionを含まない
+- 推奨する解決方法と、Contributorが判断してよい範囲をIssue本文で説明している
+- 必要な背景知識、参照すべき仕様、類似実装例へのlinkがある
+- 変更対象のcode、fixture、test、documentを具体的なpathまたはsymbolで示している
+- 変更または複製できる既存testがあり、validation commandを実行できる。test基盤自体の新設を初回Contributorへ要求しない
+- private environment、credential、customer data、Maintainer専用権限を必要としない
+- advanced setupまたはLayerDraw固有domainの深い事前知識を必要としない
+
+単なる優先度不足、仕様未確定、内部作業の委任希望にcommunity labelを使わない。条件を満たさなくなった、内容が古くなった、またはContributorへassign済みのIssueはMaintainerがlabelを再評価する。両labelの追加・除去はMaintainer triageの責務とする。
 
 blank issueは無効化し、外部Contributorを構造化Issue Formへ誘導する。open-ended questionと初期ideaはDiscussionsで扱う。Issue Formの`projects:`指定は起票者のProject write権限を要求するためpublic contributor向け経路には使わず、Project側のauto-addを使用する。
 
