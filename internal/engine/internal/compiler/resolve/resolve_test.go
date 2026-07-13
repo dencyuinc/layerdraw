@@ -199,7 +199,7 @@ layers {
 entities service @application {
   order_api "Order API"
 }
-rows order_api [environment] {
+rows service [environment] {
   order_api production: prod
 }
 export { order_api }
@@ -297,7 +297,7 @@ layers {
 entities service @application {
   order_api "Order API"
 }
-rows order_api [environment] {
+rows service [environment] {
   order_api production: prod
 }
 moves {

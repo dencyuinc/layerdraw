@@ -36,15 +36,16 @@ func Compile(input Input) Result {
 	}
 
 	out := Result{
-		Root:          Root{Mode: input.Resolve.Mode, Address: input.Resolve.RootAddress},
-		Dependencies:  append([]resolve.ResolvedPackSummary{}, input.Resolve.Dependencies...),
-		Identity:      semanticIdentity(input.Resolve),
-		Diagnostics:   append([]resolve.Diagnostic{}, input.Resolve.Diagnostics...),
-		HasErrors:     input.Resolve.HasErrors,
-		EntityTypes:   []EntityType{},
-		RelationTypes: []RelationType{},
-		Layers:        []Layer{},
-		References:    []Reference{},
+		stageGeneration: input.Resolve.Generation(),
+		Root:            Root{Mode: input.Resolve.Mode, Address: input.Resolve.RootAddress},
+		Dependencies:    append([]resolve.ResolvedPackSummary{}, input.Resolve.Dependencies...),
+		Identity:        semanticIdentity(input.Resolve),
+		Diagnostics:     append([]resolve.Diagnostic{}, input.Resolve.Diagnostics...),
+		HasErrors:       input.Resolve.HasErrors,
+		EntityTypes:     []EntityType{},
+		RelationTypes:   []RelationType{},
+		Layers:          []Layer{},
+		References:      []Reference{},
 	}
 	if input.Resolve.Mode == resolve.CompilePack && input.Resolve.RootAddress != "" {
 		out.Pack = &Pack{Address: input.Resolve.RootAddress, CanonicalID: input.Resolve.RootCanonicalID}

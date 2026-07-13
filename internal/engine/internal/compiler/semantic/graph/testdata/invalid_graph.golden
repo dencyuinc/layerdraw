@@ -1,0 +1,6 @@
+LDL1503|relation_cardinality_violation|454:456|ldl:project:p:entity:l2|ldl:project:p:relation-type:maps|cause@374:378@ldl:project:p:entity:l2@ldl:project:p:relation-type:maps
+LDL1503|relation_cardinality_violation|498:500|ldl:project:p:entity:r2|ldl:project:p:relation-type:maps|cause@395:399@ldl:project:p:entity:r2@ldl:project:p:relation-type:maps
+LDL1401|scalar_or_column_type_mismatch|542:547|ldl:project:p:entity:l1:row:invalid|ldl:project:p:entity:l1|
+LDL1502|relation_duplicate_policy_violation|569:584|ldl:project:p:relation:first||previous@587:606@ldl:project:p:relation:duplicate@
+LDL1501|invalid_relation_endpoint_or_self_rule|616:618|ldl:project:p:relation:wrong||
+LDL1501|invalid_relation_endpoint_or_self_rule|622:624|ldl:project:p:relation:wrong||

@@ -73,6 +73,7 @@ type PackDependency struct {
 }
 
 type Result struct {
+	stageGeneration StageGeneration
 	Mode            CompileMode
 	RootAddress     string
 	RootCanonicalID string
@@ -93,6 +94,31 @@ type Result struct {
 	Dependencies []ResolvedPackSummary
 	Diagnostics  []Diagnostic
 	HasErrors    bool
+}
+
+// StageGeneration is an opaque, process-local token binding compiler stage
+// results to one Resolve invocation. It is not part of semantic output.
+type StageGeneration struct {
+	token *stageGenerationToken
+}
+
+type stageGenerationToken struct {
+	marker byte
+}
+
+func newStageGeneration() StageGeneration {
+	return StageGeneration{token: &stageGenerationToken{marker: 1}}
+}
+
+// Matches reports whether both tokens came from the same Resolve invocation.
+func (g StageGeneration) Matches(other StageGeneration) bool {
+	return g.token != nil && g.token == other.token
+}
+
+// Generation returns the opaque token for propagation to the next internal
+// compiler stage.
+func (r Result) Generation() StageGeneration {
+	return r.stageGeneration
 }
 
 type OriginKind string

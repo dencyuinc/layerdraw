@@ -1,0 +1,39 @@
+project p "P" {}
+layers {
+  app "App" @0
+}
+entity_type left "Left" {
+  representation table
+  columns {
+    value "Value" integer
+  }
+}
+entity_type right "Right" {
+  representation shape rect
+}
+relation_type maps "Maps" reference {
+  duplicate_policy deny_same_type_between_same_endpoints
+  from source types [left]
+  to target types [right]
+  cardinality {
+    to_per_from 1..1
+    from_per_to 1..1
+  }
+  label "maps"
+}
+entities left @app {
+  l1 "L1"
+  l2 "L2"
+}
+entities right @app {
+  r1 "R1"
+  r2 "R2"
+}
+rows left [value] {
+  l1 invalid: "bad"
+}
+relations maps {
+  first: l1 -> r1
+  duplicate: l1 -> r1
+  wrong: r1 -> l2
+}

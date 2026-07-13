@@ -1,0 +1,62 @@
+project p "Project" {}
+
+layers {
+  app "Application" @10
+  data "Data" @20
+}
+
+entity_type service "Service" {
+  representation shape rect
+  columns {
+    environment "Environment" enum [prod, stg] required default prod
+    hostname "Hostname" string format hostname
+    owner "Owner" string
+  }
+  unique host [hostname]
+}
+
+relation_type calls "Calls" data_flow {
+  allow_self false
+  duplicate_policy allow
+  from caller types [service] layers [app, data]
+  to callee types [service] layers [app, data]
+  cardinality {
+    to_per_from 0..*
+    from_per_to 0..*
+  }
+  label "calls"
+  columns {
+    protocol "Protocol" enum [http, grpc] required
+    port "Port" integer min 1 max 65535
+  }
+  unique transport [protocol, port]
+}
+
+entities service @app {
+  alpha "Alpha" {
+    tags [critical, api]
+    reserve_rows [legacy]
+  }
+  beta "Beta"
+}
+
+entities service @data {
+  gamma "Gamma"
+}
+
+rows service [hostname, owner] {
+  alpha primary: "API.EXAMPLE.COM.", _
+  beta primary: "beta.example.com", "Platform"
+  gamma primary: "gamma.example.com", "Data"
+}
+
+relations calls {
+  alpha_beta: alpha -> beta "Alpha to Beta"
+  beta_gamma: beta -> gamma
+  gamma_alpha: gamma -> alpha
+}
+
+relation_rows calls [protocol, port] {
+  alpha_beta http: http, 443
+  alpha_beta grpc: grpc, 8443
+}

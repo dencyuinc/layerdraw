@@ -101,7 +101,7 @@ func sortRelated(items []DiagnosticRelated) {
 		if a.OwnerAddress != b.OwnerAddress {
 			return a.OwnerAddress < b.OwnerAddress
 		}
-		return a.Message < b.Message
+		return false
 	})
 }
 
@@ -112,7 +112,7 @@ func dedupeRelated(items []DiagnosticRelated) []DiagnosticRelated {
 	out := items[:0]
 	var prev string
 	for _, item := range items {
-		key := item.Relation + "|" + rangeKey(item.Range) + "|" + item.SubjectAddress + "|" + item.OwnerAddress + "|" + item.Message
+		key := item.Relation + "|" + rangeKey(item.Range) + "|" + item.SubjectAddress + "|" + item.OwnerAddress
 		if key == prev {
 			continue
 		}
