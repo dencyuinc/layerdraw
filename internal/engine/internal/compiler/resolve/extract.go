@@ -4,6 +4,7 @@ package resolve
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/syntax"
 )
@@ -13,6 +14,7 @@ type moduleAST struct {
 	exports            []ExportDecl
 	declarations       []rawDecl
 	reservations       []rawReservation
+	reservationBlocks  []rawReservationBlock
 	moves              []rawMove
 	rootReservedBlocks []syntax.Span
 	rootMoveBlocks     []syntax.Span
@@ -42,6 +44,14 @@ type rawReservation struct {
 	kind      SubjectKind
 	id        string
 	span      syntax.Span
+}
+
+type rawReservationBlock struct {
+	ownerKind SubjectKind
+	ownerID   string
+	row       bool
+	span      syntax.Span
+	node      *syntax.Node
 }
 
 type rawMove struct {
@@ -165,6 +175,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		if len(toks) > 1 {
 			d.id = toks[1].Raw
 		}
+		d.refs = append(d.refs, extractRelationTypeEndpointRefs(n)...)
 		ast.declarations = append(ast.declarations, d)
 		extractOwnerChildren(n, d, ast)
 		extractOwnerReservations(n, d, ast)
@@ -241,11 +252,77 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		}
 	case "reserved":
 		ast.rootReservedBlocks = append(ast.rootReservedBlocks, n.Span)
-		ast.reservations = append(ast.reservations, extractReservations(n)...)
+		ast.reservationBlocks = append(ast.reservationBlocks, rawReservationBlock{span: n.Span, node: n})
 	case "moves":
 		ast.rootMoveBlocks = append(ast.rootMoveBlocks, n.Span)
 		ast.moves = append(ast.moves, extractMoves(n)...)
 	}
+}
+
+func extractRelationTypeEndpointRefs(n *syntax.Node) []rawRef {
+	var refs []rawRef
+	body := firstNode(n, syntax.NodeBlock)
+	for _, stmt := range nodeChildren(body) {
+		if stmt.Kind != syntax.NodeStatement {
+			continue
+		}
+		toks := nodeTokens(stmt)
+		if len(toks) == 0 || (toks[0].Raw != "from" && toks[0].Raw != "to") {
+			continue
+		}
+		mode := ""
+		for _, child := range stmt.Children {
+			node, ok := child.(*syntax.Node)
+			if !ok || node.Kind != syntax.NodeValue {
+				continue
+			}
+			vtoks := nodeTokens(node)
+			if len(vtoks) == 0 {
+				continue
+			}
+			switch vtoks[0].Raw {
+			case "types", "layers":
+				mode = vtoks[0].Raw
+				continue
+			}
+			switch mode {
+			case "types":
+				for _, q := range qualifiedValues(node) {
+					refs = append(refs, rawRef{kind: KindEntityType, text: q.text, span: q.span})
+				}
+			case "layers":
+				for _, q := range qualifiedValues(node) {
+					refs = append(refs, rawRef{kind: KindLayer, text: q.text, span: q.span})
+				}
+			}
+		}
+	}
+	return refs
+}
+
+type qualifiedValue struct {
+	text string
+	span syntax.Span
+}
+
+func qualifiedValues(n *syntax.Node) []qualifiedValue {
+	var out []qualifiedValue
+	syntax.Walk(n, func(node *syntax.Node) {
+		if node.Kind != syntax.NodeQualifiedToken && node.Kind != syntax.NodeSymbolRef {
+			return
+		}
+		toks := nodeTokens(node)
+		var parts []string
+		for _, tok := range toks {
+			if tok.Kind == syntax.TokenIdentifier {
+				parts = append(parts, tok.Raw)
+			}
+		}
+		if len(parts) > 0 {
+			out = append(out, qualifiedValue{text: strings.Join(parts, "."), span: node.Span})
+		}
+	})
+	return out
 }
 
 func extractOwnerChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
@@ -254,44 +331,48 @@ func extractOwnerChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 }
 
 func extractOwnerReservations(n *syntax.Node, owner rawDecl, ast *moduleAST) {
-	for _, nb := range descendants(n, syntax.NodeNestedBlock) {
+	for _, nb := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if nb.Kind != syntax.NodeNestedBlock {
+			continue
+		}
 		toks := directTokens(nb)
 		if len(toks) == 0 || toks[0].Raw != "reserve" {
 			continue
 		}
 		key := string(owner.kind) + ":" + owner.id
 		ast.ownerReserveBlocks[key] = append(ast.ownerReserveBlocks[key], nb.Span)
-		for _, res := range extractReservations(nb) {
-			res.ownerKind = owner.kind
-			res.ownerID = owner.id
-			ast.reservations = append(ast.reservations, res)
-		}
+		ast.reservationBlocks = append(ast.reservationBlocks, rawReservationBlock{ownerKind: owner.kind, ownerID: owner.id, span: nb.Span, node: nb})
 	}
 }
 
 func extractRowReservations(n *syntax.Node, ownerKind SubjectKind, ownerID string, ast *moduleAST) {
-	for _, stmt := range descendants(n, syntax.NodeStatement) {
+	for _, stmt := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if stmt.Kind != syntax.NodeStatement {
+			continue
+		}
 		toks := nodeTokens(stmt)
 		if len(toks) == 0 || toks[0].Raw != "reserve_rows" {
 			continue
 		}
 		key := string(ownerKind) + ":" + ownerID
 		ast.rowReserveBlocks[key] = append(ast.rowReserveBlocks[key], stmt.Span)
-		for _, tok := range toks[1:] {
-			if tok.Kind == syntax.TokenIdentifier {
-				ast.reservations = append(ast.reservations, rawReservation{ownerKind: ownerKind, ownerID: ownerID, kind: KindRow, id: tok.Raw, span: tok.Span})
-			}
-		}
+		ast.reservationBlocks = append(ast.reservationBlocks, rawReservationBlock{ownerKind: ownerKind, ownerID: ownerID, row: true, span: stmt.Span, node: stmt})
 	}
 }
 
 func extractNamedBlockChildren(n *syntax.Node, owner rawDecl, block string, kind SubjectKind, ast *moduleAST) {
-	for _, nb := range descendants(n, syntax.NodeNestedBlock) {
+	for _, nb := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if nb.Kind != syntax.NodeNestedBlock {
+			continue
+		}
 		toks := directTokens(nb)
 		if len(toks) == 0 || toks[0].Raw != block {
 			continue
 		}
-		for _, stmt := range descendants(firstNode(nb, syntax.NodeBlock), syntax.NodeStatement) {
+		for _, stmt := range nodeChildren(firstNode(nb, syntax.NodeBlock)) {
+			if stmt.Kind != syntax.NodeStatement {
+				continue
+			}
 			stoks := nodeTokens(stmt)
 			if len(stoks) > 0 {
 				od := owner
@@ -302,7 +383,10 @@ func extractNamedBlockChildren(n *syntax.Node, owner rawDecl, block string, kind
 }
 
 func extractUniqueConstraints(n *syntax.Node, owner rawDecl, ast *moduleAST) {
-	for _, stmt := range descendants(n, syntax.NodeStatement) {
+	for _, stmt := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if stmt.Kind != syntax.NodeStatement {
+			continue
+		}
 		toks := nodeTokens(stmt)
 		if len(toks) >= 2 && toks[0].Raw == "unique" {
 			od := owner
@@ -326,26 +410,6 @@ func extractViewChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 			ast.declarations = append(ast.declarations, rawDecl{kind: KindExport, id: toks[1].Raw, childOf: &od, span: nb.Span})
 		}
 	}
-}
-
-func extractReservations(n *syntax.Node) []rawReservation {
-	var out []rawReservation
-	for _, stmt := range descendants(n, syntax.NodeStatement) {
-		toks := nodeTokens(stmt)
-		if len(toks) == 0 {
-			continue
-		}
-		kind, ok := reservationKind(toks[0].Raw)
-		if !ok {
-			continue
-		}
-		for _, tok := range toks[1:] {
-			if tok.Kind == syntax.TokenIdentifier {
-				out = append(out, rawReservation{kind: kind, id: tok.Raw, span: tok.Span})
-			}
-		}
-	}
-	return out
 }
 
 func extractMoves(n *syntax.Node) []rawMove {
@@ -464,6 +528,16 @@ func descendants(n *syntax.Node, kind syntax.NodeKind) []*syntax.Node {
 	syntax.Walk(n, func(node *syntax.Node) {
 		if node.Kind == kind {
 			out = append(out, node)
+		}
+	})
+	return out
+}
+
+func nodesBySpan(n *syntax.Node) map[syntax.Span]*syntax.Node {
+	out := map[syntax.Span]*syntax.Node{}
+	syntax.Walk(n, func(node *syntax.Node) {
+		if _, exists := out[node.Span]; !exists {
+			out[node.Span] = node
 		}
 	})
 	return out

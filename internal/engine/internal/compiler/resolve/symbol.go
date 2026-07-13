@@ -63,6 +63,28 @@ func addressOf(sym StableSymbol) string {
 	return b.String()
 }
 
+// StableAddress returns the canonical address for a resolved semantic symbol.
+func StableAddress(sym StableSymbol) string {
+	return addressOf(sym)
+}
+
+// MoveClosureKind returns the semantic subject kind represented by a closure.
+func MoveClosureKind(move MoveClosure) SubjectKind {
+	if len(move.toSymbol.Path) == 0 {
+		return KindProject
+	}
+	return move.toSymbol.Path[len(move.toSymbol.Path)-1].Kind
+}
+
+// MoveClosureOwner returns the terminal owner for an owner-scoped move.
+func MoveClosureOwner(move MoveClosure) (StableSymbol, bool) {
+	if len(move.toSymbol.Path) <= 1 {
+		return StableSymbol{}, false
+	}
+	owner := StableSymbol{Origin: move.toSymbol.Origin, Path: append([]SymbolSegment{}, move.toSymbol.Path[:len(move.toSymbol.Path)-1]...)}
+	return owner, true
+}
+
 func compareSymbol(a, b StableSymbol) int {
 	if originRank(a.Origin) != originRank(b.Origin) {
 		return originRank(a.Origin) - originRank(b.Origin)
@@ -136,4 +158,14 @@ func sortDeclarations(decls []DeclarationSymbol) {
 	sort.SliceStable(decls, func(i, j int) bool {
 		return compareSymbol(decls[i].Symbol, decls[j].Symbol) < 0
 	})
+}
+
+// SortDeclarations orders declarations by their structured StableSymbol.
+func SortDeclarations(decls []DeclarationSymbol) {
+	sortDeclarations(decls)
+}
+
+// CompareStableSymbols applies the normative structured StableSymbol order.
+func CompareStableSymbols(a, b StableSymbol) int {
+	return compareSymbol(a, b)
 }

@@ -329,8 +329,7 @@ func TestSupplementalCandidateIdentityIsCanonicallySorted(t *testing.T) {
 entity_type zeta "Zeta" {}
 entity_type alpha "Alpha" {}
 reserved {
-  entity_types [z_old]
-  entity_types [a_old]
+	  entity_types [z_old, a_old]
 }
 moves {
   entity_type z_older -> zeta

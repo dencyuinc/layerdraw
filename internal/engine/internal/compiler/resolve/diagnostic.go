@@ -62,6 +62,11 @@ func sortDiagnostics(ds []Diagnostic) {
 	})
 }
 
+// SortDiagnostics applies the compiler-wide deterministic diagnostic order.
+func SortDiagnostics(ds []Diagnostic) {
+	sortDiagnostics(ds)
+}
+
 func canonicalArgs(args map[string]string) string {
 	if len(args) == 0 {
 		return ""

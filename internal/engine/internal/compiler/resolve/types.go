@@ -73,10 +73,15 @@ type PackDependency struct {
 }
 
 type Result struct {
-	Modules []ResolvedModule
-	Exports []ExportBinding
+	Mode            CompileMode
+	RootAddress     string
+	RootCanonicalID string
+	Modules         []ResolvedModule
+	Exports         []ExportBinding
 	// Bindings contains declaration/import/export source bindings reachable from the selected effective document.
 	Bindings []SourceBinding
+	// DeclarationSources contains lossless CST handles for selected effective declarations.
+	DeclarationSources []DeclarationSource
 	// Declarations contains the selected effective document symbols only.
 	Declarations []DeclarationSymbol
 	// Candidates contains every valid declaration symbol loaded from the closed source tree.
@@ -217,6 +222,15 @@ type DeclarationSymbol struct {
 	Selected      bool
 }
 
+type DeclarationSource struct {
+	Symbol  StableSymbol
+	Address string
+	Kind    SubjectKind
+	Module  ModuleKey
+	Range   syntax.Span
+	Node    *syntax.Node
+}
+
 type SourceBinding struct {
 	Module        ModuleKey
 	ExpectedKind  SubjectKind
@@ -259,13 +273,17 @@ type Move struct {
 	To          string
 	FromAddress string
 	ToAddress   string
+	fromSymbol  StableSymbol
+	toSymbol    StableSymbol
 	Range       syntax.Span
 	Owner       *StableSymbol
 }
 
 type MoveClosure struct {
-	From string
-	To   string
+	From       string
+	To         string
+	fromSymbol StableSymbol
+	toSymbol   StableSymbol
 }
 
 type ResolvedPackSummary struct {
