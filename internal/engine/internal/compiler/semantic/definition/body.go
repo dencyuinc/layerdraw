@@ -245,6 +245,13 @@ var goPackagePattern = regexp.MustCompile(`(?m)^package [A-Za-z_][A-Za-z0-9_]*\s
 var goDeclarationPattern = regexp.MustCompile(`(?m)^(?:func|type|var|const|import)\b`)
 var javascriptVariableArrowPattern = regexp.MustCompile(`(?s)^(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>`)
 var javascriptParenthesizedArrowPattern = regexp.MustCompile(`(?s)^(?:async\s*)?\([^)]*\)\s*=>`)
+var javascriptSingleParameterArrowPattern = regexp.MustCompile(`(?s)^(?:async\s+[A-Za-z_$][A-Za-z0-9_$]*|[a-z_$][A-Za-z0-9_$]*)\s*=>`)
+var javascriptFunctionPattern = regexp.MustCompile(`(?s)^\(?\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
+var javascriptVariableFunctionPattern = regexp.MustCompile(`(?s)^(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
+var javascriptClassPattern = regexp.MustCompile(`(?s)^(?:export\s+)?(?:default\s+)?class(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\{`)
+var javascriptModulePattern = regexp.MustCompile(`(?s)^(?:import\s+.+\s+from\s+|export\s+(?:default\s+)?(?:function|class|const|let|var)\b)`)
+var goSourcePrefixPattern = regexp.MustCompile(`(?s)^(?:package\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:\n|$)|func\s+(?:\([^)]*\)\s*)?[A-Za-z_][A-Za-z0-9_]*\s*\()`)
+var wasmTextPattern = regexp.MustCompile(`(?s)^\(module(?:\s|\()`)
 
 func forbiddenAnnotationKey(key string) bool {
 	name := canonicalAnnotationName(key)
@@ -332,14 +339,21 @@ func forbiddenAnnotationValue(value string) bool {
 			return true
 		}
 	}
-	firstLine := strings.ToUpper(trimmed)
-	if line, _, ok := strings.Cut(firstLine, "\n"); ok {
-		firstLine = strings.TrimSpace(line)
+	for _, line := range strings.Split(trimmed, "\n") {
+		header := strings.ToUpper(strings.TrimSpace(line))
+		if strings.HasPrefix(header, "-----BEGIN ") && strings.HasSuffix(header, "-----") && strings.Contains(header, " PRIVATE KEY") {
+			return true
+		}
 	}
-	if strings.HasPrefix(firstLine, "-----BEGIN ") && strings.HasSuffix(firstLine, "-----") && strings.Contains(firstLine, " PRIVATE KEY") {
-		return true
-	}
-	if javascriptVariableArrowPattern.MatchString(trimmed) || javascriptParenthesizedArrowPattern.MatchString(trimmed) {
+	if javascriptVariableArrowPattern.MatchString(trimmed) ||
+		javascriptParenthesizedArrowPattern.MatchString(trimmed) ||
+		javascriptSingleParameterArrowPattern.MatchString(trimmed) ||
+		javascriptFunctionPattern.MatchString(trimmed) ||
+		javascriptVariableFunctionPattern.MatchString(trimmed) ||
+		javascriptClassPattern.MatchString(trimmed) ||
+		javascriptModulePattern.MatchString(trimmed) ||
+		goSourcePrefixPattern.MatchString(trimmed) ||
+		wasmTextPattern.MatchString(trimmed) {
 		return true
 	}
 	if authorizationValuePattern.MatchString(trimmed) {

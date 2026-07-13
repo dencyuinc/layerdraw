@@ -58,6 +58,46 @@ func TestAnnotationSafetyMatchesQualifiedConceptsWithoutRejectingBenignTokens(t 
 	}
 }
 
+func TestAnnotationSafetyRejectsCommonEmbeddedSourceForms(t *testing.T) {
+	t.Parallel()
+
+	source := `project p "Project" {
+  annotations {
+    key_envelope: "Bag Attributes\n-----BEGIN PRIVATE KEY-----\nredacted",
+    handler_example: "const f = function () { return 1; };",
+    async_handler: "async x => await x",
+    arrow_handler: "x => x",
+    named_handler: "function named() { return 1; }",
+    implementation_note: "func main() {}",
+    module_example: "(module (func))",
+    arrow_notation: "A => B",
+    constellation_note: "constellation map",
+    functional_note: "functional design",
+    class_note: "class ownership",
+  }
+}
+`
+	got := compileProject(t, map[string]string{"document.ldl": source})
+	forbidden := diagnosticsByCode(got.Diagnostics, "LDL1901")
+	if len(forbidden) != 7 {
+		t.Fatalf("forbidden diagnostics = %+v, want 7; annotations=%+v", forbidden, got.Project.Annotations)
+	}
+	for _, diagnostic := range forbidden {
+		if diagnostic.Range == nil || diagnostic.Range.StartByte < 0 || diagnostic.Range.EndByte > len(source) || diagnostic.Range.StartByte >= diagnostic.Range.EndByte {
+			t.Fatalf("invalid forbidden diagnostic range: %+v", diagnostic)
+		}
+	}
+	want := map[string]string{
+		"arrow_notation":     "A => B",
+		"constellation_note": "constellation map",
+		"functional_note":    "functional design",
+		"class_note":         "class ownership",
+	}
+	if !reflect.DeepEqual(got.Project.Annotations, want) {
+		t.Fatalf("published annotations = %+v, want %+v", got.Project.Annotations, want)
+	}
+}
+
 func TestRequiredDefinitionMembersDistinguishMissingFromWrongShape(t *testing.T) {
 	t.Parallel()
 
