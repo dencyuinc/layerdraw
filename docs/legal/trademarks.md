@@ -1,8 +1,8 @@
 # LayerDraw Trademark Policy
 
-Version 1.0 - pre-release draft
+Version 1.0
 
-本書は株式会社DENCYUの承認前draftである。外部弁護士のreviewはOSI非承認またはcustom licenseであることから生じる法定要件ではなく、公開前に行うかは株式会社DENCYUが判断する。承認前のdraftを法務承認済みとして扱ってはならない。
+Effective date: July 13, 2026
 
 ## 1. Scope
 

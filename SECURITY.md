@@ -27,12 +27,16 @@ Out of scope until a supported release exists:
 - issues that require modifying the local source tree after checkout
 - reports against unreleased prototype code that is not part of the active implementation
 
-## Public Release Gate
+## Public Repository Gate
 
-Before the repository is made public or a supported release is shipped, the project must verify:
+Before the repository is made public, the project must verify:
 
 - license and notice files are included in source archives and review bundles
 - secret scanning and push protection are enabled where available
 - branch protection, rulesets, and required checks are configured
-- release artifacts include SBOM, provenance, license files, and third-party notices
 - security contact and vulnerability disclosure flow are finalized
+- private vulnerability reporting is enabled
+
+## Supported Release Gate
+
+Before a supported release is shipped, release artifacts must include SBOM, provenance, license files, third-party notices, signatures, and documented security support scope.

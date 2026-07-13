@@ -1,8 +1,10 @@
 # LayerDraw Contributor License Agreement
 
-Version 1.0 - pre-release draft
+Version 1.0
 
-本書の英語条項を規範とする。本書は株式会社DENCYUの承認前draftであり、公開Contribution受付前に本文と同意記録方式を確定する。特定の電子署名技術は一律の法定要件ではなく、本Agreementもそれを必須にしない。
+Effective date: July 13, 2026
+
+本書の英語条項を規範とする。
 
 ## Agreement
 
@@ -100,11 +102,13 @@ accepting party's identity, the date and method of acceptance, the covered
 Contributions, and corporate authorization where applicable. No particular
 signature technology is required by this Agreement.
 
-11. Governing terms
+Personal information associated with acceptance and Contributions is handled
+as described in the [LayerDraw Contributor Privacy Notice](contributor-privacy-notice.md).
 
-Before public use, DENCYU must approve the governing law, venue, privacy notice,
-acceptance evidence, age / authority requirements, and corporate-contributor
-procedure. No public Contribution may be merged while these terms and the
-acceptance process remain unapproved. Whether DENCYU obtains external legal
-advice as part of that approval is a governance decision, not a condition
-created by OSI status.
+11. Governing law and jurisdiction
+
+This Agreement is governed by the laws of Japan.
+
+Except where applicable law provides for exclusive jurisdiction elsewhere,
+the Fukuoka District Court has exclusive jurisdiction as the court of first
+instance over any dispute arising out of or relating to this Agreement.

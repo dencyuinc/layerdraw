@@ -10,8 +10,9 @@
 | root [`NOTICE`](../../NOTICE) | 配布notice | 著作権・third-party noticeの入口 |
 | 本書 | license設計、適用path、判断順序 | repository内の適用範囲を定める設計規範 |
 | [`use-cases.md`](use-cases.md) | 具体的な利用判定例 | 非拘束の解説。条文と競合する場合は`LICENSE`優先 |
-| [`trademarks.md`](trademarks.md) | 商標方針 | copyright licenseとは独立した商標規範案 |
-| [`contributor-license-agreement.md`](contributor-license-agreement.md) | Contributor契約 | 公開Contribution受付前に確定するCLA案 |
+| [`trademarks.md`](trademarks.md) | 商標方針 | copyright licenseとは独立した商標規範 |
+| [`contributor-license-agreement.md`](contributor-license-agreement.md) | Contributor契約 | 外部Contributionへ適用するCLA 1.0 |
+| [`contributor-privacy-notice.md`](contributor-privacy-notice.md) | Contributor privacy notice | CLA同意とContribution記録に関する個人情報の取扱い |
 | [`licenses/Apache-2.0.txt`](licenses/Apache-2.0.txt) | Apache-2.0本文 | matrixで明示したinteroperability surfaceだけの第二ライセンス |
 
 rootには一般的な配布toolと利用者が最初に探す`LICENSE`と`NOTICE`だけを置く。説明・判断例・運用設計・個別policyは通常のrepository文書として本directoryへ集約する。
@@ -29,7 +30,7 @@ LayerDrawはmixed-licenseのsource-available productである。製品中核はO
 
 [use-cases.md](use-cases.md)は具体例と運用指針である。条文と競合する場合はライセンス条文が優先する。
 
-OSI承認の有無、source-availableであること、custom licenseであることだけを理由として、弁護士レビュー、行政承認、利用者の署名が法律上一律に要求されるわけではない。本repositoryでは、独自のHosted制限、Commercial / OEM境界、特許条項、Contributorから得る権利を事業上意図したとおりにするため、初回public release前に株式会社DENCYUが条文と運用を正式承認することを内部release gateとする。外部弁護士のreviewをその承認材料にするかは株式会社DENCYUのgovernance判断であり、OSI要件ではない。承認前のdraftを「法務承認済み」と表示してはならない。
+OSI承認の有無、source-availableであること、custom licenseであることだけを理由として、弁護士レビュー、行政承認、利用者の署名が法律上一律に要求されるわけではない。本repositoryでは、独自のHosted制限、Commercial / OEM境界、特許条項、Contributorから得る権利を事業上意図したとおりにするため、株式会社DENCYUが公開する条文と運用をrepositoryの規範とする。外部弁護士のreviewを承認材料にするかは株式会社DENCYUのgovernance判断であり、OSI要件ではない。
 
 本書とuse caseでいう`Provider` / `Publisher`は、該当productまたはserviceを提供し、そのSchema Definitionを管理するLicense上の`You`または`Your Organization`を指す。`End User`、`Schema Definition`、`General-Purpose Schema Authoring`、`Fixed Model Application`、`Read-Only Viewing Service`、`Customer-Controlled Deployment`、`Restricted Hosted Offering`の規範定義はLayerDraw License 1.0 Section 2に従う。
 
@@ -199,7 +200,7 @@ Viewer、Browser Editor、Server SDK、WASM、native sidecar、MCP adapterの取
 
 ## 8. Trademark
 
-Copyright licenseは商標利用権を与えない。商標利用の規範方針案は[trademarks.md](trademarks.md)だけに置き、本書へ条件を重複定義しない。
+Copyright licenseは商標利用権を与えない。商標利用の規範方針は[trademarks.md](trademarks.md)だけに置き、本書へ条件を重複定義しない。
 
 ## 9. Contributions and relicensing
 
@@ -212,9 +213,9 @@ Copyright licenseは商標利用権を与えない。商標利用の規範方針
 
 このgrantは意図的に広く保ち、Commercial / OEMまたはproprietary termsでの再許諾権を削らない。CLAは本repositoryへmergeするContributionのinbound policyであり、Registryへ独立artifactとして公開するPack / Templateのcontent licenseとは分離する。
 
-CLA同意記録なしのContributionをmergeしてからlicenseを変更しない。必要なのは、適用CLA version、同意者、同意日時、対象Contribution、法人を代理する場合の権限を後から検証できる記録である。手書き署名、電子署名service、GitHub連携click-through等の特定方式を本設計では一律必須にせず、採用方式と証拠要件を公開Contribution受付前に株式会社DENCYUが決定する。
+CLA同意記録なしの外部Contributionをmergeしない。Contributorは各Pull RequestでCLA 1.0への同意checkboxを明示的に選択し、Contributionに必要な権利と勤務先等の承認を表明する。GitHub account、Pull Request、対象commit、同意文、CLA version、記録日時を同意記録とする。法人自身をContributorとする場合は、Section 8に従い権限ある代表者による署名またはDENCYUが指定する電子的同意記録を別途保持する。Dependabotが作成した依存更新Pull Requestは、bot自身が著作権を主張するContributionではないためcheckbox対象外とする。required repository-policy checkは対象Pull Requestの同意欠落を拒否する。
 
-CLA draftは[contributor-license-agreement.md](contributor-license-agreement.md)に置く。
+個人情報の取扱いは[LayerDraw Contributor Privacy Notice](contributor-privacy-notice.md)に従う。CLA本文は[contributor-license-agreement.md](contributor-license-agreement.md)を正本とする。
 
 ## 10. Release and CI enforcement
 

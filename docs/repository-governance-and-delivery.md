@@ -10,7 +10,7 @@
 - public product monorepo の正準構成
 - Go / TypeScript / generated artifact の build orchestration
 - maintainer、reviewer、approver、contributor の権限境界
-- pull request、merge queue、CI の信頼境界
+- pull request、branch protection、CI の信頼境界
 - release set、artifact、配布先、署名、provenance
 - public release と private SaaS deployment の分離
 - source-available product と interoperability surface のライセンス境界
@@ -282,17 +282,20 @@ pull requestは次を必須とする。
 - release note要否
 - license / dependency impact
 
-CLAを採用し、個人と法人のcontributionを追跡できるようにする。CLAは著作権を不必要に譲渡させるためではなく、source-available commercial distribution、relicensing、patent grantの法的権限を明確にするために使う。
+CLAを採用し、個人と法人のcontributionを追跡できるようにする。CLAは著作権を不必要に譲渡させるためではなく、source-available commercial distribution、relicensing、patent grantの法的権限を明確にするために使う。個人ContributorはPull Request templateのCLA 1.0 checkboxへ明示同意し、required `Repository policy` checkが未同意を拒否する。法人自身をContributorとする場合は権限ある代表者の同意記録を別途保持する。
+
+Community participationにはroot `CODE_OF_CONDUCT.md`を適用し、違反報告は`conduct@dencyu.co.jp`へ非公開で送る。質問、bug、security、commercial inquiryの経路はroot `SUPPORT.md`で分離し、行動規範窓口へproduct supportまたは脆弱性報告を混在させない。
 
 ### 6.5 Branch policy
 
 - `main` を常時release可能なtrunkとする
 - direct pushを禁止する
-- merge queueを使用する
 - required checks、required review、conversation resolutionを強制する
 - mergeはsquashを標準とし、Changesetをrelease履歴の正本にする
 - maintenance branchは既存majorのsecurity / critical fixに限る
 - 長期feature branchをrelease integration単位にしない
+
+依存更新はGitHub標準のDependabotへ統一し、Renovateその他の依存更新botを併用しない。repository内の対応対象となるGo Modules、npm / pnpm、GitHub Actions、Docker等のmanifest locationは`.github/dependabot.yml`で明示し、security updateとversion updateを同じbranch policyおよびrequired checksへ通す。更新頻度とgroupingはecosystemごとに定義し、未検証の自動mergeは行わない。
 
 ## 7. CI Architecture
 
