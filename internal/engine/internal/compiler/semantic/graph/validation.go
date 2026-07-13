@@ -28,7 +28,7 @@ func (c *compiler) validateRelations() {
 		to := c.entities[toIndex]
 		valid[i] = true
 		if relation.FromAddress == relation.ToAddress && !typeDefinition.AllowSelf {
-			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", c.sources[relation.Address], c.sources[relation.Address].Range, "relation type forbids self relations", relation.Address, "")
+			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", c.sources[relation.Address], c.endpointSpans[relation.Address].to, "relation type forbids self relations", relation.Address, "")
 			valid[i] = false
 		}
 		if !endpointAllows(typeDefinition.From, from) {

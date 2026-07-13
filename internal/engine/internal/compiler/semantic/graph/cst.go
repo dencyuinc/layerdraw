@@ -22,6 +22,8 @@ type factGroup struct {
 	span        syntax.Span
 	refs        []groupRef
 	header      []headerColumn
+	members     []sourceKey
+	entry       bool
 	typeAddress string
 }
 
@@ -59,6 +61,7 @@ func inspectFactGroups(modules []resolve.ResolvedModule) ([]*factGroup, map[sour
 				module: resolve.ModuleKey{Origin: module.Origin, Path: module.Path},
 				span:   decl.Span,
 				header: readHeader(firstNode(decl, syntax.NodeColumnHeader)),
+				entry:  module.Kind == resolve.ModuleProjectEntry || module.Kind == resolve.ModulePackEntry,
 			}
 			refs := directSymbolRefs(decl)
 			switch group.kind {
@@ -85,13 +88,50 @@ func inspectFactGroups(modules []resolve.ResolvedModule) ([]*factGroup, map[sour
 			groups = append(groups, group)
 			block := firstNode(decl, syntax.NodeItemBlock)
 			for _, item := range nodeChildren(block) {
+				key := sourceKey{module: group.module, span: item.Span}
+				switch {
+				case group.kind == "entities" && item.Kind == syntax.NodeEntityItem,
+					group.kind == "relations" && item.Kind == syntax.NodeRelationItem,
+					(group.kind == "rows" || group.kind == "relation_rows") && item.Kind == syntax.NodeRowItem:
+					group.members = append(group.members, key)
+				}
 				if item.Kind == syntax.NodeRowItem {
-					rows[sourceKey{module: group.module, span: item.Span}] = group
+					rows[key] = group
 				}
 			}
 		}
 	}
 	return groups, rows
+}
+
+func selectEffectiveFactGroups(sources []resolve.DeclarationSource, groups []*factGroup, rows map[sourceKey]*factGroup) ([]*factGroup, map[sourceKey]*factGroup) {
+	selectedSources := map[sourceKey]bool{}
+	for _, source := range sources {
+		key := sourceKey{module: source.Module, span: source.Range}
+		selectedSources[key] = true
+	}
+	selectedGroups := map[*factGroup]bool{}
+	out := make([]*factGroup, 0, len(groups))
+	for _, group := range groups {
+		selected := len(group.members) == 0 && group.entry
+		for _, member := range group.members {
+			if selectedSources[member] {
+				selected = true
+				break
+			}
+		}
+		if selected {
+			selectedGroups[group] = true
+			out = append(out, group)
+		}
+	}
+	selectedRows := map[sourceKey]*factGroup{}
+	for key, group := range rows {
+		if selectedGroups[group] {
+			selectedRows[key] = group
+		}
+	}
+	return out, selectedRows
 }
 
 func readHeader(n *syntax.Node) []headerColumn {

@@ -131,6 +131,7 @@ func (r *resolver) resolve() {
 		return
 	}
 	r.selectProject(entryState)
+	r.validateSelectedFactGroupRefs()
 }
 
 func (r *resolver) resolvePackMode(entry string) {
@@ -174,6 +175,7 @@ func (r *resolver) resolvePackMode(entry string) {
 		return
 	}
 	r.selectPack(entryState)
+	r.validateSelectedFactGroupRefs()
 }
 
 func (r *resolver) hasBlockingIdentityErrors(identityDiagnosticStart int) bool {
@@ -711,7 +713,7 @@ func (r *resolver) finalizeModule(st *moduleState) {
 		}
 	}
 	r.resolveDeclarationRefs(st)
-	r.resolveFactGroupRefs(st)
+	r.bindFactGroupRefs(st)
 	st.exports = r.computeExports(st)
 	st.finalState = evalDone
 }
@@ -889,6 +891,11 @@ func (r *resolver) resolveDeclarationRefs(st *moduleState) {
 }
 
 func (r *resolver) resolveFactGroupRefs(st *moduleState) {
+	r.bindFactGroupRefs(st)
+	r.validateFactGroupRefs(st, false)
+}
+
+func (r *resolver) bindFactGroupRefs(st *moduleState) {
 	for _, group := range st.ast.factGroups {
 		for _, ref := range group.refs {
 			if ref.text == "" {
@@ -896,7 +903,6 @@ func (r *resolver) resolveFactGroupRefs(st *moduleState) {
 			}
 			target, ok := r.resolveText(st, ref.kind, ref.text)
 			if !ok {
-				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "fact group header binding is unknown or ambiguous", st.key, ref.span)
 				continue
 			}
 			if len(group.members) == 0 {
@@ -908,6 +914,43 @@ func (r *resolver) resolveFactGroupRefs(st *moduleState) {
 			}
 		}
 	}
+}
+
+func (r *resolver) validateSelectedFactGroupRefs() {
+	for _, key := range sortedModuleKeys(r.modules) {
+		r.validateFactGroupRefs(r.modules[key], true)
+	}
+}
+
+func (r *resolver) validateFactGroupRefs(st *moduleState, selectedOnly bool) {
+	for _, group := range st.ast.factGroups {
+		if selectedOnly && !r.factGroupSelected(st, group) {
+			continue
+		}
+		for _, ref := range group.refs {
+			if ref.text == "" {
+				continue
+			}
+			if _, ok := r.resolveText(st, ref.kind, ref.text); !ok {
+				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "fact group header binding is unknown or ambiguous", st.key, ref.span)
+			}
+		}
+	}
+}
+
+func (r *resolver) factGroupSelected(st *moduleState, group rawFactGroup) bool {
+	if len(group.members) > 0 {
+		for _, member := range group.members {
+			if r.selected[st.declarationAddress(member)] {
+				return true
+			}
+		}
+		return false
+	}
+	if st.kind == ModuleProjectEntry || st.kind == ModulePackEntry {
+		return true
+	}
+	return false
 }
 
 func (r *resolver) resolveText(st *moduleState, kind SubjectKind, text string) (DeclarationSymbol, bool) {

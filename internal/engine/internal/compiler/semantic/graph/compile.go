@@ -34,21 +34,31 @@ type compiler struct {
 // all succeed.
 func Compile(input Input) Result {
 	result := Result{stageGeneration: input.Definition.Generation()}
-	diagnostics := append([]resolve.Diagnostic{}, input.Definition.Diagnostics...)
+	diagnostics := cloneDiagnostics(input.Definition.Diagnostics)
 	if len(diagnostics) == 0 {
-		diagnostics = append(diagnostics, input.Resolve.Diagnostics...)
+		diagnostics = cloneDiagnostics(input.Resolve.Diagnostics)
+	}
+	coherent := input.Definition.Root.Mode == input.Resolve.Mode &&
+		input.Definition.Root.Address == input.Resolve.RootAddress &&
+		input.Definition.MatchesResolve(input.Resolve)
+	if !coherent {
+		diagnostics = append(diagnostics, resolve.Diagnostic{
+			Code:           "LDL1301",
+			Severity:       "error",
+			MessageKey:     "unknown_or_ambiguous_symbol",
+			Arguments:      map[string]string{},
+			Message:        "definition result does not match resolve result",
+			SubjectAddress: input.Resolve.RootAddress,
+		})
 	}
 	resolve.SortDiagnostics(diagnostics)
-	if input.Resolve.HasErrors || input.Definition.HasErrors {
+	if input.Resolve.HasErrors || input.Definition.HasErrors || !coherent {
 		result.Diagnostics = diagnostics
 		result.HasErrors = true
 		return result
 	}
 
 	c := newCompiler(input)
-	if input.Definition.Root.Mode != input.Resolve.Mode || input.Definition.Root.Address != input.Resolve.RootAddress || !input.Definition.MatchesResolve(input.Resolve) {
-		c.diag("LDL1301", "unknown_or_ambiguous_symbol", resolve.DeclarationSource{}, syntax.Span{}, "definition result does not match resolve result", input.Resolve.RootAddress, "")
-	}
 	c.validateFactGroups()
 	c.compileEntities()
 	c.compileRelations()
@@ -72,6 +82,7 @@ func newCompiler(input Input) *compiler {
 	declarations := append([]resolve.DeclarationSymbol{}, input.Resolve.Declarations...)
 	resolve.SortDeclarations(declarations)
 	factGroups, rowGroups := inspectFactGroups(input.Resolve.Modules)
+	factGroups, rowGroups = selectEffectiveFactGroups(input.Resolve.DeclarationSources, factGroups, rowGroups)
 	c := &compiler{
 		input:         input,
 		declarations:  declarations,
@@ -102,6 +113,40 @@ func newCompiler(input Input) *compiler {
 		c.layers[layer.Address] = layer
 	}
 	return c
+}
+
+func cloneDiagnostics(diagnostics []resolve.Diagnostic) []resolve.Diagnostic {
+	out := make([]resolve.Diagnostic, len(diagnostics))
+	for i, diagnostic := range diagnostics {
+		out[i] = diagnostic
+		out[i].Arguments = cloneStringMap(diagnostic.Arguments)
+		out[i].Range = cloneSourceRange(diagnostic.Range)
+		out[i].Related = make([]resolve.DiagnosticRelated, len(diagnostic.Related))
+		for j, related := range diagnostic.Related {
+			out[i].Related[j] = related
+			out[i].Related[j].Range = cloneSourceRange(related.Range)
+		}
+	}
+	return out
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneSourceRange(source *resolve.SourceRange) *resolve.SourceRange {
+	if source == nil {
+		return nil
+	}
+	out := *source
+	return &out
 }
 
 func (c *compiler) compileEntities() {

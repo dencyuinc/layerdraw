@@ -100,3 +100,49 @@ func TestIssue14AmbiguousRowTypeProducesOneStableGroupDiagnostic(t *testing.T) {
 		t.Fatalf("diagnostic = %+v", diagnostic)
 	}
 }
+
+func TestIssue14UnselectedPrivateFactGroupHeadersDoNotRejectEffectiveDocument(t *testing.T) {
+	got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{
+		"document.ldl": parse(`import { record } from "./schema.ldl"
+project p "P" {}`),
+		"schema.ldl": parse(`entity_type record "Record" {}
+entities missing_type @missing_layer {
+  hidden "Hidden"
+}
+rows missing_type [value] {}
+export { record }`),
+	}}})
+	if got.HasErrors || len(got.Diagnostics) != 0 {
+		t.Fatalf("unselected private group rejected effective document: %+v", got.Diagnostics)
+	}
+	if !hasAddress(got, "ldl:project:p:entity-type:record") || hasAddress(got, "ldl:project:p:entity:hidden") {
+		t.Fatalf("selected closure = %v", addresses(got))
+	}
+}
+
+func TestIssue14FactGroupSelectionScope(t *testing.T) {
+	module := ModuleKey{Origin: Origin{Kind: OriginProject, ProjectID: "p"}, Path: "facts.ldl"}
+	member := topDecl(module, KindEntity, "item", zeroSpan())
+	state := &moduleState{
+		key:            module,
+		kind:           ModuleProject,
+		localTop:       map[SubjectKind]map[string]DeclarationSymbol{KindEntity: {"item": member}},
+		localByAddress: map[string]DeclarationSymbol{member.Address: member},
+	}
+	group := rawFactGroup{members: []rawDecl{{kind: KindEntity, id: "item"}}}
+
+	selected := &resolver{selected: map[string]bool{member.Address: true}}
+	if !selected.factGroupSelected(state, group) {
+		t.Fatal("group with a selected member was not selected")
+	}
+	if (&resolver{selected: map[string]bool{}}).factGroupSelected(state, group) {
+		t.Fatal("group with only unselected members was selected")
+	}
+	if !selected.factGroupSelected(&moduleState{kind: ModuleProjectEntry}, rawFactGroup{}) ||
+		!selected.factGroupSelected(&moduleState{kind: ModulePackEntry}, rawFactGroup{}) {
+		t.Fatal("empty entry group was not selected")
+	}
+	if selected.factGroupSelected(state, rawFactGroup{}) {
+		t.Fatal("empty group outside the entry module was selected")
+	}
+}
