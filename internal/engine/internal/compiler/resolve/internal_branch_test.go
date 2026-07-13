@@ -17,8 +17,8 @@ func TestResolverDefensiveBranches(t *testing.T) {
 	if got := Resolve(Input{Mode: CompilePack, EntryPath: "pack.ldl"}); !hasDiag(got, "LDL1201") {
 		t.Fatalf("pack compile without pack diagnostics = %+v", got.Diagnostics)
 	}
-	if got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{"document.ldl": parse(`entity_type a "A" {}`)}}}); !hasAddress(got, "ldl:project:unknown_project:entity-type:a") {
-		t.Fatalf("unknown project origin result = %+v", got.Declarations)
+	if got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{"document.ldl": parse(`entity_type a "A" {}`)}}}); !hasDiag(got, "LDL1302") || len(got.Declarations) != 0 {
+		t.Fatalf("missing project result = declarations=%+v diagnostics=%+v", got.Declarations, got.Diagnostics)
 	}
 
 	r := &resolver{input: baseInput(), packs: map[string]packInfo{}, aliases: map[string]string{}, modules: map[ModuleKey]*moduleState{}, visiting: map[ModuleKey]bool{}}
@@ -63,7 +63,7 @@ func TestImportExportAndReferenceErrorBranches(t *testing.T) {
 
 	st := &moduleState{
 		key:      ModuleKey{Origin: Origin{Kind: OriginProject, ProjectID: "p"}, Path: "document.ldl"},
-		local:    map[SubjectKind]map[string]DeclarationSymbol{KindEntityType: {"local": {Kind: KindEntityType, ID: "local"}}},
+		localTop: map[SubjectKind]map[string]DeclarationSymbol{KindEntityType: {"local": {Kind: KindEntityType, ID: "local"}}},
 		imported: map[SubjectKind]map[string]DeclarationSymbol{},
 	}
 	target := &moduleState{exports: map[string]DeclarationSymbol{
@@ -145,10 +145,14 @@ func TestAdditionalCoverageBranches(t *testing.T) {
 
 	got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{
 		"document.ldl": parse(`project p "P" {}
-relation_type r "R" dependency {}
-entities missing @missing {
+entity_type service "Service" {}
+layers {
+  app "App" @0
+}
+entities service @app {
   a "A"
 }
+relation_type r "R" dependency {}
 relations r {
   rel: a -> a
 }

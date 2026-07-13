@@ -32,9 +32,11 @@ type rawRef struct {
 }
 
 type rawReservation struct {
-	kind SubjectKind
-	id   string
-	span syntax.Span
+	ownerKind SubjectKind
+	ownerID   string
+	kind      SubjectKind
+	id        string
+	span      syntax.Span
 }
 
 type rawMove struct {
@@ -151,6 +153,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		}
 		ast.declarations = append(ast.declarations, d)
 		extractOwnerChildren(n, d, ast)
+		extractOwnerReservations(n, d, ast)
 	case "relation_type":
 		d := rawDecl{kind: KindRelationType, span: n.Span}
 		if len(toks) > 1 {
@@ -158,6 +161,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		}
 		ast.declarations = append(ast.declarations, d)
 		extractOwnerChildren(n, d, ast)
+		extractOwnerReservations(n, d, ast)
 	case "layers":
 		for _, item := range descendants(n, syntax.NodeLayerItem) {
 			itoks := nodeTokens(item)
@@ -178,6 +182,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 			itoks := nodeTokens(item)
 			if len(itoks) > 0 {
 				ast.declarations = append(ast.declarations, rawDecl{kind: KindEntity, id: itoks[0].Raw, span: item.Span, refs: []rawRef{{kind: KindEntityType, text: ownerType, span: item.Span}, {kind: KindLayer, text: layer, span: item.Span}}})
+				extractRowReservations(item, KindEntity, itoks[0].Raw, ast)
 			}
 		}
 	case "rows":
@@ -199,6 +204,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 					refs = append(refs, rawRef{kind: KindEntity, text: ref, span: item.Span})
 				}
 				ast.declarations = append(ast.declarations, rawDecl{kind: KindRelation, id: itoks[0].Raw, span: item.Span, refs: refs})
+				extractRowReservations(item, KindRelation, itoks[0].Raw, ast)
 			}
 		}
 	case "relation_rows":
@@ -216,6 +222,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		}
 		ast.declarations = append(ast.declarations, d)
 		extractNamedBlockChildren(n, d, "parameters", KindParameter, ast)
+		extractOwnerReservations(n, d, ast)
 	case "view":
 		d := rawDecl{kind: KindView, span: n.Span}
 		if len(toks) > 1 {
@@ -224,6 +231,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		ast.declarations = append(ast.declarations, d)
 		extractNamedBlockChildren(n, d, "columns", KindTableColumn, ast)
 		extractNamedBlockChildren(n, d, "exports", KindExport, ast)
+		extractOwnerReservations(n, d, ast)
 	case "reference":
 		if len(toks) > 1 {
 			ast.declarations = append(ast.declarations, rawDecl{kind: KindReference, id: toks[1].Raw, span: n.Span})
@@ -238,6 +246,34 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 func extractOwnerChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 	extractNamedBlockChildren(n, owner, "columns", KindColumn, ast)
 	extractNamedBlockChildren(n, owner, "constraints", KindConstraint, ast)
+}
+
+func extractOwnerReservations(n *syntax.Node, owner rawDecl, ast *moduleAST) {
+	for _, nb := range descendants(n, syntax.NodeNestedBlock) {
+		toks := directTokens(nb)
+		if len(toks) == 0 || toks[0].Raw != "reserve" {
+			continue
+		}
+		for _, res := range extractReservations(nb) {
+			res.ownerKind = owner.kind
+			res.ownerID = owner.id
+			ast.reservations = append(ast.reservations, res)
+		}
+	}
+}
+
+func extractRowReservations(n *syntax.Node, ownerKind SubjectKind, ownerID string, ast *moduleAST) {
+	for _, stmt := range descendants(n, syntax.NodeStatement) {
+		toks := nodeTokens(stmt)
+		if len(toks) == 0 || toks[0].Raw != "reserve_rows" {
+			continue
+		}
+		for _, tok := range toks[1:] {
+			if tok.Kind == syntax.TokenIdentifier {
+				ast.reservations = append(ast.reservations, rawReservation{ownerKind: ownerKind, ownerID: ownerID, kind: KindRow, id: tok.Raw, span: tok.Span})
+			}
+		}
+	}
 }
 
 func extractNamedBlockChildren(n *syntax.Node, owner rawDecl, block string, kind SubjectKind, ast *moduleAST) {

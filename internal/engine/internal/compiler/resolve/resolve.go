@@ -4,6 +4,7 @@ package resolve
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -11,14 +12,17 @@ import (
 )
 
 type resolver struct {
-	input       Input
-	project     Origin
-	packs       map[string]packInfo
-	aliases     map[string]string
-	modules     map[ModuleKey]*moduleState
-	visiting    map[ModuleKey]bool
-	visited     map[ModuleKey]bool
-	diagnostics []Diagnostic
+	input         Input
+	project       Origin
+	packs         map[string]packInfo
+	aliases       map[string]string
+	modules       map[ModuleKey]*moduleState
+	visiting      map[ModuleKey]bool
+	diagnostics   []Diagnostic
+	syntaxInvalid bool
+	invalidInput  bool
+	symbols       map[string]DeclarationSymbol
+	selected      map[string]bool
 }
 
 type packInfo struct {
@@ -28,14 +32,26 @@ type packInfo struct {
 }
 
 type moduleState struct {
-	key      ModuleKey
-	kind     ModuleKind
-	file     SourceFile
-	ast      moduleAST
-	exports  map[string]DeclarationSymbol
-	local    map[SubjectKind]map[string]DeclarationSymbol
-	imported map[SubjectKind]map[string]DeclarationSymbol
-	bindings []SourceBinding
+	key              ModuleKey
+	kind             ModuleKind
+	file             SourceFile
+	ast              moduleAST
+	exports          map[string]DeclarationSymbol
+	localTop         map[SubjectKind]map[string]DeclarationSymbol
+	localByAddress   map[string]DeclarationSymbol
+	imported         map[SubjectKind]map[string]DeclarationSymbol
+	bindings         []SourceBinding
+	namespaceAliases map[string]syntax.Span
+	namedAliases     map[SubjectKind]map[string]syntax.Span
+	reservations     []Reservation
+	moves            []Move
+	moveClosure      []MoveClosure
+}
+
+type moveEdge struct {
+	move Move
+	from string
+	to   string
 }
 
 func Resolve(input Input) Result {
@@ -45,7 +61,8 @@ func Resolve(input Input) Result {
 		aliases:  map[string]string{},
 		modules:  map[ModuleKey]*moduleState{},
 		visiting: map[ModuleKey]bool{},
-		visited:  map[ModuleKey]bool{},
+		symbols:  map[string]DeclarationSymbol{},
+		selected: map[string]bool{},
 	}
 	r.resolve()
 	return r.result()
@@ -54,95 +71,247 @@ func Resolve(input Input) Result {
 func (r *resolver) resolve() {
 	r.validateProjectFiles()
 	r.validatePacks()
-	entry, ok := normalizePath(r.input.EntryPath)
-	if !ok || !strings.HasSuffix(entry, ".ldl") {
-		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid entry module path", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: r.input.EntryPath}, zeroSpan())
-		return
-	}
 	if r.input.Mode == "" {
 		r.input.Mode = CompileProject
 	}
-	if r.input.Mode == CompilePack {
-		var first *packInfo
-		for _, p := range r.packs {
-			cp := p
-			first = &cp
-			break
-		}
-		if first == nil {
-			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack compile requires one installed pack", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: entry}, zeroSpan())
-			return
-		}
-		r.loadModule(ModuleKey{Origin: first.origin, Path: entry})
+	entry, ok := normalizePath(r.input.EntryPath)
+	if !ok || !strings.HasSuffix(entry, ".ldl") {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid entry module path", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: r.input.EntryPath}, zeroSpan())
+		r.invalidInput = true
 		return
 	}
-	r.project = r.peekProjectOrigin(entry)
-	r.loadModule(ModuleKey{Origin: r.project, Path: entry})
+	if r.input.Mode == CompilePack {
+		r.resolvePackMode(entry)
+		return
+	}
+	origin, ok := r.projectOrigin(entry)
+	if !ok {
+		r.invalidInput = true
+		return
+	}
+	r.project = origin
+	entryKey := ModuleKey{Origin: origin, Path: entry}
+	entryState := r.loadModule(entryKey)
+	if entryState == nil || r.syntaxInvalid || r.invalidInput {
+		return
+	}
+	r.bindAllModules()
+	r.validateAllIdentity()
+	if r.hasErrors() {
+		return
+	}
+	r.selectProject(entryState)
+}
+
+func (r *resolver) resolvePackMode(entry string) {
+	if len(r.packs) != 1 {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack compile requires exactly one installed pack", ModuleKey{Origin: Origin{Kind: OriginPack}, Path: entry}, zeroSpan())
+		r.invalidInput = true
+		return
+	}
+	installs := sortedKeysPack(r.packs)
+	info := r.packs[installs[0]]
+	if entry != info.pack.Entry {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack compile entry must equal pack manifest entry", ModuleKey{Origin: info.origin, Path: entry}, zeroSpan())
+		r.invalidInput = true
+		return
+	}
+	entryState := r.loadModule(ModuleKey{Origin: info.origin, Path: entry})
+	if entryState == nil || r.syntaxInvalid || r.invalidInput {
+		return
+	}
+	r.bindAllModules()
+	r.validateAllIdentity()
+	if r.hasErrors() {
+		return
+	}
+	r.selectPack(entryState)
 }
 
 func (r *resolver) validateProjectFiles() {
-	var paths []string
+	paths := make([]string, 0, len(r.input.Project.Files))
 	for raw := range r.input.Project.Files {
 		norm, ok := normalizePath(raw)
 		if !ok || norm != raw || !strings.HasSuffix(raw, ".ldl") {
 			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid project source path", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: raw}, zeroSpan())
+			r.invalidInput = true
 		}
 		paths = append(paths, raw)
 	}
+	sort.Strings(paths)
 	for _, pair := range caseFoldCollisions(paths) {
 		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "case-folding source path collision", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: pair[1]}, zeroSpan())
+		r.invalidInput = true
 	}
 }
 
 func (r *resolver) validatePacks() {
-	type identity struct {
-		version string
-		digest  string
-		entry   string
-		files   string
+	if len(r.input.Packs.Installs) == 0 {
+		return
 	}
-	seenCanonical := map[string]identity{}
+	if r.input.Packs.Format != "layerdraw-resolved" || r.input.Packs.FormatVersion != 1 || r.input.Packs.Language != 1 {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid resolved dependency envelope", ModuleKey{Origin: Origin{Kind: OriginProject}}, zeroSpan())
+		r.invalidInput = true
+	}
+	seenCanonical := map[string]string{}
 	seenPath := map[string]string{}
-	for install, pack := range r.input.Packs.Installs {
+	installs := sortedKeysResolved(r.input.Packs.Installs)
+	for _, install := range installs {
+		pack := r.input.Packs.Installs[install]
+		origin := Origin{Kind: OriginPack}
 		if !isIdent(install) {
 			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid installed pack alias", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
 			continue
 		}
 		pub, name, ok := parseCanonicalID(pack.CanonicalID)
 		if !ok {
 			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid canonical pack id", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
 			continue
 		}
-		entry, ok := normalizePath(pack.Entry)
-		if !ok || !strings.HasSuffix(entry, ".ldl") {
-			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid pack entry path", ModuleKey{Origin: Origin{Kind: OriginPack}, Path: pack.Entry}, zeroSpan())
-			continue
+		origin = Origin{Kind: OriginPack, Publisher: pub, PackName: name}
+		entry, entryOK := normalizePath(pack.Entry)
+		root, rootOK := normalizePath(pack.Path)
+		if !entryOK || entry != pack.Entry || !strings.HasSuffix(entry, ".ldl") {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid pack entry path", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
 		}
-		root, ok := normalizePath(pack.Path)
-		if !ok {
-			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid installed pack path", ModuleKey{Origin: Origin{Kind: OriginPack}, Path: pack.Entry}, zeroSpan())
-			continue
+		if !rootOK || root != pack.Path {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid installed pack path", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+		}
+		if !isExactSemver(pack.Version) || !isDigest(pack.Digest) {
+			r.diag("LDL1203", "dependency_digest_mismatch", "invalid pack version or digest", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
 		}
 		if prev, exists := seenPath[root]; exists && prev != pack.CanonicalID {
-			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "installed pack path collision", ModuleKey{Origin: Origin{Kind: OriginPack}, Path: entry}, zeroSpan())
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "installed pack path collision", ModuleKey{Origin: origin, Path: entry}, zeroSpan())
+			r.invalidInput = true
 		}
 		seenPath[root] = pack.CanonicalID
-		filesKey := digestFileMap(pack.Files)
-		id := identity{version: pack.Version, digest: pack.Digest, entry: entry, files: filesKey}
-		if prev, exists := seenCanonical[pack.CanonicalID]; exists && prev != id {
-			r.diag("LDL1203", "dependency_digest_mismatch", "canonical pack alias has different resolved content", ModuleKey{Origin: Origin{Kind: OriginPack}, Path: entry}, zeroSpan())
+		identity := pack.Version + "|" + pack.Digest + "|" + pack.Entry + "|" + digestFileMap(pack.Files)
+		if prev, exists := seenCanonical[pack.CanonicalID]; exists && prev != identity {
+			r.diag("LDL1203", "dependency_digest_mismatch", "canonical pack alias has different resolved content", ModuleKey{Origin: origin, Path: entry}, zeroSpan())
+			r.invalidInput = true
 		}
-		seenCanonical[pack.CanonicalID] = id
-		origin := Origin{Kind: OriginPack, Publisher: pub, PackName: name}
-		info := packInfo{install: install, origin: origin, pack: pack}
-		r.packs[install] = info
+		seenCanonical[pack.CanonicalID] = identity
+		r.validateManifest(install, origin, pack)
+		r.validatePackFiles(origin, pack)
+		r.packs[install] = packInfo{install: install, origin: origin, pack: pack}
 		r.aliases[pack.CanonicalID] = install
-		for p := range pack.SourceFiles {
-			norm, ok := normalizePath(p)
-			if !ok || norm != p || !strings.HasSuffix(p, ".ldl") {
-				r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid pack source path", ModuleKey{Origin: origin, Path: p}, zeroSpan())
+	}
+	r.validateDependencyGraph()
+}
+
+func (r *resolver) validateManifest(install string, origin Origin, pack ResolvedPack) {
+	m := pack.Manifest
+	if m.Format != "layerdraw-pack" || m.FormatVersion != 1 || m.Language != 1 || m.ID != pack.CanonicalID || m.Version != pack.Version || m.Entry != pack.Entry || !isIdent(m.Name) {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack manifest metadata does not match resolved metadata", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+		r.invalidInput = true
+	}
+	if m.Name == install {
+		// This is allowed; install aliases are project-local and often match manifest names.
+	}
+	if _, exists := m.Dependencies[m.Name]; exists {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack dependency-local name collides with manifest name", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+		r.invalidInput = true
+	}
+	seenIDs := map[string]string{}
+	for local, dep := range m.Dependencies {
+		if !isIdent(local) || dep.ID == pack.CanonicalID || !isExactSemver(dep.Version) {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid pack manifest dependency", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+		}
+		if _, _, ok := parseCanonicalID(dep.ID); !ok {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid pack manifest dependency id", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+		}
+		if prev, ok := seenIDs[dep.ID]; ok && prev != local {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "duplicate canonical pack dependency", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+		}
+		seenIDs[dep.ID] = local
+		targetInstall, ok := pack.Dependencies[local]
+		if !ok {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "manifest dependency missing from resolved metadata", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+			continue
+		}
+		target, ok := r.input.Packs.Installs[targetInstall]
+		if !ok || target.CanonicalID != dep.ID || target.Version != dep.Version {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "resolved dependency target does not match manifest", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+		}
+	}
+	for local, target := range pack.Dependencies {
+		if !isIdent(local) || target == "" {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid resolved dependency mapping", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+		}
+		if _, ok := m.Dependencies[local]; !ok {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "resolved dependency missing from manifest", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+		}
+		if _, ok := r.input.Packs.Installs[target]; !ok {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "resolved dependency target install is missing", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
+			r.invalidInput = true
+		}
+	}
+}
+
+func (r *resolver) validatePackFiles(origin Origin, pack ResolvedPack) {
+	for p, digest := range pack.Files {
+		norm, ok := normalizePath(p)
+		if !ok || norm != p || !isDigest(digest) {
+			r.diag("LDL1203", "dependency_digest_mismatch", "invalid pack file digest entry", ModuleKey{Origin: origin, Path: p}, zeroSpan())
+			r.invalidInput = true
+		}
+		if strings.HasSuffix(p, ".ldl") {
+			if _, ok := pack.SourceFiles[p]; !ok {
+				r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "resolved LDL file is missing source", ModuleKey{Origin: origin, Path: p}, zeroSpan())
+				r.invalidInput = true
 			}
 		}
+	}
+	for p := range pack.SourceFiles {
+		norm, ok := normalizePath(p)
+		if !ok || norm != p || !strings.HasSuffix(p, ".ldl") {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid pack source path", ModuleKey{Origin: origin, Path: p}, zeroSpan())
+			r.invalidInput = true
+			continue
+		}
+		if _, ok := pack.Files[p]; !ok {
+			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack source missing resolved digest", ModuleKey{Origin: origin, Path: p}, zeroSpan())
+			r.invalidInput = true
+		}
+	}
+}
+
+func (r *resolver) validateDependencyGraph() {
+	state := map[string]int{}
+	var visit func(string)
+	visit = func(install string) {
+		if state[install] == 1 {
+			r.diag("LDL1202", "import_cycle", "resolved dependency cycle", ModuleKey{Origin: Origin{Kind: OriginProject}}, zeroSpan())
+			r.invalidInput = true
+			return
+		}
+		if state[install] == 2 {
+			return
+		}
+		state[install] = 1
+		pack := r.input.Packs.Installs[install]
+		keys := sortedStringMapValues(pack.Dependencies)
+		for _, target := range keys {
+			if _, ok := r.input.Packs.Installs[target]; ok {
+				visit(target)
+			}
+		}
+		state[install] = 2
+	}
+	for _, install := range sortedKeysResolved(r.input.Packs.Installs) {
+		visit(install)
 	}
 }
 
@@ -162,6 +331,26 @@ func digestFileMap(files map[string]string) string {
 	return b.String()
 }
 
+func (r *resolver) projectOrigin(entry string) (Origin, bool) {
+	file, ok := r.input.Project.Files[entry]
+	if !ok {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "project entry module not found", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: entry}, zeroSpan())
+		return Origin{}, false
+	}
+	ast := extractModule(file)
+	var projects []rawDecl
+	for _, decl := range ast.declarations {
+		if decl.kind == KindProject {
+			projects = append(projects, decl)
+		}
+	}
+	if len(projects) != 1 || projects[0].id == "" {
+		r.diag("LDL1302", "duplicate_or_reserved_identity", "project entry must declare exactly one project", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: entry}, zeroSpan())
+		return Origin{}, false
+	}
+	return Origin{Kind: OriginProject, ProjectID: projects[0].id}, true
+}
+
 func (r *resolver) loadModule(key ModuleKey) *moduleState {
 	if r.visiting[key] {
 		r.diag("LDL1202", "import_cycle", "import cycle", key, zeroSpan())
@@ -175,40 +364,63 @@ func (r *resolver) loadModule(key ModuleKey) *moduleState {
 		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "module not found in closed source tree", key, zeroSpan())
 		return nil
 	}
-	r.visiting[key] = true
+	r.mergeSyntaxDiagnostics(key, file)
 	ast := extractModule(file)
-	st := &moduleState{key: key, kind: r.moduleKind(key), file: file, ast: ast, local: map[SubjectKind]map[string]DeclarationSymbol{}, imported: map[SubjectKind]map[string]DeclarationSymbol{}}
+	st := &moduleState{
+		key:              key,
+		kind:             r.moduleKind(key),
+		file:             file,
+		ast:              ast,
+		localTop:         map[SubjectKind]map[string]DeclarationSymbol{},
+		localByAddress:   map[string]DeclarationSymbol{},
+		imported:         map[SubjectKind]map[string]DeclarationSymbol{},
+		namespaceAliases: map[string]syntax.Span{},
+		namedAliases:     map[SubjectKind]map[string]syntax.Span{},
+	}
 	r.modules[key] = st
-	r.collectLocalDeclarations(st)
+	r.visiting[key] = true
+	r.collectDeclarations(st)
 	for i := range st.ast.imports {
 		target, ok := r.resolveSpecifier(key, st.ast.imports[i].Specifier, st.ast.imports[i].Range)
-		if !ok {
-			continue
+		if ok {
+			st.ast.imports[i].Module = target
+			r.loadModule(target)
 		}
-		st.ast.imports[i].Module = target
-		tst := r.loadModule(target)
-		if tst == nil {
-			continue
-		}
-		r.bindImport(st, st.ast.imports[i], tst)
 	}
 	for i := range st.ast.exports {
 		if st.ast.exports[i].Specifier == "" {
 			continue
 		}
 		target, ok := r.resolveSpecifier(key, st.ast.exports[i].Specifier, st.ast.exports[i].Range)
-		if !ok {
-			continue
+		if ok {
+			st.ast.exports[i].Module = target
+			r.loadModule(target)
 		}
-		st.ast.exports[i].Module = target
-		r.loadModule(target)
 	}
-	r.resolveDeclarationRefs(st)
-	st.exports = r.computeExports(st)
-	r.validateMovesAndReservations(st)
 	delete(r.visiting, key)
-	r.visited[key] = true
 	return st
+}
+
+func (r *resolver) mergeSyntaxDiagnostics(key ModuleKey, file SourceFile) {
+	for _, sd := range file.Diagnostics {
+		d := Diagnostic{
+			Code:       sd.Code,
+			Severity:   sd.Severity,
+			MessageKey: sd.MessageKey,
+			Arguments:  map[string]string{},
+			Message:    sd.Message,
+			Range: &SourceRange{
+				Origin:     sourceOrigin(key.Origin),
+				ModulePath: key.Path,
+				StartByte:  sd.Span.Start,
+				EndByte:    sd.Span.End,
+			},
+		}
+		r.diagnostics = append(r.diagnostics, d)
+		if sd.Severity == "error" {
+			r.syntaxInvalid = true
+		}
+	}
 }
 
 func (r *resolver) sourceFile(key ModuleKey) (SourceFile, bool) {
@@ -222,19 +434,6 @@ func (r *resolver) sourceFile(key ModuleKey) (SourceFile, bool) {
 	}
 	file, ok := info.pack.SourceFiles[key.Path]
 	return file, ok
-}
-
-func (r *resolver) peekProjectOrigin(entry string) Origin {
-	file, ok := r.input.Project.Files[entry]
-	if !ok {
-		return Origin{Kind: OriginProject, ProjectID: "unknown_project"}
-	}
-	for _, decl := range extractModule(file).declarations {
-		if decl.kind == KindProject && decl.id != "" {
-			return Origin{Kind: OriginProject, ProjectID: decl.id}
-		}
-	}
-	return Origin{Kind: OriginProject, ProjectID: "unknown_project"}
 }
 
 func (r *resolver) packByOrigin(origin Origin) (packInfo, bool) {
@@ -291,10 +490,9 @@ func (r *resolver) resolveSpecifier(from ModuleKey, spec string, span syntax.Spa
 		return ModuleKey{}, false
 	}
 	var target packInfo
-	switch {
-	case segments[0] == info.pack.Manifest.Name:
+	if segments[0] == info.pack.Manifest.Name {
 		target = info
-	default:
+	} else {
 		install, ok := info.pack.Dependencies[segments[0]]
 		if !ok {
 			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "unknown pack dependency-local name", from, span)
@@ -309,30 +507,41 @@ func (r *resolver) resolveSpecifier(from ModuleKey, spec string, span syntax.Spa
 	return ModuleKey{Origin: target.origin, Path: packModulePath(segments, target.pack.Entry)}, true
 }
 
-func (r *resolver) collectLocalDeclarations(st *moduleState) {
-	if st.key.Origin.Kind == OriginPack {
+func (r *resolver) collectDeclarations(st *moduleState) {
+	if st.key.Origin.Kind == OriginPack && st.kind == ModulePackEntry {
 		root := StableSymbol{Origin: st.key.Origin}
-		r.addLocal(st, DeclarationSymbol{Symbol: root, Address: addressOf(root), Kind: KindPack, Module: st.key})
+		r.addDecl(st, DeclarationSymbol{Symbol: root, Address: addressOf(root), Kind: KindPack, Module: st.key})
 	}
 	for _, d := range st.ast.declarations {
-		if st.key.Origin.Kind == OriginPack && !packKindAllowed(d.kind) {
-			r.diag("LDL1102", "unknown_or_duplicate_schema_member", "declaration kind is not allowed in pack source", st.key, d.span)
-			continue
-		}
 		if d.kind == KindProject {
 			if st.key.Origin.Kind == OriginPack {
 				r.diag("LDL1102", "unknown_or_duplicate_schema_member", "project declaration is not allowed in pack source", st.key, d.span)
 				continue
 			}
-			origin := st.key.Origin
-			sym := StableSymbol{Origin: origin}
-			r.addLocal(st, DeclarationSymbol{Symbol: sym, Address: addressOf(sym), Kind: KindProject, ID: d.id, Module: st.key, Range: d.span})
+			if st.kind != ModuleProjectEntry {
+				r.diag("LDL1302", "duplicate_or_reserved_identity", "project declaration must be in entry module", st.key, d.span)
+				continue
+			}
+			r.addDecl(st, DeclarationSymbol{Symbol: StableSymbol{Origin: st.key.Origin}, Address: addressOf(StableSymbol{Origin: st.key.Origin}), Kind: KindProject, ID: d.id, Module: st.key, Range: d.span})
 			continue
 		}
+		if isChildKind(d.kind) || d.kind == KindRow {
+			continue
+		}
+		if st.key.Origin.Kind == OriginPack && !packKindAllowed(d.kind) {
+			r.diag("LDL1102", "unknown_or_duplicate_schema_member", "declaration kind is not allowed in pack source", st.key, d.span)
+			continue
+		}
+		r.addDecl(st, topDecl(st.key, d.kind, d.id, d.span))
+	}
+	for _, d := range st.ast.declarations {
 		if d.childOf != nil {
-			ownerSym := StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: d.childOf.kind, ID: d.childOf.id}}}
-			sym := StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: d.childOf.kind, ID: d.childOf.id}, {Kind: d.kind, ID: d.id}}}
-			r.addLocal(st, DeclarationSymbol{Symbol: sym, Address: addressOf(sym), Kind: d.kind, ID: d.id, Owner: &ownerSym, Module: st.key, Range: d.span})
+			owner, ok := st.findTop(d.childOf.id, d.childOf.kind)
+			if !ok {
+				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "owner declaration is missing for child", st.key, d.span)
+				continue
+			}
+			r.addDecl(st, childDecl(st.key, owner, d.kind, d.id, d.span))
 			continue
 		}
 		if d.kind == KindRow {
@@ -344,62 +553,106 @@ func (r *resolver) collectLocalDeclarations(st *moduleState) {
 				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "row owner is not declared in the same module", st.key, d.span)
 				continue
 			}
-			sym := StableSymbol{Origin: owner.Symbol.Origin, Path: append(append([]SymbolSegment{}, owner.Symbol.Path...), SymbolSegment{Kind: KindRow, ID: d.id})}
-			r.addLocal(st, DeclarationSymbol{Symbol: sym, Address: addressOf(sym), Kind: KindRow, ID: d.id, Owner: &owner.Symbol, Module: st.key, Range: d.span})
-			continue
+			r.addDecl(st, childDecl(st.key, owner, KindRow, d.id, d.span))
 		}
-		sym := StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: d.kind, ID: d.id}}}
-		r.addLocal(st, DeclarationSymbol{Symbol: sym, Address: addressOf(sym), Kind: d.kind, ID: d.id, Module: st.key, Range: d.span})
 	}
 }
 
-func (r *resolver) addLocal(st *moduleState, decl DeclarationSymbol) {
-	if st.local[decl.Kind] == nil {
-		st.local[decl.Kind] = map[string]DeclarationSymbol{}
+func topDecl(module ModuleKey, kind SubjectKind, id string, span syntax.Span) DeclarationSymbol {
+	sym := StableSymbol{Origin: module.Origin, Path: []SymbolSegment{{Kind: kind, ID: id}}}
+	return DeclarationSymbol{Symbol: sym, Address: addressOf(sym), Kind: kind, ID: id, Module: module, Range: span}
+}
+
+func childDecl(module ModuleKey, owner DeclarationSymbol, kind SubjectKind, id string, span syntax.Span) DeclarationSymbol {
+	sym := StableSymbol{Origin: owner.Symbol.Origin, Path: append(append([]SymbolSegment{}, owner.Symbol.Path...), SymbolSegment{Kind: kind, ID: id})}
+	ownerSym := owner.Symbol
+	return DeclarationSymbol{Symbol: sym, Address: addressOf(sym), Kind: kind, ID: id, Owner: &ownerSym, Module: module, Range: span}
+}
+
+func (r *resolver) addDecl(st *moduleState, decl DeclarationSymbol) {
+	if decl.Address == "" || !validSymbol(decl.Symbol) {
+		r.diag("LDL1302", "duplicate_or_reserved_identity", "invalid stable symbol", st.key, decl.Range)
+		return
 	}
-	if prev, exists := st.local[decl.Kind][decl.ID]; exists {
+	if prev, ok := r.symbols[decl.Address]; ok {
 		r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate declaration identity", st.key, decl.Range)
-		if compareSymbol(prev.Symbol, decl.Symbol) <= 0 {
-			return
+		r.addRelatedConflict(&r.diagnostics[len(r.diagnostics)-1], prev)
+		return
+	}
+	r.symbols[decl.Address] = decl
+	st.localByAddress[decl.Address] = decl
+	if len(decl.Symbol.Path) == 1 || decl.Kind == KindProject || decl.Kind == KindPack {
+		if st.localTop[decl.Kind] == nil {
+			st.localTop[decl.Kind] = map[string]DeclarationSymbol{}
+		}
+		if _, exists := st.localTop[decl.Kind][decl.ID]; !exists {
+			st.localTop[decl.Kind][decl.ID] = decl
 		}
 	}
-	st.local[decl.Kind][decl.ID] = decl
+}
+
+func (r *resolver) addRelatedConflict(d *Diagnostic, prev DeclarationSymbol) {
+	if d == nil {
+		return
+	}
+	d.Related = append(d.Related, DiagnosticRelated{Relation: "previous", Range: &SourceRange{Origin: sourceOrigin(prev.Module.Origin), ModulePath: prev.Module.Path, StartByte: prev.Range.Start, EndByte: prev.Range.End}, SubjectAddress: prev.Address})
 }
 
 func (st *moduleState) findTop(id string, kinds ...SubjectKind) (DeclarationSymbol, bool) {
 	for _, kind := range kinds {
-		if decl, ok := st.local[kind][id]; ok {
+		if decl, ok := st.localTop[kind][id]; ok {
 			return decl, true
 		}
 	}
 	return DeclarationSymbol{}, false
 }
 
-func packKindAllowed(kind SubjectKind) bool {
-	switch kind {
-	case KindEntityType, KindRelationType, KindQuery, KindView, KindReference, KindColumn, KindConstraint, KindParameter, KindTableColumn, KindExport:
-		return true
-	default:
-		return false
+func (r *resolver) bindAllModules() {
+	keys := sortedModuleKeys(r.modules)
+	for _, key := range keys {
+		st := r.modules[key]
+		for i := range st.ast.imports {
+			target := r.modules[st.ast.imports[i].Module]
+			if target != nil {
+				r.bindImport(st, st.ast.imports[i], target)
+			}
+		}
+	}
+	for _, key := range keys {
+		st := r.modules[key]
+		r.resolveDeclarationRefs(st)
+		st.exports = r.computeExports(st)
 	}
 }
 
 func (r *resolver) bindImport(st *moduleState, imp ImportDecl, target *moduleState) {
+	if st.imported == nil {
+		st.imported = map[SubjectKind]map[string]DeclarationSymbol{}
+	}
+	if st.namespaceAliases == nil {
+		st.namespaceAliases = map[string]syntax.Span{}
+	}
+	if st.namedAliases == nil {
+		st.namedAliases = map[SubjectKind]map[string]syntax.Span{}
+	}
 	if target.exports == nil {
 		target.exports = r.computeExports(target)
 	}
 	if imp.Kind == ImportNamespace {
-		for name, decl := range target.exports {
-			for _, kind := range topImportKinds() {
-				if decl.Kind != kind {
-					continue
-				}
-				if st.imported[kind] == nil {
-					st.imported[kind] = map[string]DeclarationSymbol{}
-				}
-				st.imported[kind][imp.Alias+"."+name] = decl
-				st.addBinding(kind, imp.Alias+"."+name, decl)
+		if prev, exists := st.namespaceAliases[imp.Alias]; exists {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate namespace import alias", st.key, imp.Range)
+			r.diagnostics[len(r.diagnostics)-1].Related = append(r.diagnostics[len(r.diagnostics)-1].Related, DiagnosticRelated{Relation: "previous", Range: &SourceRange{Origin: sourceOrigin(st.key.Origin), ModulePath: st.key.Path, StartByte: prev.Start, EndByte: prev.End}})
+			return
+		}
+		st.namespaceAliases[imp.Alias] = imp.Range
+		names := sortedExportNames(target.exports)
+		for _, name := range names {
+			decl := target.exports[name]
+			if !isTopKind(decl.Kind) {
+				continue
 			}
+			text := imp.Alias + "." + name
+			r.addImportedBinding(st, decl.Kind, text, imp.Range, "import:"+imp.Alias, decl)
 		}
 		return
 	}
@@ -409,20 +662,33 @@ func (r *resolver) bindImport(st *moduleState, imp ImportDecl, target *moduleSta
 			r.diag("LDL1301", "unknown_or_ambiguous_symbol", "named import target is not exported", st.key, item.Range)
 			continue
 		}
-		if st.imported[decl.Kind] == nil {
-			st.imported[decl.Kind] = map[string]DeclarationSymbol{}
+		if st.namedAliases[decl.Kind] == nil {
+			st.namedAliases[decl.Kind] = map[string]syntax.Span{}
 		}
-		if _, exists := st.local[decl.Kind][item.Local]; exists {
+		if _, exists := st.localTop[decl.Kind][item.Local]; exists {
 			r.diag("LDL1302", "duplicate_or_reserved_identity", "named import alias collides with local declaration", st.key, item.Range)
 			continue
 		}
-		if _, exists := st.imported[decl.Kind][item.Local]; exists {
+		if prev, exists := st.namedAliases[decl.Kind][item.Local]; exists {
 			r.diag("LDL1302", "duplicate_or_reserved_identity", "named import alias collides with another import", st.key, item.Range)
+			r.diagnostics[len(r.diagnostics)-1].Related = append(r.diagnostics[len(r.diagnostics)-1].Related, DiagnosticRelated{Relation: "previous", Range: &SourceRange{Origin: sourceOrigin(st.key.Origin), ModulePath: st.key.Path, StartByte: prev.Start, EndByte: prev.End}})
 			continue
 		}
-		st.imported[decl.Kind][item.Local] = decl
-		st.addBinding(decl.Kind, item.Local, decl)
+		st.namedAliases[decl.Kind][item.Local] = item.Range
+		r.addImportedBinding(st, decl.Kind, item.Local, item.Range, "import:"+item.Local, decl)
 	}
+}
+
+func (r *resolver) addImportedBinding(st *moduleState, kind SubjectKind, text string, span syntax.Span, via string, target DeclarationSymbol) {
+	if st.imported[kind] == nil {
+		st.imported[kind] = map[string]DeclarationSymbol{}
+	}
+	if prev, exists := st.imported[kind][text]; exists && prev.Address != target.Address {
+		r.diag("LDL1302", "duplicate_or_reserved_identity", "binding alias collides with another target", st.key, span)
+		return
+	}
+	st.imported[kind][text] = target
+	st.addBinding(kind, text, span, via, target)
 }
 
 func topImportKinds() []SubjectKind {
@@ -440,16 +706,15 @@ func (r *resolver) computeExports(st *moduleState) map[string]DeclarationSymbol 
 					r.diag("LDL1301", "unknown_or_ambiguous_symbol", "exported local symbol is unknown or ambiguous", st.key, item.Range)
 					continue
 				}
-				if _, exists := out[item.Public]; exists {
-					r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate public export name", st.key, item.Range)
-					continue
-				}
-				out[item.Public] = decl
+				r.addExport(out, st, item.Public, decl, item.Range)
 			}
 		case ExportFrom:
 			target := r.modules[exp.Module]
 			if target == nil {
 				continue
+			}
+			if target.exports == nil {
+				target.exports = r.computeExports(target)
 			}
 			for _, item := range exp.Items {
 				decl, ok := target.exports[item.Local]
@@ -457,48 +722,43 @@ func (r *resolver) computeExports(st *moduleState) map[string]DeclarationSymbol 
 					r.diag("LDL1301", "unknown_or_ambiguous_symbol", "re-export target is not exported", st.key, item.Range)
 					continue
 				}
-				if _, exists := out[item.Public]; exists {
-					r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate public export name", st.key, item.Range)
-					continue
-				}
-				out[item.Public] = decl
+				r.addExport(out, st, item.Public, decl, item.Range)
 			}
 		case ExportStar:
 			target := r.modules[exp.Module]
 			if target == nil {
 				continue
 			}
-			names := make([]string, 0, len(target.exports))
-			for name := range target.exports {
-				names = append(names, name)
+			if target.exports == nil {
+				target.exports = r.computeExports(target)
 			}
-			sort.Strings(names)
-			for _, name := range names {
-				if _, exists := out[name]; exists {
-					r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate public export name", st.key, exp.Range)
-					continue
-				}
-				out[name] = target.exports[name]
+			for _, name := range sortedExportNames(target.exports) {
+				r.addExport(out, st, name, target.exports[name], exp.Range)
 			}
 		}
 	}
 	return out
 }
 
+func (r *resolver) addExport(out map[string]DeclarationSymbol, st *moduleState, name string, decl DeclarationSymbol, span syntax.Span) {
+	if _, exists := out[name]; exists {
+		r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate public export name", st.key, span)
+		return
+	}
+	out[name] = decl
+}
+
 func (r *resolver) resolveAny(st *moduleState, text string) (DeclarationSymbol, bool) {
 	var found []DeclarationSymbol
 	for _, kind := range topImportKinds() {
-		if decl, ok := st.local[kind][text]; ok {
+		if decl, ok := st.localTop[kind][text]; ok {
 			found = append(found, decl)
 		}
 		if decl, ok := st.imported[kind][text]; ok {
 			found = append(found, decl)
 		}
 	}
-	if len(found) != 1 {
-		return DeclarationSymbol{}, false
-	}
-	return found[0], true
+	return single(found)
 }
 
 func (r *resolver) resolveDeclarationRefs(st *moduleState) {
@@ -512,14 +772,14 @@ func (r *resolver) resolveDeclarationRefs(st *moduleState) {
 				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "source binding is unknown or ambiguous", st.key, ref.span)
 				continue
 			}
-			st.addBinding(ref.kind, ref.text, target)
+			st.addBinding(ref.kind, ref.text, ref.span, "reference", target)
 		}
 	}
 }
 
 func (r *resolver) resolveText(st *moduleState, kind SubjectKind, text string) (DeclarationSymbol, bool) {
 	var found []DeclarationSymbol
-	if decl, ok := st.local[kind][text]; ok {
+	if decl, ok := st.localTop[kind][text]; ok {
 		found = append(found, decl)
 	}
 	if decl, ok := st.imported[kind][text]; ok {
@@ -535,99 +795,300 @@ func single(found []DeclarationSymbol) (DeclarationSymbol, bool) {
 	return found[0], true
 }
 
-func (st *moduleState) addBinding(kind SubjectKind, text string, target DeclarationSymbol) {
-	st.bindings = append(st.bindings, SourceBinding{Module: st.key, ExpectedKind: kind, SourceText: text, Target: target.Symbol, TargetAddress: target.Address})
+func (st *moduleState) addBinding(kind SubjectKind, text string, span syntax.Span, via string, target DeclarationSymbol) {
+	st.bindings = append(st.bindings, SourceBinding{Module: st.key, ExpectedKind: kind, SourceText: text, Range: span, Target: target.Symbol, TargetAddress: target.Address, Via: via})
 }
 
-func (r *resolver) validateMovesAndReservations(st *moduleState) {
-	active := map[SubjectKind]map[string]bool{}
-	for kind, byID := range st.local {
-		active[kind] = map[string]bool{}
-		for id := range byID {
-			active[kind][id] = true
-		}
+func (r *resolver) validateAllIdentity() {
+	for _, key := range sortedModuleKeys(r.modules) {
+		st := r.modules[key]
+		r.validateReservations(st)
+		r.validateMoves(st)
 	}
-	for _, res := range st.ast.reservations {
-		if active[res.kind][res.id] {
-			r.diag("LDL1302", "duplicate_or_reserved_identity", "reservation uses active identity", st.key, res.span)
+}
+
+func (r *resolver) validateReservations(st *moduleState) {
+	seen := map[string]Reservation{}
+	for _, raw := range st.ast.reservations {
+		if raw.ownerID == "" && isChildKind(raw.kind) {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "root reservation uses owner-scoped kind", st.key, raw.span)
+			continue
 		}
+		owner, ok := r.reservationOwner(st, raw)
+		if !ok {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "reservation owner is invalid", st.key, raw.span)
+			continue
+		}
+		addr := reservationAddress(owner, raw.kind, raw.id)
+		if _, active := r.symbols[addr]; active {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "reservation uses active identity", st.key, raw.span)
+			continue
+		}
+		if _, exists := seen[addr]; exists {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate reservation", st.key, raw.span)
+			continue
+		}
+		res := Reservation{Owner: owner, Kind: raw.kind, ID: raw.id, Address: addr, Range: raw.span}
+		seen[addr] = res
+		st.reservations = append(st.reservations, res)
 	}
-	successor := map[SubjectKind]map[string]string{}
-	for _, mv := range st.ast.moves {
-		if successor[mv.kind] == nil {
-			successor[mv.kind] = map[string]string{}
-		}
-		if _, exists := successor[mv.kind][mv.from]; exists {
-			r.diag("LDL1303", "invalid_move_graph", "move source has multiple successors", st.key, mv.span)
-		}
-		successor[mv.kind][mv.from] = mv.to
-		if active[mv.kind][mv.from] {
-			r.diag("LDL1303", "invalid_move_graph", "move source is active", st.key, mv.span)
-		}
+}
+
+func (r *resolver) reservationOwner(st *moduleState, raw rawReservation) (StableSymbol, bool) {
+	if raw.ownerID == "" {
+		return StableSymbol{Origin: st.key.Origin}, true
 	}
-	for kind, graph := range successor {
-		for from := range graph {
+	owner, ok := st.findTop(raw.ownerID, raw.ownerKind)
+	if !ok {
+		return StableSymbol{}, false
+	}
+	return owner.Symbol, true
+}
+
+func reservationAddress(owner StableSymbol, kind SubjectKind, id string) string {
+	sym := StableSymbol{Origin: owner.Origin, Path: append(append([]SymbolSegment{}, owner.Path...), SymbolSegment{Kind: kind, ID: id})}
+	return addressOf(sym)
+}
+
+func (r *resolver) validateMoves(st *moduleState) {
+	byScope := map[string][]moveEdge{}
+	for _, raw := range st.ast.moves {
+		mv, ok := r.materializeMove(st, raw)
+		if !ok {
+			continue
+		}
+		st.moves = append(st.moves, mv)
+		scope := moveScope(mv)
+		byScope[scope] = append(byScope[scope], moveEdge{move: mv, from: mv.FromAddress, to: mv.ToAddress})
+	}
+	for _, scope := range sortedEdgeScopes(byScope) {
+		edges := byScope[scope]
+		successor := map[string]moveEdge{}
+		predecessor := map[string]moveEdge{}
+		for _, e := range edges {
+			if _, exists := successor[e.from]; exists {
+				r.diag("LDL1303", "invalid_move_graph", "move source has multiple successors", st.key, e.move.Range)
+			}
+			if _, exists := predecessor[e.to]; exists {
+				r.diag("LDL1303", "invalid_move_graph", "move target has multiple predecessors", st.key, e.move.Range)
+			}
+			successor[e.from] = e
+			predecessor[e.to] = e
+			if _, active := r.symbols[e.from]; active {
+				r.diag("LDL1303", "invalid_move_graph", "move source is active", st.key, e.move.Range)
+			}
+		}
+		for _, e := range edges {
 			seen := map[string]bool{}
-			cur := from
-			for graph[cur] != "" {
+			cur := e.from
+			for {
+				next, ok := successor[cur]
+				if !ok {
+					if _, active := r.symbols[cur]; !active {
+						r.diag("LDL1303", "invalid_move_graph", "terminal move target is not active", st.key, e.move.Range)
+					}
+					if e.from != cur {
+						st.moveClosure = append(st.moveClosure, MoveClosure{From: e.from, To: cur})
+					}
+					break
+				}
 				if seen[cur] {
-					r.diag("LDL1303", "invalid_move_graph", "move graph cycle", st.key, zeroSpan())
+					r.diag("LDL1303", "invalid_move_graph", "move graph cycle", st.key, e.move.Range)
 					break
 				}
 				seen[cur] = true
-				cur = graph[cur]
-			}
-			if !active[kind][cur] {
-				r.diag("LDL1303", "invalid_move_graph", "terminal move target is not active", st.key, zeroSpan())
+				cur = next.to
 			}
 		}
 	}
+}
+
+func (r *resolver) materializeMove(st *moduleState, raw rawMove) (Move, bool) {
+	if raw.kind == KindProject {
+		if st.key.Origin.Kind != OriginProject || raw.to != st.key.Origin.ProjectID {
+			r.diag("LDL1303", "invalid_move_graph", "project move target must be current project id", st.key, raw.span)
+			return Move{}, false
+		}
+		from := addressOf(StableSymbol{Origin: Origin{Kind: OriginProject, ProjectID: raw.from}})
+		to := addressOf(StableSymbol{Origin: st.key.Origin})
+		return Move{Origin: st.key.Origin, Kind: raw.kind, From: raw.from, To: raw.to, FromAddress: from, ToAddress: to, Range: raw.span}, true
+	}
+	if isChildKind(raw.kind) {
+		owner, ok := r.moveOwner(st, raw)
+		if !ok {
+			r.diag("LDL1303", "invalid_move_graph", "child move owner is invalid", st.key, raw.span)
+			return Move{}, false
+		}
+		from := reservationAddress(owner.Symbol, raw.kind, raw.from)
+		to := reservationAddress(owner.Symbol, raw.kind, raw.to)
+		return Move{Origin: st.key.Origin, Kind: raw.kind, OwnerID: raw.ownerID, Owner: &owner.Symbol, From: raw.from, To: raw.to, FromAddress: from, ToAddress: to, Range: raw.span}, true
+	}
+	from := addressOf(StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: raw.kind, ID: raw.from}}})
+	to := addressOf(StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: raw.kind, ID: raw.to}}})
+	return Move{Origin: st.key.Origin, Kind: raw.kind, OwnerID: raw.ownerID, From: raw.from, To: raw.to, FromAddress: from, ToAddress: to, Range: raw.span}, true
+}
+
+func (r *resolver) moveOwner(st *moduleState, raw rawMove) (DeclarationSymbol, bool) {
+	switch raw.kind {
+	case KindColumn, KindConstraint:
+		if owner, ok := st.findTop(raw.ownerID, KindEntityType); ok {
+			return owner, true
+		}
+		return st.findTop(raw.ownerID, KindRelationType)
+	case KindRow:
+		if owner, ok := st.findTop(raw.ownerID, KindEntity); ok {
+			return owner, true
+		}
+		return st.findTop(raw.ownerID, KindRelation)
+	case KindParameter:
+		return st.findTop(raw.ownerID, KindQuery)
+	case KindTableColumn, KindExport:
+		return st.findTop(raw.ownerID, KindView)
+	default:
+		return DeclarationSymbol{}, false
+	}
+}
+
+func moveScope(m Move) string {
+	owner := ""
+	if m.Owner != nil {
+		owner = addressOf(*m.Owner)
+	}
+	return addressOf(StableSymbol{Origin: m.Origin}) + "|" + owner + "|" + string(m.Kind)
+}
+
+func (r *resolver) selectProject(entry *moduleState) {
+	for _, decl := range entry.localByAddress {
+		if isTopKind(decl.Kind) || decl.Kind == KindProject {
+			r.selectDecl(decl)
+		}
+	}
+	for _, imp := range entry.ast.imports {
+		if imp.Kind == ImportNamed {
+			for _, item := range imp.Items {
+				target, ok := entry.importedBinding(item.Local)
+				if ok {
+					r.selectDecl(target)
+				}
+			}
+			continue
+		}
+		prefix := imp.Alias + "."
+		for _, binding := range entry.bindings {
+			if strings.HasPrefix(binding.SourceText, prefix) {
+				if target, ok := r.symbols[binding.TargetAddress]; ok {
+					r.selectDecl(target)
+				}
+			}
+		}
+	}
+	for _, decl := range entry.exports {
+		r.selectDecl(decl)
+	}
+}
+
+func (r *resolver) selectPack(entry *moduleState) {
+	for _, name := range sortedExportNames(entry.exports) {
+		r.selectDecl(entry.exports[name])
+	}
+}
+
+func (st *moduleState) importedBinding(local string) (DeclarationSymbol, bool) {
+	for _, byText := range st.imported {
+		if decl, ok := byText[local]; ok {
+			return decl, true
+		}
+	}
+	return DeclarationSymbol{}, false
+}
+
+func (r *resolver) selectDecl(decl DeclarationSymbol) {
+	if decl.Address == "" || r.selected[decl.Address] {
+		return
+	}
+	r.selected[decl.Address] = true
+	if decl.Symbol.Origin.Kind == OriginPack {
+		r.selected[addressOf(StableSymbol{Origin: decl.Symbol.Origin})] = true
+	}
+	for _, child := range r.childrenOf(decl.Symbol) {
+		r.selectDecl(child)
+	}
+	st := r.modules[decl.Module]
+	if st != nil {
+		for _, b := range st.bindings {
+			if b.Module == decl.Module && b.TargetAddress != decl.Address {
+				continue
+			}
+		}
+		for _, raw := range st.ast.declarations {
+			if raw.id != decl.ID || raw.kind != decl.Kind {
+				continue
+			}
+			for _, ref := range raw.refs {
+				target, ok := r.resolveText(st, ref.kind, ref.text)
+				if ok {
+					r.selectDecl(target)
+				}
+			}
+		}
+	}
+}
+
+func (r *resolver) childrenOf(owner StableSymbol) []DeclarationSymbol {
+	if len(owner.Path) == 0 {
+		return nil
+	}
+	var out []DeclarationSymbol
+	prefix := addressOf(owner) + ":"
+	for addr, decl := range r.symbols {
+		if strings.HasPrefix(addr, prefix) && len(decl.Symbol.Path) == len(owner.Path)+1 {
+			out = append(out, decl)
+		}
+	}
+	sortDeclarations(out)
+	return out
 }
 
 func (r *resolver) result() Result {
 	var result Result
-	for _, st := range r.modules {
+	for _, key := range sortedModuleKeys(r.modules) {
+		st := r.modules[key]
 		result.Modules = append(result.Modules, ResolvedModule{Origin: st.key.Origin, Path: st.key.Path, Kind: st.kind, File: st.file, Imports: st.ast.imports, Exports: st.ast.exports})
-		for _, byID := range st.local {
-			for _, decl := range byID {
-				result.Declarations = append(result.Declarations, decl)
+		if !r.syntaxInvalid && !r.hasErrors() {
+			for _, decl := range sortedDeclMap(st.localByAddress) {
+				if r.selected[decl.Address] {
+					decl.Selected = true
+					result.Declarations = append(result.Declarations, decl)
+				}
+			}
+			for public, decl := range st.exports {
+				if r.selected[decl.Address] {
+					result.Exports = append(result.Exports, ExportBinding{Module: st.key, PublicName: public, Target: decl.Symbol, TargetAddress: decl.Address})
+				}
+			}
+			result.Bindings = append(result.Bindings, st.bindings...)
+			result.Identity.Reservations = append(result.Identity.Reservations, st.reservations...)
+			result.Identity.Moves = append(result.Identity.Moves, st.moves...)
+			result.Identity.MoveClosure = append(result.Identity.MoveClosure, st.moveClosure...)
+		}
+	}
+	if !r.syntaxInvalid && !r.hasErrors() {
+		usedPacks := map[Origin]bool{}
+		for address := range r.selected {
+			decl, ok := r.symbols[address]
+			if ok && decl.Symbol.Origin.Kind == OriginPack {
+				usedPacks[decl.Symbol.Origin] = true
 			}
 		}
-		for public, decl := range st.exports {
-			result.Exports = append(result.Exports, ExportBinding{Module: st.key, PublicName: public, Target: decl.Symbol, TargetAddress: decl.Address})
-		}
-		result.Bindings = append(result.Bindings, st.bindings...)
-		for _, res := range st.ast.reservations {
-			root := StableSymbol{Origin: st.key.Origin}
-			addr := addressOf(StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: res.kind, ID: res.id}}})
-			result.Identity.Reservations = append(result.Identity.Reservations, Reservation{Owner: root, Kind: res.kind, ID: res.id, Address: addr, Range: res.span})
-		}
-		for _, mv := range st.ast.moves {
-			from := addressOf(StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: mv.kind, ID: mv.from}}})
-			to := addressOf(StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: mv.kind, ID: mv.to}}})
-			result.Identity.Moves = append(result.Identity.Moves, Move{Origin: st.key.Origin, Kind: mv.kind, OwnerID: mv.ownerID, From: mv.from, To: mv.to, FromAddress: from, ToAddress: to, Range: mv.span})
-			result.Identity.MoveClosure = append(result.Identity.MoveClosure, MoveClosure{From: from, To: to})
+		for _, install := range sortedKeysPack(r.packs) {
+			info := r.packs[install]
+			if !usedPacks[info.origin] {
+				continue
+			}
+			addr := addressOf(StableSymbol{Origin: info.origin})
+			result.Dependencies = append(result.Dependencies, ResolvedPackSummary{Address: addr, CanonicalID: info.pack.CanonicalID, Version: info.pack.Version, Digest: info.pack.Digest})
 		}
 	}
-	usedPacks := map[Origin]bool{}
-	for _, mod := range result.Modules {
-		if mod.Origin.Kind == OriginPack {
-			usedPacks[mod.Origin] = true
-		}
-	}
-	for _, info := range r.packs {
-		if !usedPacks[info.origin] {
-			continue
-		}
-		addr := addressOf(StableSymbol{Origin: info.origin})
-		result.Dependencies = append(result.Dependencies, ResolvedPackSummary{Address: addr, CanonicalID: info.pack.CanonicalID, Version: info.pack.Version, Digest: info.pack.Digest})
-	}
-	sort.SliceStable(result.Modules, func(i, j int) bool {
-		if cmp := compareOrigin(result.Modules[i].Origin, result.Modules[j].Origin); cmp != 0 {
-			return cmp < 0
-		}
-		return result.Modules[i].Path < result.Modules[j].Path
-	})
 	sortDeclarations(result.Declarations)
 	sort.SliceStable(result.Exports, func(i, j int) bool {
 		if result.Exports[i].PublicName != result.Exports[j].PublicName {
@@ -642,18 +1103,32 @@ func (r *resolver) result() Result {
 		if result.Bindings[i].ExpectedKind != result.Bindings[j].ExpectedKind {
 			return kindRank(result.Bindings[i].ExpectedKind) < kindRank(result.Bindings[j].ExpectedKind)
 		}
-		return result.Bindings[i].SourceText < result.Bindings[j].SourceText
+		if result.Bindings[i].SourceText != result.Bindings[j].SourceText {
+			return result.Bindings[i].SourceText < result.Bindings[j].SourceText
+		}
+		return result.Bindings[i].TargetAddress < result.Bindings[j].TargetAddress
 	})
 	sort.SliceStable(result.Dependencies, func(i, j int) bool { return result.Dependencies[i].Address < result.Dependencies[j].Address })
+	sort.SliceStable(result.Identity.Reservations, func(i, j int) bool {
+		return result.Identity.Reservations[i].Address < result.Identity.Reservations[j].Address
+	})
+	sort.SliceStable(result.Identity.Moves, func(i, j int) bool {
+		return result.Identity.Moves[i].FromAddress < result.Identity.Moves[j].FromAddress
+	})
+	sort.SliceStable(result.Identity.MoveClosure, func(i, j int) bool { return result.Identity.MoveClosure[i].From < result.Identity.MoveClosure[j].From })
 	sortDiagnostics(r.diagnostics)
 	result.Diagnostics = r.diagnostics
-	for _, d := range result.Diagnostics {
+	result.HasErrors = r.hasErrors()
+	return result
+}
+
+func (r *resolver) hasErrors() bool {
+	for _, d := range r.diagnostics {
 		if d.Severity == "error" {
-			result.HasErrors = true
-			break
+			return true
 		}
 	}
-	return result
+	return false
 }
 
 func compareOrigin(a, b Origin) int {
@@ -670,3 +1145,128 @@ func compareOrigin(a, b Origin) int {
 }
 
 func zeroSpan() syntax.Span { return syntax.Span{} }
+
+func packKindAllowed(kind SubjectKind) bool {
+	switch kind {
+	case KindEntityType, KindRelationType, KindQuery, KindView, KindReference, KindColumn, KindConstraint, KindParameter, KindTableColumn, KindExport:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTopKind(kind SubjectKind) bool {
+	switch kind {
+	case KindEntityType, KindRelationType, KindLayer, KindEntity, KindRelation, KindQuery, KindView, KindReference:
+		return true
+	default:
+		return false
+	}
+}
+
+func isChildKind(kind SubjectKind) bool {
+	switch kind {
+	case KindColumn, KindConstraint, KindRow, KindParameter, KindTableColumn, KindExport:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSymbol(sym StableSymbol) bool {
+	if sym.Origin.Kind == OriginProject && sym.Origin.ProjectID == "" {
+		return false
+	}
+	if sym.Origin.Kind == OriginPack && (sym.Origin.Publisher == "" || sym.Origin.PackName == "") {
+		return false
+	}
+	if len(sym.Path) > 2 {
+		return false
+	}
+	if len(sym.Path) == 0 {
+		return true
+	}
+	if !isTopKind(sym.Path[0].Kind) || !isIdent(sym.Path[0].ID) {
+		return false
+	}
+	if len(sym.Path) == 2 && (!isChildKind(sym.Path[1].Kind) || !isIdent(sym.Path[1].ID)) {
+		return false
+	}
+	return true
+}
+
+var (
+	semverRe = regexp.MustCompile(`^[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?(?:[+][0-9A-Za-z.-]+)?$`)
+	digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
+
+func isExactSemver(s string) bool { return semverRe.MatchString(s) }
+func isDigest(s string) bool      { return digestRe.MatchString(s) }
+
+func sortedKeysResolved(m map[string]ResolvedPack) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedKeysPack(m map[string]packInfo) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedStringMapValues(m map[string]string) []string {
+	values := make([]string, 0, len(m))
+	for _, v := range m {
+		values = append(values, v)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func sortedModuleKeys(m map[ModuleKey]*moduleState) []ModuleKey {
+	keys := make([]ModuleKey, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		if cmp := compareOrigin(keys[i].Origin, keys[j].Origin); cmp != 0 {
+			return cmp < 0
+		}
+		return keys[i].Path < keys[j].Path
+	})
+	return keys
+}
+
+func sortedExportNames(m map[string]DeclarationSymbol) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedDeclMap(m map[string]DeclarationSymbol) []DeclarationSymbol {
+	out := make([]DeclarationSymbol, 0, len(m))
+	for _, decl := range m {
+		out = append(out, decl)
+	}
+	sortDeclarations(out)
+	return out
+}
+
+func sortedEdgeScopes(m map[string][]moveEdge) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}

@@ -106,9 +106,6 @@ export { b as a } from "./b.ldl"
 	if !hasDiag(got, "LDL1302") {
 		t.Fatalf("Diagnostics = %+v, want duplicate export", got.Diagnostics)
 	}
-	if !hasAddress(got, "ldl:project:p:entity-type:a") || !hasAddress(got, "ldl:project:p:entity-type:b") {
-		t.Fatalf("Declarations = %+v", got.Declarations)
-	}
 }
 
 func TestInvalidPackMetadataBranches(t *testing.T) {

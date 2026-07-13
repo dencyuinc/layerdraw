@@ -23,7 +23,10 @@ func SourceFromParse(result syntax.ParseResult) SourceFile {
 }
 
 type Input struct {
-	Mode      CompileMode
+	Mode CompileMode
+	// EntryPath is the project entry in project mode and the pack-relative entry
+	// path in pack mode. Pack mode is accepted only when exactly one pack is
+	// installed, so no map iteration can choose the semantic root.
 	EntryPath string
 	Project   ProjectInput
 	Packs     ResolvedDependencies
@@ -200,6 +203,7 @@ type DeclarationSymbol struct {
 	Module        ModuleKey
 	Range         syntax.Span
 	ExportedNames []string
+	Selected      bool
 }
 
 type SourceBinding struct {
@@ -244,6 +248,7 @@ type Move struct {
 	FromAddress string
 	ToAddress   string
 	Range       syntax.Span
+	Owner       *StableSymbol
 }
 
 type MoveClosure struct {

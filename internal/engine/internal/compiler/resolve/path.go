@@ -6,11 +6,15 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
 func normalizePath(raw string) (string, bool) {
 	if raw == "" || strings.HasPrefix(raw, "/") || strings.Contains(raw, "\\") || strings.ContainsRune(raw, 0) || !utf8.ValidString(raw) {
+		return "", false
+	}
+	if !isCanonicalPathUnicode(raw) {
 		return "", false
 	}
 	decoded, err := url.PathUnescape(raw)
@@ -35,6 +39,15 @@ func normalizePath(raw string) (string, bool) {
 		return "", false
 	}
 	return clean, true
+}
+
+func isCanonicalPathUnicode(raw string) bool {
+	for _, r := range raw {
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Mc, r) {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveRelative(base, spec string) (string, bool) {

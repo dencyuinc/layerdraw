@@ -73,11 +73,11 @@ export * from "network.network"
 	in.Packs.Installs["net"] = ResolvedPack{
 		CanonicalID: "layerdraw/network",
 		Version:     "1.0.0",
-		Digest:      "sha256:2222",
+		Digest:      testDigest("2"),
 		Path:        "pack/net",
 		Entry:       "pack.ldl",
-		Files:       map[string]string{"pack.ldl": "sha256:n", "modules/network.ldl": "sha256:n2"},
-		Manifest:    PackManifest{Name: "net", ID: "layerdraw/network", Version: "1.0.0", Entry: "pack.ldl"},
+		Files:       map[string]string{"pack.ldl": testDigest("c"), "modules/network.ldl": testDigest("d")},
+		Manifest:    PackManifest{Format: "layerdraw-pack", FormatVersion: 1, Language: 1, Name: "net", ID: "layerdraw/network", Version: "1.0.0", Entry: "pack.ldl"},
 		SourceFiles: map[string]SourceFile{
 			"pack.ldl":            parse(`export * from "./modules/network.ldl"`),
 			"modules/network.ldl": parse(`entity_type subnet "Subnet" {}` + "\n" + `export { subnet }`),
@@ -97,10 +97,11 @@ func TestUnusedInstalledPackIsNotDependencySummary(t *testing.T) {
 	in.Packs.Installs["unused"] = ResolvedPack{
 		CanonicalID: "layerdraw/unused",
 		Version:     "1.0.0",
-		Digest:      "sha256:unused",
+		Digest:      testDigest("3"),
 		Path:        "pack/unused",
 		Entry:       "pack.ldl",
-		Manifest:    PackManifest{Name: "unused", ID: "layerdraw/unused", Version: "1.0.0", Entry: "pack.ldl"},
+		Files:       map[string]string{"pack.ldl": testDigest("e")},
+		Manifest:    PackManifest{Format: "layerdraw-pack", FormatVersion: 1, Language: 1, Name: "unused", ID: "layerdraw/unused", Version: "1.0.0", Entry: "pack.ldl"},
 		SourceFiles: map[string]SourceFile{"pack.ldl": parse(`entity_type unused "Unused" {}`)},
 	}
 	got := Resolve(in)
@@ -161,7 +162,7 @@ func TestInvalidInputsProduceStableDiagnostics(t *testing.T) {
 		{
 			name: "pack forbidden kind",
 			in: Input{Mode: CompilePack, EntryPath: "pack.ldl", Packs: ResolvedDependencies{Installs: map[string]ResolvedPack{
-				"bad": {CanonicalID: "layerdraw/bad", Version: "1.0.0", Digest: "sha256:bad", Path: "pack/bad", Entry: "pack.ldl", Manifest: PackManifest{Name: "bad"}, SourceFiles: map[string]SourceFile{"pack.ldl": parse(`layers {` + "\n  app \"App\" @0\n}")}},
+				"bad": {CanonicalID: "layerdraw/bad", Version: "1.0.0", Digest: testDigest("f"), Path: "pack/bad", Entry: "pack.ldl", Files: map[string]string{"pack.ldl": testDigest("9")}, Manifest: PackManifest{Format: "layerdraw-pack", FormatVersion: 1, Language: 1, ID: "layerdraw/bad", Name: "bad", Version: "1.0.0", Entry: "pack.ldl"}, SourceFiles: map[string]SourceFile{"pack.ldl": parse(`layers {` + "\n  app \"App\" @0\n}")}},
 			}}},
 			code: "LDL1102",
 		},
@@ -263,7 +264,7 @@ func FuzzNormalizePath(f *testing.F) {
 		if !ok {
 			return
 		}
-		if got == "" || strings.Contains(got, "\\") || strings.HasPrefix(got, "/") || strings.Contains(got, "//") || strings.Contains(got, "..") {
+		if got == "" || strings.Contains(got, "\\") || strings.HasPrefix(got, "/") || strings.Contains(got, "//") || hasTraversalSegment(got) {
 			t.Fatalf("accepted non-canonical path %q -> %q", raw, got)
 		}
 		got2, ok2 := normalizePath(got)
@@ -271,6 +272,15 @@ func FuzzNormalizePath(f *testing.F) {
 			t.Fatalf("normalizePath not idempotent: %q -> %q,%v", got, got2, ok2)
 		}
 	})
+}
+
+func hasTraversalSegment(path string) bool {
+	for _, part := range strings.Split(path, "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func baseInput() Input {
@@ -310,11 +320,11 @@ export { service }
 			"aws": {
 				CanonicalID: "layerdraw/aws-complete",
 				Version:     "1.0.0",
-				Digest:      "sha256:1111",
+				Digest:      testDigest("1"),
 				Path:        "pack/aws",
 				Entry:       "pack.ldl",
-				Files:       map[string]string{"pack.ldl": "sha256:a", "modules/network.ldl": "sha256:b"},
-				Manifest:    PackManifest{Name: "aws", ID: "layerdraw/aws-complete", Version: "1.0.0", Entry: "pack.ldl"},
+				Files:       map[string]string{"pack.ldl": testDigest("a"), "modules/network.ldl": testDigest("b")},
+				Manifest:    PackManifest{Format: "layerdraw-pack", FormatVersion: 1, Language: 1, Name: "aws", ID: "layerdraw/aws-complete", Version: "1.0.0", Entry: "pack.ldl"},
 				SourceFiles: map[string]SourceFile{
 					"pack.ldl":            parse(`export * from "./modules/network.ldl"`),
 					"modules/network.ldl": parse(`entity_type vpc "VPC" {}` + "\n" + `export { vpc }`),
@@ -322,6 +332,10 @@ export { service }
 			},
 		}},
 	}
+}
+
+func testDigest(seed string) string {
+	return "sha256:" + strings.Repeat(seed[:1], 64)
 }
 
 func parse(src string) SourceFile {
