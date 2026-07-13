@@ -30,6 +30,7 @@ type rawDecl struct {
 	ownerKind SubjectKind
 	childOf   *rawDecl
 	span      syntax.Span
+	node      *syntax.Node
 	refs      []rawRef
 }
 
@@ -257,7 +258,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		}
 		ast.factGroups = append(ast.factGroups, group)
 	case "query":
-		d := rawDecl{kind: KindQuery, span: n.Span}
+		d := rawDecl{kind: KindQuery, span: n.Span, node: n}
 		if len(toks) > 1 {
 			d.id = toks[1].Raw
 		}
