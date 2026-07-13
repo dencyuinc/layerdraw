@@ -265,7 +265,7 @@ relation_type rel "Rel" data_flow {
 		t.Fatalf("Diagnostics = %+v", got.Diagnostics)
 	}
 	rt := got.RelationTypes[0]
-	if !rt.AllowSelf || rt.Cardinality.ToPerFrom.Max != "1" || rt.Cardinality.FromPerTo.Min != 1 {
+	if !rt.AllowSelf || rt.Cardinality.ToPerFrom.Max != CardinalityMaximumOne || rt.Cardinality.FromPerTo.Min != 1 {
 		t.Fatalf("relation policy/cardinality = %+v", rt)
 	}
 	if rt.Traversal.DefaultDirection != "both" || !rt.Traversal.ParticipatesInDependencyMatrix {

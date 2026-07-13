@@ -204,7 +204,7 @@ func TestPureSemanticDecoders(t *testing.T) {
 		{format: "hostname", value: "bad-.example", ok: false},
 		{format: "hostname", value: "a..example", ok: false},
 		{format: "hostname", value: strings.Repeat("a", 254), ok: false},
-		{format: "ipv6", value: "fe80::1%lo0", ok: false},
+		{format: "ipv6", value: "fe80::1%eth0", ok: false},
 		{format: "unknown", value: "value", ok: false},
 	}
 	for _, tt := range formats {
@@ -220,7 +220,7 @@ func TestPureSemanticDecoders(t *testing.T) {
 	if got := heredocText("not-a-heredoc"); got != "not-a-heredoc" {
 		t.Fatalf("short heredoc = %q", got)
 	}
-	if got := canonicalSet([]string{"b", "a", "a"}); !reflect.DeepEqual(got, []string{"a", "b"}) {
+	if got := (&compiler{decls: map[string]resolve.DeclarationSymbol{}}).canonicalAddressSet([]string{"b", "a", "a"}); !reflect.DeepEqual(got, []string{"a", "b"}) {
 		t.Fatalf("canonical set = %+v", got)
 	}
 	if _, ok := resolveAssetLocator("types/entity.ldl", "assets/\nimage.png"); ok {

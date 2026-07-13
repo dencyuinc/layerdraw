@@ -12,17 +12,18 @@ import (
 )
 
 type resolver struct {
-	input         Input
-	project       Origin
-	packs         map[string]packInfo
-	aliases       map[string]string
-	modules       map[ModuleKey]*moduleState
-	visiting      map[ModuleKey]bool
-	diagnostics   []Diagnostic
-	syntaxInvalid bool
-	invalidInput  bool
-	symbols       map[string]DeclarationSymbol
-	selected      map[string]bool
+	input           Input
+	project         Origin
+	rootCanonicalID string
+	packs           map[string]packInfo
+	aliases         map[string]string
+	modules         map[ModuleKey]*moduleState
+	visiting        map[ModuleKey]bool
+	diagnostics     []Diagnostic
+	syntaxInvalid   bool
+	invalidInput    bool
+	symbols         map[string]DeclarationSymbol
+	selected        map[string]bool
 }
 
 type packInfo struct {
@@ -145,6 +146,7 @@ func (r *resolver) resolvePackMode(entry string) {
 	}
 	info := matches[0]
 	r.project = info.origin
+	r.rootCanonicalID = info.pack.CanonicalID
 	if entry != info.pack.Entry {
 		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack compile entry must equal pack manifest entry", ModuleKey{Origin: info.origin, Path: entry}, zeroSpan())
 		r.invalidInput = true
@@ -625,7 +627,12 @@ func (r *resolver) addDecl(st *moduleState, decl DeclarationSymbol) {
 	}
 	if prev, ok := r.symbols[decl.Address]; ok {
 		r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate declaration identity", st.key, decl.Range)
-		r.addRelatedConflict(&r.diagnostics[len(r.diagnostics)-1], prev)
+		diagnostic := &r.diagnostics[len(r.diagnostics)-1]
+		if decl.Owner != nil {
+			diagnostic.SubjectAddress = decl.Address
+			diagnostic.OwnerAddress = addressOf(*decl.Owner)
+		}
+		r.addRelatedConflict(diagnostic, prev)
 		return
 	}
 	r.symbols[decl.Address] = decl
@@ -644,7 +651,11 @@ func (r *resolver) addRelatedConflict(d *Diagnostic, prev DeclarationSymbol) {
 	if d == nil {
 		return
 	}
-	d.Related = append(d.Related, DiagnosticRelated{Relation: "previous", Range: &SourceRange{Origin: sourceOrigin(prev.Module.Origin), ModulePath: prev.Module.Path, StartByte: prev.Range.Start, EndByte: prev.Range.End}, SubjectAddress: prev.Address})
+	related := DiagnosticRelated{Relation: "previous", Range: &SourceRange{Origin: sourceOrigin(prev.Module.Origin), ModulePath: prev.Module.Path, StartByte: prev.Range.Start, EndByte: prev.Range.End}, SubjectAddress: prev.Address}
+	if prev.Owner != nil {
+		related.OwnerAddress = addressOf(*prev.Owner)
+	}
+	d.Related = append(d.Related, related)
 }
 
 func (st *moduleState) findTop(id string, kinds ...SubjectKind) (DeclarationSymbol, bool) {
@@ -1382,7 +1393,7 @@ func (r *resolver) childrenOf(owner StableSymbol) []DeclarationSymbol {
 }
 
 func (r *resolver) result() Result {
-	result := Result{Mode: r.input.Mode}
+	result := Result{Mode: r.input.Mode, RootCanonicalID: r.rootCanonicalID}
 	if r.project.Kind != "" {
 		result.RootAddress = addressOf(StableSymbol{Origin: r.project})
 	}

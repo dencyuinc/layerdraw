@@ -142,3 +142,8 @@ func sortDeclarations(decls []DeclarationSymbol) {
 func SortDeclarations(decls []DeclarationSymbol) {
 	sortDeclarations(decls)
 }
+
+// CompareStableSymbols applies the normative structured StableSymbol order.
+func CompareStableSymbols(a, b StableSymbol) int {
+	return compareSymbol(a, b)
+}

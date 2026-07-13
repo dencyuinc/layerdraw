@@ -73,10 +73,11 @@ type PackDependency struct {
 }
 
 type Result struct {
-	Mode        CompileMode
-	RootAddress string
-	Modules     []ResolvedModule
-	Exports     []ExportBinding
+	Mode            CompileMode
+	RootAddress     string
+	RootCanonicalID string
+	Modules         []ResolvedModule
+	Exports         []ExportBinding
 	// Bindings contains declaration/import/export source bindings reachable from the selected effective document.
 	Bindings []SourceBinding
 	// DeclarationSources contains lossless CST handles for selected effective declarations.

@@ -46,7 +46,7 @@ func Compile(input Input) Result {
 		References:    []Reference{},
 	}
 	if input.Resolve.Mode == resolve.CompilePack && input.Resolve.RootAddress != "" {
-		out.Pack = &Pack{Address: input.Resolve.RootAddress}
+		out.Pack = &Pack{Address: input.Resolve.RootAddress, CanonicalID: input.Resolve.RootCanonicalID}
 	}
 	for _, d := range declarations {
 		src := c.sources[d.Address]
@@ -160,12 +160,12 @@ func (c *compiler) compileRelationType(d resolve.DeclarationSymbol, src resolve.
 		Address:         d.Address,
 		Common:          Common{Annotations: map[string]string{}},
 		AllowSelf:       false,
-		DuplicatePolicy: "deny_same_type_between_same_endpoints",
+		DuplicatePolicy: DuplicateDenySameTypeBetweenSameEndpoints,
 		Cardinality: Cardinality{
-			ToPerFrom: CardinalityBound{Min: 0, Max: "many"},
-			FromPerTo: CardinalityBound{Min: 0, Max: "many"},
+			ToPerFrom: CardinalityBound{Min: 0, Max: CardinalityMaximumMany},
+			FromPerTo: CardinalityBound{Min: 0, Max: CardinalityMaximumMany},
 		},
-		Traversal:   TraversalPolicy{DefaultDirection: "outgoing"},
+		Traversal:   TraversalPolicy{DefaultDirection: TraversalOutgoing},
 		Projections: defaultProjections(),
 		Render:      defaultRender(),
 		Export:      RelationExport{IncludeEndpoints: true, IncludeRelationRows: true},
@@ -174,8 +174,8 @@ func (c *compiler) compileRelationType(d resolve.DeclarationSymbol, src resolve.
 		r.DisplayName = normalizeString(tokenString(toks[2]))
 	}
 	if len(toks) > 3 {
-		r.SemanticKind = toks[3].Raw
-		if !semanticKinds[r.SemanticKind] {
+		r.SemanticKind = RelationSemanticKind(toks[3].Raw)
+		if !semanticKinds[string(r.SemanticKind)] {
 			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", src, toks[3].Span, "invalid semantic kind", d.Address, "")
 		}
 	}
@@ -183,17 +183,19 @@ func (c *compiler) compileRelationType(d resolve.DeclarationSymbol, src resolve.
 	c.rejectUnknown(body, src, relationSpec())
 	r.Common = c.common(body, src, d.Address, "")
 	r.AllowSelf = c.optionalBoolDefault(body, "allow_self", false, src, d.Address, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
-	r.DuplicatePolicy = c.optionalEnumDefault(body, "duplicate_policy", r.DuplicatePolicy, duplicatePolicies, src, d.Address, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
+	r.DuplicatePolicy = DuplicatePolicy(c.optionalEnumDefault(body, "duplicate_policy", string(r.DuplicatePolicy), duplicatePolicies, src, d.Address, "", "LDL1501", "invalid_relation_endpoint_or_self_rule"))
 	r.From = c.endpoint(body.stmt("from"), resolve.KindEntityType, d, src)
 	r.To = c.endpoint(body.stmt("to"), resolve.KindEntityType, d, src)
 	r.Cardinality = c.cardinality(body.block("cardinality"), r.Cardinality, src, d.Address)
 	r.ForwardLabel = c.requiredString(body, "label", src, d.Address, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
 	r.ReverseLabel = c.optionalString(body, "reverse", src, d.Address, "")
 	r.Projections.Context = defaultContext(r.ForwardLabel, r.ReverseLabel)
+	contextRanges := defaultContextRanges(body, src)
 	r.Columns = c.columns(body.block("columns"), d, src)
 	r.UniqueConstraints = c.uniques(body, d, src, r.Columns)
 	r.Traversal = c.traversal(body.block("traversal"), r.Traversal, src, d.Address)
-	c.projections(body.blocksByHead("projection"), &r, src)
+	c.projections(body.blocksByHead("projection"), &r, src, &contextRanges)
+	c.validateContext(r.Projections.Context, contextRanges, src, r.Address)
 	c.render(body.blocksByHead("render"), &r, src)
 	r.Export = c.export(body.block("export"), r.Export, src, d.Address)
 	c.validateReserve(body.block("reserve"), src, d.Address)
@@ -268,9 +270,9 @@ func relationSpec() map[string]fieldSpec {
 
 func defaultProjections() ProjectionSet {
 	return ProjectionSet{
-		Composed: ComposedProjection{Mode: "edge", Priority: 0, Conflict: "diagnostic", KeepEdge: true},
-		Diagram:  DiagramProjection{Mode: "edge", SourceEndpoint: "from", TargetEndpoint: "to", EdgeLabel: "forward_label", IncludeRelationType: false},
-		Table:    TableProjection{RowMode: "automatic", IncludeFrom: true, IncludeTo: true, IncludeRelationType: true},
+		Composed: ComposedProjection{Mode: ComposedEdge, Priority: 0, Conflict: ProjectionConflictDiagnostic, KeepEdge: true},
+		Diagram:  DiagramProjection{Mode: DiagramEdge, SourceEndpoint: ProjectionEndpointFrom, TargetEndpoint: ProjectionEndpointTo, EdgeLabel: ProjectionLabelForwardLabel, IncludeRelationType: false},
+		Table:    TableProjection{RowMode: TableRowsAutomatic, IncludeFrom: true, IncludeTo: true, IncludeRelationType: true},
 		Context:  ContextProjection{FactTemplate: "{from.display_name} {to.display_name}", IncludeAttributeRows: false},
 	}
 }
@@ -286,9 +288,9 @@ func defaultContext(forward string, reverse *string) ContextProjection {
 
 func defaultRender() RenderSet {
 	return RenderSet{
-		Edge:    EdgeRender{Arrow: "forward", Line: "solid", Label: "forward_label"},
-		Nested:  NestedRender{FrameLabel: "parent", FrameStyle: "subtle"},
-		Overlay: OverlayRender{Kind: "badge", Position: "top_right", MaxItems: 4},
-		Badge:   BadgeRender{Label: "count", Position: "top_right"},
+		Edge:    EdgeRender{Arrow: RenderArrowForward, Line: RenderLineSolid, Label: ProjectionLabelForwardLabel},
+		Nested:  NestedRender{FrameLabel: RenderFrameLabelParent, FrameStyle: RenderFrameSubtle},
+		Overlay: OverlayRender{Kind: "badge", Position: RenderPositionTopRight, MaxItems: 4},
+		Badge:   BadgeRender{Label: RenderBadgeLabelCount, Position: RenderPositionTopRight},
 	}
 }

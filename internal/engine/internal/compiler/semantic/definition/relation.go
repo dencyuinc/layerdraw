@@ -81,8 +81,8 @@ func (c *compiler) endpoint(it *item, entityKind resolve.SubjectKind, owner reso
 			}
 		}
 	}
-	ep.EntityTypeAddresses = canonicalSet(ep.EntityTypeAddresses)
-	ep.LayerAddresses = canonicalSet(ep.LayerAddresses)
+	ep.EntityTypeAddresses = c.canonicalAddressSet(ep.EntityTypeAddresses)
+	ep.LayerAddresses = c.canonicalAddressSet(ep.LayerAddresses)
 	return ep
 }
 
@@ -125,10 +125,13 @@ func cardinalityBound(v value) (CardinalityBound, bool) {
 	if err != nil || (min != 0 && min != 1) {
 		return CardinalityBound{}, false
 	}
-	max := toks[2].Raw
-	if max == "*" {
-		max = "many"
-	} else if max != "1" {
+	var max CardinalityMaximum
+	switch toks[2].Raw {
+	case "*":
+		max = CardinalityMaximumMany
+	case "1":
+		max = CardinalityMaximumOne
+	default:
 		return CardinalityBound{}, false
 	}
 	return CardinalityBound{Min: min, Max: max}, true
@@ -140,7 +143,7 @@ func (c *compiler) traversal(it *item, def TraversalPolicy, src resolve.Declarat
 	}
 	spec := specs("default_direction", "participates_in_impact", "participates_in_flow", "participates_in_hierarchy", "participates_in_dependency_matrix")
 	c.rejectUnknown(it.nested, src, spec)
-	def.DefaultDirection = c.optionalEnumDefault(it.nested, "default_direction", def.DefaultDirection, set("outgoing", "incoming", "both"), src, subject, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
+	def.DefaultDirection = TraversalDirection(c.optionalEnumDefault(it.nested, "default_direction", string(def.DefaultDirection), set("outgoing", "incoming", "both"), src, subject, "", "LDL1501", "invalid_relation_endpoint_or_self_rule"))
 	def.ParticipatesInImpact = c.optionalBoolDefault(it.nested, "participates_in_impact", def.ParticipatesInImpact, src, subject, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
 	def.ParticipatesInFlow = c.optionalBoolDefault(it.nested, "participates_in_flow", def.ParticipatesInFlow, src, subject, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
 	def.ParticipatesInHierarchy = c.optionalBoolDefault(it.nested, "participates_in_hierarchy", def.ParticipatesInHierarchy, src, subject, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
@@ -148,7 +151,34 @@ func (c *compiler) traversal(it *item, def TraversalPolicy, src resolve.Declarat
 	return def
 }
 
-func (c *compiler) projections(items []item, r *RelationType, src resolve.DeclarationSource) {
+type contextTemplateRanges struct {
+	fact    syntax.Span
+	reverse syntax.Span
+}
+
+func defaultContextRanges(b body, src resolve.DeclarationSource) contextTemplateRanges {
+	ranges := contextTemplateRanges{fact: src.Range, reverse: src.Range}
+	if label := b.stmt("label"); label != nil {
+		ranges.fact = itemValueSpan(label)
+		ranges.reverse = ranges.fact
+	}
+	if reverse := b.stmt("reverse"); reverse != nil {
+		ranges.reverse = itemValueSpan(reverse)
+	}
+	return ranges
+}
+
+func itemValueSpan(it *item) syntax.Span {
+	if it != nil && len(it.args) > 0 {
+		return it.args[0].span
+	}
+	if it != nil {
+		return it.span
+	}
+	return syntax.Span{}
+}
+
+func (c *compiler) projections(items []item, r *RelationType, src resolve.DeclarationSource, contextRanges *contextTemplateRanges) {
 	for _, it := range items {
 		if len(it.args) != 1 || !it.block {
 			continue
@@ -156,9 +186,9 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 		switch it.args[0].raw {
 		case "composed":
 			c.rejectUnknown(it.nested, src, specs("mode", "parent_endpoint", "child_endpoint", "overlay_endpoint", "target_endpoint", "badge_endpoint", "priority", "conflict", "keep_edge"))
-			r.Projections.Composed.Mode = c.optionalEnumDefault(it.nested, "mode", r.Projections.Composed.Mode, set("edge", "nest", "overlay", "badge", "hide"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			r.Projections.Composed.Mode = ComposedProjectionMode(c.optionalEnumDefault(it.nested, "mode", string(r.Projections.Composed.Mode), set("edge", "nest", "overlay", "badge", "hide"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 			r.Projections.Composed.Priority = c.optionalIntDefault(it.nested, "priority", r.Projections.Composed.Priority, src, r.Address)
-			r.Projections.Composed.Conflict = c.optionalEnumDefault(it.nested, "conflict", r.Projections.Composed.Conflict, set("keep_edge", "prefer_first", "diagnostic"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			r.Projections.Composed.Conflict = ProjectionConflict(c.optionalEnumDefault(it.nested, "conflict", string(r.Projections.Composed.Conflict), set("keep_edge", "prefer_first", "diagnostic"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 			r.Projections.Composed.KeepEdge = c.optionalBoolDefault(it.nested, "keep_edge", r.Projections.Composed.KeepEdge, src, r.Address, "", "LDL1504", "invalid_projection_contract")
 			r.Projections.Composed.ParentEndpoint = c.endpointField(it.nested, "parent_endpoint", src, r.Address)
 			r.Projections.Composed.ChildEndpoint = c.endpointField(it.nested, "child_endpoint", src, r.Address)
@@ -168,15 +198,15 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 			c.validateComposed(r.Projections.Composed, src, it.span, r.Address)
 		case "diagram":
 			c.rejectUnknown(it.nested, src, specs("mode", "source_endpoint", "target_endpoint", "edge_label", "include_relation_type"))
-			r.Projections.Diagram.Mode = c.optionalEnumDefault(it.nested, "mode", r.Projections.Diagram.Mode, set("edge", "hide"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
-			r.Projections.Diagram.SourceEndpoint = c.optionalEnumDefault(it.nested, "source_endpoint", r.Projections.Diagram.SourceEndpoint, endpointSet(), src, r.Address, "", "LDL1504", "invalid_projection_contract")
-			r.Projections.Diagram.TargetEndpoint = c.optionalEnumDefault(it.nested, "target_endpoint", r.Projections.Diagram.TargetEndpoint, endpointSet(), src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			r.Projections.Diagram.Mode = DiagramProjectionMode(c.optionalEnumDefault(it.nested, "mode", string(r.Projections.Diagram.Mode), set("edge", "hide"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			r.Projections.Diagram.SourceEndpoint = ProjectionEndpoint(c.optionalEnumDefault(it.nested, "source_endpoint", string(r.Projections.Diagram.SourceEndpoint), endpointSet(), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			r.Projections.Diagram.TargetEndpoint = ProjectionEndpoint(c.optionalEnumDefault(it.nested, "target_endpoint", string(r.Projections.Diagram.TargetEndpoint), endpointSet(), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 			r.Projections.Diagram.EdgeLabel = c.optionalLabelDefault(it.nested, "edge_label", r.Projections.Diagram.EdgeLabel, r, src)
 			r.Projections.Diagram.IncludeRelationType = c.optionalBoolDefault(it.nested, "include_relation_type", r.Projections.Diagram.IncludeRelationType, src, r.Address, "", "LDL1504", "invalid_projection_contract")
 			c.distinctEndpoints(r.Projections.Diagram.SourceEndpoint, r.Projections.Diagram.TargetEndpoint, src, it.span, r.Address)
 		case "table":
 			c.rejectUnknown(it.nested, src, specs("row_mode", "include_from", "include_to", "include_relation_type"))
-			r.Projections.Table.RowMode = c.optionalEnumDefault(it.nested, "row_mode", r.Projections.Table.RowMode, set("relation", "relation_rows", "automatic"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			r.Projections.Table.RowMode = TableRowMode(c.optionalEnumDefault(it.nested, "row_mode", string(r.Projections.Table.RowMode), set("relation", "relation_rows", "automatic"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 			r.Projections.Table.IncludeFrom = c.optionalBoolDefault(it.nested, "include_from", r.Projections.Table.IncludeFrom, src, r.Address, "", "LDL1504", "invalid_projection_contract")
 			r.Projections.Table.IncludeTo = c.optionalBoolDefault(it.nested, "include_to", r.Projections.Table.IncludeTo, src, r.Address, "", "LDL1504", "invalid_projection_contract")
 			r.Projections.Table.IncludeRelationType = c.optionalBoolDefault(it.nested, "include_relation_type", r.Projections.Table.IncludeRelationType, src, r.Address, "", "LDL1504", "invalid_projection_contract")
@@ -196,9 +226,11 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 			r.Projections.Tree = &t
 		case "flow":
 			c.rejectUnknown(it.nested, src, specs("source_endpoint", "target_endpoint", "connector_kind", "branch_value_column"))
-			f := FlowProjection{SourceEndpoint: c.requiredEndpoint(it.nested, "source_endpoint", src, r.Address), TargetEndpoint: c.requiredEndpoint(it.nested, "target_endpoint", src, r.Address), ConnectorKind: c.optionalEnumDefault(it.nested, "connector_kind", "", set("sequence", "control", "data", "message", "error"), src, r.Address, "", "LDL1504", "invalid_projection_contract")}
-			if f.ConnectorKind == "" {
+			f := FlowProjection{SourceEndpoint: c.requiredEndpoint(it.nested, "source_endpoint", src, r.Address), TargetEndpoint: c.requiredEndpoint(it.nested, "target_endpoint", src, r.Address)}
+			if connector := it.nested.stmt("connector_kind"); connector == nil {
 				c.diag("LDL1504", "invalid_projection_contract", src, it.span, "missing connector kind", r.Address, "")
+			} else {
+				f.ConnectorKind = FlowConnectorKind(c.optionalEnumDefault(it.nested, "connector_kind", "", set("sequence", "control", "data", "message", "error"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 			}
 			if bv := it.nested.stmt("branch_value_column"); bv != nil {
 				if len(bv.args) != 1 || bv.args[0].kind != syntax.TokenIdentifier {
@@ -215,15 +247,13 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 			c.rejectUnknown(it.nested, src, specs("fact_template", "reverse_fact_template", "include_attribute_rows"))
 			if value := c.optionalString(it.nested, "fact_template", src, r.Address, ""); value != nil {
 				r.Projections.Context.FactTemplate = *value
+				contextRanges.fact = itemValueSpan(it.nested.stmt("fact_template"))
 			}
 			if value := c.optionalString(it.nested, "reverse_fact_template", src, r.Address, ""); value != nil {
 				r.Projections.Context.ReverseFactTemplate = value
+				contextRanges.reverse = itemValueSpan(it.nested.stmt("reverse_fact_template"))
 			}
 			r.Projections.Context.IncludeAttributeRows = c.optionalBoolDefault(it.nested, "include_attribute_rows", r.Projections.Context.IncludeAttributeRows, src, r.Address, "", "LDL1504", "invalid_projection_contract")
-			c.contextPlaceholders(r.Projections.Context.FactTemplate, src, it.span, r.Address)
-			if r.Projections.Context.ReverseFactTemplate != nil {
-				c.contextPlaceholders(*r.Projections.Context.ReverseFactTemplate, src, it.span, r.Address)
-			}
 		default:
 			c.diag("LDL1504", "invalid_projection_contract", src, it.span, "unknown projection primitive", r.Address, "")
 		}
@@ -238,24 +268,24 @@ func (c *compiler) render(items []item, r *RelationType, src resolve.Declaration
 		switch it.args[0].raw {
 		case "edge":
 			c.rejectUnknown(it.nested, src, specs("arrow", "line", "color", "label"))
-			r.Render.Edge.Arrow = c.optionalEnumDefault(it.nested, "arrow", r.Render.Edge.Arrow, set("forward", "backward", "both", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
-			r.Render.Edge.Line = c.optionalEnumDefault(it.nested, "line", r.Render.Edge.Line, set("solid", "dashed", "dotted"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			r.Render.Edge.Arrow = RenderArrow(c.optionalEnumDefault(it.nested, "arrow", string(r.Render.Edge.Arrow), set("forward", "backward", "both", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			r.Render.Edge.Line = RenderLine(c.optionalEnumDefault(it.nested, "line", string(r.Render.Edge.Line), set("solid", "dashed", "dotted"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 			r.Render.Edge.Label = c.optionalLabelDefault(it.nested, "label", r.Render.Edge.Label, r, src)
 			r.Render.Edge.Color = c.optionalColor(it.nested, "color", src, r.Address, "")
 		case "nested":
 			c.rejectUnknown(it.nested, src, specs("frame_label", "frame_style"))
-			r.Render.Nested.FrameLabel = c.optionalEnumDefault(it.nested, "frame_label", r.Render.Nested.FrameLabel, set("parent", "type", "display_name", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
-			r.Render.Nested.FrameStyle = c.optionalEnumDefault(it.nested, "frame_style", r.Render.Nested.FrameStyle, set("subtle", "strong", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			r.Render.Nested.FrameLabel = RenderFrameLabel(c.optionalEnumDefault(it.nested, "frame_label", string(r.Render.Nested.FrameLabel), set("parent", "type", "display_name", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			r.Render.Nested.FrameStyle = RenderFrameStyle(c.optionalEnumDefault(it.nested, "frame_style", string(r.Render.Nested.FrameStyle), set("subtle", "strong", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 		case "overlay":
 			c.rejectUnknown(it.nested, src, specs("kind", "position", "max_items"))
 			r.Render.Overlay.Kind = c.optionalAtomDefault(it.nested, "kind", r.Render.Overlay.Kind, src, r.Address)
-			r.Render.Overlay.Position = c.optionalEnumDefault(it.nested, "position", r.Render.Overlay.Position, set("top_left", "top_right", "bottom_left", "bottom_right", "center"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			r.Render.Overlay.Position = RenderPosition(c.optionalEnumDefault(it.nested, "position", string(r.Render.Overlay.Position), set("top_left", "top_right", "bottom_left", "bottom_right", "center"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 			r.Render.Overlay.MaxItems = c.optionalPositiveIntDefault(it.nested, "max_items", r.Render.Overlay.MaxItems, src, r.Address)
 		case "badge":
 			c.rejectUnknown(it.nested, src, specs("icon", "label", "position"))
 			r.Render.Badge.Icon = c.optionalString(it.nested, "icon", src, r.Address, "")
-			r.Render.Badge.Label = c.optionalEnumDefault(it.nested, "label", r.Render.Badge.Label, set("type", "display_name", "count", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
-			r.Render.Badge.Position = c.optionalEnumDefault(it.nested, "position", r.Render.Badge.Position, set("top_left", "top_right", "bottom_left", "bottom_right"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			r.Render.Badge.Label = RenderBadgeLabel(c.optionalEnumDefault(it.nested, "label", string(r.Render.Badge.Label), set("type", "display_name", "count", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			r.Render.Badge.Position = RenderPosition(c.optionalEnumDefault(it.nested, "position", string(r.Render.Badge.Position), set("top_left", "top_right", "bottom_left", "bottom_right"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 		default:
 			c.diag("LDL1504", "invalid_projection_contract", src, it.span, "unknown render primitive", r.Address, "")
 		}
@@ -315,7 +345,7 @@ func (c *compiler) optionalAtomDefault(b body, name, def string, src resolve.Dec
 	return it.args[0].string()
 }
 
-func (c *compiler) endpointField(b body, name string, src resolve.DeclarationSource, subject string) *string {
+func (c *compiler) endpointField(b body, name string, src resolve.DeclarationSource, subject string) *ProjectionEndpoint {
 	it := b.stmt(name)
 	if it == nil {
 		return nil
@@ -324,15 +354,16 @@ func (c *compiler) endpointField(b body, name string, src resolve.DeclarationSou
 	if ep == "" {
 		return nil
 	}
-	return &ep
+	typed := ProjectionEndpoint(ep)
+	return &typed
 }
 
-func (c *compiler) requiredEndpoint(b body, name string, src resolve.DeclarationSource, subject string) string {
-	ep := c.optionalEnumDefault(b, name, "", endpointSet(), src, subject, "", "LDL1504", "invalid_projection_contract")
-	if ep == "" {
+func (c *compiler) requiredEndpoint(b body, name string, src resolve.DeclarationSource, subject string) ProjectionEndpoint {
+	if b.stmt(name) == nil {
 		c.diag("LDL1504", "invalid_projection_contract", src, src.Range, "missing endpoint", subject, "")
+		return ""
 	}
-	return ep
+	return ProjectionEndpoint(c.optionalEnumDefault(b, name, "", endpointSet(), src, subject, "", "LDL1504", "invalid_projection_contract"))
 }
 
 func (c *compiler) requiredBool(b body, name string, src resolve.DeclarationSource, subject string) bool {
@@ -344,9 +375,9 @@ func (c *compiler) requiredBool(b body, name string, src resolve.DeclarationSour
 	return c.optionalBoolDefault(b, name, false, src, subject, "", "LDL1504", "invalid_projection_contract")
 }
 
-func (c *compiler) optionalLabelDefault(b body, name, def string, r *RelationType, src resolve.DeclarationSource) string {
-	label := c.optionalEnumDefault(b, name, def, set("type", "display_name", "forward_label", "reverse_label", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
-	if label == "reverse_label" && r.ReverseLabel == nil {
+func (c *compiler) optionalLabelDefault(b body, name string, def ProjectionLabel, r *RelationType, src resolve.DeclarationSource) ProjectionLabel {
+	label := ProjectionLabel(c.optionalEnumDefault(b, name, string(def), set("type", "display_name", "forward_label", "reverse_label", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+	if label == ProjectionLabelReverseLabel && r.ReverseLabel == nil {
 		span := src.Range
 		if it := b.stmt(name); it != nil {
 			span = it.span
@@ -386,7 +417,7 @@ func (c *compiler) validateComposed(p ComposedProjection, src resolve.Declaratio
 	}
 }
 
-func (c *compiler) distinctEndpoints(a, b string, src resolve.DeclarationSource, span syntax.Span, subject string) {
+func (c *compiler) distinctEndpoints(a, b ProjectionEndpoint, src resolve.DeclarationSource, span syntax.Span, subject string) {
 	if a != "" && b != "" && a == b {
 		c.diag("LDL1504", "invalid_projection_contract", src, span, "endpoints must be distinct", subject, "")
 	}
@@ -398,11 +429,19 @@ func (c *compiler) contextPlaceholders(template string, src resolve.DeclarationS
 	for _, m := range pattern.FindAllString(template, -1) {
 		if !allowed[m] {
 			c.diag("LDL1504", "invalid_projection_contract", src, span, "unknown context placeholder", subject, "")
+			return
 		}
 	}
 	remaining := pattern.ReplaceAllString(template, "")
 	if strings.ContainsAny(remaining, "{}") {
 		c.diag("LDL1504", "invalid_projection_contract", src, span, "malformed context placeholder", subject, "")
+	}
+}
+
+func (c *compiler) validateContext(context ContextProjection, ranges contextTemplateRanges, src resolve.DeclarationSource, subject string) {
+	c.contextPlaceholders(context.FactTemplate, src, ranges.fact, subject)
+	if context.ReverseFactTemplate != nil {
+		c.contextPlaceholders(*context.ReverseFactTemplate, src, ranges.reverse, subject)
 	}
 }
 
@@ -419,8 +458,15 @@ func endpointSet() map[string]bool {
 	return set("from", "to")
 }
 
-func canonicalSet(vals []string) []string {
-	sort.Strings(vals)
+func (c *compiler) canonicalAddressSet(vals []string) []string {
+	sort.SliceStable(vals, func(i, j int) bool {
+		a, aOK := c.decls[vals[i]]
+		b, bOK := c.decls[vals[j]]
+		if aOK && bOK {
+			return resolve.CompareStableSymbols(a.Symbol, b.Symbol) < 0
+		}
+		return vals[i] < vals[j]
+	})
 	out := vals[:0]
 	var prev string
 	for _, v := range vals {

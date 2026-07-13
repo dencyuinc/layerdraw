@@ -123,6 +123,7 @@ func TestStringFormatNormalizationTable(t *testing.T) {
 		{format: "hostname", input: "éxample.com"},
 		{format: "ipv4", input: "192.168.001.1"},
 		{format: "ipv6", input: "192.0.2.1"},
+		{format: "ipv6", input: "fe80::1%eth0"},
 		{format: "cidr", input: "192.0.2.1/24"},
 	}
 	for _, tt := range invalid {

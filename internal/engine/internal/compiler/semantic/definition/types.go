@@ -29,7 +29,8 @@ type Root struct {
 }
 
 type Pack struct {
-	Address string
+	Address     string
+	CanonicalID string
 }
 
 type Common struct {
@@ -77,9 +78,31 @@ type AuthoredAsset struct {
 }
 
 type Representation struct {
-	Kind  string
-	Shape string
+	Kind  RepresentationKind
+	Shape RepresentationShape
 }
+
+type RepresentationKind string
+
+const (
+	RepresentationContainer RepresentationKind = "container"
+	RepresentationTable     RepresentationKind = "table"
+	RepresentationShapeKind RepresentationKind = "shape"
+)
+
+type RepresentationShape string
+
+const (
+	ShapeRect     RepresentationShape = "rect"
+	ShapeRounded  RepresentationShape = "rounded"
+	ShapeEllipse  RepresentationShape = "ellipse"
+	ShapeDiamond  RepresentationShape = "diamond"
+	ShapeCylinder RepresentationShape = "cylinder"
+	ShapeCloud    RepresentationShape = "cloud"
+	ShapeHexagon  RepresentationShape = "hexagon"
+	ShapePerson   RepresentationShape = "person"
+	ShapeDevice   RepresentationShape = "device"
+)
 
 type Column struct {
 	ID                 string
@@ -90,12 +113,23 @@ type Column struct {
 	ReservedEnumValues []string
 	Required           bool
 	Default            *Scalar
-	Format             *string
+	Format             *StringFormat
 	Min                *float64
 	Max                *float64
 	MinLength          *int64
 	MaxLength          *int64
 }
+
+type StringFormat string
+
+const (
+	StringFormatURI      StringFormat = "uri"
+	StringFormatEmail    StringFormat = "email"
+	StringFormatHostname StringFormat = "hostname"
+	StringFormatIPv4     StringFormat = "ipv4"
+	StringFormatIPv6     StringFormat = "ipv6"
+	StringFormatCIDR     StringFormat = "cidr"
+)
 
 type ScalarType string
 
@@ -134,9 +168,9 @@ type RelationType struct {
 	ID                    string
 	Address               string
 	DisplayName           string
-	SemanticKind          string
+	SemanticKind          RelationSemanticKind
 	AllowSelf             bool
-	DuplicatePolicy       string
+	DuplicatePolicy       DuplicatePolicy
 	From                  EndpointRule
 	To                    EndpointRule
 	Cardinality           Cardinality
@@ -152,6 +186,31 @@ type RelationType struct {
 	ReservedConstraintIDs []string
 }
 
+type RelationSemanticKind string
+
+const (
+	RelationDependency  RelationSemanticKind = "dependency"
+	RelationDataFlow    RelationSemanticKind = "data_flow"
+	RelationControlFlow RelationSemanticKind = "control_flow"
+	RelationDeployment  RelationSemanticKind = "deployment"
+	RelationNetwork     RelationSemanticKind = "network"
+	RelationSecurity    RelationSemanticKind = "security"
+	RelationContainment RelationSemanticKind = "containment"
+	RelationOwnership   RelationSemanticKind = "ownership"
+	RelationSequence    RelationSemanticKind = "sequence"
+	RelationImpact      RelationSemanticKind = "impact"
+	RelationReference   RelationSemanticKind = "reference"
+	RelationGovernance  RelationSemanticKind = "governance"
+)
+
+type DuplicatePolicy string
+
+const (
+	DuplicateAllow                            DuplicatePolicy = "allow"
+	DuplicateDenySameTypeBetweenSameEndpoints DuplicatePolicy = "deny_same_type_between_same_endpoints"
+	DuplicateDenyAnyBetweenSameEndpoints      DuplicatePolicy = "deny_any_between_same_endpoints"
+)
+
 type EndpointRule struct {
 	Role                string
 	EntityTypeAddresses []string
@@ -160,8 +219,15 @@ type EndpointRule struct {
 
 type CardinalityBound struct {
 	Min int
-	Max string
+	Max CardinalityMaximum
 }
+
+type CardinalityMaximum uint8
+
+const (
+	CardinalityMaximumOne CardinalityMaximum = iota + 1
+	CardinalityMaximumMany
+)
 
 type Cardinality struct {
 	ToPerFrom CardinalityBound
@@ -169,12 +235,20 @@ type Cardinality struct {
 }
 
 type TraversalPolicy struct {
-	DefaultDirection               string
+	DefaultDirection               TraversalDirection
 	ParticipatesInImpact           bool
 	ParticipatesInFlow             bool
 	ParticipatesInHierarchy        bool
 	ParticipatesInDependencyMatrix bool
 }
+
+type TraversalDirection string
+
+const (
+	TraversalOutgoing TraversalDirection = "outgoing"
+	TraversalIncoming TraversalDirection = "incoming"
+	TraversalBoth     TraversalDirection = "both"
+)
 
 type ProjectionSet struct {
 	Composed ComposedProjection
@@ -187,49 +261,109 @@ type ProjectionSet struct {
 }
 
 type ComposedProjection struct {
-	Mode            string
+	Mode            ComposedProjectionMode
 	Priority        int64
-	Conflict        string
+	Conflict        ProjectionConflict
 	KeepEdge        bool
-	ParentEndpoint  *string
-	ChildEndpoint   *string
-	OverlayEndpoint *string
-	TargetEndpoint  *string
-	BadgeEndpoint   *string
+	ParentEndpoint  *ProjectionEndpoint
+	ChildEndpoint   *ProjectionEndpoint
+	OverlayEndpoint *ProjectionEndpoint
+	TargetEndpoint  *ProjectionEndpoint
+	BadgeEndpoint   *ProjectionEndpoint
 }
 
+type ComposedProjectionMode string
+
+const (
+	ComposedEdge    ComposedProjectionMode = "edge"
+	ComposedNest    ComposedProjectionMode = "nest"
+	ComposedOverlay ComposedProjectionMode = "overlay"
+	ComposedBadge   ComposedProjectionMode = "badge"
+	ComposedHide    ComposedProjectionMode = "hide"
+)
+
+type ProjectionConflict string
+
+const (
+	ProjectionConflictKeepEdge    ProjectionConflict = "keep_edge"
+	ProjectionConflictPreferFirst ProjectionConflict = "prefer_first"
+	ProjectionConflictDiagnostic  ProjectionConflict = "diagnostic"
+)
+
+type ProjectionEndpoint string
+
+const (
+	ProjectionEndpointFrom ProjectionEndpoint = "from"
+	ProjectionEndpointTo   ProjectionEndpoint = "to"
+)
+
 type DiagramProjection struct {
-	Mode                string
-	SourceEndpoint      string
-	TargetEndpoint      string
-	EdgeLabel           string
+	Mode                DiagramProjectionMode
+	SourceEndpoint      ProjectionEndpoint
+	TargetEndpoint      ProjectionEndpoint
+	EdgeLabel           ProjectionLabel
 	IncludeRelationType bool
 }
 
+type DiagramProjectionMode string
+
+const (
+	DiagramEdge DiagramProjectionMode = "edge"
+	DiagramHide DiagramProjectionMode = "hide"
+)
+
+type ProjectionLabel string
+
+const (
+	ProjectionLabelType         ProjectionLabel = "type"
+	ProjectionLabelDisplayName  ProjectionLabel = "display_name"
+	ProjectionLabelForwardLabel ProjectionLabel = "forward_label"
+	ProjectionLabelReverseLabel ProjectionLabel = "reverse_label"
+	ProjectionLabelNone         ProjectionLabel = "none"
+)
+
 type TableProjection struct {
-	RowMode             string
+	RowMode             TableRowMode
 	IncludeFrom         bool
 	IncludeTo           bool
 	IncludeRelationType bool
 }
 
+type TableRowMode string
+
+const (
+	TableRowsRelation     TableRowMode = "relation"
+	TableRowsRelationRows TableRowMode = "relation_rows"
+	TableRowsAutomatic    TableRowMode = "automatic"
+)
+
 type MatrixProjection struct {
-	RowEndpoint         string
-	ColumnEndpoint      string
+	RowEndpoint         ProjectionEndpoint
+	ColumnEndpoint      ProjectionEndpoint
 	IncludeRelationRows bool
 }
 
 type TreeProjection struct {
-	ParentEndpoint string
-	ChildEndpoint  string
+	ParentEndpoint ProjectionEndpoint
+	ChildEndpoint  ProjectionEndpoint
 }
 
 type FlowProjection struct {
-	SourceEndpoint           string
-	TargetEndpoint           string
-	ConnectorKind            string
+	SourceEndpoint           ProjectionEndpoint
+	TargetEndpoint           ProjectionEndpoint
+	ConnectorKind            FlowConnectorKind
 	BranchValueColumnAddress *string
 }
+
+type FlowConnectorKind string
+
+const (
+	FlowConnectorSequence FlowConnectorKind = "sequence"
+	FlowConnectorControl  FlowConnectorKind = "control"
+	FlowConnectorData     FlowConnectorKind = "data"
+	FlowConnectorMessage  FlowConnectorKind = "message"
+	FlowConnectorError    FlowConnectorKind = "error"
+)
 
 type ContextProjection struct {
 	FactTemplate         string
@@ -245,28 +379,81 @@ type RenderSet struct {
 }
 
 type EdgeRender struct {
-	Arrow string
-	Line  string
+	Arrow RenderArrow
+	Line  RenderLine
 	Color *string
-	Label string
+	Label ProjectionLabel
 }
 
+type RenderArrow string
+
+const (
+	RenderArrowForward  RenderArrow = "forward"
+	RenderArrowBackward RenderArrow = "backward"
+	RenderArrowBoth     RenderArrow = "both"
+	RenderArrowNone     RenderArrow = "none"
+)
+
+type RenderLine string
+
+const (
+	RenderLineSolid  RenderLine = "solid"
+	RenderLineDashed RenderLine = "dashed"
+	RenderLineDotted RenderLine = "dotted"
+)
+
 type NestedRender struct {
-	FrameLabel string
-	FrameStyle string
+	FrameLabel RenderFrameLabel
+	FrameStyle RenderFrameStyle
 }
+
+type RenderFrameLabel string
+
+const (
+	RenderFrameLabelParent      RenderFrameLabel = "parent"
+	RenderFrameLabelType        RenderFrameLabel = "type"
+	RenderFrameLabelDisplayName RenderFrameLabel = "display_name"
+	RenderFrameLabelNone        RenderFrameLabel = "none"
+)
+
+type RenderFrameStyle string
+
+const (
+	RenderFrameSubtle RenderFrameStyle = "subtle"
+	RenderFrameStrong RenderFrameStyle = "strong"
+	RenderFrameNone   RenderFrameStyle = "none"
+)
 
 type OverlayRender struct {
 	Kind     string
-	Position string
+	Position RenderPosition
 	MaxItems int64
 }
 
 type BadgeRender struct {
 	Icon     *string
-	Label    string
-	Position string
+	Label    RenderBadgeLabel
+	Position RenderPosition
 }
+
+type RenderPosition string
+
+const (
+	RenderPositionTopLeft     RenderPosition = "top_left"
+	RenderPositionTopRight    RenderPosition = "top_right"
+	RenderPositionBottomLeft  RenderPosition = "bottom_left"
+	RenderPositionBottomRight RenderPosition = "bottom_right"
+	RenderPositionCenter      RenderPosition = "center"
+)
+
+type RenderBadgeLabel string
+
+const (
+	RenderBadgeLabelType        RenderBadgeLabel = "type"
+	RenderBadgeLabelDisplayName RenderBadgeLabel = "display_name"
+	RenderBadgeLabelCount       RenderBadgeLabel = "count"
+	RenderBadgeLabelNone        RenderBadgeLabel = "none"
+)
 
 type RelationExport struct {
 	IncludeEndpoints    bool

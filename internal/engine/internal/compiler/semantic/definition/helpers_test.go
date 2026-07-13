@@ -74,7 +74,7 @@ func TestDefinitionInvalidHelperBranches(t *testing.T) {
 func TestDefinitionComposedValidationBranches(t *testing.T) {
 	src := testSource()
 	c := &compiler{}
-	from, to := "from", "to"
+	from, to := ProjectionEndpointFrom, ProjectionEndpointTo
 	c.validateComposed(ComposedProjection{Mode: "overlay", OverlayEndpoint: &from, TargetEndpoint: &from}, src, syntax.Span{Start: 1, End: 2}, "subject")
 	c.validateComposed(ComposedProjection{Mode: "badge", BadgeEndpoint: &from, TargetEndpoint: &from}, src, syntax.Span{Start: 2, End: 3}, "subject")
 	c.validateComposed(ComposedProjection{Mode: "edge", ParentEndpoint: &to}, src, syntax.Span{Start: 3, End: 4}, "subject")
@@ -218,13 +218,14 @@ func TestDefinitionRelationBranchCoverage(t *testing.T) {
 	c := &compiler{}
 	rt := RelationType{Address: "rt", Projections: defaultProjections(), Render: defaultRender()}
 	from, to := value{raw: "from", kind: syntax.TokenIdentifier}, value{raw: "to", kind: syntax.TokenIdentifier}
+	ranges := contextTemplateRanges{}
 	c.projections([]item{
 		{args: []value{{raw: "composed"}}, block: true, nested: body{items: []item{{name: "mode", args: []value{{raw: "overlay", kind: syntax.TokenIdentifier}}}, {name: "overlay_endpoint", args: []value{from}}, {name: "target_endpoint", args: []value{to}}}}},
 		{args: []value{{raw: "composed"}}, block: true, nested: body{items: []item{{name: "mode", args: []value{{raw: "badge", kind: syntax.TokenIdentifier}}}, {name: "badge_endpoint", args: []value{from}}, {name: "target_endpoint", args: []value{to}}}}},
 		{args: []value{{raw: "composed"}}, block: true, nested: body{items: []item{{name: "mode", args: []value{{raw: "hide", kind: syntax.TokenIdentifier}}}}}},
 		{args: []value{{raw: "flow"}}, block: true, nested: body{items: []item{{name: "source_endpoint", args: []value{from}}, {name: "target_endpoint", args: []value{to}}, {name: "connector_kind", args: []value{{raw: "message", kind: syntax.TokenIdentifier}}}}}},
 		{args: []value{{raw: "unknown"}}, block: true, span: syntax.Span{Start: 10, End: 11}},
-	}, &rt, src)
+	}, &rt, src, &ranges)
 	if rt.Projections.Flow == nil || rt.Projections.Flow.ConnectorKind != "message" {
 		t.Fatalf("flow projection = %+v", rt.Projections.Flow)
 	}
@@ -273,7 +274,8 @@ func TestDefinitionRemainingBranches(t *testing.T) {
 		t.Fatalf("layer tie order = %+v", got)
 	}
 	rt := RelationType{Address: "rt", Projections: defaultProjections(), Render: defaultRender()}
-	c.projections([]item{{}}, &rt, src)
+	ranges := contextTemplateRanges{}
+	c.projections([]item{{}}, &rt, src, &ranges)
 	c.render([]item{{}}, &rt, src)
 	_, _ = cardinalityBound(value{node: rangeNode("0", "2")})
 	_, _ = cardinalityBound(value{node: &syntax.Node{Kind: syntax.NodeValue}})

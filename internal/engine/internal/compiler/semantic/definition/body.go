@@ -217,9 +217,12 @@ func (c *compiler) optionalString(b body, name string, src resolve.DeclarationSo
 }
 
 func (c *compiler) requiredString(b body, name string, src resolve.DeclarationSource, subject, owner, code, key string) string {
+	if b.stmt(name) == nil {
+		c.diag(code, key, src, src.Range, "missing required string", subject, owner)
+		return ""
+	}
 	s := c.optionalString(b, name, src, subject, owner)
 	if s == nil {
-		c.diag(code, key, src, src.Range, "missing required string", subject, owner)
 		return ""
 	}
 	return *s
@@ -311,13 +314,13 @@ func (c *compiler) representation(b body, src resolve.DeclarationSource, subject
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, it.span, "invalid representation", subject, owner)
 			return Representation{}
 		}
-		return Representation{Kind: it.args[0].raw}
+		return Representation{Kind: RepresentationKind(it.args[0].raw)}
 	case "shape":
 		if len(it.args) != 2 || !set("rect", "rounded", "ellipse", "diamond", "cylinder", "cloud", "hexagon", "person", "device")[it.args[1].raw] {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, it.span, "invalid representation", subject, owner)
 			return Representation{}
 		}
-		return Representation{Kind: "shape", Shape: it.args[1].raw}
+		return Representation{Kind: RepresentationShapeKind, Shape: RepresentationShape(it.args[1].raw)}
 	default:
 		c.diag("LDL1401", "scalar_or_column_type_mismatch", src, it.span, "invalid representation", subject, owner)
 		return Representation{}
@@ -394,8 +397,8 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 			defaultSpan = operand.span
 			i++
 		case "format":
-			format := operand.raw
-			if operand.kind != syntax.TokenIdentifier || col.ValueType != ScalarString || !stringFormats[format] {
+			format := StringFormat(operand.raw)
+			if operand.kind != syntax.TokenIdentifier || col.ValueType != ScalarString || !stringFormats[string(format)] {
 				c.diag("LDL1401", "scalar_or_column_type_mismatch", src, operand.span, "invalid format", col.Address, owner)
 			}
 			col.Format = &format
@@ -585,7 +588,7 @@ func (c *compiler) validateDefault(col *Column, src resolve.DeclarationSource, o
 		return
 	}
 	if col.ValueType == ScalarString && col.Format != nil {
-		normalized, ok := normalizeStringFormat(*col.Format, s.String)
+		normalized, ok := normalizeStringFormat(string(*col.Format), s.String)
 		if !ok {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, span, "default format mismatch", col.Address, owner)
 			return
