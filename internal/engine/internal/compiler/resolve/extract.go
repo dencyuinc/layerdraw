@@ -331,7 +331,10 @@ func extractOwnerChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 }
 
 func extractOwnerReservations(n *syntax.Node, owner rawDecl, ast *moduleAST) {
-	for _, nb := range descendants(n, syntax.NodeNestedBlock) {
+	for _, nb := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if nb.Kind != syntax.NodeNestedBlock {
+			continue
+		}
 		toks := directTokens(nb)
 		if len(toks) == 0 || toks[0].Raw != "reserve" {
 			continue
@@ -343,7 +346,10 @@ func extractOwnerReservations(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 }
 
 func extractRowReservations(n *syntax.Node, ownerKind SubjectKind, ownerID string, ast *moduleAST) {
-	for _, stmt := range descendants(n, syntax.NodeStatement) {
+	for _, stmt := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if stmt.Kind != syntax.NodeStatement {
+			continue
+		}
 		toks := nodeTokens(stmt)
 		if len(toks) == 0 || toks[0].Raw != "reserve_rows" {
 			continue
@@ -355,12 +361,18 @@ func extractRowReservations(n *syntax.Node, ownerKind SubjectKind, ownerID strin
 }
 
 func extractNamedBlockChildren(n *syntax.Node, owner rawDecl, block string, kind SubjectKind, ast *moduleAST) {
-	for _, nb := range descendants(n, syntax.NodeNestedBlock) {
+	for _, nb := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if nb.Kind != syntax.NodeNestedBlock {
+			continue
+		}
 		toks := directTokens(nb)
 		if len(toks) == 0 || toks[0].Raw != block {
 			continue
 		}
-		for _, stmt := range descendants(firstNode(nb, syntax.NodeBlock), syntax.NodeStatement) {
+		for _, stmt := range nodeChildren(firstNode(nb, syntax.NodeBlock)) {
+			if stmt.Kind != syntax.NodeStatement {
+				continue
+			}
 			stoks := nodeTokens(stmt)
 			if len(stoks) > 0 {
 				od := owner
@@ -371,7 +383,10 @@ func extractNamedBlockChildren(n *syntax.Node, owner rawDecl, block string, kind
 }
 
 func extractUniqueConstraints(n *syntax.Node, owner rawDecl, ast *moduleAST) {
-	for _, stmt := range descendants(n, syntax.NodeStatement) {
+	for _, stmt := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if stmt.Kind != syntax.NodeStatement {
+			continue
+		}
 		toks := nodeTokens(stmt)
 		if len(toks) >= 2 && toks[0].Raw == "unique" {
 			od := owner

@@ -225,10 +225,34 @@ var forbiddenAnnotationKeys = set(
 )
 
 var environmentReadPattern = regexp.MustCompile(`\$\{[A-Z][A-Z0-9_]*\}`)
-var bearerValuePattern = regexp.MustCompile(`(?i)^bearer [A-Za-z0-9._~+/=-]+$`)
+var bearerValuePattern = regexp.MustCompile(`(?i)^bearer ([A-Za-z0-9._~+/=-]+)$`)
+var authorizationValuePattern = regexp.MustCompile(`(?i)^(?:proxy-)?authorization\s*:\s*(?:basic|bearer)\s+\S+\s*$`)
+var goPackagePattern = regexp.MustCompile(`(?m)^package [A-Za-z_][A-Za-z0-9_]*\s*$`)
+var goDeclarationPattern = regexp.MustCompile(`(?m)^(?:func|type|var|const|import)\b`)
 
 func forbiddenAnnotationKey(key string) bool {
-	return forbiddenAnnotationKeys[canonicalAnnotationName(key)]
+	name := canonicalAnnotationName(key)
+	if name == "password_policy" || strings.HasSuffix(name, "_password_policy") {
+		return false
+	}
+	if forbiddenAnnotationKeys[name] {
+		return true
+	}
+	for forbidden := range forbiddenAnnotationKeys {
+		if strings.HasSuffix(name, "_"+forbidden) {
+			return true
+		}
+	}
+	return annotationNameContainsWord(name, "credential") ||
+		annotationNameContainsWord(name, "credentials") ||
+		annotationNameContainsWord(name, "executable") ||
+		name == "state_version" || strings.HasSuffix(name, "_state_version") ||
+		name == "generated_state" || strings.HasSuffix(name, "_generated_state")
+}
+
+func annotationNameContainsWord(name, word string) bool {
+	padded := "_" + name + "_"
+	return strings.Contains(padded, "_"+word+"_")
 }
 
 func canonicalAnnotationName(key string) string {
@@ -265,14 +289,27 @@ func forbiddenAnnotationValue(value string) bool {
 	for _, prefix := range []string{
 		"javascript:", "#!", "function ", "async function ", "eval(",
 		"bash -c ", "sh -c ", "zsh -c ", "powershell ", "cmd.exe /c ",
-		"-----begin private key", "-----begin rsa private key",
 	} {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}
-	if bearerValuePattern.MatchString(trimmed) {
+	firstLine := lower
+	if line, _, ok := strings.Cut(firstLine, "\n"); ok {
+		firstLine = strings.TrimSpace(line)
+	}
+	if strings.HasPrefix(firstLine, "-----begin ") && strings.HasSuffix(firstLine, " private key-----") {
 		return true
+	}
+	if authorizationValuePattern.MatchString(trimmed) {
+		return true
+	}
+	if match := bearerValuePattern.FindStringSubmatch(trimmed); len(match) == 2 {
+		token := match[1]
+		if !strings.EqualFold(token, "authentication") &&
+			(len(token) >= 20 || strings.ContainsAny(token, ".0123456789_~+/=-")) {
+			return true
+		}
 	}
 	if strings.HasPrefix(lower, "basic ") {
 		encoded := strings.TrimSpace(trimmed[len("basic "):])
@@ -288,6 +325,9 @@ func forbiddenAnnotationValue(value string) bool {
 		if strings.Contains(lower, marker) {
 			return true
 		}
+	}
+	if goPackagePattern.MatchString(trimmed) && goDeclarationPattern.MatchString(trimmed) {
+		return true
 	}
 	return environmentReadPattern.MatchString(trimmed)
 }
@@ -496,6 +536,10 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 		lastRank = rank
 		if prev, ok := seen[name]; ok {
 			c.diagRelated("LDL1102", "unknown_or_duplicate_schema_member", src, args[i].span, "duplicate column modifier", col.Address, owner, prev)
+			if name != "required" && i+1 < len(args) {
+				i++
+			}
+			continue
 		}
 		seen[name] = args[i].span
 		if name == "required" {
@@ -964,15 +1008,8 @@ func allDigits(raw string) bool {
 var emailPattern = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([A-Za-z0-9.-]+)$")
 
 func validEmail(raw string) bool {
-	if len(raw) > 254 {
-		return false
-	}
 	m := emailPattern.FindStringSubmatch(raw)
 	if m == nil {
-		return false
-	}
-	local := raw[:strings.LastIndexByte(raw, '@')]
-	if len(local) > 64 {
 		return false
 	}
 	normalized, ok := normalizeHostname(m[1])

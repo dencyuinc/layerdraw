@@ -973,7 +973,8 @@ func (r *resolver) validateReservationSchemas(st *moduleState) {
 		}
 		seenBlocks[scope] = true
 		if block.row {
-			r.validateReservationStatement(st, block, block.node, KindRow)
+			reservations, _ := r.validateReservationStatement(st, block, block.node, KindRow)
+			st.ast.reservations = append(st.ast.reservations, reservations...)
 			continue
 		}
 		seenCategories := map[SubjectKind]syntax.Span{}
@@ -1003,12 +1004,21 @@ func (r *resolver) validateReservationSchemas(st *moduleState) {
 				continue
 			}
 			seenCategories[kind] = headSpan
-			r.validateReservationStatement(st, block, member, kind)
+			reservations, schemaValid := r.validateReservationStatement(st, block, member, kind)
+			if !reservationCategoryAllowed(st, block, kind) {
+				if schemaValid {
+					r.diag("LDL1302", "duplicate_or_reserved_identity", reservationCategoryMessage(st, block, kind), st.key, headSpan)
+				}
+				continue
+			}
+			st.ast.reservations = append(st.ast.reservations, reservations...)
 		}
 	}
 }
 
-func (r *resolver) validateReservationStatement(st *moduleState, block rawReservationBlock, stmt *syntax.Node, kind SubjectKind) {
+func (r *resolver) validateReservationStatement(st *moduleState, block rawReservationBlock, stmt *syntax.Node, kind SubjectKind) ([]rawReservation, bool) {
+	var reservations []rawReservation
+	valid := true
 	var args []*syntax.Node
 	for _, child := range nodeChildren(stmt) {
 		if child.Kind == syntax.NodeValue {
@@ -1022,30 +1032,32 @@ func (r *resolver) validateReservationStatement(st *moduleState, block rawReserv
 	}
 	if len(args) == 0 {
 		r.diag("LDL1102", "unknown_or_duplicate_schema_member", "reservation requires one list", st.key, headSpan)
-		return
+		return nil, false
 	}
 	if len(args) != 1 {
 		r.diag("LDL1102", "unknown_or_duplicate_schema_member", "reservation requires one list", st.key, args[1].Span)
-		return
+		return nil, false
 	}
 	list := firstNode(args[0], syntax.NodeList)
 	if list == nil {
 		r.diag("LDL1102", "unknown_or_duplicate_schema_member", "reservation requires one list", st.key, args[0].Span)
-		return
+		return nil, false
 	}
 	for _, member := range nodeChildren(list) {
 		if member.Kind != syntax.NodeValue {
 			if member.Kind == syntax.NodeError {
 				r.diag("LDL1102", "unknown_or_duplicate_schema_member", "malformed reservation identifier", st.key, member.Span)
+				valid = false
 			}
 			continue
 		}
 		tokens := nodeTokens(member)
 		if len(descendants(member, syntax.NodeError)) != 0 || len(tokens) != 1 || tokens[0].Kind != syntax.TokenIdentifier || !isIdent(tokens[0].Raw) {
 			r.diag("LDL1102", "unknown_or_duplicate_schema_member", "invalid reservation identifier", st.key, member.Span)
+			valid = false
 			continue
 		}
-		st.ast.reservations = append(st.ast.reservations, rawReservation{
+		reservations = append(reservations, rawReservation{
 			ownerKind: block.ownerKind,
 			ownerID:   block.ownerID,
 			kind:      kind,
@@ -1053,6 +1065,24 @@ func (r *resolver) validateReservationStatement(st *moduleState, block rawReserv
 			span:      tokens[0].Span,
 		})
 	}
+	return reservations, valid
+}
+
+func reservationCategoryAllowed(st *moduleState, block rawReservationBlock, kind SubjectKind) bool {
+	if block.ownerID == "" {
+		return !isChildKind(kind) && rootReservationAllowed(st.key.Origin.Kind, kind)
+	}
+	return ownerReservationAllowed(block.ownerKind, kind)
+}
+
+func reservationCategoryMessage(st *moduleState, block rawReservationBlock, kind SubjectKind) string {
+	if block.ownerID == "" && isChildKind(kind) {
+		return "root reservation uses owner-scoped kind"
+	}
+	if block.ownerID == "" && !rootReservationAllowed(st.key.Origin.Kind, kind) {
+		return "reservation kind is not allowed for origin root"
+	}
+	return "reservation kind is not allowed for owner"
 }
 
 func (r *resolver) validateRootAndOwnerBlocks(st *moduleState) {

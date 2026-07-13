@@ -34,6 +34,10 @@ func (c *compiler) endpoint(it *item, entityKind resolve.SubjectKind, owner reso
 		}
 		if prev, duplicate := seenSelectors[selector.raw]; duplicate {
 			c.diagRelated("LDL1102", "unknown_or_duplicate_schema_member", src, selector.span, "duplicate endpoint selector", owner.Address, "", prev)
+			if i+1 < len(it.args) && firstNode(it.args[i+1].node, syntax.NodeList) != nil {
+				i++
+			}
+			continue
 		}
 		rank := 0
 		if selector.raw == "layers" {
@@ -97,7 +101,12 @@ func (c *compiler) cardinality(it *item, def Cardinality, src resolve.Declaratio
 	}
 	spec := specs("to_per_from", "from_per_to")
 	c.rejectUnknown(it.nested, src, spec)
+	seen := map[string]bool{}
 	for _, stmt := range it.nested.items {
+		if seen[stmt.name] {
+			continue
+		}
+		seen[stmt.name] = true
 		if len(stmt.args) != 1 {
 			c.diag("LDL1503", "relation_cardinality_violation", src, invalidOperandSpan(&stmt), "invalid cardinality", subject, "")
 			continue
@@ -178,9 +187,14 @@ func itemValueSpan(it *item) syntax.Span {
 	return syntax.Span{}
 }
 
-func (c *compiler) projections(items []item, r *RelationType, src resolve.DeclarationSource, contextRanges *contextTemplateRanges) {
+func (c *compiler) projections(items []item, r *RelationType, src resolve.DeclarationSource, contextRanges *contextTemplateRanges) bool {
+	duplicate := duplicatePrimitives(items, projectionPrimitives)
+	contextValidated := false
 	for _, it := range items {
 		if len(it.args) != 1 || !it.block {
+			continue
+		}
+		if duplicate[it.args[0].raw] {
 			continue
 		}
 		switch it.args[0].raw {
@@ -219,11 +233,16 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 				r.Projections.Diagram = candidate
 			}
 		case "table":
+			before := len(c.diagnostics)
+			candidate := r.Projections.Table
 			c.rejectUnknown(it.nested, src, specs("row_mode", "include_from", "include_to", "include_relation_type"))
-			r.Projections.Table.RowMode = TableRowMode(c.optionalEnumDefault(it.nested, "row_mode", string(r.Projections.Table.RowMode), set("relation", "relation_rows", "automatic"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
-			r.Projections.Table.IncludeFrom = c.optionalBoolDefault(it.nested, "include_from", r.Projections.Table.IncludeFrom, src, r.Address, "", "LDL1504", "invalid_projection_contract")
-			r.Projections.Table.IncludeTo = c.optionalBoolDefault(it.nested, "include_to", r.Projections.Table.IncludeTo, src, r.Address, "", "LDL1504", "invalid_projection_contract")
-			r.Projections.Table.IncludeRelationType = c.optionalBoolDefault(it.nested, "include_relation_type", r.Projections.Table.IncludeRelationType, src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			candidate.RowMode = TableRowMode(c.optionalEnumDefault(it.nested, "row_mode", string(candidate.RowMode), set("relation", "relation_rows", "automatic"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			candidate.IncludeFrom = c.optionalBoolDefault(it.nested, "include_from", candidate.IncludeFrom, src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			candidate.IncludeTo = c.optionalBoolDefault(it.nested, "include_to", candidate.IncludeTo, src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			candidate.IncludeRelationType = c.optionalBoolDefault(it.nested, "include_relation_type", candidate.IncludeRelationType, src, r.Address, "", "LDL1504", "invalid_projection_contract")
+			if len(c.diagnostics) == before {
+				r.Projections.Table = candidate
+			}
 		case "matrix":
 			before := len(c.diagnostics)
 			c.rejectUnknown(it.nested, src, specs("row_endpoint", "column_endpoint", "include_relation_rows"))
@@ -275,6 +294,7 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 				r.Projections.Flow = &f
 			}
 		case "context":
+			contextValidated = true
 			before := len(c.diagnostics)
 			candidate := r.Projections.Context
 			candidateRanges := *contextRanges
@@ -297,38 +317,80 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 			c.diag("LDL1504", "invalid_projection_contract", src, it.span, "unknown projection primitive", r.Address, "")
 		}
 	}
+	return contextValidated
 }
 
 func (c *compiler) render(items []item, r *RelationType, src resolve.DeclarationSource) {
+	duplicate := duplicatePrimitives(items, renderPrimitives)
 	for _, it := range items {
 		if len(it.args) != 1 || !it.block {
 			continue
 		}
+		if duplicate[it.args[0].raw] {
+			continue
+		}
 		switch it.args[0].raw {
 		case "edge":
+			before := len(c.diagnostics)
+			candidate := r.Render.Edge
 			c.rejectUnknown(it.nested, src, specs("arrow", "line", "color", "label"))
-			r.Render.Edge.Arrow = RenderArrow(c.optionalEnumDefault(it.nested, "arrow", string(r.Render.Edge.Arrow), set("forward", "backward", "both", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
-			r.Render.Edge.Line = RenderLine(c.optionalEnumDefault(it.nested, "line", string(r.Render.Edge.Line), set("solid", "dashed", "dotted"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
-			r.Render.Edge.Label = c.optionalLabelDefault(it.nested, "label", r.Render.Edge.Label, r, src)
-			r.Render.Edge.Color = c.optionalColor(it.nested, "color", src, r.Address, "")
+			candidate.Arrow = RenderArrow(c.optionalEnumDefault(it.nested, "arrow", string(candidate.Arrow), set("forward", "backward", "both", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			candidate.Line = RenderLine(c.optionalEnumDefault(it.nested, "line", string(candidate.Line), set("solid", "dashed", "dotted"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			candidate.Label = c.optionalLabelDefault(it.nested, "label", candidate.Label, r, src)
+			candidate.Color = c.optionalColor(it.nested, "color", src, r.Address, "")
+			if len(c.diagnostics) == before {
+				r.Render.Edge = candidate
+			}
 		case "nested":
+			before := len(c.diagnostics)
+			candidate := r.Render.Nested
 			c.rejectUnknown(it.nested, src, specs("frame_label", "frame_style"))
-			r.Render.Nested.FrameLabel = RenderFrameLabel(c.optionalEnumDefault(it.nested, "frame_label", string(r.Render.Nested.FrameLabel), set("parent", "type", "display_name", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
-			r.Render.Nested.FrameStyle = RenderFrameStyle(c.optionalEnumDefault(it.nested, "frame_style", string(r.Render.Nested.FrameStyle), set("subtle", "strong", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			candidate.FrameLabel = RenderFrameLabel(c.optionalEnumDefault(it.nested, "frame_label", string(candidate.FrameLabel), set("parent", "type", "display_name", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			candidate.FrameStyle = RenderFrameStyle(c.optionalEnumDefault(it.nested, "frame_style", string(candidate.FrameStyle), set("subtle", "strong", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			if len(c.diagnostics) == before {
+				r.Render.Nested = candidate
+			}
 		case "overlay":
+			before := len(c.diagnostics)
+			candidate := r.Render.Overlay
 			c.rejectUnknown(it.nested, src, specs("kind", "position", "max_items"))
-			r.Render.Overlay.Kind = c.optionalAtomDefault(it.nested, "kind", r.Render.Overlay.Kind, src, r.Address)
-			r.Render.Overlay.Position = RenderPosition(c.optionalEnumDefault(it.nested, "position", string(r.Render.Overlay.Position), set("top_left", "top_right", "bottom_left", "bottom_right", "center"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
-			r.Render.Overlay.MaxItems = c.optionalPositiveIntDefault(it.nested, "max_items", r.Render.Overlay.MaxItems, src, r.Address)
+			candidate.Kind = c.optionalAtomDefault(it.nested, "kind", candidate.Kind, src, r.Address)
+			candidate.Position = RenderPosition(c.optionalEnumDefault(it.nested, "position", string(candidate.Position), set("top_left", "top_right", "bottom_left", "bottom_right", "center"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			candidate.MaxItems = c.optionalPositiveIntDefault(it.nested, "max_items", candidate.MaxItems, src, r.Address)
+			if len(c.diagnostics) == before {
+				r.Render.Overlay = candidate
+			}
 		case "badge":
+			before := len(c.diagnostics)
+			candidate := r.Render.Badge
 			c.rejectUnknown(it.nested, src, specs("icon", "label", "position"))
-			r.Render.Badge.Icon = c.optionalString(it.nested, "icon", src, r.Address, "")
-			r.Render.Badge.Label = RenderBadgeLabel(c.optionalEnumDefault(it.nested, "label", string(r.Render.Badge.Label), set("type", "display_name", "count", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
-			r.Render.Badge.Position = RenderPosition(c.optionalEnumDefault(it.nested, "position", string(r.Render.Badge.Position), set("top_left", "top_right", "bottom_left", "bottom_right"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			candidate.Icon = c.optionalString(it.nested, "icon", src, r.Address, "")
+			candidate.Label = RenderBadgeLabel(c.optionalEnumDefault(it.nested, "label", string(candidate.Label), set("type", "display_name", "count", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			candidate.Position = RenderPosition(c.optionalEnumDefault(it.nested, "position", string(candidate.Position), set("top_left", "top_right", "bottom_left", "bottom_right"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+			if len(c.diagnostics) == before {
+				r.Render.Badge = candidate
+			}
 		default:
 			c.diag("LDL1504", "invalid_projection_contract", src, it.span, "unknown render primitive", r.Address, "")
 		}
 	}
+}
+
+var projectionPrimitives = set("composed", "diagram", "table", "matrix", "tree", "flow", "context")
+var renderPrimitives = set("edge", "nested", "overlay", "badge")
+
+func duplicatePrimitives(items []item, known map[string]bool) map[string]bool {
+	counts := map[string]int{}
+	for _, it := range items {
+		if it.block && len(it.args) == 1 && known[it.args[0].raw] {
+			counts[it.args[0].raw]++
+		}
+	}
+	duplicate := map[string]bool{}
+	for primitive, count := range counts {
+		duplicate[primitive] = count > 1
+	}
+	return duplicate
 }
 
 func (c *compiler) export(it *item, def RelationExport, src resolve.DeclarationSource, subject string) RelationExport {

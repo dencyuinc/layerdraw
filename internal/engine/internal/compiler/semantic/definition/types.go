@@ -52,6 +52,7 @@ type Layer struct {
 	Address     string
 	DisplayName string
 	Order       int64
+	symbol      resolve.StableSymbol
 }
 
 type EntityType struct {

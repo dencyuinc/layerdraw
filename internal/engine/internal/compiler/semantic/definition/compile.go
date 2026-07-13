@@ -79,6 +79,11 @@ func LayersByDisplayOrder(layers []Layer) []Layer {
 		if a.Order > b.Order {
 			return 1
 		}
+		if a.symbol.Origin.Kind != "" && b.symbol.Origin.Kind != "" {
+			if compared := resolve.CompareStableSymbols(a.symbol, b.symbol); compared != 0 {
+				return compared
+			}
+		}
 		return strings.Compare(a.Address, b.Address)
 	})
 	return out
@@ -115,7 +120,7 @@ func (c *compiler) compileProject(d resolve.DeclarationSymbol, src resolve.Decla
 
 func (c *compiler) compileLayer(d resolve.DeclarationSymbol, src resolve.DeclarationSource) Layer {
 	toks := directTokens(src.Node)
-	l := Layer{ID: d.ID, Address: d.Address, Common: Common{Annotations: map[string]string{}}}
+	l := Layer{ID: d.ID, Address: d.Address, symbol: d.Symbol, Common: Common{Annotations: map[string]string{}}}
 	if len(toks) > 1 {
 		l.DisplayName = normalizeString(tokenString(toks[1]))
 	}
@@ -194,8 +199,9 @@ func (c *compiler) compileRelationType(d resolve.DeclarationSymbol, src resolve.
 	r.Columns = c.columns(body.block("columns"), d, src)
 	r.UniqueConstraints = c.uniques(body, d, src, r.Columns)
 	r.Traversal = c.traversal(body.block("traversal"), r.Traversal, src, d.Address)
-	c.projections(body.blocksByHead("projection"), &r, src, &contextRanges)
-	c.validateContext(r.Projections.Context, contextRanges, src, r.Address)
+	if !c.projections(body.blocksByHead("projection"), &r, src, &contextRanges) {
+		c.validateContext(r.Projections.Context, contextRanges, src, r.Address)
+	}
 	c.render(body.blocksByHead("render"), &r, src)
 	r.Export = c.export(body.block("export"), r.Export, src, d.Address)
 	r.ReservedColumnIDs, r.ReservedConstraintIDs = c.childReservations(d.Symbol)
