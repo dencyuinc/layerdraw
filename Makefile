@@ -42,6 +42,7 @@ format-check:
 	fi
 
 lint:
+	./tools/check-repository.sh --self-test
 	./tools/check-repository.sh
 	$(GO) tool actionlint
 	$(GO) vet ./...

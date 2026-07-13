@@ -10,11 +10,61 @@ event_name="${LAYERDRAW_EVENT_NAME:-}"
 pr_author="${LAYERDRAW_PR_AUTHOR:-}"
 pr_body="${LAYERDRAW_PR_BODY:-}"
 branch_name_pattern='^(feat|fix|docs|refactor|test|build|ci|chore|perf|security|revert|release)/[a-z0-9]+(-[a-z0-9]+)*$'
+legacy_ldl_source_header_pattern='(^|[^[:alnum:]_])language[[:space:]]+[0-9]+([.][0-9]+)*([^[:alnum:]_.]|$)'
+legacy_ldl_grammar_pattern='(^|[^[:alnum:]_-])(language-decl|"language"[[:space:]]*,[[:space:]]*integer)([^[:alnum:]_-]|$)'
 
 fail() {
   printf 'ERROR: %s\n' "$1" >&2
   failed=1
 }
+
+assert_pattern_matches() {
+  local pattern="$1"
+  local sample="$2"
+  local description="$3"
+
+  if ! grep -Eq -- "$pattern" <<< "$sample"; then
+    fail "repository policy self-test did not reject $description"
+  fi
+}
+
+assert_pattern_does_not_match() {
+  local pattern="$1"
+  local sample="$2"
+  local description="$3"
+
+  if grep -Eq -- "$pattern" <<< "$sample"; then
+    fail "repository policy self-test rejected $description"
+  fi
+}
+
+run_self_test() {
+  assert_pattern_matches "$legacy_ldl_source_header_pattern" 'language 1' 'an integer LDL source header'
+  assert_pattern_matches "$legacy_ldl_source_header_pattern" 'language 1.0' 'a dotted LDL source header'
+  assert_pattern_matches "$legacy_ldl_grammar_pattern" 'file = language-decl, declaration;' 'the removed language-decl production'
+  assert_pattern_matches "$legacy_ldl_grammar_pattern" 'language-decl = "language", integer;' 'the removed direct header grammar'
+  assert_pattern_does_not_match "$legacy_ldl_source_header_pattern" 'Language 1 is the current specification generation.' 'a normative Language 1 reference'
+
+  if (( failed != 0 )); then
+    return 1
+  fi
+
+  printf 'Repository policy self-tests passed.\n'
+}
+
+if [[ "${1:-}" == '--self-test' ]]; then
+  if (( $# != 1 )); then
+    printf 'usage: %s [--self-test]\n' "$0" >&2
+    exit 2
+  fi
+  run_self_test
+  exit $?
+fi
+
+if (( $# != 0 )); then
+  printf 'usage: %s [--self-test]\n' "$0" >&2
+  exit 2
+fi
 
 required_files=(
   README.md
@@ -99,7 +149,8 @@ check_forbidden_text() {
   fi
 }
 
-check_forbidden_text '(^|[^[:alnum:]_])language[[:space:]]+1([^[:digit:].]|$)' 'legacy LDL source language header was found'
+check_forbidden_text "$legacy_ldl_source_header_pattern" 'legacy LDL source language header was found'
+check_forbidden_text "$legacy_ldl_grammar_pattern" 'removed LDL source language-header grammar was found'
 check_forbidden_text '(^|[^[:alnum:]_])ldl[[:space:]]+1([^[:digit:].]|$)' 'legacy LDL version header was found'
 check_forbidden_text 'language_version' 'removed LDL source language_version field was found'
 check_forbidden_text '@layerdraw/core' 'removed legacy TypeScript core package name was found'
