@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 set -euo pipefail
 
@@ -31,6 +32,8 @@ required_files=(
   docs/legal/contributor-license-agreement.md
   docs/legal/contributor-privacy-notice.md
   docs/legal/trademarks.md
+  .nvmrc
+  .node-version
 )
 
 for path in "${required_files[@]}"; do
@@ -38,6 +41,26 @@ for path in "${required_files[@]}"; do
     fail "required public repository file is missing: $path"
   fi
 done
+
+if [[ -f .nvmrc && -f .node-version ]] && ! cmp -s .nvmrc .node-version; then
+  fail '.nvmrc and .node-version must pin the same Node.js version'
+fi
+
+nested_go_modules="$({
+  find . \
+    -path './.git' -prune -o \
+    -path './node_modules' -prune -o \
+    -mindepth 2 -name go.mod -print
+})"
+
+if [[ -n "$nested_go_modules" ]]; then
+  printf '%s\n' "$nested_go_modules" >&2
+  fail 'nested Go modules are forbidden; use the repository root module'
+fi
+
+if [[ -f go.mod ]] && ! grep -Fxq 'module github.com/dencyuinc/layerdraw' go.mod; then
+  fail 'root go.mod must declare module github.com/dencyuinc/layerdraw'
+fi
 
 default_branch_event=false
 if [[ "$branch_name" == "main" && ( "$event_name" == "push" || "$event_name" == "workflow_dispatch" ) ]]; then

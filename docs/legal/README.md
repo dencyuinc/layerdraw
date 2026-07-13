@@ -219,11 +219,18 @@ CLA同意記録なしの外部Contributionをmergeしない。Contributorは各P
 
 ## 10. Release and CI enforcement
 
+- 機械可読のlicense policy正本を[`tools/license-policy.json`](../../tools/license-policy.json)とし、`make license-check`を必須CI gateにする。
+- `make license-check` / `make license-report`はGo/npmのruntime・development全依存を統合した`reports/dependency-licenses.json`を生成する。reportはpackage/module、version、scope、検出license、解決後license、review evidence、policy / lockfile digestを持ち、時刻とmachine固有pathを含めない。
+- third-party licenseは明示allowlistだけを自動許可し、denylist該当だけでなく未分類・未知・新しいlicense expressionもreview完了まで拒否する。
+- Go moduleはmodule path、version、SPDX license、license file path、本文SHA-256をreview記録として固定する。module graphの追加・更新・削除とpolicyのdriftを拒否し、未定義の`replace`で審査済みsourceを差し替えられないようにする。
+- npm dependencyはpnpmが実際に解決したpackage / version / licenseを検査する。`Unknown`等のmetadata不備はpackage / version単位のoverrideとlicense本文SHA-256がある場合だけ許可する。
+- development dependencyも検査対象に含めるが、配布NOTICEとartifact SBOMには実際に配布物へ組み込まれたruntime dependencyだけを含める。
 - pathごとのlicense allowlistをCIで検証する。
 - Apache packageがproduct implementationをimportしたら失敗させる。
 - package manifest、SPDX header、release manifest、container noticeのdriftを拒否する。
 - npm tarball内の`package.json`が`SEE LICENSE IN LICENSE`を指し、artifact rootの`LICENSE`が正準条文とdigest一致することを検証する。
-- third-party license / notice / SBOMをartifactへ同梱する。
+- Go binaryはcompiled build infoからlinked moduleを再取得し、正準`LICENSE`、`NOTICE`、`LICENSING.md`、`THIRD_PARTY_NOTICES.txt`、CycloneDX SBOMを同じartifact bundleへ生成する。source module graph全体をruntime依存として記載してはならない。
+- TS package、container、VSIX、Desktop、WASM等も各artifactの実際のruntime closureからthird-party notice / SBOMを生成し、repository全体のdevelopment SBOMを代用しない。
 - `.ldpack` / `.layerdraw` publishingでcontent license不足を拒否する。
 - public release前に株式会社DENCYUが承認したlicense versionと承認記録をrelease metadataへ残す。外部弁護士の関与を必須metadataにしない。
 

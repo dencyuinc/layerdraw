@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "module": "github.com/dencyuinc/layerdraw",
+  "overall_minimum": 85,
+  "default_package_minimum": 85,
+  "patch_minimum": 90,
+  "package_rules": [
+    {
+      "prefix": "github.com/dencyuinc/layerdraw/internal/engine",
+      "minimum": 95
+    },
+    {
+      "prefix": "github.com/dencyuinc/layerdraw/internal/runtime",
+      "minimum": 95
+    },
+    {
+      "prefix": "github.com/dencyuinc/layerdraw/internal/access",
+      "minimum": 95
+    },
+    {
+      "prefix": "github.com/dencyuinc/layerdraw/internal/registry",
+      "minimum": 95
+    },
+    {
+      "prefix": "github.com/dencyuinc/layerdraw/internal/adapter",
+      "minimum": 80
+    },
+    {
+      "prefix": "github.com/dencyuinc/layerdraw/internal/transport",
+      "minimum": 80
+    },
+    {
+      "prefix": "github.com/dencyuinc/layerdraw/cmd",
+      "minimum": 80
+    }
+  ]
+}

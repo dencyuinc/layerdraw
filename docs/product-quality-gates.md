@@ -89,3 +89,67 @@ Current implementation:
 - fixed semantic modelではschema write不可ActorとAI agentが許可Type / RelationType / Layer内のinstanceを編集でき、Schema変更、Pack更新、generic source patchによる迂回を拒否する
 - preview後のpolicy / membership / delegation変更、mixed-capability batch、権限不足approver、untrusted external headを拒否する
 - multi-actor realtime checkpointは各contributionをorigin Actorのcurrent grantで再評価し、checkpoint trigger / autosave service actorによる権限の付け替えを拒否する
+
+## 7. Test Coverage
+
+Coverageはテストの十分性そのものではないが、未検証の実行可能pathを継続的に増やさないための必須gateとする。全体平均だけでpackage別の不足を隠してはならない。
+
+### 7.1 Go
+
+Goはcoverprofileのstatement blockを次の基準で検査する。機械可読の正本は[`tools/coverage-policy.json`](../tools/coverage-policy.json)とし、`make coverage-check`が不足を拒否する。
+
+| Scope | Minimum |
+| --- | ---: |
+| repository全体 | 85% |
+| PR / working treeで変更した実行可能statement | 90% |
+| 新規packageの既定値 | 85% |
+| Engine / Compiler / Workbench / Runtime / Access / Registry semantics | 95% |
+| storage / query / external service adapter | 80% + 共通contract test |
+| HTTP / stdio / WebSocket / WASM / Wails transport | 80% + transport integration test |
+| `cmd/**` composition root | 80% + packaged binary test |
+
+package別ruleは最も具体的なpath prefixを優先する。分類に該当しない新規packageは85%を自動適用し、thresholdを下げる変更は理由と代替のcontract / integration / E2E gateを同じPRで示す。
+
+Go標準coverageはbranch coverageを独立計測しない。分岐の完全性はtable-driven test、invalid fixture、fuzz test、conformance testで補う。
+
+### 7.2 TypeScript
+
+TypeScript packageはVitest / Istanbul互換coverageで次を強制する。packageが追加された時点で各packageの設定とroot taskへ反映し、一時的な無制約状態を作らない。
+
+| Scope | Statements / lines / functions | Branches |
+| --- | ---: | ---: |
+| protocol client / Composer / Render / Export / SDK | 85% | 80% |
+| Accessまたはoperation / capability変換 | 95% | 90% |
+| browser / provider adapter | 80% | 75% |
+| React UI / framework shell | 75% | 70% |
+
+React UI / framework shellはcoverage数値だけで完了とせず、対応するuser workflowのE2E testを必須とする。
+
+### 7.3 Exclusions and non-substitutable gates
+
+次は集計から除外できるが、無検証にはしない。
+
+- generated Go / TypeScript binding: schema round-tripとcross-language conformance
+- 宣言だけを持つgenerated registry: digest / regeneration drift check
+- fixture、test helper、mock: 本番source coverageの分母から除外
+
+次はcoverage thresholdで代替してはならない。
+
+- LDL lexer / parser / formatter: valid / invalid golden fixture、round-trip、fuzz test
+- StableAddress / hash / canonicalization: golden vector、実行環境間の決定性test
+- Access / AuthoringImpact: deny、stale、mixed capability、迂回経路のtable test
+- Runtime commit / realtime: race、failure injection、multi-actor integration test
+- `.layerdraw` / `.ldpack` / ZIP: fuzz、ZIP slip、容量・深さ上限test
+- protocol / generated binding: Go / TypeScript round-trip、unknown field、version negotiation conformance
+
+Coverage exclusion、`// coverage:ignore`相当、threshold低下を通常の機能PRに混ぜない。必要な場合はquality policy変更として別にreviewする。
+
+## 8. Dependency License and SBOM
+
+- third-party dependencyはruntime / developmentの両方を`make license-check`で検査する
+- 検査済みの全依存は`reports/dependency-licenses.json`へ機械可読な統合inventoryとして出力し、policy / lockfile digestから検査入力を追跡できるようにする
+- 自動許可は[`tools/license-policy.json`](../tools/license-policy.json)のallowlistへ明示したpermissive licenseだけとし、未知のlicenseを推測して通さない
+- Go dependencyはmodule / version / license本文digest、npm metadata不備はpackage / version / license本文digestへreviewを束縛する
+- dependency updateでmodule、version、license expression、license本文のいずれかが変わった場合はCIを失敗させ、更新PR内で再確認する
+- 配布bundleのNOTICE / SBOMはcompiled binaryまたはpacked artifactのruntime closureから生成し、development dependencyを配布依存として記載しない
+- packaged artifact testはLicense、Notice、third-party notice、SBOMの存在とparse可能性を検証する

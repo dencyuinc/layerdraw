@@ -3,8 +3,8 @@ Copyright (c) 2026 株式会社DENCYU
 
 This product includes software developed by LayerDraw contributors and may
 include third-party components under their respective licenses. See
-docs/legal/README.md, docs/legal/licenses/, the release SBOM, and bundled
-third-party notices.
+LICENSING.md in a binary distribution (or docs/legal/README.md in the source
+repository), the release SBOM, and bundled third-party notices.
 
 LayerDraw is a trademark of 株式会社DENCYU. The software licenses do not grant
 rights to use LayerDraw names, logos, or official publisher marks except as
