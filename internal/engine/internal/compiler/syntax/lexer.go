@@ -98,7 +98,7 @@ func (l *lexer) consumeTrivia() bool {
 	}
 	for l.pos < len(l.src) {
 		switch l.src[l.pos] {
-		case ' ', '\t', '\f', '\v':
+		case ' ', '\t':
 			l.pos++
 		default:
 			if l.pos > start {

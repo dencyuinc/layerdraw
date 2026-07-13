@@ -46,6 +46,8 @@ func (p *parser) parseFile() *Node {
 			sawContent = true
 		case p.at(TokenDocComment):
 			file.append(p.parseTriviaToken())
+			sawContent = true
+			sawDeclaration = true
 		case p.atDeclarationStart():
 			file.append(p.parseDeclaration())
 			sawContent = true
@@ -68,7 +70,7 @@ func (p *parser) parseImportDecl() *Node {
 	}
 	p.expectKeywordInto(n, "from")
 	p.expectInto(n, TokenString)
-	p.consumeLineEnd(n)
+	p.expectDeclarationLineEndInto(n)
 	return n
 }
 
@@ -126,7 +128,7 @@ func (p *parser) parseExportDecl() *Node {
 		n.append(p.consume())
 		p.expectKeywordInto(n, "from")
 		p.expectInto(n, TokenString)
-		p.consumeLineEnd(n)
+		p.expectDeclarationLineEndInto(n)
 		return n
 	}
 	p.expectInto(n, TokenLBrace)
@@ -136,7 +138,7 @@ func (p *parser) parseExportDecl() *Node {
 		n.append(p.consume())
 		p.expectInto(n, TokenString)
 	}
-	p.consumeLineEnd(n)
+	p.expectDeclarationLineEndInto(n)
 	return n
 }
 
@@ -302,7 +304,7 @@ func (p *parser) parseBlock() *Node {
 
 func (p *parser) parseStatementOrNestedBlock() *Node {
 	n := newNode(NodeStatement, p.expect(TokenIdentifier))
-	for !p.at(TokenEOF) && !p.at(TokenNewline) && !p.at(TokenRBrace) {
+	for !p.at(TokenEOF) && !p.at(TokenNewline) && !p.at(TokenRBrace) && !p.at(TokenLineComment) {
 		if p.at(TokenLBrace) && !p.looksObject() {
 			break
 		}
@@ -323,13 +325,24 @@ func (p *parser) looksObject() bool {
 	if p.look(1).Kind == TokenRBrace {
 		return true
 	}
-	return (p.look(1).Kind == TokenIdentifier || p.look(1).Kind == TokenString) && p.look(2).Kind == TokenColon
+	idx := p.pos + 1
+	for idx < len(p.tokens) {
+		switch p.tokens[idx].Kind {
+		case TokenNewline, TokenLineComment:
+			idx++
+			continue
+		default:
+		}
+		break
+	}
+	if idx+1 >= len(p.tokens) {
+		return false
+	}
+	return (p.tokens[idx].Kind == TokenIdentifier || p.tokens[idx].Kind == TokenString) && p.tokens[idx+1].Kind == TokenColon
 }
 
 func (p *parser) parseStatementArg() Element {
 	switch {
-	case p.at(TokenLBracket):
-		return p.parseColumnHeader()
 	case isValueStart(p.peek().Kind):
 		return p.parseValue()
 	case p.at(TokenEqualEqual) || p.at(TokenBangEqual) || p.at(TokenLess) || p.at(TokenLessEqual) || p.at(TokenGreater) || p.at(TokenGreaterEqual) || p.at(TokenArrow):
@@ -367,8 +380,13 @@ func (p *parser) parseValue() *Node {
 
 func (p *parser) parseRange() *Node {
 	n := newNode(NodeRange, p.expect(TokenInteger), p.expect(TokenDotDot))
-	if p.at(TokenInteger) || p.at(TokenStar) {
+	if p.at(TokenInteger) {
 		n.append(p.consume())
+	} else if p.at(TokenStar) {
+		n.append(p.consume())
+		if !p.at(TokenEOF) && p.tokens[p.pos-1].Span.End == p.peek().Span.Start && (p.at(TokenIdentifier) || p.at(TokenUnderscore) || p.at(TokenStar) || p.at(TokenInvalid)) {
+			n.append(p.errorNode("malformed range upper bound"))
+		}
 	} else {
 		n.append(p.errorNode("expected range upper bound"))
 	}
@@ -417,6 +435,12 @@ func (p *parser) parseList() *Node {
 			break
 		}
 	}
+	for !p.at(TokenEOF) && !p.at(TokenRBracket) && p.atTriviaToken() {
+		if p.at(TokenNewline) {
+			multiline = true
+		}
+		n.append(p.parseTriviaToken())
+	}
 	if trailingComma && !multiline {
 		n.append(p.errorAtCurrent("trailing comma requires multiline list"))
 	}
@@ -454,6 +478,12 @@ func (p *parser) parseObject() *Node {
 			break
 		}
 	}
+	for !p.at(TokenEOF) && !p.at(TokenRBrace) && p.atTriviaToken() {
+		if p.at(TokenNewline) {
+			multiline = true
+		}
+		n.append(p.parseTriviaToken())
+	}
 	if trailingComma && !multiline {
 		n.append(p.errorAtCurrent("trailing comma requires multiline object"))
 	}
@@ -489,6 +519,26 @@ func (p *parser) parseTriviaToken() *Node {
 }
 
 func (p *parser) consumeLineEnd(n *Node) {
+	if p.at(TokenNewline) {
+		n.append(p.consume())
+	}
+}
+
+func (p *parser) expectDeclarationLineEndInto(n *Node) {
+	if p.at(TokenNewline) || p.at(TokenEOF) {
+		if p.at(TokenNewline) {
+			n.append(p.consume())
+		}
+		return
+	}
+	if p.at(TokenLineComment) {
+		n.append(p.consume())
+		if p.at(TokenNewline) {
+			n.append(p.consume())
+		}
+		return
+	}
+	n.append(p.errorNodeUntil("expected declaration line terminator", p.isLineOrEOFBoundary))
 	if p.at(TokenNewline) {
 		n.append(p.consume())
 	}
@@ -535,12 +585,18 @@ func (p *parser) expect(kind TokenKind) Element {
 	if p.at(kind) {
 		return p.consume()
 	}
+	if p.at(TokenNewline) || p.at(TokenRBrace) || p.at(TokenEOF) {
+		return p.errorAtCurrent("expected " + kind.String())
+	}
 	return p.errorNode("expected " + kind.String())
 }
 
 func (p *parser) expectKeyword(keyword string) Element {
 	if p.atKeyword(keyword) {
 		return p.consume()
+	}
+	if p.at(TokenNewline) || p.at(TokenRBrace) || p.at(TokenEOF) {
+		return p.errorAtCurrent("expected " + keyword)
 	}
 	return p.errorNode("expected " + keyword)
 }
@@ -587,6 +643,10 @@ func (p *parser) isTopLevelBoundary() bool {
 
 func (p *parser) isLineOrBlockBoundary() bool {
 	return p.at(TokenNewline) || p.at(TokenRBrace)
+}
+
+func (p *parser) isLineOrEOFBoundary() bool {
+	return p.at(TokenNewline) || p.at(TokenEOF)
 }
 
 func (p *parser) at(kind TokenKind) bool {

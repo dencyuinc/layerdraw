@@ -148,6 +148,78 @@ func TestParseModuleDocAfterDeclarationDiagnostic(t *testing.T) {
 	}
 }
 
+func TestParseDocCommentStartsDeclarationPhase(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		span Span
+	}{
+		{
+			name: "module doc after doc comment",
+			src:  "/// declaration docs\n//! module docs\nproject p \"P\" {}\n",
+			span: Span{Start: 21, End: 36},
+		},
+		{
+			name: "import after doc comment",
+			src:  "/// declaration docs\nimport aws from \"aws\"\nproject p \"P\" {}\n",
+			span: Span{Start: 21, End: 27},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(tt.src))
+			assertParseInvariants(t, []byte(tt.src), got)
+			if len(got.Diagnostics) == 0 {
+				t.Fatal("Diagnostics empty, want phase diagnostic")
+			}
+			if got.Diagnostics[0].Span != tt.span {
+				t.Fatalf("first diagnostic = %+v, want span %+v", got.Diagnostics[0], tt.span)
+			}
+		})
+	}
+}
+
+func TestParseImportExportRequirePhysicalLineEnd(t *testing.T) {
+	t.Parallel()
+
+	negative := []string{
+		"import aws from \"aws\" import gcp from \"gcp\"\n",
+		"import aws from \"aws\" project p \"P\" {}\n",
+		"export { p } project p \"P\" {}\n",
+		"export { p } from \"./p.ldl\" project p \"P\" {}\n",
+	}
+	for _, src := range negative {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+			if len(got.Diagnostics) == 0 {
+				t.Fatalf("Diagnostics empty for %q", src)
+			}
+		})
+	}
+
+	positive := []string{
+		"import aws from \"aws\" // trailing\nproject p \"P\" {}\n",
+		"export { p } // trailing\nproject p \"P\" {}\n",
+		"export { p } from \"./p.ldl\" // trailing\nproject p \"P\" {}\n",
+		"import aws from \"aws\"",
+	}
+	for _, src := range positive {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+			if len(got.Diagnostics) != 0 {
+				t.Fatalf("Diagnostics = %+v, want none for %q", got.Diagnostics, src)
+			}
+		})
+	}
+}
+
 func TestParseObjectValueVersusNestedBlock(t *testing.T) {
 	t.Parallel()
 
@@ -163,6 +235,36 @@ func TestParseObjectValueVersusNestedBlock(t *testing.T) {
 	}
 	if counts[NodeNestedBlock] != 1 {
 		t.Fatalf("nested block nodes = %d, want 1", counts[NodeNestedBlock])
+	}
+}
+
+func TestParseGenericStatementListValues(t *testing.T) {
+	t.Parallel()
+
+	src := "query q \"Q\" {\n  empty []\n  strings [\"a\", \"b\"]\n  numbers [1, 2]\n  objects [{ owner: \"platform\" }]\n}\n"
+	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
+	if len(got.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
+	}
+	counts := countNodes(got.Root)
+	if counts[NodeList] != 4 || counts[NodeColumnHeader] != 0 {
+		t.Fatalf("counts = %v, want four NodeList values and no column headers", counts)
+	}
+}
+
+func TestParseMultilineObjectValueVersusNestedBlock(t *testing.T) {
+	t.Parallel()
+
+	src := "query q \"Q\" {\n  metadata {\n    owner: \"platform\"\n  }\n  shape diagram {\n    layout layered\n  }\n}\n"
+	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
+	if len(got.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
+	}
+	counts := countNodes(got.Root)
+	if counts[NodeObject] != 1 || counts[NodeNestedBlock] != 1 {
+		t.Fatalf("counts = %v, want one object value and one nested block", counts)
 	}
 }
 
@@ -207,11 +309,11 @@ func TestParseEmptyCollectionsAndMissingRangeBound(t *testing.T) {
 	src := "query q \"Q\" {\n  empty_list []\n  empty_object { values: [] }\n  bad_range 0..\n}\n"
 	got := Parse([]byte(src))
 	assertParseInvariants(t, []byte(src), got)
-	if len(got.Diagnostics) != 2 {
-		t.Fatalf("Diagnostics = %+v, want empty column header and missing range bound diagnostics", got.Diagnostics)
+	if len(got.Diagnostics) != 1 {
+		t.Fatalf("Diagnostics = %+v, want missing range bound diagnostic only", got.Diagnostics)
 	}
 	counts := countNodes(got.Root)
-	if counts[NodeList] != 1 || counts[NodeObject] != 1 || counts[NodeRange] != 1 {
+	if counts[NodeList] != 2 || counts[NodeObject] != 1 || counts[NodeRange] != 1 {
 		t.Fatalf("counts = %v, want list/object/range", counts)
 	}
 }

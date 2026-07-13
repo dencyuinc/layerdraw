@@ -131,6 +131,34 @@ func TestLexerAcceptsCRLFAndTabsAsLosslessTrivia(t *testing.T) {
 	}
 }
 
+func TestLexRejectsNonSpecHorizontalWhitespace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		span Span
+	}{
+		{name: "form feed", src: "project\fp \"P\" {}\n", span: Span{Start: 7, End: 8}},
+		{name: "vertical tab", src: "project\vp \"P\" {}\n", span: Span{Start: 7, End: 8}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Lex([]byte(tt.src))
+			if ReconstructTokens(got.Tokens) != tt.src {
+				t.Fatal("source did not round trip")
+			}
+			if len(got.Diagnostics) == 0 || got.Diagnostics[0].Code != "LDL1101" || got.Diagnostics[0].Span != tt.span {
+				t.Fatalf("Diagnostics = %+v, want LDL1101 at %+v", got.Diagnostics, tt.span)
+			}
+			if !hasToken(got.Tokens, TokenInvalid) {
+				t.Fatal("expected invalid token for non-spec whitespace")
+			}
+		})
+	}
+}
+
 func TestLexPunctuationAndScalarEdges(t *testing.T) {
 	t.Parallel()
 
@@ -291,6 +319,49 @@ func TestLexLongestMatchAndMalformedNumericRuns(t *testing.T) {
 	}
 	if numericDiagnostics != 2 {
 		t.Fatalf("numeric adjacency diagnostics = %d, want 2; diagnostics=%+v", numericDiagnostics, got.Diagnostics)
+	}
+}
+
+func TestParseRangeStarAdjacency(t *testing.T) {
+	t.Parallel()
+
+	positive := []string{
+		"query q \"Q\" {\n  depth 1..*\n}\n",
+		"query q \"Q\" {\n  depth 1..* abc\n}\n",
+		"query q \"Q\" {\n  depth 1..2\n}\n",
+	}
+	for _, src := range positive {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+			if len(got.Diagnostics) != 0 {
+				t.Fatalf("Diagnostics = %+v, want none for %q", got.Diagnostics, src)
+			}
+		})
+	}
+
+	negative := []string{
+		"query q \"Q\" {\n  depth 1..*abc\n}\n",
+		"query q \"Q\" {\n  depth 1..*_suffix\n}\n",
+		"query q \"Q\" {\n  depth 1..**\n}\n",
+		"query q \"Q\" {\n  depth 1..*/\n}\n",
+	}
+	for _, src := range negative {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+			found := false
+			for _, diag := range got.Diagnostics {
+				if diag.Code == "LDL1101" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("Diagnostics = %+v, want LDL1101 for %q", got.Diagnostics, src)
+			}
+		})
 	}
 }
 
