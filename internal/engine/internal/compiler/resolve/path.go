@@ -6,12 +6,14 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
 
-func normalizePath(raw string) (string, bool) {
+func normalizePortablePath(raw string) (string, bool) {
 	if raw == "" || strings.HasPrefix(raw, "/") || strings.Contains(raw, "\\") || strings.ContainsRune(raw, 0) || !utf8.ValidString(raw) {
 		return "", false
 	}
@@ -26,12 +28,12 @@ func normalizePath(raw string) (string, bool) {
 		return "", false
 	}
 	for _, p := range strings.Split(decoded, "/") {
-		if p == "" || p == ".." {
+		if p == "" || p == "." || p == ".." {
 			return "", false
 		}
 	}
 	for _, p := range strings.Split(raw, "/") {
-		if p == "" || !validModulePathSegment(p) {
+		if !validPortablePathSegment(p) {
 			return "", false
 		}
 	}
@@ -42,12 +44,45 @@ func normalizePath(raw string) (string, bool) {
 	return clean, true
 }
 
-func validModulePathSegment(segment string) bool {
-	base := strings.TrimSuffix(segment, ".ldl")
-	if base == "" {
+func normalizeModulePath(raw string) (string, bool) {
+	clean, ok := normalizePortablePath(raw)
+	if !ok || clean != raw || !strings.HasSuffix(raw, ".ldl") {
+		return "", false
+	}
+	parts := strings.Split(raw, "/")
+	for i, p := range parts {
+		if strings.Contains(p, ".ldl/") {
+			return "", false
+		}
+		if i < len(parts)-1 {
+			if strings.Contains(p, ".") || !isIdent(p) {
+				return "", false
+			}
+			continue
+		}
+		base := strings.TrimSuffix(p, ".ldl")
+		if base == "" || strings.Contains(base, ".") || !isIdent(base) {
+			return "", false
+		}
+	}
+	return clean, true
+}
+
+func normalizePath(raw string) (string, bool) {
+	return normalizeModulePath(raw)
+}
+
+func validPortablePathSegment(segment string) bool {
+	if segment == "" || segment == "." || segment == ".." {
 		return false
 	}
-	return isIdent(base)
+	for _, r := range segment {
+		if r == '-' || r == '_' || r == '.' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func resolveRelative(base, spec string) (string, bool) {
@@ -58,7 +93,7 @@ func resolveRelative(base, spec string) (string, bool) {
 	if target == "." || strings.HasPrefix(target, "../") || target == ".." || strings.HasPrefix(target, "/") {
 		return "", false
 	}
-	return target, true
+	return normalizeModulePath(target)
 }
 
 func packModulePath(segments []string, entry string) string {
@@ -71,8 +106,9 @@ func packModulePath(segments []string, entry string) string {
 func caseFoldCollisions(paths []string) [][2]string {
 	seen := map[string]string{}
 	var out [][2]string
+	folder := cases.Fold()
 	for _, p := range paths {
-		fold := strings.ToLower(p)
+		fold := folder.String(p)
 		if prev, ok := seen[fold]; ok && prev != p {
 			out = append(out, [2]string{prev, p})
 			continue

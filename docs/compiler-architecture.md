@@ -12,6 +12,7 @@ Compiler は次の閉じた入力だけを受け取る。
 CompileInput
   compile_mode
   entry_path
+  root_pack_id
   project_source_tree[path] = UTF-8 bytes
   installed_pack_tree[path] = verified UTF-8 / asset bytes
   resolved_dependencies
@@ -19,6 +20,7 @@ CompileInput
 ```
 
 - `entry_path` は source tree 内の canonical project-relative path である。
+- `root_pack_id` は Pack compile のときだけ必須の canonical `publisher/pack-name` selector であり、Project compile では空でなければならない。これはCompileInputのroot選択metadataで、LDL semantic identityへ含めない。
 - LDL source fileはversion headerを持たない。Compilerは自身のsupported LDL generation、release manifest、container/package metadata、migrator capabilityに基づいてsource syntaxを解釈し、未対応構文はdiagnosticとして返す。
 - import の network fetch は Compiler 外で完了していなければならない。
 - Pack は導入・展開・digest 検証済みの immutable tree として渡す。

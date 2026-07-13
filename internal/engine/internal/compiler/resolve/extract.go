@@ -191,11 +191,10 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 			}
 		}
 	case "rows":
-		owner := firstSymbolRef(n)
 		for _, item := range descendants(n, syntax.NodeRowItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) >= 2 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: owner, span: item.Span})
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, span: item.Span})
 			}
 		}
 	case "relations":
@@ -213,11 +212,10 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 			}
 		}
 	case "relation_rows":
-		owner := firstSymbolRef(n)
 		for _, item := range descendants(n, syntax.NodeRowItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) >= 2 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: owner, span: item.Span})
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, span: item.Span})
 			}
 		}
 	case "query":
@@ -234,8 +232,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 			d.id = toks[1].Raw
 		}
 		ast.declarations = append(ast.declarations, d)
-		extractNamedBlockChildren(n, d, "columns", KindTableColumn, ast)
-		extractNamedBlockChildren(n, d, "exports", KindExport, ast)
+		extractViewChildren(n, d, ast)
 		extractOwnerReservations(n, d, ast)
 	case "reference":
 		if len(toks) > 1 {
@@ -252,7 +249,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 
 func extractOwnerChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 	extractNamedBlockChildren(n, owner, "columns", KindColumn, ast)
-	extractNamedBlockChildren(n, owner, "constraints", KindConstraint, ast)
+	extractUniqueConstraints(n, owner, ast)
 }
 
 func extractOwnerReservations(n *syntax.Node, owner rawDecl, ast *moduleAST) {
@@ -299,6 +296,33 @@ func extractNamedBlockChildren(n *syntax.Node, owner rawDecl, block string, kind
 				od := owner
 				ast.declarations = append(ast.declarations, rawDecl{kind: kind, id: stoks[0].Raw, childOf: &od, span: stmt.Span})
 			}
+		}
+	}
+}
+
+func extractUniqueConstraints(n *syntax.Node, owner rawDecl, ast *moduleAST) {
+	for _, stmt := range descendants(n, syntax.NodeStatement) {
+		toks := nodeTokens(stmt)
+		if len(toks) >= 2 && toks[0].Raw == "unique" {
+			od := owner
+			ast.declarations = append(ast.declarations, rawDecl{kind: KindConstraint, id: toks[1].Raw, childOf: &od, span: stmt.Span})
+		}
+	}
+}
+
+func extractViewChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
+	for _, nb := range descendants(n, syntax.NodeNestedBlock) {
+		toks := nodeTokens(nb)
+		if len(toks) < 2 {
+			continue
+		}
+		switch toks[0].Raw {
+		case "column":
+			od := owner
+			ast.declarations = append(ast.declarations, rawDecl{kind: KindTableColumn, id: toks[1].Raw, childOf: &od, span: nb.Span})
+		case "export":
+			od := owner
+			ast.declarations = append(ast.declarations, rawDecl{kind: KindExport, id: toks[1].Raw, childOf: &od, span: nb.Span})
 		}
 	}
 }

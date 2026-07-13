@@ -24,12 +24,13 @@ func SourceFromParse(result syntax.ParseResult) SourceFile {
 
 type Input struct {
 	Mode CompileMode
-	// EntryPath is the project entry in project mode and the pack-relative entry
-	// path in pack mode. Pack mode is accepted only when exactly one pack is
-	// installed, so no map iteration can choose the semantic root.
+	// EntryPath is the project entry in project mode and the pack-relative entry path in pack mode.
 	EntryPath string
-	Project   ProjectInput
-	Packs     ResolvedDependencies
+	// RootPackID selects the canonical publisher/pack-name root for CompilePack.
+	// It must be empty for CompileProject and non-empty for CompilePack.
+	RootPackID string
+	Project    ProjectInput
+	Packs      ResolvedDependencies
 }
 
 type ProjectInput struct {
@@ -72,11 +73,17 @@ type PackDependency struct {
 }
 
 type Result struct {
-	Modules      []ResolvedModule
-	Exports      []ExportBinding
-	Bindings     []SourceBinding
+	Modules []ResolvedModule
+	Exports []ExportBinding
+	// Bindings contains declaration/import/export source bindings reachable from the selected effective document.
+	Bindings []SourceBinding
+	// Declarations contains the selected effective document symbols only.
 	Declarations []DeclarationSymbol
-	Candidates   []DeclarationSymbol
+	// Candidates contains every valid declaration symbol loaded from the closed source tree.
+	Candidates []DeclarationSymbol
+	// CandidateIdentity contains valid identity metadata from every loaded module for downstream semantic stages.
+	CandidateIdentity IdentityHistory
+	// Identity contains only selected root and selected owner-scoped identity metadata.
 	Identity     IdentityHistory
 	Dependencies []ResolvedPackSummary
 	Diagnostics  []Diagnostic
@@ -218,6 +225,7 @@ type SourceBinding struct {
 	Target        StableSymbol
 	TargetAddress string
 	Via           string
+	SourceAddress string
 }
 
 type ExportBinding struct {

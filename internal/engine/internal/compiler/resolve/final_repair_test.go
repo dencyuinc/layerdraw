@@ -59,7 +59,7 @@ moves {
 }
 `)}
 	pack.Files = map[string]string{"pack.ldl": testDigest("a")}
-	in := Input{Mode: CompilePack, EntryPath: "pack.ldl", Packs: ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1, Installs: map[string]ResolvedPack{"aws": pack}}}
+	in := Input{Mode: CompilePack, RootPackID: "layerdraw/aws-complete", EntryPath: "pack.ldl", Packs: ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1, Installs: map[string]ResolvedPack{"aws": pack}}}
 	got := Resolve(in)
 	if !hasDiag(got, "LDL1302") || !hasDiag(got, "LDL1303") {
 		t.Fatalf("Diagnostics = %+v", got.Diagnostics)

@@ -161,7 +161,7 @@ func TestInvalidInputsProduceStableDiagnostics(t *testing.T) {
 		},
 		{
 			name: "pack forbidden kind",
-			in: Input{Mode: CompilePack, EntryPath: "pack.ldl", Packs: ResolvedDependencies{Installs: map[string]ResolvedPack{
+			in: Input{Mode: CompilePack, RootPackID: "layerdraw/bad", EntryPath: "pack.ldl", Packs: ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1, Installs: map[string]ResolvedPack{
 				"bad": {CanonicalID: "layerdraw/bad", Version: "1.0.0", Digest: testDigest("f"), Path: "pack/bad", Entry: "pack.ldl", Files: map[string]string{"pack.ldl": testDigest("9")}, Manifest: PackManifest{Format: "layerdraw-pack", FormatVersion: 1, Language: 1, ID: "layerdraw/bad", Name: "bad", Version: "1.0.0", Entry: "pack.ldl"}, SourceFiles: map[string]SourceFile{"pack.ldl": parse(`layers {` + "\n  app \"App\" @0\n}")}},
 			}}},
 			code: "LDL1102",

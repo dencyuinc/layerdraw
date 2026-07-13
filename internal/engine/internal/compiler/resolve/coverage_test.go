@@ -15,7 +15,7 @@ func TestExtractAllDeclarationShapes(t *testing.T) {
 	file := parse(`project p "P" {}
 entity_type service "Service" {
   columns { environment "Environment" string }
-  constraints { unique_environment [environment] }
+  unique unique_environment [environment]
 }
 relation_type depends_on "Depends On" dependency {
   columns { weight "Weight" integer }
@@ -26,21 +26,23 @@ layers {
 entities service @application {
   order_api "Order API"
 }
-rows order_api [environment] {
+rows service [environment] {
   order_api production: prod
 }
 relations depends_on {
   api_dep: order_api -> order_api
 }
-relation_rows api_dep [weight] {
+relation_rows depends_on [weight] {
   api_dep production: 1
 }
 query q "Q" {
   parameters { env string }
 }
 view v "V" topology {
-  columns { name "Name" string }
-  exports { svg "SVG" }
+  table {
+    column name {}
+  }
+  export svg svg "v.svg" {}
 }
 reference guide <<-TEXT
 hello

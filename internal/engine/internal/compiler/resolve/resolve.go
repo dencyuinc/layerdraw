@@ -86,7 +86,7 @@ func (r *resolver) resolve() {
 	if r.input.Mode == "" {
 		r.input.Mode = CompileProject
 	}
-	entry, ok := normalizePath(r.input.EntryPath)
+	entry, ok := normalizeModulePath(r.input.EntryPath)
 	if !ok || entry != r.input.EntryPath || !strings.HasSuffix(entry, ".ldl") {
 		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid entry module path", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: r.input.EntryPath}, zeroSpan())
 		r.invalidInput = true
@@ -99,6 +99,11 @@ func (r *resolver) resolve() {
 	}
 	if r.input.Mode == CompilePack {
 		r.resolvePackMode(entry)
+		return
+	}
+	if r.input.RootPackID != "" {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "root pack id is only valid in pack mode", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: r.input.EntryPath}, zeroSpan())
+		r.invalidInput = true
 		return
 	}
 	origin, ok := r.projectOrigin(entry)
@@ -121,13 +126,24 @@ func (r *resolver) resolve() {
 }
 
 func (r *resolver) resolvePackMode(entry string) {
-	if len(r.packs) != 1 {
-		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack compile requires exactly one installed pack", ModuleKey{Origin: Origin{Kind: OriginPack}, Path: entry}, zeroSpan())
+	if r.input.RootPackID == "" {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack compile requires root pack id", ModuleKey{Origin: Origin{Kind: OriginPack}, Path: entry}, zeroSpan())
 		r.invalidInput = true
 		return
 	}
-	installs := sortedKeysPack(r.packs)
-	info := r.packs[installs[0]]
+	var matches []packInfo
+	for _, install := range sortedKeysPack(r.packs) {
+		info := r.packs[install]
+		if info.pack.CanonicalID == r.input.RootPackID {
+			matches = append(matches, info)
+		}
+	}
+	if len(matches) == 0 {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "root pack id is not installed", ModuleKey{Origin: Origin{Kind: OriginPack}, Path: entry}, zeroSpan())
+		r.invalidInput = true
+		return
+	}
+	info := matches[0]
 	if entry != info.pack.Entry {
 		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack compile entry must equal pack manifest entry", ModuleKey{Origin: info.origin, Path: entry}, zeroSpan())
 		r.invalidInput = true
@@ -148,7 +164,7 @@ func (r *resolver) resolvePackMode(entry string) {
 func (r *resolver) validateProjectFiles() {
 	paths := make([]string, 0, len(r.input.Project.Files))
 	for raw := range r.input.Project.Files {
-		norm, ok := normalizePath(raw)
+		norm, ok := normalizeModulePath(raw)
 		if !ok || norm != raw || !strings.HasSuffix(raw, ".ldl") {
 			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid project source path", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: raw}, zeroSpan())
 			r.invalidInput = true
@@ -188,8 +204,8 @@ func (r *resolver) validatePacks() {
 			continue
 		}
 		origin = Origin{Kind: OriginPack, Publisher: pub, PackName: name}
-		entry, entryOK := normalizePath(pack.Entry)
-		root, rootOK := normalizePath(pack.Path)
+		entry, entryOK := normalizeModulePath(pack.Entry)
+		root, rootOK := normalizePortablePath(pack.Path)
 		if !entryOK || entry != pack.Entry || !strings.HasSuffix(entry, ".ldl") {
 			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid pack entry path", ModuleKey{Origin: origin, Path: pack.Entry}, zeroSpan())
 			r.invalidInput = true
@@ -278,21 +294,33 @@ func (r *resolver) validateManifest(install string, origin Origin, pack Resolved
 }
 
 func (r *resolver) validatePackFiles(origin Origin, pack ResolvedPack) {
+	filePaths := make([]string, 0, len(pack.Files))
 	for p, digest := range pack.Files {
-		norm, ok := normalizePath(p)
+		norm, ok := normalizePortablePath(p)
 		if !ok || norm != p || !isDigest(digest) {
 			r.diag("LDL1203", "dependency_digest_mismatch", "invalid pack file digest entry", ModuleKey{Origin: origin, Path: p}, zeroSpan())
 			r.invalidInput = true
 		}
 		if strings.HasSuffix(p, ".ldl") {
+			if norm, ok := normalizeModulePath(p); !ok || norm != p {
+				r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid LDL source path in pack file map", ModuleKey{Origin: origin, Path: p}, zeroSpan())
+				r.invalidInput = true
+			}
 			if _, ok := pack.SourceFiles[p]; !ok {
 				r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "resolved LDL file is missing source", ModuleKey{Origin: origin, Path: p}, zeroSpan())
 				r.invalidInput = true
 			}
 		}
+		filePaths = append(filePaths, p)
 	}
+	sort.Strings(filePaths)
+	for _, pair := range caseFoldCollisions(filePaths) {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "case-folding pack file path collision", ModuleKey{Origin: origin, Path: pair[1]}, zeroSpan())
+		r.invalidInput = true
+	}
+	sourcePaths := make([]string, 0, len(pack.SourceFiles))
 	for p := range pack.SourceFiles {
-		norm, ok := normalizePath(p)
+		norm, ok := normalizeModulePath(p)
 		if !ok || norm != p || !strings.HasSuffix(p, ".ldl") {
 			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid pack source path", ModuleKey{Origin: origin, Path: p}, zeroSpan())
 			r.invalidInput = true
@@ -302,6 +330,12 @@ func (r *resolver) validatePackFiles(origin Origin, pack ResolvedPack) {
 			r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack source missing resolved digest", ModuleKey{Origin: origin, Path: p}, zeroSpan())
 			r.invalidInput = true
 		}
+		sourcePaths = append(sourcePaths, p)
+	}
+	sort.Strings(sourcePaths)
+	for _, pair := range caseFoldCollisions(sourcePaths) {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "case-folding pack source path collision", ModuleKey{Origin: origin, Path: pair[1]}, zeroSpan())
+		r.invalidInput = true
 	}
 }
 
@@ -718,7 +752,7 @@ func (r *resolver) addImportedBinding(st *moduleState, kind SubjectKind, text st
 		return
 	}
 	st.imported[kind][text] = target
-	st.addBinding(kind, text, span, via, target)
+	st.addBinding(kind, text, span, via, target, target.Address)
 }
 
 func topImportKinds() []SubjectKind {
@@ -808,6 +842,7 @@ func (r *resolver) resolveAny(st *moduleState, text string) (DeclarationSymbol, 
 
 func (r *resolver) resolveDeclarationRefs(st *moduleState) {
 	for _, decl := range st.ast.declarations {
+		sourceAddress := st.declarationAddress(decl)
 		for _, ref := range decl.refs {
 			if ref.text == "" {
 				continue
@@ -817,7 +852,7 @@ func (r *resolver) resolveDeclarationRefs(st *moduleState) {
 				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "source binding is unknown or ambiguous", st.key, ref.span)
 				continue
 			}
-			st.addBinding(ref.kind, ref.text, ref.span, "reference", target)
+			st.addBinding(ref.kind, ref.text, ref.span, "reference", target, sourceAddress)
 		}
 	}
 }
@@ -840,8 +875,37 @@ func single(found []DeclarationSymbol) (DeclarationSymbol, bool) {
 	return found[0], true
 }
 
-func (st *moduleState) addBinding(kind SubjectKind, text string, span syntax.Span, via string, target DeclarationSymbol) {
-	st.bindings = append(st.bindings, SourceBinding{Module: st.key, ExpectedKind: kind, SourceText: text, Range: span, Target: target.Symbol, TargetAddress: target.Address, Via: via})
+func (st *moduleState) addBinding(kind SubjectKind, text string, span syntax.Span, via string, target DeclarationSymbol, sourceAddress string) {
+	st.bindings = append(st.bindings, SourceBinding{Module: st.key, ExpectedKind: kind, SourceText: text, Range: span, Target: target.Symbol, TargetAddress: target.Address, Via: via, SourceAddress: sourceAddress})
+}
+
+func (st *moduleState) declarationAddress(raw rawDecl) string {
+	if raw.childOf != nil {
+		owner, ok := st.findTop(raw.childOf.id, raw.childOf.kind)
+		if !ok {
+			return ""
+		}
+		return reservationAddress(owner.Symbol, raw.kind, raw.id)
+	}
+	if raw.kind == KindRow {
+		owner, ok := st.findTop(raw.owner, KindEntity)
+		if !ok {
+			owner, ok = st.findTop(raw.owner, KindRelation)
+		}
+		if !ok {
+			return ""
+		}
+		return reservationAddress(owner.Symbol, KindRow, raw.id)
+	}
+	if raw.kind == KindProject {
+		return addressOf(StableSymbol{Origin: st.key.Origin})
+	}
+	if isTopKind(raw.kind) {
+		if decl, ok := st.findTop(raw.id, raw.kind); ok {
+			return decl.Address
+		}
+	}
+	return ""
 }
 
 func (r *resolver) validateAllIdentity() {
@@ -1020,32 +1084,90 @@ func (r *resolver) validateMoves(st *moduleState) {
 			}
 		}
 	}
-	r.materializeDerivedMoveClosure(st)
+	r.materializeComposedMoveClosure(st)
 }
 
-func (r *resolver) materializeDerivedMoveClosure(st *moduleState) {
-	for _, mv := range st.moves {
-		switch {
-		case mv.Kind == KindProject:
-			for _, decl := range sortedDeclMap(r.symbols) {
-				if decl.Symbol.Origin.Kind != OriginProject || decl.Symbol.Origin.ProjectID != st.key.Origin.ProjectID || len(decl.Symbol.Path) == 0 {
-					continue
-				}
-				from := addressOf(StableSymbol{Origin: Origin{Kind: OriginProject, ProjectID: mv.From}, Path: decl.Symbol.Path})
-				appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: from, To: decl.Address})
-			}
-		case !isChildKind(mv.Kind):
-			target, ok := r.symbols[mv.ToAddress]
-			if !ok {
-				continue
-			}
-			for _, child := range r.childrenOf(target.Symbol) {
-				oldPath := append([]SymbolSegment{{Kind: mv.Kind, ID: mv.From}}, child.Symbol.Path[1:]...)
-				from := addressOf(StableSymbol{Origin: child.Symbol.Origin, Path: oldPath})
-				appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: from, To: child.Address})
+func (r *resolver) materializeComposedMoveClosure(st *moduleState) {
+	for _, decl := range sortedDeclMap(r.symbols) {
+		if decl.Symbol.Origin != st.key.Origin {
+			continue
+		}
+		for _, from := range st.historicalAddressesFor(decl.Symbol) {
+			to := decl.Address
+			if from != to {
+				appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: from, To: to})
 			}
 		}
 	}
+}
+
+func (st *moduleState) historicalAddressesFor(current StableSymbol) []string {
+	roots := st.historicalOrigins(current.Origin)
+	if len(current.Path) == 0 {
+		out := make([]string, 0, len(roots))
+		for _, root := range roots {
+			out = append(out, addressOf(StableSymbol{Origin: root}))
+		}
+		return out
+	}
+	top := current.Path[0]
+	topIDs := st.historicalTopIDs(top.Kind, top.ID)
+	if len(current.Path) == 1 {
+		var out []string
+		for _, root := range roots {
+			for _, topID := range topIDs {
+				out = append(out, addressOf(StableSymbol{Origin: root, Path: []SymbolSegment{{Kind: top.Kind, ID: topID}}}))
+			}
+		}
+		return out
+	}
+	child := current.Path[1]
+	childIDs := st.historicalChildIDs(current, child.ID)
+	var out []string
+	for _, root := range roots {
+		for _, topID := range topIDs {
+			for _, childID := range childIDs {
+				out = append(out, addressOf(StableSymbol{Origin: root, Path: []SymbolSegment{{Kind: top.Kind, ID: topID}, {Kind: child.Kind, ID: childID}}}))
+			}
+		}
+	}
+	return out
+}
+
+func (st *moduleState) historicalOrigins(current Origin) []Origin {
+	out := []Origin{current}
+	for _, mv := range st.moves {
+		if mv.Kind == KindProject && current.Kind == OriginProject && mv.To == current.ProjectID {
+			out = append(out, Origin{Kind: OriginProject, ProjectID: mv.From})
+		}
+	}
+	sort.SliceStable(out[1:], func(i, j int) bool { return out[i+1].ProjectID < out[j+1].ProjectID })
+	return out
+}
+
+func (st *moduleState) historicalTopIDs(kind SubjectKind, currentID string) []string {
+	out := []string{currentID}
+	for _, mv := range st.moves {
+		if !isChildKind(mv.Kind) && mv.Kind == kind && mv.To == currentID {
+			out = append(out, mv.From)
+		}
+	}
+	sort.Strings(out[1:])
+	return out
+}
+
+func (st *moduleState) historicalChildIDs(current StableSymbol, currentID string) []string {
+	out := []string{currentID}
+	owner := StableSymbol{Origin: current.Origin, Path: append([]SymbolSegment{}, current.Path[:1]...)}
+	ownerAddress := addressOf(owner)
+	childKind := current.Path[1].Kind
+	for _, mv := range st.moves {
+		if mv.Kind == childKind && mv.To == currentID && mv.Owner != nil && addressOf(*mv.Owner) == ownerAddress {
+			out = append(out, mv.From)
+		}
+	}
+	sort.Strings(out[1:])
+	return out
 }
 
 func appendMoveClosureUnique(out *[]MoveClosure, item MoveClosure) {
@@ -1222,10 +1344,29 @@ func (r *resolver) result() Result {
 					result.Exports = append(result.Exports, binding)
 				}
 			}
-			result.Bindings = append(result.Bindings, st.bindings...)
-			result.Identity.Reservations = append(result.Identity.Reservations, st.reservations...)
-			result.Identity.Moves = append(result.Identity.Moves, st.moves...)
-			result.Identity.MoveClosure = append(result.Identity.MoveClosure, st.moveClosure...)
+			for _, binding := range st.bindings {
+				if r.bindingSelected(binding) {
+					result.Bindings = append(result.Bindings, binding)
+				}
+			}
+			result.CandidateIdentity.Reservations = append(result.CandidateIdentity.Reservations, st.reservations...)
+			result.CandidateIdentity.Moves = append(result.CandidateIdentity.Moves, st.moves...)
+			result.CandidateIdentity.MoveClosure = append(result.CandidateIdentity.MoveClosure, st.moveClosure...)
+			for _, res := range st.reservations {
+				if r.reservationSelected(res) {
+					result.Identity.Reservations = append(result.Identity.Reservations, res)
+				}
+			}
+			for _, mv := range st.moves {
+				if r.moveSelected(mv) {
+					result.Identity.Moves = append(result.Identity.Moves, mv)
+				}
+			}
+			for _, closure := range st.moveClosure {
+				if r.selected[closure.To] {
+					result.Identity.MoveClosure = append(result.Identity.MoveClosure, closure)
+				}
+			}
 		}
 	}
 	if !r.syntaxInvalid && !r.hasErrors() {
@@ -1280,6 +1421,33 @@ func (r *resolver) result() Result {
 	result.Diagnostics = r.diagnostics
 	result.HasErrors = r.hasErrors()
 	return result
+}
+
+func (r *resolver) bindingSelected(binding SourceBinding) bool {
+	if binding.SourceAddress == "" {
+		return r.selected[binding.TargetAddress]
+	}
+	if !r.selected[binding.SourceAddress] {
+		return false
+	}
+	return strings.HasPrefix(binding.Via, "import:")
+}
+
+func (r *resolver) reservationSelected(res Reservation) bool {
+	if len(res.Owner.Path) == 0 {
+		return r.selected[addressOf(StableSymbol{Origin: res.Owner.Origin})]
+	}
+	return r.selected[addressOf(res.Owner)]
+}
+
+func (r *resolver) moveSelected(mv Move) bool {
+	if mv.Owner != nil {
+		return r.selected[addressOf(*mv.Owner)]
+	}
+	if mv.Kind == KindProject {
+		return r.selected[mv.ToAddress]
+	}
+	return r.selected[mv.ToAddress]
 }
 
 func (r *resolver) addTransitivePackDependencies(used map[Origin]bool) {
@@ -1386,11 +1554,19 @@ func isExactSemver(s string) bool {
 	if len(mainAndBuild) > 2 || (len(mainAndBuild) == 2 && !validDotIdentifiers(mainAndBuild[1], false)) {
 		return false
 	}
-	coreAndPre := strings.Split(mainAndBuild[0], "-")
-	if len(coreAndPre) > 2 || (len(coreAndPre) == 2 && !validDotIdentifiers(coreAndPre[1], true)) {
+	corePart := mainAndBuild[0]
+	prePart := ""
+	if idx := strings.IndexByte(corePart, '-'); idx >= 0 {
+		prePart = corePart[idx+1:]
+		corePart = corePart[:idx]
+	}
+	if prePart != "" && !validDotIdentifiers(prePart, true) {
 		return false
 	}
-	core := strings.Split(coreAndPre[0], ".")
+	if strings.Contains(mainAndBuild[0], "-") && prePart == "" {
+		return false
+	}
+	core := strings.Split(corePart, ".")
 	if len(core) != 3 {
 		return false
 	}

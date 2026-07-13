@@ -13,6 +13,7 @@ func TestPackCompileSuccessSelectsEntryExports(t *testing.T) {
 	in := baseInput()
 	in.Mode = CompilePack
 	in.EntryPath = "pack.ldl"
+	in.RootPackID = "layerdraw/aws-complete"
 	in.Project = ProjectInput{}
 	got := Resolve(in)
 	if got.HasErrors {
@@ -60,9 +61,7 @@ entity_type service "Service" {
   columns {
     name "Name" string
   }
-  constraints {
-    unique_name [name]
-  }
+  unique unique_name [name]
 }
 relation_type link "Link" dependency {
   columns {
@@ -75,13 +74,13 @@ layers {
 entities service @app {
   api "API" {}
 }
-rows api [name] {
+rows service [name] {
   api api: "API"
 }
 relations link {
   rel: api -> api {}
 }
-relation_rows rel [weight] {
+relation_rows link [weight] {
   rel rel: 1
 }
 query q "Q" {
@@ -90,11 +89,14 @@ query q "Q" {
   }
 }
 view v "V" topology {
-  columns {
-    title "Title" string
+  table {
+    rows entity_rows
+    column title {
+      source attribute title
+    }
   }
-  exports {
-    svg "SVG"
+  export svg svg "v.svg" {
+    fidelity visual_only
   }
 }
 moves {
@@ -169,7 +171,7 @@ func TestAdditionalNegativeContractBranches(t *testing.T) {
 		t.Fatalf("project outside entry diagnostics = %+v", got.Diagnostics)
 	}
 
-	got = Resolve(Input{Mode: CompilePack, EntryPath: "pack.ldl", Packs: ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1, Installs: map[string]ResolvedPack{
+	got = Resolve(Input{Mode: CompilePack, RootPackID: "layerdraw/bad", EntryPath: "pack.ldl", Packs: ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1, Installs: map[string]ResolvedPack{
 		"bad": {CanonicalID: "layerdraw/bad", Version: "1.0.0", Digest: testDigest("8"), Path: "pack/bad", Entry: "pack.ldl", Files: map[string]string{"pack.ldl": testDigest("7")}, Manifest: PackManifest{Format: "layerdraw-pack", FormatVersion: 1, Language: 1, ID: "layerdraw/bad", Name: "bad", Version: "1.0.0", Entry: "pack.ldl"}, SourceFiles: map[string]SourceFile{"pack.ldl": parse(`project p "P" {}`)}},
 	}}})
 	if !hasDiag(got, "LDL1102") {
@@ -215,6 +217,7 @@ func TestDependencyCycleAndPackEntryMismatch(t *testing.T) {
 	single := baseInput()
 	single.Mode = CompilePack
 	single.EntryPath = "modules/network.ldl"
+	single.RootPackID = "layerdraw/aws-complete"
 	single.Project = ProjectInput{}
 	got = Resolve(single)
 	if !hasDiag(got, "LDL1201") {

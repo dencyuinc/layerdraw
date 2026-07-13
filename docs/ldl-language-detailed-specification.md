@@ -250,6 +250,7 @@ ResolvedDependencies {
   format: "layerdraw-resolved"
   format_version: 1
   language: 1
+  root_pack_id?: "<publisher>/<pack-name>"
   installs: map<install_name, ResolvedPack>
 }
 
@@ -265,7 +266,7 @@ ResolvedPack {
 }
 ```
 
-Registry toolingは未知フィールドを保持してよいが、言語意味論へ含めない。`layerdraw.resolved.json`全体のintegrity digestと、言語の`resolved`セマンティック ハッシュを区別する。後者のPack payloadは`canonical_id`、exact `version`、artifact `digest`、`entry`、`files`と、dependency-local nameから対象Packの`canonical_id`・exact `version`・artifact `digest`へのmapだけを持つ。Project install name、installed `path`、`registry_source`、mirror URL、credentialはセマンティック ハッシュへ含めない。Pack payloadはPackOrigin StableAddress順、dependencyはlocal name順、fileはnormalized path順でハッシュする。
+Registry toolingは未知フィールドを保持してよいが、言語意味論へ含めない。`root_pack_id`はPack compileのときだけ必須で、CompileInputがどのcanonical Packをrootとしてcompileするかを選ぶmetadataである。Project compileでは存在しないか空でなければならず、Pack semantic identity、StableAddress、definition hashへ含めない。`layerdraw.resolved.json`全体のintegrity digestと、言語の`resolved`セマンティック ハッシュを区別する。後者のPack payloadは`canonical_id`、exact `version`、artifact `digest`、`entry`、`files`と、dependency-local nameから対象Packの`canonical_id`・exact `version`・artifact `digest`へのmapだけを持つ。Project install name、installed `path`、`registry_source`、mirror URL、credentialはセマンティック ハッシュへ含めない。Pack payloadはPackOrigin StableAddress順、dependencyはlocal name順、fileはnormalized path順でハッシュする。
 
 全install nameとdependency-local nameは正準identifierで、各`dependencies` targetは`installs`の既存keyを指さなければならない。manifestとresolved metadataのversionはSemVer 2.0.0 grammarに一致するcanonical stringで、leading `v`やrangeをresolved exact versionへ使うことを禁止する。prerelease/build metadataはgrammarどおり許可し、exact identityでは文字列全体を比較する。resolved dependency graphは非循環でなければならない。同じcanonical pack IDを複数install nameでaliasしてよいが、exact version、artifact digest、entry、file digest mapが完全一致しなければresolution errorとし、semantic closureでは1つのPackOriginへdeduplicateする。異なるcanonical pack IDが同じinstalled pathを共有すること、1つのPack内でmanifest `name`とdependency-local nameが衝突することを禁止する。
 

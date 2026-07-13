@@ -45,7 +45,7 @@ export { a, b }
 	}
 }
 
-func TestReviewPackCompileRequiresExactlyOnePack(t *testing.T) {
+func TestReviewPackCompileRequiresRootPackID(t *testing.T) {
 	t.Parallel()
 	in := baseInput()
 	in.Mode = CompilePack
@@ -59,7 +59,7 @@ func TestReviewPackCompileRequiresExactlyOnePack(t *testing.T) {
 	in.Packs.Installs["other"] = other
 	got := Resolve(in)
 	if !hasDiag(got, "LDL1201") {
-		t.Fatalf("Diagnostics = %+v, want pack-mode cardinality diagnostic", got.Diagnostics)
+		t.Fatalf("Diagnostics = %+v, want missing root pack diagnostic", got.Diagnostics)
 	}
 }
 
