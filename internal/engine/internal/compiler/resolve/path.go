@@ -6,31 +6,32 @@ import (
 	"net/url"
 	"path"
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 func normalizePath(raw string) (string, bool) {
 	if raw == "" || strings.HasPrefix(raw, "/") || strings.Contains(raw, "\\") || strings.ContainsRune(raw, 0) || !utf8.ValidString(raw) {
 		return "", false
 	}
-	if !isCanonicalPathUnicode(raw) {
+	if !norm.NFC.IsNormalString(raw) {
 		return "", false
 	}
 	decoded, err := url.PathUnescape(raw)
 	if err != nil {
 		return "", false
 	}
-	if strings.Contains(decoded, "..") {
-		parts := strings.Split(decoded, "/")
-		for _, p := range parts {
-			if p == ".." {
-				return "", false
-			}
+	if strings.HasPrefix(decoded, "/") || strings.Contains(decoded, "\\") || strings.ContainsRune(decoded, 0) {
+		return "", false
+	}
+	for _, p := range strings.Split(decoded, "/") {
+		if p == "" || p == ".." {
+			return "", false
 		}
 	}
 	for _, p := range strings.Split(raw, "/") {
-		if p == "" {
+		if p == "" || !validModulePathSegment(p) {
 			return "", false
 		}
 	}
@@ -41,13 +42,12 @@ func normalizePath(raw string) (string, bool) {
 	return clean, true
 }
 
-func isCanonicalPathUnicode(raw string) bool {
-	for _, r := range raw {
-		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Mc, r) {
-			return false
-		}
+func validModulePathSegment(segment string) bool {
+	base := strings.TrimSuffix(segment, ".ldl")
+	if base == "" {
+		return false
 	}
-	return true
+	return isIdent(base)
 }
 
 func resolveRelative(base, spec string) (string, bool) {

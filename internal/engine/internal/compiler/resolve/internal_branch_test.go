@@ -70,7 +70,8 @@ func TestImportExportAndReferenceErrorBranches(t *testing.T) {
 		"remote": {Kind: KindEntityType, ID: "remote", Symbol: StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: KindEntityType, ID: "remote"}}}, Address: "ldl:project:p:entity-type:remote"},
 	}}
 	r := &resolver{modules: map[ModuleKey]*moduleState{}, diagnostics: nil}
-	r.bindImport(st, ImportDecl{Kind: ImportNamed, Items: []ImportItem{{Remote: "missing", Local: "missing"}, {Remote: "remote", Local: "local"}, {Remote: "remote", Local: "alias"}, {Remote: "remote", Local: "alias"}}}, target)
+	imp := ImportDecl{Kind: ImportNamed, Items: []ImportItem{{Remote: "missing", Local: "missing"}, {Remote: "remote", Local: "local"}, {Remote: "remote", Local: "alias"}, {Remote: "remote", Local: "alias"}}}
+	r.bindImport(st, &imp, target)
 	if len(r.diagnostics) < 3 {
 		t.Fatalf("bindImport diagnostics = %+v", r.diagnostics)
 	}

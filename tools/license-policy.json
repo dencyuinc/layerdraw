@@ -192,6 +192,13 @@
       "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
     },
     {
+      "module": "golang.org/x/text",
+      "version": "v0.40.0",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    },
+    {
       "module": "golang.org/x/telemetry",
       "version": "v0.0.0-20260708182218-49f421fb7959",
       "license": "BSD-3-Clause",

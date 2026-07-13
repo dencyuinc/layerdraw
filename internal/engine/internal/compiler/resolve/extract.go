@@ -9,11 +9,15 @@ import (
 )
 
 type moduleAST struct {
-	imports      []ImportDecl
-	exports      []ExportDecl
-	declarations []rawDecl
-	reservations []rawReservation
-	moves        []rawMove
+	imports            []ImportDecl
+	exports            []ExportDecl
+	declarations       []rawDecl
+	reservations       []rawReservation
+	moves              []rawMove
+	rootReservedBlocks []syntax.Span
+	rootMoveBlocks     []syntax.Span
+	ownerReserveBlocks map[string][]syntax.Span
+	rowReserveBlocks   map[string][]syntax.Span
 }
 
 type rawDecl struct {
@@ -41,6 +45,7 @@ type rawReservation struct {
 
 type rawMove struct {
 	kind    SubjectKind
+	variant string
 	ownerID string
 	from    string
 	to      string
@@ -48,7 +53,7 @@ type rawMove struct {
 }
 
 func extractModule(file SourceFile) moduleAST {
-	var ast moduleAST
+	ast := moduleAST{ownerReserveBlocks: map[string][]syntax.Span{}, rowReserveBlocks: map[string][]syntax.Span{}}
 	for _, child := range nodeChildren(file.Root) {
 		if child.Kind != syntax.NodeImportDecl && child.Kind != syntax.NodeDeclaration {
 			continue
@@ -237,8 +242,10 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 			ast.declarations = append(ast.declarations, rawDecl{kind: KindReference, id: toks[1].Raw, span: n.Span})
 		}
 	case "reserved":
+		ast.rootReservedBlocks = append(ast.rootReservedBlocks, n.Span)
 		ast.reservations = append(ast.reservations, extractReservations(n)...)
 	case "moves":
+		ast.rootMoveBlocks = append(ast.rootMoveBlocks, n.Span)
 		ast.moves = append(ast.moves, extractMoves(n)...)
 	}
 }
@@ -254,6 +261,8 @@ func extractOwnerReservations(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 		if len(toks) == 0 || toks[0].Raw != "reserve" {
 			continue
 		}
+		key := string(owner.kind) + ":" + owner.id
+		ast.ownerReserveBlocks[key] = append(ast.ownerReserveBlocks[key], nb.Span)
 		for _, res := range extractReservations(nb) {
 			res.ownerKind = owner.kind
 			res.ownerID = owner.id
@@ -268,6 +277,8 @@ func extractRowReservations(n *syntax.Node, ownerKind SubjectKind, ownerID strin
 		if len(toks) == 0 || toks[0].Raw != "reserve_rows" {
 			continue
 		}
+		key := string(ownerKind) + ":" + ownerID
+		ast.rowReserveBlocks[key] = append(ast.rowReserveBlocks[key], stmt.Span)
 		for _, tok := range toks[1:] {
 			if tok.Kind == syntax.TokenIdentifier {
 				ast.reservations = append(ast.reservations, rawReservation{ownerKind: ownerKind, ownerID: ownerID, kind: KindRow, id: tok.Raw, span: tok.Span})
@@ -322,10 +333,10 @@ func extractMoves(n *syntax.Node) []rawMove {
 		kind, child := moveKind(toks[0].Raw)
 		if child {
 			if len(toks) >= 5 {
-				out = append(out, rawMove{kind: kind, ownerID: toks[1].Raw, from: toks[2].Raw, to: toks[4].Raw, span: item.Span})
+				out = append(out, rawMove{kind: kind, variant: toks[0].Raw, ownerID: toks[1].Raw, from: toks[2].Raw, to: toks[4].Raw, span: item.Span})
 			}
 		} else {
-			out = append(out, rawMove{kind: kind, from: toks[1].Raw, to: toks[3].Raw, span: item.Span})
+			out = append(out, rawMove{kind: kind, variant: toks[0].Raw, from: toks[1].Raw, to: toks[3].Raw, span: item.Span})
 		}
 	}
 	return out

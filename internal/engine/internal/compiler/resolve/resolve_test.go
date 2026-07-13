@@ -247,7 +247,7 @@ func TestPathNormalizationProperties(t *testing.T) {
 			t.Fatalf("normalizePath(%q) = %q, true; want false", p, got)
 		}
 	}
-	valid := []string{"document.ldl", "schema/./service.ldl", "modules/network/vpc.ldl"}
+	valid := []string{"document.ldl", "schema/service.ldl", "modules/network/vpc.ldl"}
 	for _, p := range valid {
 		if got, ok := normalizePath(p); !ok || strings.Contains(got, "./") {
 			t.Fatalf("normalizePath(%q) = %q,%v", p, got, ok)

@@ -37,6 +37,7 @@ type moduleState struct {
 	file             SourceFile
 	ast              moduleAST
 	exports          map[string]DeclarationSymbol
+	exportBindings   []ExportBinding
 	localTop         map[SubjectKind]map[string]DeclarationSymbol
 	localByAddress   map[string]DeclarationSymbol
 	imported         map[SubjectKind]map[string]DeclarationSymbol
@@ -46,7 +47,18 @@ type moduleState struct {
 	reservations     []Reservation
 	moves            []Move
 	moveClosure      []MoveClosure
+	finalState       evalState
+	exportState      evalState
+	exportCycleDiag  bool
 }
+
+type evalState uint8
+
+const (
+	evalUnvisited evalState = iota
+	evalVisiting
+	evalDone
+)
 
 type moveEdge struct {
 	move Move
@@ -75,8 +87,13 @@ func (r *resolver) resolve() {
 		r.input.Mode = CompileProject
 	}
 	entry, ok := normalizePath(r.input.EntryPath)
-	if !ok || !strings.HasSuffix(entry, ".ldl") {
+	if !ok || entry != r.input.EntryPath || !strings.HasSuffix(entry, ".ldl") {
 		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "invalid entry module path", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: r.input.EntryPath}, zeroSpan())
+		r.invalidInput = true
+		return
+	}
+	if r.input.Mode != CompileProject && r.input.Mode != CompilePack {
+		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "unsupported compile mode", ModuleKey{Origin: Origin{Kind: OriginProject}, Path: r.input.EntryPath}, zeroSpan())
 		r.invalidInput = true
 		return
 	}
@@ -95,7 +112,7 @@ func (r *resolver) resolve() {
 	if entryState == nil || r.syntaxInvalid || r.invalidInput {
 		return
 	}
-	r.bindAllModules()
+	r.finalizeAllModules()
 	r.validateAllIdentity()
 	if r.hasErrors() {
 		return
@@ -120,7 +137,7 @@ func (r *resolver) resolvePackMode(entry string) {
 	if entryState == nil || r.syntaxInvalid || r.invalidInput {
 		return
 	}
-	r.bindAllModules()
+	r.finalizeAllModules()
 	r.validateAllIdentity()
 	if r.hasErrors() {
 		return
@@ -607,25 +624,34 @@ func (st *moduleState) findTop(id string, kinds ...SubjectKind) (DeclarationSymb
 	return DeclarationSymbol{}, false
 }
 
-func (r *resolver) bindAllModules() {
-	keys := sortedModuleKeys(r.modules)
-	for _, key := range keys {
-		st := r.modules[key]
-		for i := range st.ast.imports {
-			target := r.modules[st.ast.imports[i].Module]
-			if target != nil {
-				r.bindImport(st, st.ast.imports[i], target)
-			}
-		}
-	}
-	for _, key := range keys {
-		st := r.modules[key]
-		r.resolveDeclarationRefs(st)
-		st.exports = r.computeExports(st)
+func (r *resolver) finalizeAllModules() {
+	for _, key := range sortedModuleKeys(r.modules) {
+		r.finalizeModule(r.modules[key])
 	}
 }
 
-func (r *resolver) bindImport(st *moduleState, imp ImportDecl, target *moduleState) {
+func (r *resolver) finalizeModule(st *moduleState) {
+	if st == nil || st.finalState == evalDone {
+		return
+	}
+	if st.finalState == evalVisiting {
+		r.diag("LDL1202", "import_cycle", "module import/export cycle", st.key, zeroSpan())
+		return
+	}
+	st.finalState = evalVisiting
+	for i := range st.ast.imports {
+		target := r.modules[st.ast.imports[i].Module]
+		if target != nil {
+			r.finalizeModule(target)
+			r.bindImport(st, &st.ast.imports[i], target)
+		}
+	}
+	r.resolveDeclarationRefs(st)
+	st.exports = r.computeExports(st)
+	st.finalState = evalDone
+}
+
+func (r *resolver) bindImport(st *moduleState, imp *ImportDecl, target *moduleState) {
 	if st.imported == nil {
 		st.imported = map[SubjectKind]map[string]DeclarationSymbol{}
 	}
@@ -656,7 +682,8 @@ func (r *resolver) bindImport(st *moduleState, imp ImportDecl, target *moduleSta
 		}
 		return
 	}
-	for _, item := range imp.Items {
+	for i := range imp.Items {
+		item := &imp.Items[i]
 		decl, ok := target.exports[item.Remote]
 		if !ok {
 			r.diag("LDL1301", "unknown_or_ambiguous_symbol", "named import target is not exported", st.key, item.Range)
@@ -675,6 +702,9 @@ func (r *resolver) bindImport(st *moduleState, imp ImportDecl, target *moduleSta
 			continue
 		}
 		st.namedAliases[decl.Kind][item.Local] = item.Range
+		item.Target = decl.Symbol
+		item.TargetAddress = decl.Address
+		item.TargetKind = decl.Kind
 		r.addImportedBinding(st, decl.Kind, item.Local, item.Range, "import:"+item.Local, decl)
 	}
 }
@@ -696,7 +726,25 @@ func topImportKinds() []SubjectKind {
 }
 
 func (r *resolver) computeExports(st *moduleState) map[string]DeclarationSymbol {
+	if st == nil {
+		return map[string]DeclarationSymbol{}
+	}
+	if st.exportState == evalDone {
+		return st.exports
+	}
+	if st.exportState == evalVisiting {
+		if !st.exportCycleDiag {
+			r.diag("LDL1202", "import_cycle", "export cycle", st.key, zeroSpan())
+			st.exportCycleDiag = true
+		}
+		return map[string]DeclarationSymbol{}
+	}
+	st.exportState = evalVisiting
 	out := map[string]DeclarationSymbol{}
+	defer func() {
+		st.exports = out
+		st.exportState = evalDone
+	}()
 	for _, exp := range st.ast.exports {
 		switch exp.Kind {
 		case ExportLocal:
@@ -706,46 +754,43 @@ func (r *resolver) computeExports(st *moduleState) map[string]DeclarationSymbol 
 					r.diag("LDL1301", "unknown_or_ambiguous_symbol", "exported local symbol is unknown or ambiguous", st.key, item.Range)
 					continue
 				}
-				r.addExport(out, st, item.Public, decl, item.Range)
+				r.addExport(out, st, item.Public, decl, item.Range, false)
 			}
 		case ExportFrom:
 			target := r.modules[exp.Module]
 			if target == nil {
 				continue
 			}
-			if target.exports == nil {
-				target.exports = r.computeExports(target)
-			}
+			target.exports = r.computeExports(target)
 			for _, item := range exp.Items {
 				decl, ok := target.exports[item.Local]
 				if !ok {
 					r.diag("LDL1301", "unknown_or_ambiguous_symbol", "re-export target is not exported", st.key, item.Range)
 					continue
 				}
-				r.addExport(out, st, item.Public, decl, item.Range)
+				r.addExport(out, st, item.Public, decl, item.Range, true)
 			}
 		case ExportStar:
 			target := r.modules[exp.Module]
 			if target == nil {
 				continue
 			}
-			if target.exports == nil {
-				target.exports = r.computeExports(target)
-			}
+			target.exports = r.computeExports(target)
 			for _, name := range sortedExportNames(target.exports) {
-				r.addExport(out, st, name, target.exports[name], exp.Range)
+				r.addExport(out, st, name, target.exports[name], exp.Range, true)
 			}
 		}
 	}
 	return out
 }
 
-func (r *resolver) addExport(out map[string]DeclarationSymbol, st *moduleState, name string, decl DeclarationSymbol, span syntax.Span) {
+func (r *resolver) addExport(out map[string]DeclarationSymbol, st *moduleState, name string, decl DeclarationSymbol, span syntax.Span, reExport bool) {
 	if _, exists := out[name]; exists {
 		r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate public export name", st.key, span)
 		return
 	}
 	out[name] = decl
+	st.exportBindings = append(st.exportBindings, ExportBinding{Module: st.key, PublicName: name, Target: decl.Symbol, TargetAddress: decl.Address, Range: span, ReExport: reExport})
 }
 
 func (r *resolver) resolveAny(st *moduleState, text string) (DeclarationSymbol, bool) {
@@ -802,8 +847,36 @@ func (st *moduleState) addBinding(kind SubjectKind, text string, span syntax.Spa
 func (r *resolver) validateAllIdentity() {
 	for _, key := range sortedModuleKeys(r.modules) {
 		st := r.modules[key]
+		r.validateRootAndOwnerBlocks(st)
 		r.validateReservations(st)
 		r.validateMoves(st)
+		r.validateReservationMoveDisjointness(st)
+	}
+}
+
+func (r *resolver) validateRootAndOwnerBlocks(st *moduleState) {
+	entry := st.kind == ModuleProjectEntry || st.kind == ModulePackEntry
+	if len(st.ast.rootReservedBlocks) > 0 && !entry {
+		r.diag("LDL1302", "duplicate_or_reserved_identity", "root reserved block must be in origin entry", st.key, st.ast.rootReservedBlocks[0])
+	}
+	if len(st.ast.rootReservedBlocks) > 1 {
+		r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate root reserved block", st.key, st.ast.rootReservedBlocks[1])
+	}
+	if len(st.ast.rootMoveBlocks) > 0 && !entry {
+		r.diag("LDL1303", "invalid_move_graph", "root moves block must be in origin entry", st.key, st.ast.rootMoveBlocks[0])
+	}
+	if len(st.ast.rootMoveBlocks) > 1 {
+		r.diag("LDL1303", "invalid_move_graph", "duplicate root moves block", st.key, st.ast.rootMoveBlocks[1])
+	}
+	for _, spans := range st.ast.ownerReserveBlocks {
+		if len(spans) > 1 {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate owner reserve block", st.key, spans[1])
+		}
+	}
+	for _, spans := range st.ast.rowReserveBlocks {
+		if len(spans) > 1 {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate reserve_rows statement", st.key, spans[1])
+		}
 	}
 }
 
@@ -812,6 +885,14 @@ func (r *resolver) validateReservations(st *moduleState) {
 	for _, raw := range st.ast.reservations {
 		if raw.ownerID == "" && isChildKind(raw.kind) {
 			r.diag("LDL1302", "duplicate_or_reserved_identity", "root reservation uses owner-scoped kind", st.key, raw.span)
+			continue
+		}
+		if raw.ownerID == "" && !rootReservationAllowed(st.key.Origin.Kind, raw.kind) {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "reservation kind is not allowed for origin root", st.key, raw.span)
+			continue
+		}
+		if raw.ownerID != "" && !ownerReservationAllowed(raw.ownerKind, raw.kind) {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "reservation kind is not allowed for owner", st.key, raw.span)
 			continue
 		}
 		owner, ok := r.reservationOwner(st, raw)
@@ -834,6 +915,40 @@ func (r *resolver) validateReservations(st *moduleState) {
 	}
 }
 
+func rootReservationAllowed(origin OriginKind, kind SubjectKind) bool {
+	if origin == OriginPack {
+		switch kind {
+		case KindEntityType, KindRelationType, KindQuery, KindView, KindReference:
+			return true
+		default:
+			return false
+		}
+	}
+	return isTopKind(kind)
+}
+
+func rootMoveAllowed(origin OriginKind, kind SubjectKind) bool {
+	if kind == KindProject {
+		return origin == OriginProject
+	}
+	return rootReservationAllowed(origin, kind)
+}
+
+func ownerReservationAllowed(ownerKind, childKind SubjectKind) bool {
+	switch ownerKind {
+	case KindEntityType, KindRelationType:
+		return childKind == KindColumn || childKind == KindConstraint
+	case KindEntity, KindRelation:
+		return childKind == KindRow
+	case KindQuery:
+		return childKind == KindParameter
+	case KindView:
+		return childKind == KindTableColumn || childKind == KindExport
+	default:
+		return false
+	}
+}
+
 func (r *resolver) reservationOwner(st *moduleState, raw rawReservation) (StableSymbol, bool) {
 	if raw.ownerID == "" {
 		return StableSymbol{Origin: st.key.Origin}, true
@@ -853,6 +968,10 @@ func reservationAddress(owner StableSymbol, kind SubjectKind, id string) string 
 func (r *resolver) validateMoves(st *moduleState) {
 	byScope := map[string][]moveEdge{}
 	for _, raw := range st.ast.moves {
+		if raw.ownerID == "" && !rootMoveAllowed(st.key.Origin.Kind, raw.kind) {
+			r.diag("LDL1303", "invalid_move_graph", "move kind is not allowed for origin root", st.key, raw.span)
+			continue
+		}
 		mv, ok := r.materializeMove(st, raw)
 		if !ok {
 			continue
@@ -888,7 +1007,7 @@ func (r *resolver) validateMoves(st *moduleState) {
 						r.diag("LDL1303", "invalid_move_graph", "terminal move target is not active", st.key, e.move.Range)
 					}
 					if e.from != cur {
-						st.moveClosure = append(st.moveClosure, MoveClosure{From: e.from, To: cur})
+						appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: e.from, To: cur})
 					}
 					break
 				}
@@ -899,6 +1018,54 @@ func (r *resolver) validateMoves(st *moduleState) {
 				seen[cur] = true
 				cur = next.to
 			}
+		}
+	}
+	r.materializeDerivedMoveClosure(st)
+}
+
+func (r *resolver) materializeDerivedMoveClosure(st *moduleState) {
+	for _, mv := range st.moves {
+		switch {
+		case mv.Kind == KindProject:
+			for _, decl := range sortedDeclMap(r.symbols) {
+				if decl.Symbol.Origin.Kind != OriginProject || decl.Symbol.Origin.ProjectID != st.key.Origin.ProjectID || len(decl.Symbol.Path) == 0 {
+					continue
+				}
+				from := addressOf(StableSymbol{Origin: Origin{Kind: OriginProject, ProjectID: mv.From}, Path: decl.Symbol.Path})
+				appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: from, To: decl.Address})
+			}
+		case !isChildKind(mv.Kind):
+			target, ok := r.symbols[mv.ToAddress]
+			if !ok {
+				continue
+			}
+			for _, child := range r.childrenOf(target.Symbol) {
+				oldPath := append([]SymbolSegment{{Kind: mv.Kind, ID: mv.From}}, child.Symbol.Path[1:]...)
+				from := addressOf(StableSymbol{Origin: child.Symbol.Origin, Path: oldPath})
+				appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: from, To: child.Address})
+			}
+		}
+	}
+}
+
+func appendMoveClosureUnique(out *[]MoveClosure, item MoveClosure) {
+	for _, existing := range *out {
+		if existing == item {
+			return
+		}
+	}
+	*out = append(*out, item)
+}
+
+func (r *resolver) validateReservationMoveDisjointness(st *moduleState) {
+	reserved := map[string]syntax.Span{}
+	for _, res := range st.reservations {
+		reserved[res.Address] = res.Range
+	}
+	for _, mv := range st.moves {
+		if span, ok := reserved[mv.FromAddress]; ok {
+			r.diag("LDL1302", "duplicate_or_reserved_identity", "move source is also explicitly reserved", st.key, mv.Range)
+			r.diagnostics[len(r.diagnostics)-1].Related = append(r.diagnostics[len(r.diagnostics)-1].Related, DiagnosticRelated{Relation: "conflict", Range: &SourceRange{Origin: sourceOrigin(st.key.Origin), ModulePath: st.key.Path, StartByte: span.Start, EndByte: span.End}, SubjectAddress: mv.FromAddress})
 		}
 	}
 }
@@ -929,20 +1096,18 @@ func (r *resolver) materializeMove(st *moduleState, raw rawMove) (Move, bool) {
 }
 
 func (r *resolver) moveOwner(st *moduleState, raw rawMove) (DeclarationSymbol, bool) {
-	switch raw.kind {
-	case KindColumn, KindConstraint:
-		if owner, ok := st.findTop(raw.ownerID, KindEntityType); ok {
-			return owner, true
-		}
+	switch raw.variant {
+	case "entity_type_column", "entity_type_constraint":
+		return st.findTop(raw.ownerID, KindEntityType)
+	case "relation_type_column", "relation_type_constraint":
 		return st.findTop(raw.ownerID, KindRelationType)
-	case KindRow:
-		if owner, ok := st.findTop(raw.ownerID, KindEntity); ok {
-			return owner, true
-		}
+	case "entity_row":
+		return st.findTop(raw.ownerID, KindEntity)
+	case "relation_row":
 		return st.findTop(raw.ownerID, KindRelation)
-	case KindParameter:
+	case "query_parameter":
 		return st.findTop(raw.ownerID, KindQuery)
-	case KindTableColumn, KindExport:
+	case "view_table_column", "view_export":
 		return st.findTop(raw.ownerID, KindView)
 	default:
 		return DeclarationSymbol{}, false
@@ -966,7 +1131,7 @@ func (r *resolver) selectProject(entry *moduleState) {
 	for _, imp := range entry.ast.imports {
 		if imp.Kind == ImportNamed {
 			for _, item := range imp.Items {
-				target, ok := entry.importedBinding(item.Local)
+				target, ok := r.symbols[item.TargetAddress]
 				if ok {
 					r.selectDecl(target)
 				}
@@ -991,15 +1156,6 @@ func (r *resolver) selectPack(entry *moduleState) {
 	for _, name := range sortedExportNames(entry.exports) {
 		r.selectDecl(entry.exports[name])
 	}
-}
-
-func (st *moduleState) importedBinding(local string) (DeclarationSymbol, bool) {
-	for _, byText := range st.imported {
-		if decl, ok := byText[local]; ok {
-			return decl, true
-		}
-	}
-	return DeclarationSymbol{}, false
 }
 
 func (r *resolver) selectDecl(decl DeclarationSymbol) {
@@ -1061,9 +1217,9 @@ func (r *resolver) result() Result {
 					result.Declarations = append(result.Declarations, decl)
 				}
 			}
-			for public, decl := range st.exports {
-				if r.selected[decl.Address] {
-					result.Exports = append(result.Exports, ExportBinding{Module: st.key, PublicName: public, Target: decl.Symbol, TargetAddress: decl.Address})
+			for _, binding := range st.exportBindings {
+				if r.selected[binding.TargetAddress] {
+					result.Exports = append(result.Exports, binding)
 				}
 			}
 			result.Bindings = append(result.Bindings, st.bindings...)
@@ -1073,6 +1229,7 @@ func (r *resolver) result() Result {
 		}
 	}
 	if !r.syntaxInvalid && !r.hasErrors() {
+		result.Candidates = sortedDeclMap(r.symbols)
 		usedPacks := map[Origin]bool{}
 		for address := range r.selected {
 			decl, ok := r.symbols[address]
@@ -1080,11 +1237,14 @@ func (r *resolver) result() Result {
 				usedPacks[decl.Symbol.Origin] = true
 			}
 		}
+		r.addTransitivePackDependencies(usedPacks)
+		emitted := map[Origin]bool{}
 		for _, install := range sortedKeysPack(r.packs) {
 			info := r.packs[install]
-			if !usedPacks[info.origin] {
+			if !usedPacks[info.origin] || emitted[info.origin] {
 				continue
 			}
+			emitted[info.origin] = true
 			addr := addressOf(StableSymbol{Origin: info.origin})
 			result.Dependencies = append(result.Dependencies, ResolvedPackSummary{Address: addr, CanonicalID: info.pack.CanonicalID, Version: info.pack.Version, Digest: info.pack.Digest})
 		}
@@ -1120,6 +1280,30 @@ func (r *resolver) result() Result {
 	result.Diagnostics = r.diagnostics
 	result.HasErrors = r.hasErrors()
 	return result
+}
+
+func (r *resolver) addTransitivePackDependencies(used map[Origin]bool) {
+	var visit func(Origin)
+	visit = func(origin Origin) {
+		info, ok := r.packByOrigin(origin)
+		if !ok {
+			return
+		}
+		for _, local := range sortedManifestDependencyNames(info.pack.Manifest.Dependencies) {
+			install := info.pack.Dependencies[local]
+			target, ok := r.packs[install]
+			if !ok {
+				continue
+			}
+			if !used[target.origin] {
+				used[target.origin] = true
+				visit(target.origin)
+			}
+		}
+	}
+	for origin := range used {
+		visit(origin)
+	}
 }
 
 func (r *resolver) hasErrors() bool {
@@ -1195,13 +1379,70 @@ func validSymbol(sym StableSymbol) bool {
 	return true
 }
 
-var (
-	semverRe = regexp.MustCompile(`^[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?(?:[+][0-9A-Za-z.-]+)?$`)
-	digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-)
+var digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-func isExactSemver(s string) bool { return semverRe.MatchString(s) }
-func isDigest(s string) bool      { return digestRe.MatchString(s) }
+func isExactSemver(s string) bool {
+	mainAndBuild := strings.Split(s, "+")
+	if len(mainAndBuild) > 2 || (len(mainAndBuild) == 2 && !validDotIdentifiers(mainAndBuild[1], false)) {
+		return false
+	}
+	coreAndPre := strings.Split(mainAndBuild[0], "-")
+	if len(coreAndPre) > 2 || (len(coreAndPre) == 2 && !validDotIdentifiers(coreAndPre[1], true)) {
+		return false
+	}
+	core := strings.Split(coreAndPre[0], ".")
+	if len(core) != 3 {
+		return false
+	}
+	for _, part := range core {
+		if !validNumericIdentifier(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func validDotIdentifiers(s string, checkNumericLeadingZero bool) bool {
+	if s == "" {
+		return false
+	}
+	for _, part := range strings.Split(s, ".") {
+		if part == "" {
+			return false
+		}
+		allDigits := true
+		for _, c := range part {
+			if (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' {
+				if c < '0' || c > '9' {
+					allDigits = false
+				}
+				continue
+			}
+			return false
+		}
+		if checkNumericLeadingZero && allDigits && !validNumericIdentifier(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func validNumericIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	if len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isDigest(s string) bool { return digestRe.MatchString(s) }
 
 func sortedKeysResolved(m map[string]ResolvedPack) []string {
 	keys := make([]string, 0, len(m))
@@ -1245,6 +1486,15 @@ func sortedModuleKeys(m map[ModuleKey]*moduleState) []ModuleKey {
 }
 
 func sortedExportNames(m map[string]DeclarationSymbol) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedManifestDependencyNames(m map[string]PackDependency) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

@@ -76,6 +76,7 @@ type Result struct {
 	Exports      []ExportBinding
 	Bindings     []SourceBinding
 	Declarations []DeclarationSymbol
+	Candidates   []DeclarationSymbol
 	Identity     IdentityHistory
 	Dependencies []ResolvedPackSummary
 	Diagnostics  []Diagnostic
@@ -136,9 +137,12 @@ type ImportDecl struct {
 }
 
 type ImportItem struct {
-	Remote string
-	Local  string
-	Range  syntax.Span
+	Remote        string
+	Local         string
+	Range         syntax.Span
+	Target        StableSymbol
+	TargetAddress string
+	TargetKind    SubjectKind
 }
 
 type ExportKind string
