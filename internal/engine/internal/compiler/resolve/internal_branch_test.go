@@ -116,7 +116,8 @@ func TestImportExportAndReferenceErrorBranches(t *testing.T) {
 	}
 
 	st.ast.declarations = []rawDecl{{kind: KindEntity, id: "e", refs: []rawRef{{kind: KindLayer, text: "missing", span: syntax.Span{Start: 1, End: 2}}}}}
-	r.resolveDeclarationRefs(st)
+	r.bindDeclarationRefs(st)
+	r.validateDeclarationRefs(st, false)
 	if len(r.diagnostics) < 6 {
 		t.Fatalf("resolveDeclarationRefs diagnostics = %+v", r.diagnostics)
 	}
