@@ -50,12 +50,20 @@ rsvg-convert \
   --output "${social_logo}" \
   "${dark_logo_source}"
 
-magick \
-  -size 1280x640 \
-  'canvas:#0d1117' \
-  "${social_logo}" \
-  -gravity center \
-  -composite \
-  -strip \
-  -depth 8 \
-  "${brand_dir}/github-social-preview.png"
+render_social_image() {
+  local dimensions="$1"
+  local output="$2"
+
+  magick \
+    -size "${dimensions}" \
+    'canvas:#0d1117' \
+    "${social_logo}" \
+    -gravity center \
+    -composite \
+    -strip \
+    -depth 8 \
+    "${output}"
+}
+
+render_social_image 1280x640 "${brand_dir}/github-social-preview.png"
+render_social_image 1200x630 "${brand_dir}/og-image.png"

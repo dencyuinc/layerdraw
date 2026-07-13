@@ -28,6 +28,7 @@ and the favicon are generated from them by `tools/generate-brand-assets.sh`.
 | `png/layerdraw-logo-on-dark-1200.png` | Raster logo for dark backgrounds |
 | `favicon.ico` | Multi-resolution 16, 32, and 48 pixel favicon |
 | `github-social-preview.png` | 1280 x 640 GitHub social preview |
+| `og-image.png` | 1200 x 630 Open Graph and large social card image |
 
 Regenerate all derived assets from the repository root:
 
