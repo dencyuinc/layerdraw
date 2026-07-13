@@ -25,6 +25,12 @@ components:
     reviewers: []
     approvers: []
 
+  brand:
+    paths:
+      - brand/**
+    reviewers: []
+    approvers: []
+
   engine:
     paths:
       - internal/engine/**

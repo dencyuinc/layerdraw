@@ -1,4 +1,10 @@
-<h1 align="center">LayerDraw</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/layerdraw-logo-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="brand/layerdraw-logo-on-light.svg">
+    <img src="brand/layerdraw-logo-on-light.svg" alt="LayerDraw" width="640">
+  </picture>
+</p>
 
 <p align="center"><strong>Don’t maintain diagrams. Define the structure.</strong></p>
 <p align="center"><strong>Change one fact. Every view stays current.</strong></p>
