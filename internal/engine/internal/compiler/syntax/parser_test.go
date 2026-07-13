@@ -4,6 +4,7 @@ package syntax
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -148,6 +149,77 @@ func TestParseModuleDocAfterDeclarationDiagnostic(t *testing.T) {
 	}
 }
 
+func TestParseDocCommentItemBlockRestrictions(t *testing.T) {
+	t.Parallel()
+
+	positive := []string{
+		"layers {\n  /// layer docs\n  application \"Application\" @0\n}\n",
+		"entities application_service @application {\n  /// entity docs\n  order_api \"Order API\"\n}\n",
+		"relations writes_to {\n  /// relation docs\n  r: a -> b\n}\n",
+	}
+	for _, src := range positive {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+			if len(got.Diagnostics) != 0 {
+				t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
+			}
+		})
+	}
+
+	negative := []struct {
+		src string
+		raw string
+	}{
+		{src: "rows owner [col] {\n  /// row docs\n  owner row: value\n}\n", raw: "/// row docs"},
+		{src: "relation_rows owner [col] {\n  /// row docs\n  owner row: value\n}\n", raw: "/// row docs"},
+		{src: "moves {\n  /// move docs\n  project old -> new\n}\n", raw: "/// move docs"},
+	}
+	for _, tt := range negative {
+		t.Run(tt.src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(tt.src))
+			assertParseInvariants(t, []byte(tt.src), got)
+			assertOneDiagnosticAtRaw(t, got.Diagnostics, tt.src, tt.raw)
+		})
+	}
+}
+
+func TestParseModuleDocInvalidInDelimitedContexts(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"query q \"Q\" {\n  values [\n    //! bad\n    prod,\n  ]\n}\n",
+		"query q \"Q\" {\n  metadata { owner: \"platform\",\n    //! bad\n    env: prod,\n  }\n}\n",
+		"rows owner [\n  //! bad\n  col,\n] {}\n",
+		"import {\n  //! bad\n  subnet,\n} from \"aws.network\"\n",
+		"export {\n  //! bad\n  subnet,\n} from \"./network.ldl\"\n",
+		"query q \"Q\" {\n  //! bad\n  field value\n}\n",
+	}
+	for _, src := range tests {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(src))
+			assertParseInvariants(t, []byte(src), got)
+			assertOneDiagnosticAtRaw(t, got.Diagnostics, src, "//! bad")
+		})
+	}
+}
+
+func TestParseModuleDocFirstObjectItemRecovery(t *testing.T) {
+	t.Parallel()
+
+	src := "query q \"Q\" {\n  metadata {\n    //! bad\n    owner: \"x\"\n  }\n}\n"
+	got := Parse([]byte(src))
+	assertParseInvariants(t, []byte(src), got)
+	assertOneDiagnosticAtRaw(t, got.Diagnostics, src, "//! bad")
+	counts := countNodes(got.Root)
+	if counts[NodeObject] != 1 || counts[NodeNestedBlock] != 0 {
+		t.Fatalf("counts = %v, want object value recovery without nested block misclassification", counts)
+	}
+}
+
 func TestParseDocCommentStartsDeclarationPhase(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +337,32 @@ func TestParseMultilineObjectValueVersusNestedBlock(t *testing.T) {
 	counts := countNodes(got.Root)
 	if counts[NodeObject] != 1 || counts[NodeNestedBlock] != 1 {
 		t.Fatalf("counts = %v, want one object value and one nested block", counts)
+	}
+}
+
+func TestParseEmptyBlockPrecedenceOverObjectAtStatementTail(t *testing.T) {
+	t.Parallel()
+
+	nested := "query q \"Q\" {\n  select {}\n  source query q {}\n}\n"
+	got := Parse([]byte(nested))
+	assertParseInvariants(t, []byte(nested), got)
+	if len(got.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
+	}
+	counts := countNodes(got.Root)
+	if counts[NodeNestedBlock] != 2 || counts[NodeObject] != 0 {
+		t.Fatalf("counts = %v, want two nested empty blocks and no object values", counts)
+	}
+
+	unambiguousObjects := "query q \"Q\" {\n  list [{}]\n  metadata { nested: {} }\n  nested_block {\n    field value\n  }\n}\n"
+	got = Parse([]byte(unambiguousObjects))
+	assertParseInvariants(t, []byte(unambiguousObjects), got)
+	if len(got.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
+	}
+	counts = countNodes(got.Root)
+	if counts[NodeObject] != 3 || counts[NodeNestedBlock] != 1 {
+		t.Fatalf("counts = %v, want three unambiguous objects and one true nested block", counts)
 	}
 }
 
@@ -401,6 +499,38 @@ func TestParseEBNFPositiveMatrix(t *testing.T) {
 			if len(got.Diagnostics) != 0 {
 				t.Fatalf("Diagnostics = %+v, want none for %q", got.Diagnostics, src)
 			}
+		})
+	}
+}
+
+func TestParseMoveItemKindAndArityMatrix(t *testing.T) {
+	t.Parallel()
+
+	valid := "moves {\n  project old_project -> new_project\n  entity_type old_entity_type -> new_entity_type\n  relation_type old_relation_type -> new_relation_type\n  layer old_layer -> new_layer\n  entity old_entity -> new_entity\n  relation old_relation -> new_relation\n  query old_query -> new_query\n  view old_view -> new_view\n  reference old_reference -> new_reference\n  entity_type_column owner old_column -> new_column\n  entity_type_constraint owner old_constraint -> new_constraint\n  relation_type_column owner old_column -> new_column\n  relation_type_constraint owner old_constraint -> new_constraint\n  entity_row owner old_row -> new_row\n  relation_row owner old_row -> new_row\n  query_parameter owner old_parameter -> new_parameter\n  view_table_column owner old_column -> new_column\n  view_export owner old_export -> new_export\n}\n"
+	got := Parse([]byte(valid))
+	assertParseInvariants(t, []byte(valid), got)
+	if len(got.Diagnostics) != 0 {
+		t.Fatalf("Diagnostics = %+v, want none", got.Diagnostics)
+	}
+	if moves := countNodes(got.Root)[NodeMoveItem]; moves != 18 {
+		t.Fatalf("move items = %d, want 18", moves)
+	}
+
+	tests := []struct {
+		name string
+		src  string
+		raw  string
+	}{
+		{name: "unknown kind", src: "moves {\n  unknown_kind old -> new\n}\n", raw: "unknown_kind"},
+		{name: "top kind child arity", src: "moves {\n  project owner old -> new\n}\n", raw: "old"},
+		{name: "child kind top arity", src: "moves {\n  entity_row old -> new\n}\n", raw: "->"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(tt.src))
+			assertParseInvariants(t, []byte(tt.src), got)
+			assertOneDiagnosticAtRaw(t, got.Diagnostics, tt.src, tt.raw)
 		})
 	}
 }
@@ -602,5 +732,21 @@ func assertParseInvariants(t *testing.T, src []byte, got ParseResult) {
 		if diag.Code != "LDL1001" && diag.Code != "LDL1101" {
 			t.Fatalf("unexpected diagnostic identity: %+v", diag)
 		}
+	}
+}
+
+func assertOneDiagnosticAtRaw(t *testing.T, diagnostics []Diagnostic, src string, raw string) {
+	t.Helper()
+	start := strings.Index(src, raw)
+	if start < 0 {
+		t.Fatalf("raw marker %q not found in source", raw)
+	}
+	want := Span{Start: start, End: start + len(raw)}
+	if len(diagnostics) != 1 {
+		t.Fatalf("diagnostics at %q = %+v, want exactly one", raw, diagnostics)
+	}
+	diag := diagnostics[0]
+	if diag.Span != want || diag.Code != "LDL1101" || diag.MessageKey != "invalid_structure_syntax" {
+		t.Fatalf("diagnostic at %q = %+v, want LDL1101 invalid_structure_syntax at %+v", raw, diag, want)
 	}
 }

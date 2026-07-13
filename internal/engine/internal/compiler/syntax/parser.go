@@ -35,7 +35,7 @@ func (p *parser) parseFile() *Node {
 			if sawContent {
 				p.diagnostics = append(p.diagnostics, invalidStructure(p.peek().Span, "module documentation must appear before imports and declarations"))
 			}
-			file.append(p.parseTriviaToken())
+			file.append(p.parseTriviaTokenAllowModuleDoc())
 		case p.at(TokenNewline) || p.at(TokenLineComment):
 			file.append(p.parseTriviaToken())
 		case p.atKeyword("import"):
@@ -160,10 +160,11 @@ func (p *parser) parseItemBlock(item string) *Node {
 		return n
 	}
 	p.expectNewlineInto(n)
+	allowDocComment := item == "layer" || item == "entity" || item == "relation"
 	for !p.at(TokenEOF) && !p.at(TokenRBrace) {
 		if p.atTriviaToken() || p.at(TokenDocComment) {
-			if p.at(TokenModuleDoc) {
-				p.diagnostics = append(p.diagnostics, invalidStructure(p.peek().Span, "module documentation is only valid at the start of a file"))
+			if p.at(TokenDocComment) && !allowDocComment {
+				p.diagnostics = append(p.diagnostics, invalidStructure(p.peek().Span, "doc comments are not valid in this item block"))
 			}
 			n.append(p.parseTriviaToken())
 			continue
@@ -219,11 +220,38 @@ func (p *parser) parseRowItem() *Node {
 }
 
 func (p *parser) parseMoveItem() *Node {
-	n := newNode(NodeMoveItem, p.expect(TokenIdentifier), p.expect(TokenIdentifier))
-	if !p.at(TokenArrow) {
-		n.append(p.expect(TokenIdentifier))
+	kind := p.peek()
+	n := newNode(NodeMoveItem, p.expect(TokenIdentifier))
+	if kind.Kind != TokenIdentifier {
+		n.append(p.errorNodeUntil("expected move kind", p.isLineOrBlockBoundary))
+		return n
 	}
-	n.append(p.expect(TokenArrow), p.expect(TokenIdentifier))
+	switch {
+	case isTopMoveKind(kind.Raw):
+		n.append(p.expect(TokenIdentifier))
+		if p.at(TokenIdentifier) {
+			n.append(p.errorNode("top-level move kind does not take an owner"))
+		}
+		n.append(p.expect(TokenArrow), p.expect(TokenIdentifier))
+	case isChildMoveKind(kind.Raw):
+		if p.at(TokenArrow) {
+			n.append(p.errorNodeUntil("child move kind requires owner and source identifiers", p.isLineOrBlockBoundary))
+			return n
+		}
+		n.append(p.expect(TokenIdentifier))
+		if p.at(TokenArrow) {
+			n.append(p.errorNodeUntil("child move kind requires owner and source identifiers", p.isLineOrBlockBoundary))
+			return n
+		}
+		n.append(p.expect(TokenIdentifier), p.expect(TokenArrow), p.expect(TokenIdentifier))
+	default:
+		p.diagnostics = append(p.diagnostics, invalidStructure(kind.Span, "unknown move kind"))
+		err := &Node{Kind: NodeError, Span: kind.Span}
+		for !p.at(TokenEOF) && !p.isLineOrBlockBoundary() {
+			err.append(p.consume())
+		}
+		n.append(err)
+	}
 	return n
 }
 
@@ -285,9 +313,6 @@ func (p *parser) parseBlock() *Node {
 	p.expectNewlineInto(n)
 	for !p.at(TokenEOF) && !p.at(TokenRBrace) {
 		if p.atTriviaToken() || p.at(TokenDocComment) {
-			if p.at(TokenModuleDoc) {
-				p.diagnostics = append(p.diagnostics, invalidStructure(p.peek().Span, "module documentation is only valid at the start of a file"))
-			}
 			n.append(p.parseTriviaToken())
 			continue
 		}
@@ -323,12 +348,12 @@ func (p *parser) looksObject() bool {
 		return false
 	}
 	if p.look(1).Kind == TokenRBrace {
-		return true
+		return false
 	}
 	idx := p.pos + 1
 	for idx < len(p.tokens) {
 		switch p.tokens[idx].Kind {
-		case TokenNewline, TokenLineComment:
+		case TokenNewline, TokenLineComment, TokenModuleDoc:
 			idx++
 			continue
 		default:
@@ -515,6 +540,13 @@ func (p *parser) parseDelimited(listKind NodeKind, itemKind NodeKind, stop Token
 }
 
 func (p *parser) parseTriviaToken() *Node {
+	if p.at(TokenModuleDoc) {
+		p.diagnostics = append(p.diagnostics, invalidStructure(p.peek().Span, "module documentation is only valid at the start of a file"))
+	}
+	return newNode(NodeComment, p.consume())
+}
+
+func (p *parser) parseTriviaTokenAllowModuleDoc() *Node {
 	return newNode(NodeComment, p.consume())
 }
 
@@ -685,4 +717,22 @@ func (p *parser) look(offset int) Token {
 		return p.tokens[len(p.tokens)-1]
 	}
 	return p.tokens[idx]
+}
+
+func isTopMoveKind(kind string) bool {
+	switch kind {
+	case "project", "entity_type", "relation_type", "layer", "entity", "relation", "query", "view", "reference":
+		return true
+	default:
+		return false
+	}
+}
+
+func isChildMoveKind(kind string) bool {
+	switch kind {
+	case "entity_type_column", "entity_type_constraint", "relation_type_column", "relation_type_constraint", "entity_row", "relation_row", "query_parameter", "view_table_column", "view_export":
+		return true
+	default:
+		return false
+	}
 }
