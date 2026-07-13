@@ -32,6 +32,14 @@ Contributor information is handled under the [LayerDraw Contributor Privacy Noti
 - Do not add secrets, customer data, private SaaS configuration, or local agent configuration.
 - Do not introduce dependencies or licenses that conflict with the licensing matrix in [docs/legal/README.md](docs/legal/README.md).
 
+## Work Tracking
+
+GitHub Issues are LayerDraw's only tickets and work items. Implementation and normative changes should start from a triaged Issue with explicit acceptance criteria. Maintainers own labels, Project fields, Milestones, and workflow transitions; external contributors are not expected to have permission to set them.
+
+Link an implementation pull request with `Closes #<issue>`. The linked Issue owns type, area, priority, Size, and Milestone metadata, so do not duplicate those values on the pull request. Apply `breaking change` directly to a pull request when it changes a public compatibility contract.
+
+Issue-free pull requests are limited to approved dependency automation, release automation, and maintainer-owned XS typo or mechanical metadata corrections that do not change public behavior, contracts, dependencies, licensing, or security posture. Questions and uncommitted ideas belong in Discussions. The normative lifecycle, Milestone, and community-label rules are defined in [Repository Governance and Delivery](docs/repository-governance-and-delivery.md#641-work-item-lifecycle).
+
 ## Local Development
 
 LayerDraw pins Go and the current production LTS line of Node.js in `.go-version`, `.node-version`, and `.nvmrc`, and pins pnpm through the root `packageManager` field. NVM users can run `nvm use` from the repository root. After installing the pinned Go and Node.js versions, use the repository-level task contract:
