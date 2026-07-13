@@ -188,7 +188,7 @@ moves {
   project old -> wrong
 }
 `)}}})
-	if !hasDiag(got, "LDL1102") || !hasDiag(got, "LDL1303") {
+	if !hasDiag(got, "LDL1302") || !hasDiag(got, "LDL1303") {
 		t.Fatalf("invalid owner diagnostics = %+v", got.Diagnostics)
 	}
 }

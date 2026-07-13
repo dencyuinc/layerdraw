@@ -46,6 +46,39 @@ reserved {
 	}
 }
 
+func TestAcceptanceKnownReservationCategoryInWrongScopeKeepsIdentityDiagnostic(t *testing.T) {
+	t.Parallel()
+	project := Resolve(Input{Mode: CompileProject, EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{
+		"document.ldl": parse(`project p "P" {}
+reserved {
+  columns [orphan_column]
+}
+`),
+	}}})
+	if diagnosticCodeCount(project.Diagnostics, "LDL1102") != 0 || diagnosticCodeCount(project.Diagnostics, "LDL1302") != 1 {
+		t.Fatalf("project wrong-scope diagnostics = %+v", project.Diagnostics)
+	}
+	if len(project.CandidateIdentity.Reservations) != 0 {
+		t.Fatalf("wrong-scope project reservation leaked identity: %+v", project.CandidateIdentity.Reservations)
+	}
+
+	resolvedPack := baseInput().Packs.Installs["aws"]
+	resolvedPack.Files = map[string]string{"pack.ldl": testDigest("a")}
+	resolvedPack.SourceFiles = map[string]SourceFile{"pack.ldl": parse(`reserved {
+  layers [project_only_layer]
+}
+`)}
+	pack := Resolve(Input{Mode: CompilePack, RootPackID: resolvedPack.CanonicalID, EntryPath: resolvedPack.Entry, Packs: ResolvedDependencies{
+		Format: "layerdraw-resolved", FormatVersion: 1, Language: 1, Installs: map[string]ResolvedPack{"aws": resolvedPack},
+	}})
+	if diagnosticCodeCount(pack.Diagnostics, "LDL1102") != 0 || diagnosticCodeCount(pack.Diagnostics, "LDL1302") != 1 {
+		t.Fatalf("pack wrong-scope diagnostics = %+v", pack.Diagnostics)
+	}
+	if len(pack.CandidateIdentity.Reservations) != 0 {
+		t.Fatalf("wrong-scope pack reservation leaked identity: %+v", pack.CandidateIdentity.Reservations)
+	}
+}
+
 func TestAcceptanceReservationMalformedMemberAndReserveRowsDoNotLeakIdentity(t *testing.T) {
 	t.Parallel()
 	malformed := `project p "P" {}
@@ -239,6 +272,16 @@ func schemaDiagnostic(diagnostics []Diagnostic, message string) *Diagnostic {
 		}
 	}
 	return nil
+}
+
+func diagnosticCodeCount(diagnostics []Diagnostic, code string) int {
+	count := 0
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code {
+			count++
+		}
+	}
+	return count
 }
 
 func TestAcceptanceReservationDiagnosticsHaveNoSemanticDuplicates(t *testing.T) {

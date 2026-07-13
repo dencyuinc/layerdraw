@@ -984,14 +984,7 @@ func (r *resolver) validateReservationSchemas(st *moduleState) {
 			}
 			headSpan := head[0].Span
 			kind, known := reservationKind(head[0].Raw)
-			allowed := known
-			if allowed && block.ownerID == "" {
-				allowed = rootReservationAllowed(st.key.Origin.Kind, kind)
-			}
-			if allowed && block.ownerID != "" {
-				allowed = ownerReservationAllowed(block.ownerKind, kind)
-			}
-			if !known || !allowed {
+			if !known {
 				r.diag("LDL1102", "unknown_or_duplicate_schema_member", "unknown reservation category", st.key, headSpan)
 				continue
 			}
