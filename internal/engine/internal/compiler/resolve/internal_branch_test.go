@@ -30,6 +30,34 @@ func TestResolverDefensiveBranches(t *testing.T) {
 	}
 }
 
+func TestSemanticSymbolAccessors(t *testing.T) {
+	t.Parallel()
+
+	origin := Origin{Kind: OriginProject, ProjectID: "p"}
+	entity := StableSymbol{Origin: origin, Path: []SymbolSegment{{Kind: KindEntityType, ID: "service"}}}
+	if got := StableAddress(entity); got != "ldl:project:p:entity-type:service" {
+		t.Fatalf("stable address = %q", got)
+	}
+	topLevel := MoveClosure{toSymbol: entity}
+	if got := MoveClosureKind(topLevel); got != KindEntityType {
+		t.Fatalf("top-level closure kind = %q", got)
+	}
+	if owner, ok := MoveClosureOwner(topLevel); ok {
+		t.Fatalf("top-level closure owner = %+v", owner)
+	}
+	child := MoveClosure{toSymbol: StableSymbol{Origin: origin, Path: append(append([]SymbolSegment{}, entity.Path...), SymbolSegment{Kind: KindColumn, ID: "environment"})}}
+	if got := MoveClosureKind(child); got != KindColumn {
+		t.Fatalf("child closure kind = %q", got)
+	}
+	owner, ok := MoveClosureOwner(child)
+	if !ok || StableAddress(owner) != StableAddress(entity) {
+		t.Fatalf("child closure owner = %+v, %v", owner, ok)
+	}
+	if got := MoveClosureKind(MoveClosure{toSymbol: StableSymbol{Origin: origin}}); got != KindProject {
+		t.Fatalf("project closure kind = %q", got)
+	}
+}
+
 func TestResolveSpecifierBranches(t *testing.T) {
 	t.Parallel()
 

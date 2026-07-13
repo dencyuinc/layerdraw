@@ -74,6 +74,19 @@ func (b body) stmt(name string) *item {
 	return nil
 }
 
+func (b body) item(name string) *item {
+	for i := range b.items {
+		if b.items[i].name == name {
+			return &b.items[i]
+		}
+	}
+	return nil
+}
+
+func (b body) has(name string) bool {
+	return b.item(name) != nil
+}
+
 func (b body) block(name string) *item {
 	for i := range b.items {
 		if b.items[i].name == name && b.items[i].block {
@@ -222,6 +235,7 @@ var forbiddenAnnotationKeys = set(
 	"binary", "binary_data", "binary_payload", "image_data", "image_bytes", "asset_bytes",
 	"javascript", "javascript_source", "js_source", "go_source", "wasm", "wasm_module", "source_code", "script", "shell", "shell_command", "command", "callback",
 	"environment_read", "environment_variable", "env_var", "getenv",
+	"state_version", "generated_state", "executable",
 )
 
 var environmentReadPattern = regexp.MustCompile(`\$\{[A-Z][A-Z0-9_]*\}`)
@@ -229,56 +243,80 @@ var bearerValuePattern = regexp.MustCompile(`(?i)^bearer ([A-Za-z0-9._~+/=-]+)$`
 var authorizationValuePattern = regexp.MustCompile(`(?i)^(?:proxy-)?authorization\s*:\s*(?:basic|bearer)\s+\S+\s*$`)
 var goPackagePattern = regexp.MustCompile(`(?m)^package [A-Za-z_][A-Za-z0-9_]*\s*$`)
 var goDeclarationPattern = regexp.MustCompile(`(?m)^(?:func|type|var|const|import)\b`)
+var javascriptVariableArrowPattern = regexp.MustCompile(`(?s)^(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>`)
+var javascriptParenthesizedArrowPattern = regexp.MustCompile(`(?s)^(?:async\s*)?\([^)]*\)\s*=>`)
 
 func forbiddenAnnotationKey(key string) bool {
 	name := canonicalAnnotationName(key)
-	if name == "password_policy" || strings.HasSuffix(name, "_password_policy") {
-		return false
-	}
-	if forbiddenAnnotationKeys[name] {
-		return true
-	}
+	words := strings.FieldsFunc(name, func(r rune) bool { return r == '_' })
 	for forbidden := range forbiddenAnnotationKeys {
-		if strings.HasSuffix(name, "_"+forbidden) {
+		if forbidden == "token" {
+			continue
+		}
+		phrase := strings.Split(forbidden, "_")
+		for start := 0; start+len(phrase) <= len(words); start++ {
+			if forbidden == "password" || forbidden == "passwd" {
+				if start+1 < len(words) && words[start+1] == "policy" {
+					continue
+				}
+			}
+			if slicesEqual(words[start:start+len(phrase)], phrase) {
+				return true
+			}
+		}
+	}
+	for i, word := range words {
+		if word != "token" {
+			continue
+		}
+		if len(words) == 1 || annotationTokenHasCredentialContext(words, i) {
 			return true
 		}
 	}
-	return annotationNameContainsWord(name, "credential") ||
-		annotationNameContainsWord(name, "credentials") ||
-		annotationNameContainsWord(name, "executable") ||
-		name == "state_version" || strings.HasSuffix(name, "_state_version") ||
-		name == "generated_state" || strings.HasSuffix(name, "_generated_state")
+	return false
 }
 
-func annotationNameContainsWord(name, word string) bool {
-	padded := "_" + name + "_"
-	return strings.Contains(padded, "_"+word+"_")
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func annotationTokenHasCredentialContext(words []string, index int) bool {
+	credentialContext := set("access", "refresh", "auth", "authorization", "bearer", "api", "client", "secret", "credential", "credentials", "oauth", "session", "account")
+	return index > 0 && credentialContext[words[index-1]] || index+1 < len(words) && credentialContext[words[index+1]]
 }
 
 func canonicalAnnotationName(key string) string {
-	trimmed := strings.TrimSpace(key)
+	runes := []rune(strings.TrimSpace(key))
 	var out strings.Builder
 	lastUnderscore := false
-	for i, r := range trimmed {
-		if r == '-' || r == '.' || r == '/' || r == ' ' {
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
 			if out.Len() > 0 && !lastUnderscore {
 				out.WriteByte('_')
 				lastUnderscore = true
 			}
 			continue
 		}
-		if r >= 'A' && r <= 'Z' {
-			previousLowerOrDigit := i > 0 && ((trimmed[i-1] >= 'a' && trimmed[i-1] <= 'z') || (trimmed[i-1] >= '0' && trimmed[i-1] <= '9'))
-			nextLower := i+1 < len(trimmed) && trimmed[i+1] >= 'a' && trimmed[i+1] <= 'z'
+		if unicode.IsUpper(r) {
+			previousLowerOrDigit := i > 0 && (unicode.IsLower(runes[i-1]) || unicode.IsDigit(runes[i-1]))
+			nextLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
 			if out.Len() > 0 && !lastUnderscore && (previousLowerOrDigit || nextLower) {
 				out.WriteByte('_')
 			}
-			out.WriteRune(r + ('a' - 'A'))
+			out.WriteRune(unicode.ToLower(r))
 			lastUnderscore = false
 			continue
 		}
-		out.WriteRune(r)
-		lastUnderscore = r == '_'
+		out.WriteRune(unicode.ToLower(r))
+		lastUnderscore = false
 	}
 	return strings.Trim(out.String(), "_")
 }
@@ -294,11 +332,14 @@ func forbiddenAnnotationValue(value string) bool {
 			return true
 		}
 	}
-	firstLine := lower
+	firstLine := strings.ToUpper(trimmed)
 	if line, _, ok := strings.Cut(firstLine, "\n"); ok {
 		firstLine = strings.TrimSpace(line)
 	}
-	if strings.HasPrefix(firstLine, "-----begin ") && strings.HasSuffix(firstLine, " private key-----") {
+	if strings.HasPrefix(firstLine, "-----BEGIN ") && strings.HasSuffix(firstLine, "-----") && strings.Contains(firstLine, " PRIVATE KEY") {
+		return true
+	}
+	if javascriptVariableArrowPattern.MatchString(trimmed) || javascriptParenthesizedArrowPattern.MatchString(trimmed) {
 		return true
 	}
 	if authorizationValuePattern.MatchString(trimmed) {
@@ -346,7 +387,7 @@ func (c *compiler) optionalString(b body, name string, src resolve.DeclarationSo
 }
 
 func (c *compiler) requiredString(b body, name string, src resolve.DeclarationSource, subject, owner, code, key string) string {
-	if b.stmt(name) == nil {
+	if !b.has(name) {
 		c.diag(code, key, src, declarationHeaderSpan(src), "missing required string", subject, owner)
 		return ""
 	}
@@ -451,8 +492,14 @@ func containsControl(raw string) bool {
 
 func (c *compiler) representation(b body, src resolve.DeclarationSource, subject, owner string) Representation {
 	it := b.stmt("representation")
-	if it == nil || len(it.args) == 0 {
-		c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, declarationHeaderSpan(src), "missing representation", subject, owner)
+	if it == nil {
+		if !b.has("representation") {
+			c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, declarationHeaderSpan(src), "missing representation", subject, owner)
+		}
+		return Representation{}
+	}
+	if len(it.args) == 0 {
+		c.diag("LDL1401", "scalar_or_column_type_mismatch", src, it.span, "invalid representation", subject, owner)
 		return Representation{}
 	}
 	switch it.args[0].raw {

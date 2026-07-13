@@ -157,14 +157,14 @@ func TestDefinitionCommonColumnAndEndpointErrorBranches(t *testing.T) {
 	if len(cols) != 1 {
 		t.Fatalf("columns = %+v", cols)
 	}
-	ep := c.endpoint(&item{args: []value{
+	ep := c.endpoint(body{items: []item{{name: "from", args: []value{
 		{raw: "role", kind: syntax.TokenIdentifier},
 		{raw: "bad", kind: syntax.TokenIdentifier, span: syntax.Span{Start: 13, End: 14}},
 		{raw: "types", kind: syntax.TokenIdentifier},
 		{raw: "server", kind: syntax.TokenIdentifier, span: syntax.Span{Start: 0, End: 0}, node: listNode("server")},
 		{raw: "layers", kind: syntax.TokenIdentifier},
 		{raw: "missing_layer", kind: syntax.TokenIdentifier, span: syntax.Span{Start: 14, End: 15}, node: listNode("missing_layer")},
-	}}, resolve.KindEntityType, owner, src)
+	}}}}, "from", resolve.KindEntityType, owner, src)
 	if len(ep.EntityTypeAddresses) != 1 {
 		t.Fatalf("endpoint = %+v", ep)
 	}

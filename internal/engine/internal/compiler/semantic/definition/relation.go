@@ -12,10 +12,17 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/syntax"
 )
 
-func (c *compiler) endpoint(it *item, entityKind resolve.SubjectKind, owner resolve.DeclarationSymbol, src resolve.DeclarationSource) EndpointRule {
+func (c *compiler) endpoint(b body, name string, entityKind resolve.SubjectKind, owner resolve.DeclarationSymbol, src resolve.DeclarationSource) EndpointRule {
 	var ep EndpointRule
-	if it == nil || len(it.args) == 0 {
-		c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", src, declarationHeaderSpan(src), "missing endpoint", owner.Address, "")
+	it := b.stmt(name)
+	if it == nil {
+		if !b.has(name) {
+			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", src, declarationHeaderSpan(src), "missing endpoint", owner.Address, "")
+		}
+		return ep
+	}
+	if len(it.args) == 0 {
+		c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", src, it.span, "invalid endpoint role", owner.Address, "")
 		return ep
 	}
 	if it.args[0].kind != syntax.TokenIdentifier {
@@ -274,7 +281,9 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 			f := FlowProjection{SourceEndpoint: source, TargetEndpoint: target}
 			connectorValid := true
 			if connector := it.nested.stmt("connector_kind"); connector == nil {
-				c.diag("LDL1504", "invalid_projection_contract", src, header, "missing connector kind", r.Address, "")
+				if !it.nested.has("connector_kind") {
+					c.diag("LDL1504", "invalid_projection_contract", src, header, "missing connector kind", r.Address, "")
+				}
 				connectorValid = false
 			} else {
 				connector, valid := c.optionalEnumDefaultValid(it.nested, "connector_kind", "", set("sequence", "control", "data", "message", "error"), src, r.Address, "", "LDL1504", "invalid_projection_contract")
@@ -461,7 +470,9 @@ func (c *compiler) endpointField(b body, name string, src resolve.DeclarationSou
 
 func (c *compiler) requiredEndpoint(b body, name string, src resolve.DeclarationSource, missingSpan syntax.Span, subject string) (ProjectionEndpoint, bool) {
 	if b.stmt(name) == nil {
-		c.diag("LDL1504", "invalid_projection_contract", src, missingSpan, "missing endpoint", subject, "")
+		if !b.has(name) {
+			c.diag("LDL1504", "invalid_projection_contract", src, missingSpan, "missing endpoint", subject, "")
+		}
 		return "", false
 	}
 	value, valid := c.optionalEnumDefaultValid(b, name, "", endpointSet(), src, subject, "", "LDL1504", "invalid_projection_contract")
@@ -471,7 +482,9 @@ func (c *compiler) requiredEndpoint(b body, name string, src resolve.Declaration
 func (c *compiler) requiredBool(b body, name string, src resolve.DeclarationSource, missingSpan syntax.Span, subject string) (bool, bool) {
 	it := b.stmt(name)
 	if it == nil {
-		c.diag("LDL1504", "invalid_projection_contract", src, missingSpan, "missing required boolean", subject, "")
+		if !b.has(name) {
+			c.diag("LDL1504", "invalid_projection_contract", src, missingSpan, "missing required boolean", subject, "")
+		}
 		return false, false
 	}
 	if len(it.args) != 1 || (it.args[0].raw != "true" && it.args[0].raw != "false") {

@@ -18,7 +18,7 @@ type Result struct {
 	Layers        []Layer
 	References    []Reference
 	Dependencies  []resolve.ResolvedPackSummary
-	Identity      resolve.IdentityHistory
+	Identity      IdentityHistory
 	Diagnostics   []resolve.Diagnostic
 	HasErrors     bool
 }
@@ -26,6 +26,26 @@ type Result struct {
 type Root struct {
 	Mode    resolve.CompileMode
 	Address string
+}
+
+type IdentityHistory struct {
+	RootReservations map[string]map[resolve.SubjectKind][]string
+	Moves            []Move
+	MoveClosure      []MoveResolution
+}
+
+type Move struct {
+	Kind         resolve.SubjectKind
+	OwnerAddress *string
+	OldAddress   string
+	NewAddress   string
+}
+
+type MoveResolution struct {
+	Kind            resolve.SubjectKind
+	OwnerAddress    *string
+	SourceAddress   string
+	TerminalAddress string
 }
 
 type Pack struct {

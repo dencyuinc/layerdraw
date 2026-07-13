@@ -4,6 +4,7 @@ package definition
 
 import (
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -37,7 +38,7 @@ func Compile(input Input) Result {
 	out := Result{
 		Root:          Root{Mode: input.Resolve.Mode, Address: input.Resolve.RootAddress},
 		Dependencies:  append([]resolve.ResolvedPackSummary{}, input.Resolve.Dependencies...),
-		Identity:      input.Resolve.Identity,
+		Identity:      semanticIdentity(input.Resolve),
 		Diagnostics:   append([]resolve.Diagnostic{}, input.Resolve.Diagnostics...),
 		HasErrors:     input.Resolve.HasErrors,
 		EntityTypes:   []EntityType{},
@@ -68,6 +69,82 @@ func Compile(input Input) Result {
 	resolve.SortDiagnostics(out.Diagnostics)
 	out.HasErrors = out.HasErrors || len(c.diagnostics) > 0
 	return out
+}
+
+func semanticIdentity(input resolve.Result) IdentityHistory {
+	out := IdentityHistory{
+		RootReservations: map[string]map[resolve.SubjectKind][]string{},
+		Moves:            []Move{},
+		MoveClosure:      []MoveResolution{},
+	}
+	if input.RootAddress != "" {
+		originKind := resolve.OriginProject
+		if input.Mode == resolve.CompilePack {
+			originKind = resolve.OriginPack
+		}
+		ensureRootReservations(out.RootReservations, input.RootAddress, originKind)
+	}
+	for _, dependency := range input.Dependencies {
+		ensureRootReservations(out.RootReservations, dependency.Address, resolve.OriginPack)
+	}
+	for _, reservation := range input.Identity.Reservations {
+		if len(reservation.Owner.Path) != 0 {
+			continue
+		}
+		rootAddress := resolve.StableAddress(reservation.Owner)
+		sets := ensureRootReservations(out.RootReservations, rootAddress, reservation.Owner.Origin.Kind)
+		sets[reservation.Kind] = append(sets[reservation.Kind], reservation.ID)
+	}
+	for _, sets := range out.RootReservations {
+		for kind := range sets {
+			sort.Strings(sets[kind])
+		}
+	}
+	for _, move := range input.Identity.Moves {
+		out.Moves = append(out.Moves, Move{
+			Kind:         move.Kind,
+			OwnerAddress: semanticOwnerAddress(move.Owner),
+			OldAddress:   move.FromAddress,
+			NewAddress:   move.ToAddress,
+		})
+	}
+	for _, move := range input.Identity.MoveClosure {
+		var ownerAddress *string
+		if owner, ok := resolve.MoveClosureOwner(move); ok {
+			ownerAddress = semanticOwnerAddress(&owner)
+		}
+		out.MoveClosure = append(out.MoveClosure, MoveResolution{
+			Kind:            resolve.MoveClosureKind(move),
+			OwnerAddress:    ownerAddress,
+			SourceAddress:   move.From,
+			TerminalAddress: move.To,
+		})
+	}
+	return out
+}
+
+func ensureRootReservations(roots map[string]map[resolve.SubjectKind][]string, address string, originKind resolve.OriginKind) map[resolve.SubjectKind][]string {
+	if existing, ok := roots[address]; ok {
+		return existing
+	}
+	kinds := []resolve.SubjectKind{resolve.KindEntityType, resolve.KindRelationType, resolve.KindQuery, resolve.KindView, resolve.KindReference}
+	if originKind == resolve.OriginProject {
+		kinds = append(kinds, resolve.KindLayer, resolve.KindEntity, resolve.KindRelation)
+	}
+	sets := make(map[resolve.SubjectKind][]string, len(kinds))
+	for _, kind := range kinds {
+		sets[kind] = []string{}
+	}
+	roots[address] = sets
+	return sets
+}
+
+func semanticOwnerAddress(owner *resolve.StableSymbol) *string {
+	if owner == nil {
+		return nil
+	}
+	address := resolve.StableAddress(*owner)
+	return &address
 }
 
 func LayersByDisplayOrder(layers []Layer) []Layer {
@@ -207,8 +284,8 @@ func (c *compiler) compileRelationType(d resolve.DeclarationSymbol, src resolve.
 	r.Common = c.common(body, src, d.Address, "")
 	r.AllowSelf = c.optionalBoolDefault(body, "allow_self", false, src, d.Address, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
 	r.DuplicatePolicy = DuplicatePolicy(c.optionalEnumDefault(body, "duplicate_policy", string(r.DuplicatePolicy), duplicatePolicies, src, d.Address, "", "LDL1501", "invalid_relation_endpoint_or_self_rule"))
-	r.From = c.endpoint(body.stmt("from"), resolve.KindEntityType, d, src)
-	r.To = c.endpoint(body.stmt("to"), resolve.KindEntityType, d, src)
+	r.From = c.endpoint(body, "from", resolve.KindEntityType, d, src)
+	r.To = c.endpoint(body, "to", resolve.KindEntityType, d, src)
 	r.Cardinality = c.cardinality(body.block("cardinality"), r.Cardinality, src, d.Address)
 	r.ForwardLabel = c.requiredString(body, "label", src, d.Address, "", "LDL1501", "invalid_relation_endpoint_or_self_rule")
 	r.ReverseLabel = c.optionalString(body, "reverse", src, d.Address, "")

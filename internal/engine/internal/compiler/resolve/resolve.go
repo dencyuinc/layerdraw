@@ -1771,10 +1771,17 @@ func (r *resolver) moveSelected(mv Move) bool {
 	if mv.Owner != nil {
 		return r.selected[addressOf(*mv.Owner)]
 	}
-	if mv.Kind == KindProject {
-		return r.selected[mv.ToAddress]
+	if r.selected[mv.ToAddress] {
+		return true
 	}
-	return r.selected[mv.ToAddress]
+	for _, st := range r.modules {
+		for _, closure := range st.moveClosure {
+			if closure.From == mv.FromAddress && r.selected[closure.To] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *resolver) addTransitivePackDependencies(used map[Origin]bool) {

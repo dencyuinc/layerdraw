@@ -95,7 +95,7 @@ func TestEndpointClosedSchema(t *testing.T) {
 		from    string
 		message string
 	}{
-		{name: "missing role", from: `from`, message: "missing endpoint"},
+		{name: "missing role", from: `from`, message: "invalid endpoint role"},
 		{name: "selector order", from: `from source layers [app] types [endpoint]`, message: "endpoint selectors out of order"},
 		{name: "duplicate selector", from: `from source types [endpoint] types [endpoint]`, message: "duplicate endpoint selector"},
 		{name: "selector needs list", from: `from source types "invalid"`, message: "endpoint selector requires a list"},
