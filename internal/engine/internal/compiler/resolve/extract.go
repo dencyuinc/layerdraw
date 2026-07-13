@@ -1,0 +1,473 @@
+// SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
+
+package resolve
+
+import (
+	"strconv"
+
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/syntax"
+)
+
+type moduleAST struct {
+	imports      []ImportDecl
+	exports      []ExportDecl
+	declarations []rawDecl
+	reservations []rawReservation
+	moves        []rawMove
+}
+
+type rawDecl struct {
+	kind    SubjectKind
+	id      string
+	owner   string
+	childOf *rawDecl
+	span    syntax.Span
+	refs    []rawRef
+}
+
+type rawRef struct {
+	kind SubjectKind
+	text string
+	span syntax.Span
+}
+
+type rawReservation struct {
+	kind SubjectKind
+	id   string
+	span syntax.Span
+}
+
+type rawMove struct {
+	kind    SubjectKind
+	ownerID string
+	from    string
+	to      string
+	span    syntax.Span
+}
+
+func extractModule(file SourceFile) moduleAST {
+	var ast moduleAST
+	for _, child := range nodeChildren(file.Root) {
+		if child.Kind != syntax.NodeImportDecl && child.Kind != syntax.NodeDeclaration {
+			continue
+		}
+		switch {
+		case child.Kind == syntax.NodeImportDecl:
+			ast.imports = append(ast.imports, extractImport(child))
+		case firstRaw(child) == "export":
+			ast.exports = append(ast.exports, extractExport(firstNode(child, syntax.NodeExportDecl)))
+		default:
+			extractDeclaration(child, &ast)
+		}
+	}
+	return ast
+}
+
+func extractImport(n *syntax.Node) ImportDecl {
+	toks := nodeTokens(n)
+	decl := ImportDecl{Range: n.Span}
+	if len(toks) < 4 {
+		return decl
+	}
+	decl.Specifier = stringToken(toks[len(toks)-1])
+	if toks[1].Kind == syntax.TokenIdentifier {
+		decl.Kind = ImportNamespace
+		decl.Alias = toks[1].Raw
+		return decl
+	}
+	decl.Kind = ImportNamed
+	for _, item := range nodeChildren(n) {
+		if item.Kind != syntax.NodeImportItems {
+			continue
+		}
+		for _, child := range nodeChildren(item) {
+			itoks := nodeTokens(child)
+			if len(itoks) == 0 {
+				continue
+			}
+			imp := ImportItem{Remote: itoks[0].Raw, Local: itoks[0].Raw, Range: child.Span}
+			if len(itoks) >= 3 && itoks[1].Raw == "as" {
+				imp.Local = itoks[2].Raw
+			}
+			decl.Items = append(decl.Items, imp)
+		}
+	}
+	return decl
+}
+
+func extractExport(n *syntax.Node) ExportDecl {
+	if n == nil {
+		return ExportDecl{}
+	}
+	toks := nodeTokens(n)
+	decl := ExportDecl{Range: n.Span}
+	for i, tok := range toks {
+		if tok.Raw == "from" && i+1 < len(toks) {
+			decl.Specifier = stringToken(toks[i+1])
+		}
+	}
+	if len(toks) > 1 && toks[1].Kind == syntax.TokenStar {
+		decl.Kind = ExportStar
+		return decl
+	}
+	if decl.Specifier != "" {
+		decl.Kind = ExportFrom
+	} else {
+		decl.Kind = ExportLocal
+	}
+	for _, item := range nodeChildren(n) {
+		if item.Kind != syntax.NodeExportItems {
+			continue
+		}
+		for _, child := range nodeChildren(item) {
+			itoks := nodeTokens(child)
+			if len(itoks) == 0 {
+				continue
+			}
+			exp := ExportItem{Local: itoks[0].Raw, Public: itoks[0].Raw, Range: child.Span}
+			if len(itoks) >= 3 && itoks[1].Raw == "as" {
+				exp.Public = itoks[2].Raw
+			}
+			decl.Items = append(decl.Items, exp)
+		}
+	}
+	return decl
+}
+
+func extractDeclaration(n *syntax.Node, ast *moduleAST) {
+	toks := directTokens(n)
+	if len(toks) == 0 {
+		return
+	}
+	switch toks[0].Raw {
+	case "project":
+		if len(toks) > 1 {
+			ast.declarations = append(ast.declarations, rawDecl{kind: KindProject, id: toks[1].Raw, span: n.Span})
+		}
+	case "entity_type":
+		d := rawDecl{kind: KindEntityType, span: n.Span}
+		if len(toks) > 1 {
+			d.id = toks[1].Raw
+		}
+		ast.declarations = append(ast.declarations, d)
+		extractOwnerChildren(n, d, ast)
+	case "relation_type":
+		d := rawDecl{kind: KindRelationType, span: n.Span}
+		if len(toks) > 1 {
+			d.id = toks[1].Raw
+		}
+		ast.declarations = append(ast.declarations, d)
+		extractOwnerChildren(n, d, ast)
+	case "layers":
+		for _, item := range descendants(n, syntax.NodeLayerItem) {
+			itoks := nodeTokens(item)
+			if len(itoks) > 0 {
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindLayer, id: itoks[0].Raw, span: item.Span})
+			}
+		}
+	case "entities":
+		refs := symbolRefs(n)
+		var ownerType, layer string
+		if len(refs) > 0 {
+			ownerType = refs[0]
+		}
+		if len(refs) > 1 {
+			layer = refs[1]
+		}
+		for _, item := range descendants(n, syntax.NodeEntityItem) {
+			itoks := nodeTokens(item)
+			if len(itoks) > 0 {
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindEntity, id: itoks[0].Raw, span: item.Span, refs: []rawRef{{kind: KindEntityType, text: ownerType, span: item.Span}, {kind: KindLayer, text: layer, span: item.Span}}})
+			}
+		}
+	case "rows":
+		owner := firstSymbolRef(n)
+		for _, item := range descendants(n, syntax.NodeRowItem) {
+			itoks := nodeTokens(item)
+			if len(itoks) >= 2 {
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: owner, span: item.Span})
+			}
+		}
+	case "relations":
+		relType := firstSymbolRef(n)
+		for _, item := range descendants(n, syntax.NodeRelationItem) {
+			itoks := nodeTokens(item)
+			if len(itoks) > 0 {
+				refs := []rawRef{{kind: KindRelationType, text: relType, span: item.Span}}
+				srefs := symbolRefs(item)
+				for _, ref := range srefs {
+					refs = append(refs, rawRef{kind: KindEntity, text: ref, span: item.Span})
+				}
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRelation, id: itoks[0].Raw, span: item.Span, refs: refs})
+			}
+		}
+	case "relation_rows":
+		owner := firstSymbolRef(n)
+		for _, item := range descendants(n, syntax.NodeRowItem) {
+			itoks := nodeTokens(item)
+			if len(itoks) >= 2 {
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: owner, span: item.Span})
+			}
+		}
+	case "query":
+		d := rawDecl{kind: KindQuery, span: n.Span}
+		if len(toks) > 1 {
+			d.id = toks[1].Raw
+		}
+		ast.declarations = append(ast.declarations, d)
+		extractNamedBlockChildren(n, d, "parameters", KindParameter, ast)
+	case "view":
+		d := rawDecl{kind: KindView, span: n.Span}
+		if len(toks) > 1 {
+			d.id = toks[1].Raw
+		}
+		ast.declarations = append(ast.declarations, d)
+		extractNamedBlockChildren(n, d, "columns", KindTableColumn, ast)
+		extractNamedBlockChildren(n, d, "exports", KindExport, ast)
+	case "reference":
+		if len(toks) > 1 {
+			ast.declarations = append(ast.declarations, rawDecl{kind: KindReference, id: toks[1].Raw, span: n.Span})
+		}
+	case "reserved":
+		ast.reservations = append(ast.reservations, extractReservations(n)...)
+	case "moves":
+		ast.moves = append(ast.moves, extractMoves(n)...)
+	}
+}
+
+func extractOwnerChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
+	extractNamedBlockChildren(n, owner, "columns", KindColumn, ast)
+	extractNamedBlockChildren(n, owner, "constraints", KindConstraint, ast)
+}
+
+func extractNamedBlockChildren(n *syntax.Node, owner rawDecl, block string, kind SubjectKind, ast *moduleAST) {
+	for _, nb := range descendants(n, syntax.NodeNestedBlock) {
+		toks := directTokens(nb)
+		if len(toks) == 0 || toks[0].Raw != block {
+			continue
+		}
+		for _, stmt := range descendants(firstNode(nb, syntax.NodeBlock), syntax.NodeStatement) {
+			stoks := nodeTokens(stmt)
+			if len(stoks) > 0 {
+				od := owner
+				ast.declarations = append(ast.declarations, rawDecl{kind: kind, id: stoks[0].Raw, childOf: &od, span: stmt.Span})
+			}
+		}
+	}
+}
+
+func extractReservations(n *syntax.Node) []rawReservation {
+	var out []rawReservation
+	for _, stmt := range descendants(n, syntax.NodeStatement) {
+		toks := nodeTokens(stmt)
+		if len(toks) == 0 {
+			continue
+		}
+		kind, ok := reservationKind(toks[0].Raw)
+		if !ok {
+			continue
+		}
+		for _, tok := range toks[1:] {
+			if tok.Kind == syntax.TokenIdentifier {
+				out = append(out, rawReservation{kind: kind, id: tok.Raw, span: tok.Span})
+			}
+		}
+	}
+	return out
+}
+
+func extractMoves(n *syntax.Node) []rawMove {
+	var out []rawMove
+	for _, item := range descendants(n, syntax.NodeMoveItem) {
+		toks := nodeTokens(item)
+		if len(toks) < 4 {
+			continue
+		}
+		kind, child := moveKind(toks[0].Raw)
+		if child {
+			if len(toks) >= 5 {
+				out = append(out, rawMove{kind: kind, ownerID: toks[1].Raw, from: toks[2].Raw, to: toks[4].Raw, span: item.Span})
+			}
+		} else {
+			out = append(out, rawMove{kind: kind, from: toks[1].Raw, to: toks[3].Raw, span: item.Span})
+		}
+	}
+	return out
+}
+
+func reservationKind(raw string) (SubjectKind, bool) {
+	switch raw {
+	case "entity_types":
+		return KindEntityType, true
+	case "relation_types":
+		return KindRelationType, true
+	case "layers":
+		return KindLayer, true
+	case "entities":
+		return KindEntity, true
+	case "relations":
+		return KindRelation, true
+	case "queries":
+		return KindQuery, true
+	case "views":
+		return KindView, true
+	case "references":
+		return KindReference, true
+	case "columns":
+		return KindColumn, true
+	case "constraints":
+		return KindConstraint, true
+	case "parameters":
+		return KindParameter, true
+	case "table_columns":
+		return KindTableColumn, true
+	case "exports":
+		return KindExport, true
+	default:
+		return "", false
+	}
+}
+
+func moveKind(raw string) (SubjectKind, bool) {
+	switch raw {
+	case "project":
+		return KindProject, false
+	case "entity_type":
+		return KindEntityType, false
+	case "relation_type":
+		return KindRelationType, false
+	case "layer":
+		return KindLayer, false
+	case "entity":
+		return KindEntity, false
+	case "relation":
+		return KindRelation, false
+	case "query":
+		return KindQuery, false
+	case "view":
+		return KindView, false
+	case "reference":
+		return KindReference, false
+	case "entity_type_column", "relation_type_column":
+		return KindColumn, true
+	case "entity_type_constraint", "relation_type_constraint":
+		return KindConstraint, true
+	case "entity_row", "relation_row":
+		return KindRow, true
+	case "query_parameter":
+		return KindParameter, true
+	case "view_table_column":
+		return KindTableColumn, true
+	case "view_export":
+		return KindExport, true
+	default:
+		return "", false
+	}
+}
+
+func nodeChildren(n *syntax.Node) []*syntax.Node {
+	if n == nil {
+		return nil
+	}
+	var out []*syntax.Node
+	for _, child := range n.Children {
+		if node, ok := child.(*syntax.Node); ok {
+			out = append(out, node)
+		}
+	}
+	return out
+}
+
+func firstNode(n *syntax.Node, kind syntax.NodeKind) *syntax.Node {
+	for _, child := range nodeChildren(n) {
+		if child.Kind == kind {
+			return child
+		}
+	}
+	return nil
+}
+
+func descendants(n *syntax.Node, kind syntax.NodeKind) []*syntax.Node {
+	var out []*syntax.Node
+	syntax.Walk(n, func(node *syntax.Node) {
+		if node.Kind == kind {
+			out = append(out, node)
+		}
+	})
+	return out
+}
+
+func firstRaw(n *syntax.Node) string {
+	toks := nodeTokens(n)
+	if len(toks) == 0 {
+		return ""
+	}
+	return toks[0].Raw
+}
+
+func directTokens(n *syntax.Node) []syntax.Token {
+	if n == nil {
+		return nil
+	}
+	var out []syntax.Token
+	for _, child := range n.Children {
+		if tok, ok := child.(syntax.TokenElement); ok {
+			out = append(out, tok.Token)
+		}
+	}
+	return out
+}
+
+func nodeTokens(n *syntax.Node) []syntax.Token {
+	if n == nil {
+		return nil
+	}
+	var out []syntax.Token
+	var walk func(*syntax.Node)
+	walk = func(node *syntax.Node) {
+		for _, child := range node.Children {
+			switch c := child.(type) {
+			case syntax.TokenElement:
+				if c.Token.Kind != syntax.TokenNewline && c.Token.Kind != syntax.TokenLineComment && c.Token.Kind != syntax.TokenDocComment && c.Token.Kind != syntax.TokenModuleDoc && c.Token.Kind != syntax.TokenEOF {
+					out = append(out, c.Token)
+				}
+			case *syntax.Node:
+				walk(c)
+			}
+		}
+	}
+	walk(n)
+	return out
+}
+
+func stringToken(tok syntax.Token) string {
+	if tok.Kind != syntax.TokenString {
+		return tok.Raw
+	}
+	s, err := strconv.Unquote(tok.Raw)
+	if err != nil {
+		return tok.Raw
+	}
+	return s
+}
+
+func firstSymbolRef(n *syntax.Node) string {
+	refs := symbolRefs(n)
+	if len(refs) == 0 {
+		return ""
+	}
+	return refs[0]
+}
+
+func symbolRefs(n *syntax.Node) []string {
+	var refs []string
+	for _, ref := range descendants(n, syntax.NodeSymbolRef) {
+		toks := nodeTokens(ref)
+		if len(toks) == 1 {
+			refs = append(refs, toks[0].Raw)
+		} else if len(toks) >= 3 {
+			refs = append(refs, toks[0].Raw+"."+toks[2].Raw)
+		}
+	}
+	return refs
+}
