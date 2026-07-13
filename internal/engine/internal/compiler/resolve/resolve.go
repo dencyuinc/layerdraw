@@ -877,6 +877,9 @@ func (r *resolver) resolveDeclarationRefs(st *moduleState) {
 			}
 			target, ok := r.resolveText(st, ref.kind, ref.text)
 			if !ok {
+				if ref.optional {
+					continue
+				}
 				r.diag("LDL1301", "unknown_or_ambiguous_symbol", "source binding is unknown or ambiguous", st.key, ref.span)
 				continue
 			}

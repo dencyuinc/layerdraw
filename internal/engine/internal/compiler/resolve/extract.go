@@ -33,9 +33,10 @@ type rawDecl struct {
 }
 
 type rawRef struct {
-	kind SubjectKind
-	text string
-	span syntax.Span
+	kind     SubjectKind
+	text     string
+	span     syntax.Span
+	optional bool
 }
 
 type rawReservation struct {
@@ -187,8 +188,8 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 			}
 		}
 	case "entities":
-		refs := symbolRefs(n)
-		var ownerType, layer string
+		refs := directSymbolRefs(n)
+		var ownerType, layer qualifiedValue
 		if len(refs) > 0 {
 			ownerType = refs[0]
 		}
@@ -198,36 +199,38 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		for _, item := range descendants(n, syntax.NodeEntityItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) > 0 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindEntity, id: itoks[0].Raw, span: item.Span, refs: []rawRef{{kind: KindEntityType, text: ownerType, span: item.Span}, {kind: KindLayer, text: layer, span: item.Span}}})
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindEntity, id: itoks[0].Raw, span: item.Span, refs: []rawRef{{kind: KindEntityType, text: ownerType.text, span: ownerType.span}, {kind: KindLayer, text: layer.text, span: layer.span}}})
 				extractRowReservations(item, KindEntity, itoks[0].Raw, ast)
 			}
 		}
 	case "rows":
+		groupType := firstDirectSymbolRef(n)
 		for _, item := range descendants(n, syntax.NodeRowItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) >= 2 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindEntity, span: item.Span})
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindEntity, span: item.Span, refs: []rawRef{{kind: KindEntityType, text: groupType.text, span: groupType.span, optional: true}}})
 			}
 		}
 	case "relations":
-		relType := firstSymbolRef(n)
+		relType := firstDirectSymbolRef(n)
 		for _, item := range descendants(n, syntax.NodeRelationItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) > 0 {
-				refs := []rawRef{{kind: KindRelationType, text: relType, span: item.Span}}
-				srefs := symbolRefs(item)
+				refs := []rawRef{{kind: KindRelationType, text: relType.text, span: relType.span}}
+				srefs := directSymbolRefs(item)
 				for _, ref := range srefs {
-					refs = append(refs, rawRef{kind: KindEntity, text: ref, span: item.Span})
+					refs = append(refs, rawRef{kind: KindEntity, text: ref.text, span: ref.span})
 				}
 				ast.declarations = append(ast.declarations, rawDecl{kind: KindRelation, id: itoks[0].Raw, span: item.Span, refs: refs})
 				extractRowReservations(item, KindRelation, itoks[0].Raw, ast)
 			}
 		}
 	case "relation_rows":
+		groupType := firstDirectSymbolRef(n)
 		for _, item := range descendants(n, syntax.NodeRowItem) {
 			itoks := nodeTokens(item)
 			if len(itoks) >= 2 {
-				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindRelation, span: item.Span})
+				ast.declarations = append(ast.declarations, rawDecl{kind: KindRow, id: itoks[1].Raw, owner: itoks[0].Raw, ownerKind: KindRelation, span: item.Span, refs: []rawRef{{kind: KindRelationType, text: groupType.text, span: groupType.span, optional: true}}})
 			}
 		}
 	case "query":
@@ -603,6 +606,34 @@ func firstSymbolRef(n *syntax.Node) string {
 		return ""
 	}
 	return refs[0]
+}
+
+func firstDirectSymbolRef(n *syntax.Node) qualifiedValue {
+	refs := directSymbolRefs(n)
+	if len(refs) == 0 {
+		return qualifiedValue{}
+	}
+	return refs[0]
+}
+
+func directSymbolRefs(n *syntax.Node) []qualifiedValue {
+	var refs []qualifiedValue
+	for _, ref := range nodeChildren(n) {
+		if ref.Kind != syntax.NodeSymbolRef {
+			continue
+		}
+		toks := nodeTokens(ref)
+		var parts []string
+		for _, tok := range toks {
+			if tok.Kind == syntax.TokenIdentifier {
+				parts = append(parts, tok.Raw)
+			}
+		}
+		if len(parts) > 0 {
+			refs = append(refs, qualifiedValue{text: strings.Join(parts, "."), span: ref.Span})
+		}
+	}
+	return refs
 }
 
 func symbolRefs(n *syntax.Node) []string {
