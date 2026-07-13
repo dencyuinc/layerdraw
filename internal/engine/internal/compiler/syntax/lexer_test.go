@@ -246,23 +246,119 @@ func TestLexJSONCompatibleStringEscapes(t *testing.T) {
 		t.Fatalf("valid JSON escapes diagnostics = %+v", got.Diagnostics)
 	}
 
-	tests := []string{`"\u"`, `"\u1"`, `"\u12xz"`, "\"raw\tcontrol\"", "\"raw\x00control\""}
-	for _, src := range tests {
-		t.Run(src, func(t *testing.T) {
+	closedMalformedUnicode := []struct {
+		src  string
+		span Span
+	}{
+		{src: `"\u"`, span: Span{Start: 1, End: 3}},
+		{src: `"\u1"`, span: Span{Start: 1, End: 4}},
+		{src: `"\u12"`, span: Span{Start: 1, End: 5}},
+		{src: `"\u12xz"`, span: Span{Start: 1, End: 7}},
+	}
+	for _, tt := range closedMalformedUnicode {
+		t.Run(tt.src, func(t *testing.T) {
 			t.Parallel()
-			got := Lex([]byte(src))
-			found := false
-			for _, diag := range got.Diagnostics {
-				if diag.Code == "LDL1101" {
-					found = true
-				}
+			got := Lex([]byte(tt.src))
+			assertDiagnosticsExact(t, got.Diagnostics, invalidStructure(tt.span, "malformed unicode escape"))
+			if len(got.Tokens) < 1 || got.Tokens[0].Kind != TokenString || got.Tokens[0].Span != (Span{Start: 0, End: len(tt.src)}) {
+				t.Fatalf("first token = %+v, want closed TokenString spanning full quoted source", got.Tokens[0])
 			}
-			if !found {
-				t.Fatalf("Diagnostics = %+v, want LDL1101", got.Diagnostics)
-			}
-			if ReconstructTokens(got.Tokens) != src {
+			if ReconstructTokens(got.Tokens) != tt.src {
 				t.Fatal("malformed string source did not round trip")
 			}
+		})
+	}
+
+	unclosedMalformedUnicode := []struct {
+		name string
+		src  string
+		want []Diagnostic
+	}{
+		{
+			name: "newline after short unicode",
+			src:  "\"\\u\n",
+			want: []Diagnostic{
+				invalidStructure(Span{Start: 0, End: 3}, "unclosed string literal"),
+				invalidStructure(Span{Start: 1, End: 3}, "malformed unicode escape"),
+			},
+		},
+		{
+			name: "eof after short unicode",
+			src:  "\"\\u",
+			want: []Diagnostic{
+				invalidStructure(Span{Start: 0, End: 3}, "unclosed string literal"),
+				invalidStructure(Span{Start: 1, End: 3}, "malformed unicode escape"),
+			},
+		},
+		{
+			name: "eof after partial unicode digit",
+			src:  "\"\\u1",
+			want: []Diagnostic{
+				invalidStructure(Span{Start: 0, End: 4}, "unclosed string literal"),
+				invalidStructure(Span{Start: 1, End: 4}, "malformed unicode escape"),
+			},
+		},
+	}
+	for _, tt := range unclosedMalformedUnicode {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Lex([]byte(tt.src))
+			assertDiagnosticsExact(t, got.Diagnostics, tt.want...)
+			if ReconstructTokens(got.Tokens) != tt.src {
+				t.Fatal("malformed string source did not round trip")
+			}
+		})
+	}
+
+	controlCharacters := []struct {
+		src  string
+		span Span
+	}{
+		{src: "\"raw\tcontrol\"", span: Span{Start: 4, End: 5}},
+		{src: "\"raw\x00control\"", span: Span{Start: 4, End: 5}},
+	}
+	for _, tt := range controlCharacters {
+		t.Run(tt.src, func(t *testing.T) {
+			t.Parallel()
+			got := Lex([]byte(tt.src))
+			assertDiagnosticsExact(t, got.Diagnostics, invalidStructure(tt.span, "unescaped control character in string literal"))
+			if ReconstructTokens(got.Tokens) != tt.src {
+				t.Fatal("malformed string source did not round trip")
+			}
+		})
+	}
+}
+
+func TestParseMalformedStringCSTInvariants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+		want []Diagnostic
+	}{
+		{
+			name: "closed short unicode",
+			src:  "query q \"\\u\" {}\n",
+			want: []Diagnostic{
+				invalidStructure(Span{Start: 9, End: 11}, "malformed unicode escape"),
+			},
+		},
+		{
+			name: "unclosed short unicode before newline",
+			src:  "query q \"Q\" {\n  field \"\\u\n}\n",
+			want: []Diagnostic{
+				invalidStructure(Span{Start: 22, End: 25}, "unclosed string literal"),
+				invalidStructure(Span{Start: 23, End: 25}, "malformed unicode escape"),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Parse([]byte(tt.src))
+			assertParseInvariants(t, []byte(tt.src), got)
+			assertDiagnosticsExact(t, got.Diagnostics, tt.want...)
 		})
 	}
 }
@@ -438,6 +534,18 @@ func FuzzLexRoundTrip(f *testing.F) {
 			}
 		}
 	})
+}
+
+func assertDiagnosticsExact(t *testing.T, got []Diagnostic, want ...Diagnostic) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("diagnostics = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("diagnostic %d = %+v, want %+v; all=%+v", i, got[i], want[i], got)
+		}
+	}
 }
 
 func assertTokenKinds(t *testing.T, tokens []Token, want ...TokenKind) {

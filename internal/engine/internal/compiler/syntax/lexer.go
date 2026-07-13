@@ -223,11 +223,11 @@ func (l *lexer) scanString() {
 			}
 			if l.src[l.pos] == 'u' {
 				hexStart := l.pos + 1
-				hexEnd := hexStart + 4
-				if hexEnd > len(l.src) {
-					hexEnd = len(l.src)
+				hexEnd := hexStart
+				for hexEnd < len(l.src) && hexEnd < hexStart+4 && l.src[hexEnd] != '"' && l.src[hexEnd] != '\n' && l.src[hexEnd] != '\r' && l.src[hexEnd] != '\\' {
+					hexEnd++
 				}
-				if hexStart+4 > len(l.src) || !isFourHex(l.src[hexStart:hexStart+4]) {
+				if hexEnd-hexStart < 4 || !isFourHex(l.src[hexStart:hexStart+4]) {
 					for hexEnd < len(l.src) && l.src[hexEnd] != '"' && l.src[hexEnd] != '\n' && l.src[hexEnd] != '\r' && l.src[hexEnd] != '\\' {
 						hexEnd++
 					}
