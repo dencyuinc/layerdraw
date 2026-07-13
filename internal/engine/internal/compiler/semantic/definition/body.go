@@ -3,16 +3,16 @@
 package definition
 
 import (
+	"encoding/base64"
 	"fmt"
 	"math"
 	"net/netip"
-	"net/url"
-	"path"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/resolve"
@@ -197,10 +197,99 @@ func (c *compiler) annotations(it *item, src resolve.DeclarationSource, subject,
 			c.diagRelated("LDL1102", "unknown_or_duplicate_schema_member", src, entry.span, "duplicate annotation", subject, owner, prev)
 			continue
 		}
+		annotationValue := entry.value.string()
+		if forbiddenAnnotationKey(key) {
+			c.diag("LDL1901", "forbidden_state_credential_or_executable_content", src, entry.keySpan, "forbidden annotation key", subject, owner)
+			continue
+		}
+		if forbiddenAnnotationValue(annotationValue) {
+			c.diag("LDL1901", "forbidden_state_credential_or_executable_content", src, entry.value.span, "forbidden annotation value", subject, owner)
+			continue
+		}
 		seen[key] = entry.span
-		out[key] = normalizeString(entry.value.string())
+		out[key] = normalizeString(annotationValue)
 	}
 	return out
+}
+
+var forbiddenAnnotationKeys = set(
+	"created_at", "updated_at", "created_by", "updated_by",
+	"observed_at", "verified_at", "verified_by", "observation", "verification", "confidence", "freshness", "provenance", "source_uri", "source_url", "field_owner", "field_ownership",
+	"audit_event", "operation_log", "resource_version", "revision", "managed_fields", "lock", "lease", "presence",
+	"credential", "credentials", "password", "passwd", "secret", "api_key", "access_key", "secret_key", "token", "access_token", "refresh_token", "authorization", "auth_token", "bearer_token", "private_key", "client_secret",
+	"backend", "backend_binding", "backend_credentials", "data_source_binding",
+	"view_data", "viewdata", "render_data", "renderdata", "generated_index", "search_index", "preview", "artifact", "export_artifact", "generated_artifact",
+	"binary", "binary_data", "binary_payload", "image_data", "image_bytes", "asset_bytes",
+	"javascript", "javascript_source", "js_source", "go_source", "wasm", "wasm_module", "source_code", "script", "shell", "shell_command", "command", "callback",
+	"environment_read", "environment_variable", "env_var", "getenv",
+)
+
+var environmentReadPattern = regexp.MustCompile(`\$\{[A-Z][A-Z0-9_]*\}`)
+var bearerValuePattern = regexp.MustCompile(`(?i)^bearer [A-Za-z0-9._~+/=-]+$`)
+
+func forbiddenAnnotationKey(key string) bool {
+	return forbiddenAnnotationKeys[canonicalAnnotationName(key)]
+}
+
+func canonicalAnnotationName(key string) string {
+	trimmed := strings.TrimSpace(key)
+	var out strings.Builder
+	lastUnderscore := false
+	for i, r := range trimmed {
+		if r == '-' || r == '.' || r == '/' || r == ' ' {
+			if out.Len() > 0 && !lastUnderscore {
+				out.WriteByte('_')
+				lastUnderscore = true
+			}
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			previousLowerOrDigit := i > 0 && ((trimmed[i-1] >= 'a' && trimmed[i-1] <= 'z') || (trimmed[i-1] >= '0' && trimmed[i-1] <= '9'))
+			nextLower := i+1 < len(trimmed) && trimmed[i+1] >= 'a' && trimmed[i+1] <= 'z'
+			if out.Len() > 0 && !lastUnderscore && (previousLowerOrDigit || nextLower) {
+				out.WriteByte('_')
+			}
+			out.WriteRune(r + ('a' - 'A'))
+			lastUnderscore = false
+			continue
+		}
+		out.WriteRune(r)
+		lastUnderscore = r == '_'
+	}
+	return strings.Trim(out.String(), "_")
+}
+
+func forbiddenAnnotationValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{
+		"javascript:", "#!", "function ", "async function ", "eval(",
+		"bash -c ", "sh -c ", "zsh -c ", "powershell ", "cmd.exe /c ",
+		"-----begin private key", "-----begin rsa private key",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	if bearerValuePattern.MatchString(trimmed) {
+		return true
+	}
+	if strings.HasPrefix(lower, "basic ") {
+		encoded := strings.TrimSpace(trimmed[len("basic "):])
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			decoded, err = base64.RawStdEncoding.DecodeString(encoded)
+		}
+		if err == nil && strings.ContainsRune(string(decoded), ':') {
+			return true
+		}
+	}
+	for _, marker := range []string{"process.env.", "os.getenv(", "getenv(", "${env:", "%env%"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return environmentReadPattern.MatchString(trimmed)
 }
 
 func (c *compiler) optionalString(b body, name string, src resolve.DeclarationSource, subject, owner string) *string {
@@ -209,7 +298,7 @@ func (c *compiler) optionalString(b body, name string, src resolve.DeclarationSo
 		return nil
 	}
 	if len(it.args) != 1 || it.args[0].kind != syntax.TokenString && it.args[0].kind != syntax.TokenHeredoc {
-		c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, it.span, "expected string", subject, owner)
+		c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, invalidOperandSpan(it), "expected string", subject, owner)
 		return nil
 	}
 	s := it.args[0].string()
@@ -234,22 +323,44 @@ func (c *compiler) optionalBoolDefault(b body, name string, def bool, src resolv
 		return def
 	}
 	if len(it.args) != 1 || (it.args[0].raw != "true" && it.args[0].raw != "false") {
-		c.diag(code, key, src, it.span, "expected boolean", subject, owner)
+		c.diag(code, key, src, invalidOperandSpan(it), "expected boolean", subject, owner)
 		return def
 	}
 	return it.args[0].raw == "true"
 }
 
 func (c *compiler) optionalEnumDefault(b body, name, def string, allowed map[string]bool, src resolve.DeclarationSource, subject, owner, code, key string) string {
+	value, _ := c.optionalEnumDefaultValid(b, name, def, allowed, src, subject, owner, code, key)
+	return value
+}
+
+func (c *compiler) optionalEnumDefaultValid(b body, name, def string, allowed map[string]bool, src resolve.DeclarationSource, subject, owner, code, key string) (string, bool) {
 	it := b.stmt(name)
 	if it == nil {
-		return def
+		return def, true
 	}
-	if len(it.args) != 1 || !allowed[it.args[0].raw] {
-		c.diag(code, key, src, it.span, "invalid enum", subject, owner)
-		return def
+	if len(it.args) != 1 || it.args[0].kind != syntax.TokenIdentifier || !allowed[it.args[0].raw] {
+		c.diag(code, key, src, invalidOperandSpan(it), "invalid enum", subject, owner)
+		return def, false
 	}
-	return it.args[0].raw
+	return it.args[0].raw, true
+}
+
+func invalidOperandSpan(it *item) syntax.Span {
+	if it == nil {
+		return syntax.Span{}
+	}
+	if len(it.args) > 1 {
+		return it.args[1].span
+	}
+	if len(it.args) == 1 {
+		return it.args[0].span
+	}
+	tokens := directTokens(it.node)
+	if len(tokens) > 0 {
+		return tokens[0].Span
+	}
+	return itemHeaderSpan(it)
 }
 
 func (c *compiler) optionalColor(b body, name string, src resolve.DeclarationSource, subject, owner string) *string {
@@ -268,50 +379,30 @@ func (c *compiler) optionalColor(b body, name string, src resolve.DeclarationSou
 var colorPattern = regexp.MustCompile(`^#[0-9A-F]{6}([0-9A-F]{2})?$`)
 
 func (c *compiler) optionalAsset(b body, name string, src resolve.DeclarationSource, subject string) *AuthoredAsset {
-	s := c.optionalString(b, name, src, subject, "")
-	if s == nil {
+	it := b.stmt(name)
+	if it == nil {
 		return nil
 	}
-	locator, ok := resolveAssetLocator(src.Module.Path, *s)
+	if len(it.args) != 1 || it.args[0].kind != syntax.TokenString {
+		c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, invalidOperandSpan(it), "expected asset path string", subject, "")
+		return nil
+	}
+	authored, ok := it.args[0].authoredString()
 	if !ok {
-		c.diag("LDL1201", "module_pack_or_asset_resolution_failed", src, b.stmt(name).args[0].span, "invalid asset locator", subject, "")
+		c.diag("LDL1201", "module_pack_or_asset_resolution_failed", src, it.args[0].span, "invalid asset locator", subject, "")
 		return nil
 	}
-	return &AuthoredAsset{AuthoredPath: *s, Locator: locator, Origin: src.Module.Origin, ModulePath: src.Module.Path, SourceRange: c.rangeOf(src, b.stmt(name).args[0].span)}
+	locator, ok := resolve.ResolveAuthoredAssetLocator(src.Module.Path, authored)
+	if !ok {
+		c.diag("LDL1201", "module_pack_or_asset_resolution_failed", src, it.args[0].span, "invalid asset locator", subject, "")
+		return nil
+	}
+	return &AuthoredAsset{AuthoredPath: authored, Locator: locator, Origin: src.Module.Origin, ModulePath: src.Module.Path, SourceRange: c.rangeOf(src, it.args[0].span)}
 }
-
-func resolveAssetLocator(modulePath, raw string) (string, bool) {
-	if raw == "" || assetSchemePattern.MatchString(raw) || strings.HasPrefix(raw, "/") || strings.Contains(raw, "\\") || containsControl(raw) {
-		return "", false
-	}
-	decoded, err := url.PathUnescape(raw)
-	if err != nil || !utf8.ValidString(decoded) || !norm.NFC.IsNormalString(decoded) || strings.Contains(decoded, "\\") || containsControl(decoded) {
-		return "", false
-	}
-	if strings.Count(decoded, "/") != strings.Count(raw, "/") {
-		return "", false
-	}
-	rawSegments, decodedSegments := strings.Split(raw, "/"), strings.Split(decoded, "/")
-	if len(rawSegments) != len(decodedSegments) {
-		return "", false
-	}
-	for i, segment := range decodedSegments {
-		if (segment == "." || segment == "..") && segment != rawSegments[i] {
-			return "", false
-		}
-	}
-	clean := path.Clean(path.Join(path.Dir(modulePath), raw))
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", false
-	}
-	return clean, true
-}
-
-var assetSchemePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 
 func containsControl(raw string) bool {
 	for _, r := range raw {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return true
 		}
 	}
@@ -361,26 +452,34 @@ func (c *compiler) columns(it *item, owner resolve.DeclarationSymbol, src resolv
 		}
 		seen[id] = stmt.span
 		decl := c.columnDecl[childKey(&owner.Symbol, resolve.KindColumn, id)]
-		col := Column{ID: id, Address: decl.Address, DisplayName: normalizeString(stmt.args[0].string()), ValueType: ScalarType(stmt.args[1].raw), ReservedEnumValues: []string{}}
-		c.columnModifiers(&col, stmt.args[1], stmt.args[2:], src, owner.Address)
+		col := Column{ID: id, Address: decl.Address, DisplayName: normalizeString(stmt.args[0].string()), ReservedEnumValues: []string{}}
+		if !set("string", "integer", "number", "boolean", "enum", "date", "datetime")[stmt.args[1].raw] {
+			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, stmt.args[1].span, "invalid scalar type", col.Address, owner.Address)
+		} else {
+			col.ValueType = ScalarType(stmt.args[1].raw)
+			c.columnModifiers(&col, stmt.args[1], stmt.args[2:], src, owner.Address)
+		}
 		cols = append(cols, col)
 	}
 	return cols
 }
 
 func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, src resolve.DeclarationSource, owner string) {
-	if !set("string", "integer", "number", "boolean", "enum", "date", "datetime")[string(col.ValueType)] {
-		c.diag("LDL1401", "scalar_or_column_type_mismatch", src, typeValue.span, "invalid scalar type", col.Address, owner)
-	}
 	seen := map[string]syntax.Span{}
 	lastRank := -1
 	defaultSpan := typeValue.span
 	var defaultValue *value
-	if len(args) > 0 && firstNode(args[0].node, syntax.NodeList) != nil {
+	enumOptionsPresent := len(args) > 0 && firstNode(args[0].node, syntax.NodeList) != nil
+	enumOptionsValid := true
+	if enumOptionsPresent {
 		if col.ValueType != ScalarEnum {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, args[0].span, "enum values forbidden", col.Address, owner)
 		} else {
-			col.EnumValues, _ = c.enumList(args[0], false, src, col.Address, owner)
+			values, valid := c.enumList(args[0], false, src, col.Address, owner)
+			enumOptionsValid = valid
+			if valid {
+				col.EnumValues = values
+			}
 		}
 		args = args[1:]
 	}
@@ -461,8 +560,12 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 			i++
 		}
 	}
-	if col.ValueType == ScalarEnum && len(col.EnumValues) == 0 {
+	if col.ValueType == ScalarEnum && !enumOptionsPresent {
 		c.diag("LDL1401", "scalar_or_column_type_mismatch", src, typeValue.span, "enum requires values", col.Address, owner)
+		enumOptionsValid = false
+	} else if col.ValueType == ScalarEnum && enumOptionsValid && len(col.EnumValues) == 0 {
+		c.diag("LDL1401", "scalar_or_column_type_mismatch", src, typeValue.span, "enum requires values", col.Address, owner)
+		enumOptionsValid = false
 	}
 	reservedValuesValid := true
 	for _, active := range col.EnumValues {
@@ -485,11 +588,13 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 			col.MinLength, col.MaxLength = nil, nil
 		}
 	}
-	if defaultValue != nil {
+	if defaultValue != nil && (col.ValueType != ScalarEnum || enumOptionsValid) {
 		col.Default = c.scalar(*defaultValue, col, src, owner)
 	}
 	if col.Default != nil {
-		c.validateDefault(col, src, owner, defaultSpan)
+		if !c.validateDefault(col, src, owner, defaultSpan) {
+			col.Default = nil
+		}
 	}
 }
 
@@ -622,16 +727,16 @@ func normalizeDatetime(raw string) (string, bool) {
 	return parsed.UTC().Format(time.RFC3339Nano), true
 }
 
-func (c *compiler) validateDefault(col *Column, src resolve.DeclarationSource, owner string, span syntax.Span) {
+func (c *compiler) validateDefault(col *Column, src resolve.DeclarationSource, owner string, span syntax.Span) bool {
 	s := col.Default
 	if s == nil {
-		return
+		return true
 	}
 	if col.ValueType == ScalarString && col.Format != nil {
 		normalized, ok := normalizeStringFormat(string(*col.Format), s.String)
 		if !ok {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, span, "default format mismatch", col.Address, owner)
-			return
+			return false
 		}
 		s.String = normalized
 	}
@@ -639,19 +744,23 @@ func (c *compiler) validateDefault(col *Column, src resolve.DeclarationSource, o
 		length := int64(utf8.RuneCountInString(s.String))
 		if col.MinLength != nil && length < *col.MinLength || col.MaxLength != nil && length > *col.MaxLength {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, span, "default length mismatch", col.Address, owner)
+			return false
 		}
 	}
 	if col.ValueType == ScalarInteger {
 		value := float64(s.Int)
 		if col.Min != nil && value < *col.Min || col.Max != nil && value > *col.Max {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, span, "default range mismatch", col.Address, owner)
+			return false
 		}
 	}
 	if col.ValueType == ScalarNumber {
 		if col.Min != nil && s.Float < *col.Min || col.Max != nil && s.Float > *col.Max {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, span, "default range mismatch", col.Address, owner)
+			return false
 		}
 	}
+	return true
 }
 
 func normalizeStringFormat(format, raw string) (string, bool) {
@@ -900,7 +1009,12 @@ func isASCII(raw string) bool {
 
 func (c *compiler) uniques(b body, owner resolve.DeclarationSymbol, src resolve.DeclarationSource, cols []Column) []UniqueConstraint {
 	colByID := map[string]string{}
+	invalidColumns := map[string]bool{}
 	for _, col := range cols {
+		if col.ValueType == "" {
+			invalidColumns[col.ID] = true
+			continue
+		}
 		colByID[col.ID] = col.Address
 	}
 	out := []UniqueConstraint{}
@@ -915,63 +1029,39 @@ func (c *compiler) uniques(b body, owner resolve.DeclarationSymbol, src resolve.
 		id := it.args[0].raw
 		decl := c.columnDecl[childKey(&owner.Symbol, resolve.KindConstraint, id)]
 		u := UniqueConstraint{ID: id, Address: decl.Address, ColumnAddresses: []string{}}
+		valid := true
+		invalidDependency := false
 		seenColumns := map[string]syntax.Span{}
 		for _, v := range listValues(it.args[1].node) {
 			if prev, duplicate := seenColumns[v.raw]; duplicate {
 				c.diagRelated("LDL1102", "unknown_or_duplicate_schema_member", src, v.span, "duplicate unique column", u.Address, owner.Address, prev)
+				valid = false
 				continue
 			}
 			seenColumns[v.raw] = v.span
 			addr, ok := colByID[v.raw]
 			if !ok {
+				if invalidColumns[v.raw] {
+					valid = false
+					invalidDependency = true
+					continue
+				}
 				c.diag("LDL1301", "unknown_or_ambiguous_symbol", src, v.span, "unknown column", u.Address, owner.Address)
+				valid = false
 				continue
 			}
 			u.ColumnAddresses = append(u.ColumnAddresses, addr)
 		}
-		if len(u.ColumnAddresses) == 0 {
+		if len(u.ColumnAddresses) == 0 && !invalidDependency {
 			c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, it.span, "empty unique", u.Address, owner.Address)
+			valid = false
 		}
-		out = append(out, u)
+		if valid && len(u.ColumnAddresses) > 0 {
+			out = append(out, u)
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Address < out[j].Address })
 	return out
-}
-
-func (c *compiler) validateReserve(it *item, src resolve.DeclarationSource, owner string) {
-	if it == nil {
-		return
-	}
-	c.rejectUnknown(it.nested, src, specs("columns", "constraints"))
-	for _, name := range []string{"columns", "constraints"} {
-		member := it.nested.stmt(name)
-		if member == nil {
-			continue
-		}
-		if len(member.args) != 1 || firstNode(member.args[0].node, syntax.NodeList) == nil {
-			c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, member.span, "reservation requires one list", "", owner)
-			continue
-		}
-		for _, value := range listValues(member.args[0].node) {
-			tokens := nodeTokens(value.node)
-			if len(tokens) != 1 || tokens[0].Kind != syntax.TokenIdentifier || !canonicalIdentifier(tokens[0].Raw) {
-				c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, value.span, "invalid reservation identifier", "", owner)
-			}
-		}
-	}
-}
-
-func canonicalIdentifier(raw string) bool {
-	if raw == "" || raw[0] < 'a' || raw[0] > 'z' {
-		return false
-	}
-	for i := 1; i < len(raw); i++ {
-		if raw[i] >= 'a' && raw[i] <= 'z' || raw[i] >= '0' && raw[i] <= '9' || raw[i] == '_' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func (c *compiler) childReservations(owner resolve.StableSymbol) ([]string, []string) {
@@ -1003,6 +1093,17 @@ func (v value) string() string {
 		return heredocText(v.raw)
 	}
 	return normalizeString(v.raw)
+}
+
+func (v value) authoredString() (string, bool) {
+	if v.kind != syntax.TokenString {
+		return "", false
+	}
+	s, err := strconv.Unquote(v.raw)
+	if err != nil {
+		return "", false
+	}
+	return s, true
 }
 
 func (v value) integer() (int64, bool) {
@@ -1236,9 +1337,10 @@ func listValues(n *syntax.Node) []value {
 }
 
 type objectEntry struct {
-	key   string
-	value value
-	span  syntax.Span
+	key     string
+	keySpan syntax.Span
+	value   value
+	span    syntax.Span
 }
 
 func objectValues(n *syntax.Node) []objectEntry {
@@ -1258,9 +1360,10 @@ func objectValues(n *syntax.Node) []objectEntry {
 			continue
 		}
 		out = append(out, objectEntry{
-			key:   tokenString(toks[0]),
-			value: value{raw: valueRaw(valueTokens), kind: valueTokens[0].Kind, span: valueNode.Span, node: valueNode},
-			span:  child.Span,
+			key:     tokenString(toks[0]),
+			keySpan: toks[0].Span,
+			value:   value{raw: valueRaw(valueTokens), kind: valueTokens[0].Kind, span: valueNode.Span, node: valueNode},
+			span:    child.Span,
 		})
 	}
 	return out

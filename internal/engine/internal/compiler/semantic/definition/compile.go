@@ -148,7 +148,6 @@ func (c *compiler) compileEntityType(d resolve.DeclarationSymbol, src resolve.De
 	e.Representation = c.representation(body, src, d.Address, "")
 	e.Columns = c.columns(body.block("columns"), d, src)
 	e.UniqueConstraints = c.uniques(body, d, src, e.Columns)
-	c.validateReserve(body.block("reserve"), src, d.Address)
 	e.ReservedColumnIDs, e.ReservedConstraintIDs = c.childReservations(d.Symbol)
 	return e
 }
@@ -174,9 +173,10 @@ func (c *compiler) compileRelationType(d resolve.DeclarationSymbol, src resolve.
 		r.DisplayName = normalizeString(tokenString(toks[2]))
 	}
 	if len(toks) > 3 {
-		r.SemanticKind = RelationSemanticKind(toks[3].Raw)
-		if !semanticKinds[string(r.SemanticKind)] {
+		if !semanticKinds[toks[3].Raw] {
 			c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", src, toks[3].Span, "invalid semantic kind", d.Address, "")
+		} else {
+			r.SemanticKind = RelationSemanticKind(toks[3].Raw)
 		}
 	}
 	body := c.body(src)
@@ -198,7 +198,6 @@ func (c *compiler) compileRelationType(d resolve.DeclarationSymbol, src resolve.
 	c.validateContext(r.Projections.Context, contextRanges, src, r.Address)
 	c.render(body.blocksByHead("render"), &r, src)
 	r.Export = c.export(body.block("export"), r.Export, src, d.Address)
-	c.validateReserve(body.block("reserve"), src, d.Address)
 	r.ReservedColumnIDs, r.ReservedConstraintIDs = c.childReservations(d.Symbol)
 	return r
 }

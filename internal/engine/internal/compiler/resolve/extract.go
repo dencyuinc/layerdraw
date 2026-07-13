@@ -14,6 +14,7 @@ type moduleAST struct {
 	exports            []ExportDecl
 	declarations       []rawDecl
 	reservations       []rawReservation
+	reservationBlocks  []rawReservationBlock
 	moves              []rawMove
 	rootReservedBlocks []syntax.Span
 	rootMoveBlocks     []syntax.Span
@@ -43,6 +44,14 @@ type rawReservation struct {
 	kind      SubjectKind
 	id        string
 	span      syntax.Span
+}
+
+type rawReservationBlock struct {
+	ownerKind SubjectKind
+	ownerID   string
+	row       bool
+	span      syntax.Span
+	node      *syntax.Node
 }
 
 type rawMove struct {
@@ -243,7 +252,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		}
 	case "reserved":
 		ast.rootReservedBlocks = append(ast.rootReservedBlocks, n.Span)
-		ast.reservations = append(ast.reservations, extractReservations(n)...)
+		ast.reservationBlocks = append(ast.reservationBlocks, rawReservationBlock{span: n.Span, node: n})
 	case "moves":
 		ast.rootMoveBlocks = append(ast.rootMoveBlocks, n.Span)
 		ast.moves = append(ast.moves, extractMoves(n)...)
@@ -329,11 +338,7 @@ func extractOwnerReservations(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 		}
 		key := string(owner.kind) + ":" + owner.id
 		ast.ownerReserveBlocks[key] = append(ast.ownerReserveBlocks[key], nb.Span)
-		for _, res := range extractReservations(nb) {
-			res.ownerKind = owner.kind
-			res.ownerID = owner.id
-			ast.reservations = append(ast.reservations, res)
-		}
+		ast.reservationBlocks = append(ast.reservationBlocks, rawReservationBlock{ownerKind: owner.kind, ownerID: owner.id, span: nb.Span, node: nb})
 	}
 }
 
@@ -345,11 +350,7 @@ func extractRowReservations(n *syntax.Node, ownerKind SubjectKind, ownerID strin
 		}
 		key := string(ownerKind) + ":" + ownerID
 		ast.rowReserveBlocks[key] = append(ast.rowReserveBlocks[key], stmt.Span)
-		for _, tok := range toks[1:] {
-			if tok.Kind == syntax.TokenIdentifier {
-				ast.reservations = append(ast.reservations, rawReservation{ownerKind: ownerKind, ownerID: ownerID, kind: KindRow, id: tok.Raw, span: tok.Span})
-			}
-		}
+		ast.reservationBlocks = append(ast.reservationBlocks, rawReservationBlock{ownerKind: ownerKind, ownerID: ownerID, row: true, span: stmt.Span, node: stmt})
 	}
 }
 
@@ -394,60 +395,6 @@ func extractViewChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 			ast.declarations = append(ast.declarations, rawDecl{kind: KindExport, id: toks[1].Raw, childOf: &od, span: nb.Span})
 		}
 	}
-}
-
-func extractReservations(n *syntax.Node) []rawReservation {
-	var out []rawReservation
-	for _, stmt := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
-		if stmt.Kind != syntax.NodeStatement {
-			continue
-		}
-		head := directTokens(stmt)
-		if len(head) == 0 {
-			continue
-		}
-		kind, ok := reservationKind(head[0].Raw)
-		if !ok {
-			continue
-		}
-		for _, tok := range reservationIdentifiers(stmt) {
-			out = append(out, rawReservation{kind: kind, id: tok.Raw, span: tok.Span})
-		}
-	}
-	return out
-}
-
-// reservationIdentifiers deliberately follows the statement/list structure.
-// Scanning descendant identifier tokens would turn a qualified or malformed
-// value into one or more unrelated durable identities.
-func reservationIdentifiers(stmt *syntax.Node) []syntax.Token {
-	if len(descendants(stmt, syntax.NodeError)) != 0 {
-		return nil
-	}
-	var args []*syntax.Node
-	for _, child := range nodeChildren(stmt) {
-		if child.Kind == syntax.NodeValue {
-			args = append(args, child)
-		}
-	}
-	if len(args) != 1 {
-		return nil
-	}
-	list := firstNode(args[0], syntax.NodeList)
-	if list == nil {
-		return nil
-	}
-	var out []syntax.Token
-	for _, child := range nodeChildren(list) {
-		if child.Kind != syntax.NodeValue || len(descendants(child, syntax.NodeError)) != 0 {
-			continue
-		}
-		toks := nodeTokens(child)
-		if len(toks) == 1 && toks[0].Kind == syntax.TokenIdentifier && isIdent(toks[0].Raw) {
-			out = append(out, toks[0])
-		}
-	}
-	return out
 }
 
 func extractMoves(n *syntax.Node) []rawMove {

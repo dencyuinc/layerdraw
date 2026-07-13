@@ -80,7 +80,7 @@ entity_type invalid "Invalid" {
   }
 }
 `})
-	for _, message := range []string{"invalid representation", "reservation requires one list", "unknown or invalid schema member"} {
+	for _, message := range []string{"invalid representation", "reservation requires one list", "unknown reservation category"} {
 		if !hasDiagnosticMessage(invalid.Diagnostics, message) {
 			t.Fatalf("Diagnostics = %+v, want %q", invalid.Diagnostics, message)
 		}
@@ -223,7 +223,7 @@ func TestPureSemanticDecoders(t *testing.T) {
 	if got := (&compiler{decls: map[string]resolve.DeclarationSymbol{}}).canonicalAddressSet([]string{"b", "a", "a"}); !reflect.DeepEqual(got, []string{"a", "b"}) {
 		t.Fatalf("canonical set = %+v", got)
 	}
-	if _, ok := resolveAssetLocator("types/entity.ldl", "assets/\nimage.png"); ok {
+	if _, ok := resolve.ResolveAuthoredAssetLocator("types/entity.ldl", "assets/\nimage.png"); ok {
 		t.Fatal("asset locator with a control character was accepted")
 	}
 	layers := LayersByDisplayOrder([]Layer{{ID: "late", Address: "z", Order: 2}, {ID: "early", Address: "b", Order: 1}, {ID: "tie", Address: "a", Order: 1}})

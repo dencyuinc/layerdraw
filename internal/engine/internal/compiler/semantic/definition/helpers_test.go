@@ -17,16 +17,16 @@ func TestDefinitionHelperBranches(t *testing.T) {
 	if len(c.diagnostics) != 1 || len(c.diagnostics[0].Related) != 1 {
 		t.Fatalf("diagRelated = %+v", c.diagnostics)
 	}
-	if _, ok := resolveAssetLocator("document.ldl", ""); ok {
+	if _, ok := resolve.ResolveAuthoredAssetLocator("document.ldl", ""); ok {
 		t.Fatal("empty asset locator accepted")
 	}
-	if _, ok := resolveAssetLocator("document.ldl", "https://example.com/a.png"); ok {
+	if _, ok := resolve.ResolveAuthoredAssetLocator("document.ldl", "https://example.com/a.png"); ok {
 		t.Fatal("remote asset locator accepted")
 	}
-	if _, ok := resolveAssetLocator("document.ldl", "../a.png"); ok {
+	if _, ok := resolve.ResolveAuthoredAssetLocator("document.ldl", "../a.png"); ok {
 		t.Fatal("invalid asset locator accepted")
 	}
-	if _, ok := resolveAssetLocator("document.ldl", "assets/a.png"); !ok {
+	if _, ok := resolve.ResolveAuthoredAssetLocator("document.ldl", "assets/a.png"); !ok {
 		t.Fatal("valid asset locator rejected")
 	}
 	if got := sourceOrigin(resolve.Origin{Kind: resolve.OriginPack, Publisher: "pub", PackName: "pack"}); got.PackAddress != "ldl:pack:pub:pack" {
@@ -243,7 +243,7 @@ func TestDefinitionRelationBranchCoverage(t *testing.T) {
 		{name: "from_per_to", span: syntax.Span{Start: 2, End: 3}},
 	}}
 	_ = c.cardinality(&item{nested: badCardinality}, Cardinality{}, src, "subject")
-	_ = c.requiredEndpoint(body{}, "missing", src, src.Range, "subject")
+	_, _ = c.requiredEndpoint(body{}, "missing", src, src.Range, "subject")
 	c.contextPlaceholders("{from.id} {bad.placeholder}", src, syntax.Span{Start: 3, End: 4}, "subject")
 	for _, message := range []string{"unknown projection primitive", "unknown render primitive", "invalid cardinality", "missing endpoint", "unknown context placeholder"} {
 		if !hasDiagnosticMessage(c.diagnostics, message) {
@@ -277,8 +277,8 @@ func TestDefinitionRemainingBranches(t *testing.T) {
 	ranges := contextTemplateRanges{}
 	c.projections([]item{{}}, &rt, src, &ranges)
 	c.render([]item{{}}, &rt, src)
-	_, _ = cardinalityBound(value{node: rangeNode("0", "2")})
-	_, _ = cardinalityBound(value{node: &syntax.Node{Kind: syntax.NodeValue}})
+	_, _, _ = cardinalityBound(value{node: rangeNode("0", "2")})
+	_, _, _ = cardinalityBound(value{node: &syntax.Node{Kind: syntax.NodeValue}})
 	if got := columnAddress([]Column{{ID: "a", Address: "addr"}}, "missing"); got != "" {
 		t.Fatalf("missing column address = %q", got)
 	}

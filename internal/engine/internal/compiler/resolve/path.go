@@ -5,12 +5,63 @@ package resolve
 import (
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
+
+var portableSchemePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
+
+// ResolveAuthoredAssetLocator validates an unquoted authored asset spelling and
+// resolves it to an origin-relative portable locator. Raw dot segments are
+// allowed, while percent-encoded traversal and separators are not.
+func ResolveAuthoredAssetLocator(modulePath, raw string) (string, bool) {
+	if raw == "" || !utf8.ValidString(raw) || !norm.NFC.IsNormalString(raw) ||
+		portableSchemePattern.MatchString(raw) || strings.HasPrefix(raw, "/") || strings.Contains(raw, "\\") || containsUnicodeControl(raw) {
+		return "", false
+	}
+	rawSegments := strings.Split(raw, "/")
+	for _, segment := range rawSegments {
+		if segment == "" {
+			return "", false
+		}
+	}
+	decoded, err := url.PathUnescape(raw)
+	if err != nil || !utf8.ValidString(decoded) || !norm.NFC.IsNormalString(decoded) ||
+		portableSchemePattern.MatchString(decoded) || strings.HasPrefix(decoded, "/") || strings.Contains(decoded, "\\") || containsUnicodeControl(decoded) {
+		return "", false
+	}
+	decodedSegments := strings.Split(decoded, "/")
+	if len(rawSegments) != len(decodedSegments) {
+		return "", false
+	}
+	for i, segment := range decodedSegments {
+		if segment == "" {
+			return "", false
+		}
+		if (segment == "." || segment == "..") && rawSegments[i] != segment {
+			return "", false
+		}
+	}
+	clean := path.Clean(path.Join(path.Dir(modulePath), raw))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
+		return "", false
+	}
+	return clean, true
+}
+
+func containsUnicodeControl(raw string) bool {
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
 
 func normalizePortablePath(raw string) (string, bool) {
 	if raw == "" || strings.HasPrefix(raw, "/") || strings.Contains(raw, "\\") || strings.ContainsRune(raw, 0) || !utf8.ValidString(raw) {

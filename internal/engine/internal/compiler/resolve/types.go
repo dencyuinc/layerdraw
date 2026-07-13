@@ -273,13 +273,17 @@ type Move struct {
 	To          string
 	FromAddress string
 	ToAddress   string
+	fromSymbol  StableSymbol
+	toSymbol    StableSymbol
 	Range       syntax.Span
 	Owner       *StableSymbol
 }
 
 type MoveClosure struct {
-	From string
-	To   string
+	From       string
+	To         string
+	fromSymbol StableSymbol
+	toSymbol   StableSymbol
 }
 
 type ResolvedPackSummary struct {

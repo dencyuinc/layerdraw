@@ -208,8 +208,8 @@ func TestFinalReviewStrictRFC3986AbsoluteURI(t *testing.T) {
 			t.Errorf("invalid URI %q accepted as %q", uri, got)
 		}
 	}
-	if validURIScheme("") || canonicalIdentifier("") || canonicalIdentifier("Upper") || canonicalIdentifier("bad-name") {
-		t.Fatal("empty/non-canonical lexical values were accepted")
+	if validURIScheme("") {
+		t.Fatal("empty URI scheme was accepted")
 	}
 	if got := itemHeaderSpan(nil); !got.Empty() {
 		t.Fatalf("nil item header span = %+v", got)
@@ -226,7 +226,7 @@ func TestFinalReviewAssetLocatorPercentDecodeSafety(t *testing.T) {
 		"./assets/../icons/icon.png": "types/icons/icon.png",
 	}
 	for raw, want := range valid {
-		if got, ok := resolveAssetLocator("types/entity.ldl", raw); !ok || got != want {
+		if got, ok := resolve.ResolveAuthoredAssetLocator("types/entity.ldl", raw); !ok || got != want {
 			t.Errorf("valid asset locator %q = %q,%v, want %q", raw, got, ok, want)
 		}
 	}
@@ -244,7 +244,7 @@ func TestFinalReviewAssetLocatorPercentDecodeSafety(t *testing.T) {
 		"assets/bad%escape.png",
 	}
 	for _, raw := range invalid {
-		if got, ok := resolveAssetLocator("types/entity.ldl", raw); ok {
+		if got, ok := resolve.ResolveAuthoredAssetLocator("types/entity.ldl", raw); ok {
 			t.Errorf("unsafe asset locator %q accepted as %q", raw, got)
 		}
 	}

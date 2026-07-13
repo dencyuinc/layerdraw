@@ -115,12 +115,17 @@ func (r *resolver) resolve() {
 	r.project = origin
 	entryKey := ModuleKey{Origin: origin, Path: entry}
 	entryState := r.loadModule(entryKey)
-	if entryState == nil || r.syntaxInvalid || r.invalidInput {
+	if entryState == nil || r.invalidInput {
+		return
+	}
+	if r.syntaxInvalid {
+		r.validateLoadedReservationSchemas()
 		return
 	}
 	r.finalizeAllModules()
+	identityDiagnosticStart := len(r.diagnostics)
 	r.validateAllIdentity()
-	if r.hasErrors() {
+	if r.hasBlockingIdentityErrors(identityDiagnosticStart) {
 		return
 	}
 	r.selectProject(entryState)
@@ -153,15 +158,29 @@ func (r *resolver) resolvePackMode(entry string) {
 		return
 	}
 	entryState := r.loadModule(ModuleKey{Origin: info.origin, Path: entry})
-	if entryState == nil || r.syntaxInvalid || r.invalidInput {
+	if entryState == nil || r.invalidInput {
+		return
+	}
+	if r.syntaxInvalid {
+		r.validateLoadedReservationSchemas()
 		return
 	}
 	r.finalizeAllModules()
+	identityDiagnosticStart := len(r.diagnostics)
 	r.validateAllIdentity()
-	if r.hasErrors() {
+	if r.hasBlockingIdentityErrors(identityDiagnosticStart) {
 		return
 	}
 	r.selectPack(entryState)
+}
+
+func (r *resolver) hasBlockingIdentityErrors(identityDiagnosticStart int) bool {
+	for i, diagnostic := range r.diagnostics {
+		if i < identityDiagnosticStart || diagnostic.Code != "LDL1102" {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *resolver) validateProjectFiles() {
@@ -918,6 +937,7 @@ func (r *resolver) validateAllIdentity() {
 	for _, key := range sortedModuleKeys(r.modules) {
 		st := r.modules[key]
 		r.validateRootAndOwnerBlocks(st)
+		r.validateReservationSchemas(st)
 	}
 	for _, key := range sortedModuleKeys(r.modules) {
 		st := r.modules[key]
@@ -930,6 +950,118 @@ func (r *resolver) validateAllIdentity() {
 	r.validateOriginIdentityDisjointness()
 }
 
+func (r *resolver) validateLoadedReservationSchemas() {
+	for _, key := range sortedModuleKeys(r.modules) {
+		r.validateReservationSchemas(r.modules[key])
+	}
+}
+
+func (r *resolver) validateReservationSchemas(st *moduleState) {
+	st.ast.reservations = nil
+	seenBlocks := map[string]bool{}
+	for _, block := range st.ast.reservationBlocks {
+		scope := string(block.ownerKind) + ":" + block.ownerID
+		if block.ownerID == "" {
+			scope = "root"
+		}
+		if block.row {
+			scope += ":rows"
+		}
+		if seenBlocks[scope] {
+			// The duplicate block/statement already has its placement diagnostic.
+			continue
+		}
+		seenBlocks[scope] = true
+		if block.row {
+			r.validateReservationStatement(st, block, block.node, KindRow)
+			continue
+		}
+		seenCategories := map[SubjectKind]syntax.Span{}
+		for _, member := range nodeChildren(firstNode(block.node, syntax.NodeBlock)) {
+			head := directTokens(member)
+			if len(head) == 0 {
+				continue
+			}
+			headSpan := head[0].Span
+			kind, known := reservationKind(head[0].Raw)
+			allowed := known
+			if allowed && block.ownerID == "" {
+				allowed = rootReservationAllowed(st.key.Origin.Kind, kind)
+			}
+			if allowed && block.ownerID != "" {
+				allowed = ownerReservationAllowed(block.ownerKind, kind)
+			}
+			if !known || !allowed {
+				r.diag("LDL1102", "unknown_or_duplicate_schema_member", "unknown reservation category", st.key, headSpan)
+				continue
+			}
+			if member.Kind != syntax.NodeStatement {
+				r.diag("LDL1102", "unknown_or_duplicate_schema_member", "reservation category must be a statement", st.key, headSpan)
+				continue
+			}
+			if previous, duplicate := seenCategories[kind]; duplicate {
+				r.diag("LDL1102", "unknown_or_duplicate_schema_member", "duplicate reservation category", st.key, headSpan)
+				diagnostic := &r.diagnostics[len(r.diagnostics)-1]
+				diagnostic.Related = append(diagnostic.Related, DiagnosticRelated{
+					Relation: "previous",
+					Range: &SourceRange{Origin: sourceOrigin(st.key.Origin), ModulePath: st.key.Path,
+						StartByte: previous.Start, EndByte: previous.End},
+				})
+				continue
+			}
+			seenCategories[kind] = headSpan
+			r.validateReservationStatement(st, block, member, kind)
+		}
+	}
+}
+
+func (r *resolver) validateReservationStatement(st *moduleState, block rawReservationBlock, stmt *syntax.Node, kind SubjectKind) {
+	var args []*syntax.Node
+	for _, child := range nodeChildren(stmt) {
+		if child.Kind == syntax.NodeValue {
+			args = append(args, child)
+		}
+	}
+	head := directTokens(stmt)
+	headSpan := stmt.Span
+	if len(head) > 0 {
+		headSpan = head[0].Span
+	}
+	if len(args) == 0 {
+		r.diag("LDL1102", "unknown_or_duplicate_schema_member", "reservation requires one list", st.key, headSpan)
+		return
+	}
+	if len(args) != 1 {
+		r.diag("LDL1102", "unknown_or_duplicate_schema_member", "reservation requires one list", st.key, args[1].Span)
+		return
+	}
+	list := firstNode(args[0], syntax.NodeList)
+	if list == nil {
+		r.diag("LDL1102", "unknown_or_duplicate_schema_member", "reservation requires one list", st.key, args[0].Span)
+		return
+	}
+	for _, member := range nodeChildren(list) {
+		if member.Kind != syntax.NodeValue {
+			if member.Kind == syntax.NodeError {
+				r.diag("LDL1102", "unknown_or_duplicate_schema_member", "malformed reservation identifier", st.key, member.Span)
+			}
+			continue
+		}
+		tokens := nodeTokens(member)
+		if len(descendants(member, syntax.NodeError)) != 0 || len(tokens) != 1 || tokens[0].Kind != syntax.TokenIdentifier || !isIdent(tokens[0].Raw) {
+			r.diag("LDL1102", "unknown_or_duplicate_schema_member", "invalid reservation identifier", st.key, member.Span)
+			continue
+		}
+		st.ast.reservations = append(st.ast.reservations, rawReservation{
+			ownerKind: block.ownerKind,
+			ownerID:   block.ownerID,
+			kind:      kind,
+			id:        tokens[0].Raw,
+			span:      tokens[0].Span,
+		})
+	}
+}
+
 func (r *resolver) validateRootAndOwnerBlocks(st *moduleState) {
 	entry := st.kind == ModuleProjectEntry || st.kind == ModulePackEntry
 	if len(st.ast.rootReservedBlocks) > 0 && !entry {
@@ -937,23 +1069,37 @@ func (r *resolver) validateRootAndOwnerBlocks(st *moduleState) {
 	}
 	if len(st.ast.rootReservedBlocks) > 1 {
 		r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate root reserved block", st.key, st.ast.rootReservedBlocks[1])
+		r.addPreviousRange(st.key, st.ast.rootReservedBlocks[0])
 	}
 	if len(st.ast.rootMoveBlocks) > 0 && !entry {
 		r.diag("LDL1303", "invalid_move_graph", "root moves block must be in origin entry", st.key, st.ast.rootMoveBlocks[0])
 	}
 	if len(st.ast.rootMoveBlocks) > 1 {
 		r.diag("LDL1303", "invalid_move_graph", "duplicate root moves block", st.key, st.ast.rootMoveBlocks[1])
+		r.addPreviousRange(st.key, st.ast.rootMoveBlocks[0])
 	}
 	for _, spans := range st.ast.ownerReserveBlocks {
 		if len(spans) > 1 {
 			r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate owner reserve block", st.key, spans[1])
+			r.addPreviousRange(st.key, spans[0])
 		}
 	}
 	for _, spans := range st.ast.rowReserveBlocks {
 		if len(spans) > 1 {
 			r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate reserve_rows statement", st.key, spans[1])
+			r.addPreviousRange(st.key, spans[0])
 		}
 	}
+}
+
+func (r *resolver) addPreviousRange(module ModuleKey, span syntax.Span) {
+	if len(r.diagnostics) == 0 {
+		return
+	}
+	diagnostic := &r.diagnostics[len(r.diagnostics)-1]
+	diagnostic.Related = append(diagnostic.Related, DiagnosticRelated{Relation: "previous", Range: &SourceRange{
+		Origin: sourceOrigin(module.Origin), ModulePath: module.Path, StartByte: span.Start, EndByte: span.End,
+	}})
 }
 
 func (r *resolver) validateReservations(st *moduleState) {
@@ -1107,6 +1253,7 @@ func (r *resolver) validateMoves(st *moduleState) {
 		for _, e := range edges {
 			seen := map[string]bool{}
 			cur := e.from
+			curSymbol := e.move.fromSymbol
 			for {
 				next, ok := successor[cur]
 				if !ok {
@@ -1114,7 +1261,7 @@ func (r *resolver) validateMoves(st *moduleState) {
 						r.diag("LDL1303", "invalid_move_graph", "terminal move target is not active", st.key, e.move.Range)
 					}
 					if e.from != cur {
-						appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: e.from, To: cur})
+						appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: e.from, To: cur, fromSymbol: e.move.fromSymbol, toSymbol: curSymbol})
 					}
 					break
 				}
@@ -1124,6 +1271,7 @@ func (r *resolver) validateMoves(st *moduleState) {
 				}
 				seen[cur] = true
 				cur = next.to
+				curSymbol = next.move.toSymbol
 			}
 		}
 	}
@@ -1135,42 +1283,43 @@ func (r *resolver) materializeComposedMoveClosure(st *moduleState) {
 		if decl.Symbol.Origin != st.key.Origin {
 			continue
 		}
-		for _, from := range st.historicalAddressesFor(decl.Symbol) {
+		for _, fromSymbol := range st.historicalSymbolsFor(decl.Symbol) {
+			from := addressOf(fromSymbol)
 			to := decl.Address
 			if from != to {
-				appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: from, To: to})
+				appendMoveClosureUnique(&st.moveClosure, MoveClosure{From: from, To: to, fromSymbol: fromSymbol, toSymbol: decl.Symbol})
 			}
 		}
 	}
 }
 
-func (st *moduleState) historicalAddressesFor(current StableSymbol) []string {
+func (st *moduleState) historicalSymbolsFor(current StableSymbol) []StableSymbol {
 	roots := st.historicalOrigins(current.Origin)
 	if len(current.Path) == 0 {
-		out := make([]string, 0, len(roots))
+		out := make([]StableSymbol, 0, len(roots))
 		for _, root := range roots {
-			out = append(out, addressOf(StableSymbol{Origin: root}))
+			out = append(out, StableSymbol{Origin: root})
 		}
 		return out
 	}
 	top := current.Path[0]
 	topIDs := st.historicalTopIDs(top.Kind, top.ID)
 	if len(current.Path) == 1 {
-		var out []string
+		var out []StableSymbol
 		for _, root := range roots {
 			for _, topID := range topIDs {
-				out = append(out, addressOf(StableSymbol{Origin: root, Path: []SymbolSegment{{Kind: top.Kind, ID: topID}}}))
+				out = append(out, StableSymbol{Origin: root, Path: []SymbolSegment{{Kind: top.Kind, ID: topID}}})
 			}
 		}
 		return out
 	}
 	child := current.Path[1]
 	childIDs := st.historicalChildIDs(current, child.ID)
-	var out []string
+	var out []StableSymbol
 	for _, root := range roots {
 		for _, topID := range topIDs {
 			for _, childID := range childIDs {
-				out = append(out, addressOf(StableSymbol{Origin: root, Path: []SymbolSegment{{Kind: top.Kind, ID: topID}, {Kind: child.Kind, ID: childID}}}))
+				out = append(out, StableSymbol{Origin: root, Path: []SymbolSegment{{Kind: top.Kind, ID: topID}, {Kind: child.Kind, ID: childID}}})
 			}
 		}
 	}
@@ -1236,7 +1385,7 @@ func (st *moduleState) historicalChildIDs(current StableSymbol, currentID string
 
 func appendMoveClosureUnique(out *[]MoveClosure, item MoveClosure) {
 	for _, existing := range *out {
-		if existing == item {
+		if existing.From == item.From && existing.To == item.To {
 			return
 		}
 	}
@@ -1282,9 +1431,9 @@ func (r *resolver) materializeMove(st *moduleState, raw rawMove) (Move, bool) {
 			r.diag("LDL1303", "invalid_move_graph", "project move target must be current project id", st.key, raw.span)
 			return Move{}, false
 		}
-		from := addressOf(StableSymbol{Origin: Origin{Kind: OriginProject, ProjectID: raw.from}})
-		to := addressOf(StableSymbol{Origin: st.key.Origin})
-		return Move{Origin: st.key.Origin, Kind: raw.kind, From: raw.from, To: raw.to, FromAddress: from, ToAddress: to, Range: raw.span}, true
+		fromSymbol := StableSymbol{Origin: Origin{Kind: OriginProject, ProjectID: raw.from}}
+		toSymbol := StableSymbol{Origin: st.key.Origin}
+		return Move{Origin: st.key.Origin, Kind: raw.kind, From: raw.from, To: raw.to, FromAddress: addressOf(fromSymbol), ToAddress: addressOf(toSymbol), fromSymbol: fromSymbol, toSymbol: toSymbol, Range: raw.span}, true
 	}
 	if isChildKind(raw.kind) {
 		owner, ok := r.moveOwner(st, raw)
@@ -1292,13 +1441,17 @@ func (r *resolver) materializeMove(st *moduleState, raw rawMove) (Move, bool) {
 			r.diag("LDL1303", "invalid_move_graph", "child move owner is invalid", st.key, raw.span)
 			return Move{}, false
 		}
-		from := reservationAddress(owner.Symbol, raw.kind, raw.from)
-		to := reservationAddress(owner.Symbol, raw.kind, raw.to)
-		return Move{Origin: st.key.Origin, Kind: raw.kind, OwnerID: raw.ownerID, Owner: &owner.Symbol, From: raw.from, To: raw.to, FromAddress: from, ToAddress: to, Range: raw.span}, true
+		fromSymbol := childSymbol(owner.Symbol, raw.kind, raw.from)
+		toSymbol := childSymbol(owner.Symbol, raw.kind, raw.to)
+		return Move{Origin: st.key.Origin, Kind: raw.kind, OwnerID: raw.ownerID, Owner: &owner.Symbol, From: raw.from, To: raw.to, FromAddress: addressOf(fromSymbol), ToAddress: addressOf(toSymbol), fromSymbol: fromSymbol, toSymbol: toSymbol, Range: raw.span}, true
 	}
-	from := addressOf(StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: raw.kind, ID: raw.from}}})
-	to := addressOf(StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: raw.kind, ID: raw.to}}})
-	return Move{Origin: st.key.Origin, Kind: raw.kind, OwnerID: raw.ownerID, From: raw.from, To: raw.to, FromAddress: from, ToAddress: to, Range: raw.span}, true
+	fromSymbol := StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: raw.kind, ID: raw.from}}}
+	toSymbol := StableSymbol{Origin: st.key.Origin, Path: []SymbolSegment{{Kind: raw.kind, ID: raw.to}}}
+	return Move{Origin: st.key.Origin, Kind: raw.kind, OwnerID: raw.ownerID, From: raw.from, To: raw.to, FromAddress: addressOf(fromSymbol), ToAddress: addressOf(toSymbol), fromSymbol: fromSymbol, toSymbol: toSymbol, Range: raw.span}, true
+}
+
+func childSymbol(owner StableSymbol, kind SubjectKind, id string) StableSymbol {
+	return StableSymbol{Origin: owner.Origin, Path: append(append([]SymbolSegment{}, owner.Path...), SymbolSegment{Kind: kind, ID: id})}
 }
 
 func (r *resolver) moveOwner(st *moduleState, raw rawMove) (DeclarationSymbol, bool) {
@@ -1429,7 +1582,7 @@ func (r *resolver) result() Result {
 		st := r.modules[key]
 		sourceNodes := nodesBySpan(st.file.Root)
 		result.Modules = append(result.Modules, ResolvedModule{Origin: st.key.Origin, Path: st.key.Path, Kind: st.kind, File: st.file, Imports: st.ast.imports, Exports: st.ast.exports})
-		if !r.syntaxInvalid && !r.hasErrors() {
+		if !r.syntaxInvalid && len(r.selected) > 0 {
 			for _, decl := range sortedDeclMap(st.localByAddress) {
 				if r.selected[decl.Address] {
 					decl.Selected = true
@@ -1484,7 +1637,7 @@ func (r *resolver) result() Result {
 			}
 		}
 	}
-	if !r.syntaxInvalid && !r.hasErrors() {
+	if !r.syntaxInvalid && len(r.selected) > 0 {
 		result.Candidates = sortedDeclMap(r.symbols)
 		usedPacks := map[Origin]bool{}
 		for address := range r.selected {
@@ -1529,20 +1682,44 @@ func (r *resolver) result() Result {
 	})
 	sort.SliceStable(result.Dependencies, func(i, j int) bool { return result.Dependencies[i].Address < result.Dependencies[j].Address })
 	sort.SliceStable(result.Identity.Reservations, func(i, j int) bool {
+		a := childSymbol(result.Identity.Reservations[i].Owner, result.Identity.Reservations[i].Kind, result.Identity.Reservations[i].ID)
+		b := childSymbol(result.Identity.Reservations[j].Owner, result.Identity.Reservations[j].Kind, result.Identity.Reservations[j].ID)
+		if cmp := compareSymbol(a, b); cmp != 0 {
+			return cmp < 0
+		}
 		return result.Identity.Reservations[i].Address < result.Identity.Reservations[j].Address
 	})
 	sort.SliceStable(result.CandidateIdentity.Reservations, func(i, j int) bool {
+		a := childSymbol(result.CandidateIdentity.Reservations[i].Owner, result.CandidateIdentity.Reservations[i].Kind, result.CandidateIdentity.Reservations[i].ID)
+		b := childSymbol(result.CandidateIdentity.Reservations[j].Owner, result.CandidateIdentity.Reservations[j].Kind, result.CandidateIdentity.Reservations[j].ID)
+		if cmp := compareSymbol(a, b); cmp != 0 {
+			return cmp < 0
+		}
 		return result.CandidateIdentity.Reservations[i].Address < result.CandidateIdentity.Reservations[j].Address
 	})
 	sort.SliceStable(result.Identity.Moves, func(i, j int) bool {
-		return result.Identity.Moves[i].FromAddress < result.Identity.Moves[j].FromAddress
+		if cmp := compareSymbol(result.Identity.Moves[i].fromSymbol, result.Identity.Moves[j].fromSymbol); cmp != 0 {
+			return cmp < 0
+		}
+		return compareSymbol(result.Identity.Moves[i].toSymbol, result.Identity.Moves[j].toSymbol) < 0
 	})
 	sort.SliceStable(result.CandidateIdentity.Moves, func(i, j int) bool {
-		return result.CandidateIdentity.Moves[i].FromAddress < result.CandidateIdentity.Moves[j].FromAddress
+		if cmp := compareSymbol(result.CandidateIdentity.Moves[i].fromSymbol, result.CandidateIdentity.Moves[j].fromSymbol); cmp != 0 {
+			return cmp < 0
+		}
+		return compareSymbol(result.CandidateIdentity.Moves[i].toSymbol, result.CandidateIdentity.Moves[j].toSymbol) < 0
 	})
-	sort.SliceStable(result.Identity.MoveClosure, func(i, j int) bool { return result.Identity.MoveClosure[i].From < result.Identity.MoveClosure[j].From })
+	sort.SliceStable(result.Identity.MoveClosure, func(i, j int) bool {
+		if cmp := compareSymbol(result.Identity.MoveClosure[i].fromSymbol, result.Identity.MoveClosure[j].fromSymbol); cmp != 0 {
+			return cmp < 0
+		}
+		return compareSymbol(result.Identity.MoveClosure[i].toSymbol, result.Identity.MoveClosure[j].toSymbol) < 0
+	})
 	sort.SliceStable(result.CandidateIdentity.MoveClosure, func(i, j int) bool {
-		return result.CandidateIdentity.MoveClosure[i].From < result.CandidateIdentity.MoveClosure[j].From
+		if cmp := compareSymbol(result.CandidateIdentity.MoveClosure[i].fromSymbol, result.CandidateIdentity.MoveClosure[j].fromSymbol); cmp != 0 {
+			return cmp < 0
+		}
+		return compareSymbol(result.CandidateIdentity.MoveClosure[i].toSymbol, result.CandidateIdentity.MoveClosure[j].toSymbol) < 0
 	})
 	sortDiagnostics(r.diagnostics)
 	result.Diagnostics = r.diagnostics

@@ -85,8 +85,8 @@ export * from "./schema.ldl"
 			t.Fatalf("missing extracted kind %s in %+v", kind, kinds)
 		}
 	}
-	if len(ast.reservations) != 8 {
-		t.Fatalf("reservations = %+v", ast.reservations)
+	if len(ast.reservationBlocks) != 1 {
+		t.Fatalf("reservation blocks = %+v", ast.reservationBlocks)
 	}
 	if len(ast.moves) != 6 {
 		t.Fatalf("moves = %+v", ast.moves)
