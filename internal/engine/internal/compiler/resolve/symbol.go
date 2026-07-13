@@ -137,3 +137,8 @@ func sortDeclarations(decls []DeclarationSymbol) {
 		return compareSymbol(decls[i].Symbol, decls[j].Symbol) < 0
 	})
 }
+
+// SortDeclarations orders declarations by their structured StableSymbol.
+func SortDeclarations(decls []DeclarationSymbol) {
+	sortDeclarations(decls)
+}

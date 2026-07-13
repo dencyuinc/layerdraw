@@ -144,6 +144,7 @@ func (r *resolver) resolvePackMode(entry string) {
 		return
 	}
 	info := matches[0]
+	r.project = info.origin
 	if entry != info.pack.Entry {
 		r.diag("LDL1201", "module_pack_or_asset_resolution_failed", "pack compile entry must equal pack manifest entry", ModuleKey{Origin: info.origin, Path: entry}, zeroSpan())
 		r.invalidInput = true
@@ -1381,9 +1382,13 @@ func (r *resolver) childrenOf(owner StableSymbol) []DeclarationSymbol {
 }
 
 func (r *resolver) result() Result {
-	var result Result
+	result := Result{Mode: r.input.Mode}
+	if r.project.Kind != "" {
+		result.RootAddress = addressOf(StableSymbol{Origin: r.project})
+	}
 	for _, key := range sortedModuleKeys(r.modules) {
 		st := r.modules[key]
+		sourceNodes := nodesBySpan(st.file.Root)
 		result.Modules = append(result.Modules, ResolvedModule{Origin: st.key.Origin, Path: st.key.Path, Kind: st.kind, File: st.file, Imports: st.ast.imports, Exports: st.ast.exports})
 		if !r.syntaxInvalid && !r.hasErrors() {
 			for _, decl := range sortedDeclMap(st.localByAddress) {
@@ -1401,6 +1406,24 @@ func (r *resolver) result() Result {
 				if r.bindingSelected(binding) {
 					result.Bindings = append(result.Bindings, binding)
 				}
+			}
+			for _, decl := range st.ast.declarations {
+				address := st.declarationAddress(decl)
+				if !r.selected[address] {
+					continue
+				}
+				symbol := StableSymbol{Origin: st.key.Origin}
+				if selected, ok := r.symbols[address]; ok {
+					symbol = selected.Symbol
+				}
+				result.DeclarationSources = append(result.DeclarationSources, DeclarationSource{
+					Symbol:  symbol,
+					Address: address,
+					Kind:    decl.kind,
+					Module:  st.key,
+					Range:   decl.span,
+					Node:    sourceNodes[decl.span],
+				})
 			}
 			result.CandidateIdentity.Reservations = append(result.CandidateIdentity.Reservations, st.reservations...)
 			result.CandidateIdentity.Moves = append(result.CandidateIdentity.Moves, st.moves...)
@@ -1461,6 +1484,9 @@ func (r *resolver) result() Result {
 			return result.Bindings[i].SourceText < result.Bindings[j].SourceText
 		}
 		return result.Bindings[i].TargetAddress < result.Bindings[j].TargetAddress
+	})
+	sort.SliceStable(result.DeclarationSources, func(i, j int) bool {
+		return compareSymbol(result.DeclarationSources[i].Symbol, result.DeclarationSources[j].Symbol) < 0
 	})
 	sort.SliceStable(result.Dependencies, func(i, j int) bool { return result.Dependencies[i].Address < result.Dependencies[j].Address })
 	sort.SliceStable(result.Identity.Reservations, func(i, j int) bool {
