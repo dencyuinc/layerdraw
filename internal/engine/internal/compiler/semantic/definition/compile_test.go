@@ -3,6 +3,7 @@
 package definition
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -293,34 +294,116 @@ func TestCompileDeterministicAcrossInputMapOrder(t *testing.T) {
 	filesA := map[string]string{
 		"document.ldl": `import { server } from "./b.ldl"
 project p "Project" {}
-layers { app "Application" @0 }
+layers {
+  app "Application" @0
+}
 relation_type r "R" dependency {
   from source types [server]
   to target types [server]
   label "r"
 }
 `,
-		"b.ldl": `entity_type server "Server" { representation shape rect }
+		"b.ldl": `entity_type server "Server" {
+  representation shape rect
+}
 export { server }
 `,
 	}
 	filesB := map[string]string{"b.ldl": filesA["b.ldl"], "document.ldl": filesA["document.ldl"]}
 	a := compileProject(t, filesA)
 	b := compileProject(t, filesB)
+	if a.HasErrors || b.HasErrors {
+		t.Fatalf("valid permutations produced diagnostics\nA=%+v\nB=%+v", a.Diagnostics, b.Diagnostics)
+	}
 	if !reflect.DeepEqual(a.EntityTypes, b.EntityTypes) || !reflect.DeepEqual(a.RelationTypes, b.RelationTypes) || !reflect.DeepEqual(a.Diagnostics, b.Diagnostics) {
 		t.Fatalf("definition output changed with map order\nA=%+v\nB=%+v", a, b)
 	}
 }
 
-func FuzzCompileDefinitionNoPanic(f *testing.F) {
-	f.Add("project p \"P\" {}\n")
-	f.Add("project p \"P\" {}\nentity_type e \"E\" { representation shape rect }\n")
+func FuzzCompileMalformedDefinitionNoPanic(f *testing.F) {
+	f.Add("project")
+	f.Add("entity_type e \"E\" { representation shape rect }")
+	f.Add("project p \"P\" {}\nentity_type e \"E\" {\n  columns [unterminated\n")
 	f.Fuzz(func(t *testing.T, src string) {
 		if len(src) > 4096 {
 			t.Skip()
 		}
 		in := resolve.Input{Mode: resolve.CompileProject, EntryPath: "document.ldl", Project: resolve.ProjectInput{Files: map[string]resolve.SourceFile{"document.ldl": parse(src)}}}
 		_ = Compile(Input{Resolve: resolve.Resolve(in)})
+	})
+}
+
+func FuzzCompileDefinitionSuccessfulDeterministic(f *testing.F) {
+	f.Add(uint8(0), false)
+	f.Add(uint8(1), true)
+	f.Fuzz(func(t *testing.T, variant uint8, reverse bool) {
+		shapes := []string{"rect", "rounded", "ellipse", "diamond", "cylinder", "cloud", "hexagon", "person", "device"}
+		reverseLine := ""
+		if reverse {
+			reverseLine = "  reverse \"is linked by\"\n"
+		}
+		filesA := map[string]string{
+			"document.ldl": `import { endpoint } from "./schema.ldl"
+project p "Project" {}
+relation_type link "Link" dependency {
+  from source types [endpoint]
+  to target types [endpoint]
+  label "links"
+` + reverseLine + `}
+`,
+			"schema.ldl": `entity_type endpoint "Endpoint" {
+  representation shape ` + shapes[int(variant)%len(shapes)] + `
+  columns {
+    name "Name" string default "value"
+  }
+}
+export { endpoint }
+`,
+		}
+		filesB := map[string]string{"schema.ldl": filesA["schema.ldl"], "document.ldl": filesA["document.ldl"]}
+		a, b := compileProject(t, filesA), compileProject(t, filesB)
+		if a.HasErrors || b.HasErrors {
+			t.Fatalf("valid generated definitions failed: A=%+v B=%+v", a.Diagnostics, b.Diagnostics)
+		}
+		if !reflect.DeepEqual(a, b) {
+			t.Fatalf("successful compilation was nondeterministic\nA=%+v\nB=%+v", a, b)
+		}
+	})
+}
+
+func FuzzCompilePackAliasRootDeterministic(f *testing.F) {
+	f.Add(uint8(0))
+	f.Add(uint8(17))
+	f.Fuzz(func(t *testing.T, suffix uint8) {
+		rootPack := issue13Pack("pub/root-pack", "root_pack", `entity_type root_type "Root" {
+  representation shape rect
+}
+export { root_type }
+`)
+		otherPack := issue13Pack("pub/other-pack", "other_pack", `entity_type other_type "Other" {
+  representation shape cloud
+}
+export { other_type }
+`)
+		rootAlias := fmt.Sprintf("selected_%d", suffix)
+		otherAlias := fmt.Sprintf("unrelated_%d", suffix)
+		compile := func(installs map[string]resolve.ResolvedPack) Result {
+			resolved := resolve.Resolve(resolve.Input{
+				Mode:       resolve.CompilePack,
+				RootPackID: rootPack.CanonicalID,
+				EntryPath:  rootPack.Entry,
+				Packs:      resolve.ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1, Installs: installs},
+			})
+			return Compile(Input{Resolve: resolved})
+		}
+		a := compile(map[string]resolve.ResolvedPack{rootAlias: rootPack, otherAlias: otherPack})
+		b := compile(map[string]resolve.ResolvedPack{otherAlias: otherPack, rootAlias: rootPack})
+		if a.HasErrors || b.HasErrors || a.Pack == nil || b.Pack == nil {
+			t.Fatalf("pack alias property failed: A=%+v B=%+v", a.Diagnostics, b.Diagnostics)
+		}
+		if a.Pack.CanonicalID != rootPack.CanonicalID || b.Pack.CanonicalID != rootPack.CanonicalID || !reflect.DeepEqual(a, b) {
+			t.Fatalf("pack root depended on alias/order\nA=%+v\nB=%+v", a, b)
+		}
 	})
 }
 

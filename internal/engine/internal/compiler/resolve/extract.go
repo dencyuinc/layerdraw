@@ -398,19 +398,53 @@ func extractViewChildren(n *syntax.Node, owner rawDecl, ast *moduleAST) {
 
 func extractReservations(n *syntax.Node) []rawReservation {
 	var out []rawReservation
-	for _, stmt := range descendants(n, syntax.NodeStatement) {
-		toks := nodeTokens(stmt)
-		if len(toks) == 0 {
+	for _, stmt := range nodeChildren(firstNode(n, syntax.NodeBlock)) {
+		if stmt.Kind != syntax.NodeStatement {
 			continue
 		}
-		kind, ok := reservationKind(toks[0].Raw)
+		head := directTokens(stmt)
+		if len(head) == 0 {
+			continue
+		}
+		kind, ok := reservationKind(head[0].Raw)
 		if !ok {
 			continue
 		}
-		for _, tok := range toks[1:] {
-			if tok.Kind == syntax.TokenIdentifier {
-				out = append(out, rawReservation{kind: kind, id: tok.Raw, span: tok.Span})
-			}
+		for _, tok := range reservationIdentifiers(stmt) {
+			out = append(out, rawReservation{kind: kind, id: tok.Raw, span: tok.Span})
+		}
+	}
+	return out
+}
+
+// reservationIdentifiers deliberately follows the statement/list structure.
+// Scanning descendant identifier tokens would turn a qualified or malformed
+// value into one or more unrelated durable identities.
+func reservationIdentifiers(stmt *syntax.Node) []syntax.Token {
+	if len(descendants(stmt, syntax.NodeError)) != 0 {
+		return nil
+	}
+	var args []*syntax.Node
+	for _, child := range nodeChildren(stmt) {
+		if child.Kind == syntax.NodeValue {
+			args = append(args, child)
+		}
+	}
+	if len(args) != 1 {
+		return nil
+	}
+	list := firstNode(args[0], syntax.NodeList)
+	if list == nil {
+		return nil
+	}
+	var out []syntax.Token
+	for _, child := range nodeChildren(list) {
+		if child.Kind != syntax.NodeValue || len(descendants(child, syntax.NodeError)) != 0 {
+			continue
+		}
+		toks := nodeTokens(child)
+		if len(toks) == 1 && toks[0].Kind == syntax.TokenIdentifier && isIdent(toks[0].Raw) {
+			out = append(out, toks[0])
 		}
 	}
 	return out

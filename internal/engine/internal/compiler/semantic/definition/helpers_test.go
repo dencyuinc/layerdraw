@@ -75,15 +75,15 @@ func TestDefinitionComposedValidationBranches(t *testing.T) {
 	src := testSource()
 	c := &compiler{}
 	from, to := ProjectionEndpointFrom, ProjectionEndpointTo
-	c.validateComposed(ComposedProjection{Mode: "overlay", OverlayEndpoint: &from, TargetEndpoint: &from}, src, syntax.Span{Start: 1, End: 2}, "subject")
-	c.validateComposed(ComposedProjection{Mode: "badge", BadgeEndpoint: &from, TargetEndpoint: &from}, src, syntax.Span{Start: 2, End: 3}, "subject")
-	c.validateComposed(ComposedProjection{Mode: "edge", ParentEndpoint: &to}, src, syntax.Span{Start: 3, End: 4}, "subject")
+	c.validateComposed(ComposedProjection{Mode: "overlay", OverlayEndpoint: &from, TargetEndpoint: &from}, body{}, src, syntax.Span{Start: 1, End: 2}, "subject")
+	c.validateComposed(ComposedProjection{Mode: "badge", BadgeEndpoint: &from, TargetEndpoint: &from}, body{}, src, syntax.Span{Start: 2, End: 3}, "subject")
+	c.validateComposed(ComposedProjection{Mode: "edge", ParentEndpoint: &to}, body{}, src, syntax.Span{Start: 3, End: 4}, "subject")
 	if len(c.diagnostics) != 3 {
 		t.Fatalf("validateComposed diagnostics = %+v", c.diagnostics)
 	}
 	c.diagnostics = nil
-	c.validateComposed(ComposedProjection{Mode: "overlay", OverlayEndpoint: &from, TargetEndpoint: &to}, src, syntax.Span{}, "subject")
-	c.validateComposed(ComposedProjection{Mode: "badge", BadgeEndpoint: &from, TargetEndpoint: &to}, src, syntax.Span{}, "subject")
+	c.validateComposed(ComposedProjection{Mode: "overlay", OverlayEndpoint: &from, TargetEndpoint: &to}, body{}, src, syntax.Span{}, "subject")
+	c.validateComposed(ComposedProjection{Mode: "badge", BadgeEndpoint: &from, TargetEndpoint: &to}, body{}, src, syntax.Span{}, "subject")
 	if len(c.diagnostics) != 0 {
 		t.Fatalf("valid composed modes diagnosed: %+v", c.diagnostics)
 	}
@@ -243,7 +243,7 @@ func TestDefinitionRelationBranchCoverage(t *testing.T) {
 		{name: "from_per_to", span: syntax.Span{Start: 2, End: 3}},
 	}}
 	_ = c.cardinality(&item{nested: badCardinality}, Cardinality{}, src, "subject")
-	_ = c.requiredEndpoint(body{}, "missing", src, "subject")
+	_ = c.requiredEndpoint(body{}, "missing", src, src.Range, "subject")
 	c.contextPlaceholders("{from.id} {bad.placeholder}", src, syntax.Span{Start: 3, End: 4}, "subject")
 	for _, message := range []string{"unknown projection primitive", "unknown render primitive", "invalid cardinality", "missing endpoint", "unknown context placeholder"} {
 		if !hasDiagnosticMessage(c.diagnostics, message) {
@@ -261,7 +261,7 @@ func TestDefinitionRemainingBranches(t *testing.T) {
 	_ = c.representation(body{}, src, "subject", "owner")
 	_ = c.requiredString(body{}, "missing", src, "subject", "owner", "LDL1504", "invalid_projection_contract")
 	_ = c.optionalColor(body{items: []item{{name: "color", args: []value{{raw: "bad", kind: syntax.TokenIdentifier}}, span: syntax.Span{Start: 1, End: 2}}}}, "color", src, "subject", "owner")
-	_ = c.enumList(value{node: listNode("a", "a")}, false, src, "subject", "owner")
+	_, _ = c.enumList(value{node: listNode("a", "a")}, false, src, "subject", "owner")
 
 	stringValue := value{raw: "\"ok\"", kind: syntax.TokenString}
 	if got := stringValue.string(); got != "ok" {

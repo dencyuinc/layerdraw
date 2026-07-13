@@ -977,18 +977,49 @@ func (r *resolver) validateReservations(st *moduleState) {
 			continue
 		}
 		addr := reservationAddress(owner, raw.kind, raw.id)
-		if _, active := r.symbols[addr]; active {
+		if active, exists := r.symbols[addr]; exists {
 			r.diag("LDL1302", "duplicate_or_reserved_identity", "reservation uses active identity", st.key, raw.span)
+			diagnostic := &r.diagnostics[len(r.diagnostics)-1]
+			setReservationDiagnosticContext(diagnostic, addr, owner, raw.kind)
+			r.addRelatedConflict(diagnostic, active)
 			continue
 		}
-		if _, exists := seen[addr]; exists {
+		if previous, exists := seen[addr]; exists {
 			r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate reservation", st.key, raw.span)
+			diagnostic := &r.diagnostics[len(r.diagnostics)-1]
+			setReservationDiagnosticContext(diagnostic, addr, owner, raw.kind)
+			addReservationRelated(diagnostic, st.key, previous, "previous")
 			continue
 		}
 		res := Reservation{Owner: owner, Kind: raw.kind, ID: raw.id, Address: addr, Range: raw.span}
 		seen[addr] = res
 		st.reservations = append(st.reservations, res)
 	}
+}
+
+func setReservationDiagnosticContext(diagnostic *Diagnostic, address string, owner StableSymbol, kind SubjectKind) {
+	if diagnostic == nil {
+		return
+	}
+	diagnostic.SubjectAddress = address
+	if isChildKind(kind) {
+		diagnostic.OwnerAddress = addressOf(owner)
+	}
+}
+
+func addReservationRelated(diagnostic *Diagnostic, module ModuleKey, reservation Reservation, relation string) {
+	if diagnostic == nil {
+		return
+	}
+	related := DiagnosticRelated{
+		Relation:       relation,
+		Range:          &SourceRange{Origin: sourceOrigin(module.Origin), ModulePath: module.Path, StartByte: reservation.Range.Start, EndByte: reservation.Range.End},
+		SubjectAddress: reservation.Address,
+	}
+	if isChildKind(reservation.Kind) {
+		related.OwnerAddress = addressOf(reservation.Owner)
+	}
+	diagnostic.Related = append(diagnostic.Related, related)
 }
 
 func rootReservationAllowed(origin OriginKind, kind SubjectKind) bool {
@@ -1224,7 +1255,9 @@ func (r *resolver) validateOriginIdentityDisjointness() {
 		for _, res := range st.reservations {
 			if prev, exists := reserved[res.Address]; exists {
 				r.diag("LDL1302", "duplicate_or_reserved_identity", "duplicate reservation", key, res.Range)
-				r.addIdentityRelatedConflict(&r.diagnostics[len(r.diagnostics)-1], prev.module, prev.item.Range, res.Address)
+				diagnostic := &r.diagnostics[len(r.diagnostics)-1]
+				setReservationDiagnosticContext(diagnostic, res.Address, res.Owner, res.Kind)
+				addReservationRelated(diagnostic, prev.module, prev.item, "previous")
 				continue
 			}
 			reserved[res.Address] = identityReservationRef{module: key, item: res}
@@ -1235,17 +1268,12 @@ func (r *resolver) validateOriginIdentityDisjointness() {
 		for _, mv := range st.moves {
 			if ref, ok := reserved[mv.FromAddress]; ok {
 				r.diag("LDL1302", "duplicate_or_reserved_identity", "move source is also explicitly reserved", key, mv.Range)
-				r.addIdentityRelatedConflict(&r.diagnostics[len(r.diagnostics)-1], ref.module, ref.item.Range, mv.FromAddress)
+				diagnostic := &r.diagnostics[len(r.diagnostics)-1]
+				setReservationDiagnosticContext(diagnostic, ref.item.Address, ref.item.Owner, ref.item.Kind)
+				addReservationRelated(diagnostic, ref.module, ref.item, "conflict")
 			}
 		}
 	}
-}
-
-func (r *resolver) addIdentityRelatedConflict(d *Diagnostic, mod ModuleKey, span syntax.Span, address string) {
-	if d == nil {
-		return
-	}
-	d.Related = append(d.Related, DiagnosticRelated{Relation: "conflict", Range: &SourceRange{Origin: sourceOrigin(mod.Origin), ModulePath: mod.Path, StartByte: span.Start, EndByte: span.End}, SubjectAddress: address})
 }
 
 func (r *resolver) materializeMove(st *moduleState, raw rawMove) (Move, bool) {

@@ -218,7 +218,7 @@ func (c *compiler) optionalString(b body, name string, src resolve.DeclarationSo
 
 func (c *compiler) requiredString(b body, name string, src resolve.DeclarationSource, subject, owner, code, key string) string {
 	if b.stmt(name) == nil {
-		c.diag(code, key, src, src.Range, "missing required string", subject, owner)
+		c.diag(code, key, src, declarationHeaderSpan(src), "missing required string", subject, owner)
 		return ""
 	}
 	s := c.optionalString(b, name, src, subject, owner)
@@ -284,6 +284,22 @@ func resolveAssetLocator(modulePath, raw string) (string, bool) {
 	if raw == "" || assetSchemePattern.MatchString(raw) || strings.HasPrefix(raw, "/") || strings.Contains(raw, "\\") || containsControl(raw) {
 		return "", false
 	}
+	decoded, err := url.PathUnescape(raw)
+	if err != nil || !utf8.ValidString(decoded) || !norm.NFC.IsNormalString(decoded) || strings.Contains(decoded, "\\") || containsControl(decoded) {
+		return "", false
+	}
+	if strings.Count(decoded, "/") != strings.Count(raw, "/") {
+		return "", false
+	}
+	rawSegments, decodedSegments := strings.Split(raw, "/"), strings.Split(decoded, "/")
+	if len(rawSegments) != len(decodedSegments) {
+		return "", false
+	}
+	for i, segment := range decodedSegments {
+		if (segment == "." || segment == "..") && segment != rawSegments[i] {
+			return "", false
+		}
+	}
 	clean := path.Clean(path.Join(path.Dir(modulePath), raw))
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", false
@@ -305,7 +321,7 @@ func containsControl(raw string) bool {
 func (c *compiler) representation(b body, src resolve.DeclarationSource, subject, owner string) Representation {
 	it := b.stmt("representation")
 	if it == nil || len(it.args) == 0 {
-		c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, src.Range, "missing representation", subject, owner)
+		c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, declarationHeaderSpan(src), "missing representation", subject, owner)
 		return Representation{}
 	}
 	switch it.args[0].raw {
@@ -359,11 +375,12 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 	seen := map[string]syntax.Span{}
 	lastRank := -1
 	defaultSpan := typeValue.span
+	var defaultValue *value
 	if len(args) > 0 && firstNode(args[0].node, syntax.NodeList) != nil {
 		if col.ValueType != ScalarEnum {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, args[0].span, "enum values forbidden", col.Address, owner)
 		} else {
-			col.EnumValues = c.enumList(args[0], false, src, col.Address, owner)
+			col.EnumValues, _ = c.enumList(args[0], false, src, col.Address, owner)
 		}
 		args = args[1:]
 	}
@@ -393,15 +410,17 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 		operand := args[i+1]
 		switch name {
 		case "default":
-			col.Default = c.scalar(operand, col, src, owner)
+			copy := operand
+			defaultValue = &copy
 			defaultSpan = operand.span
 			i++
 		case "format":
 			format := StringFormat(operand.raw)
 			if operand.kind != syntax.TokenIdentifier || col.ValueType != ScalarString || !stringFormats[string(format)] {
 				c.diag("LDL1401", "scalar_or_column_type_mismatch", src, operand.span, "invalid format", col.Address, owner)
+			} else {
+				col.Format = &format
 			}
-			col.Format = &format
 			i++
 		case "min", "max":
 			f, ok := operand.number()
@@ -414,8 +433,7 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 			}
 			if !ok {
 				c.diag("LDL1401", "scalar_or_column_type_mismatch", src, operand.span, "invalid numeric bound", col.Address, owner)
-			}
-			if name == "min" {
+			} else if name == "min" {
 				col.Min = &f
 			} else {
 				col.Max = &f
@@ -425,8 +443,7 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 			n, ok := operand.integer()
 			if !ok || n < 0 || !jsonSafeInteger(n) || col.ValueType != ScalarString {
 				c.diag("LDL1401", "scalar_or_column_type_mismatch", src, operand.span, "invalid length bound", col.Address, owner)
-			}
-			if name == "min_length" {
+			} else if name == "min_length" {
 				col.MinLength = &n
 			} else {
 				col.MaxLength = &n
@@ -436,7 +453,10 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 			if col.ValueType != ScalarEnum || firstNode(operand.node, syntax.NodeList) == nil {
 				c.diag("LDL1401", "scalar_or_column_type_mismatch", src, operand.span, "reserved enum values forbidden", col.Address, owner)
 			} else {
-				col.ReservedEnumValues = c.enumList(operand, true, src, col.Address, owner)
+				values, valid := c.enumList(operand, true, src, col.Address, owner)
+				if valid {
+					col.ReservedEnumValues = values
+				}
 			}
 			i++
 		}
@@ -444,13 +464,29 @@ func (c *compiler) columnModifiers(col *Column, typeValue value, args []value, s
 	if col.ValueType == ScalarEnum && len(col.EnumValues) == 0 {
 		c.diag("LDL1401", "scalar_or_column_type_mismatch", src, typeValue.span, "enum requires values", col.Address, owner)
 	}
+	reservedValuesValid := true
 	for _, active := range col.EnumValues {
 		if contains(col.ReservedEnumValues, active) {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, typeValue.span, "active and reserved enum values overlap", col.Address, owner)
+			reservedValuesValid = false
 		}
 	}
-	if col.Min != nil && col.Max != nil && *col.Min > *col.Max || col.MinLength != nil && col.MaxLength != nil && *col.MinLength > *col.MaxLength {
+	if !reservedValuesValid {
+		col.ReservedEnumValues = []string{}
+	}
+	invalidNumericBounds := col.Min != nil && col.Max != nil && *col.Min > *col.Max
+	invalidLengthBounds := col.MinLength != nil && col.MaxLength != nil && *col.MinLength > *col.MaxLength
+	if invalidNumericBounds || invalidLengthBounds {
 		c.diag("LDL1401", "scalar_or_column_type_mismatch", src, typeValue.span, "invalid bounds", col.Address, owner)
+		if invalidNumericBounds {
+			col.Min, col.Max = nil, nil
+		}
+		if invalidLengthBounds {
+			col.MinLength, col.MaxLength = nil, nil
+		}
+	}
+	if defaultValue != nil {
+		col.Default = c.scalar(*defaultValue, col, src, owner)
 	}
 	if col.Default != nil {
 		c.validateDefault(col, src, owner, defaultSpan)
@@ -464,21 +500,25 @@ var columnModifierRanks = map[string]int{
 
 var stringFormats = set("uri", "email", "hostname", "ipv4", "ipv6", "cidr")
 
-func (c *compiler) enumList(v value, canonical bool, src resolve.DeclarationSource, subject, owner string) []string {
+func (c *compiler) enumList(v value, canonical bool, src resolve.DeclarationSource, subject, owner string) ([]string, bool) {
 	var out []string
+	valid := true
 	seen := map[string]syntax.Span{}
 	for _, item := range listValues(v.node) {
 		if item.kind != syntax.TokenIdentifier && item.kind != syntax.TokenString {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, item.span, "invalid enum value", subject, owner)
+			valid = false
 			continue
 		}
 		s := normalizeString(item.string())
 		if s == "" {
 			c.diag("LDL1401", "scalar_or_column_type_mismatch", src, item.span, "empty enum value", subject, owner)
+			valid = false
 			continue
 		}
 		if prev, ok := seen[s]; ok {
 			c.diagRelated("LDL1102", "unknown_or_duplicate_schema_member", src, item.span, "duplicate enum value", subject, owner, prev)
+			valid = false
 			continue
 		}
 		seen[s] = item.span
@@ -487,7 +527,7 @@ func (c *compiler) enumList(v value, canonical bool, src resolve.DeclarationSour
 	if canonical {
 		sort.Strings(out)
 	}
-	return out
+	return out, valid
 }
 
 func (c *compiler) scalar(v value, col *Column, src resolve.DeclarationSource, owner string) *Scalar {
@@ -617,8 +657,7 @@ func (c *compiler) validateDefault(col *Column, src resolve.DeclarationSource, o
 func normalizeStringFormat(format, raw string) (string, bool) {
 	switch format {
 	case "uri":
-		u, err := url.Parse(raw)
-		if err != nil || !u.IsAbs() || u.Scheme == "" {
+		if !validAbsoluteURI(raw) {
 			return "", false
 		}
 		return raw, true
@@ -650,6 +689,167 @@ func normalizeStringFormat(format, raw string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func validAbsoluteURI(raw string) bool {
+	colon := strings.IndexByte(raw, ':')
+	if colon <= 0 || !validURIScheme(raw[:colon]) || !isASCII(raw) || strings.Contains(raw, "\\") || containsControl(raw) {
+		return false
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '%' {
+			if i+2 >= len(raw) || !isHex(raw[i+1]) || !isHex(raw[i+2]) {
+				return false
+			}
+			i += 2
+			continue
+		}
+		if !isURICharacter(raw[i]) {
+			return false
+		}
+	}
+	remainder := raw[colon+1:]
+	if strings.Count(remainder, "#") > 1 {
+		return false
+	}
+	hierAndQuery, fragment, hasFragment := strings.Cut(remainder, "#")
+	if hasFragment && !validURIQueryOrFragment(fragment) {
+		return false
+	}
+	hier, query, hasQuery := strings.Cut(hierAndQuery, "?")
+	if hasQuery && !validURIQueryOrFragment(query) {
+		return false
+	}
+	if strings.HasPrefix(hier, "//") {
+		authorityAndPath := hier[2:]
+		pathStart := strings.IndexByte(authorityAndPath, '/')
+		authority, uriPath := authorityAndPath, ""
+		if pathStart >= 0 {
+			authority, uriPath = authorityAndPath[:pathStart], authorityAndPath[pathStart:]
+		}
+		return validURIAuthority(authority) && validURIPath(uriPath)
+	}
+	return !strings.HasPrefix(hier, "//") && validURIPath(hier)
+}
+
+func validURIScheme(scheme string) bool {
+	if scheme == "" || !isAlpha(scheme[0]) {
+		return false
+	}
+	for i := 1; i < len(scheme); i++ {
+		if !isAlpha(scheme[i]) && !isDigitByte(scheme[i]) && !strings.ContainsRune("+.-", rune(scheme[i])) {
+			return false
+		}
+	}
+	return true
+}
+
+func validURIAuthority(authority string) bool {
+	if strings.Count(authority, "@") > 1 {
+		return false
+	}
+	hostPort := authority
+	if userinfo, rest, ok := strings.Cut(authority, "@"); ok {
+		if !validURIComponent(userinfo, true, ":") {
+			return false
+		}
+		hostPort = rest
+	}
+	if strings.HasPrefix(hostPort, "[") {
+		close := strings.IndexByte(hostPort, ']')
+		if close <= 1 {
+			return false
+		}
+		literal, rest := hostPort[1:close], hostPort[close+1:]
+		if !validIPLiteral(literal) || rest != "" && (!strings.HasPrefix(rest, ":") || !allDigits(rest[1:])) {
+			return false
+		}
+		return true
+	}
+	if strings.ContainsAny(hostPort, "[]") {
+		return false
+	}
+	host := hostPort
+	if colon := strings.LastIndexByte(hostPort, ':'); colon >= 0 {
+		host = hostPort[:colon]
+		if strings.Contains(host, ":") || !allDigits(hostPort[colon+1:]) {
+			return false
+		}
+	}
+	return validURIComponent(host, true, "")
+}
+
+func validIPLiteral(literal string) bool {
+	if addr, err := netip.ParseAddr(literal); err == nil {
+		return addr.Is6() && addr.Zone() == ""
+	}
+	if len(literal) < 4 || literal[0] != 'v' && literal[0] != 'V' {
+		return false
+	}
+	dot := strings.IndexByte(literal, '.')
+	if dot < 2 {
+		return false
+	}
+	for i := 1; i < dot; i++ {
+		if !isHex(literal[i]) {
+			return false
+		}
+	}
+	return literal[dot+1:] != "" && validURIComponent(literal[dot+1:], false, ":")
+}
+
+func validURIPath(uriPath string) bool {
+	return validURIComponent(uriPath, true, "/:@")
+}
+
+func validURIQueryOrFragment(value string) bool {
+	return validURIComponent(value, true, "/?:@")
+}
+
+func validURIComponent(value string, allowEmpty bool, extra string) bool {
+	if value == "" {
+		return allowEmpty
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] == '%' {
+			i += 2
+			continue
+		}
+		if isURIUnreserved(value[i]) || strings.ContainsRune("!$&'()*+,;="+extra, rune(value[i])) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isURICharacter(ch byte) bool {
+	return isURIUnreserved(ch) || strings.ContainsRune(":/?#[]@!$&'()*+,;=%", rune(ch))
+}
+
+func isURIUnreserved(ch byte) bool {
+	return isAlpha(ch) || isDigitByte(ch) || strings.ContainsRune("-._~", rune(ch))
+}
+
+func isAlpha(ch byte) bool {
+	return ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+}
+
+func isDigitByte(ch byte) bool {
+	return ch >= '0' && ch <= '9'
+}
+
+func isHex(ch byte) bool {
+	return isDigitByte(ch) || ch >= 'A' && ch <= 'F' || ch >= 'a' && ch <= 'f'
+}
+
+func allDigits(raw string) bool {
+	for i := 0; i < len(raw); i++ {
+		if !isDigitByte(raw[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 var emailPattern = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([A-Za-z0-9.-]+)$")
@@ -749,9 +949,29 @@ func (c *compiler) validateReserve(it *item, src resolve.DeclarationSource, owne
 			continue
 		}
 		if len(member.args) != 1 || firstNode(member.args[0].node, syntax.NodeList) == nil {
-			c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, member.span, "reservation requires one list", owner, "")
+			c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, member.span, "reservation requires one list", "", owner)
+			continue
+		}
+		for _, value := range listValues(member.args[0].node) {
+			tokens := nodeTokens(value.node)
+			if len(tokens) != 1 || tokens[0].Kind != syntax.TokenIdentifier || !canonicalIdentifier(tokens[0].Raw) {
+				c.diag("LDL1102", "unknown_or_duplicate_schema_member", src, value.span, "invalid reservation identifier", "", owner)
+			}
 		}
 	}
+}
+
+func canonicalIdentifier(raw string) bool {
+	if raw == "" || raw[0] < 'a' || raw[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(raw); i++ {
+		if raw[i] >= 'a' && raw[i] <= 'z' || raw[i] >= '0' && raw[i] <= '9' || raw[i] == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (c *compiler) childReservations(owner resolve.StableSymbol) ([]string, []string) {
@@ -863,6 +1083,55 @@ func (c *compiler) diagRelated(code, key string, src resolve.DeclarationSource, 
 
 func (c *compiler) rangeOf(src resolve.DeclarationSource, span syntax.Span) *resolve.SourceRange {
 	return &resolve.SourceRange{Origin: sourceOrigin(src.Module.Origin), ModulePath: src.Module.Path, StartByte: span.Start, EndByte: span.End}
+}
+
+func declarationHeaderSpan(src resolve.DeclarationSource) syntax.Span {
+	return headerSpan(src.Node, src.Range)
+}
+
+func itemHeaderSpan(it *item) syntax.Span {
+	if it == nil {
+		return syntax.Span{}
+	}
+	return headerSpan(it.node, it.span)
+}
+
+func headerSpan(node *syntax.Node, fallback syntax.Span) syntax.Span {
+	if node == nil {
+		return fallback
+	}
+	var first, last *syntax.Token
+	appendToken := func(token syntax.Token) {
+		switch token.Kind {
+		case syntax.TokenNewline, syntax.TokenLineComment, syntax.TokenDocComment, syntax.TokenModuleDoc, syntax.TokenEOF:
+			return
+		}
+		copy := token
+		if first == nil {
+			first = &copy
+		}
+		last = &copy
+	}
+	for _, element := range node.Children {
+		switch child := element.(type) {
+		case syntax.TokenElement:
+			appendToken(child.Token)
+		case *syntax.Node:
+			if child.Kind == syntax.NodeBlock || child.Kind == syntax.NodeItemBlock {
+				if first != nil {
+					return syntax.Span{Start: first.Span.Start, End: last.Span.End}
+				}
+				return fallback
+			}
+			for _, token := range nodeTokens(child) {
+				appendToken(token)
+			}
+		}
+	}
+	if first == nil {
+		return fallback
+	}
+	return syntax.Span{Start: first.Span.Start, End: last.Span.End}
 }
 
 func sourceOrigin(origin resolve.Origin) resolve.SourceOrigin {

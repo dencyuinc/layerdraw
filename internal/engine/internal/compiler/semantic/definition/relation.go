@@ -15,7 +15,7 @@ import (
 func (c *compiler) endpoint(it *item, entityKind resolve.SubjectKind, owner resolve.DeclarationSymbol, src resolve.DeclarationSource) EndpointRule {
 	var ep EndpointRule
 	if it == nil || len(it.args) == 0 {
-		c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", src, src.Range, "missing endpoint", owner.Address, "")
+		c.diag("LDL1501", "invalid_relation_endpoint_or_self_rule", src, declarationHeaderSpan(src), "missing endpoint", owner.Address, "")
 		return ep
 	}
 	if it.args[0].kind != syntax.TokenIdentifier {
@@ -195,7 +195,7 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 			r.Projections.Composed.OverlayEndpoint = c.endpointField(it.nested, "overlay_endpoint", src, r.Address)
 			r.Projections.Composed.TargetEndpoint = c.endpointField(it.nested, "target_endpoint", src, r.Address)
 			r.Projections.Composed.BadgeEndpoint = c.endpointField(it.nested, "badge_endpoint", src, r.Address)
-			c.validateComposed(r.Projections.Composed, src, it.span, r.Address)
+			c.validateComposed(r.Projections.Composed, it.nested, src, itemHeaderSpan(&it), r.Address)
 		case "diagram":
 			c.rejectUnknown(it.nested, src, specs("mode", "source_endpoint", "target_endpoint", "edge_label", "include_relation_type"))
 			r.Projections.Diagram.Mode = DiagramProjectionMode(c.optionalEnumDefault(it.nested, "mode", string(r.Projections.Diagram.Mode), set("edge", "hide"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
@@ -212,23 +212,26 @@ func (c *compiler) projections(items []item, r *RelationType, src resolve.Declar
 			r.Projections.Table.IncludeRelationType = c.optionalBoolDefault(it.nested, "include_relation_type", r.Projections.Table.IncludeRelationType, src, r.Address, "", "LDL1504", "invalid_projection_contract")
 		case "matrix":
 			c.rejectUnknown(it.nested, src, specs("row_endpoint", "column_endpoint", "include_relation_rows"))
+			header := itemHeaderSpan(&it)
 			m := MatrixProjection{
-				RowEndpoint:         c.requiredEndpoint(it.nested, "row_endpoint", src, r.Address),
-				ColumnEndpoint:      c.requiredEndpoint(it.nested, "column_endpoint", src, r.Address),
-				IncludeRelationRows: c.requiredBool(it.nested, "include_relation_rows", src, r.Address),
+				RowEndpoint:         c.requiredEndpoint(it.nested, "row_endpoint", src, header, r.Address),
+				ColumnEndpoint:      c.requiredEndpoint(it.nested, "column_endpoint", src, header, r.Address),
+				IncludeRelationRows: c.requiredBool(it.nested, "include_relation_rows", src, header, r.Address),
 			}
 			c.distinctEndpoints(m.RowEndpoint, m.ColumnEndpoint, src, it.span, r.Address)
 			r.Projections.Matrix = &m
 		case "tree":
 			c.rejectUnknown(it.nested, src, specs("parent_endpoint", "child_endpoint"))
-			t := TreeProjection{ParentEndpoint: c.requiredEndpoint(it.nested, "parent_endpoint", src, r.Address), ChildEndpoint: c.requiredEndpoint(it.nested, "child_endpoint", src, r.Address)}
+			header := itemHeaderSpan(&it)
+			t := TreeProjection{ParentEndpoint: c.requiredEndpoint(it.nested, "parent_endpoint", src, header, r.Address), ChildEndpoint: c.requiredEndpoint(it.nested, "child_endpoint", src, header, r.Address)}
 			c.distinctEndpoints(t.ParentEndpoint, t.ChildEndpoint, src, it.span, r.Address)
 			r.Projections.Tree = &t
 		case "flow":
 			c.rejectUnknown(it.nested, src, specs("source_endpoint", "target_endpoint", "connector_kind", "branch_value_column"))
-			f := FlowProjection{SourceEndpoint: c.requiredEndpoint(it.nested, "source_endpoint", src, r.Address), TargetEndpoint: c.requiredEndpoint(it.nested, "target_endpoint", src, r.Address)}
+			header := itemHeaderSpan(&it)
+			f := FlowProjection{SourceEndpoint: c.requiredEndpoint(it.nested, "source_endpoint", src, header, r.Address), TargetEndpoint: c.requiredEndpoint(it.nested, "target_endpoint", src, header, r.Address)}
 			if connector := it.nested.stmt("connector_kind"); connector == nil {
-				c.diag("LDL1504", "invalid_projection_contract", src, it.span, "missing connector kind", r.Address, "")
+				c.diag("LDL1504", "invalid_projection_contract", src, header, "missing connector kind", r.Address, "")
 			} else {
 				f.ConnectorKind = FlowConnectorKind(c.optionalEnumDefault(it.nested, "connector_kind", "", set("sequence", "control", "data", "message", "error"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
 			}
@@ -358,25 +361,29 @@ func (c *compiler) endpointField(b body, name string, src resolve.DeclarationSou
 	return &typed
 }
 
-func (c *compiler) requiredEndpoint(b body, name string, src resolve.DeclarationSource, subject string) ProjectionEndpoint {
+func (c *compiler) requiredEndpoint(b body, name string, src resolve.DeclarationSource, missingSpan syntax.Span, subject string) ProjectionEndpoint {
 	if b.stmt(name) == nil {
-		c.diag("LDL1504", "invalid_projection_contract", src, src.Range, "missing endpoint", subject, "")
+		c.diag("LDL1504", "invalid_projection_contract", src, missingSpan, "missing endpoint", subject, "")
 		return ""
 	}
 	return ProjectionEndpoint(c.optionalEnumDefault(b, name, "", endpointSet(), src, subject, "", "LDL1504", "invalid_projection_contract"))
 }
 
-func (c *compiler) requiredBool(b body, name string, src resolve.DeclarationSource, subject string) bool {
+func (c *compiler) requiredBool(b body, name string, src resolve.DeclarationSource, missingSpan syntax.Span, subject string) bool {
 	it := b.stmt(name)
 	if it == nil {
-		c.diag("LDL1504", "invalid_projection_contract", src, src.Range, "missing required boolean", subject, "")
+		c.diag("LDL1504", "invalid_projection_contract", src, missingSpan, "missing required boolean", subject, "")
 		return false
 	}
 	return c.optionalBoolDefault(b, name, false, src, subject, "", "LDL1504", "invalid_projection_contract")
 }
 
 func (c *compiler) optionalLabelDefault(b body, name string, def ProjectionLabel, r *RelationType, src resolve.DeclarationSource) ProjectionLabel {
+	valid := enumFieldValid(b, name, set("type", "display_name", "forward_label", "reverse_label", "none"))
 	label := ProjectionLabel(c.optionalEnumDefault(b, name, string(def), set("type", "display_name", "forward_label", "reverse_label", "none"), src, r.Address, "", "LDL1504", "invalid_projection_contract"))
+	if !valid {
+		return label
+	}
 	if label == ProjectionLabelReverseLabel && r.ReverseLabel == nil {
 		span := src.Range
 		if it := b.stmt(name); it != nil {
@@ -387,24 +394,30 @@ func (c *compiler) optionalLabelDefault(b body, name string, def ProjectionLabel
 	return label
 }
 
-func (c *compiler) validateComposed(p ComposedProjection, src resolve.DeclarationSource, span syntax.Span, subject string) {
+func (c *compiler) validateComposed(p ComposedProjection, authored body, src resolve.DeclarationSource, span syntax.Span, subject string) {
+	if !enumFieldValid(authored, "mode", set("edge", "nest", "overlay", "badge", "hide")) {
+		return
+	}
 	switch p.Mode {
 	case "nest":
-		if p.ParentEndpoint == nil || p.ChildEndpoint == nil || *p.ParentEndpoint == *p.ChildEndpoint {
+		if !invalidEndpointField(authored, "parent_endpoint") && !invalidEndpointField(authored, "child_endpoint") &&
+			(p.ParentEndpoint == nil || p.ChildEndpoint == nil || *p.ParentEndpoint == *p.ChildEndpoint) {
 			c.diag("LDL1504", "invalid_projection_contract", src, span, "invalid nest endpoints", subject, "")
 		}
 		if p.OverlayEndpoint != nil || p.TargetEndpoint != nil || p.BadgeEndpoint != nil {
 			c.diag("LDL1504", "invalid_projection_contract", src, span, "endpoint fields forbidden for nest", subject, "")
 		}
 	case "overlay":
-		if p.OverlayEndpoint == nil || p.TargetEndpoint == nil || *p.OverlayEndpoint == *p.TargetEndpoint {
+		if !invalidEndpointField(authored, "overlay_endpoint") && !invalidEndpointField(authored, "target_endpoint") &&
+			(p.OverlayEndpoint == nil || p.TargetEndpoint == nil || *p.OverlayEndpoint == *p.TargetEndpoint) {
 			c.diag("LDL1504", "invalid_projection_contract", src, span, "invalid overlay endpoints", subject, "")
 		}
 		if p.ParentEndpoint != nil || p.ChildEndpoint != nil || p.BadgeEndpoint != nil {
 			c.diag("LDL1504", "invalid_projection_contract", src, span, "endpoint fields forbidden for overlay", subject, "")
 		}
 	case "badge":
-		if p.BadgeEndpoint == nil || p.TargetEndpoint == nil || *p.BadgeEndpoint == *p.TargetEndpoint {
+		if !invalidEndpointField(authored, "badge_endpoint") && !invalidEndpointField(authored, "target_endpoint") &&
+			(p.BadgeEndpoint == nil || p.TargetEndpoint == nil || *p.BadgeEndpoint == *p.TargetEndpoint) {
 			c.diag("LDL1504", "invalid_projection_contract", src, span, "invalid badge endpoints", subject, "")
 		}
 		if p.ParentEndpoint != nil || p.ChildEndpoint != nil || p.OverlayEndpoint != nil {
@@ -415,6 +428,16 @@ func (c *compiler) validateComposed(p ComposedProjection, src resolve.Declaratio
 			c.diag("LDL1504", "invalid_projection_contract", src, span, "endpoint fields forbidden", subject, "")
 		}
 	}
+}
+
+func enumFieldValid(b body, name string, allowed map[string]bool) bool {
+	it := b.stmt(name)
+	return it == nil || len(it.args) == 1 && it.args[0].kind == syntax.TokenIdentifier && allowed[it.args[0].raw]
+}
+
+func invalidEndpointField(b body, name string) bool {
+	it := b.stmt(name)
+	return it != nil && (len(it.args) != 1 || it.args[0].kind != syntax.TokenIdentifier || !endpointSet()[it.args[0].raw])
 }
 
 func (c *compiler) distinctEndpoints(a, b ProjectionEndpoint, src resolve.DeclarationSource, span syntax.Span, subject string) {
