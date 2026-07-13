@@ -456,6 +456,8 @@ boolean             = "true" | "false" ;
 
 `identifier`、`string`、`integer`、`number`、`heredoc`、`newline`、`trivia`、`module-doc`、および `doc-comment` は section 4 で定義される lexical production である。同じ identifier-shaped token は、schema-defined grammar position に基づいて、declaration reference、enum value、または string-like atom として解決される。semantic validation は、複数の expected type の間を決して推測しない。Declaration-specific section は、`contains`、`in`、`exists`、および `missing` などの word operator を含め、汎用 `statement` および `nested-block` production を制約する。
 
+汎用 `statement` の引数位置で末尾の `{}` が `object` と `nested-block` の両方に一致する場合、`nested-block` の `empty-block` を優先する。したがって `select {}` や `source query q {}` は空の nested block であり、同位置の直接の空 object 引数は表現しない。空 object は、list 要素や object item value など block と曖昧でない value 位置では引き続き有効である。
+
 `qualified-token`は汎用statement/value位置の構文上の受理単位である。通常のdeclaration source bindingは`symbol-ref`どおり最大2 segmentに制限し、3 segment以上を許すのは詳細仕様5.4節のexact StateFieldPathなど、declaration-specific grammarが明示したselectorだけである。未知のmulti-segment tokenを任意property pathとして受理してはならない。
 
 LDL source fileはversion headerを要求しない。BOMを除いた最初のnon-trivia tokenは、module documentation、import、またはdeclarationでよい。`//!` module documentationはsource file先頭の連続sectionとしてだけ許可し、importまたはdeclarationより後に現れてはならない。
