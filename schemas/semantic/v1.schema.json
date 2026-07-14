@@ -276,51 +276,64 @@
     "QueryRecipe": {
       "type": "object",
       "properties": {
-        "address": {"$ref": "#/$defs/StableAddress"},
+        "address": {"$ref": "#/$defs/QueryAddress"},
         "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
         "dependencies": {"$ref": "#/$defs/QueryRecipeDependencies"},
         "description": {"type": "string"},
         "display_name": {"type": "string"},
-        "id": {"type": "string"},
+        "id": {"$ref": "#/$defs/LocalIdentifier"},
         "parameters": {"type": "array", "items": {"$ref": "#/$defs/QueryRecipeParameter"}},
         "relation_where": {"$ref": "#/$defs/RecipePredicate"},
-        "reserved_parameter_ids": {"type": "array", "items": {"type": "string"}},
-        "result": {"type": "array", "items": {"type": "string", "enum": ["induced_relations", "path_relations", "seed_entities", "traversed_entities"]}},
+        "reserved_parameter_ids": {"type": "array", "items": {"$ref": "#/$defs/LocalIdentifier"}, "uniqueItems": true, "x-layerdraw-canonical-identifier-order": true},
+        "result": {"type": "array", "items": {"type": "string", "enum": ["seed_entities", "traversed_entities", "path_relations", "induced_relations"]}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
         "select": {"$ref": "#/$defs/QueryRecipeSelect"},
         "state_input": {"type": "string", "enum": ["none", "optional", "required"]},
-        "tags": {"type": "array", "items": {"type": "string"}},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
         "traverse": {"$ref": "#/$defs/QueryRecipeTraversal"},
         "where": {"$ref": "#/$defs/RecipePredicate"}
       },
       "required": ["id", "address", "display_name", "tags", "annotations", "state_input", "parameters", "select", "where", "relation_where", "result", "reserved_parameter_ids", "dependencies"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-address-owners": [{"owner": "address", "children": "parameters", "selector": "address"}],
+      "x-layerdraw-address-terminal-id": {"address": "address", "id": "id"},
+      "x-layerdraw-unique-array-keys": [
+        {"array": "parameters", "property": "id"},
+        {"array": "parameters", "property": "address"}
+      ],
+      "x-layerdraw-disjoint-array-keys": [{"array": "parameters", "property": "id", "strings": "reserved_parameter_ids"}]
     },
     "QueryRecipeParameter": {
       "type": "object",
       "properties": {
-        "address": {"$ref": "#/$defs/StableAddress"},
+        "address": {"$ref": "#/$defs/ParameterAddress"},
         "default": {"$ref": "#/$defs/RecipeScalar"},
-        "enum_values": {"type": "array", "items": {"type": "string"}},
+        "enum_values": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "format": {"type": "string", "enum": ["cidr", "email", "hostname", "ipv4", "ipv6", "uri"]},
-        "id": {"type": "string"},
+        "id": {"$ref": "#/$defs/LocalIdentifier"},
         "max": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
         "max_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
         "min": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
         "min_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
         "required": {"type": "boolean"},
-        "reserved_enum_values": {"type": "array", "items": {"type": "string"}},
+        "reserved_enum_values": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
         "value_type": {"$ref": "#/$defs/ValueType"}
       },
       "required": ["id", "address", "value_type", "reserved_enum_values", "required"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-address-terminal-id": {"address": "address", "id": "id"},
+      "x-layerdraw-disjoint-arrays": [{"left": "enum_values", "right": "reserved_enum_values"}],
+      "x-layerdraw-ordered-pairs": [
+        {"lower": "min", "upper": "max", "comparison": "finite_binary64"},
+        {"lower": "min_length", "upper": "max_length", "comparison": "unsigned_decimal"}
+      ]
     },
     "QueryRecipeSelect": {
       "type": "object",
       "properties": {
-        "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "root_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}
+        "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/LayerAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "root_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}
       },
       "required": [],
       "additionalProperties": false
@@ -332,21 +345,22 @@
         "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]},
         "max_depth": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
         "min_depth": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
-        "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}
+        "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}
       },
       "required": ["direction", "min_depth", "max_depth", "cycle_policy"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-ordered-pairs": [{"lower": "min_depth", "upper": "max_depth", "comparison": "unsigned_decimal"}]
     },
     "QueryRecipeDependencies": {
       "type": "object",
       "properties": {
-        "column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "entity_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "parameter_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "relation_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "column_addresses": {"type": "array", "items": {"$ref": "#/$defs/ColumnAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "entity_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/LayerAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "parameter_addresses": {"type": "array", "items": {"$ref": "#/$defs/ParameterAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "relation_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "state_reads": {"type": "array", "items": {"$ref": "#/$defs/StateReadDependency"}}
       },
       "required": ["layer_addresses", "entity_type_addresses", "relation_type_addresses", "entity_addresses", "relation_addresses", "column_addresses", "parameter_addresses", "state_reads"],
@@ -374,9 +388,9 @@
       "type": "object",
       "properties": {
         "address_value": {"$ref": "#/$defs/StableAddress"},
-        "address_values": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "address_values": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "kind": {"type": "string", "enum": ["address", "address_set", "parameter", "scalar", "scalar_set"]},
-        "parameter_address": {"$ref": "#/$defs/StableAddress"},
+        "parameter_address": {"$ref": "#/$defs/ParameterAddress"},
         "scalar_value": {"$ref": "#/$defs/RecipeScalar"},
         "scalar_values": {"type": "array", "items": {"$ref": "#/$defs/RecipeScalar"}}
       },
@@ -404,7 +418,7 @@
         "operator": {"type": "string", "enum": ["contains", "ends_with", "eq", "exists", "gt", "gte", "in", "lt", "lte", "missing", "ne", "not_in", "starts_with"]},
         "predicate": {"$ref": "#/$defs/RecipeRowPredicate"},
         "quantifier": {"type": "string", "enum": ["all", "any", "none"]},
-        "type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "type_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityOrRelationTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "value": {"$ref": "#/$defs/RecipePredicateValue"}
       },
       "required": ["kind"],
@@ -427,7 +441,7 @@
       "properties": {
         "child": {"$ref": "#/$defs/RecipeRowPredicate"},
         "children": {"type": "array", "items": {"$ref": "#/$defs/RecipeRowPredicate"}},
-        "column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "column_addresses": {"type": "array", "items": {"$ref": "#/$defs/ColumnAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "field_path": {"$ref": "#/$defs/StateFieldPath"},
         "kind": {"type": "string", "enum": ["all", "any", "cell", "not", "state"]},
         "operator": {"type": "string", "enum": ["contains", "ends_with", "eq", "exists", "gt", "gte", "in", "lt", "lte", "missing", "ne", "not_in", "starts_with"]},
@@ -485,6 +499,11 @@
       "type": "string",
       "pattern": "^(?:(?:ldl:project:[a-z][a-z0-9_]*|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*):entity-type:[a-z][a-z0-9_]*:column:[a-z][a-z0-9_]*)$",
       "description": "The exact canonical address of an EntityType Column from a Project or Pack origin."
+    },
+    "EntityOrRelationTypeAddress": {
+      "type": "string",
+      "pattern": "^(?:(?:ldl:project:[a-z][a-z0-9_]*|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*):(?:entity-type|relation-type):[a-z][a-z0-9_]*)$",
+      "description": "The exact canonical address of an EntityType or RelationType from a Project or Pack origin."
     },
     "ExportFidelity": {
       "type": "string",
@@ -590,7 +609,7 @@
         "source": {"$ref": "#/$defs/ViewRecipeSource"},
         "state_input": {"type": "string", "enum": ["none", "optional", "required"]},
         "state_requirement": {"type": "string", "enum": ["none", "optional", "required"]},
-        "tags": {"type": "array", "items": {"type": "string"}}
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
       },
       "required": ["id", "address", "display_name", "tags", "annotations", "category", "state_input", "state_requirement", "source", "relation_projection_overrides", "shape", "exports", "reserved_table_column_ids", "reserved_export_ids", "dependencies"],
       "additionalProperties": false,
@@ -601,7 +620,8 @@
         {"array": "exports", "property": "address"},
         {"array": "exports", "property": "filename"}
       ],
-      "x-layerdraw-disjoint-array-keys": [{"array": "exports", "property": "id", "strings": "reserved_export_ids"}]
+      "x-layerdraw-disjoint-array-keys": [{"array": "exports", "property": "id", "strings": "reserved_export_ids"}],
+      "x-layerdraw-view-recipe": true
     },
     "ViewRecipeSource": {
       "type": "object",
@@ -783,13 +803,18 @@
         "sorts": {"type": "array", "items": {"$ref": "#/$defs/ViewTableSort"}}
       },
       "required": ["row_source", "include_entity_id", "include_type", "include_layer", "columns", "sorts"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [
+        {"array": "columns", "property": "id"},
+        {"array": "columns", "property": "address"}
+      ]
     },
     "ViewTableColumn": {
       "type": "object",
-      "properties": {"address": {"$ref": "#/$defs/TableColumnAddress"}, "aggregate": {"type": "string", "enum": ["count", "count_distinct", "join_unique", "max", "min", "none"]}, "id": {"type": "string"}, "label": {"type": "string"}, "source": {"$ref": "#/$defs/ViewTableColumnSource"}},
+      "properties": {"address": {"$ref": "#/$defs/TableColumnAddress"}, "aggregate": {"type": "string", "enum": ["count", "count_distinct", "join_unique", "max", "min", "none"]}, "id": {"$ref": "#/$defs/LocalIdentifier"}, "label": {"type": "string"}, "source": {"$ref": "#/$defs/ViewTableColumnSource"}},
       "required": ["id", "address", "source", "aggregate"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-address-terminal-id": {"address": "address", "id": "id"}
     },
     "ViewTableColumnSource": {
       "type": "object",
@@ -1065,7 +1090,8 @@
         "start_byte": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },
       "required": ["start_byte", "end_byte"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-ordered-range": true
     },
     "SourceSubjectRecord": {
       "type": "object",

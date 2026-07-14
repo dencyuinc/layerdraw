@@ -111,12 +111,21 @@ import {
   decodeExportOptions,
   decodeExportRecipe,
   decodePackRootAddress,
+  decodeParameterAddress,
   decodeProjectRootAddress,
+  decodeQueryAddress,
+  decodeQueryRecipe,
+  decodeQueryRecipeDependencies,
+  decodeQueryRecipeParameter,
+  decodeQueryRecipeSelect,
+  decodeQueryRecipeTraversal,
   decodeRasterBackground,
+  decodeRecipePredicateValue,
   decodeRecipePredicate,
   decodeRecipeRowPredicate,
   decodeRelationTypeColumnAddress,
   decodeSearchField,
+  decodeSourceSpan,
   decodeStableAddress,
   decodeViewAddress,
   decodeViewDiagramProjection,
@@ -131,6 +140,7 @@ import {
   decodeViewRecipeDependencies,
   decodeViewRecipeSource,
   decodeViewRenderSet,
+  decodeViewTableColumn,
   decodeViewTableColumnSource,
   decodeViewTableProjection,
   decodeViewTableShape,
@@ -148,12 +158,21 @@ import {
   encodeExportOptions,
   encodeExportRecipe,
   encodePackRootAddress,
+  encodeParameterAddress,
   encodeProjectRootAddress,
+  encodeQueryAddress,
+  encodeQueryRecipe,
+  encodeQueryRecipeDependencies,
+  encodeQueryRecipeParameter,
+  encodeQueryRecipeSelect,
+  encodeQueryRecipeTraversal,
   encodeRasterBackground,
+  encodeRecipePredicateValue,
   encodeRecipePredicate,
   encodeRecipeRowPredicate,
   encodeRelationTypeColumnAddress,
   encodeSearchField,
+  encodeSourceSpan,
   encodeStableAddress,
   encodeViewAddress,
   encodeViewDiagramProjection,
@@ -168,6 +187,7 @@ import {
   encodeViewRecipeDependencies,
   encodeViewRecipeSource,
   encodeViewRenderSet,
+  encodeViewTableColumn,
   encodeViewTableColumnSource,
   encodeViewTableProjection,
   encodeViewTableShape,
@@ -185,6 +205,8 @@ const exportOptionsCorpusURL = new URL("../../../schemas/fixtures/conformance/ex
 const predicateCorpusURL = new URL("../../../schemas/fixtures/conformance/predicates-v1.json", import.meta.url);
 const viewSourceCorpusURL = new URL("../../../schemas/fixtures/conformance/view-sources-v1.json", import.meta.url);
 const viewExportSemanticsCorpusURL = new URL("../../../schemas/fixtures/conformance/view-export-semantics-v1.json", import.meta.url);
+const queryAuthorityCorpusURL = new URL("../../../schemas/fixtures/conformance/query-authority-v1.json", import.meta.url);
+const semanticRootAuthorityCorpusURL = new URL("../../../schemas/fixtures/conformance/semantic-root-authority-v1.json", import.meta.url);
 const unicodeScalarCorpusURL = new URL("../../../schemas/fixtures/conformance/unicode-scalars-v1.json", import.meta.url);
 const canonicalEngineRoot = new URL("../../../schemas/fixtures/conformance/engine/", import.meta.url);
 
@@ -416,6 +438,7 @@ const sharedCodecs = {
   NormalizedProjectArtifactBlobRef: [decodeNormalizedProjectArtifactBlobRef, encodeNormalizedProjectArtifactBlobRef],
   NormalizedProjectCanonicalBlobRef: [decodeNormalizedProjectCanonicalBlobRef, encodeNormalizedProjectCanonicalBlobRef],
   OperationCapability: [decodeOperationCapability, encodeOperationCapability],
+  ParameterAddress: [decodeParameterAddress, encodeParameterAddress],
   ProtocolOffer: [decodeProtocolOffer, encodeProtocolOffer],
   ProtocolVersion: [decodeProtocolVersion, encodeProtocolVersion],
   ProtocolVersionOrRange: [decodeProtocolVersionOrRange, encodeProtocolVersionOrRange],
@@ -432,6 +455,14 @@ const sharedCodecs = {
   StableAddress: [decodeStableAddress, encodeStableAddress],
   PackRootAddress: [decodePackRootAddress, encodePackRootAddress],
   ProjectRootAddress: [decodeProjectRootAddress, encodeProjectRootAddress],
+  QueryAddress: [decodeQueryAddress, encodeQueryAddress],
+  QueryRecipe: [decodeQueryRecipe, encodeQueryRecipe],
+  QueryRecipeDependencies: [decodeQueryRecipeDependencies, encodeQueryRecipeDependencies],
+  QueryRecipeParameter: [decodeQueryRecipeParameter, encodeQueryRecipeParameter],
+  QueryRecipeSelect: [decodeQueryRecipeSelect, encodeQueryRecipeSelect],
+  QueryRecipeTraversal: [decodeQueryRecipeTraversal, encodeQueryRecipeTraversal],
+  RecipePredicateValue: [decodeRecipePredicateValue, encodeRecipePredicateValue],
+  SourceSpan: [decodeSourceSpan, encodeSourceSpan],
   TotalItems: [decodeTotalItems, encodeTotalItems],
   UpgradeDiagnosticData: [decodeUpgradeDiagnosticData, encodeUpgradeDiagnosticData],
   ViewAddress: [decodeViewAddress, encodeViewAddress],
@@ -449,6 +480,7 @@ const sharedCodecs = {
   ViewMatrixAxis: [decodeViewMatrixAxis, encodeViewMatrixAxis],
   ViewMatrixCell: [decodeViewMatrixCell, encodeViewMatrixCell],
   ViewTableColumnSource: [decodeViewTableColumnSource, encodeViewTableColumnSource],
+  ViewTableColumn: [decodeViewTableColumn, encodeViewTableColumn],
   ViewTableProjection: [decodeViewTableProjection, encodeViewTableProjection],
   ViewTableShape: [decodeViewTableShape, encodeViewTableShape],
   ViewTreeShape: [decodeViewTreeShape, encodeViewTreeShape],
@@ -539,6 +571,43 @@ test("complete View and Export semantics match the shared adversarial corpus", a
   for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
     const codec = sharedCodecs[vector.type];
     assert.ok(codec, `unknown View/Export codec ${vector.type}`);
+    assert.throws(() => codec[0](JSON.stringify(vector.value)));
+  });
+});
+
+test("complete Query authority matches the shared canonical and rejection corpus", async (context) => {
+  const corpus = JSON.parse(await readFile(queryAuthorityCorpusURL, "utf8"));
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 20);
+  assert.equal(corpus.rejection_cases.length, 55);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.ok(codec, `unknown Query codec ${vector.type}`);
+    const encoded = codec[1](codec[0](JSON.stringify(vector.value)));
+    assert.deepEqual(JSON.parse(encoded), vector.value);
+    assert.equal(codec[1](codec[0](encoded)), encoded);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.ok(codec, `unknown Query codec ${vector.type}`);
+    assert.throws(() => codec[0](JSON.stringify(vector.value)));
+  });
+});
+
+test("cross-cutting semantic root authority matches the shared corpus", async (context) => {
+  const corpus = JSON.parse(await readFile(semanticRootAuthorityCorpusURL, "utf8"));
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 2);
+  assert.equal(corpus.rejection_cases.length, 5);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.ok(codec, `unknown semantic root codec ${vector.type}`);
+    const encoded = codec[1](codec[0](JSON.stringify(vector.value)));
+    assert.deepEqual(JSON.parse(encoded), vector.value);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.ok(codec, `unknown semantic root codec ${vector.type}`);
     assert.throws(() => codec[0](JSON.stringify(vector.value)));
   });
 });

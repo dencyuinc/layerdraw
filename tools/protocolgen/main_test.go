@@ -351,6 +351,27 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 		{"canonical identifier order without unique strings", "canonical identifier order requires string items and uniqueItems", func() *schemaType {
 			return &schemaType{Type: "array", Items: &schemaType{Type: "string"}, CanonicalIDOrder: true}
 		}},
+		{"canonical enum order without unique enum strings", "canonical enum order requires string-enum items and uniqueItems", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "string", Enum: []string{"a", "b"}}, CanonicalEnumOrder: true}
+		}},
+		{"Unicode scalar order without unique strings", "Unicode scalar order requires string items and uniqueItems", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "string"}, UnicodeScalarOrder: true}
+		}},
+		{"ordered pair missing property", "invalid ordered-pair rule", func() *schemaType {
+			value := validObject()
+			value.OrderedPairs = []orderedPairRule{{Lower: "missing", Upper: "payload", Comparison: "unsigned_decimal"}}
+			return value
+		}},
+		{"ordered pair wrong unsigned formats", "requires canonical unsigned-decimal formats", func() *schemaType {
+			value := validObject()
+			value.OrderedPairs = []orderedPairRule{{Lower: "kind", Upper: "payload", Comparison: "unsigned_decimal"}}
+			return value
+		}},
+		{"ordered pair unknown comparison", "unknown comparison", func() *schemaType {
+			value := validObject()
+			value.OrderedPairs = []orderedPairRule{{Lower: "kind", Upper: "payload", Comparison: "other"}}
+			return value
+		}},
 		{"disjoint array-key missing arrays", "invalid disjoint array-key rule", func() *schemaType {
 			value := validObject()
 			value.DisjointArrayKeys = []disjointArrayKey{{Array: "missing", Property: "id", Strings: "also_missing"}}
@@ -364,6 +385,11 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 		{"export recipe assertion missing fields", "export recipe assertion requires exporter_profile", func() *schemaType {
 			value := validObject()
 			value.ExportRecipe = true
+			return value
+		}},
+		{"view recipe assertion missing fields", "view recipe assertion requires address", func() *schemaType {
+			value := validObject()
+			value.ViewRecipe = true
 			return value
 		}},
 		{"address owner missing property", "invalid address-owner rule", func() *schemaType {

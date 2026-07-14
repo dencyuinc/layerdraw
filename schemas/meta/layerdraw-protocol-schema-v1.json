@@ -26,6 +26,7 @@
       "minItems": 1,
       "uniqueItems": true
     },
+    "x-layerdraw-canonical-enum-order": {"type": "boolean", "const": true},
     "x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
     "x-layerdraw-go-package": {"type": "string", "minLength": 1},
     "x-layerdraw-disjoint-arrays": {
@@ -46,6 +47,12 @@
     "x-layerdraw-max-json-bytes": {"type": "integer", "minimum": 1024},
     "x-layerdraw-max-json-depth": {"type": "integer", "minimum": 1},
     "x-layerdraw-operator-value": {"$ref": "#/$defs/operatorValue"},
+    "x-layerdraw-ordered-pairs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/orderedPairRule"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
     "x-layerdraw-ordered-range": {"type": "boolean"},
     "x-layerdraw-outcome-envelope": {"type": "boolean"},
     "x-layerdraw-protocol-offer": {"type": "boolean"},
@@ -56,10 +63,12 @@
     "x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
     "x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
     "x-layerdraw-ts-module": {"type": "string", "minLength": 1},
+    "x-layerdraw-unicode-scalar-order": {"type": "boolean", "const": true},
     "x-layerdraw-unique-array-keys": {
       "type": "array",
       "items": {"$ref": "#/$defs/uniqueArrayKey"}
-    }
+    },
+    "x-layerdraw-view-recipe": {"type": "boolean", "const": true}
   },
   "$defs": {
     "addressTerminalIDRule": {
@@ -118,6 +127,16 @@
         }
       },
       "required": ["operator", "value", "valueless"],
+      "additionalProperties": false
+    },
+    "orderedPairRule": {
+      "type": "object",
+      "properties": {
+        "comparison": {"type": "string", "enum": ["finite_binary64", "unsigned_decimal"]},
+        "lower": {"type": "string", "minLength": 1},
+        "upper": {"type": "string", "minLength": 1}
+      },
+      "required": ["lower", "upper", "comparison"],
       "additionalProperties": false
     },
     "taggedUnion": {

@@ -963,6 +963,100 @@ func TestSharedViewExportSemanticCorpus(t *testing.T) {
 	}
 }
 
+func TestSharedQueryAuthorityCorpus(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "query-authority-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int `json:"schema_version"`
+		Canonical     []struct {
+			Name  string          `json:"name"`
+			Type  string          `json:"type"`
+			Value json.RawMessage `json:"value"`
+		} `json:"canonical_cases"`
+		Rejections []struct {
+			Name  string          `json:"name"`
+			Type  string          `json:"type"`
+			Value json.RawMessage `json:"value"`
+		} `json:"rejection_cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 20 || len(corpus.Rejections) != 55 {
+		t.Fatalf("incomplete Query authority corpus: version=%d canonical=%d rejection=%d", corpus.SchemaVersion, len(corpus.Canonical), len(corpus.Rejections))
+	}
+	for _, vector := range corpus.Canonical {
+		vector := vector
+		t.Run(vector.Name+" canonical", func(t *testing.T) {
+			encoded, err := roundTripSharedWire(vector.Type, vector.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want, got any
+			if err := json.Unmarshal(vector.Value, &want); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("canonical Query value changed\nwant=%s\ngot=%s", vector.Value, encoded)
+			}
+			if _, err := roundTripSharedWire(vector.Type, encoded); err != nil {
+				t.Fatalf("canonical Query output was not stable: %v", err)
+			}
+		})
+	}
+	for _, vector := range corpus.Rejections {
+		vector := vector
+		t.Run(vector.Name+" rejection", func(t *testing.T) {
+			if _, err := roundTripSharedWire(vector.Type, vector.Value); err == nil {
+				t.Fatalf("invalid Query authority vector accepted: %s", vector.Value)
+			}
+		})
+	}
+}
+
+func TestSharedSemanticRootAuthorityCorpus(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "semantic-root-authority-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int `json:"schema_version"`
+		Canonical     []struct {
+			Name  string          `json:"name"`
+			Type  string          `json:"type"`
+			Value json.RawMessage `json:"value"`
+		} `json:"canonical_cases"`
+		Rejections []struct {
+			Name  string          `json:"name"`
+			Type  string          `json:"type"`
+			Value json.RawMessage `json:"value"`
+		} `json:"rejection_cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 2 || len(corpus.Rejections) != 5 {
+		t.Fatalf("incomplete semantic root authority corpus: version=%d canonical=%d rejection=%d", corpus.SchemaVersion, len(corpus.Canonical), len(corpus.Rejections))
+	}
+	for _, vector := range corpus.Canonical {
+		if _, err := roundTripSharedWire(vector.Type, vector.Value); err != nil {
+			t.Errorf("%s canonical: %v", vector.Name, err)
+		}
+	}
+	for _, vector := range corpus.Rejections {
+		if _, err := roundTripSharedWire(vector.Type, vector.Value); err == nil {
+			t.Errorf("%s rejection was accepted", vector.Name)
+		}
+	}
+}
+
 func TestSharedScalarUnicodeCorpus(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "unicode-scalars-v1.json"))
@@ -1426,6 +1520,54 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeProjectRootAddress(value)
+	case "QueryAddress":
+		value, err := semantic.DecodeQueryAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeQueryAddress(value)
+	case "ParameterAddress":
+		value, err := semantic.DecodeParameterAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeParameterAddress(value)
+	case "QueryRecipe":
+		value, err := semantic.DecodeQueryRecipe(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeQueryRecipe(value)
+	case "QueryRecipeParameter":
+		value, err := semantic.DecodeQueryRecipeParameter(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeQueryRecipeParameter(value)
+	case "QueryRecipeSelect":
+		value, err := semantic.DecodeQueryRecipeSelect(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeQueryRecipeSelect(value)
+	case "QueryRecipeTraversal":
+		value, err := semantic.DecodeQueryRecipeTraversal(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeQueryRecipeTraversal(value)
+	case "QueryRecipeDependencies":
+		value, err := semantic.DecodeQueryRecipeDependencies(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeQueryRecipeDependencies(value)
+	case "RecipePredicateValue":
+		value, err := semantic.DecodeRecipePredicateValue(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeRecipePredicateValue(value)
 	case "EffectiveResourceLimits":
 		value, err := engineprotocol.DecodeEffectiveResourceLimits(input)
 		if err != nil {
@@ -1582,6 +1724,12 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeViewTableColumnSource(value)
+	case "ViewTableColumn":
+		value, err := semantic.DecodeViewTableColumn(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewTableColumn(value)
 	case "ViewTableProjection":
 		value, err := semantic.DecodeViewTableProjection(input)
 		if err != nil {
@@ -1600,6 +1748,12 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeViewTreeShape(value)
+	case "SourceSpan":
+		value, err := semantic.DecodeSourceSpan(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeSourceSpan(value)
 	case "Diagnostic":
 		value, err := semantic.DecodeDiagnostic(input)
 		if err != nil {

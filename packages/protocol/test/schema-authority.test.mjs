@@ -89,6 +89,39 @@ function canonicalLocalIdentifier(value) {
   return typeof value === "string" && /^[a-z][a-z0-9_]*$/.test(value);
 }
 
+function compareUnicodeScalars(left, right) {
+  const leftScalars = Array.from(left, (item) => item.codePointAt(0));
+  const rightScalars = Array.from(right, (item) => item.codePointAt(0));
+  for (let index = 0; index < Math.min(leftScalars.length, rightScalars.length); index++) {
+    if (leftScalars[index] !== rightScalars[index]) return leftScalars[index] - rightScalars[index];
+  }
+  return leftScalars.length - rightScalars.length;
+}
+
+function compareCanonicalUnsignedDecimals(left, right) {
+  if (!/^(0|[1-9][0-9]*)$/.test(left) || !/^(0|[1-9][0-9]*)$/.test(right)) return undefined;
+  if (left.length !== right.length) return left.length - right.length;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function orderedPair(data, rule) {
+  const own = (key) => Object.prototype.hasOwnProperty.call(data, key);
+  if (!own(rule.lower) || !own(rule.upper)) return true;
+  const lower = data[rule.lower];
+  const upper = data[rule.upper];
+  if (typeof lower !== "string" || typeof upper !== "string") return false;
+  if (rule.comparison === "unsigned_decimal") {
+    const compared = compareCanonicalUnsignedDecimals(lower, upper);
+    return compared !== undefined && compared <= 0;
+  }
+  if (rule.comparison === "finite_binary64") {
+    const lowerValue = Number(lower);
+    const upperValue = Number(upper);
+    return Number.isFinite(lowerValue) && Number.isFinite(upperValue) && lowerValue <= upperValue;
+  }
+  return false;
+}
+
 function validExportRecipe(value) {
   const extensions = new Map([
     ["json", ".json"], ["yaml", ".yaml"], ["svg", ".svg"], ["png", ".png"], ["pdf", ".pdf"],
@@ -105,6 +138,19 @@ function validExportRecipe(value) {
 function hasDirectStableAddressOwner(owner, child) {
   const parts = child.split(":");
   return parts.length >= 2 && parts.slice(0, -2).join(":") === owner;
+}
+
+function validViewRecipe(value) {
+  const {address, shape, reserved_table_column_ids: reservedValues} = value;
+  if (typeof address !== "string" || shape === null || typeof shape !== "object" || Array.isArray(shape) ||
+      !Array.isArray(reservedValues) || !reservedValues.every((item) => typeof item === "string")) return false;
+  if (shape.kind !== "table") return true;
+  const table = shape.table;
+  if (table === null || typeof table !== "object" || Array.isArray(table) || !Array.isArray(table.columns)) return false;
+  const reserved = new Set(reservedValues);
+  return table.columns.every((column) => column !== null && typeof column === "object" && !Array.isArray(column) &&
+    typeof column.address === "string" && typeof column.id === "string" &&
+    hasDirectStableAddressOwner(address, column.address) && !reserved.has(column.id));
 }
 
 function realUTCDateTime(value) {
@@ -359,6 +405,17 @@ function addLayerDrawVocabulary(ajv, meta) {
     if (!enabled) return true;
     return data.every(canonicalLocalIdentifier) && data.every((item, index) => index === 0 || data[index - 1] < item);
   }});
+  register({keyword: "x-layerdraw-canonical-enum-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data, parentSchema) {
+    if (!enabled) return true;
+    const values = parentSchema?.items?.enum;
+    if (!Array.isArray(values)) return false;
+    const ranks = new Map(values.map((value, index) => [value, index]));
+    return data.every((item, index) => index === 0 || ranks.has(item) && ranks.has(data[index - 1]) && ranks.get(data[index - 1]) < ranks.get(item));
+  }});
+  register({keyword: "x-layerdraw-unicode-scalar-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data) {
+    if (!enabled) return true;
+    return data.every((item) => typeof item === "string") && data.every((item, index) => index === 0 || compareUnicodeScalars(data[index - 1], item) < 0);
+  }});
   register({keyword: "x-layerdraw-stable-address-order", schemaType: "string", type: "array", errors: false, validate(selector, data) {
     const address = (item) => selector === "$item" ? item : item?.[selector];
     for (let index = 1; index < data.length; index++) {
@@ -394,9 +451,11 @@ function addLayerDrawVocabulary(ajv, meta) {
   register({keyword: "x-layerdraw-disjoint-arrays", schemaType: "array", errors: false, validate(rules, data) {
     if (data === null || typeof data !== "object" || Array.isArray(data)) return true;
     return rules.every((rule) => {
-      if (!Array.isArray(data[rule.left]) || !Array.isArray(data[rule.right])) return false;
-      const left = new Set(data[rule.left]);
-      return data[rule.right].every((item) => !left.has(item));
+      const leftValues = Object.prototype.hasOwnProperty.call(data, rule.left) ? data[rule.left] : [];
+      const rightValues = Object.prototype.hasOwnProperty.call(data, rule.right) ? data[rule.right] : [];
+      if (!Array.isArray(leftValues) || !Array.isArray(rightValues)) return false;
+      const left = new Set(leftValues);
+      return rightValues.every((item) => !left.has(item));
     });
   }});
   register({keyword: "x-layerdraw-disjoint-array-keys", schemaType: "array", type: "object", errors: false, validate(rules, data) {
@@ -427,6 +486,9 @@ function addLayerDrawVocabulary(ajv, meta) {
   register({keyword: "x-layerdraw-export-recipe", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
     return !enabled || data === null || Array.isArray(data) || validExportRecipe(data);
   }});
+  register({keyword: "x-layerdraw-view-recipe", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
+    return !enabled || data === null || Array.isArray(data) || validViewRecipe(data);
+  }});
   register({keyword: "x-layerdraw-outcome-envelope", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object" || Array.isArray(data)) return true;
     const own = (key) => Object.prototype.hasOwnProperty.call(data, key);
@@ -438,6 +500,10 @@ function addLayerDrawVocabulary(ajv, meta) {
   register({keyword: "x-layerdraw-ordered-range", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object") return true;
     try { return BigInt(data.start_byte) <= BigInt(data.end_byte); } catch { return false; }
+  }});
+  register({keyword: "x-layerdraw-ordered-pairs", schemaType: "array", type: "object", errors: false, validate(rules, data) {
+    if (data === null || Array.isArray(data)) return true;
+    return rules.every((rule) => orderedPair(data, rule));
   }});
   register({keyword: "x-layerdraw-operator-value", schemaType: "object", errors: false, validate(rule, data) {
     if (data === null || typeof data !== "object" || typeof data[rule.operator] !== "string") return true;
@@ -724,6 +790,36 @@ test("independent schema authority matches the complete View and Export semantic
   assert.equal(corpus.schema_version, 1);
   assert.equal(corpus.canonical_cases.length, 34);
   assert.equal(corpus.rejection_cases.length, 94);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
+    assert.equal(compile(semantic, vector.type)(vector.value), true);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
+    assert.equal(compile(semantic, vector.type)(vector.value), false);
+  });
+});
+
+test("independent schema authority matches the complete Query authority corpus", async (context) => {
+  const compile = await authority();
+  const semantic = "https://schemas.layerdraw.dev/semantic/v1";
+  const corpus = await readJSON("fixtures/conformance/query-authority-v1.json");
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 20);
+  assert.equal(corpus.rejection_cases.length, 55);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
+    assert.equal(compile(semantic, vector.type)(vector.value), true);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
+    assert.equal(compile(semantic, vector.type)(vector.value), false);
+  });
+});
+
+test("independent schema authority matches the cross-cutting semantic root corpus", async (context) => {
+  const compile = await authority();
+  const semantic = "https://schemas.layerdraw.dev/semantic/v1";
+  const corpus = await readJSON("fixtures/conformance/semantic-root-authority-v1.json");
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 2);
+  assert.equal(corpus.rejection_cases.length, 5);
   for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
     assert.equal(compile(semantic, vector.type)(vector.value), true);
   });

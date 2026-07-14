@@ -42,6 +42,11 @@ Its assertion keywords have these exact meanings:
   and failure/cancellation to contain `failure` but no `payload`.
 - `x-layerdraw-ordered-range: true` requires canonical `start_byte` to be no
   greater than canonical `end_byte`.
+- `x-layerdraw-ordered-pairs` compares each configured pair of optional string
+  properties when both are present. `unsigned_decimal` compares canonical
+  unsigned decimal strings by length and then byte order without converting to
+  a bounded host integer; `finite_binary64` compares the already format-checked
+  finite binary64 values numerically.
 - `x-layerdraw-operator-value` makes the configured value member absent for a
   listed valueless operator and present for every other operator.
 - `x-layerdraw-protocol-offer: true` requires an ordered canonical inclusive
@@ -52,7 +57,7 @@ Its assertion keywords have these exact meanings:
 - `x-layerdraw-unique-array-keys` requires each configured array's objects to
   have distinct values for its configured key.
 - `x-layerdraw-disjoint-arrays` requires the two configured string-array
-  properties to have no value in common.
+  properties to have no value in common; an absent optional array is empty.
 - `x-layerdraw-disjoint-array-keys` requires every configured string key from
   an object-array property to be absent from the configured string-array
   property.
@@ -67,11 +72,22 @@ Its assertion keywords have these exact meanings:
   requires every item to match the ASCII local-identifier grammar
   `[a-z][a-z0-9_]*` in strict byte-lexicographic order. It performs no Unicode
   normalization and therefore has no host Unicode-version dependency.
+- `x-layerdraw-canonical-enum-order: true` applies to a unique string array and
+  requires strictly increasing order by the array item's published `enum`
+  sequence.
+- `x-layerdraw-unicode-scalar-order: true` applies to a unique string array and
+  requires strict lexicographic Unicode scalar-value order. It compares the
+  already-normalized wire strings directly and never invokes host Unicode
+  normalization tables.
 - `x-layerdraw-address-terminal-id` requires the configured local-ID property
   to equal the final ID segment of the configured typed StableAddress exactly.
 - `x-layerdraw-export-recipe: true` binds `format`, `options.kind`, and
   `exporter_profile.format`, and requires the exact Language 1 extension plus
   a case-sensitive canonical basename whose suffix equals that extension.
+- `x-layerdraw-view-recipe: true` requires table-column addresses to be direct
+  children of the containing View address and requires active table-column IDs
+  to be disjoint from `reserved_table_column_ids`. Non-table View shapes have
+  no table-column identities to check.
 - `x-layerdraw-address-owners` applies to an object and requires each selected
   child StableAddress to have the configured owner StableAddress as its direct
   parent. A selector is `$value` for one string property, `$propertyNames` for
