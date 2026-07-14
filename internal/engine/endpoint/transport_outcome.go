@@ -4,7 +4,6 @@ package endpoint
 
 import (
 	"fmt"
-	"unicode/utf8"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -31,8 +30,8 @@ func (d *CompileDispatcher) CompileTransportResponse(requestID string, reason Co
 	if d == nil {
 		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("nil compile dispatcher")
 	}
-	if requestID == "" || !utf8.ValidString(requestID) {
-		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("compile request ID must be nonempty valid UTF-8")
+	if err := ValidateRequestID(requestID); err != nil {
+		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("untrustworthy compile request ID: %w", err)
 	}
 	release := protocolcommon.ReleaseVersion(d.compiler.Describe().ReleaseVersion)
 	switch reason {
@@ -63,8 +62,8 @@ func (d *Descriptor) RejectNegotiatedHandshake(requestID string) (engineprotocol
 	if d == nil {
 		return engineprotocol.HandshakeResponseEnvelope{}, fmt.Errorf("nil endpoint descriptor")
 	}
-	if requestID == "" || !utf8.ValidString(requestID) {
-		return engineprotocol.HandshakeResponseEnvelope{}, fmt.Errorf("handshake request ID must be nonempty valid UTF-8")
+	if err := ValidateRequestID(requestID); err != nil {
+		return engineprotocol.HandshakeResponseEnvelope{}, fmt.Errorf("untrustworthy handshake request ID: %w", err)
 	}
 	response, err := d.rejectedResponse(requestID, []protocolcommon.ProtocolDiagnostic{protocolDiagnostic(
 		DiagnosticHandshakeState,

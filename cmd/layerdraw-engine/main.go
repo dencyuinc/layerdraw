@@ -15,8 +15,7 @@ import (
 var (
 	releaseVersion        = engine.DevelopmentVersion
 	sourceRevision        = engine.UnknownSourceRevision
-	releaseManifestDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-	endpointInstanceID    = "layerdraw-engine-stdio"
+	releaseManifestDigest = "sha256:641998a5c7ba953ad349390513af6e368cfb73d50cbbafbb7c97a4e74581b88c"
 )
 
 func main() {

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -100,8 +99,8 @@ func (d *CompileDispatcher) PrepareCompile(
 	if ctx == nil {
 		return nil, nil, fmt.Errorf("nil compile context")
 	}
-	if request.RequestID == "" || !utf8.ValidString(request.RequestID) {
-		return nil, nil, fmt.Errorf("compile request ID must be nonempty valid UTF-8")
+	if err := ValidateRequestID(request.RequestID); err != nil {
+		return nil, nil, fmt.Errorf("untrustworthy compile request ID: %w", err)
 	}
 	requestID := request.RequestID
 	engineRelease := protocolcommon.ReleaseVersion(d.compiler.Describe().ReleaseVersion)

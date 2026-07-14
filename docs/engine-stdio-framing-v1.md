@@ -58,7 +58,7 @@ Frame = Header[40] || Name[name_length] || Payload[payload_length]
 
 | kind | `stream_id` | `sequence` | Name | Payload | `offset` |
 | --- | --- | --- | --- | --- | --- |
-| `REQUEST_CONTROL` | nonzero、process内で未使用 | `0` | empty | 1..8,388,608 byte UTF-8 JSON | `0` |
+| `REQUEST_CONTROL` | nonzero、直前のcontrol high-water markより大きい | `0` | empty | 1..8,388,608 byte UTF-8 JSON | `0` |
 | `REQUEST_READY` | known pending stream | `0` | empty | empty | `0` |
 | `BLOB_CHUNK` | known ready requestまたはcurrent response | bundleの次sequence | BlobRef `blob_id`の正確なUTF-8 bytes | 0..1,048,576 bytes | blobの正確な次offset |
 | `BUNDLE_END` | known stream | bundleの次sequence | empty | empty | `0` |
@@ -110,9 +110,9 @@ writerはframe全体を検証してから、header、Name、Payloadの順にexac
 
 ## 7. Connection、admission、process lifecycle
 
-connectionは`pre_handshake`、`negotiated`、`draining`、`closed`または`fatal`のいずれかである。最初のsuccessful operationは`engine.handshake`でなければならず、成功時の#28 `NegotiatedContext`をconnectionへ一度だけbindする。handshake rejection後は再試行できる。negotiated後のsecond handshakeはcontextを置換せず、#28のgenerated rejectionになる。handshake前compileは#29のgenerated unnegotiated failureになる。
+connectionは`pre_handshake`、`negotiated`、`draining`、`closed`または`fatal`のいずれかである。最初のsuccessful operationは`engine.handshake`でなければならず、成功時の#28 `NegotiatedContext`をconnectionへ一度だけbindする。handshake rejection後は再試行できる。negotiated後のsecond handshakeは既存contextを破棄し、#28のgenerated rejectionを書いた後、そのconnection generationをdrainして終了する。handshake前compileは#29のgenerated unnegotiated failureになる。
 
-clientはnonzero `stream_id`をprocess lifetime内で再利用してはならない。再利用はcorrelationを一意にできないためconnection fatalである。`request_id`はnonterminal request間で一意であり、同時重複のlater requestだけを#28 endpoint-owned generated failureにする。terminal後の同じ`request_id`はlogical retryとして許可する。
+clientが新しい`REQUEST_CONTROL`へ割り当てるnonzero `stream_id`は、それ以前の全controlより大きくなければならない。sessionはunsigned high-water markだけを保持し、terminal stream objectを保持しない。このstrict monotonic ruleにより、process lifetime内の再利用と古いIDをbounded memoryで拒否できる。違反はcorrelationを一意にできないためconnection fatalである。`request_id`は1..128 Unicode code pointかつ最大512 UTF-8 byteで、nonterminal request間で一意である。同時重複のlater requestだけを#28 endpoint-owned generated failureにし、terminal後の同じ`request_id`はlogical retryとして許可する。
 
 sessionは次を固定上限として実装する。
 
@@ -126,6 +126,8 @@ sessionは次を固定上限として実装する。
 eligible requestはcontrol arrivalのFIFO順に`REQUEST_READY`を得る。credit以前のblob、wrong stream、wrong sequence / offsetはそのrequestだけを失敗させる。unreferenced、missing、size/digest/lifetime mismatchはcollectorがbounded bytesをsealした後、#29が同じgenerated failureへ変換し、compilerを呼ばない。input bufferはrequest-ownedであり、cancel、failure、dispatch完了時に解放する。
 
 `CANCEL`はunknown / terminal streamではno-opである。pending、upload、dispatchのrequest contextとplanをcancel / abortし、publication前ならgenerated `cancelled` responseを一度だけ書く。`deadline_at`のvalidationとcontext conversionは#28 endpoint facadeだけが所有し、stdio側は別policyを作らない。
+
+native processは起動したendpoint instanceごとにcryptographic entropyから新しい`endpoint_instance_id`をmintする。development buildは[`deploy/development-release-manifest.json`](../deploy/development-release-manifest.json)の実byte SHA-256をlinkし、同じmanifestをartifact bundleへ同梱する。release buildはrelease pipelineが検証したco-distributed manifestとそのdigestをbuild inputとして置換しなければならず、endpoint requestからrelease identityを受け取らない。
 
 `CLOSE`またはframe境界のstdin EOFはadmissionを停止し、pending / partial uploadをcancelし、sealed / dispatching requestのterminal bundleを完了してexit 0になる。partial header/body、bad magic/version/kind/flag、absolute length overflow、broken stdoutは全requestをcancelし、resyncせずexit 1になる。SIGINTは130、SIGTERMは143、CLI usage errorは2である。stdoutはLDSP bytes専用であり、stderrへ出せるのはdata-independentな固定operation codeだけで、control、source、blob、path、stack、underlying errorを出してはならない。
 

@@ -117,23 +117,29 @@ type session struct {
 	decode *Decoder
 	encode *Encoder
 
-	negotiated *endpoint.NegotiatedContext
-	streams    map[uint64]*requestStream
-	requestIDs map[string]*requestStream
-	queue      []*requestStream
-	uploader   *requestStream
-	active     int
-	reserved   uint64
-	controls   int
-	controlSum uint64
-	results    chan dispatchResult
-	deadlines  chan uint64
-	draining   bool
+	negotiated       *endpoint.NegotiatedContext
+	streams          map[uint64]*requestStream
+	highWater        uint64
+	requestIDs       map[string]*requestStream
+	queue            []*requestStream
+	uploader         *requestStream
+	active           int
+	reserved         uint64
+	controls         int
+	controlSum       uint64
+	results          chan dispatchResult
+	deadlines        chan uint64
+	draining         bool
+	beforeSinkCommit func()
 }
 
 // Serve runs one LDSP 1.0 connection until CLOSE or clean frame-boundary EOF.
 // Fatal decoder/output errors poison the connection and are never resynced.
 func Serve(ctx context.Context, input io.Reader, output io.Writer, config SessionConfig) (err error) {
+	return serve(ctx, input, output, config, nil)
+}
+
+func serve(ctx context.Context, input io.Reader, output io.Writer, config SessionConfig, beforeSinkCommit func()) (err error) {
 	if ctx == nil || input == nil || output == nil || config.Descriptor == nil || config.Dispatcher == nil {
 		return &SessionError{Code: SessionErrorConfiguration}
 	}
@@ -142,15 +148,16 @@ func Serve(ctx context.Context, input io.Reader, output io.Writer, config Sessio
 		return &SessionError{Code: SessionErrorConfiguration}
 	}
 	s := &session{
-		config:     config,
-		limits:     limits,
-		root:       ctx,
-		decode:     NewDecoder(input),
-		encode:     NewEncoder(output),
-		streams:    make(map[uint64]*requestStream),
-		requestIDs: make(map[string]*requestStream),
-		results:    make(chan dispatchResult, limits.MaxConcurrentDispatch),
-		deadlines:  make(chan uint64, limits.MaxActiveStreams),
+		config:           config,
+		limits:           limits,
+		root:             ctx,
+		decode:           NewDecoder(input),
+		encode:           NewEncoder(output),
+		streams:          make(map[uint64]*requestStream),
+		requestIDs:       make(map[string]*requestStream),
+		results:          make(chan dispatchResult, limits.MaxConcurrentDispatch),
+		deadlines:        make(chan uint64, limits.MaxActiveStreams),
+		beforeSinkCommit: beforeSinkCommit,
 	}
 	defer func() {
 		if recover() != nil {
@@ -238,6 +245,9 @@ func (s *session) run() error {
 				s.abortAll()
 				return err
 			}
+			if s.draining {
+				return s.drain(true)
+			}
 		}
 	}
 }
@@ -268,6 +278,10 @@ func (s *session) accept(frame Frame) error {
 			}
 			return s.failStream(stream, "unexpected_direction")
 		}
+		if frame.StreamID <= s.highWater {
+			return nil
+		}
+		s.highWater = frame.StreamID
 		return s.writeStreamError(frame.StreamID, "unexpected_direction")
 	}
 }
@@ -277,15 +291,19 @@ func (s *session) recoverableFrameError(frame Frame) error {
 		return &SessionError{Code: SessionErrorFraming}
 	}
 	if frame.Kind == KindRequestControl {
-		if _, used := s.streams[frame.StreamID]; used {
+		if frame.StreamID <= s.highWater {
 			return &SessionError{Code: SessionErrorFraming}
 		}
-		s.streams[frame.StreamID] = &requestStream{id: frame.StreamID, phase: phaseTerminal}
+		s.highWater = frame.StreamID
 		return s.writeStreamError(frame.StreamID, "invalid_frame")
 	}
 	if stream := s.streams[frame.StreamID]; stream != nil && stream.phase != phaseTerminal {
 		return s.failStream(stream, "invalid_frame")
 	}
+	if frame.StreamID <= s.highWater {
+		return nil
+	}
+	s.highWater = frame.StreamID
 	return s.writeStreamError(frame.StreamID, "invalid_frame")
 }
 
@@ -295,15 +313,17 @@ type operationRoute struct {
 }
 
 func (s *session) acceptControl(frame Frame) error {
-	if _, used := s.streams[frame.StreamID]; used {
+	if frame.StreamID <= s.highWater {
 		return &SessionError{Code: SessionErrorFraming}
 	}
-	placeholder := &requestStream{id: frame.StreamID, phase: phaseTerminal}
-	s.streams[frame.StreamID] = placeholder
+	s.highWater = frame.StreamID
 
 	var route operationRoute
 	if err := json.Unmarshal(frame.Payload, &route); err != nil || route.Operation == "" || route.RequestID == "" {
 		return s.writeStreamError(frame.StreamID, "invalid_control")
+	}
+	if err := endpoint.ValidateRequestID(route.RequestID); err != nil {
+		return s.writeStreamError(frame.StreamID, "invalid_request_id")
 	}
 	if active := s.requestIDs[route.RequestID]; active != nil && active.phase != phaseTerminal {
 		if route.Operation == endpoint.OperationCompile {
@@ -355,6 +375,11 @@ func (s *session) acceptHandshake(frame Frame) error {
 	}
 	if negotiated != nil {
 		s.negotiated = negotiated
+	} else if s.negotiated != nil {
+		// A second handshake ends this connection generation; the established
+		// context is never retained after its rejection is committed.
+		s.negotiated = nil
+		s.draining = true
 	}
 	return nil
 }
@@ -455,8 +480,15 @@ func (s *session) admit() error {
 
 func (s *session) acceptUpload(frame Frame) error {
 	stream := s.streams[frame.StreamID]
-	if stream == nil || stream.phase == phaseTerminal {
-		return nil // late frames are bounded and deliberately drained
+	if stream == nil {
+		if frame.StreamID <= s.highWater {
+			return nil // historical late frames are bounded and drained
+		}
+		s.highWater = frame.StreamID
+		return s.writeStreamError(frame.StreamID, "unknown_stream")
+	}
+	if stream.phase == phaseTerminal {
+		return nil
 	}
 	if stream != s.uploader || stream.phase != phaseUploading {
 		return s.failStream(stream, "blob_before_ready")
@@ -496,7 +528,7 @@ func (s *session) acceptUpload(frame Frame) error {
 func (s *session) dispatch(stream *requestStream) {
 	go func() {
 		source := collectedSource{stream: stream}
-		sink := &captureSink{ctx: stream.ctx, maximum: s.limits.MaxOutputBlobBytes}
+		sink := &captureSink{ctx: stream.ctx, maximum: s.limits.MaxOutputBlobBytes, beforeCommit: s.beforeSinkCommit}
 		response, err := stream.plan.Execute(stream.ctx, source, sink)
 		for name := range stream.blobs {
 			delete(stream.blobs, name)
@@ -613,6 +645,7 @@ func (s *session) releaseStream(stream *requestStream) {
 	if stream.cancel != nil {
 		stream.cancel()
 	}
+	delete(s.streams, stream.id)
 	if current := s.requestIDs[stream.requestID]; current == stream {
 		delete(s.requestIDs, stream.requestID)
 	}
@@ -775,10 +808,11 @@ func (source collectedSource) Definitions(context.Context) ([]endpoint.BlobDefin
 }
 
 type captureSink struct {
-	mu      sync.Mutex
-	ctx     context.Context
-	maximum uint64
-	blobs   []endpoint.OutputBlob
+	mu           sync.Mutex
+	ctx          context.Context
+	maximum      uint64
+	blobs        []endpoint.OutputBlob
+	beforeCommit func()
 }
 
 func (sink *captureSink) Publish(ctx context.Context, blobs []endpoint.OutputBlob) error {
@@ -800,6 +834,9 @@ func (sink *captureSink) Publish(ctx context.Context, blobs []endpoint.OutputBlo
 	for index, blob := range blobs {
 		owned[index] = blob
 		owned[index].Bytes = append([]byte(nil), blob.Bytes...)
+	}
+	if sink.beforeCommit != nil {
+		sink.beforeCommit()
 	}
 	if err := ctx.Err(); err != nil {
 		return err

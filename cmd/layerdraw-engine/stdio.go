@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,10 +17,14 @@ import (
 
 func serveStdio(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	compiler := engine.New(engine.BuildInfo{ReleaseVersion: releaseVersion, SourceRevision: sourceRevision})
+	instanceID, err := newEndpointInstanceID()
+	if err != nil {
+		return &transport.SessionError{Code: transport.SessionErrorConfiguration}
+	}
 	descriptor, err := endpoint.NewCompilerDescriptor(
 		compiler,
 		releaseManifestDigest,
-		endpointInstanceID,
+		instanceID,
 		[]string{transport.TransportID},
 		endpoint.DefaultLimitPolicy(),
 	)
@@ -30,6 +36,14 @@ func serveStdio(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 		Dispatcher: endpoint.NewCompileDispatcher(compiler),
 		Limits:     transport.DefaultSessionLimits(),
 	})
+}
+
+func newEndpointInstanceID() (string, error) {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", err
+	}
+	return "stdio-" + hex.EncodeToString(entropy[:]), nil
 }
 
 func safeStdioError(err error) string {

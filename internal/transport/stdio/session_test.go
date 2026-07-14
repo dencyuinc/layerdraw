@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -86,6 +87,58 @@ func TestSessionCompileBeforeHandshakeUsesGeneratedFailure(t *testing.T) {
 	}
 	if response.Outcome != protocolcommon.OutcomeFailed || response.Failure == nil || response.Failure.Code != endpoint.FailureCompileUnnegotiated {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestSessionSecondHandshakeEndsGeneration(t *testing.T) {
+	t.Parallel()
+	source := []byte("project p \"Project\" {}\n")
+	input := marshalFrames(t,
+		controlFrame(t, 1, sessionHandshake("first")),
+		controlFrame(t, 2, sessionHandshake("second")),
+		controlFrame(t, 3, sessionCompile("must-not-run", "source", source)),
+	)
+	var output bytes.Buffer
+	if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{})); err != nil {
+		t.Fatal(err)
+	}
+	responses := 0
+	for _, frame := range decodeFrames(t, output.Bytes()) {
+		if frame.StreamID == 3 {
+			t.Fatalf("post-handshake-generation frame = %#v", frame)
+		}
+		if frame.Kind == KindResponseControl {
+			response, err := engineprotocol.DecodeHandshakeResponseEnvelope(frame.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			responses++
+			if frame.StreamID == 2 && response.Outcome != protocolcommon.OutcomeRejected {
+				t.Fatalf("second handshake = %+v", response)
+			}
+		}
+	}
+	if responses != 2 {
+		t.Fatalf("handshake responses = %d", responses)
+	}
+}
+
+func TestSessionRejectsUntrustworthyRequestIDWithoutPoisoning(t *testing.T) {
+	t.Parallel()
+	overlong := strings.Repeat("x", endpoint.MaxRequestIDCodePoints+1)
+	payload := []byte(`{"operation":"engine.handshake","request_id":"` + overlong + `"}`)
+	input := marshalFrames(t,
+		Frame{Kind: KindRequestControl, StreamID: 1, Payload: payload},
+		controlFrame(t, 2, sessionHandshake("valid")),
+		Frame{Kind: KindClose},
+	)
+	var output bytes.Buffer
+	if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{})); err != nil {
+		t.Fatal(err)
+	}
+	frames := decodeFrames(t, output.Bytes())
+	if len(frames) != 4 || frames[0].Kind != KindStreamError || string(frames[0].Name) != "invalid_request_id" || frames[2].Kind != KindResponseControl {
+		t.Fatalf("frames = %#v", frames)
 	}
 }
 
@@ -274,6 +327,55 @@ func TestSessionDuplicateInflightRequestLeavesFirstUntouched(t *testing.T) {
 	}
 }
 
+func TestSessionCancelAfterSealJoinsExecuteBeforePublication(t *testing.T) {
+	source := []byte("project p \"Project\" {}\n")
+	for _, test := range []struct {
+		name      string
+		deadline  bool
+		afterSeal []Frame
+		hookDelay time.Duration
+	}{
+		{name: "cancel", afterSeal: []Frame{{Kind: KindCancel, StreamID: 2}}, hookDelay: 50 * time.Millisecond},
+		{name: "deadline", deadline: true, hookDelay: 75 * time.Millisecond},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			request := sessionCompile(test.name+"-after-seal", "source", source)
+			if test.deadline {
+				deadline := protocolcommon.Rfc3339Time(time.Now().UTC().Add(25 * time.Millisecond).Format(time.RFC3339Nano))
+				request.DeadlineAt = &deadline
+			}
+			frames := []Frame{
+				controlFrame(t, 1, sessionHandshake("hs")), controlFrame(t, 2, request),
+				{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte("source"), Payload: source},
+				{Kind: KindBundleEnd, StreamID: 2, Sequence: 2},
+			}
+			frames = append(frames, test.afterSeal...)
+			frames = append(frames, Frame{Kind: KindClose})
+			var output bytes.Buffer
+			if err := serve(context.Background(), bytes.NewReader(marshalFrames(t, frames...)), &output, sessionConfig(t, SessionLimits{}), func() { time.Sleep(test.hookDelay) }); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, frame := range decodeFrames(t, output.Bytes()) {
+				if frame.Kind == KindResponseControl && frame.StreamID == 2 {
+					response, err := engineprotocol.DecodeCompileResponseEnvelope(frame.Payload)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if response.Outcome != protocolcommon.OutcomeCancelled || response.Failure == nil || response.Failure.Code != endpoint.FailureCompileCancelled {
+						t.Fatalf("response = %+v", response)
+					}
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("cancelled request had no joined terminal response")
+			}
+		})
+	}
+}
+
 func TestSessionAdmissionLimitAndZeroByteFinal(t *testing.T) {
 	t.Parallel()
 	limits := DefaultSessionLimits()
@@ -389,6 +491,31 @@ func TestSessionRecoverableFrameAndStateErrors(t *testing.T) {
 	var nilError *SessionError
 	if nilError.Error() != "<nil>" {
 		t.Fatal("nil safe error")
+	}
+}
+
+func TestSessionHighWaterKeepsTerminalRegistryBounded(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	s := &session{
+		encode:     NewEncoder(&output),
+		streams:    make(map[uint64]*requestStream),
+		requestIDs: make(map[string]*requestStream),
+	}
+	payload := []byte(`{"operation":"engine.unknown","request_id":"bounded"}`)
+	for streamID := uint64(1); streamID <= 4096; streamID++ {
+		if err := s.acceptControl(Frame{Kind: KindRequestControl, StreamID: streamID, Payload: payload}); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.streams) != 0 || len(s.requestIDs) != 0 {
+			t.Fatalf("retained terminal state at stream %d: streams=%d requests=%d", streamID, len(s.streams), len(s.requestIDs))
+		}
+	}
+	if s.highWater != 4096 {
+		t.Fatalf("high water = %d", s.highWater)
+	}
+	if err := s.acceptControl(Frame{Kind: KindRequestControl, StreamID: 4095, Payload: payload}); err == nil {
+		t.Fatal("non-monotonic stream ID was accepted")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -59,6 +60,19 @@ func TestPackagedEngineStdioHandshakeProjectAndPack(t *testing.T) {
 	if err != nil || response.Outcome != protocolcommon.OutcomeSuccess || response.Payload == nil || response.Payload.EndpointInstanceID == "" {
 		t.Fatalf("handshake = %+v, %v", response, err)
 	}
+	firstInstanceID := response.Payload.EndpointInstanceID
+	bundle := os.Getenv("LAYERDRAW_BUNDLE_DIR")
+	if bundle == "" {
+		t.Fatal("LAYERDRAW_BUNDLE_DIR is not set for stdio artifact verification")
+	}
+	releaseManifestBytes, err := os.ReadFile(filepath.Join(bundle, "layerdraw-engine.release-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest := sha256.Sum256(releaseManifestBytes)
+	if got, want := response.Payload.ReleaseManifestDigest, protocolcommon.Digest("sha256:"+hex.EncodeToString(manifestDigest[:])); got != want {
+		t.Fatalf("release manifest digest = %q, want %q", got, want)
+	}
 	packagedReadFrame(t, decoder)
 
 	projectSource := []byte("project p \"Project\" {}\n")
@@ -97,6 +111,9 @@ func TestPackagedEngineStdioHandshakeProjectAndPack(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if secondInstanceID := packagedHandshakeInstanceID(t, binary); secondInstanceID == firstInstanceID {
+		t.Fatalf("replacement reused endpoint instance ID %q", firstInstanceID)
 	}
 }
 
@@ -181,4 +198,43 @@ func packagedReadFrame(t *testing.T, decoder *transport.Decoder) transport.Frame
 		t.Fatal(err)
 	}
 	return frame
+}
+
+func packagedHandshakeInstanceID(t *testing.T, binary string) protocolcommon.EndpointInstanceID {
+	t.Helper()
+	command := exec.Command(binary, "stdio")
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	encoder, decoder := transport.NewEncoder(stdin), transport.NewDecoder(stdout)
+	request := packagedHandshake()
+	request.RequestID = "replacement-handshake"
+	encoded, err := engineprotocol.EncodeHandshakeRequestEnvelope(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.WriteFrames([]transport.Frame{{Kind: transport.KindRequestControl, StreamID: 1, Payload: encoded}, {Kind: transport.KindClose}}); err != nil {
+		t.Fatal(err)
+	}
+	control := packagedReadFrame(t, decoder)
+	response, err := engineprotocol.DecodeHandshakeResponseEnvelope(control.Payload)
+	if err != nil || response.Payload == nil {
+		t.Fatalf("replacement handshake = %+v, %v", response, err)
+	}
+	packagedReadFrame(t, decoder)
+	_ = stdin.Close()
+	if err := command.Wait(); err != nil || stderr.Len() != 0 {
+		t.Fatalf("replacement process: %v, stderr=%q", err, stderr.String())
+	}
+	return response.Payload.EndpointInstanceID
 }

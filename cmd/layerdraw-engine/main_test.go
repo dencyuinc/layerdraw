@@ -4,11 +4,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
+	"github.com/dencyuinc/layerdraw/internal/engine"
 )
 
 func TestRunVersion(t *testing.T) {
@@ -67,6 +73,44 @@ func TestRunStdioConfigurationAndSafeOperationalErrors(t *testing.T) {
 		if code := signalExitCode(current); code != 130 && code != 143 {
 			t.Fatalf("signal %v exit = %d", current, code)
 		}
+	}
+}
+
+func TestStdioCompositionMintsPerInstanceIdentity(t *testing.T) {
+	t.Parallel()
+	first, err := newEndpointInstanceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newEndpointInstanceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || !strings.HasPrefix(first, "stdio-") || len(first) != len("stdio-")+32 {
+		t.Fatalf("instance IDs = %q, %q", first, second)
+	}
+	if releaseManifestDigest == "sha256:"+strings.Repeat("0", 64) {
+		t.Fatal("zero release-manifest identity")
+	}
+}
+
+func TestDevelopmentReleaseManifestMatchesLinkedAuthority(t *testing.T) {
+	t.Parallel()
+	encoded, err := os.ReadFile("../../deploy/development-release-manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		EngineProtocolSchemaDigest string `json:"engine_protocol_schema_digest"`
+		Release                    string `json:"release"`
+	}
+	if err := json.Unmarshal(encoded, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(encoded)
+	wantDigest := "sha256:" + hex.EncodeToString(digest[:])
+	if releaseManifestDigest != wantDigest || manifest.EngineProtocolSchemaDigest != engineprotocol.SchemaDigest || manifest.Release != engine.DevelopmentVersion {
+		t.Fatalf("linked=%q file=%q release=%q", releaseManifestDigest, manifest.EngineProtocolSchemaDigest, manifest.Release)
 	}
 }
 

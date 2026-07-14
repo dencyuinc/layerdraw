@@ -7,8 +7,8 @@ PNPM ?= corepack pnpm
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 VERSION ?= 0.0.0-dev
 SOURCE_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || printf 'unknown')
-RELEASE_MANIFEST_DIGEST ?= sha256:0000000000000000000000000000000000000000000000000000000000000000
-ENDPOINT_INSTANCE_ID ?= layerdraw-engine-stdio
+RELEASE_MANIFEST ?= deploy/development-release-manifest.json
+RELEASE_MANIFEST_DIGEST ?= sha256:$(shell { command -v sha256sum >/dev/null && sha256sum $(RELEASE_MANIFEST) || shasum -a 256 $(RELEASE_MANIFEST); } | awk '{print $$1}')
 COVERAGE_BASE_REF ?= origin/main
 ENGINE_BINARY := dist/layerdraw-engine
 LICENSE_REPORT := reports/dependency-licenses.json
@@ -88,10 +88,15 @@ integration:
 	$(GO) test ./tests/integration/...
 
 build:
+	@if [[ "$(VERSION)" != "0.0.0-dev" && "$(RELEASE_MANIFEST)" == "deploy/development-release-manifest.json" ]]; then \
+		printf 'A non-development VERSION requires an explicit verified RELEASE_MANIFEST.\n' >&2; \
+		exit 1; \
+	fi
 	@mkdir -p dist
 	CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false \
-		-ldflags "-s -w -X main.releaseVersion=$(VERSION) -X main.sourceRevision=$(SOURCE_REVISION) -X main.releaseManifestDigest=$(RELEASE_MANIFEST_DIGEST) -X main.endpointInstanceID=$(ENDPOINT_INSTANCE_ID)" \
+		-ldflags "-s -w -X main.releaseVersion=$(VERSION) -X main.sourceRevision=$(SOURCE_REVISION) -X main.releaseManifestDigest=$(RELEASE_MANIFEST_DIGEST)" \
 		-o $(ENGINE_BINARY) ./cmd/layerdraw-engine
+	cp $(RELEASE_MANIFEST) dist/layerdraw-engine.release-manifest.json
 	$(PNPM) exec turbo run build
 
 protocol-package-check: build

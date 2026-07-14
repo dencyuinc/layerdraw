@@ -4,8 +4,10 @@ package endpoint
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/internal/engine"
@@ -101,5 +103,21 @@ func TestRequestContextRejectsInvalidGeneratedTime(t *testing.T) {
 	}
 	if _, _, err := RequestContext(nil, nil); err == nil {
 		t.Fatal("nil parent was accepted")
+	}
+}
+
+func TestValidateRequestIDExactBounds(t *testing.T) {
+	t.Parallel()
+	valid := []string{"a", strings.Repeat("a", MaxRequestIDCodePoints), strings.Repeat("😀", MaxRequestIDCodePoints)}
+	for _, requestID := range valid {
+		if err := ValidateRequestID(requestID); err != nil {
+			t.Fatalf("valid ID bytes=%d runes=%d: %v", len(requestID), utf8.RuneCountInString(requestID), err)
+		}
+	}
+	invalid := []string{"", strings.Repeat("a", MaxRequestIDCodePoints+1), strings.Repeat("😀", MaxRequestIDCodePoints) + "a", string([]byte{0xff})}
+	for _, requestID := range invalid {
+		if err := ValidateRequestID(requestID); err == nil {
+			t.Fatalf("invalid ID bytes=%d was accepted", len(requestID))
+		}
 	}
 }
