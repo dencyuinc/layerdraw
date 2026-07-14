@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -376,6 +378,23 @@ func TestSessionCancelAfterSealJoinsExecuteBeforePublication(t *testing.T) {
 	}
 }
 
+func TestSessionCorrelatedFailureAfterSealJoinsExecuteBeforePublication(t *testing.T) {
+	source := []byte("project p \"Project\" {}\n")
+	input := marshalFrames(t,
+		controlFrame(t, 1, sessionHandshake("hs")),
+		controlFrame(t, 2, sessionCompile("framing-after-seal", "source", source)),
+		Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte("source"), Payload: source},
+		Frame{Kind: KindBundleEnd, StreamID: 2, Sequence: 2},
+		Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 3, Name: []byte("source"), Payload: source},
+		Frame{Kind: KindClose},
+	)
+	var output bytes.Buffer
+	if err := serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{}), func() { time.Sleep(50 * time.Millisecond) }); err != nil {
+		t.Fatal(err)
+	}
+	assertCorrelatedFailure(t, decodeFrames(t, output.Bytes()), 2, "framing-after-seal")
+}
+
 func TestSessionAdmissionLimitAndZeroByteFinal(t *testing.T) {
 	t.Parallel()
 	limits := DefaultSessionLimits()
@@ -446,19 +465,20 @@ func TestSessionRecoverableFrameAndStateErrors(t *testing.T) {
 	input := append(prefix, rawHeader(invalid)...)
 	input = append(input, invalid.Name...)
 	input = append(input, invalid.Payload...)
-	input = append(input, marshalFrames(t, Frame{Kind: KindClose})...)
+	input = append(input, marshalFrames(t,
+		controlFrame(t, 3, sessionCompile("after-invalid-chunk", "later", source)),
+		Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 3, Sequence: 1, Name: []byte("later"), Payload: source},
+		Frame{Kind: KindBundleEnd, StreamID: 3, Sequence: 2},
+		Frame{Kind: KindClose},
+	)...)
 	var output bytes.Buffer
 	if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{})); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, frame := range decodeFrames(t, output.Bytes()) {
-		if frame.Kind == KindStreamError && frame.StreamID == 2 && string(frame.Name) == "invalid_frame" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("recoverable error output = %#v", decodeFrames(t, output.Bytes()))
+	frames := decodeFrames(t, output.Bytes())
+	assertCorrelatedFailure(t, frames, 2, "compile")
+	if response := compileResponseForStream(t, frames, 3); response.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("later response = %+v", response)
 	}
 
 	limits := DefaultSessionLimits()
@@ -475,14 +495,10 @@ func TestSessionRecoverableFrameAndStateErrors(t *testing.T) {
 	if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, limits)); err != nil {
 		t.Fatal(err)
 	}
-	found = false
-	for _, frame := range decodeFrames(t, output.Bytes()) {
-		if frame.Kind == KindStreamError && frame.StreamID == 3 && string(frame.Name) == "blob_before_ready" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("blob-before-credit did not fail the offending stream")
+	frames = decodeFrames(t, output.Bytes())
+	assertCorrelatedFailure(t, frames, 3, "two")
+	if response := compileResponseForStream(t, frames, 2); response.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("credited response = %+v", response)
 	}
 
 	if got := (&SessionError{Code: SessionErrorOutput}).Error(); got != "layerdraw stdio: output" {
@@ -491,6 +507,53 @@ func TestSessionRecoverableFrameAndStateErrors(t *testing.T) {
 	var nilError *SessionError
 	if nilError.Error() != "<nil>" {
 		t.Fatal("nil safe error")
+	}
+}
+
+func TestSessionCorrelatedUploadFailuresRecoverExactlyOnce(t *testing.T) {
+	t.Parallel()
+	source := []byte("project p \"Project\" {}\n")
+	for _, test := range []struct {
+		name   string
+		frames []Frame
+	}{
+		{
+			name:   "sequence",
+			frames: []Frame{{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 2, Name: []byte("bad"), Payload: source}},
+		},
+		{
+			name:   "offset",
+			frames: []Frame{{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte("bad"), Payload: source, Offset: 1}},
+		},
+		{
+			name:   "reserved bytes",
+			frames: []Frame{{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte("bad"), Payload: append(append([]byte(nil), source...), 'x')}},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			inputFrames := []Frame{
+				controlFrame(t, 1, sessionHandshake("hs")),
+				controlFrame(t, 2, sessionCompile("bad", "bad", source)),
+			}
+			inputFrames = append(inputFrames, test.frames...)
+			inputFrames = append(inputFrames,
+				controlFrame(t, 3, sessionCompile("later", "later", source)),
+				Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 3, Sequence: 1, Name: []byte("later"), Payload: source},
+				Frame{Kind: KindBundleEnd, StreamID: 3, Sequence: 2},
+				Frame{Kind: KindClose},
+			)
+			var output bytes.Buffer
+			if err := Serve(context.Background(), bytes.NewReader(marshalFrames(t, inputFrames...)), &output, sessionConfig(t, SessionLimits{})); err != nil {
+				t.Fatal(err)
+			}
+			frames := decodeFrames(t, output.Bytes())
+			assertCorrelatedFailure(t, frames, 2, "bad")
+			if response := compileResponseForStream(t, frames, 3); response.Outcome != protocolcommon.OutcomeSuccess {
+				t.Fatalf("later response = %+v", response)
+			}
+		})
 	}
 }
 
@@ -517,6 +580,79 @@ func TestSessionHighWaterKeepsTerminalRegistryBounded(t *testing.T) {
 	if err := s.acceptControl(Frame{Kind: KindRequestControl, StreamID: 4095, Payload: payload}); err == nil {
 		t.Fatal("non-monotonic stream ID was accepted")
 	}
+}
+
+func TestSessionAdmissionRejectionsRetainNoState(t *testing.T) {
+	limits := DefaultSessionLimits()
+	limits.MaxConcurrentDispatch = 1
+	config := sessionConfig(t, limits)
+	root, cancelRoot := context.WithCancel(context.Background())
+	s := &session{
+		config:     config,
+		limits:     limits,
+		root:       root,
+		encode:     NewEncoder(io.Discard),
+		streams:    make(map[uint64]*requestStream),
+		requestIDs: make(map[string]*requestStream),
+		results:    make(chan dispatchResult, limits.MaxConcurrentDispatch),
+		deadlines:  make(chan uint64, limits.MaxActiveStreams),
+	}
+	t.Cleanup(func() {
+		s.abortAll()
+		cancelRoot()
+	})
+
+	if err := s.acceptControl(controlFrame(t, 1, sessionHandshake("hs"))); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte("project p \"Project\" {}\n")
+	for index := 0; index < limits.MaxActiveStreams; index++ {
+		requestID := fmt.Sprintf("stalled-%d", index)
+		streamID := uint64(index + 2)
+		if err := s.acceptControl(controlFrame(t, streamID, sessionCompile(requestID, requestID, source))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s.streams) != limits.MaxActiveStreams || len(s.requestIDs) != limits.MaxActiveStreams || s.controls != limits.MaxActiveStreams || s.active != 1 || len(s.queue) != limits.MaxActiveStreams-1 {
+		t.Fatalf("stalled baseline: streams=%d requests=%d controls=%d active=%d queued=%d", len(s.streams), len(s.requestIDs), s.controls, s.active, len(s.queue))
+	}
+	baselineControlSum, baselineReserved := s.controlSum, s.reserved
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	baselineGoroutines := runtime.NumGoroutine()
+
+	const rejected = 20000
+	for index := 0; index < rejected; index++ {
+		requestID := fmt.Sprintf("rejected-%d", index)
+		streamID := uint64(limits.MaxActiveStreams + index + 2)
+		if err := s.acceptControl(controlFrame(t, streamID, sessionCompile(requestID, "rejected", source))); err != nil {
+			t.Fatal(err)
+		}
+		if index%1000 == 0 {
+			if len(s.streams) != limits.MaxActiveStreams || len(s.requestIDs) != limits.MaxActiveStreams || s.controls != limits.MaxActiveStreams || s.controlSum != baselineControlSum || s.reserved != baselineReserved || s.active != 1 || len(s.queue) != limits.MaxActiveStreams-1 {
+				t.Fatalf("retained rejected request %d: streams=%d requests=%d controls=%d bytes=%d reserved=%d active=%d queued=%d", index, len(s.streams), len(s.requestIDs), s.controls, s.controlSum, s.reserved, s.active, len(s.queue))
+			}
+			if s.requestIDs[requestID] != nil || s.streams[streamID] != nil {
+				t.Fatalf("rejected request %d remains addressable", index)
+			}
+		}
+	}
+	if want := uint64(limits.MaxActiveStreams + rejected + 1); s.highWater != want {
+		t.Fatalf("high water = %d, want %d", s.highWater, want)
+	}
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	heapGrowth := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	objectGrowth := int64(after.HeapObjects) - int64(before.HeapObjects)
+	if heapGrowth > 4<<20 || objectGrowth > 4096 {
+		t.Fatalf("rejections retained heap state: bytes=%d objects=%d", heapGrowth, objectGrowth)
+	}
+	if growth := runtime.NumGoroutine() - baselineGoroutines; growth > 4 {
+		t.Fatalf("rejections retained goroutines: growth=%d", growth)
+	}
+	runtime.KeepAlive(s)
 }
 
 func sessionConfig(t *testing.T, limits SessionLimits) SessionConfig {
@@ -635,4 +771,47 @@ func decodeFrames(t *testing.T, encoded []byte) []Frame {
 		}
 		frames = append(frames, frame)
 	}
+}
+
+func assertCorrelatedFailure(t *testing.T, frames []Frame, streamID uint64, requestID string) {
+	t.Helper()
+	controls, ends := 0, 0
+	for _, frame := range frames {
+		if frame.StreamID != streamID {
+			continue
+		}
+		switch frame.Kind {
+		case KindResponseControl:
+			controls++
+			response, err := engineprotocol.DecodeCompileResponseEnvelope(frame.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.RequestID != requestID || response.Outcome != protocolcommon.OutcomeFailed || response.Failure == nil || response.Failure.Code != endpoint.FailureCompileTransportProtocol || response.Failure.Category != protocolcommon.ProtocolFailureCategoryTransport || response.Failure.Retryable {
+				t.Fatalf("correlated response = %+v", response)
+			}
+		case KindBundleEnd:
+			ends++
+		case KindStreamError:
+			t.Fatalf("correlated stream %d used STREAM_ERROR %q", streamID, frame.Name)
+		}
+	}
+	if controls != 1 || ends != 1 {
+		t.Fatalf("correlated stream %d controls=%d ends=%d", streamID, controls, ends)
+	}
+}
+
+func compileResponseForStream(t *testing.T, frames []Frame, streamID uint64) engineprotocol.CompileResponseEnvelope {
+	t.Helper()
+	for _, frame := range frames {
+		if frame.Kind == KindResponseControl && frame.StreamID == streamID {
+			response, err := engineprotocol.DecodeCompileResponseEnvelope(frame.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return response
+		}
+	}
+	t.Fatalf("stream %d has no compile response", streamID)
+	return engineprotocol.CompileResponseEnvelope{}
 }

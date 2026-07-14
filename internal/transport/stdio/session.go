@@ -96,6 +96,8 @@ type requestStream struct {
 	received     uint64
 	reserved     uint64
 	suppress     bool
+	cancelling   bool
+	terminal     *engineprotocol.CompileResponseEnvelope
 }
 
 type readResult struct {
@@ -265,7 +267,7 @@ func (s *session) accept(frame Frame) error {
 		return nil
 	case KindStreamError:
 		if stream := s.streams[frame.StreamID]; stream != nil && stream.phase != phaseTerminal {
-			return s.failStream(stream, "peer_stream_error")
+			return s.failCorrelatedStream(stream)
 		}
 		return nil
 	default:
@@ -276,7 +278,7 @@ func (s *session) accept(frame Frame) error {
 			if stream.phase == phaseTerminal {
 				return nil
 			}
-			return s.failStream(stream, "unexpected_direction")
+			return s.failCorrelatedStream(stream)
 		}
 		if frame.StreamID <= s.highWater {
 			return nil
@@ -298,7 +300,7 @@ func (s *session) recoverableFrameError(frame Frame) error {
 		return s.writeStreamError(frame.StreamID, "invalid_frame")
 	}
 	if stream := s.streams[frame.StreamID]; stream != nil && stream.phase != phaseTerminal {
-		return s.failStream(stream, "invalid_frame")
+		return s.failCorrelatedStream(stream)
 	}
 	if frame.StreamID <= s.highWater {
 		return nil
@@ -393,25 +395,23 @@ func (s *session) acceptCompile(frame Frame) error {
 	if err != nil {
 		return s.writeStreamError(frame.StreamID, "invalid_deadline")
 	}
-	stream := &requestStream{
-		id: frame.StreamID, requestID: request.RequestID, controlBytes: uint64(len(frame.Payload)),
-		ctx: ctx, cancel: cancel, phase: phaseQueued,
-	}
-	s.streams[frame.StreamID] = stream
-	s.requestIDs[request.RequestID] = stream
-
+	controlBytes := uint64(len(frame.Payload))
 	if s.controls >= s.limits.MaxActiveStreams ||
-		s.controlSum > math.MaxUint64-stream.controlBytes ||
-		s.controlSum+stream.controlBytes > s.limits.MaxPendingControlBytes {
+		s.controlSum > math.MaxUint64-controlBytes ||
+		s.controlSum+controlBytes > s.limits.MaxPendingControlBytes {
+		cancel()
 		response, responseErr := s.config.Dispatcher.CompileTransportResponse(request.RequestID, endpoint.CompileTransportResourceLimit)
 		if responseErr != nil {
 			return &SessionError{Code: SessionErrorInvariant}
 		}
-		stream.phase = phaseTerminal
-		cancel()
-		delete(s.requestIDs, request.RequestID)
 		return s.writeCompile(frame.StreamID, response, nil)
 	}
+	stream := &requestStream{
+		id: frame.StreamID, requestID: request.RequestID, controlBytes: controlBytes,
+		ctx: ctx, cancel: cancel, phase: phaseQueued,
+	}
+	s.streams[frame.StreamID] = stream
+	s.requestIDs[request.RequestID] = stream
 	s.controls++
 	s.controlSum += stream.controlBytes
 	go func(id uint64, done <-chan struct{}) {
@@ -491,15 +491,15 @@ func (s *session) acceptUpload(frame Frame) error {
 		return nil
 	}
 	if stream != s.uploader || stream.phase != phaseUploading {
-		return s.failStream(stream, "blob_before_ready")
+		return s.failCorrelatedStream(stream)
 	}
 	if err := stream.validator.Accept(frame); err != nil {
-		return s.failStream(stream, "invalid_bundle")
+		return s.failCorrelatedStream(stream)
 	}
 	if frame.Kind == KindBlobChunk {
 		length := uint64(len(frame.Payload))
 		if stream.received > math.MaxUint64-length || stream.received+length > stream.reserved {
-			return s.failStream(stream, "upload_limit")
+			return s.failCorrelatedStream(stream)
 		}
 		name := string(frame.Name)
 		if _, found := stream.blobs[name]; !found {
@@ -547,11 +547,15 @@ func (s *session) finishDispatch(result dispatchResult) error {
 		s.reserved -= stream.reserved
 	}
 	if !stream.suppress {
-		if result.err != nil {
+		if stream.terminal != nil {
+			if err := s.writeCompile(stream.id, *stream.terminal, nil); err != nil {
+				s.releaseStream(stream)
+				return err
+			}
+		} else if result.err != nil {
 			s.releaseStream(stream)
 			return &SessionError{Code: SessionErrorInvariant}
-		}
-		if err := s.writeCompile(stream.id, result.response, result.blobs); err != nil {
+		} else if err := s.writeCompile(stream.id, result.response, result.blobs); err != nil {
 			s.releaseStream(stream)
 			return err
 		}
@@ -583,6 +587,8 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 	case phaseDispatching:
 		if !emit {
 			stream.suppress = true
+		} else if stream.terminal == nil {
+			stream.cancelling = true
 		}
 		return nil
 	}
@@ -600,30 +606,39 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 	return s.admit()
 }
 
-func (s *session) failStream(stream *requestStream, code string) error {
+func (s *session) failCorrelatedStream(stream *requestStream) error {
+	if stream == nil || stream.phase == phaseTerminal || stream.suppress || stream.cancelling || stream.terminal != nil {
+		return nil
+	}
+	response, err := s.config.Dispatcher.CompileTransportResponse(stream.requestID, endpoint.CompileTransportProtocolViolation)
+	if err != nil {
+		return &SessionError{Code: SessionErrorInvariant}
+	}
 	if stream.phase == phaseDispatching {
-		stream.suppress = true
+		stream.terminal = &response
 		stream.cancel()
 		stream.plan.Abort()
-	} else {
-		if stream.plan != nil {
-			stream.plan.Abort()
-		}
-		if stream.cancel != nil {
-			stream.cancel()
-		}
-		if stream.phase == phaseQueued {
-			s.removeQueued(stream)
-		}
-		if stream.phase == phaseUploading {
+		return nil
+	}
+	stream.plan.Abort()
+	stream.cancel()
+	if stream.phase == phaseQueued {
+		s.removeQueued(stream)
+	}
+	if stream.phase == phaseUploading {
+		if s.uploader == stream {
 			s.uploader = nil
+		}
+		if s.active > 0 {
 			s.active--
+		}
+		if s.reserved >= stream.reserved {
 			s.reserved -= stream.reserved
 		}
-		stream.phase = phaseTerminal
-		s.releaseStream(stream)
 	}
-	if err := s.writeStreamError(stream.id, code); err != nil {
+	stream.phase = phaseTerminal
+	s.releaseStream(stream)
+	if err := s.writeCompile(stream.id, response, nil); err != nil {
 		return err
 	}
 	return s.admit()

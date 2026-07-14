@@ -117,6 +117,93 @@ func TestPackagedEngineStdioHandshakeProjectAndPack(t *testing.T) {
 	}
 }
 
+func TestPackagedEngineStdioCorrelatedFrameFailureRecovers(t *testing.T) {
+	binary := os.Getenv("LAYERDRAW_ENGINE_BINARY")
+	if binary == "" {
+		t.Skip("LAYERDRAW_ENGINE_BINARY is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "stdio")
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	encoder, decoder := transport.NewEncoder(stdin), transport.NewDecoder(stdout)
+
+	handshakeBytes, err := engineprotocol.EncodeHandshakeRequestEnvelope(packagedHandshake())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.WriteFrame(transport.Frame{Kind: transport.KindRequestControl, StreamID: 1, Payload: handshakeBytes}); err != nil {
+		t.Fatal(err)
+	}
+	if responseFrame := packagedReadFrame(t, decoder); responseFrame.Kind != transport.KindResponseControl || responseFrame.StreamID != 1 {
+		t.Fatalf("handshake response = %#v", responseFrame)
+	}
+	if end := packagedReadFrame(t, decoder); end.Kind != transport.KindBundleEnd || end.StreamID != 1 {
+		t.Fatalf("handshake end = %#v", end)
+	}
+
+	source := []byte("project p \"Project\" {}\n")
+	badRef := packagedBlobRef("bad-source", "text/plain; charset=utf-8", source)
+	bad := packagedBaseCompile("bad-framing", engineprotocol.CompileModeProject)
+	bad.Payload.EntryPath = "document.ldl"
+	bad.Payload.ProjectSourceTree = []engineprotocol.SourceFileInput{{Path: "document.ldl", Blob: badRef}}
+	badBytes, err := engineprotocol.EncodeCompileRequestEnvelope(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.WriteFrame(transport.Frame{Kind: transport.KindRequestControl, StreamID: 2, Payload: badBytes}); err != nil {
+		t.Fatal(err)
+	}
+	if ready := packagedReadFrame(t, decoder); ready.Kind != transport.KindRequestReady || ready.StreamID != 2 {
+		t.Fatalf("bad ready = %#v", ready)
+	}
+	if err := encoder.WriteFrame(transport.Frame{Kind: transport.KindBlobChunk, Flags: transport.FlagFinal, StreamID: 2, Sequence: 2, Name: []byte(badRef.BlobID), Payload: source}); err != nil {
+		t.Fatal(err)
+	}
+	failureControl := packagedReadFrame(t, decoder)
+	if failureControl.Kind != transport.KindResponseControl || failureControl.StreamID != 2 {
+		t.Fatalf("correlated failure control = %#v", failureControl)
+	}
+	failure, err := engineprotocol.DecodeCompileResponseEnvelope(failureControl.Payload)
+	if err != nil || failure.RequestID != "bad-framing" || failure.Outcome != protocolcommon.OutcomeFailed || failure.Failure == nil || failure.Failure.Code != endpoint.FailureCompileTransportProtocol || failure.Failure.Category != protocolcommon.ProtocolFailureCategoryTransport || failure.Failure.Retryable {
+		t.Fatalf("correlated failure = %+v, %v", failure, err)
+	}
+	if end := packagedReadFrame(t, decoder); end.Kind != transport.KindBundleEnd || end.StreamID != 2 || end.Sequence != 1 {
+		t.Fatalf("correlated failure end = %#v", end)
+	}
+
+	goodRef := packagedBlobRef("good-source", "text/plain; charset=utf-8", source)
+	good := packagedBaseCompile("after-framing", engineprotocol.CompileModeProject)
+	good.Payload.EntryPath = "document.ldl"
+	good.Payload.ProjectSourceTree = []engineprotocol.SourceFileInput{{Path: "document.ldl", Blob: goodRef}}
+	if response := packagedSendCompile(t, encoder, decoder, 3, good, []packagedBlob{{id: goodRef.BlobID, bytes: source}}); response.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("later response = %+v", response)
+	}
+
+	if err := encoder.WriteFrame(transport.Frame{Kind: transport.KindClose}); err != nil {
+		t.Fatal(err)
+	}
+	_ = stdin.Close()
+	if err := command.Wait(); err != nil {
+		t.Fatalf("packaged stdio recovery: %v, stderr=%q", err, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 type packagedBlob struct {
 	id    string
 	bytes []byte

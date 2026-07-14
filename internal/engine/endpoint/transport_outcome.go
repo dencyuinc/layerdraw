@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	FailureCompileDuplicateRequest = "engine.compile.duplicate_request_id"
-	FailureCompileTransportLimit   = "engine.compile.transport_limit"
-	DiagnosticHandshakeState       = "protocol.handshake.invalid_connection_state"
+	FailureCompileDuplicateRequest  = "engine.compile.duplicate_request_id"
+	FailureCompileTransportLimit    = "engine.compile.transport_limit"
+	FailureCompileTransportProtocol = "engine.compile.transport_protocol_violation"
+	DiagnosticHandshakeState        = "protocol.handshake.invalid_connection_state"
 )
 
 // CompileTransportFailure is the closed endpoint-owned set of generated
@@ -22,6 +23,7 @@ type CompileTransportFailure uint8
 const (
 	CompileTransportDuplicateRequest CompileTransportFailure = iota + 1
 	CompileTransportResourceLimit
+	CompileTransportProtocolViolation
 )
 
 // CompileTransportResponse constructs a stable generated failure without
@@ -49,6 +51,14 @@ func (d *CompileDispatcher) CompileTransportResponse(requestID string, reason Co
 			FailureCompileTransportLimit,
 			"The transport cannot admit this request within its fixed resource limits.",
 			true,
+			nil,
+		))
+	case CompileTransportProtocolViolation:
+		return compileFailedResponse(requestID, release, protocolFailure(
+			protocolcommon.ProtocolFailureCategoryTransport,
+			FailureCompileTransportProtocol,
+			"The request stream violated the negotiated transport protocol.",
+			false,
 			nil,
 		))
 	default:

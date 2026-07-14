@@ -41,8 +41,9 @@ func TestEndpointOwnsTransportStateOutcomes(t *testing.T) {
 	t.Parallel()
 	dispatcher := NewCompileDispatcher(engine.New(engine.BuildInfo{}))
 	for reason, code := range map[CompileTransportFailure]string{
-		CompileTransportDuplicateRequest: FailureCompileDuplicateRequest,
-		CompileTransportResourceLimit:    FailureCompileTransportLimit,
+		CompileTransportDuplicateRequest:  FailureCompileDuplicateRequest,
+		CompileTransportResourceLimit:     FailureCompileTransportLimit,
+		CompileTransportProtocolViolation: FailureCompileTransportProtocol,
 	} {
 		response, err := dispatcher.CompileTransportResponse("request", reason)
 		if err != nil {
