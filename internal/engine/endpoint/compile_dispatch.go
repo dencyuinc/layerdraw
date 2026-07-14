@@ -87,14 +87,43 @@ type BlobSink interface {
 	Publish(context.Context, []OutputBlob) error
 }
 
+// compileDriver is the package-private boundary around the canonical facade's
+// one Compile call and one defensive Snapshot. The public constructor always
+// installs engineCompileDriver; endpoint tests can supply deterministic
+// snapshots without exposing an alternate compiler through the public API.
+type compileDriver interface {
+	Describe() engine.Descriptor
+	CompileSnapshot(context.Context, engine.CompileInput) (engine.Snapshot, error)
+}
+
+type engineCompileDriver struct {
+	compiler engine.Engine
+}
+
+func (driver engineCompileDriver) Describe() engine.Descriptor {
+	return driver.compiler.Describe()
+}
+
+func (driver engineCompileDriver) CompileSnapshot(ctx context.Context, input engine.CompileInput) (engine.Snapshot, error) {
+	result, err := driver.compiler.Compile(ctx, input)
+	if err != nil {
+		return engine.Snapshot{}, err
+	}
+	return result.Snapshot(), nil
+}
+
 // CompileDispatcher is immutable and safe for concurrent use.
 type CompileDispatcher struct {
-	compiler engine.Engine
+	compiler compileDriver
 }
 
 // NewCompileDispatcher binds the canonical Engine facade used by every
 // transport. The facade is invoked exactly once for each mapped request.
 func NewCompileDispatcher(compiler engine.Engine) *CompileDispatcher {
+	return newCompileDispatcher(engineCompileDriver{compiler: compiler})
+}
+
+func newCompileDispatcher(compiler compileDriver) *CompileDispatcher {
 	return &CompileDispatcher{compiler: compiler}
 }
 

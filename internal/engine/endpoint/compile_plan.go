@@ -11,7 +11,6 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
-	"github.com/dencyuinc/layerdraw/internal/engine"
 )
 
 const (
@@ -75,7 +74,7 @@ const (
 // BlobSink makes its atomic successful commit.
 type CompilePlan struct {
 	mu             sync.Mutex
-	compiler       engine.Engine
+	compiler       compileDriver
 	requestID      string
 	release        protocolcommon.ReleaseVersion
 	prepared       *preparedCompileInput
@@ -297,12 +296,9 @@ func (p *CompilePlan) executePrepared(ctx context.Context, prepared *preparedCom
 		return compileCancelledResponse(p.requestID, p.release)
 	}
 
-	// These are intentionally the only facade and Snapshot invocations.
-	compileResult, compileErr := p.compiler.Compile(ctx, mapped)
-	var snapshot engine.Snapshot
-	if compileErr == nil {
-		snapshot = compileResult.Snapshot()
-	}
+	// This is the only compile-driver invocation. The production driver makes
+	// exactly one canonical facade call and one defensive Snapshot.
+	snapshot, compileErr := p.compiler.CompileSnapshot(ctx, mapped)
 	if releaseFailure := lease.Release(ctx); releaseFailure != nil {
 		lease = nil
 		if releaseFailure.Category == protocolcommon.ProtocolFailureCategoryCancelled {

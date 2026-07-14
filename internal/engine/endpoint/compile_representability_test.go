@@ -17,10 +17,7 @@ import (
 )
 
 func TestDispatchCompileLargeRejectionUsesStableControlFailureAndRecovers(t *testing.T) {
-	if testRaceEnabled {
-		t.Skip("the real 100,000-error parser regression exceeds the all-package race/coverage timeout; fallback concurrency is race-tested separately")
-	}
-	value := []byte("project p \"P\" {}\n" + strings.Repeat("?\n", 100_000))
+	value := []byte("project p \"P\" {}\n")
 	request := compileRequest(value)
 	releases := 0
 	source := &memoryBlobSource{definitions: []BlobDefinition{{
@@ -30,7 +27,8 @@ func TestDispatchCompileLargeRejectionUsesStableControlFailureAndRecovers(t *tes
 		}},
 	}}}
 	sink := &memoryBlobSink{}
-	dispatcher := NewCompileDispatcher(engine.New(engine.BuildInfo{}))
+	driver := newOversizedRejectionDriver()
+	dispatcher := newCompileDispatcher(driver)
 	negotiated := compileContext(t)
 
 	response, err := dispatcher.DispatchCompile(context.Background(), negotiated, request, source, sink)
@@ -56,6 +54,53 @@ func TestDispatchCompileLargeRejectionUsesStableControlFailureAndRecovers(t *tes
 	if recovered.Outcome != protocolcommon.OutcomeSuccess || recovered.Payload == nil || recovered.Failure != nil || validSink.calls != 1 {
 		t.Fatalf("subsequent valid compile did not recover: response=%+v sink=%d", recovered, validSink.calls)
 	}
+	if driver.callCount() != 2 {
+		t.Fatalf("compile driver calls=%d, want 2", driver.callCount())
+	}
+}
+
+type oversizedRejectionDriver struct {
+	canonical engineCompileDriver
+	mu        sync.Mutex
+	calls     int
+	rejection engine.Snapshot
+}
+
+func newOversizedRejectionDriver() *oversizedRejectionDriver {
+	diagnostics := make([]engine.Diagnostic, 100_000)
+	for index := range diagnostics {
+		diagnostics[index] = engine.Diagnostic{
+			Arguments:  map[string]string{},
+			Code:       "LDL1001",
+			MessageKey: "syntax.unexpected_token",
+			Severity:   "error",
+		}
+	}
+	return &oversizedRejectionDriver{
+		canonical: engineCompileDriver{compiler: engine.New(engine.BuildInfo{})},
+		rejection: engine.Snapshot{CompileOutput: engine.CompileOutput{Diagnostics: diagnostics}},
+	}
+}
+
+func (driver *oversizedRejectionDriver) Describe() engine.Descriptor {
+	return driver.canonical.Describe()
+}
+
+func (driver *oversizedRejectionDriver) CompileSnapshot(ctx context.Context, input engine.CompileInput) (engine.Snapshot, error) {
+	driver.mu.Lock()
+	driver.calls++
+	call := driver.calls
+	driver.mu.Unlock()
+	if call == 1 {
+		return driver.rejection, nil
+	}
+	return driver.canonical.CompileSnapshot(ctx, input)
+}
+
+func (driver *oversizedRejectionDriver) callCount() int {
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	return driver.calls
 }
 
 func TestCompileResponseFallbackClassifiesSuccessControlAndInvariantFailures(t *testing.T) {
