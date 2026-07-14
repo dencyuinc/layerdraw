@@ -250,7 +250,7 @@ default and effective maximum must be no greater than the hard maximum. A
 positive compile override must be no greater than the effective maximum or the
 request is rejected; a zero/omitted override applies `min(default_value,
 effective_maximum)`. These are wire and combination semantics; enforcing them
-when dispatching a compile remains Issue #29.
+when dispatching a compile belongs to the Engine endpoint.
 
 `CompileResult` retains a validated tagged normalized Project-or-Pack artifact,
 canonical/artifact blob bindings, source map, semantic index, addresses,
@@ -267,6 +267,16 @@ walk only schema-declared properties in canonical wire-property order and
 array items in their original order. Every occurrence is returned, including
 duplicates, as a detached `BlobRef`; the collectors never deduplicate, repair,
 resolve, or verify digests and never reflect over unknown object properties.
+
+A compiler `success` or `rejected` outcome is complete only when its entire
+generated response envelope, including every diagnostic and payload field, is
+representable within the Engine Protocol wire-byte and depth limits. If that
+complete control result exceeds the limit, the endpoint must not truncate it,
+publish output blobs, or expose a Go error; it returns a minimal `failed`
+envelope with empty diagnostics and payload, failure category `resource`, and
+stable code `engine.compile.control_output_exhausted`. An under-limit response
+that violates generated mapping invariants remains an `invariant` failure,
+distinct from control-output resource exhaustion.
 
 The `NormalizedArtifact` union owns the mode-dependent result invariants.
 Project results require `graph_hash` and may carry SearchDocuments. Pack

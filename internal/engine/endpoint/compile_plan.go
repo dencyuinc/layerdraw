@@ -326,15 +326,15 @@ func (p *CompilePlan) executePrepared(ctx context.Context, prepared *preparedCom
 		if !isRejectedCompileSnapshot(snapshot) || len(mappedDiagnostics) == 0 {
 			return compileFailedResponse(p.requestID, p.release, invariantProtocolFailure())
 		}
-		return compileRejectedResponse(p.requestID, p.release, mappedDiagnostics)
+		return p.finalizeCompileResponse(ctx, compileRejectedEnvelope(p.requestID, p.release, mappedDiagnostics))
 	}
 	payload, blobs, mapErr := mapCompileSnapshot(snapshot)
 	if mapErr != nil {
 		return compileFailedResponse(p.requestID, p.release, invariantProtocolFailure())
 	}
-	response, err = compileSuccessResponse(p.requestID, p.release, payload, mappedDiagnostics)
-	if err != nil {
-		return compileFailedResponse(p.requestID, p.release, invariantProtocolFailure())
+	response, err = p.finalizeCompileResponse(ctx, compileSuccessEnvelope(p.requestID, p.release, payload, mappedDiagnostics))
+	if err != nil || response.Outcome != protocolcommon.OutcomeSuccess {
+		return response, err
 	}
 	if !p.claimPublication(ctx) {
 		return compileCancelledResponse(p.requestID, p.release)
@@ -358,6 +358,25 @@ func (p *CompilePlan) executePrepared(ctx context.Context, prepared *preparedCom
 		true,
 		nil,
 	))
+}
+
+func (p *CompilePlan) finalizeCompileResponse(ctx context.Context, candidate engineprotocol.CompileResponseEnvelope) (engineprotocol.CompileResponseEnvelope, error) {
+	representation, limit, _ := classifyCompileResponse(candidate)
+	if ctx.Err() != nil || p.abortWasRequested() {
+		return compileCancelledResponse(p.requestID, p.release)
+	}
+	if representation == compileResponseRepresentable {
+		return candidate, nil
+	}
+	failure := invariantProtocolFailure()
+	if representation == compileResponseControlExhausted {
+		failure = controlOutputProtocolFailure(limit)
+	}
+	response, err := compileFailedResponse(p.requestID, p.release, failure)
+	if err != nil {
+		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("compile response fallback construction failed: %w", err)
+	}
+	return response, nil
 }
 
 // Abort is idempotent. It releases retained preparation state immediately for

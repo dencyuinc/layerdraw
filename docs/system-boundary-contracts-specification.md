@@ -465,6 +465,8 @@ schemas/engine-protocol/*.schema
 - Goの`error`は`ProtocolFailure`へmapし、source diagnosticを`error`文字列へ潰さない。
 - TSのexceptionはnetwork、decode、client misuseに限定し、正常に受信した`rejected`をthrowだけで表現しない。
 
+compilerの`success`または`rejected` outcomeは、diagnostics、payload、その他のcontrol fieldをすべて含む完全なresponse envelopeがgenerated Engine Protocolのwire byte/depth制限内で表現できる場合に限り完了する。完全なcontrol resultが上限を超えた場合、diagnosticsやpayloadを切り詰めて元のoutcomeを主張せず、output blobをpublishせず、空のdiagnostics/payloadを持つ`failed`を返す。この安定したresource exhaustionはcategory `resource`、code `engine.compile.control_output_exhausted`で表し、上限内だがmappingまたはgenerated invariantを満たさないresponseはcategory `invariant`として区別する。terminal outcomeの確定前に観測したcontext cancellationまたは明示abortは、どちらのfallbackよりも`cancelled`を優先する。
+
 ### 3.7 Normalized publication blob boundary
 
 portable compileの`NormalizedArtifact` control valueはProject/Packのclosed tagged unionであり、選択branch、root address、role固有canonical/public `BlobRef`をgenerated型として保持する。参照先はEngineが生成したimmutable opaque bytesである。Project/Pack media type、`schema_version: 1`、`format`、RFC 8785 canonical bytes、public artifactのexact one LF、raw digest/size、request lifetime、version bump規則の正本は[schemas/README.mdのNormalized blob payload contract](../schemas/README.md#normalized-blob-payload-contract)と[LDL詳細仕様5.1節](ldl-language-detailed-specification.md#51-エンベロープと不変条件)である。

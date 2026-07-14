@@ -4,6 +4,7 @@ package endpoint
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +31,22 @@ const (
 	FailureCompileBlobOversized      = "engine.compile.blob_oversized"
 	FailureCompileBlobLifetime       = "engine.compile.unsupported_blob_lifetime"
 	FailureCompileBlobSink           = "engine.compile.blob_sink_failure"
+	FailureCompileControlOutput      = "engine.compile.control_output_exhausted"
 )
+
+type compileResponseRepresentation uint8
+
+const (
+	compileResponseRepresentable compileResponseRepresentation = iota
+	compileResponseControlExhausted
+	compileResponseInvalid
+)
+
+type compileResponseLimit struct {
+	resource string
+	limit    int64
+	observed int64
+}
 
 // OwnedBlob transfers one already-owned Go byte slice into Execute without a
 // redundant transport-layer copy. The source must relinquish all access until
@@ -144,7 +160,11 @@ func mapCompileError(requestID string, release protocolcommon.ReleaseVersion, co
 }
 
 func compileSuccessResponse(requestID string, release protocolcommon.ReleaseVersion, payload engineprotocol.CompileResult, diagnostics []semantic.Diagnostic) (engineprotocol.CompileResponseEnvelope, error) {
-	response := engineprotocol.CompileResponseEnvelope{
+	return validateCompileResponse(compileSuccessEnvelope(requestID, release, payload, diagnostics))
+}
+
+func compileSuccessEnvelope(requestID string, release protocolcommon.ReleaseVersion, payload engineprotocol.CompileResult, diagnostics []semantic.Diagnostic) engineprotocol.CompileResponseEnvelope {
+	return engineprotocol.CompileResponseEnvelope{
 		Diagnostics:   diagnostics,
 		EngineRelease: release,
 		Outcome:       protocolcommon.OutcomeSuccess,
@@ -152,18 +172,20 @@ func compileSuccessResponse(requestID string, release protocolcommon.ReleaseVers
 		Protocol:      bootstrapProtocolRef(),
 		RequestID:     requestID,
 	}
-	return validateCompileResponse(response)
 }
 
 func compileRejectedResponse(requestID string, release protocolcommon.ReleaseVersion, diagnostics []semantic.Diagnostic) (engineprotocol.CompileResponseEnvelope, error) {
-	response := engineprotocol.CompileResponseEnvelope{
+	return validateCompileResponse(compileRejectedEnvelope(requestID, release, diagnostics))
+}
+
+func compileRejectedEnvelope(requestID string, release protocolcommon.ReleaseVersion, diagnostics []semantic.Diagnostic) engineprotocol.CompileResponseEnvelope {
+	return engineprotocol.CompileResponseEnvelope{
 		Diagnostics:   diagnostics,
 		EngineRelease: release,
 		Outcome:       protocolcommon.OutcomeRejected,
 		Protocol:      bootstrapProtocolRef(),
 		RequestID:     requestID,
 	}
-	return validateCompileResponse(response)
 }
 
 func compileFailedResponse(requestID string, release protocolcommon.ReleaseVersion, failure protocolcommon.ProtocolFailure) (engineprotocol.CompileResponseEnvelope, error) {
@@ -198,10 +220,74 @@ func compileCancelledResponse(requestID string, release protocolcommon.ReleaseVe
 }
 
 func validateCompileResponse(response engineprotocol.CompileResponseEnvelope) (engineprotocol.CompileResponseEnvelope, error) {
-	if _, err := engineprotocol.EncodeCompileResponseEnvelope(response); err != nil {
+	representation, limit, err := classifyCompileResponse(response)
+	if representation == compileResponseControlExhausted {
+		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("constructed compile response uses %d %s, exceeding the control limit of %d", limit.observed, limit.resource, limit.limit)
+	}
+	if err != nil {
 		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("constructed compile response is invalid: %w", err)
 	}
 	return response, nil
+}
+
+func classifyCompileResponse(response engineprotocol.CompileResponseEnvelope) (compileResponseRepresentation, compileResponseLimit, error) {
+	_, encodeErr := engineprotocol.EncodeCompileResponseEnvelope(response)
+	if encodeErr == nil {
+		return compileResponseRepresentable, compileResponseLimit{}, nil
+	}
+	encoded, marshalErr := json.Marshal(response)
+	if marshalErr != nil {
+		return compileResponseInvalid, compileResponseLimit{}, encodeErr
+	}
+	if observed := int64(len(encoded)); observed > int64(engineprotocol.MaxWireJSONBytes) {
+		return compileResponseControlExhausted, compileResponseLimit{
+			resource: "control_output_bytes",
+			limit:    int64(engineprotocol.MaxWireJSONBytes),
+			observed: observed,
+		}, nil
+	}
+	if observed := compileResponseJSONDepth(encoded); observed > int64(engineprotocol.MaxWireJSONDepth) {
+		return compileResponseControlExhausted, compileResponseLimit{
+			resource: "control_output_depth",
+			limit:    int64(engineprotocol.MaxWireJSONDepth),
+			observed: observed,
+		}, nil
+	}
+	return compileResponseInvalid, compileResponseLimit{}, encodeErr
+}
+
+// compileResponseJSONDepth mirrors the generated wire codec's container-depth
+// accounting over json.Marshal output. The input is valid JSON by construction.
+func compileResponseJSONDepth(encoded []byte) int64 {
+	var depth, maximum int64
+	inString := false
+	escaped := false
+	for _, value := range encoded {
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if value == '\\' {
+				escaped = true
+			} else if value == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch value {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > maximum {
+				maximum = depth
+			}
+		case '}', ']':
+			depth--
+		}
+	}
+	return maximum
 }
 
 func protocolFailure(category protocolcommon.ProtocolFailureCategory, code, message string, retryable bool, details protocolcommon.JsonObject) protocolcommon.ProtocolFailure {
@@ -219,6 +305,21 @@ func invariantProtocolFailure() protocolcommon.ProtocolFailure {
 		"The Engine could not complete compilation.",
 		false,
 		nil,
+	)
+}
+
+func controlOutputProtocolFailure(limit compileResponseLimit) protocolcommon.ProtocolFailure {
+	details := protocolcommon.JsonObject{
+		"limit":    stringJSON(fmt.Sprintf("%d", limit.limit)),
+		"observed": stringJSON(fmt.Sprintf("%d", limit.observed)),
+		"resource": stringJSON(limit.resource),
+	}
+	return protocolFailure(
+		protocolcommon.ProtocolFailureCategoryResource,
+		FailureCompileControlOutput,
+		"The complete compile control result exceeds the Engine Protocol limit.",
+		false,
+		details,
 	)
 }
 
