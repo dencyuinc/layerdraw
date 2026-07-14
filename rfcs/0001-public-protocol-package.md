@@ -1,7 +1,8 @@
 # RFC 0001: Public protocol package and generation boundary
 
-- Status: Proposed
+- Status: Accepted
 - Authors: LayerDraw maintainers
+- Approval: Dencyuman, protocol/release maintainer, 2026-07-15
 - Tracking issue: #27
 - Target release: the first release containing `@layerdraw/protocol`
 
@@ -41,12 +42,17 @@ the schemas, regenerate both languages in one change, and carry shared
 conformance coverage.
 
 `make generate-check` runs generation from the committed revision in an
-isolated clean worktree, permits changes only to the declared generated-output
-set, and requires two clean passes. Package verification builds and packs the
-actual npm artifact, checks its export boundary in Node and browser
-conditions, and rejects source maps whose source is neither packaged nor
-embedded. Release jobs publish the already verified artifact rather than
-regenerating it.
+independent temporary clone, compares NUL-delimited manifests of every
+non-Git filesystem entry (including ignored paths, types, modes, contents, and
+symlink targets), permits changes only to the declared generated-output set,
+and requires two clean passes. A frozen offline install materializes per-run
+dependency copies from a read-only package store, and both dependencies and
+tool caches live outside the cloned repository. Dependency copies are also
+manifested so mutation attempts fail without exposing caller dependency state.
+Package verification builds and packs the actual npm artifact, checks its
+export boundary in Node and browser conditions, and rejects source maps whose
+source is neither packaged nor embedded. Release jobs publish the already
+verified artifact rather than regenerating it.
 
 Protocol compatibility and npm package compatibility are related but distinct
 version axes. Wire documents follow the `major.minor` rules in
@@ -56,6 +62,11 @@ The npm package follows SemVer through Changesets and remains part of the
 repository's fixed LayerDraw release set. A package release must not imply that
 an endpoint supports a protocol version; negotiation remains explicit in the
 wire contract.
+
+## Approval record
+
+On 2026-07-15, Dencyuman approved RFC 0001 in the protocol/release maintainer
+role, covering both the public protocol boundary and its release policy.
 
 ## Alternatives considered
 
@@ -95,5 +106,5 @@ Only named package subpaths are compatibility commitments.
   and wire compatibility rules are honored.
 - Adding a public package expands release, licensing, provenance, and packaged
   artifact verification responsibilities for every LayerDraw release.
-- Until this RFC is approved by the required protocol/release approvers, the
-  package must not be published to a stable channel.
+- RFC acceptance authorizes the package boundary and stable-channel release
+  policy; each release must still pass the repository delivery gates.
