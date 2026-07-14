@@ -21,7 +21,6 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
-	"github.com/dencyuinc/layerdraw/internal/engine"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	wasmtransport "github.com/dencyuinc/layerdraw/internal/transport/wasm"
 )
@@ -131,7 +130,7 @@ func canonicalCorpus(corpus parityCorpus) ([]byte, error) {
 func buildCorpus() (parityCorpus, error) {
 	authority, err := endpoint.NewCompilerEndpoint(endpoint.CompilerEndpointConfig{
 		EngineRelease:         "0.0.0",
-		SourceRevision:        engine.UnknownSourceRevision,
+		SourceRevision:        "unknown",
 		ReleaseManifestDigest: releaseManifestDigest,
 		EndpointInstanceID:    "parity-in-process",
 		Transports:            []string{endpoint.TransportInProcess},
