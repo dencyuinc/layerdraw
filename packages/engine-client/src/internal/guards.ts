@@ -30,28 +30,32 @@ const typedArrayBuffer = Object.getOwnPropertyDescriptor(
 )?.get;
 
 export function strictArray(value: unknown): value is readonly unknown[] {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
-    return false;
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(value);
-  if (
-    keys.some((key) => typeof key !== "string") ||
-    keys.length !== value.length + 1
-  ) {
-    return false;
-  }
-  for (let index = 0; index < value.length; index++) {
-    const descriptor = descriptors[String(index)];
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+      return false;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
     if (
-      descriptor === undefined ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
+      keys.some((key) => typeof key !== "string") ||
+      keys.length !== value.length + 1
     ) {
       return false;
     }
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (
+        descriptor === undefined ||
+        !descriptor.enumerable ||
+        !("value" in descriptor)
+      ) {
+        return false;
+      }
+    }
+    return Object.keys(value).length === value.length;
+  } catch {
+    return false;
   }
-  return Object.keys(value).length === value.length;
 }
 
 export function dataObject(
@@ -59,35 +63,41 @@ export function dataObject(
   required: readonly string[],
   optional: readonly string[] = [],
 ): Record<string, unknown> | undefined {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    (Object.getPrototypeOf(value) !== Object.prototype &&
-      Object.getPrototypeOf(value) !== null)
-  ) {
-    return undefined;
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const allowed = new Set([...required, ...optional]);
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string" || !allowed.has(key)) return undefined;
-    const descriptor = descriptors[key];
+  try {
     if (
-      descriptor === undefined ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value)
     ) {
       return undefined;
     }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return undefined;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const allowed = new Set([...required, ...optional]);
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string" || !allowed.has(key)) return undefined;
+      const descriptor = descriptors[key];
+      if (
+        descriptor === undefined ||
+        !descriptor.enumerable ||
+        !("value" in descriptor)
+      ) {
+        return undefined;
+      }
+    }
+    if (required.some((key) => descriptors[key] === undefined)) return undefined;
+    return Object.fromEntries(
+      Object.entries(descriptors).map(([key, descriptor]) => [
+        key,
+        "value" in descriptor ? descriptor.value : undefined,
+      ]),
+    );
+  } catch {
+    return undefined;
   }
-  if (required.some((key) => descriptors[key] === undefined)) return undefined;
-  return Object.fromEntries(
-    Object.entries(descriptors).map(([key, descriptor]) => [
-      key,
-      "value" in descriptor ? descriptor.value : undefined,
-    ]),
-  );
 }
 
 export function fixedArrayBufferByteLength(value: unknown): number | undefined {
@@ -157,6 +167,17 @@ export function utf8ByteLength(value: string): number | undefined {
     }
   }
   return bytes;
+}
+
+export function compareUtf8(left: string, right: string): number {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  const shared = Math.min(leftBytes.byteLength, rightBytes.byteLength);
+  for (let index = 0; index < shared; index++) {
+    const difference = leftBytes[index]! - rightBytes[index]!;
+    if (difference !== 0) return difference;
+  }
+  return leftBytes.byteLength - rightBytes.byteLength;
 }
 
 export function validRequestId(value: unknown): value is string {

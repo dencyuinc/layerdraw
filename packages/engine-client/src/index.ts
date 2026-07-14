@@ -199,6 +199,7 @@ export type EngineClientTransportErrorCode =
   | "PROCESS_EXITED"
   | "WORKER_CRASHED"
   | "TRANSFER_FAILED"
+  | "DIGEST_FAILED"
   | "TIMEOUT_DURING_CREATION"
   | "REPLACEMENT_FAILED";
 
@@ -234,6 +235,7 @@ const messages = Object.freeze({
   PROCESS_EXITED: "The Engine process exited unexpectedly.",
   WORKER_CRASHED: "The Engine Worker stopped unexpectedly.",
   TRANSFER_FAILED: "The Engine transport could not transfer the request.",
+  DIGEST_FAILED: "The client could not verify blob digests.",
   TIMEOUT_DURING_CREATION: "Engine client creation timed out.",
   REPLACEMENT_FAILED: "The Engine endpoint could not be replaced.",
   MALFORMED_FRAME: "The Engine transport produced a malformed frame.",

@@ -52,6 +52,7 @@ import {
 import {
   blobRefFingerprint,
   bytesToHex,
+  compareUtf8,
   dataObject,
   deepFreeze,
   fixedArrayBufferByteLength,
@@ -105,6 +106,7 @@ interface EndpointContext {
   readonly limits: InternalTransportLimits;
   readonly snapshot: EngineEndpointSnapshot;
   readonly capabilityStatuses: ReadonlyMap<string, boolean>;
+  readonly engineRelease: string;
 }
 
 interface OwnedRequestBlob {
@@ -136,6 +138,11 @@ interface ActiveCompile {
   readonly interrupt: Deferred<CompileInterrupt>;
   readonly joined: Deferred<void>;
 }
+
+type CompileTerminal =
+  | Readonly<{ kind: "valid"; outcome: CompileOutcome }>
+  | Readonly<{ kind: "invalid"; error: unknown }>
+  | Readonly<{ kind: "rejected"; error: unknown }>;
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -186,9 +193,14 @@ export async function createInternalEngineClient(
   }
   const runtime =
     (object.runtime as InternalClientRuntime | undefined) ?? defaultRuntime();
-  const options = normalizeCreationOptions(
-    object.options as EngineClientCreationOptions,
-  );
+  let options: NormalizedCreationOptions;
+  try {
+    options = normalizeCreationOptions(
+      object.options as EngineClientCreationOptions,
+    );
+  } catch (error) {
+    throw inputFault(error);
+  }
   const client = new EngineClientImplementation(
     object.transportFactory as InternalTransportFactory,
     object.protocolCollectors as InternalProtocolBlobRefCollectors,
@@ -284,6 +296,7 @@ class EngineClientImplementation implements EngineClient {
   private readonly runtime: InternalClientRuntime;
   private readonly nonce: string;
   private requestCounter = 0n;
+  private exchangeCounter = 0n;
   private lastGeneration = 0;
   private lastEndpointInstanceId: string | undefined;
   private endpoint: EndpointContext | undefined;
@@ -343,7 +356,12 @@ class EngineClientImplementation implements EngineClient {
     options?: CompileOptions,
   ): Promise<CompileOutcome> {
     const endpoint = this.readyEndpoint();
-    const normalized = normalizeCompileOptions(options, this.options);
+    let normalized: NormalizedCompileOptions;
+    try {
+      normalized = normalizeCompileOptions(options, this.options);
+    } catch (error) {
+      throw inputFault(error);
+    }
     const requestId = normalized.requestId ?? this.nextRequestId();
     if (this.active?.requestId === requestId) {
       throw new EngineClientStateError("DUPLICATE_REQUEST_ID", { requestId });
@@ -366,7 +384,14 @@ class EngineClientImplementation implements EngineClient {
       );
     }
 
-    const preparedMetadata = this.prepareCompileMetadata(request, endpoint.limits);
+    let preparedMetadata: ReturnType<
+      EngineClientImplementation["prepareCompileMetadata"]
+    >;
+    try {
+      preparedMetadata = this.prepareCompileMetadata(request, endpoint.limits);
+    } catch (error) {
+      throw inputFault(error);
+    }
     const active: ActiveCompile = {
       requestId,
       generation: endpoint.generation,
@@ -395,13 +420,13 @@ class EngineClientImplementation implements EngineClient {
   }
 
   restart(): Promise<void> {
-    if (this.replacementPromise !== undefined) return this.replacementPromise;
     if (this._state === "disposing") {
       throw new EngineClientStateError("DISPOSING");
     }
     if (this._state === "disposed") {
       throw new EngineClientStateError("DISPOSED");
     }
+    if (this.replacementPromise !== undefined) return this.replacementPromise;
     const barrier = deferred<void>();
     const active = this.active;
     if (active !== undefined) {
@@ -490,6 +515,16 @@ class EngineClientImplementation implements EngineClient {
     return `ec1-${this.nonce}-${this.requestCounter.toString(16).padStart(16, "0")}`;
   }
 
+  private nextExchangeId(): string {
+    if (this.exchangeCounter >= 2n ** 64n - 1n) {
+      throw new EngineClientStateError("FAILED");
+    }
+    this.exchangeCounter++;
+    return `ex1-${this.nonce}-${this.exchangeCounter
+      .toString(16)
+      .padStart(16, "0")}`;
+  }
+
   private prepareCompileMetadata(
     request: PortableCompileRequest,
     limits: InternalTransportLimits,
@@ -540,6 +575,7 @@ class EngineClientImplementation implements EngineClient {
     }
 
     const seen = new Set<string>();
+    const seenBuffers = new Set<ArrayBuffer>();
     const attachments: Array<Readonly<{
       ref: BlobRef;
       bytes: Uint8Array | ArrayBuffer;
@@ -569,16 +605,25 @@ class EngineClientImplementation implements EngineClient {
       }
       const ownership = blob.ownership ?? "copy";
       let byteLength: number | undefined;
+      let sourceBuffer: ArrayBuffer | undefined;
       if (ownership === "copy") {
-        byteLength = uint8ViewSource(blob.bytes)?.byteLength;
+        const source = uint8ViewSource(blob.bytes);
+        byteLength = source?.byteLength;
+        sourceBuffer = source?.buffer;
       } else if (ownership === "transfer") {
         byteLength = fixedArrayBufferByteLength(blob.bytes);
+        sourceBuffer = blob.bytes as ArrayBuffer;
       } else {
         throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
       }
-      if (byteLength === undefined) {
+      if (
+        byteLength === undefined ||
+        sourceBuffer === undefined ||
+        seenBuffers.has(sourceBuffer)
+      ) {
         throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
       }
+      seenBuffers.add(sourceBuffer);
       if (BigInt(wanted.size) !== BigInt(byteLength)) {
         throw new EngineClientInputError("BLOB_SIZE_MISMATCH", {
           blobCount: expected.size,
@@ -705,16 +750,15 @@ class EngineClientImplementation implements EngineClient {
         protocol: ENGINE_PROTOCOL,
         request_id: active.requestId,
       } satisfies CompileRequestEnvelope;
-      const control = encodeControl(encodeCompileRequestEnvelope(envelope));
-      if (control.byteLength > endpoint.limits.maxControlBytes) {
-        throw new EngineClientInputError("LIMIT_EXCEEDED");
-      }
+      const controlText = encodeCompileRequestEnvelope(envelope);
+      validateOutgoingControl(controlText, endpoint.limits);
+      const control = encodeControl(controlText);
       const transportBlobs = prepared.blobs
         .map((blob) => ({ blobId: blob.ref.blob_id, bytes: blob.bytes }))
-        .sort((left, right) => left.blobId.localeCompare(right.blobId));
+        .sort((left, right) => compareUtf8(left.blobId, right.blobId));
       try {
         exchange = endpoint.transport.request({
-          exchangeId: active.requestId,
+          exchangeId: this.nextExchangeId(),
           control,
           blobs: transportBlobs,
         });
@@ -725,25 +769,47 @@ class EngineClientImplementation implements EngineClient {
         );
       }
 
+      const terminal = this.observeCompileTerminal(
+        exchange,
+        endpoint,
+        active.requestId,
+      );
       const winner = await Promise.race([
-        exchange.response.then(
-          (response) => ({ kind: "response" as const, response }),
-          (error: unknown) => ({ kind: "response-fault" as const, error }),
+        terminal.then((result) =>
+          result.kind === "valid"
+            ? ({ kind: "response" as const, outcome: result.outcome })
+            : ({ kind: "response-fault" as const, error: result.error }),
         ),
         active.interrupt.promise,
       ]);
       if (winner.kind === "cancel") {
         const cancelResult = await this.cancelExchange(exchange);
+        const terminalResult = await this.withBound(
+          terminal,
+          this.options.cancelGraceMs,
+          undefined,
+        );
+        const terminalIsInvalid = terminalResult?.kind === "invalid";
+        const reusable =
+          cancelResult.reusable &&
+          !terminalIsInvalid &&
+          terminalResult !== undefined;
+        const engineCancellation =
+          terminalResult?.kind === "valid" &&
+          terminalResult.outcome.origin === "engine" &&
+          terminalResult.outcome.outcome === "cancelled"
+            ? terminalResult.outcome
+            : undefined;
         active.joined.resolve();
         if (
-          !cancelResult.reusable &&
+          !reusable &&
           winner.reason !== "restart" &&
           winner.reason !== "dispose"
         ) {
           await this.replaceAfterCancellation(active);
         }
         if (winner.barrier !== undefined) await winner.barrier;
-        return clientCancellation(active, winner.reason);
+        return engineCancellation ?? clientCancellation(active, winner.reason);
       }
       if (winner.kind === "fault") {
         active.joined.resolve();
@@ -754,22 +820,8 @@ class EngineClientImplementation implements EngineClient {
         throw await this.replaceForFault(winner.error, active);
       }
 
-      removeAbort?.();
-      removeAbort = undefined;
-      if (timer !== undefined) this.runtime.clearTimer(timer);
-      timer = undefined;
-      try {
-        const outcome = await this.decodeCompileOutcome(
-          winner.response,
-          endpoint,
-          active.requestId,
-        );
-        active.joined.resolve();
-        return outcome;
-      } catch (error) {
-        active.joined.resolve();
-        throw await this.replaceForFault(error, active);
-      }
+      active.joined.resolve();
+      return winner.outcome;
     } finally {
       removeAbort?.();
       if (timer !== undefined) this.runtime.clearTimer(timer);
@@ -778,17 +830,39 @@ class EngineClientImplementation implements EngineClient {
   }
 
   private async verifyInputDigests(prepared: PreparedCompile): Promise<void> {
-    await Promise.all(
-      prepared.blobs.map(async (blob) => {
-        const digest = bytesToHex(
-          await this.runtime.sha256(new Uint8Array(blob.bytes)),
-        );
-        if (`sha256:${digest}` !== blob.ref.digest) {
-          throw new EngineClientInputError("BLOB_DIGEST_MISMATCH", {
-            blobCount: prepared.blobs.length,
-          });
+    for (const blob of prepared.blobs) {
+      let digestBytes: Uint8Array;
+      try {
+        digestBytes = await this.runtime.sha256(new Uint8Array(blob.bytes));
+      } catch {
+        throw new EngineClientTransportError("DIGEST_FAILED");
+      }
+      const digest = bytesToHex(digestBytes);
+      if (`sha256:${digest}` !== blob.ref.digest) {
+        throw new EngineClientInputError("BLOB_DIGEST_MISMATCH", {
+          blobCount: prepared.blobs.length,
+        });
+      }
+    }
+  }
+
+  private observeCompileTerminal(
+    exchange: InternalTransportExchange,
+    endpoint: EndpointContext,
+    requestId: string,
+  ): Promise<CompileTerminal> {
+    return exchange.response.then(
+      async (raw): Promise<CompileTerminal> => {
+        try {
+          return {
+            kind: "valid",
+            outcome: await this.decodeCompileOutcome(raw, endpoint, requestId),
+          };
+        } catch (error) {
+          return { kind: "invalid", error };
         }
-      }),
+      },
+      (error: unknown): CompileTerminal => ({ kind: "rejected", error }),
     );
   }
 
@@ -800,7 +874,9 @@ class EngineClientImplementation implements EngineClient {
     const response = validateTransportResponse(raw, endpoint.limits);
     let envelope: CompileResponseEnvelope;
     try {
-      envelope = decodeCompileResponseEnvelope(decodeControl(response.control));
+      envelope = decodeCompileResponseEnvelope(
+        decodeControl(response.control, endpoint.limits.maxControlDepth),
+      );
     } catch {
       throw new EngineClientDecodeError("MALFORMED_MESSAGE");
     }
@@ -813,6 +889,9 @@ class EngineClientImplementation implements EngineClient {
       envelope.protocol.name !== "engine" ||
       envelope.protocol.version !== "1.0"
     ) {
+      throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+    }
+    if (envelope.engine_release !== endpoint.engineRelease) {
       throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
     }
     if (envelope.outcome !== "success") {
@@ -883,11 +962,16 @@ class EngineClientImplementation implements EngineClient {
     exchange: InternalTransportExchange,
   ): Promise<InternalCancelResult> {
     try {
-      return await this.withBound(
+      const raw = await this.withBound(
         Promise.resolve().then(() => exchange.cancel()),
-        this.options.disposeTimeoutMs,
-        { reusable: false },
+        this.options.cancelGraceMs,
+        undefined,
       );
+      const result = dataObject(raw, ["reusable"]);
+      if (result === undefined || typeof result.reusable !== "boolean") {
+        return { reusable: false };
+      }
+      return Object.freeze({ reusable: result.reusable });
     } catch {
       return { reusable: false };
     }
@@ -1016,13 +1100,12 @@ class EngineClientImplementation implements EngineClient {
         protocol: ENGINE_PROTOCOL,
         request_id: requestId,
       } satisfies HandshakeRequestEnvelope;
-      const control = encodeControl(encodeHandshakeRequestEnvelope(envelope));
-      if (control.byteLength > limits.maxControlBytes) {
-        throw new EngineClientInputError("LIMIT_EXCEEDED");
-      }
+      const controlText = encodeHandshakeRequestEnvelope(envelope);
+      validateOutgoingControl(controlText, limits);
+      const control = encodeControl(controlText);
       try {
         exchange = transport.request({
-          exchangeId: requestId,
+          exchangeId: this.nextExchangeId(),
           control,
           blobs: [],
         });
@@ -1039,7 +1122,7 @@ class EngineClientImplementation implements EngineClient {
       let handshake: HandshakeResponseEnvelope;
       try {
         handshake = decodeHandshakeResponseEnvelope(
-          decodeControl(response.control),
+          decodeControl(response.control, limits.maxControlDepth),
         );
       } catch {
         throw new EngineClientDecodeError("MALFORMED_MESSAGE");
@@ -1057,6 +1140,7 @@ class EngineClientImplementation implements EngineClient {
         limits,
         snapshot: deepFreeze({ generation, handshake: validated.result }),
         capabilityStatuses: validated.statuses,
+        engineRelease: validated.result.host_release,
       };
     } catch (error) {
       if (error instanceof CreationTimedOut) {
@@ -1136,7 +1220,13 @@ class EngineClientImplementation implements EngineClient {
       close.details,
     );
     if (this.active !== undefined) {
-      this.active.interrupt.resolve({ kind: "fault", fault: error });
+      const active = this.active;
+      active.interrupt.resolve({ kind: "fault", fault: error });
+      void active.joined.promise.then(() => {
+        if (this.endpoint === endpoint && this._state === "ready") {
+          void this.startReplacement().catch(() => undefined);
+        }
+      });
       return;
     }
     void this.startReplacement().catch(() => undefined);
@@ -1342,7 +1432,7 @@ function validateTransportResponse(
   ) {
     throw new EngineClientDecodeError("MALFORMED_MESSAGE");
   }
-  let prior = "";
+  let prior: string | undefined;
   let total = 0;
   const blobs: InternalTransportBlob[] = [];
   for (const raw of object.blobs) {
@@ -1351,8 +1441,9 @@ function validateTransportResponse(
     if (
       blob === undefined ||
       typeof blob.blobId !== "string" ||
+      (utf8ByteLength(blob.blobId) ?? 0) < 1 ||
       (utf8ByteLength(blob.blobId) ?? Infinity) > limits.maxBlobIdBytes ||
-      blob.blobId <= prior ||
+      (prior !== undefined && compareUtf8(prior, blob.blobId) >= 0) ||
       length === undefined ||
       length > limits.maxOutputBlobBytes
     ) {
@@ -1411,6 +1502,7 @@ function validateHandshake(
   if (
     protocol?.version !== "1.0" ||
     protocol.schema_digest !== schemaDigest ||
+    response.engine_release !== result.host_release ||
     result.release_manifest_digest !== options.expectedReleaseManifestDigest ||
     (previousInstanceId !== undefined &&
       result.endpoint_instance_id === previousInstanceId)
@@ -1463,12 +1555,63 @@ function encodeControl(text: string): ArrayBuffer {
   return copy.buffer;
 }
 
-function decodeControl(buffer: ArrayBuffer): string {
+function decodeControl(buffer: ArrayBuffer, maxDepth: number): string {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    if (controlDepth(text) > maxDepth) {
+      throw new EngineClientDecodeError("MALFORMED_MESSAGE");
+    }
+    return text;
   } catch {
     throw new EngineClientDecodeError("MALFORMED_MESSAGE");
   }
+}
+
+function validateOutgoingControl(
+  text: string,
+  limits: InternalTransportLimits,
+): void {
+  const bytes = utf8ByteLength(text);
+  if (
+    bytes === undefined ||
+    bytes > limits.maxControlBytes ||
+    controlDepth(text) > limits.maxControlDepth
+  ) {
+    throw new EngineClientInputError("LIMIT_EXCEEDED");
+  }
+}
+
+function controlDepth(text: string): number {
+  let depth = 0;
+  let maximum = 0;
+  let inString = false;
+  let escaped = false;
+  for (const character of text) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+    } else if (character === "{" || character === "[") {
+      depth++;
+      maximum = Math.max(maximum, depth);
+    } else if (character === "}" || character === "]") {
+      depth--;
+    }
+  }
+  return maximum;
+}
+
+function inputFault(error: unknown): EngineClientInputError {
+  if (error instanceof EngineClientInputError) return error;
+  return new EngineClientInputError("INVALID_ARGUMENT");
 }
 
 function publicFault(

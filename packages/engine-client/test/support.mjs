@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import {
   decodeCompileRequestEnvelope,
@@ -125,6 +126,10 @@ function decode(buffer) {
   return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
 }
 
+function compareUtf8(left, right) {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
 function promiseBox() {
   let resolve;
   let reject;
@@ -178,7 +183,10 @@ export class StrictFakeTransport {
       if (!(blob.bytes instanceof ArrayBuffer)) {
         throw new Error("strict fake requires owned ArrayBuffers");
       }
-      if (index > 0 && input.blobs[index - 1].blobId >= blob.blobId) {
+      if (
+        index > 0 &&
+        compareUtf8(input.blobs[index - 1].blobId, blob.blobId) >= 0
+      ) {
         throw new Error("strict fake requires sorted unique blobs");
       }
     }
