@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"unicode/utf8"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -23,6 +22,7 @@ const (
 	FailureCompileUnnegotiated       = "engine.compile.unnegotiated_context"
 	FailureCompileBlobSource         = "engine.compile.blob_source_failure"
 	FailureCompileDuplicateBlob      = "engine.compile.duplicate_blob_definition"
+	FailureCompileUnexpectedBlob     = "engine.compile.unexpected_blob_definition"
 	FailureCompileConflictingBlobRef = "engine.compile.conflicting_blob_reference"
 	FailureCompileMissingBlob        = "engine.compile.missing_blob"
 	FailureCompileBlobSizeMismatch   = "engine.compile.blob_size_mismatch"
@@ -31,12 +31,22 @@ const (
 	FailureCompileBlobSink           = "engine.compile.blob_sink_failure"
 )
 
-// BlobDefinition is one request/session attachment. Reader is consumed at
-// most once and is closed on every dispatch path. Implementations must not
-// perform persistent lookup or return mutable storage after Close.
+// OwnedBlob transfers one already-owned Go byte slice into Execute without a
+// redundant transport-layer copy. The source must relinquish all access until
+// Release is called; Release must not mutate Bytes and is invoked exactly once.
+// A nil Bytes slice is a valid transferred zero-byte blob.
+type OwnedBlob struct {
+	Bytes   []byte
+	Release func()
+}
+
+// BlobDefinition is one request-scoped attachment. Exactly one of Reader or
+// Owned must be non-nil. Readers are closed and owned buffers are released on
+// every acquired execution path.
 type BlobDefinition struct {
 	BlobID string
 	Reader io.ReadCloser
+	Owned  *OwnedBlob
 }
 
 // BlobSource enumerates the complete request-scoped attachment table. The
@@ -54,7 +64,8 @@ type OutputBlob struct {
 
 // BlobSink atomically publishes a complete request-scoped output set. It must
 // either take an independent copy of every byte slice and return nil, or make
-// no BlobRef visible and return an error.
+// no BlobRef visible and return an error. A configured transport output cap and
+// context cancellation must fail without making any response BlobRef visible.
 type BlobSink interface {
 	Publish(context.Context, []OutputBlob) error
 }
@@ -80,146 +91,14 @@ func (d *CompileDispatcher) DispatchCompile(
 	source BlobSource,
 	sink BlobSink,
 ) (response engineprotocol.CompileResponseEnvelope, err error) {
-	if d == nil {
-		return response, fmt.Errorf("nil compile dispatcher")
-	}
-	if ctx == nil {
-		return response, fmt.Errorf("nil compile context")
-	}
-	if request.RequestID == "" || !utf8.ValidString(request.RequestID) {
-		return response, fmt.Errorf("compile request ID must be nonempty valid UTF-8")
-	}
-	requestID := request.RequestID
-	engineRelease := protocolcommon.ReleaseVersion(d.compiler.Describe().ReleaseVersion)
-
-	// Caller-owned BlobSource/BlobSink implementations are outside the trusted
-	// mapper. Contain their panics without exposing panic text or stacks.
-	defer func() {
-		if recover() != nil {
-			response, err = compileFailedResponse(request.RequestID, engineRelease, protocolFailure(
-				protocolcommon.ProtocolFailureCategoryInvariant,
-				FailureCompileInvariant,
-				"The Engine could not complete compilation.",
-				false,
-				nil,
-			))
-		}
-	}()
-
-	if ctx.Err() != nil {
-		return compileCancelledResponse(request.RequestID, engineRelease)
-	}
-	encodedRequest, encodeErr := engineprotocol.EncodeCompileRequestEnvelope(request)
-	if encodeErr != nil {
-		return compileFailedResponse(request.RequestID, engineRelease, protocolFailure(
-			protocolcommon.ProtocolFailureCategoryTransport,
-			FailureCompileInvalidRequest,
-			"The compile request is not a valid generated Engine envelope.",
-			false,
-			nil,
-		))
-	}
-	// Decode the canonical generated representation so caller-owned slices,
-	// maps, and pointers cannot be changed by a reentrant BlobSource callback.
-	request, encodeErr = engineprotocol.DecodeCompileRequestEnvelope(encodedRequest)
-	if encodeErr != nil {
-		return compileFailedResponse(requestID, engineRelease, invariantProtocolFailure())
-	}
-	if negotiated == nil ||
-		negotiated.protocolName != ProtocolName ||
-		string(negotiated.protocolVersion) != ProtocolVersion ||
-		string(negotiated.protocolSchemaDigest) != engineprotocol.SchemaDigest ||
-		!negotiated.SupportsOperation(OperationCompile) ||
-		request.Protocol.Name != engineprotocol.EngineProtocolRefNameValue ||
-		request.Protocol.Version != engineprotocol.EngineProtocolRefVersionValue ||
-		request.Operation != engineprotocol.CompileRequestEnvelopeOperationValue {
-		return compileFailedResponse(request.RequestID, engineRelease, protocolFailure(
-			protocolcommon.ProtocolFailureCategoryInvariant,
-			FailureCompileUnnegotiated,
-			"Compilation requires a compatible negotiated Engine context.",
-			false,
-			nil,
-		))
-	}
-	if engineRelease != negotiated.engineRelease {
-		return compileFailedResponse(request.RequestID, engineRelease, protocolFailure(
-			protocolcommon.ProtocolFailureCategoryInvariant,
-			FailureCompileInvariant,
-			"The Engine could not complete compilation.",
-			false,
-			nil,
-		))
-	}
-	if source == nil || sink == nil {
-		return compileFailedResponse(request.RequestID, negotiated.engineRelease, protocolFailure(
-			protocolcommon.ProtocolFailureCategoryInvariant,
-			FailureCompileInvariant,
-			"The Engine could not complete compilation.",
-			false,
-			nil,
-		))
-	}
-
-	mapped, diagnostics, failure := mapCompileInput(ctx, negotiated, request.Payload, source)
-	if ctx.Err() != nil {
-		return compileCancelledResponse(request.RequestID, negotiated.engineRelease)
-	}
-	if failure != nil {
-		if failure.Category == protocolcommon.ProtocolFailureCategoryCancelled {
-			return compileCancelledResponse(request.RequestID, negotiated.engineRelease)
-		}
-		return compileFailedResponse(request.RequestID, negotiated.engineRelease, *failure)
-	}
-	if len(diagnostics) != 0 {
-		return compileRejectedResponse(request.RequestID, negotiated.engineRelease, diagnostics)
-	}
-
-	// This is intentionally the only facade invocation in the dispatcher.
-	compileResult, compileErr := d.compiler.Compile(ctx, mapped)
-	if compileErr != nil {
-		return mapCompileError(request.RequestID, negotiated.engineRelease, compileErr)
-	}
-	// This is intentionally the only Snapshot call in the dispatcher.
-	snapshot := compileResult.Snapshot()
-	if ctx.Err() != nil {
-		return compileCancelledResponse(request.RequestID, negotiated.engineRelease)
-	}
-
-	mappedDiagnostics, mapErr := mapDiagnostics(snapshot.Diagnostics)
-	if mapErr != nil {
-		return compileFailedResponse(request.RequestID, negotiated.engineRelease, invariantProtocolFailure())
-	}
-	if snapshot.Mode == "" {
-		if !isRejectedCompileSnapshot(snapshot) || len(mappedDiagnostics) == 0 {
-			return compileFailedResponse(request.RequestID, negotiated.engineRelease, invariantProtocolFailure())
-		}
-		return compileRejectedResponse(request.RequestID, negotiated.engineRelease, mappedDiagnostics)
-	}
-
-	payload, blobs, mapErr := mapCompileSnapshot(snapshot)
-	if mapErr != nil {
-		return compileFailedResponse(request.RequestID, negotiated.engineRelease, invariantProtocolFailure())
-	}
-	response, err = compileSuccessResponse(request.RequestID, negotiated.engineRelease, payload, mappedDiagnostics)
+	plan, terminal, err := d.PrepareCompile(ctx, negotiated, request)
 	if err != nil {
-		return compileFailedResponse(request.RequestID, negotiated.engineRelease, invariantProtocolFailure())
+		return response, err
 	}
-	if ctx.Err() != nil {
-		return compileCancelledResponse(request.RequestID, negotiated.engineRelease)
+	if terminal != nil {
+		return *terminal, nil
 	}
-	if publishErr := sink.Publish(ctx, cloneOutputBlobs(blobs)); publishErr != nil {
-		if ctx.Err() != nil || errors.Is(publishErr, context.Canceled) || errors.Is(publishErr, context.DeadlineExceeded) {
-			return compileCancelledResponse(request.RequestID, negotiated.engineRelease)
-		}
-		return compileFailedResponse(request.RequestID, negotiated.engineRelease, protocolFailure(
-			protocolcommon.ProtocolFailureCategoryIo,
-			FailureCompileBlobSink,
-			"The compiled output blobs could not be published.",
-			true,
-			nil,
-		))
-	}
-	return response, nil
+	return plan.Execute(ctx, source, sink)
 }
 
 func isRejectedCompileSnapshot(snapshot engine.Snapshot) bool {

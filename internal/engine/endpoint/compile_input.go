@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -25,29 +26,58 @@ type blobUse struct {
 	ref protocolcommon.BlobRef
 }
 
+type preparedCompileInput struct {
+	input        engineprotocol.CompileInput
+	limits       engine.ResourceLimits
+	uses         []blobUse
+	requirements []BlobRequirement
+	budget       CompileAdmissionBudget
+}
+
 func mapCompileInput(ctx context.Context, negotiated *NegotiatedContext, input engineprotocol.CompileInput, source BlobSource) (engine.CompileInput, []semantic.Diagnostic, *protocolcommon.ProtocolFailure) {
-	limits, diagnostics, failure := mapRequestLimits(input.ResourceLimits, negotiated.defaultLimits, negotiated.effectiveMaximums)
+	prepared, diagnostics, failure := prepareCompileInput(negotiated, input)
 	if failure != nil || len(diagnostics) != 0 {
 		return engine.CompileInput{}, diagnostics, failure
+	}
+	owned, lease, failure := acquireBlobUses(ctx, prepared.uses, source)
+	if failure != nil {
+		return engine.CompileInput{}, nil, failure
+	}
+	mapped := mapPreparedCompileInput(prepared, owned)
+	if releaseFailure := lease.Release(ctx); releaseFailure != nil {
+		return engine.CompileInput{}, nil, releaseFailure
+	}
+	return mapped, nil, nil
+}
+
+func prepareCompileInput(negotiated *NegotiatedContext, input engineprotocol.CompileInput) (preparedCompileInput, []semantic.Diagnostic, *protocolcommon.ProtocolFailure) {
+	limits, diagnostics, failure := mapRequestLimits(input.ResourceLimits, negotiated.defaultLimits, negotiated.effectiveMaximums)
+	if failure != nil || len(diagnostics) != 0 {
+		return preparedCompileInput{}, diagnostics, failure
 	}
 
 	duplicateDiagnostics := validateLogicalDuplicates(input)
 	if len(duplicateDiagnostics) != 0 {
-		return engine.CompileInput{}, duplicateDiagnostics, nil
+		return preparedCompileInput{}, duplicateDiagnostics, nil
 	}
 
 	uses := enumerateBlobUses(input)
 	if failure := validateBlobAliases(uses); failure != nil {
-		return engine.CompileInput{}, nil, failure
+		return preparedCompileInput{}, nil, failure
 	}
-	if failure := preflightBlobResources(input, limits); failure != nil {
-		return engine.CompileInput{}, nil, failure
-	}
-	owned, failure := resolveBlobUses(ctx, uses, source)
+	requirements, requiredBytes, failure := buildBlobRequirements(uses)
 	if failure != nil {
-		return engine.CompileInput{}, nil, failure
+		return preparedCompileInput{}, nil, failure
 	}
+	budget, failure := compileAdmissionBudget(input, limits, int64(len(requirements)), requiredBytes)
+	if failure != nil {
+		return preparedCompileInput{}, nil, failure
+	}
+	return preparedCompileInput{input: input, limits: limits, uses: uses, requirements: requirements, budget: budget}, nil, nil
+}
 
+func mapPreparedCompileInput(prepared preparedCompileInput, owned map[string][]byte) engine.CompileInput {
+	input := prepared.input
 	mapped := engine.CompileInput{
 		Mode:              engine.CompileMode(input.Mode),
 		EntryPath:         string(input.EntryPath),
@@ -60,16 +90,16 @@ func mapCompileInput(ctx context.Context, negotiated *NegotiatedContext, input e
 			Installs:      make([]engine.ResolvedPack, len(input.ResolvedDependencies.Installs)),
 		},
 		ReferencedAssets: make([]engine.AssetInput, len(input.ReferencedAssets)),
-		ResourceLimits:   limits,
+		ResourceLimits:   prepared.limits,
 	}
 	if input.RootPackID != nil {
 		mapped.RootPackID = string(*input.RootPackID)
 	}
 	for _, file := range input.ProjectSourceTree {
-		mapped.ProjectSourceTree[string(file.Path)] = bytes.Clone(owned[file.Blob.BlobID])
+		mapped.ProjectSourceTree[string(file.Path)] = owned[file.Blob.BlobID]
 	}
 	for _, file := range input.InstalledPackTree {
-		mapped.InstalledPackTree[string(file.Path)] = bytes.Clone(owned[file.Blob.BlobID])
+		mapped.InstalledPackTree[string(file.Path)] = owned[file.Blob.BlobID]
 	}
 	for index, pack := range input.ResolvedDependencies.Installs {
 		mappedPack := engine.ResolvedPack{
@@ -80,7 +110,7 @@ func mapCompileInput(ctx context.Context, negotiated *NegotiatedContext, input e
 			Path:         pack.Path,
 			Entry:        pack.Entry,
 			ManifestPath: pack.ManifestPath,
-			Manifest:     bytes.Clone(owned[pack.Manifest.BlobID]),
+			Manifest:     owned[pack.Manifest.BlobID],
 			Files:        make([]engine.ResolvedPackFile, len(pack.Files)),
 			Dependencies: make([]engine.ResolvedPackDependency, len(pack.Dependencies)),
 		}
@@ -96,7 +126,7 @@ func mapCompileInput(ctx context.Context, negotiated *NegotiatedContext, input e
 		mappedAsset := engine.AssetInput{
 			Origin:     engine.SourceOriginKind(asset.Origin),
 			Locator:    asset.Locator,
-			Bytes:      bytes.Clone(owned[asset.Blob.BlobID]),
+			Bytes:      owned[asset.Blob.BlobID],
 			Digest:     string(asset.Digest),
 			MediaType:  asset.MediaType,
 			ByteLength: int64(len(owned[asset.Blob.BlobID])),
@@ -106,7 +136,7 @@ func mapCompileInput(ctx context.Context, negotiated *NegotiatedContext, input e
 		}
 		mapped.ReferencedAssets[index] = mappedAsset
 	}
-	return mapped, nil, nil
+	return mapped
 }
 
 func mapRequestLimits(input engineprotocol.ResourceLimits, defaults, maximums engine.ResourceLimits) (engine.ResourceLimits, []semantic.Diagnostic, *protocolcommon.ProtocolFailure) {
@@ -268,56 +298,107 @@ func validateBlobAliases(input []blobUse) *protocolcommon.ProtocolFailure {
 	return nil
 }
 
+func buildBlobRequirements(input []blobUse) ([]BlobRequirement, int64, *protocolcommon.ProtocolFailure) {
+	uses := slices.Clone(input)
+	sort.SliceStable(uses, func(i, j int) bool { return uses[i].ref.BlobID < uses[j].ref.BlobID })
+	requirements := make([]BlobRequirement, 0, len(uses))
+	var requiredBytes int64
+	for index := 0; index < len(uses); {
+		next := index + 1
+		for next < len(uses) && uses[next].ref.BlobID == uses[index].ref.BlobID {
+			if uses[next].ref != uses[index].ref {
+				failure := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileConflictingBlobRef, "One blob identity has conflicting metadata.", false, nil)
+				return nil, 0, &failure
+			}
+			next++
+		}
+		size, failure := blobSize(uses[index].ref)
+		if failure != nil {
+			return nil, 0, failure
+		}
+		if size > math.MaxInt64-requiredBytes {
+			failure := protocolFailure(protocolcommon.ProtocolFailureCategoryResource, FailureCompileBlobOversized, "The required blob set exceeds the supported signed byte range.", false, nil)
+			return nil, 0, &failure
+		}
+		requiredBytes += size
+		requirements = append(requirements, BlobRequirement{Ref: uses[index].ref, References: int64(next - index)})
+		index = next
+	}
+	return requirements, requiredBytes, nil
+}
+
 func preflightBlobResources(input engineprotocol.CompileInput, limits engine.ResourceLimits) *protocolcommon.ProtocolFailure {
+	_, failure := compileAdmissionBudget(input, limits, 0, 0)
+	return failure
+}
+
+func compileAdmissionBudget(input engineprotocol.CompileInput, limits engine.ResourceLimits, requiredBlobCount, requiredBlobBytes int64) (CompileAdmissionBudget, *protocolcommon.ProtocolFailure) {
+	budget := CompileAdmissionBudget{
+		RequiredBlobCount:  requiredBlobCount,
+		RequiredBlobBytes:  requiredBlobBytes,
+		ProjectSourceFiles: int64(len(input.ProjectSourceTree)),
+		InstalledPackFiles: int64(len(input.InstalledPackTree)),
+		Assets:             int64(len(input.ReferencedAssets)),
+		EffectiveCompilerLimits: CompileEffectiveLimits{
+			MaxProjectSourceFiles: limits.MaxProjectSourceFiles,
+			MaxProjectSourceBytes: limits.MaxProjectSourceBytes,
+			MaxPackFiles:          limits.MaxPackFiles, MaxPackBytes: limits.MaxPackBytes,
+			MaxAssets: limits.MaxAssets, MaxAssetBytes: limits.MaxAssetBytes,
+			MaxRasterDimension: limits.MaxRasterDimension, MaxRasterPixels: limits.MaxRasterPixels,
+			MaxDeclarations: limits.MaxDeclarations,
+		},
+	}
 	if int64(len(input.ProjectSourceTree)) > limits.MaxProjectSourceFiles {
-		return resourceFailure(engine.ErrorCodeProjectSourceFilesExceeded, "project_source_files", limits.MaxProjectSourceFiles, int64(len(input.ProjectSourceTree)))
+		return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodeProjectSourceFilesExceeded, "project_source_files", limits.MaxProjectSourceFiles, int64(len(input.ProjectSourceTree)))
 	}
 	if int64(len(input.InstalledPackTree)) > limits.MaxPackFiles {
-		return resourceFailure(engine.ErrorCodePackFilesExceeded, "pack_files", limits.MaxPackFiles, int64(len(input.InstalledPackTree)))
+		return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodePackFilesExceeded, "pack_files", limits.MaxPackFiles, int64(len(input.InstalledPackTree)))
 	}
 	metadataFiles := int64(len(input.ResolvedDependencies.Installs))
 	for _, pack := range input.ResolvedDependencies.Installs {
 		if int64(len(pack.Files)) > math.MaxInt64-metadataFiles {
-			return resourceFailure(engine.ErrorCodePackFilesExceeded, "pack_files", limits.MaxPackFiles, math.MaxInt64)
+			return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodePackFilesExceeded, "pack_files", limits.MaxPackFiles, math.MaxInt64)
 		}
 		metadataFiles += int64(len(pack.Files))
 	}
+	budget.ResolvedPackFiles = metadataFiles
 	if metadataFiles > limits.MaxPackFiles {
-		return resourceFailure(engine.ErrorCodePackFilesExceeded, "pack_files", limits.MaxPackFiles, metadataFiles)
+		return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodePackFilesExceeded, "pack_files", limits.MaxPackFiles, metadataFiles)
 	}
 	if int64(len(input.ReferencedAssets)) > limits.MaxAssets {
-		return resourceFailure(engine.ErrorCodeAssetsExceeded, "assets", limits.MaxAssets, int64(len(input.ReferencedAssets)))
+		return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodeAssetsExceeded, "assets", limits.MaxAssets, int64(len(input.ReferencedAssets)))
 	}
 
 	projectBytes := int64(0)
 	for _, file := range input.ProjectSourceTree {
 		value, failure := blobSize(file.Blob)
 		if failure != nil {
-			return failure
+			return CompileAdmissionBudget{}, failure
 		}
 		if value > limits.MaxProjectSourceBytes-projectBytes {
-			return resourceFailure(engine.ErrorCodeProjectSourceBytesExceeded, "project_source_bytes", limits.MaxProjectSourceBytes, saturatedAdd(projectBytes, value))
+			return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodeProjectSourceBytesExceeded, "project_source_bytes", limits.MaxProjectSourceBytes, saturatedAdd(projectBytes, value))
 		}
 		projectBytes += value
 	}
+	budget.ProjectSourceBytes = projectBytes
 	packBytes := int64(0)
 	for _, file := range input.InstalledPackTree {
 		value, failure := blobSize(file.Blob)
 		if failure != nil {
-			return failure
+			return CompileAdmissionBudget{}, failure
 		}
 		if value > limits.MaxPackBytes-packBytes {
-			return resourceFailure(engine.ErrorCodePackBytesExceeded, "pack_bytes", limits.MaxPackBytes, saturatedAdd(packBytes, value))
+			return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodePackBytesExceeded, "pack_bytes", limits.MaxPackBytes, saturatedAdd(packBytes, value))
 		}
 		packBytes += value
 	}
 	for _, pack := range input.ResolvedDependencies.Installs {
 		value, failure := blobSize(pack.Manifest)
 		if failure != nil {
-			return failure
+			return CompileAdmissionBudget{}, failure
 		}
 		if value > limits.MaxPackBytes-packBytes {
-			return resourceFailure(engine.ErrorCodePackBytesExceeded, "pack_bytes", limits.MaxPackBytes, saturatedAdd(packBytes, value))
+			return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodePackBytesExceeded, "pack_bytes", limits.MaxPackBytes, saturatedAdd(packBytes, value))
 		}
 		packBytes += value
 	}
@@ -325,18 +406,20 @@ func preflightBlobResources(input engineprotocol.CompileInput, limits engine.Res
 	for _, asset := range input.ReferencedAssets {
 		if asset.Digest != asset.Blob.Digest || asset.MediaType != asset.Blob.MediaType {
 			failure := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileConflictingBlobRef, "An asset binding conflicts with its blob metadata.", false, nil)
-			return &failure
+			return CompileAdmissionBudget{}, &failure
 		}
 		value, failure := blobSize(asset.Blob)
 		if failure != nil {
-			return failure
+			return CompileAdmissionBudget{}, failure
 		}
 		if value > limits.MaxAssetBytes-assetBytes {
-			return resourceFailure(engine.ErrorCodeAssetBytesExceeded, "asset_bytes", limits.MaxAssetBytes, saturatedAdd(assetBytes, value))
+			return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodeAssetBytesExceeded, "asset_bytes", limits.MaxAssetBytes, saturatedAdd(assetBytes, value))
 		}
 		assetBytes += value
 	}
-	return nil
+	budget.PackBytes = packBytes
+	budget.AssetBytes = assetBytes
+	return budget, nil
 }
 
 func blobSize(ref protocolcommon.BlobRef) (int64, *protocolcommon.ProtocolFailure) {
@@ -369,27 +452,60 @@ func resourceFailure(code, resource string, limit, observed int64) *protocolcomm
 	return &failure
 }
 
-func resolveBlobUses(ctx context.Context, uses []blobUse, source BlobSource) (owned map[string][]byte, failure *protocolcommon.ProtocolFailure) {
+type blobLease struct {
+	once        sync.Once
+	definitions []BlobDefinition
+	failure     *protocolcommon.ProtocolFailure
+}
+
+func (lease *blobLease) Release(ctx context.Context) *protocolcommon.ProtocolFailure {
+	if lease == nil {
+		return nil
+	}
+	lease.once.Do(func() {
+		for index := range lease.definitions {
+			definition := lease.definitions[index]
+			var releaseErr error
+			func() {
+				defer func() {
+					if recover() != nil {
+						releaseErr = fmt.Errorf("blob release panic")
+					}
+				}()
+				if definition.Reader != nil {
+					releaseErr = definition.Reader.Close()
+				} else if definition.Owned != nil && definition.Owned.Release != nil {
+					definition.Owned.Release()
+				}
+			}()
+			if releaseErr != nil && lease.failure == nil {
+				lease.failure = blobSourceFailure(ctx, releaseErr)
+			}
+		}
+		lease.definitions = nil
+	})
+	return lease.failure
+}
+
+func acquireBlobUses(ctx context.Context, uses []blobUse, source BlobSource) (owned map[string][]byte, lease *blobLease, failure *protocolcommon.ProtocolFailure) {
 	definitions, err := source.Definitions(ctx)
 	if err != nil {
-		return nil, blobSourceFailure(ctx, err)
+		return nil, nil, blobSourceFailure(ctx, err)
 	}
+	lease = &blobLease{definitions: definitions}
 	defer func() {
-		for index := range definitions {
-			if definitions[index].Reader != nil {
-				if closeErr := definitions[index].Reader.Close(); closeErr != nil && failure == nil {
-					failure = blobSourceFailure(ctx, closeErr)
-					owned = nil
-				}
-			}
+		if failure != nil {
+			_ = lease.Release(ctx)
+			lease = nil
+			owned = nil
 		}
 	}()
 
 	definitionIDs := make([]string, len(definitions))
 	for index, definition := range definitions {
-		if definition.BlobID == "" || definition.Reader == nil {
+		if definition.BlobID == "" || (definition.Reader == nil) == (definition.Owned == nil) {
 			result := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileBlobSource, "The request blob source is invalid.", false, nil)
-			return nil, &result
+			return nil, lease, &result
 		}
 		definitionIDs[index] = definition.BlobID
 	}
@@ -397,48 +513,74 @@ func resolveBlobUses(ctx context.Context, uses []blobUse, source BlobSource) (ow
 	for index := 1; index < len(definitionIDs); index++ {
 		if definitionIDs[index] == definitionIDs[index-1] {
 			result := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileDuplicateBlob, "The request contains duplicate blob definitions.", false, nil)
-			return nil, &result
+			return nil, lease, &result
 		}
 	}
 
-	// Maps are constructed only after duplicate definitions and conflicting
-	// reference aliases have been fully enumerated.
-	byID := make(map[string]io.Reader, len(definitions))
-	for _, definition := range definitions {
-		byID[definition.BlobID] = definition.Reader
-	}
 	uniqueUses := slices.Clone(uses)
 	sort.SliceStable(uniqueUses, func(i, j int) bool { return uniqueUses[i].ref.BlobID < uniqueUses[j].ref.BlobID })
 	uniqueUses = slices.CompactFunc(uniqueUses, func(a, b blobUse) bool { return a.ref.BlobID == b.ref.BlobID })
+	for definitionIndex, useIndex := 0, 0; definitionIndex < len(definitionIDs) || useIndex < len(uniqueUses); {
+		if definitionIndex == len(definitionIDs) || useIndex < len(uniqueUses) && uniqueUses[useIndex].ref.BlobID < definitionIDs[definitionIndex] {
+			result := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileMissingBlob, "A required request blob is missing.", false, nil)
+			return nil, lease, &result
+		}
+		if useIndex == len(uniqueUses) || definitionIDs[definitionIndex] < uniqueUses[useIndex].ref.BlobID {
+			result := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileUnexpectedBlob, "The request contains an unreferenced blob definition.", false, nil)
+			return nil, lease, &result
+		}
+		definitionIndex++
+		useIndex++
+	}
+
+	// Maps are constructed only after all duplicate, missing, and unreferenced
+	// definitions and conflicting reference aliases have been enumerated.
+	byID := make(map[string]BlobDefinition, len(definitions))
+	for _, definition := range definitions {
+		byID[definition.BlobID] = definition
+	}
 	owned = make(map[string][]byte, len(uniqueUses))
 	for _, use := range uniqueUses {
 		if ctx.Err() != nil {
-			return nil, cancelledProtocolFailure()
+			return nil, lease, cancelledProtocolFailure()
 		}
-		reader, found := byID[use.ref.BlobID]
-		if !found {
-			result := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileMissingBlob, "A required request blob is missing.", false, nil)
-			return nil, &result
-		}
+		definition := byID[use.ref.BlobID]
 		expected, sizeFailure := blobSize(use.ref)
 		if sizeFailure != nil {
-			return nil, sizeFailure
+			return nil, lease, sizeFailure
 		}
-		value, readErr := readBounded(ctx, reader, expected)
-		if readErr != nil {
-			return nil, blobSourceFailure(ctx, readErr)
+		var value []byte
+		if definition.Owned != nil {
+			value = definition.Owned.Bytes
+		} else {
+			var readErr error
+			value, readErr = readBounded(ctx, definition.Reader, expected)
+			if readErr != nil {
+				return nil, lease, blobSourceFailure(ctx, readErr)
+			}
 		}
 		if int64(len(value)) != expected {
 			result := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileBlobSizeMismatch, "A request blob does not match its declared size.", false, nil)
-			return nil, &result
+			return nil, lease, &result
 		}
 		digest := sha256.Sum256(value)
 		actualDigest := "sha256:" + hex.EncodeToString(digest[:])
 		if actualDigest != string(use.ref.Digest) {
 			result := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileBlobDigestMismatch, "A request blob does not match its declared digest.", false, nil)
-			return nil, &result
+			return nil, lease, &result
 		}
 		owned[use.ref.BlobID] = value
+	}
+	return owned, lease, nil
+}
+
+func resolveBlobUses(ctx context.Context, uses []blobUse, source BlobSource) (map[string][]byte, *protocolcommon.ProtocolFailure) {
+	owned, lease, failure := acquireBlobUses(ctx, uses, source)
+	if failure != nil {
+		return nil, failure
+	}
+	if releaseFailure := lease.Release(ctx); releaseFailure != nil {
+		return nil, releaseFailure
 	}
 	return owned, nil
 }
