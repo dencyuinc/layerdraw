@@ -337,6 +337,14 @@
     ,{"name": "view_recipe_persistent_lifetime", "type": "ViewRecipeBlobRef", "input": "{\"blob_id\":\"view\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.view-recipe.v1+json\",\"size\":\"1\"}"}
     ,{"name": "export_recipe_session_lifetime", "type": "ExportRecipeBlobRef", "input": "{\"blob_id\":\"export\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"session\",\"media_type\":\"application/vnd.layerdraw.export-recipe.v1+json\",\"size\":\"1\"}"}
     ,{"name": "export_recipe_persistent_lifetime", "type": "ExportRecipeBlobRef", "input": "{\"blob_id\":\"export\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.export-recipe.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "normalized_project_artifact_session_lifetime", "type": "NormalizedProjectArtifactBlobRef", "input": "{\"blob_id\":\"project-artifact\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"session\",\"media_type\":\"application/vnd.layerdraw.project.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "normalized_project_artifact_persistent_lifetime", "type": "NormalizedProjectArtifactBlobRef", "input": "{\"blob_id\":\"project-artifact\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.project.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "normalized_project_canonical_session_lifetime", "type": "NormalizedProjectCanonicalBlobRef", "input": "{\"blob_id\":\"project-canonical\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"session\",\"media_type\":\"application/vnd.layerdraw.normalized-project.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "normalized_project_canonical_persistent_lifetime", "type": "NormalizedProjectCanonicalBlobRef", "input": "{\"blob_id\":\"project-canonical\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.normalized-project.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "normalized_pack_artifact_session_lifetime", "type": "NormalizedPackArtifactBlobRef", "input": "{\"blob_id\":\"pack-artifact\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"session\",\"media_type\":\"application/vnd.layerdraw.pack.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "normalized_pack_artifact_persistent_lifetime", "type": "NormalizedPackArtifactBlobRef", "input": "{\"blob_id\":\"pack-artifact\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.pack.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "normalized_pack_canonical_session_lifetime", "type": "NormalizedPackCanonicalBlobRef", "input": "{\"blob_id\":\"pack-canonical\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"session\",\"media_type\":\"application/vnd.layerdraw.normalized-pack.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "normalized_pack_canonical_persistent_lifetime", "type": "NormalizedPackCanonicalBlobRef", "input": "{\"blob_id\":\"pack-canonical\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.normalized-pack.v1+json\",\"size\":\"1\"}"}
   ],
   "mutation_cases": [
     {"name": "success_with_valid_failure", "fixture": "compile-success.json", "mutation": "add_valid_failure"},
@@ -348,7 +356,15 @@
     {"name": "project_without_graph_hash", "fixture": "compile-success.json", "mutation": "remove_project_graph"},
     {"name": "pack_with_graph_hash", "fixture": "compile-success-pack.json", "mutation": "add_pack_graph"},
     {"name": "pack_with_search_documents", "fixture": "compile-success-pack.json", "mutation": "add_pack_search_document"},
-    {"name": "project_with_wrong_artifact_media_type", "fixture": "compile-success.json", "mutation": "corrupt_project_media_type"}
+    {"name": "project_with_wrong_artifact_media_type", "fixture": "compile-success.json", "mutation": "corrupt_project_media_type"},
+    {"name": "project_artifact_with_session_lifetime", "fixture": "compile-success.json", "mutation": "set_project_artifact_session_lifetime"},
+    {"name": "project_artifact_with_persistent_lifetime", "fixture": "compile-success.json", "mutation": "set_project_artifact_persistent_lifetime"},
+    {"name": "project_canonical_with_session_lifetime", "fixture": "compile-success.json", "mutation": "set_project_canonical_session_lifetime"},
+    {"name": "project_canonical_with_persistent_lifetime", "fixture": "compile-success.json", "mutation": "set_project_canonical_persistent_lifetime"},
+    {"name": "pack_artifact_with_session_lifetime", "fixture": "compile-success-pack.json", "mutation": "set_pack_artifact_session_lifetime"},
+    {"name": "pack_artifact_with_persistent_lifetime", "fixture": "compile-success-pack.json", "mutation": "set_pack_artifact_persistent_lifetime"},
+    {"name": "pack_canonical_with_session_lifetime", "fixture": "compile-success-pack.json", "mutation": "set_pack_canonical_session_lifetime"},
+    {"name": "pack_canonical_with_persistent_lifetime", "fixture": "compile-success-pack.json", "mutation": "set_pack_canonical_persistent_lifetime"}
   ],
   "request_mutation_cases": [
     {"name": "project_with_root_pack_id", "fixture": "compile-request.json", "mutation": "add_project_root"},

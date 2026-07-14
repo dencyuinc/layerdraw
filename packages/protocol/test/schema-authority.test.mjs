@@ -154,6 +154,25 @@ async function authority() {
   return (id, name) => ajv.compile({$ref: `${id}#/$defs/${name}`});
 }
 
+test("normalized schema and document authority require request lifetime and the exact byte profile", async () => {
+  const engine = await readJSON("engine-protocol/v1.schema.json");
+  const readme = await readFile(new URL("README.md", schemaRoot), "utf8");
+  const descriptions = {
+    NormalizedPackArtifactBlobRef: "The public normalized Pack artifact bytes contain exactly the same JSON value as the canonical normalized Pack document; the canonical RFC 8785 UTF-8 bytes have no trailing LF, and these public bytes are exactly those canonical bytes followed by one LF.",
+    NormalizedPackCanonicalBlobRef: "The canonical normalized Pack document bytes: RFC 8785 UTF-8 with no trailing LF.",
+    NormalizedProjectArtifactBlobRef: "The public normalized Project artifact bytes contain exactly the same JSON value as the canonical normalized Project document; the canonical RFC 8785 UTF-8 bytes have no trailing LF, and these public bytes are exactly those canonical bytes followed by one LF.",
+    NormalizedProjectCanonicalBlobRef: "The canonical normalized Project document bytes: RFC 8785 UTF-8 with no trailing LF.",
+  };
+  for (const [name, description] of Object.entries(descriptions)) {
+    assert.equal(engine.$defs[name].description, description);
+    assert.deepEqual(engine.$defs[name].properties.lifetime, {type: "string", const: "request"});
+  }
+  for (const authorityText of [JSON.stringify(engine), readme]) {
+    assert.doesNotMatch(authorityText, /\b(?:may be identical|may equal canonical)\b/i);
+  }
+  assert.match(readme, /Canonical and public artifact\s+roles contain exactly the same JSON value\. Canonical bytes are RFC 8785 UTF-8\s+with no trailing LF; public artifact bytes are exactly those canonical bytes\s+followed by one LF\./);
+});
+
 test("published dialect requires format assertion and every codec-critical format agrees with authority vectors", async (context) => {
   const meta = await readJSON("meta/layerdraw-protocol-schema-v1.json");
   assert.equal(meta.$vocabulary["https://json-schema.org/draft/2020-12/vocab/format-assertion"], true);

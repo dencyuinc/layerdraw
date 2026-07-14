@@ -179,7 +179,9 @@ nonempty canonical selector.
 Normalized Project/Pack canonical bytes, public artifact bytes, and each
 Query/View/Export recipe document use distinct versioned media types declared
 by their role-specific generated BlobRef types. Canonical and public artifact
-bytes may be identical, but their role and media type remain distinct. Recipe
+roles contain exactly the same JSON value. Canonical bytes are RFC 8785 UTF-8
+with no trailing LF; public artifact bytes are exactly those canonical bytes
+followed by one LF. Their role and media type remain distinct. Recipe
 blobs are the canonical JSON representation of the corresponding Language 1
 normalized Query, View, or Export recipe defined by the normative detailed
 LDL specification; ordinary serialization of compiler-internal Go recipe

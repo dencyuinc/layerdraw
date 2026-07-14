@@ -564,7 +564,7 @@ func TestSharedRecursiveValueLimits(t *testing.T) {
 	}
 }
 
-func TestSharedOutcomeAndUnionMutationCorpus(t *testing.T) {
+func TestSharedResponseEnvelopeMutationsRejectBeforeBlobResolution(t *testing.T) {
 	t.Parallel()
 	corpus := readSharedConformanceCorpus(t)
 	for _, test := range corpus.MutationCases {
@@ -608,6 +608,22 @@ func TestSharedOutcomeAndUnionMutationCorpus(t *testing.T) {
 				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["search_documents"] = success["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["search_documents"]
 			case "corrupt_project_media_type":
 				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["project"].(map[string]any)["artifact_json"].(map[string]any)["media_type"] = "application/json"
+			case "set_project_artifact_session_lifetime":
+				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["project"].(map[string]any)["artifact_json"].(map[string]any)["lifetime"] = "session"
+			case "set_project_artifact_persistent_lifetime":
+				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["project"].(map[string]any)["artifact_json"].(map[string]any)["lifetime"] = "persistent"
+			case "set_project_canonical_session_lifetime":
+				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["project"].(map[string]any)["canonical_json"].(map[string]any)["lifetime"] = "session"
+			case "set_project_canonical_persistent_lifetime":
+				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["project"].(map[string]any)["canonical_json"].(map[string]any)["lifetime"] = "persistent"
+			case "set_pack_artifact_session_lifetime":
+				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["pack"].(map[string]any)["artifact_json"].(map[string]any)["lifetime"] = "session"
+			case "set_pack_artifact_persistent_lifetime":
+				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["pack"].(map[string]any)["artifact_json"].(map[string]any)["lifetime"] = "persistent"
+			case "set_pack_canonical_session_lifetime":
+				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["pack"].(map[string]any)["canonical_json"].(map[string]any)["lifetime"] = "session"
+			case "set_pack_canonical_persistent_lifetime":
+				value["payload"].(map[string]any)["normalized_artifact"].(map[string]any)["pack"].(map[string]any)["canonical_json"].(map[string]any)["lifetime"] = "persistent"
 			default:
 				t.Fatalf("unknown mutation %q", test.Mutation)
 			}
@@ -820,6 +836,30 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return engineprotocol.EncodeExportRecipeBlobRef(value)
+	case "NormalizedPackArtifactBlobRef":
+		value, err := engineprotocol.DecodeNormalizedPackArtifactBlobRef(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeNormalizedPackArtifactBlobRef(value)
+	case "NormalizedPackCanonicalBlobRef":
+		value, err := engineprotocol.DecodeNormalizedPackCanonicalBlobRef(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeNormalizedPackCanonicalBlobRef(value)
+	case "NormalizedProjectArtifactBlobRef":
+		value, err := engineprotocol.DecodeNormalizedProjectArtifactBlobRef(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeNormalizedProjectArtifactBlobRef(value)
+	case "NormalizedProjectCanonicalBlobRef":
+		value, err := engineprotocol.DecodeNormalizedProjectCanonicalBlobRef(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeNormalizedProjectCanonicalBlobRef(value)
 	case "QueryRecipeBlobRef":
 		value, err := engineprotocol.DecodeQueryRecipeBlobRef(input)
 		if err != nil {

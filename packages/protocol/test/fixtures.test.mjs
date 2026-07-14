@@ -10,6 +10,10 @@ import {
   decodeCanonicalSourcePath,
   decodeEffectiveResourceLimits,
   decodeExportRecipeBlobRef,
+  decodeNormalizedPackArtifactBlobRef,
+  decodeNormalizedPackCanonicalBlobRef,
+  decodeNormalizedProjectArtifactBlobRef,
+  decodeNormalizedProjectCanonicalBlobRef,
   decodeQueryRecipeBlobRef,
   decodeViewRecipeBlobRef,
   decodeHandshakeResponseEnvelope,
@@ -18,6 +22,10 @@ import {
   encodeCanonicalSourcePath,
   encodeEffectiveResourceLimits,
   encodeExportRecipeBlobRef,
+  encodeNormalizedPackArtifactBlobRef,
+  encodeNormalizedPackCanonicalBlobRef,
+  encodeNormalizedProjectArtifactBlobRef,
+  encodeNormalizedProjectCanonicalBlobRef,
   encodeQueryRecipeBlobRef,
   encodeViewRecipeBlobRef,
   encodeHandshakeResponseEnvelope,
@@ -234,6 +242,10 @@ const sharedCodecs = {
   JsonValue: [decodeJsonValue, encodeJsonValue],
   HandshakeRequest: [decodeHandshakeRequest, encodeHandshakeRequest],
   ManifestETag: [decodeManifestETag, encodeManifestETag],
+  NormalizedPackArtifactBlobRef: [decodeNormalizedPackArtifactBlobRef, encodeNormalizedPackArtifactBlobRef],
+  NormalizedPackCanonicalBlobRef: [decodeNormalizedPackCanonicalBlobRef, encodeNormalizedPackCanonicalBlobRef],
+  NormalizedProjectArtifactBlobRef: [decodeNormalizedProjectArtifactBlobRef, encodeNormalizedProjectArtifactBlobRef],
+  NormalizedProjectCanonicalBlobRef: [decodeNormalizedProjectCanonicalBlobRef, encodeNormalizedProjectCanonicalBlobRef],
   OperationCapability: [decodeOperationCapability, encodeOperationCapability],
   ProtocolOffer: [decodeProtocolOffer, encodeProtocolOffer],
   ProtocolVersion: [decodeProtocolVersion, encodeProtocolVersion],
@@ -356,7 +368,7 @@ test("canonical byte limit uses emitted bytes for escaped characters and multiby
   });
 });
 
-test("shared outcome and tagged-union mutations are isolated", async (context) => {
+test("shared response-envelope mutations are rejected before blob resolution", async (context) => {
   const corpus = await readCorpus();
   for (const vector of corpus.mutation_cases) await context.test(vector.name, async () => {
     const value = await readFixture(vector.fixture);
@@ -396,6 +408,30 @@ test("shared outcome and tagged-union mutations are isolated", async (context) =
       }
       case "corrupt_project_media_type":
         value.payload.normalized_artifact.project.artifact_json.media_type = "application/json";
+        break;
+      case "set_project_artifact_session_lifetime":
+        value.payload.normalized_artifact.project.artifact_json.lifetime = "session";
+        break;
+      case "set_project_artifact_persistent_lifetime":
+        value.payload.normalized_artifact.project.artifact_json.lifetime = "persistent";
+        break;
+      case "set_project_canonical_session_lifetime":
+        value.payload.normalized_artifact.project.canonical_json.lifetime = "session";
+        break;
+      case "set_project_canonical_persistent_lifetime":
+        value.payload.normalized_artifact.project.canonical_json.lifetime = "persistent";
+        break;
+      case "set_pack_artifact_session_lifetime":
+        value.payload.normalized_artifact.pack.artifact_json.lifetime = "session";
+        break;
+      case "set_pack_artifact_persistent_lifetime":
+        value.payload.normalized_artifact.pack.artifact_json.lifetime = "persistent";
+        break;
+      case "set_pack_canonical_session_lifetime":
+        value.payload.normalized_artifact.pack.canonical_json.lifetime = "session";
+        break;
+      case "set_pack_canonical_persistent_lifetime":
+        value.payload.normalized_artifact.pack.canonical_json.lifetime = "persistent";
         break;
       default:
         assert.fail(`unknown mutation ${vector.mutation}`);

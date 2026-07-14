@@ -92,11 +92,11 @@
     },
     "NormalizedPackArtifactBlobRef": {
       "type": "object",
-      "description": "The public normalized Pack artifact bytes; they may equal canonical bytes, but retain their distinct role and media type.",
+      "description": "The public normalized Pack artifact bytes contain exactly the same JSON value as the canonical normalized Pack document; the canonical RFC 8785 UTF-8 bytes have no trailing LF, and these public bytes are exactly those canonical bytes followed by one LF.",
       "properties": {
         "blob_id": {"type": "string", "minLength": 1},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "lifetime": {"type": "string", "const": "request"},
         "media_type": {"type": "string", "const": "application/vnd.layerdraw.pack.v1+json"},
         "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },
@@ -105,11 +105,11 @@
     },
     "NormalizedPackCanonicalBlobRef": {
       "type": "object",
-      "description": "The canonical normalized Pack document bytes.",
+      "description": "The canonical normalized Pack document bytes: RFC 8785 UTF-8 with no trailing LF.",
       "properties": {
         "blob_id": {"type": "string", "minLength": 1},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "lifetime": {"type": "string", "const": "request"},
         "media_type": {"type": "string", "const": "application/vnd.layerdraw.normalized-pack.v1+json"},
         "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },
@@ -118,11 +118,11 @@
     },
     "NormalizedProjectArtifactBlobRef": {
       "type": "object",
-      "description": "The public normalized Project artifact bytes; they may equal canonical bytes, but retain their distinct role and media type.",
+      "description": "The public normalized Project artifact bytes contain exactly the same JSON value as the canonical normalized Project document; the canonical RFC 8785 UTF-8 bytes have no trailing LF, and these public bytes are exactly those canonical bytes followed by one LF.",
       "properties": {
         "blob_id": {"type": "string", "minLength": 1},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "lifetime": {"type": "string", "const": "request"},
         "media_type": {"type": "string", "const": "application/vnd.layerdraw.project.v1+json"},
         "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },
@@ -131,11 +131,11 @@
     },
     "NormalizedProjectCanonicalBlobRef": {
       "type": "object",
-      "description": "The canonical normalized Project document bytes.",
+      "description": "The canonical normalized Project document bytes: RFC 8785 UTF-8 with no trailing LF.",
       "properties": {
         "blob_id": {"type": "string", "minLength": 1},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "lifetime": {"type": "string", "const": "request"},
         "media_type": {"type": "string", "const": "application/vnd.layerdraw.normalized-project.v1+json"},
         "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },
