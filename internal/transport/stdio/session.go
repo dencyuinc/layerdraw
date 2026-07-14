@@ -25,6 +25,8 @@ const (
 	DefaultMaxConcurrentDispatch  = 4
 	DefaultMaxReservedBlobBytes   = 576 << 20
 	DefaultMaxOutputBlobBytes     = 512 << 20
+	DefaultMaxUploadBlobCount     = 65_536
+	DefaultMaxUploadMetadataBytes = 8 << 20
 )
 
 // SessionLimits bounds every connection-owned queue and byte reservoir.
@@ -34,6 +36,8 @@ type SessionLimits struct {
 	MaxConcurrentDispatch  int
 	MaxReservedBlobBytes   uint64
 	MaxOutputBlobBytes     uint64
+	MaxUploadBlobCount     int
+	MaxUploadMetadataBytes uint64
 }
 
 func DefaultSessionLimits() SessionLimits {
@@ -43,6 +47,8 @@ func DefaultSessionLimits() SessionLimits {
 		MaxConcurrentDispatch:  DefaultMaxConcurrentDispatch,
 		MaxReservedBlobBytes:   DefaultMaxReservedBlobBytes,
 		MaxOutputBlobBytes:     DefaultMaxOutputBlobBytes,
+		MaxUploadBlobCount:     DefaultMaxUploadBlobCount,
+		MaxUploadMetadataBytes: DefaultMaxUploadMetadataBytes,
 	}
 }
 
@@ -81,6 +87,72 @@ const (
 	phaseTerminal
 )
 
+type terminalKind uint8
+
+const (
+	terminalUndecided terminalKind = iota
+	terminalExecution
+	terminalCancellation
+	terminalTransport
+)
+
+// terminalArbiter is the stream's single linearization point. Execute result
+// publication, cancellation/deadline, and correlated framing failures all
+// compete here; the first terminal kind is immutable.
+type terminalArbiter struct {
+	mu       sync.Mutex
+	kind     terminalKind
+	response engineprotocol.CompileResponseEnvelope
+}
+
+func (arbiter *terminalArbiter) claimExecution() bool {
+	if arbiter == nil {
+		return false
+	}
+	arbiter.mu.Lock()
+	defer arbiter.mu.Unlock()
+	if arbiter.kind == terminalUndecided {
+		arbiter.kind = terminalExecution
+	}
+	return arbiter.kind == terminalExecution
+}
+
+func (arbiter *terminalArbiter) claimCancellation() bool {
+	if arbiter == nil {
+		return false
+	}
+	arbiter.mu.Lock()
+	defer arbiter.mu.Unlock()
+	if arbiter.kind != terminalUndecided {
+		return false
+	}
+	arbiter.kind = terminalCancellation
+	return true
+}
+
+func (arbiter *terminalArbiter) claimTransport(response engineprotocol.CompileResponseEnvelope) bool {
+	if arbiter == nil {
+		return false
+	}
+	arbiter.mu.Lock()
+	defer arbiter.mu.Unlock()
+	if arbiter.kind != terminalUndecided {
+		return false
+	}
+	arbiter.kind = terminalTransport
+	arbiter.response = response
+	return true
+}
+
+func (arbiter *terminalArbiter) snapshot() (terminalKind, engineprotocol.CompileResponseEnvelope) {
+	if arbiter == nil {
+		return terminalUndecided, engineprotocol.CompileResponseEnvelope{}
+	}
+	arbiter.mu.Lock()
+	defer arbiter.mu.Unlock()
+	return arbiter.kind, arbiter.response
+}
+
 type requestStream struct {
 	id           uint64
 	requestID    string
@@ -92,12 +164,11 @@ type requestStream struct {
 	validator    *BundleValidator
 	blobs        map[string][]byte
 	expected     map[string]uint64
-	blobOrder    []string
+	requirements []endpoint.BlobRequirement
 	received     uint64
 	reserved     uint64
 	suppress     bool
-	cancelling   bool
-	terminal     *engineprotocol.CompileResponseEnvelope
+	terminal     terminalArbiter
 }
 
 type readResult struct {
@@ -176,7 +247,8 @@ func normalizeSessionLimits(input SessionLimits) (SessionLimits, bool) {
 	}
 	if input.MaxActiveStreams <= 0 || input.MaxPendingControlBytes == 0 ||
 		input.MaxConcurrentDispatch <= 0 || input.MaxReservedBlobBytes == 0 ||
-		input.MaxOutputBlobBytes == 0 || input.MaxConcurrentDispatch > input.MaxActiveStreams {
+		input.MaxOutputBlobBytes == 0 || input.MaxUploadBlobCount <= 0 ||
+		input.MaxUploadMetadataBytes == 0 || input.MaxConcurrentDispatch > input.MaxActiveStreams {
 		return SessionLimits{}, false
 	}
 	return input, true
@@ -265,11 +337,8 @@ func (s *session) accept(frame Frame) error {
 			return s.cancelStream(stream, true)
 		}
 		return nil
-	case KindStreamError:
-		if stream := s.streams[frame.StreamID]; stream != nil && stream.phase != phaseTerminal {
-			return s.failCorrelatedStream(stream)
-		}
-		return nil
+	case KindRequestReady, KindResponseControl, KindStreamError:
+		return s.acceptUnexpectedDirection(frame.StreamID)
 	default:
 		if frame.StreamID == 0 {
 			return &SessionError{Code: SessionErrorFraming}
@@ -288,6 +357,22 @@ func (s *session) accept(frame Frame) error {
 	}
 }
 
+func (s *session) acceptUnexpectedDirection(streamID uint64) error {
+	if stream := s.streams[streamID]; stream != nil {
+		if stream.phase == phaseTerminal {
+			return &SessionError{Code: SessionErrorFraming}
+		}
+		return s.failCorrelatedStream(stream)
+	}
+	if streamID <= s.highWater {
+		// An engine-to-client frame replayed by the client cannot be assigned a
+		// second response bundle without violating sequence authority.
+		return &SessionError{Code: SessionErrorFraming}
+	}
+	s.highWater = streamID
+	return s.writeStreamError(streamID, "unexpected_direction")
+}
+
 func (s *session) recoverableFrameError(frame Frame) error {
 	if frame.StreamID == 0 {
 		return &SessionError{Code: SessionErrorFraming}
@@ -298,6 +383,9 @@ func (s *session) recoverableFrameError(frame Frame) error {
 		}
 		s.highWater = frame.StreamID
 		return s.writeStreamError(frame.StreamID, "invalid_frame")
+	}
+	if frame.Kind == KindRequestReady || frame.Kind == KindResponseControl || frame.Kind == KindStreamError {
+		return s.acceptUnexpectedDirection(frame.StreamID)
 	}
 	if stream := s.streams[frame.StreamID]; stream != nil && stream.phase != phaseTerminal {
 		return s.failCorrelatedStream(stream)
@@ -406,9 +494,34 @@ func (s *session) acceptCompile(frame Frame) error {
 		}
 		return s.writeCompile(frame.StreamID, response, nil)
 	}
+	plan, terminal, err := s.config.Dispatcher.PrepareCompile(ctx, s.negotiated, request)
+	if err != nil {
+		cancel()
+		return s.writeStreamError(frame.StreamID, "endpoint_invariant")
+	}
+	if terminal != nil {
+		cancel()
+		return s.writeCompile(frame.StreamID, *terminal, nil)
+	}
+	requirements := plan.BlobRequirements()
+	budget := plan.AdmissionBudget()
+	metadataBytes, metadataOK := uploadMetadataBytes(requirements, s.limits.MaxUploadMetadataBytes)
+	if budget.RequiredBlobBytes < 0 || budget.RequiredBlobCount != int64(len(requirements)) ||
+		uint64(budget.RequiredBlobBytes) > s.limits.MaxReservedBlobBytes ||
+		len(requirements) > s.limits.MaxUploadBlobCount || !metadataOK ||
+		metadataBytes > s.limits.MaxUploadMetadataBytes {
+		plan.Abort()
+		cancel()
+		response, responseErr := s.config.Dispatcher.CompileTransportResponse(request.RequestID, endpoint.CompileTransportResourceLimit)
+		if responseErr != nil {
+			return &SessionError{Code: SessionErrorInvariant}
+		}
+		return s.writeCompile(frame.StreamID, response, nil)
+	}
 	stream := &requestStream{
 		id: frame.StreamID, requestID: request.RequestID, controlBytes: controlBytes,
-		ctx: ctx, cancel: cancel, phase: phaseQueued,
+		plan: plan, requirements: requirements, ctx: ctx, cancel: cancel, phase: phaseQueued,
+		reserved: uint64(budget.RequiredBlobBytes),
 	}
 	s.streams[frame.StreamID] = stream
 	s.requestIDs[request.RequestID] = stream
@@ -421,32 +534,20 @@ func (s *session) acceptCompile(frame Frame) error {
 		case <-s.root.Done():
 		}
 	}(stream.id, ctx.Done())
-
-	plan, terminal, err := s.config.Dispatcher.PrepareCompile(ctx, s.negotiated, request)
-	if err != nil {
-		s.releaseStream(stream)
-		return s.writeStreamError(frame.StreamID, "endpoint_invariant")
-	}
-	if terminal != nil {
-		stream.phase = phaseTerminal
-		s.releaseStream(stream)
-		return s.writeCompile(frame.StreamID, *terminal, nil)
-	}
-	stream.plan = plan
-	budget := plan.AdmissionBudget()
-	if budget.RequiredBlobBytes < 0 || uint64(budget.RequiredBlobBytes) > s.limits.MaxReservedBlobBytes {
-		plan.Abort()
-		response, responseErr := s.config.Dispatcher.CompileTransportResponse(request.RequestID, endpoint.CompileTransportResourceLimit)
-		if responseErr != nil {
-			return &SessionError{Code: SessionErrorInvariant}
-		}
-		stream.phase = phaseTerminal
-		s.releaseStream(stream)
-		return s.writeCompile(frame.StreamID, response, nil)
-	}
-	stream.reserved = uint64(budget.RequiredBlobBytes)
 	s.queue = append(s.queue, stream)
 	return s.admit()
+}
+
+func uploadMetadataBytes(requirements []endpoint.BlobRequirement, maximum uint64) (uint64, bool) {
+	var total uint64
+	for _, requirement := range requirements {
+		length := uint64(len(requirement.Ref.BlobID))
+		if total > math.MaxUint64-length || total+length > maximum {
+			return 0, false
+		}
+		total += length
+	}
+	return total, true
 }
 
 func (s *session) admit() error {
@@ -462,7 +563,7 @@ func (s *session) admit() error {
 	stream.validator = NewBundleValidator()
 	stream.blobs = make(map[string][]byte)
 	stream.expected = make(map[string]uint64)
-	for _, requirement := range stream.plan.BlobRequirements() {
+	for _, requirement := range stream.requirements {
 		size, err := strconv.ParseUint(string(requirement.Ref.Size), 10, 64)
 		if err != nil || size > uint64(^uint(0)>>1) {
 			return &SessionError{Code: SessionErrorInvariant}
@@ -493,26 +594,34 @@ func (s *session) acceptUpload(frame Frame) error {
 	if stream != s.uploader || stream.phase != phaseUploading {
 		return s.failCorrelatedStream(stream)
 	}
+	var name string
+	var current []byte
+	var length uint64
+	if frame.Kind == KindBlobChunk {
+		length = uint64(len(frame.Payload))
+		if stream.received > math.MaxUint64-length || stream.received+length > stream.reserved {
+			return s.failCorrelatedStream(stream)
+		}
+		name = string(frame.Name)
+		expected, known := stream.expected[name]
+		if !known {
+			// Requirement membership is checked before BundleValidator can retain
+			// the incoming name. Unknown zero-byte blobs therefore cannot consume
+			// count or metadata state.
+			return s.failCorrelatedStream(stream)
+		}
+		current = stream.blobs[name]
+		if length > expected || uint64(len(current)) > expected-length {
+			return s.failCorrelatedStream(stream)
+		}
+	}
 	if err := stream.validator.Accept(frame); err != nil {
 		return s.failCorrelatedStream(stream)
 	}
 	if frame.Kind == KindBlobChunk {
-		length := uint64(len(frame.Payload))
-		if stream.received > math.MaxUint64-length || stream.received+length > stream.reserved {
-			return s.failCorrelatedStream(stream)
-		}
-		name := string(frame.Name)
-		if _, found := stream.blobs[name]; !found {
-			stream.blobOrder = append(stream.blobOrder, name)
-			if expected, known := stream.expected[name]; known {
-				stream.blobs[name] = make([]byte, 0, int(expected))
-			}
-		}
-		current := stream.blobs[name]
-		if _, known := stream.expected[name]; !known && cap(current)-len(current) < len(frame.Payload) {
-			grown := make([]byte, len(current), len(current)+len(frame.Payload))
-			copy(grown, current)
-			current = grown
+		expected := stream.expected[name]
+		if current == nil {
+			current = make([]byte, 0, int(expected))
 		}
 		stream.blobs[name] = append(current, frame.Payload...)
 		stream.received += length
@@ -528,13 +637,18 @@ func (s *session) acceptUpload(frame Frame) error {
 func (s *session) dispatch(stream *requestStream) {
 	go func() {
 		source := collectedSource{stream: stream}
-		sink := &captureSink{ctx: stream.ctx, maximum: s.limits.MaxOutputBlobBytes, beforeCommit: s.beforeSinkCommit}
+		sink := &captureSink{
+			ctx: stream.ctx, maximum: s.limits.MaxOutputBlobBytes,
+			beforeCommit: s.beforeSinkCommit, commit: stream.terminal.claimExecution,
+		}
 		response, err := stream.plan.Execute(stream.ctx, source, sink)
+		stream.terminal.claimExecution()
+		blobs := sink.take()
 		for name := range stream.blobs {
 			delete(stream.blobs, name)
 		}
-		stream.blobOrder = nil
-		s.results <- dispatchResult{stream: stream, response: response, blobs: sink.take(), err: err}
+		stream.requirements = nil
+		s.results <- dispatchResult{stream: stream, response: response, blobs: blobs, err: err}
 	}()
 }
 
@@ -547,17 +661,29 @@ func (s *session) finishDispatch(result dispatchResult) error {
 		s.reserved -= stream.reserved
 	}
 	if !stream.suppress {
-		if stream.terminal != nil {
-			if err := s.writeCompile(stream.id, *stream.terminal, nil); err != nil {
+		kind, terminal := stream.terminal.snapshot()
+		switch kind {
+		case terminalTransport:
+			if err := s.writeCompile(stream.id, terminal, nil); err != nil {
 				s.releaseStream(stream)
 				return err
 			}
-		} else if result.err != nil {
+		case terminalExecution, terminalCancellation:
+			if result.err != nil {
+				s.releaseStream(stream)
+				return &SessionError{Code: SessionErrorInvariant}
+			}
+			blobs := result.blobs
+			if kind == terminalCancellation {
+				blobs = nil
+			}
+			if err := s.writeCompile(stream.id, result.response, blobs); err != nil {
+				s.releaseStream(stream)
+				return err
+			}
+		default:
 			s.releaseStream(stream)
 			return &SessionError{Code: SessionErrorInvariant}
-		} else if err := s.writeCompile(stream.id, result.response, result.blobs); err != nil {
-			s.releaseStream(stream)
-			return err
 		}
 	}
 	stream.phase = phaseTerminal
@@ -567,6 +693,23 @@ func (s *session) finishDispatch(result dispatchResult) error {
 
 func (s *session) cancelStream(stream *requestStream, emit bool) error {
 	if stream == nil || stream.phase == phaseTerminal {
+		return nil
+	}
+	if stream.phase == phaseDispatching {
+		if !emit {
+			stream.suppress = true
+			stream.cancel()
+			stream.plan.Abort()
+			return nil
+		}
+		if !stream.terminal.claimCancellation() {
+			return nil
+		}
+		stream.cancel()
+		stream.plan.Abort()
+		return nil
+	}
+	if !stream.terminal.claimCancellation() {
 		return nil
 	}
 	stream.cancel()
@@ -584,13 +727,6 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 		if s.reserved >= stream.reserved {
 			s.reserved -= stream.reserved
 		}
-	case phaseDispatching:
-		if !emit {
-			stream.suppress = true
-		} else if stream.terminal == nil {
-			stream.cancelling = true
-		}
-		return nil
 	}
 	response, err := stream.plan.Execute(stream.ctx, collectedSource{}, &captureSink{ctx: stream.ctx, maximum: s.limits.MaxOutputBlobBytes})
 	if err != nil {
@@ -607,15 +743,17 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 }
 
 func (s *session) failCorrelatedStream(stream *requestStream) error {
-	if stream == nil || stream.phase == phaseTerminal || stream.suppress || stream.cancelling || stream.terminal != nil {
+	if stream == nil || stream.phase == phaseTerminal || stream.suppress {
 		return nil
 	}
 	response, err := s.config.Dispatcher.CompileTransportResponse(stream.requestID, endpoint.CompileTransportProtocolViolation)
 	if err != nil {
 		return &SessionError{Code: SessionErrorInvariant}
 	}
+	if !stream.terminal.claimTransport(response) {
+		return nil
+	}
 	if stream.phase == phaseDispatching {
-		stream.terminal = &response
 		stream.cancel()
 		stream.plan.Abort()
 		return nil
@@ -676,8 +814,11 @@ func (s *session) releaseStream(stream *requestStream) {
 	for name := range stream.blobs {
 		delete(stream.blobs, name)
 	}
-	stream.blobOrder = nil
+	stream.validator = nil
+	stream.blobs = nil
+	stream.requirements = nil
 	stream.expected = nil
+	stream.received = 0
 }
 
 func (s *session) abortAll() {
@@ -811,9 +952,13 @@ func (source collectedSource) Definitions(context.Context) ([]endpoint.BlobDefin
 	if source.stream == nil {
 		return []endpoint.BlobDefinition{}, nil
 	}
-	definitions := make([]endpoint.BlobDefinition, 0, len(source.stream.blobOrder))
-	for _, blobID := range source.stream.blobOrder {
-		bytes := source.stream.blobs[blobID]
+	definitions := make([]endpoint.BlobDefinition, 0, len(source.stream.requirements))
+	for _, requirement := range source.stream.requirements {
+		blobID := requirement.Ref.BlobID
+		bytes, found := source.stream.blobs[blobID]
+		if !found {
+			continue
+		}
 		definitions = append(definitions, endpoint.BlobDefinition{
 			BlobID: blobID,
 			Owned:  &endpoint.OwnedBlob{Bytes: bytes, Release: func() {}},
@@ -828,6 +973,7 @@ type captureSink struct {
 	maximum      uint64
 	blobs        []endpoint.OutputBlob
 	beforeCommit func()
+	commit       func() bool
 }
 
 func (sink *captureSink) Publish(ctx context.Context, blobs []endpoint.OutputBlob) error {
@@ -855,6 +1001,9 @@ func (sink *captureSink) Publish(ctx context.Context, blobs []endpoint.OutputBlo
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if sink.commit != nil && !sink.commit() {
+		return context.Canceled
 	}
 	sink.mu.Lock()
 	sink.blobs = owned

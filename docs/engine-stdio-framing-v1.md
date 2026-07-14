@@ -71,6 +71,8 @@ Frame = Header[40] || Name[name_length] || Payload[payload_length]
 
 direction、known stream、stream再利用、request correlationはsession integrationの状態不変条件であり、context-free frame codecだけでは判定しない。
 
+`REQUEST_READY`、`RESPONSE_CONTROL`、`STREAM_ERROR`はengine → client専用であり、clientから受信した場合は方向違反である。activeなgenerated requestへ一意にcorrelateできる場合はそのrequestをgenerated transport failureで終了する。未知のfuture streamならhigh-water markを進めて`STREAM_ERROR`と`BUNDLE_END`を一度だけ返し、すでにhigh-water以下のstreamへのreplayは二つ目のterminal sequenceを作れないためconnection-fatalとする。
+
 ## 5. Canonical blob bundle
 
 `blob_id`はUnicode scalar stringとして有効なUTF-8でなければならない。比較と同一性は**raw UTF-8 bytesそのもの**を使用し、Unicode normalization、case folding、path解釈を行わない。NULを含むscalar valueはlength prefixにより安全であり、diagnosticへNameを出力しない。
@@ -122,8 +124,14 @@ sessionは次を固定上限として実装する。
 - uploadまたはdispatch slotは最大4個
 - admitted requestのdeclared input予約総量は最大576 MiB
 - response output blob保持量はrequestごとに最大512 MiB
+- 一つのuploadが保持できるrequired blobは最大65,536個
+- 一つのuploadが保持できるrequired `blob_id` byte総量は最大8 MiB
 
-eligible requestはcontrol arrivalのFIFO順に`REQUEST_READY`を得る。credit以前のblob、wrong stream、wrong sequence / offsetはそのrequestだけを失敗させる。unreferenced、missing、size/digest/lifetime mismatchはcollectorがbounded bytesをsealした後、#29が同じgenerated failureへ変換し、compilerを呼ばない。input bufferはrequest-ownedであり、cancel、failure、dispatch完了時に解放する。
+eligible requestはcontrol arrivalのFIFO順に`REQUEST_READY`を得る。credit以前のblob、wrong stream、wrong sequence / offset、unreferenced blobはそのrequestだけをgenerated transport failureにする。missing、size/digest/lifetime mismatchはcollectorがbounded bytesをsealした後、#29がgenerated failureへ変換し、compilerを呼ばない。input bufferはrequest-ownedであり、cancel、failure、dispatch完了時に解放する。
+
+upload collectorは`CompilePlan.BlobRequirements`にないblobの最初のframeを、validator、blob map、ordered metadataへ保持する前にgenerated transport failureへ閉じる。required blob countとrequired `blob_id` byte総量はdeclared byte予約とは独立に検査するため、zero-byte blobでstate上限を回避できない。
+
+sealed dispatchではExecute result（successful output publicationを含む）、`CANCEL` / deadline、correlated framing failureがrequest-localな一度だけのterminal arbiterを競合する。output sinkのatomic commit、非publication Execute result、cancel/deadline event、framing eventのうち最初にarbiterを確定したeventだけがterminal authorityを持ち、session join前の後着eventは既決定のoutcomeを書き換えない。dispatch goroutineは必ずsessionへjoinし、選ばれたresponse bundleは`BUNDLE_END`を正確に一度だけ持ち、losing output setは一切書かない。
 
 `CANCEL`はunknown / terminal streamではno-opである。pending、upload、dispatchのrequest contextとplanをcancel / abortし、publication前ならgenerated `cancelled` responseを一度だけ書く。`deadline_at`のvalidationとcontext conversionは#28 endpoint facadeだけが所有し、stdio側は別policyを作らない。
 

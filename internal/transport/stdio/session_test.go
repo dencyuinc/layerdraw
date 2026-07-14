@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -261,7 +262,7 @@ func TestSessionBlobFailuresPreserveLaterRequest(t *testing.T) {
 				{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte("aaa-unexpected"), Payload: validSource},
 				{Kind: KindBundleEnd, StreamID: 2, Sequence: 2},
 			},
-			wantCode: endpoint.FailureCompileUnexpectedBlob,
+			wantCode: endpoint.FailureCompileTransportProtocol,
 		},
 	} {
 		test := test
@@ -443,6 +444,203 @@ func TestSessionAdmissionLimitAndZeroByteFinal(t *testing.T) {
 	}
 }
 
+func TestSessionUnexpectedZeroByteBlobsTerminateWithoutRetention(t *testing.T) {
+	limits := DefaultSessionLimits()
+	config := sessionConfig(t, limits)
+	root, cancelRoot := context.WithCancel(context.Background())
+	var output bytes.Buffer
+	s := &session{
+		config: config, limits: limits, root: root, encode: NewEncoder(&output),
+		streams: make(map[uint64]*requestStream), requestIDs: make(map[string]*requestStream),
+		results:   make(chan dispatchResult, limits.MaxConcurrentDispatch),
+		deadlines: make(chan uint64, limits.MaxActiveStreams),
+	}
+	t.Cleanup(func() { s.abortAll(); cancelRoot() })
+	if err := s.acceptControl(controlFrame(t, 1, sessionHandshake("zero-retention-hs"))); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte("project p \"Project\" {}\n")
+	if err := s.acceptControl(controlFrame(t, 2, sessionCompile("zero-retention", "required", source))); err != nil {
+		t.Fatal(err)
+	}
+	stream := s.streams[2]
+	if stream == nil || stream.phase != phaseUploading {
+		t.Fatalf("stream not uploading: %#v", stream)
+	}
+	started := time.Now()
+	const count = 50_000
+	for index := 0; index < count; index++ {
+		frame := Frame{
+			Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: uint32(index + 1),
+			Name: []byte(fmt.Sprintf("unexpected-%08d", index)),
+		}
+		if err := s.acceptUpload(frame); err != nil {
+			t.Fatalf("frame %d: %v", index, err)
+		}
+		if index == 0 && (s.streams[2] != nil || stream.validator != nil || stream.blobs != nil || stream.expected != nil || stream.requirements != nil || stream.received != 0) {
+			t.Fatalf("first unknown frame retained stream state: %+v", stream)
+		}
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("50k terminal late frames took %s", elapsed)
+	}
+	if len(s.streams) != 0 || len(s.requestIDs) != 0 || s.controls != 0 || s.controlSum != 0 || s.active != 0 || s.reserved != 0 || len(s.queue) != 0 || s.uploader != nil {
+		t.Fatalf("retained session state: streams=%d requests=%d controls=%d bytes=%d active=%d reserved=%d queue=%d uploader=%p", len(s.streams), len(s.requestIDs), s.controls, s.controlSum, s.active, s.reserved, len(s.queue), s.uploader)
+	}
+	assertCorrelatedFailure(t, decodeFrames(t, output.Bytes()), 2, "zero-retention")
+}
+
+func TestSessionUploadCountAndMetadataLimitsRejectWithoutState(t *testing.T) {
+	pack, _, _ := sessionPackCompile(t, "count-limit")
+	source := []byte("project p \"Project\" {}\n")
+	for _, test := range []struct {
+		name    string
+		limits  func(*SessionLimits)
+		request engineprotocol.CompileRequestEnvelope
+	}{
+		{
+			name: "count", request: pack,
+			limits: func(limits *SessionLimits) { limits.MaxUploadBlobCount = 1 },
+		},
+		{
+			name: "metadata", request: sessionCompile("metadata-limit", "source-name", source),
+			limits: func(limits *SessionLimits) { limits.MaxUploadMetadataBytes = 1 },
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			limits := DefaultSessionLimits()
+			test.limits(&limits)
+			config := sessionConfig(t, limits)
+			root, cancelRoot := context.WithCancel(context.Background())
+			var output bytes.Buffer
+			s := &session{
+				config: config, limits: limits, root: root, encode: NewEncoder(&output),
+				streams: make(map[uint64]*requestStream), requestIDs: make(map[string]*requestStream),
+				results:   make(chan dispatchResult, limits.MaxConcurrentDispatch),
+				deadlines: make(chan uint64, limits.MaxActiveStreams),
+			}
+			t.Cleanup(func() { s.abortAll(); cancelRoot() })
+			if err := s.acceptControl(controlFrame(t, 1, sessionHandshake(test.name+"-hs"))); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.acceptControl(controlFrame(t, 2, test.request)); err != nil {
+				t.Fatal(err)
+			}
+			if len(s.streams) != 0 || len(s.requestIDs) != 0 || s.controls != 0 || s.controlSum != 0 || s.active != 0 || s.reserved != 0 || len(s.queue) != 0 || s.uploader != nil {
+				t.Fatalf("limit rejection retained state: %+v", s)
+			}
+			response := compileResponseForStream(t, decodeFrames(t, output.Bytes()), 2)
+			if response.Failure == nil || response.Failure.Code != endpoint.FailureCompileTransportLimit {
+				t.Fatalf("response = %+v", response)
+			}
+		})
+	}
+}
+
+func TestSessionCommittedExecutionWinsLateFramingBeforeJoin(t *testing.T) {
+	limits := DefaultSessionLimits()
+	config := sessionConfig(t, limits)
+	root, cancelRoot := context.WithCancel(context.Background())
+	var output bytes.Buffer
+	s := &session{
+		config: config, limits: limits, root: root, encode: NewEncoder(&output),
+		streams: make(map[uint64]*requestStream), requestIDs: make(map[string]*requestStream),
+		results:   make(chan dispatchResult, limits.MaxConcurrentDispatch),
+		deadlines: make(chan uint64, limits.MaxActiveStreams),
+	}
+	t.Cleanup(func() { s.abortAll(); cancelRoot() })
+	if err := s.acceptControl(controlFrame(t, 1, sessionHandshake("terminal-hs"))); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte("project p \"Project\" {}\n")
+	if err := s.acceptControl(controlFrame(t, 2, sessionCompile("terminal-first", "source", source))); err != nil {
+		t.Fatal(err)
+	}
+	stream := s.streams[2]
+	if err := s.acceptUpload(Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte("source"), Payload: source}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.validator.Accept(Frame{Kind: KindBundleEnd, StreamID: 2, Sequence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	s.uploader = nil
+	stream.phase = phaseDispatching
+	sink := &captureSink{ctx: stream.ctx, maximum: limits.MaxOutputBlobBytes, commit: stream.terminal.claimExecution}
+	response, err := stream.plan.Execute(stream.ctx, collectedSource{stream: stream}, sink)
+	if err != nil || response.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("execute = %+v, %v", response, err)
+	}
+	stream.terminal.claimExecution()
+	result := dispatchResult{stream: stream, response: response, blobs: sink.take()}
+	if err := s.failCorrelatedStream(stream); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := stream.terminal.snapshot(); kind != terminalExecution || stream.ctx.Err() != nil {
+		t.Fatalf("late framing changed terminal: kind=%d context=%v", kind, stream.ctx.Err())
+	}
+	if err := s.finishDispatch(result); err != nil {
+		t.Fatal(err)
+	}
+	frames := decodeFrames(t, output.Bytes())
+	if response := compileResponseForStream(t, frames, 2); response.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("published terminal = %+v", response)
+	}
+	controls, ends := 0, 0
+	for _, frame := range frames {
+		if frame.StreamID != 2 {
+			continue
+		}
+		if frame.Kind == KindResponseControl {
+			controls++
+		}
+		if frame.Kind == KindBundleEnd {
+			ends++
+		}
+	}
+	if controls != 1 || ends != 1 {
+		t.Fatalf("terminal bundle controls=%d ends=%d", controls, ends)
+	}
+}
+
+func TestTerminalArbiterLinearizesConcurrentEventsExactlyOnce(t *testing.T) {
+	for iteration := 0; iteration < 1_000; iteration++ {
+		var arbiter terminalArbiter
+		start := make(chan struct{})
+		claims := make(chan bool, 3)
+		var workers sync.WaitGroup
+		workers.Add(3)
+		go func() {
+			defer workers.Done()
+			<-start
+			claims <- arbiter.claimExecution()
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			claims <- arbiter.claimCancellation()
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			claims <- arbiter.claimTransport(engineprotocol.CompileResponseEnvelope{})
+		}()
+		close(start)
+		workers.Wait()
+		close(claims)
+		winners := 0
+		for won := range claims {
+			if won {
+				winners++
+			}
+		}
+		kind, _ := arbiter.snapshot()
+		if winners != 1 || kind == terminalUndecided {
+			t.Fatalf("iteration %d: winners=%d kind=%d", iteration, winners, kind)
+		}
+	}
+}
+
 func TestSessionStreamReuseIsFatal(t *testing.T) {
 	t.Parallel()
 	input := marshalFrames(t,
@@ -454,6 +652,86 @@ func TestSessionStreamReuseIsFatal(t *testing.T) {
 	var sessionError *SessionError
 	if !errors.As(err, &sessionError) || sessionError.Code != SessionErrorFraming {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSessionIncomingStreamErrorFailsClosedAndRecoversNextRequest(t *testing.T) {
+	t.Parallel()
+	source := []byte("project p \"Project\" {}\n")
+	input := marshalFrames(t,
+		Frame{Kind: KindStreamError, StreamID: 1, Name: []byte("peer-error")},
+		controlFrame(t, 2, sessionHandshake("after-peer-error")),
+		controlFrame(t, 3, sessionCompile("after-peer-error-compile", "source", source)),
+		Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 3, Sequence: 1, Name: []byte("source"), Payload: source},
+		Frame{Kind: KindBundleEnd, StreamID: 3, Sequence: 2},
+		Frame{Kind: KindClose},
+	)
+	var output bytes.Buffer
+	if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{})); err != nil {
+		t.Fatal(err)
+	}
+	frames := decodeFrames(t, output.Bytes())
+	if len(frames) < 2 || frames[0].Kind != KindStreamError || frames[0].StreamID != 1 || string(frames[0].Name) != "unexpected_direction" || frames[1].Kind != KindBundleEnd {
+		t.Fatalf("peer STREAM_ERROR terminal = %#v", frames)
+	}
+	if response := compileResponseForStream(t, frames, 3); response.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("later response = %+v", response)
+	}
+}
+
+func TestSessionIncomingStreamErrorOnKnownStreamUsesCorrelatedTerminal(t *testing.T) {
+	t.Parallel()
+	source := []byte("project p \"Project\" {}\n")
+	input := marshalFrames(t,
+		controlFrame(t, 1, sessionHandshake("peer-known-hs")),
+		controlFrame(t, 2, sessionCompile("peer-known", "source", source)),
+		Frame{Kind: KindStreamError, StreamID: 2, Name: []byte("peer-error")},
+		controlFrame(t, 3, sessionCompile("peer-known-later", "later", source)),
+		Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 3, Sequence: 1, Name: []byte("later"), Payload: source},
+		Frame{Kind: KindBundleEnd, StreamID: 3, Sequence: 2},
+		Frame{Kind: KindClose},
+	)
+	var output bytes.Buffer
+	if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{})); err != nil {
+		t.Fatal(err)
+	}
+	frames := decodeFrames(t, output.Bytes())
+	assertCorrelatedFailure(t, frames, 2, "peer-known")
+	if response := compileResponseForStream(t, frames, 3); response.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("later response = %+v", response)
+	}
+}
+
+func TestSessionIncomingStreamErrorReplayIsFatal(t *testing.T) {
+	t.Parallel()
+	input := marshalFrames(t,
+		controlFrame(t, 1, sessionHandshake("peer-replay-hs")),
+		Frame{Kind: KindStreamError, StreamID: 1, Name: []byte("peer-replay")},
+	)
+	var output bytes.Buffer
+	err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{}))
+	var sessionError *SessionError
+	if !errors.As(err, &sessionError) || sessionError.Code != SessionErrorFraming {
+		t.Fatalf("error = %v", err)
+	}
+	frames := decodeFrames(t, output.Bytes())
+	if len(frames) != 2 || frames[0].Kind != KindResponseControl || frames[1].Kind != KindBundleEnd {
+		t.Fatalf("replay emitted an ambiguous second terminal: %#v", frames)
+	}
+}
+
+func TestSessionMalformedIncomingStreamErrorDrainsBodyAndRecovers(t *testing.T) {
+	t.Parallel()
+	invalid := Frame{Kind: KindStreamError, StreamID: 1, Sequence: 1, Name: []byte("peer-error")}
+	input := append(rawHeader(invalid), invalid.Name...)
+	input = append(input, marshalFrames(t, controlFrame(t, 2, sessionHandshake("after-malformed-peer-error")), Frame{Kind: KindClose})...)
+	var output bytes.Buffer
+	if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{})); err != nil {
+		t.Fatal(err)
+	}
+	frames := decodeFrames(t, output.Bytes())
+	if len(frames) != 4 || frames[0].Kind != KindStreamError || frames[0].StreamID != 1 || frames[1].Kind != KindBundleEnd || frames[2].Kind != KindResponseControl || frames[2].StreamID != 2 {
+		t.Fatalf("frames = %#v", frames)
 	}
 }
 
