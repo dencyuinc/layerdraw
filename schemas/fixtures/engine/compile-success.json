@@ -44,18 +44,18 @@
       "kind": "project",
       "project": {
         "artifact_json": {
-          "blob_id": "compile/artifact-json",
-          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "blob_id": "fixtures/normalized/v1/normalized-project-v1.artifact.json",
+          "digest": "sha256:66d4a7211a66457e2537c97f15978f190d72425a04efed60680e7d5e248c348c",
           "lifetime": "request",
           "media_type": "application/vnd.layerdraw.project.v1+json",
-          "size": "128"
+          "size": "523"
         },
         "canonical_json": {
-          "blob_id": "compile/canonical-json",
-          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "blob_id": "fixtures/normalized/v1/normalized-project-v1.canonical.json",
+          "digest": "sha256:fdbbeeb5222b2e7f65ec1f78598935760777f48e4a7019ebcb2bbdf45d7eca24",
           "lifetime": "request",
           "media_type": "application/vnd.layerdraw.normalized-project.v1+json",
-          "size": "128"
+          "size": "522"
         },
         "project_address": "ldl:project:fixture"
       },

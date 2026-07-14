@@ -22,20 +22,20 @@
       "kind": "pack",
       "pack": {
         "artifact_json": {
-          "blob_id": "compile/pack-artifact-json",
-          "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "blob_id": "fixtures/normalized/v1/normalized-pack-v1.artifact.json",
+          "digest": "sha256:e4ddf3d95bc5de8034559730e846d2ea80f821e12953f05838a63e8fffecdb60",
           "lifetime": "request",
           "media_type": "application/vnd.layerdraw.pack.v1+json",
-          "size": "96"
+          "size": "668"
         },
         "canonical_json": {
-          "blob_id": "compile/pack-canonical-json",
-          "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "blob_id": "fixtures/normalized/v1/normalized-pack-v1.canonical.json",
+          "digest": "sha256:15e2ba1b84a4f15f947ece3cdce2f9843b9ed907df10307821d2484a2deb72ba",
           "lifetime": "request",
           "media_type": "application/vnd.layerdraw.normalized-pack.v1+json",
-          "size": "96"
+          "size": "667"
         },
-        "pack_address": "ldl:pack:fixture:pack"
+        "pack_address": "ldl:pack:pub:schema"
       },
       "search_documents": []
     },
@@ -55,7 +55,7 @@
       "assets": [], "bindings": [], "exports": [], "files": [],
       "schema_version": 1, "subjects": []
     },
-    "stable_addresses": ["ldl:pack:fixture:pack"],
+    "stable_addresses": ["ldl:pack:pub:schema"],
     "subject_semantic_hashes": [],
     "subtree_hashes": []
   },

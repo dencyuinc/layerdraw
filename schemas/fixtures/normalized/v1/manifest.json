@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "kind": "project",
+      "format": "layerdraw-normalized",
+      "root_address": "ldl:project:fixture",
+      "control_envelope": "schemas/fixtures/engine/compile-success.json",
+      "source": "schemas/fixtures/normalized/v1/project/document.ldl",
+      "canonical_json": {
+        "role": "normalized_project_canonical_json",
+        "blob_id": "fixtures/normalized/v1/normalized-project-v1.canonical.json",
+        "file": "schemas/fixtures/normalized/v1/normalized-project-v1.canonical.json",
+        "digest": "sha256:fdbbeeb5222b2e7f65ec1f78598935760777f48e4a7019ebcb2bbdf45d7eca24",
+        "size": "522",
+        "media_type": "application/vnd.layerdraw.normalized-project.v1+json",
+        "lifetime": "request"
+      },
+      "artifact_json": {
+        "role": "normalized_project_artifact_json",
+        "blob_id": "fixtures/normalized/v1/normalized-project-v1.artifact.json",
+        "file": "schemas/fixtures/normalized/v1/normalized-project-v1.artifact.json",
+        "digest": "sha256:66d4a7211a66457e2537c97f15978f190d72425a04efed60680e7d5e248c348c",
+        "size": "523",
+        "media_type": "application/vnd.layerdraw.project.v1+json",
+        "lifetime": "request"
+      }
+    },
+    {
+      "kind": "pack",
+      "format": "layerdraw-normalized-pack",
+      "root_address": "ldl:pack:pub:schema",
+      "control_envelope": "schemas/fixtures/engine/compile-success-pack.json",
+      "source": "schemas/fixtures/normalized/v1/pack/pack.ldl",
+      "pack_manifest": "schemas/fixtures/normalized/v1/pack/manifest.json",
+      "canonical_json": {
+        "role": "normalized_pack_canonical_json",
+        "blob_id": "fixtures/normalized/v1/normalized-pack-v1.canonical.json",
+        "file": "schemas/fixtures/normalized/v1/normalized-pack-v1.canonical.json",
+        "digest": "sha256:15e2ba1b84a4f15f947ece3cdce2f9843b9ed907df10307821d2484a2deb72ba",
+        "size": "667",
+        "media_type": "application/vnd.layerdraw.normalized-pack.v1+json",
+        "lifetime": "request"
+      },
+      "artifact_json": {
+        "role": "normalized_pack_artifact_json",
+        "blob_id": "fixtures/normalized/v1/normalized-pack-v1.artifact.json",
+        "file": "schemas/fixtures/normalized/v1/normalized-pack-v1.artifact.json",
+        "digest": "sha256:e4ddf3d95bc5de8034559730e846d2ea80f821e12953f05838a63e8fffecdb60",
+        "size": "668",
+        "media_type": "application/vnd.layerdraw.pack.v1+json",
+        "lifetime": "request"
+      }
+    }
+  ]
+}

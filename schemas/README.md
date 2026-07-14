@@ -188,6 +188,77 @@ All three recipe blob references have the literal lifetime `request`; `session`
 and `persistent` are invalid even though those values remain available to other
 blob roles.
 
+### Normalized blob payload contract
+
+The normalized Project/Pack bodies are output-only, Engine-produced publication
+artifacts. At the Engine Protocol and TypeScript client boundary they are
+immutable opaque bytes behind the role-specific `BlobRef`s: generated protocol
+clients verify and transfer the bytes, but do not parse, reconstruct, default,
+or canonically re-encode a normalized body. The Go materializer is the sole
+semantic and byte-serialization authority.
+
+The four media types have these exact meanings:
+
+- `application/vnd.layerdraw.normalized-project.v1+json` is the Language 1
+  `NormalizedDocument` union member with top-level `format:
+  "layerdraw-normalized"`, `schema_version: 1`, and `language: 1`, serialized
+  as RFC 8785 UTF-8 with no trailing LF.
+- `application/vnd.layerdraw.normalized-pack.v1+json` is the Language 1
+  `NormalizedPackArtifact` union member with top-level `format:
+  "layerdraw-normalized-pack"`, `schema_version: 1`, and `language: 1`, using
+  the same canonical byte profile with no trailing LF.
+- `application/vnd.layerdraw.project.v1+json` is exactly the same JSON value
+  and canonical Project bytes followed by one LF.
+- `application/vnd.layerdraw.pack.v1+json` is exactly the same JSON value and
+  canonical Pack bytes followed by one LF.
+
+No second structural model is introduced by the public artifact role. The
+`NormalizedArtifact.kind`, selected Project/Pack branch, normalized body's
+`format`, and root address must agree: Project selects only `project`, has
+`layerdraw-normalized`, and has `project_address == project.address`; Pack
+selects only `pack`, has `layerdraw-normalized-pack`, and has `pack_address ==
+pack.address`. Project-only and Pack-only top-level members remain those of the
+exact Language 1 union in the detailed language specification.
+
+Each normalized output ref has request lifetime. Its digest is the raw SHA-256
+of the exact referenced bytes and its decimal size is the exact raw byte count,
+including the public artifact LF. Canonical/public roles and Project/Pack media
+types are not interchangeable; swapping refs is invalid even if two bodies
+happen to compare equal. A consumer must resolve the named blob, verify raw
+digest and size before use, and preserve the verified byte array unchanged.
+The Engine-produced Project and Pack byte goldens, their raw metadata, source
+inputs, and matching control-envelope refs are fixed by
+`fixtures/normalized/v1/manifest.json`.
+
+Compatibility has two levels. Engine Protocol `1.0` and its schema-closure
+digest bind the closed control JSON, BlobRef metadata, and accepted normalized
+media-type versions; they do not digest referenced bodies. The normalized
+media-type version together with the body's `schema_version` binds the Language
+content and byte contract. Changing a required member, default, enum meaning,
+reference representation, ordering, or canonicalization must bump the
+normalized `schema_version` and both canonical/public media-type versions, then
+update the Engine schema media-type constants so its closure digest changes.
+Any same-version content or byte drift is a conformance failure.
+
+Query/View/Export recipe blobs are different: they are typed execution-facing
+semantic inputs for later Engine and adapter operations, so their Language 1
+documents are definitions in `semantic/v1.schema.json` and receive generated
+codecs. Normalized Project/Pack JSON is an output publication and conformance
+artifact in the portable-compilation milestone, so generating a second domain
+tree for clients would create an unauthorized semantic/canonicalization path.
+Publishing the machine-readable normalized schema required to freeze Language
+1 is a separately owned language-contract obligation. It must not be replaced
+by handwritten TypeScript types or a transport mapper, and it does not imply
+that `@layerdraw/protocol/semantic` currently exports `NormalizedDocument` or
+`NormalizedPackArtifact`.
+
+The normative semantic union is in
+[`docs/ldl-language-detailed-specification.md`](../docs/ldl-language-detailed-specification.md),
+and boundary ownership is reconciled in
+[`docs/system-boundary-contracts-specification.md`](../docs/system-boundary-contracts-specification.md)
+and
+[`docs/component-package-boundary-specification.md`](../docs/component-package-boundary-specification.md).
+
 `semantic.Diagnostic` is the Language 1 diagnostic protocol, not the generic
 host diagnostic sketch: it fixes `protocol_version` 1, `LDLdddd` codes,
 `error|warning|info`, stable `message_key`, typed recursive `arguments`,

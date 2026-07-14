@@ -1,0 +1,4 @@
+entity_type service "Service" {
+  representation shape rect
+}
+export { service }

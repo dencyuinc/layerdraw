@@ -465,6 +465,14 @@ schemas/engine-protocol/*.schema
 - Goの`error`は`ProtocolFailure`へmapし、source diagnosticを`error`文字列へ潰さない。
 - TSのexceptionはnetwork、decode、client misuseに限定し、正常に受信した`rejected`をthrowだけで表現しない。
 
+### 3.7 Normalized publication blob boundary
+
+portable compileの`NormalizedArtifact` control valueはProject/Packのclosed tagged unionであり、選択branch、root address、role固有canonical/public `BlobRef`をgenerated型として保持する。参照先はEngineが生成したimmutable opaque bytesである。Project/Pack media type、`schema_version: 1`、`format`、RFC 8785 canonical bytes、public artifactのexact one LF、raw digest/size、request lifetime、version bump規則の正本は[schemas/README.mdのNormalized blob payload contract](../schemas/README.md#normalized-blob-payload-contract)と[LDL詳細仕様5.1節](ldl-language-detailed-specification.md#51-エンベロープと不変条件)である。
+
+boundary mapperは同じGo materializer generationから得たbyte sliceをblobとして登録し、raw SHA-256とbyte countを計算し、kind/branch/root/role/media typeの一致を検証する。normalized bodyからgenerated domain treeを再構築または再serializeしてはならない。`@layerdraw/engine-client`を含むTypeScript clientはcontrol envelopeだけをdecode/canonical re-encodeし、blobはdigest/size検証後も同じbyte arrayとしてtransferする。normalized bodyを`JSON.parse`、default、repair、またはcanonical re-encodeしない。
+
+これに対しQuery/View/Export recipe documentは後続Engine/adapter operationが内容をtyped semantic inputとして読むため、`@layerdraw/protocol/semantic`にgenerated definitionを持つ。この実行inputと、portable-compilation milestoneにおけるoutput publication/conformance artifactは同じownershipではない。`@layerdraw/protocol/semantic`が現在generated `NormalizedDocument`または`NormalizedPackArtifact`を公開するとは解釈しない。Language 1 freezeに必要なmachine-readable normalized schemaは別ownerのlanguage artifactであり、transportまたはclientへ第2のcanonicalization pathを追加する根拠にしない。
+
 ## 4. Runtime / Host Port Boundary
 
 ### 4.1 Runtime ownership
