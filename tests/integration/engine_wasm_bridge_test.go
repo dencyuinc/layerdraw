@@ -50,7 +50,7 @@ func TestEngineWASMBridgeNodeSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run Engine WASM bridge smoke: %v\n%s", err, output)
 	}
-	if !strings.Contains(string(output), "smoke passed") {
+	if !strings.Contains(string(output), "hard-cancel/replacement smoke passed") {
 		t.Fatalf("unexpected bridge smoke output: %s", output)
 	}
 }

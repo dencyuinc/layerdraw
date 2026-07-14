@@ -98,12 +98,19 @@ func TestEndpointPublicCallerMisuseGuards(t *testing.T) {
 	if _, _, err := nilDescriptor.Negotiate(context.Background(), engineprotocol.HandshakeRequestEnvelope{}); err == nil {
 		t.Fatal("nil descriptor negotiation was accepted")
 	}
+	if _, err := nilDescriptor.RejectHandshakeConnectionState("request"); err == nil {
+		t.Fatal("nil descriptor connection-state rejection was accepted")
+	}
 	descriptor := newTestDescriptor(t)
 	if _, _, err := descriptor.Negotiate(nil, engineprotocol.HandshakeRequestEnvelope{}); err == nil {
 		t.Fatal("nil negotiation context was accepted")
 	}
 	if _, _, err := descriptor.Negotiate(context.Background(), engineprotocol.HandshakeRequestEnvelope{}); err == nil {
 		t.Fatal("untrustworthy handshake request ID was accepted")
+	}
+	rejected, err := descriptor.RejectHandshakeConnectionState("request")
+	if err != nil || rejected.Outcome != "rejected" || len(rejected.Diagnostics) != 1 || rejected.Diagnostics[0].Code != DiagnosticHandshakeInvalidConnectionState {
+		t.Fatalf("invalid connection-state response=%+v err=%v", rejected, err)
 	}
 
 	var nilContext *NegotiatedContext

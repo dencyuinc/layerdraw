@@ -39,9 +39,9 @@ func Run(config StaticConfig) {
 }
 
 func (bridge *jsBridge) register() {
-	initialize := bridge.callback(PhaseInitialization, bridge.initialize)
-	request := bridge.callback(PhaseRequest, bridge.request)
-	dispose := bridge.callback(PhaseLifecycle, bridge.dispose)
+	initialize := bridge.callback(bridge.initialize)
+	request := bridge.callback(bridge.request)
+	dispose := bridge.callback(bridge.dispose)
 	bridge.callbacks = []js.Func{initialize, request, dispose}
 	api := js.Global().Get("Object").New()
 	api.Set("initialize", initialize)
@@ -52,14 +52,14 @@ func (bridge *jsBridge) register() {
 	js.Global().Set(GlobalBridgeName, api)
 }
 
-func (bridge *jsBridge) callback(phase string, handler func([]js.Value) any) js.Func {
+func (bridge *jsBridge) callback(handler func([]js.Value) any) js.Func {
 	return js.FuncOf(func(_ js.Value, args []js.Value) (result any) {
 		defer func() {
 			if recover() != nil {
 				if bridge.session != nil {
 					bridge.session.markCrashed()
 				}
-				result = failureValue(localFailure(FailureCrashed, phase, true))
+				result = failureValue(localFailure(FailureCrashed))
 			}
 		}()
 		return handler(args)
@@ -67,12 +67,16 @@ func (bridge *jsBridge) callback(phase string, handler func([]js.Value) any) js.
 }
 
 func (bridge *jsBridge) initialize(args []js.Value) any {
-	if len(args) != 3 || bridge.session != nil {
-		return failureValue(localFailure(FailureInitializationFailed, PhaseInitialization, false))
+	if len(args) != 2 || bridge.session != nil {
+		return failureValue(localFailure(FailureInitializationFailed))
 	}
-	generation, endpointID, releaseDigest, ok := threeStrings(args)
-	if !ok || !validGeneration(generation) {
-		return failureValue(localFailure(FailureInitializationFailed, PhaseInitialization, false))
+	generation, releaseDigest, ok := twoStrings(args)
+	if !ok || !validOpaqueString(generation, 128) {
+		return failureValue(localFailure(FailureInitializationFailed))
+	}
+	endpointID, err := newEndpointInstanceID()
+	if err != nil {
+		return failureValue(localFailure(FailureInitializationFailed))
 	}
 	authority, err := endpoint.NewCompilerEndpoint(endpoint.CompilerEndpointConfig{
 		EngineRelease:         bridge.static.EngineRelease,
@@ -83,11 +87,11 @@ func (bridge *jsBridge) initialize(args []js.Value) any {
 		Limits:                BrowserCompilerLimitPolicy(),
 	})
 	if err != nil {
-		return failureValue(localFailure(FailureInitializationFailed, PhaseInitialization, false))
+		return failureValue(localFailure(FailureInitializationFailed))
 	}
 	session, err := NewSession(authority, generation, BrowserTransportLimits())
 	if err != nil {
-		return failureValue(localFailure(FailureInitializationFailed, PhaseInitialization, false))
+		return failureValue(localFailure(FailureInitializationFailed))
 	}
 	bridge.session = session
 	result := js.Global().Get("Object").New()
@@ -100,10 +104,10 @@ func (bridge *jsBridge) initialize(args []js.Value) any {
 
 func (bridge *jsBridge) request(args []js.Value) any {
 	if bridge.session == nil {
-		return failureValue(localFailure(FailureInitializationFailed, PhaseInitialization, false))
+		return failureValue(localFailure(FailureInitializationFailed))
 	}
 	if len(args) != 4 || args[0].Type() != js.TypeString || !exactArrayBuffer(args[1]) || !arrayValue(args[2]) || !arrayValue(args[3]) {
-		return failureValue(localFailure(FailureMalformedMessage, PhaseRequest, false))
+		return failureValue(localFailure(FailureMalformedMessage))
 	}
 	generation := args[0].String()
 	if failure := bridge.session.PreflightGeneration(generation); failure != nil {
@@ -149,10 +153,10 @@ func (bridge *jsBridge) request(args []js.Value) any {
 
 func (bridge *jsBridge) dispose(args []js.Value) any {
 	if len(args) != 1 || args[0].Type() != js.TypeString {
-		return failureValue(localFailure(FailureMalformedMessage, PhaseLifecycle, false))
+		return failureValue(localFailure(FailureMalformedMessage))
 	}
 	if bridge.session == nil {
-		return failureValue(localFailure(FailureDisposed, PhaseLifecycle, false))
+		return failureValue(localFailure(FailureDisposed))
 	}
 	if failure := bridge.session.Dispose(args[0].String()); failure != nil {
 		return failureValue(failure)
@@ -162,13 +166,13 @@ func (bridge *jsBridge) dispose(args []js.Value) any {
 	return result
 }
 
-func threeStrings(args []js.Value) (string, string, string, bool) {
+func twoStrings(args []js.Value) (string, string, bool) {
 	for _, value := range args {
 		if value.Type() != js.TypeString {
-			return "", "", "", false
+			return "", "", false
 		}
 	}
-	return args[0].String(), args[1].String(), args[2].String(), true
+	return args[0].String(), args[1].String(), true
 }
 
 func exactArrayBuffer(value js.Value) bool {
@@ -193,7 +197,7 @@ func arrayValue(value js.Value) bool {
 
 func decodeBlobArguments(idsValue, buffersValue js.Value, limits TransportLimits) ([]string, []js.Value, *LocalFailure) {
 	if idsValue.Length() != buffersValue.Length() || int64(idsValue.Length()) > limits.MaxBuffers {
-		return nil, nil, localFailure(FailureMalformedMessage, PhaseRequest, false)
+		return nil, nil, localFailure(FailureMalformedMessage)
 	}
 	ids := make([]string, idsValue.Length())
 	buffers := make([]js.Value, buffersValue.Length())
@@ -201,15 +205,15 @@ func decodeBlobArguments(idsValue, buffersValue js.Value, limits TransportLimits
 	for index := range ids {
 		idValue, buffer := idsValue.Index(index), buffersValue.Index(index)
 		if idValue.Type() != js.TypeString || !exactArrayBuffer(buffer) {
-			return nil, nil, localFailure(FailureMalformedMessage, PhaseRequest, false)
+			return nil, nil, localFailure(FailureMalformedMessage)
 		}
 		id := idValue.String()
 		if id == "" || !utf8.ValidString(id) || int64(len(id)) > limits.MaxBlobIDBytes {
-			return nil, nil, localFailure(FailureMalformedMessage, PhaseRequest, false)
+			return nil, nil, localFailure(FailureMalformedMessage)
 		}
 		length := int64(buffer.Get("byteLength").Int())
 		if length < 0 || length > limits.MaxInputBlobBytes || total > limits.MaxInputTotalBytes-length {
-			return nil, nil, localFailure(FailureTransferFailed, PhaseTransfer, false)
+			return nil, nil, localFailure(FailureTransferFailed)
 		}
 		total += length
 		ids[index], buffers[index] = id, buffer
@@ -228,12 +232,12 @@ func bufferLengths(values []js.Value) []int {
 func copyArrayBufferToGo(value js.Value, maximum int64) ([]byte, *LocalFailure) {
 	length := value.Get("byteLength").Int()
 	if length < 0 || int64(length) > maximum {
-		return nil, localFailure(FailureTransferFailed, PhaseTransfer, false)
+		return nil, localFailure(FailureTransferFailed)
 	}
 	result := make([]byte, length)
 	view := js.Global().Get("Uint8Array").New(value)
 	if copied := js.CopyBytesToGo(result, view); copied != length {
-		return nil, localFailure(FailureTransferFailed, PhaseTransfer, true)
+		return nil, localFailure(FailureTransferFailed)
 	}
 	return result, nil
 }
@@ -242,7 +246,7 @@ func copyGoBytesToArrayBuffer(value []byte) (js.Value, *LocalFailure) {
 	buffer := js.Global().Get("ArrayBuffer").New(len(value))
 	view := js.Global().Get("Uint8Array").New(buffer)
 	if copied := js.CopyBytesToJS(view, value); copied != len(value) {
-		return js.Undefined(), localFailure(FailureTransferFailed, PhaseTransfer, true)
+		return js.Undefined(), localFailure(FailureTransferFailed)
 	}
 	return buffer, nil
 }
@@ -259,12 +263,12 @@ func (table *jsBlobTable) Count() int { return len(table.ids) }
 
 func (table *jsBlobTable) Bind(_ []endpoint.BlobRequirement, limits TransportLimits) *LocalFailure {
 	if table == nil || table.released || table.bound || int64(len(table.ids)) > limits.MaxBuffers {
-		return localFailure(FailureMalformedMessage, PhaseRequest, false)
+		return localFailure(FailureMalformedMessage)
 	}
 	var total int64
 	for _, length := range table.lengths {
 		if length < 0 || int64(length) > limits.MaxInputBlobBytes || total > limits.MaxInputTotalBytes-int64(length) {
-			return localFailure(FailureTransferFailed, PhaseTransfer, false)
+			return localFailure(FailureTransferFailed)
 		}
 		total += int64(length)
 	}

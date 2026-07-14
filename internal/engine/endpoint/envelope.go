@@ -22,12 +22,33 @@ const (
 	DiagnosticRequiredCapabilityMissing = "protocol.required_capability_missing"
 	// DiagnosticLimitIncompatible is reserved for an unsatisfied valid limit contract.
 	DiagnosticLimitIncompatible = "protocol.limit_incompatible"
+	// DiagnosticHandshakeInvalidConnectionState identifies a second handshake
+	// attempt on an endpoint generation that already consumed its one attempt.
+	DiagnosticHandshakeInvalidConnectionState = "protocol.handshake.invalid_connection_state"
 
 	// FailureHandshakeCancelled identifies caller cancellation or deadline expiry.
 	FailureHandshakeCancelled = "engine.handshake.cancelled"
 	// FailureHandshakeInvariant identifies a safe unexpected endpoint invariant failure.
 	FailureHandshakeInvariant = "engine.handshake.invariant_failure"
 )
+
+// RejectHandshakeConnectionState constructs the generated terminal response
+// shared by transports when an endpoint generation receives a second
+// handshake. The transport must clear its context and terminate the generation
+// after publishing this response.
+func (d *Descriptor) RejectHandshakeConnectionState(requestID string) (engineprotocol.HandshakeResponseEnvelope, error) {
+	if d == nil {
+		return engineprotocol.HandshakeResponseEnvelope{}, fmt.Errorf("nil endpoint descriptor")
+	}
+	diagnostic := protocolDiagnostic(
+		DiagnosticHandshakeInvalidConnectionState,
+		"The endpoint generation has already consumed its handshake attempt.",
+		"Create a fresh endpoint generation and perform one handshake.",
+		nil,
+	)
+	response, _, err := d.reject(requestID, diagnostic)
+	return response, err
+}
 
 const (
 	// DiagnosticDataReason is the safe detail key used by invalid-handshake diagnostics.

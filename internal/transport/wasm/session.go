@@ -39,7 +39,7 @@ func (EmptyRequestBlobs) Count() int { return 0 }
 
 func (EmptyRequestBlobs) Bind(requirements []endpoint.BlobRequirement, _ TransportLimits) *LocalFailure {
 	if len(requirements) != 0 {
-		return localFailure(FailureTransferFailed, PhaseTransfer, false)
+		return localFailure(FailureTransferFailed)
 	}
 	return nil
 }
@@ -79,22 +79,24 @@ func (response *Response) Release() {
 // Session binds one endpoint generation to one negotiated context and permits
 // at most one synchronous dispatch at a time.
 type Session struct {
-	mu         sync.Mutex
-	descriptor *endpoint.Descriptor
-	dispatcher *endpoint.CompileDispatcher
-	limits     TransportLimits
-	generation string
-	state      sessionState
-	inFlight   bool
-	negotiated *endpoint.NegotiatedContext
-	activePlan *endpoint.CompilePlan
+	mu                 sync.Mutex
+	descriptor         *endpoint.Descriptor
+	dispatcher         *endpoint.CompileDispatcher
+	limits             TransportLimits
+	generation         string
+	state              sessionState
+	inFlight           bool
+	inFlightDone       chan struct{}
+	handshakeAttempted bool
+	negotiated         *endpoint.NegotiatedContext
+	activePlan         *endpoint.CompilePlan
 }
 
 func NewSession(authority *endpoint.CompilerEndpoint, generation string, limits TransportLimits) (*Session, error) {
 	if authority == nil || authority.Descriptor == nil || authority.Dispatcher == nil {
 		return nil, fmt.Errorf("nil compiler endpoint authority")
 	}
-	if !validGeneration(generation) {
+	if !validOpaqueString(generation, 128) {
 		return nil, fmt.Errorf("invalid endpoint generation")
 	}
 	if err := validateTransportLimits(limits); err != nil {
@@ -157,21 +159,21 @@ func (session *Session) Generation() string {
 // before copying transferred control/blob bytes into Go linear memory.
 func (session *Session) PreflightGeneration(generation string) *LocalFailure {
 	if session == nil {
-		return localFailure(FailureDisposed, PhaseLifecycle, false)
+		return localFailure(FailureDisposed)
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if generation != session.generation {
-		return localFailure(FailureStaleGeneration, PhaseLifecycle, true)
+		return localFailure(FailureStaleGeneration)
 	}
 	switch session.state {
 	case sessionDisposed:
-		return localFailure(FailureDisposed, PhaseLifecycle, false)
+		return localFailure(FailureDisposed)
 	case sessionCrashed:
-		return localFailure(FailureCrashed, PhaseRuntime, true)
+		return localFailure(FailureCrashed)
 	}
 	if session.inFlight {
-		return localFailure(FailureMalformedMessage, PhaseRequest, false)
+		return localFailure(FailureMalformedMessage)
 	}
 	return nil
 }
@@ -180,11 +182,11 @@ func (session *Session) PreflightGeneration(generation string) *LocalFailure {
 // exchange. Every terminal response is encoded by generated Go codecs.
 func (session *Session) Dispatch(ctx context.Context, generation string, control []byte, blobs RequestBlobs) (response Response, failure *LocalFailure) {
 	if session == nil || ctx == nil || blobs == nil {
-		return Response{}, localFailure(FailureMalformedMessage, PhaseRequest, false)
+		return Response{}, localFailure(FailureMalformedMessage)
 	}
 	if int64(len(control)) > session.limits.MaxControlBytes {
 		blobs.Release()
-		return Response{}, localFailure(FailureTransferFailed, PhaseTransfer, false)
+		return Response{}, localFailure(FailureTransferFailed)
 	}
 	if beginFailure := session.begin(generation); beginFailure != nil {
 		blobs.Release()
@@ -196,37 +198,46 @@ func (session *Session) Dispatch(ctx context.Context, generation string, control
 			session.markCrashed()
 			response.Release()
 			response = Response{}
-			failure = localFailure(FailureCrashed, PhaseRuntime, true)
+			failure = localFailure(FailureCrashed)
 		}
 		session.end()
 	}()
 
 	if request, err := engineprotocol.DecodeHandshakeRequestEnvelope(control); err == nil {
 		if blobs.Count() != 0 {
-			return Response{}, localFailure(FailureMalformedMessage, PhaseRequest, false)
+			return Response{}, localFailure(FailureMalformedMessage)
 		}
 		return session.dispatchHandshake(ctx, generation, request)
 	}
 	request, err := engineprotocol.DecodeCompileRequestEnvelope(control)
 	if err != nil {
-		return Response{}, localFailure(FailureMalformedMessage, PhaseRequest, false)
+		return Response{}, localFailure(FailureMalformedMessage)
 	}
 	return session.dispatchCompile(ctx, generation, request, blobs)
 }
 
 func (session *Session) dispatchHandshake(ctx context.Context, generation string, request engineprotocol.HandshakeRequestEnvelope) (Response, *LocalFailure) {
-	// Every handshake attempt clears prior authority first. Only a successful
-	// generated response installs a context for later compile requests.
 	session.mu.Lock()
+	repeated := session.handshakeAttempted
+	session.handshakeAttempted = true
 	session.negotiated = nil
 	session.mu.Unlock()
-	result, negotiated, err := session.descriptor.Negotiate(ctx, request)
+	var (
+		result     engineprotocol.HandshakeResponseEnvelope
+		negotiated *endpoint.NegotiatedContext
+		err        error
+	)
+	if repeated {
+		result, err = session.descriptor.RejectHandshakeConnectionState(request.RequestID)
+	} else {
+		result, negotiated, err = session.descriptor.Negotiate(ctx, request)
+	}
 	if err != nil {
-		return Response{}, localFailure(FailureCrashed, PhaseRuntime, true)
+		return Response{}, localFailure(FailureCrashed)
 	}
 	control, err := engineprotocol.EncodeHandshakeResponseEnvelope(result)
 	if err != nil || int64(len(control)) > session.limits.MaxControlBytes {
-		return Response{}, localFailure(FailureCrashed, PhaseRuntime, true)
+		return Response{}, localFailure(FailureCrashed)
 	}
 	if negotiated != nil {
 		session.mu.Lock()
@@ -234,8 +245,13 @@ func (session *Session) dispatchHandshake(ctx context.Context, generation string
 			session.negotiated = negotiated
 		}
 		session.mu.Unlock()
+		return session.publishableResponse(Response{EndpointGeneration: generation, Control: control})
 	}
-	return session.publishableResponse(Response{EndpointGeneration: generation, Control: control})
+	// A rejected/cancelled first handshake and every second handshake are the
+	// one terminal generated response for this generation. Publication is
+	// allowed once, but all later bridge calls observe terminal lifecycle state.
+	session.terminateHandshakeGeneration()
+	return Response{EndpointGeneration: generation, Control: control}, nil
 }
 
 func (session *Session) dispatchCompile(ctx context.Context, generation string, request engineprotocol.CompileRequestEnvelope, blobs RequestBlobs) (Response, *LocalFailure) {
@@ -244,17 +260,17 @@ func (session *Session) dispatchCompile(ctx context.Context, generation string, 
 	session.mu.Unlock()
 	plan, terminal, err := session.dispatcher.PrepareCompile(ctx, negotiated, request)
 	if err != nil {
-		return Response{}, localFailure(FailureCrashed, PhaseRuntime, true)
+		return Response{}, localFailure(FailureCrashed)
 	}
 	if terminal != nil {
 		control, encodeErr := engineprotocol.EncodeCompileResponseEnvelope(*terminal)
 		if encodeErr != nil || int64(len(control)) > session.limits.MaxControlBytes {
-			return Response{}, localFailure(FailureCrashed, PhaseRuntime, true)
+			return Response{}, localFailure(FailureCrashed)
 		}
 		return session.publishableResponse(Response{EndpointGeneration: generation, Control: control})
 	}
 	if plan == nil {
-		return Response{}, localFailure(FailureCrashed, PhaseRuntime, true)
+		return Response{}, localFailure(FailureCrashed)
 	}
 	session.setActivePlan(plan)
 	defer session.clearActivePlan(plan)
@@ -266,16 +282,16 @@ func (session *Session) dispatchCompile(ctx context.Context, generation string, 
 	result, executeErr := plan.Execute(ctx, blobs, sink)
 	if executeErr != nil {
 		sink.Release()
-		return Response{}, localFailure(FailureCrashed, PhaseRuntime, true)
+		return Response{}, localFailure(FailureCrashed)
 	}
 	control, encodeErr := engineprotocol.EncodeCompileResponseEnvelope(result)
 	if encodeErr != nil || int64(len(control)) > session.limits.MaxControlBytes {
 		sink.Release()
-		return Response{}, localFailure(FailureCrashed, PhaseRuntime, true)
+		return Response{}, localFailure(FailureCrashed)
 	}
 	if int64(len(control))+sink.totalBytes > session.limits.MaxResponsePublishBytes {
 		sink.Release()
-		return Response{}, localFailure(FailureTransferFailed, PhaseTransfer, false)
+		return Response{}, localFailure(FailureTransferFailed)
 	}
 	response := Response{EndpointGeneration: generation, Control: control, Blobs: sink.Take()}
 	return session.publishableResponse(response)
@@ -285,24 +301,37 @@ func (session *Session) begin(generation string) *LocalFailure {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if generation != session.generation {
-		return localFailure(FailureStaleGeneration, PhaseLifecycle, true)
+		return localFailure(FailureStaleGeneration)
 	}
 	switch session.state {
 	case sessionDisposed:
-		return localFailure(FailureDisposed, PhaseLifecycle, false)
+		return localFailure(FailureDisposed)
 	case sessionCrashed:
-		return localFailure(FailureCrashed, PhaseRuntime, true)
+		return localFailure(FailureCrashed)
 	}
 	if session.inFlight {
-		return localFailure(FailureMalformedMessage, PhaseRequest, false)
+		return localFailure(FailureMalformedMessage)
 	}
 	session.inFlight = true
+	session.inFlightDone = make(chan struct{})
 	return nil
 }
 
 func (session *Session) end() {
 	session.mu.Lock()
+	done := session.inFlightDone
+	session.inFlightDone = nil
 	session.inFlight = false
+	session.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
+}
+
+func (session *Session) terminateHandshakeGeneration() {
+	session.mu.Lock()
+	session.state = sessionDisposed
+	session.negotiated = nil
 	session.mu.Unlock()
 }
 
@@ -333,9 +362,9 @@ func (session *Session) publishableResponse(response Response) (Response, *Local
 	}
 	response.Release()
 	if state == sessionDisposed {
-		return Response{}, localFailure(FailureDisposed, PhaseLifecycle, false)
+		return Response{}, localFailure(FailureDisposed)
 	}
-	return Response{}, localFailure(FailureCrashed, PhaseRuntime, true)
+	return Response{}, localFailure(FailureCrashed)
 }
 
 func (session *Session) markCrashed() {
@@ -354,24 +383,32 @@ func (session *Session) markCrashed() {
 // The owning host must terminate the dedicated Worker afterward.
 func (session *Session) Dispose(generation string) *LocalFailure {
 	if session == nil {
-		return localFailure(FailureDisposed, PhaseLifecycle, false)
+		return localFailure(FailureDisposed)
 	}
 	session.mu.Lock()
 	if generation != session.generation {
 		session.mu.Unlock()
-		return localFailure(FailureStaleGeneration, PhaseLifecycle, true)
+		return localFailure(FailureStaleGeneration)
 	}
 	if session.state == sessionDisposed {
+		done := session.inFlightDone
 		session.mu.Unlock()
+		if done != nil {
+			<-done
+		}
 		return nil
 	}
 	session.state = sessionDisposed
 	session.negotiated = nil
 	plan := session.activePlan
 	session.activePlan = nil
+	done := session.inFlightDone
 	session.mu.Unlock()
 	if plan != nil {
 		plan.Abort()
+	}
+	if done != nil {
+		<-done
 	}
 	return nil
 }

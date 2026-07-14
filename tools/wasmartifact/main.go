@@ -81,6 +81,9 @@ type manifestTransport struct {
 	ID                      string `json:"id"`
 	WorkerProtocol          string `json:"worker_protocol"`
 	WorkerProtocolVersion   int    `json:"worker_protocol_version"`
+	ContractFile            string `json:"contract_file"`
+	EndpointIDProvenance    string `json:"endpoint_instance_id_provenance"`
+	ReleaseDigestProvenance string `json:"release_manifest_digest_provenance"`
 	SingleFlight            bool   `json:"single_flight"`
 	Transfer                string `json:"transfer"`
 	MaxControlBytes         int64  `json:"max_control_bytes"`
@@ -240,7 +243,7 @@ func verify(output string) error {
 			return fmt.Errorf("manifest file mismatch for %s", file.Path)
 		}
 	}
-	for _, required := range []string{"layerdraw-engine.wasm", "wasm_exec.js", "LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.txt", sbomName} {
+	for _, required := range []string{"layerdraw-engine.wasm", "wasm_exec.js", "engine-wasm-worker-v1.json", "LICENSE", "NOTICE", "LICENSING.md", "THIRD_PARTY_NOTICES.txt", sbomName} {
 		if !seen[required] {
 			return fmt.Errorf("manifest omits required file %s", required)
 		}
@@ -318,6 +321,9 @@ func transportManifest() manifestTransport {
 		ID:                      wasmtransport.TransportID,
 		WorkerProtocol:          wasmtransport.WorkerProtocol,
 		WorkerProtocolVersion:   wasmtransport.WorkerProtocolVersion,
+		ContractFile:            "engine-wasm-worker-v1.json",
+		EndpointIDProvenance:    "runtime_crypto_rand",
+		ReleaseDigestProvenance: "verified_worker_input",
 		SingleFlight:            true,
 		Transfer:                "array_buffer",
 		MaxControlBytes:         limits.MaxControlBytes,

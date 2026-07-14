@@ -143,7 +143,7 @@ func (blobs *memoryRequestBlobs) Release() { blobs.releases++ }
 func sourceBlobs(value []byte) *memoryRequestBlobs {
 	return &memoryRequestBlobs{definitions: []endpoint.BlobDefinition{{
 		BlobID: "source",
-		Owned:  &endpoint.OwnedBlob{Bytes: slices.Clone(value)},
+		Owned:  &endpoint.OwnedBlob{Bytes: slices.Clone(value), Release: func() {}},
 	}}}
 }
 
@@ -210,7 +210,7 @@ func TestSessionUsesGeneratedTerminalResponsesWithoutBlobCopy(t *testing.T) {
 	}
 }
 
-func TestRejectedRenegotiationClearsPriorContext(t *testing.T) {
+func TestSecondHandshakeRejectsAndTerminatesGeneration(t *testing.T) {
 	t.Parallel()
 	session := newTestSession(t)
 	negotiateSession(t, session)
@@ -218,16 +218,31 @@ func TestRejectedRenegotiationClearsPriorContext(t *testing.T) {
 	if failure != nil {
 		t.Fatal(failure)
 	}
+	decoded, err := engineprotocol.DecodeHandshakeResponseEnvelope(response.Control)
 	response.Release()
+	if err != nil || decoded.Outcome != protocolcommon.OutcomeRejected || len(decoded.Diagnostics) != 1 || decoded.Diagnostics[0].Code != endpoint.DiagnosticHandshakeInvalidConnectionState {
+		t.Fatalf("second handshake response=%+v err=%v", decoded, err)
+	}
 	source := []byte("project p \"Project\" {}")
-	response, failure = session.Dispatch(context.Background(), "generation-1", compileBytes(t, source), sourceBlobs(source))
+	if _, failure = session.Dispatch(context.Background(), "generation-1", compileBytes(t, source), sourceBlobs(source)); failure == nil || failure.Code != FailureDisposed {
+		t.Fatalf("terminal generation accepted compile: %+v", failure)
+	}
+}
+
+func TestRejectedInitialHandshakeTerminatesGeneration(t *testing.T) {
+	t.Parallel()
+	session := newTestSession(t)
+	response, failure := session.Dispatch(context.Background(), "generation-1", handshakeBytes(t, false), EmptyRequestBlobs{})
 	if failure != nil {
 		t.Fatal(failure)
 	}
-	defer response.Release()
-	decoded, err := engineprotocol.DecodeCompileResponseEnvelope(response.Control)
-	if err != nil || decoded.Failure == nil || decoded.Failure.Code != endpoint.FailureCompileUnnegotiated {
-		t.Fatalf("rejected re-handshake retained authority: %+v err=%v", decoded, err)
+	decoded, err := engineprotocol.DecodeHandshakeResponseEnvelope(response.Control)
+	response.Release()
+	if err != nil || decoded.Outcome != protocolcommon.OutcomeRejected {
+		t.Fatalf("initial rejection=%+v err=%v", decoded, err)
+	}
+	if _, failure := session.Dispatch(context.Background(), "generation-1", handshakeBytes(t, true), EmptyRequestBlobs{}); failure == nil || failure.Code != FailureDisposed {
+		t.Fatalf("rejected generation allowed retry: %+v", failure)
 	}
 }
 
@@ -346,8 +361,23 @@ func TestTransportLimitValidationAndAuthority(t *testing.T) {
 	if err := validateTransportLimits(invalid); err == nil {
 		t.Fatal("zero transport limit accepted")
 	}
-	if validGeneration("") || validGeneration(" generation") || !validGeneration("generation-1") {
+	if validOpaqueString("", 128) || validOpaqueString("é", 1) || !validOpaqueString("世代-1", 128) {
 		t.Fatal("generation grammar is not closed")
+	}
+}
+
+func TestEndpointInstanceIdentityIsRuntimeMinted(t *testing.T) {
+	t.Parallel()
+	first, err := newEndpointInstanceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newEndpointInstanceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || len(first) != len("wasm-")+32 || first[:len("wasm-")] != "wasm-" || !validOpaqueString(first, 128) {
+		t.Fatalf("endpoint identities are not fresh opaque values: first=%q second=%q", first, second)
 	}
 }
 
@@ -381,7 +411,7 @@ func TestEmptyBlobsSessionConstructionAndAccessors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session, err := NewSession(authority, " bad", limits); err == nil || session != nil {
+	if session, err := NewSession(authority, string([]byte{0xff}), limits); err == nil || session != nil {
 		t.Fatalf("bad generation accepted: session=%+v err=%v", session, err)
 	}
 	limits.MaxBuffers = 0

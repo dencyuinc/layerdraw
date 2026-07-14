@@ -6,7 +6,7 @@
 package wasm
 
 import (
-	"regexp"
+	"unicode/utf8"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
@@ -91,10 +91,43 @@ type LocalFailure struct {
 	Retryable bool   `json:"retryable"`
 }
 
-func localFailure(code, phase string, retryable bool) *LocalFailure {
-	return &LocalFailure{Code: code, Phase: phase, Retryable: retryable}
+// FailureDefinition is the one frozen outer-transport classification for a
+// local failure code. Transport implementations must not reinterpret phase or
+// retryability independently.
+type FailureDefinition struct {
+	Code      string `json:"code"`
+	Phase     string `json:"phase"`
+	Retryable bool   `json:"retryable"`
 }
 
-func validGeneration(value string) bool {
-	return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`).MatchString(value)
+var failureDefinitions = [...]FailureDefinition{
+	{Code: FailureUnsupported, Phase: PhaseInitialization, Retryable: false},
+	{Code: FailureInitializationFailed, Phase: PhaseInitialization, Retryable: false},
+	{Code: FailureArtifactMismatch, Phase: PhaseInitialization, Retryable: false},
+	{Code: FailureMalformedMessage, Phase: PhaseRequest, Retryable: false},
+	{Code: FailureStaleGeneration, Phase: PhaseLifecycle, Retryable: true},
+	{Code: FailureTransferFailed, Phase: PhaseTransfer, Retryable: false},
+	{Code: FailureCrashed, Phase: PhaseRuntime, Retryable: true},
+	{Code: FailureTerminatedByCaller, Phase: PhaseLifecycle, Retryable: false},
+	{Code: FailureDisposed, Phase: PhaseLifecycle, Retryable: false},
+}
+
+// FailureDefinitions returns the version-one vocabulary in normative order.
+func FailureDefinitions() []FailureDefinition {
+	result := make([]FailureDefinition, len(failureDefinitions))
+	copy(result, failureDefinitions[:])
+	return result
+}
+
+func localFailure(code string) *LocalFailure {
+	for _, definition := range failureDefinitions {
+		if definition.Code == code {
+			return &LocalFailure{Code: definition.Code, Phase: definition.Phase, Retryable: definition.Retryable}
+		}
+	}
+	panic("unknown local failure code")
+}
+
+func validOpaqueString(value string, maximumBytes int) bool {
+	return value != "" && utf8.ValidString(value) && len(value) <= maximumBytes
 }

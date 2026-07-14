@@ -83,6 +83,7 @@ env \
     ./cmd/layerdraw-engine
 
 cp "$wasm_exec" "$stage/wasm_exec.js"
+cp "$repo_root/tests/conformance/testdata/engine_wasm_worker_v1.json" "$stage/engine-wasm-worker-v1.json"
 
 env \
   GOTOOLCHAIN=go1.26.5 \
