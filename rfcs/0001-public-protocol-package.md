@@ -10,9 +10,10 @@
 
 LayerDraw needs one language-neutral contract between the Go Engine boundary
 and TypeScript hosts without making compiler or runtime implementation types a
-public API. The repository already defines that contract as JSON Schema draft
-2020-12 sources in `schemas/`, with committed Go and TypeScript bindings that
-carry matching schema digests.
+public API. The repository already defines that contract in `schemas/` using
+LayerDraw Protocol Schema Dialect v1, which composes JSON Schema draft 2020-12
+with required LayerDraw assertion vocabulary. Committed Go and TypeScript
+bindings carry matching schema-closure digests.
 
 Publishing the TypeScript binding introduces a public package and a release
 boundary. Repository policy therefore requires an explicit decision about the
@@ -34,9 +35,11 @@ provides generated wire types, structural predicates, validated decoders, and
 canonical JSON encoders. Raw schemas, generator internals, generated source
 paths, compiler types, and runtime types are not package entry points.
 
-The JSON schemas in `schemas/` are the source of truth. `tools/protocolgen` is
-the sole writer for the committed Go bindings in `gen/go/`, the TypeScript
-sources in `packages/protocol/src/*.gen.ts`, and the schema digest manifest.
+The LayerDraw protocol schemas and dialect meta-schema in `schemas/` are the
+source of truth. A validator that does not implement the dialect's required
+assertion vocabulary must refuse the schemas. `tools/protocolgen` is the sole
+writer for the committed Go bindings in `gen/go/`, the TypeScript sources in
+`packages/protocol/src/*.gen.ts`, and the schema digest manifest.
 Generated files are never edited by hand. Changes to a wire contract start in
 the schemas, regenerate both languages in one change, and carry shared
 conformance coverage.
