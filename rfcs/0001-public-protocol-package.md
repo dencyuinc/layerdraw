@@ -45,13 +45,17 @@ the schemas, regenerate both languages in one change, and carry shared
 conformance coverage.
 
 `make generate-check` runs generation from the committed revision in an
-independent temporary clone, compares NUL-delimited manifests of every
-non-Git filesystem entry (including ignored paths, types, modes, contents, and
-symlink targets), permits changes only to the declared generated-output set,
-and requires two clean passes. A frozen offline install materializes per-run
-dependency copies from a read-only package store, and both dependencies and
-tool caches live outside the cloned repository. Dependency copies are also
-manifested so mutation attempts fail without exposing caller dependency state.
+independent temporary clone for each pass, compares NUL-delimited manifests of
+every non-Git filesystem entry (including ignored paths, types, modes,
+contents, and symlink targets), permits changes only to the declared
+generated-output set, and requires two clean passes. After the initial
+workspace dependency materialization, the gate copies the active Corepack
+runtime and imports its verified `pnpm@11.12.0` payload without network access
+into a preserved read-only bundle used by both passes; it never selects a
+global pnpm executable. Each clone receives a frozen offline dependency copy
+from the existing read-only package store and distinct HOME, XDG, Go, Turbo,
+and temporary caches. Dependency and package-manager copies are manifested so
+mutation attempts fail without exposing caller dependency state.
 Package verification builds and packs the actual npm artifact, checks its
 export boundary in Node and browser conditions, and rejects source maps whose
 source is neither packaged nor embedded. Issue #27 does not add a release or

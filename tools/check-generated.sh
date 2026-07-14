@@ -9,6 +9,13 @@ isolated_repository=''
 dependency_root=''
 repository_root=''
 caller_manifest=''
+package_manager_root=''
+package_manager_home=''
+package_manager_bin=''
+package_manager_baseline=''
+package_manager_node=''
+package_manager_corepack=''
+pinned_pnpm_version='11.12.0'
 
 write_manifest() {
   local root="$1"
@@ -101,6 +108,9 @@ cleanup() {
     fi
   fi
 
+  if [[ -n "$temporary" && -d "$temporary" ]]; then
+    chmod -R u+w "$temporary" 2>/dev/null || true
+  fi
   if [[ -n "$temporary" ]] && ! rm -rf "$temporary"; then
     printf 'Generation gate could not remove its temporary isolation directory.\n' >&2
     status=1
@@ -212,6 +222,10 @@ if (scope === "dependencies") {
   console.error(`Generation ${phase} changed the isolated dependency snapshot.`);
   process.exit(1);
 }
+if (scope === "package-manager") {
+  console.error(`Generation ${phase} changed the preserved package-manager bundle.`);
+  process.exit(1);
+}
 
 const allowlist = new Set(
   fs.readFileSync(allowlistPath, "utf8").split("\n").filter(Boolean).map((path) => Buffer.from(path).toString("base64")),
@@ -280,20 +294,161 @@ visit(dependencyRoot, Buffer.alloc(0));
 EOF
 }
 
+read_pinned_package_manager() {
+  node --input-type=module - "$isolated_repository/package.json" "$pinned_pnpm_version" <<'EOF'
+import fs from "node:fs";
+
+const [filename, expectedVersion] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(filename, "utf8"));
+const expected = `pnpm@${expectedVersion}`;
+if (manifest.packageManager !== expected) {
+  console.error(`package.json must pin packageManager to ${expected}`);
+  process.exit(1);
+}
+process.stdout.write(manifest.packageManager);
+EOF
+}
+
+run_pinned_pnpm() {
+  COREPACK_ENABLE_NETWORK=0 \
+    COREPACK_HOME="$package_manager_home" \
+    NODE_DISABLE_COMPILE_CACHE=1 \
+    "$package_manager_node" "$package_manager_corepack" pnpm "$@"
+}
+
+materialize_package_manager() {
+  local package_manager_spec corepack_executable corepack_source corepack_source_directory
+  local corepack_package_root corepack_relative_entry
+  local candidate actual_version package_version
+  local package_manager_archive package_manager_log
+  local -a corepack_homes=()
+
+  if [[ ! -f "$isolated_repository/package.json" ]]; then
+    return
+  fi
+  package_manager_spec="$(read_pinned_package_manager)"
+  package_manager_node="$(command -v node)"
+  corepack_executable="$(command -v corepack)"
+  corepack_source="$("$package_manager_node" --input-type=module - "$corepack_executable" <<'EOF'
+import fs from "node:fs";
+process.stdout.write(fs.realpathSync(process.argv[2]));
+EOF
+  )"
+  corepack_source_directory="$(dirname "$corepack_source")"
+  corepack_package_root="$(dirname "$corepack_source_directory")"
+  corepack_relative_entry="${corepack_source#"$corepack_package_root"/}"
+
+  package_manager_root="$temporary/package-manager"
+  package_manager_home="$package_manager_root/corepack-home"
+  package_manager_bin="$package_manager_root/bin"
+  package_manager_archive="$package_manager_root/corepack.tgz"
+  package_manager_log="$package_manager_root/materialize.log"
+  mkdir -p "$package_manager_root" "$package_manager_home" "$package_manager_bin"
+  cp -R "$corepack_package_root" "$package_manager_root/corepack-cli"
+  package_manager_corepack="$package_manager_root/corepack-cli/$corepack_relative_entry"
+
+  if [[ -n "${COREPACK_HOME:-}" ]]; then
+    corepack_homes+=("$COREPACK_HOME")
+  fi
+  if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+    corepack_homes+=("$XDG_CACHE_HOME/node/corepack")
+  fi
+  corepack_homes+=("$HOME/.cache/node/corepack")
+
+  for candidate in "${corepack_homes[@]}"; do
+    if [[ ! -d "$candidate" ]]; then
+      continue
+    fi
+    rm -f "$package_manager_archive"
+    if (
+      cd "$isolated_repository"
+      COREPACK_ENABLE_NETWORK=0 \
+        COREPACK_HOME="$candidate" \
+        NODE_DISABLE_COMPILE_CACHE=1 \
+        "$package_manager_node" "$package_manager_corepack" \
+          pack "$package_manager_spec" --output "$package_manager_archive"
+    ) >"$package_manager_log" 2>&1; then
+      break
+    fi
+  done
+  if [[ ! -f "$package_manager_archive" ]]; then
+    printf 'The verified %s Corepack payload is not available offline. Run make bootstrap first.\n' \
+      "$package_manager_spec" >&2
+    return 1
+  fi
+
+  COREPACK_ENABLE_NETWORK=0 \
+    COREPACK_HOME="$package_manager_home" \
+    NODE_DISABLE_COMPILE_CACHE=1 \
+    "$package_manager_node" "$package_manager_corepack" \
+      install -g --cache-only "$package_manager_archive" >"$package_manager_log" 2>&1
+  rm -f "$package_manager_archive" "$package_manager_log"
+
+  package_version="$("$package_manager_node" --input-type=module - \
+    "$package_manager_home/v1/pnpm/$pinned_pnpm_version/package.json" <<'EOF'
+import fs from "node:fs";
+const manifest = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+process.stdout.write(manifest.version);
+EOF
+)"
+  actual_version="$(cd "$isolated_repository" && run_pinned_pnpm --version)"
+  if [[ "$package_version" != "$pinned_pnpm_version" || "$actual_version" != "$pinned_pnpm_version" ]]; then
+    printf 'Materialized pnpm version mismatch: expected %s, package %s, executable %s.\n' \
+      "$pinned_pnpm_version" "$package_version" "$actual_version" >&2
+    return 1
+  fi
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'package_manager_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"' \
+    'exec env COREPACK_ENABLE_NETWORK=0 COREPACK_HOME="$package_manager_root/corepack-home" NODE_DISABLE_COMPILE_CACHE=1 \' \
+    '  node "$package_manager_root/corepack-cli/dist/corepack.js" pnpm "$@"' \
+    >"$package_manager_bin/pnpm"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'package_manager_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"' \
+    'exec env COREPACK_ENABLE_NETWORK=0 COREPACK_HOME="$package_manager_root/corepack-home" NODE_DISABLE_COMPILE_CACHE=1 \' \
+    '  node "$package_manager_root/corepack-cli/dist/corepack.js" "$@"' \
+    >"$package_manager_bin/corepack"
+  chmod 0555 "$package_manager_bin/pnpm" "$package_manager_bin/corepack"
+  chmod -R a-w "$package_manager_root"
+
+  package_manager_baseline="$temporary/package-manager-baseline.manifest"
+  write_manifest "$package_manager_root" "$package_manager_baseline"
+}
+
+verify_pinned_package_manager() {
+  local actual_version package_manager_current phase="$1"
+  if [[ -z "$package_manager_root" ]]; then
+    return
+  fi
+  actual_version="$(cd "$isolated_repository" && run_pinned_pnpm --version)"
+  if [[ "$actual_version" != "$pinned_pnpm_version" ]]; then
+    printf 'Generation %s resolved pnpm %s instead of pinned pnpm %s.\n' \
+      "$phase" "$actual_version" "$pinned_pnpm_version" >&2
+    return 1
+  fi
+  package_manager_current="$temporary/package-manager-current.manifest"
+  write_manifest "$package_manager_root" "$package_manager_current"
+  compare_manifests \
+    "$package_manager_baseline" "$package_manager_current" "$phase" package-manager
+}
+
 materialize_dependency_snapshot() {
   local source relative relative_parent destination dependency_entry entry_name pnpm_store dependency_workspace
-  dependency_root="$temporary/dependencies"
-  dependency_workspace="$temporary/dependency-workspace"
+  dependency_workspace="${dependency_root%/*}/dependency-workspace"
   mkdir -p "$dependency_root" "$dependency_workspace"
 
   if [[ -f "$isolated_repository/pnpm-lock.yaml" && -f "$isolated_repository/pnpm-workspace.yaml" ]]; then
     # Install in a separate staging tree so dependencies never occupy the
     # repository that runs generation. Copy imports prevent store hardlinks.
     git -C "$isolated_repository" archive --format=tar HEAD | tar -xf - -C "$dependency_workspace"
-    pnpm_store="$(corepack pnpm store path)"
+    pnpm_store="$(cd "$dependency_workspace" && run_pinned_pnpm store path)"
     (
       cd "$dependency_workspace"
-      CI=true corepack pnpm install \
+      CI=true run_pinned_pnpm install \
         --offline \
         --frozen-lockfile \
         --frozen-store \
@@ -350,13 +505,28 @@ invoke_fixture_gate() {
   local fixture="$1"
   local command="$2"
   local before after worktrees_before worktrees_after gate_temporary
+  local -a fixture_environment
   before="$(mktemp "$temporary/fixture-before.XXXXXX")"
   after="$(mktemp "$temporary/fixture-after.XXXXXX")"
   gate_temporary="$(mktemp -d "$temporary/fixture-gate.XXXXXX")"
   worktrees_before="$(git -C "$fixture" worktree list --porcelain)"
   write_manifest "$fixture" "$before" true
 
-  if fixture_output="$(cd "$fixture" && TMPDIR="$gate_temporary" ./tools/check-generated.sh bash -c "$command" 2>&1)"; then
+  fixture_environment=("TMPDIR=$gate_temporary")
+  if [[ -n "${GENERATION_GATE_SELF_TEST_CALLER_HOME:-}" ]]; then
+    fixture_environment+=(
+      "HOME=$GENERATION_GATE_SELF_TEST_CALLER_HOME"
+      "XDG_CACHE_HOME=$GENERATION_GATE_SELF_TEST_CALLER_XDG_CACHE"
+      "COREPACK_HOME=$GENERATION_GATE_SELF_TEST_BOOTSTRAP_COREPACK_HOME"
+      "PATH=$GENERATION_GATE_SELF_TEST_CALLER_PATH"
+      "PNPM=$GENERATION_GATE_SELF_TEST_GLOBAL_PNPM"
+      "COREPACK_ENABLE_NETWORK=1"
+      "npm_config_offline=false"
+      "pnpm_config_offline=false"
+    )
+  fi
+  if fixture_output="$(cd "$fixture" && \
+    env "${fixture_environment[@]}" ./tools/check-generated.sh bash -c "$command" 2>&1)"; then
     fixture_status=0
   else
     fixture_status=$?
@@ -407,7 +577,9 @@ assert_fixture_rejects() {
 }
 
 run_self_test() {
-  local fixture path pass_counter
+  local fixture path pass_counter package_fixture package_manager_check
+  local bootstrap_corepack_home candidate record_lines unique_homes unique_xdg_caches
+  local poison_home poison_bin poison_marker poison_store environment_record mutation_pass
   repository_root=''
   caller_manifest=''
   temporary="$(make_temporary_directory)"
@@ -471,6 +643,147 @@ run_self_test() {
     return 1
   fi
 
+  package_fixture="$temporary/package-manager-repository"
+  mkdir -p "$package_fixture/tools"
+  cp "${BASH_SOURCE[0]}" "$package_fixture/tools/check-generated.sh"
+  chmod +x "$package_fixture/tools/check-generated.sh"
+  while IFS= read -r path; do
+    mkdir -p "$package_fixture/$(dirname "$path")"
+    printf 'generated baseline\n' >"$package_fixture/$path"
+  done < <(expected_generated_paths)
+  printf 'generated files only\n' >"$package_fixture/gen/README.md"
+  printf 'node_modules/\n' >"$package_fixture/.gitignore"
+  printf '%s\n' \
+    '{"name":"generation-gate-package-manager-self-test","private":true,"packageManager":"pnpm@11.12.0"}' \
+    >"$package_fixture/package.json"
+  printf '%s\n' 'packages: []' >"$package_fixture/pnpm-workspace.yaml"
+  printf '%s\n' \
+    "lockfileVersion: '9.0'" \
+    '' \
+    'settings:' \
+    '  autoInstallPeers: true' \
+    '  excludeLinksFromLockfile: false' \
+    '' \
+    'importers:' \
+    '  .: {}' \
+    >"$package_fixture/pnpm-lock.yaml"
+  git -C "$package_fixture" init -q
+  git -C "$package_fixture" config user.email 'generation-gate-self-test@layerdraw.invalid'
+  git -C "$package_fixture" config user.name 'LayerDraw generation gate self-test'
+  git -C "$package_fixture" add .
+  git -C "$package_fixture" commit -qm 'test: initialize package-manager fixture'
+
+  bootstrap_corepack_home=''
+  for candidate in \
+    "${COREPACK_HOME:-}" \
+    "${XDG_CACHE_HOME:+$XDG_CACHE_HOME/node/corepack}" \
+    "$HOME/.cache/node/corepack"; do
+    if [[ -n "$candidate" && -f "$candidate/v1/pnpm/$pinned_pnpm_version/.corepack" ]]; then
+      bootstrap_corepack_home="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$bootstrap_corepack_home" ]]; then
+    printf 'Generation gate self-test requires the verified pnpm %s Corepack payload; run make bootstrap.\n' \
+      "$pinned_pnpm_version" >&2
+    return 1
+  fi
+
+  poison_home="$temporary/caller-home"
+  poison_bin="$temporary/caller-bin"
+  poison_marker="$temporary/global-pnpm-used"
+  environment_record="$temporary/package-manager-environments"
+  mkdir -p "$poison_home" "$poison_bin" "$poison_home/xdg-cache"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    ': >"${GENERATION_GATE_SELF_TEST_GLOBAL_PNPM_MARKER:?}"' \
+    'printf "99.99.99\n"' \
+    >"$poison_bin/pnpm"
+  chmod +x "$poison_bin/pnpm"
+  poison_store="$(cd "$package_fixture" && \
+    HOME="$poison_home" \
+    XDG_CACHE_HOME="$poison_home/xdg-cache" \
+    COREPACK_HOME="$bootstrap_corepack_home" \
+    COREPACK_ENABLE_NETWORK=0 \
+    corepack pnpm store path)"
+  mkdir -p "$temporary/package-manager-bootstrap-tmp"
+  (
+    cd "$package_fixture"
+    TMPDIR="$temporary/package-manager-bootstrap-tmp" \
+      HOME="$poison_home" \
+      XDG_CACHE_HOME="$poison_home/xdg-cache" \
+      COREPACK_HOME="$bootstrap_corepack_home" \
+      COREPACK_ENABLE_NETWORK=0 \
+      CI=true \
+      corepack pnpm install \
+        --offline \
+        --frozen-lockfile \
+        --ignore-scripts \
+        --store-dir "$poison_store" >/dev/null
+  )
+
+  export GENERATION_GATE_SELF_TEST_CALLER_HOME="$poison_home"
+  export GENERATION_GATE_SELF_TEST_CALLER_XDG_CACHE="$poison_home/xdg-cache"
+  export GENERATION_GATE_SELF_TEST_BOOTSTRAP_COREPACK_HOME="$bootstrap_corepack_home"
+  export GENERATION_GATE_SELF_TEST_CALLER_PATH="$poison_bin:$PATH"
+  export GENERATION_GATE_SELF_TEST_GLOBAL_PNPM="$poison_bin/pnpm"
+  export GENERATION_GATE_SELF_TEST_GLOBAL_PNPM_MARKER="$poison_marker"
+  export GENERATION_GATE_SELF_TEST_ENVIRONMENT_RECORD="$environment_record"
+
+  package_manager_check='
+    [[ "${COREPACK_ENABLE_NETWORK:-}" == 0 ]] || exit 31
+    [[ "${npm_config_offline:-}" == true ]] || exit 32
+    [[ "${pnpm_config_offline:-}" == true ]] || exit 33
+    [[ "${PNPM:-}" == pnpm ]] || exit 34
+    [[ "$HOME" != "$GENERATION_GATE_SELF_TEST_CALLER_HOME" ]] || exit 35
+    [[ "$XDG_CACHE_HOME" != "$GENERATION_GATE_SELF_TEST_CALLER_XDG_CACHE" ]] || exit 36
+    [[ "$COREPACK_HOME" != "$GENERATION_GATE_SELF_TEST_BOOTSTRAP_COREPACK_HOME" ]] || exit 37
+    [[ "$(command -v pnpm)" == "$GENERATION_GATE_PACKAGE_MANAGER_BIN/pnpm" ]] || exit 38
+    [[ "$(command -v corepack)" == "$GENERATION_GATE_PACKAGE_MANAGER_BIN/corepack" ]] || exit 39
+    [[ "$(pnpm --version)" == "$GENERATION_GATE_PINNED_PNPM_VERSION" ]] || exit 40
+    [[ "$(corepack pnpm --version)" == "$GENERATION_GATE_PINNED_PNPM_VERSION" ]] || exit 41
+    [[ ! -w "$COREPACK_HOME/v1/pnpm/$GENERATION_GATE_PINNED_PNPM_VERSION/package.json" ]] || exit 42
+    [[ ! -e "$GENERATION_GATE_SELF_TEST_GLOBAL_PNPM_MARKER" ]] || exit 43
+    printf "%s\t%s\t%s\t%s\n" "$GENERATION_GATE_PASS" "$HOME" "$XDG_CACHE_HOME" \
+      "$(command -v pnpm)" >>"$GENERATION_GATE_SELF_TEST_ENVIRONMENT_RECORD"
+  '
+  assert_fixture_accepts "$package_fixture" "$package_manager_check"
+  record_lines="$(wc -l <"$environment_record" | tr -d ' ')"
+  unique_homes="$(cut -f2 "$environment_record" | LC_ALL=C sort -u | wc -l | tr -d ' ')"
+  unique_xdg_caches="$(cut -f3 "$environment_record" | LC_ALL=C sort -u | wc -l | tr -d ' ')"
+  if [[ "$record_lines" != 2 || "$unique_homes" != 2 || "$unique_xdg_caches" != 2 ]] ||
+    ! diff -u <(printf '1\n2\n') <(cut -f1 "$environment_record") >/dev/null; then
+    printf 'Generation gate self-test did not observe two independently cached package-manager passes.\n' >&2
+    return 1
+  fi
+  if [[ -e "$poison_marker" ]]; then
+    printf 'Generation gate self-test invoked the caller global pnpm.\n' >&2
+    return 1
+  fi
+
+  for mutation_pass in 1 2; do
+    export GENERATION_GATE_SELF_TEST_MUTATION_PASS="$mutation_pass"
+    assert_fixture_rejects "$package_fixture" \
+      'if [[ "$GENERATION_GATE_PASS" == "$GENERATION_GATE_SELF_TEST_MUTATION_PASS" ]]; then target="$COREPACK_HOME/v1/pnpm/$GENERATION_GATE_PINNED_PNPM_VERSION/package.json"; chmod u+w "$target"; printf "\n" >>"$target"; fi' \
+      'corepack-home/v1/pnpm/11.12.0/package.json'
+    if ! grep -Fq "Generation pass $mutation_pass changed the preserved package-manager bundle" <<<"$fixture_output"; then
+      printf '%s\n' "$fixture_output" >&2
+      printf 'Generation gate self-test did not identify pass-%s package-manager cache mutation.\n' \
+        "$mutation_pass" >&2
+      return 1
+    fi
+  done
+  unset GENERATION_GATE_SELF_TEST_MUTATION_PASS
+
+  unset GENERATION_GATE_SELF_TEST_CALLER_HOME \
+    GENERATION_GATE_SELF_TEST_CALLER_XDG_CACHE \
+    GENERATION_GATE_SELF_TEST_BOOTSTRAP_COREPACK_HOME \
+    GENERATION_GATE_SELF_TEST_CALLER_PATH \
+    GENERATION_GATE_SELF_TEST_GLOBAL_PNPM \
+    GENERATION_GATE_SELF_TEST_GLOBAL_PNPM_MARKER \
+    GENERATION_GATE_SELF_TEST_ENVIRONMENT_RECORD
+
   printf 'Generation gate self-tests passed.\n'
 }
 
@@ -490,42 +803,87 @@ fi
 
 repository_root="$(git rev-parse --show-toplevel)"
 temporary="$(make_temporary_directory)"
-isolated_repository="$temporary/repository"
 caller_manifest="$temporary/caller-before.manifest"
 write_manifest "$repository_root" "$caller_manifest" true
 
 revision="$(git -C "$repository_root" rev-parse HEAD)"
-git clone --quiet --no-local --no-hardlinks --no-checkout "$repository_root" "$isolated_repository"
-git -C "$isolated_repository" checkout --quiet --detach "$revision"
-git -C "$isolated_repository" remote remove origin
-materialize_dependency_snapshot
-
-repository_baseline="$temporary/repository-baseline.manifest"
-dependency_baseline="$temporary/dependency-baseline.manifest"
-repository_current="$temporary/repository-current.manifest"
-dependency_current="$temporary/dependency-current.manifest"
-mkdir -p "$temporary/cache/turbo" "$temporary/cache/go-build" "$temporary/runtime-tmp"
-
-cd "$isolated_repository"
-assert_expected_paths
-write_manifest "$isolated_repository" "$repository_baseline" true
-write_manifest "$dependency_root" "$dependency_baseline"
-
+source_date_epoch="$(git -C "$repository_root" show -s --format=%ct "$revision")"
+go_mod_cache="$(go env GOMODCACHE)"
 for pass in 1 2; do
+  pass_root="$temporary/pass-$pass"
+  isolated_repository="$pass_root/repository"
+  dependency_root="$pass_root/dependencies"
+  repository_baseline="$pass_root/repository-baseline.manifest"
+  dependency_baseline="$pass_root/dependency-baseline.manifest"
+  repository_current="$pass_root/repository-current.manifest"
+  dependency_current="$pass_root/dependency-current.manifest"
+  pass_cache="$pass_root/cache"
+  mkdir -p "$pass_root" \
+    "$pass_cache/home" \
+    "$pass_cache/xdg-cache" \
+    "$pass_cache/xdg-config" \
+    "$pass_cache/xdg-data" \
+    "$pass_cache/xdg-state" \
+    "$pass_cache/turbo" \
+    "$pass_cache/go-build" \
+    "$pass_cache/runtime-tmp"
+
+  git clone --quiet --no-local --no-hardlinks --no-checkout \
+    "$repository_root" "$isolated_repository"
+  git -C "$isolated_repository" checkout --quiet --detach "$revision"
+  git -C "$isolated_repository" remote remove origin
+  if (( pass == 1 )); then
+    materialize_package_manager
+  fi
+  materialize_dependency_snapshot
+
+  cd "$isolated_repository"
+  assert_expected_paths
+  verify_pinned_package_manager "pass $pass before generation"
+  write_manifest "$isolated_repository" "$repository_baseline" true
+  write_manifest "$dependency_root" "$dependency_baseline"
+
+  generation_environment=(
+    "TMPDIR=$pass_cache/runtime-tmp"
+    "HOME=$pass_cache/home"
+    "XDG_CACHE_HOME=$pass_cache/xdg-cache"
+    "XDG_CONFIG_HOME=$pass_cache/xdg-config"
+    "XDG_DATA_HOME=$pass_cache/xdg-data"
+    "XDG_STATE_HOME=$pass_cache/xdg-state"
+    "LC_ALL=C"
+    "TZ=UTC"
+    "SOURCE_DATE_EPOCH=$source_date_epoch"
+    "COREPACK_ENABLE_NETWORK=0"
+    "npm_config_offline=true"
+    "pnpm_config_offline=true"
+    "TURBO_CACHE_DIR=$pass_cache/turbo"
+    "TURBO_TELEMETRY_DISABLED=1"
+    "NODE_DISABLE_COMPILE_CACHE=1"
+    "GOCACHE=$pass_cache/go-build"
+    "GOTMPDIR=$pass_cache/runtime-tmp"
+    "GOMODCACHE=$go_mod_cache"
+    "GOPROXY=off"
+    "npm_config_store_dir=$pass_cache/pnpm-store"
+    "pnpm_config_verify_deps_before_run=false"
+    "GENERATION_GATE_PASS=$pass"
+  )
+  if [[ -n "$package_manager_root" ]]; then
+    generation_environment+=(
+      "COREPACK_HOME=$package_manager_home"
+      "PATH=$package_manager_bin:$PATH"
+      "PNPM=pnpm"
+      "GENERATION_GATE_PACKAGE_MANAGER_BIN=$package_manager_bin"
+      "GENERATION_GATE_PINNED_PNPM_VERSION=$pinned_pnpm_version"
+    )
+  fi
+
   # The frozen install above is the dependency check. pnpm's default pre-exec
   # check rewrites link metadata, so disable that redundant mutating step.
-  TMPDIR="$temporary/runtime-tmp" \
-    XDG_CACHE_HOME="$temporary/cache/xdg" \
-    TURBO_CACHE_DIR="$temporary/cache/turbo" \
-    TURBO_TELEMETRY_DISABLED=1 \
-    GOCACHE="$temporary/cache/go-build" \
-    GOTMPDIR="$temporary/runtime-tmp" \
-    npm_config_store_dir="$temporary/cache/pnpm-store" \
-    pnpm_config_verify_deps_before_run=false \
-    "$@"
+  env "${generation_environment[@]}" "$@"
   assert_expected_paths
   write_manifest "$isolated_repository" "$repository_current" true
   write_manifest "$dependency_root" "$dependency_current"
   compare_manifests "$repository_baseline" "$repository_current" "pass $pass" repository
   compare_manifests "$dependency_baseline" "$dependency_current" "pass $pass" dependencies
+  verify_pinned_package_manager "pass $pass"
 done
