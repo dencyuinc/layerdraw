@@ -6,7 +6,7 @@
 
 LDSP framing 1.0と **Engine Protocol 1.0** は独立したversion空間である。LDSPの`framing_major=1`、`framing_minor=0`は、control payload内のEngine Protocol versionを表さず、Engine Protocol 1.0を選択または保証しない。Engine Protocolのversion、schema、handshake、operation、outcomeはgenerated JSON envelope側の契約である。
 
-現在実装済みの範囲は`internal/transport/stdio`のdependency-light frame codec / validator、canonical chunk planner、golden corpusだけである。`cmd/layerdraw-engine stdio`、handshake接続、CompilePlan / dispatcher接続、request admission、process / signal lifecycle、subprocess integrationはまだ存在せず、GitHub Issue #30の残りの実装が所有する。この文書はそれらが実装済みであるとは主張しない。
+現在は`internal/transport/stdio`にframe codec / validator、canonical chunk planner、connection state machine、bounded admission、#28 handshake facadeと#29 `CompilePlan` facadeへの接続、atomic response-bundle writerを実装し、`cmd/layerdraw-engine stdio`からproduction compositionを起動する。これはEngine Protocol 1.0のnative stdio endpointであり、TypeScript client、Runtime、HTTP、Registry fetch、filesystem inputは実装しない。それらのendpoint外integrationは別Issueが所有する。
 
 ## 2. Byte grammar
 
@@ -93,7 +93,7 @@ chunk plannerはblob全体を追加allocateせず、size、first sequence、chun
 
 readerは40-byte headerをexact-readする。headerを1 byteも読まないframe境界のEOFだけをclean EOFとして返す。partial header、Name途中のEOF、Payload途中のEOF、body read errorはtruncated / fatalである。
 
-完全なheader、既知kind/version/flags、絶対上限内のbody lengthを確認できた場合、readerはそのbodyをexactに消費してからkind固有fieldを検査する。したがって、例えば絶対上限内だが1 MiBを超えるchunkやwrong sequenceは次のframe境界を保持したrequest-level failureとして分類できる。session層がstreamを終了するかgenerated failureへ変換する規則はIssue #30の残りが所有する。
+完全なheader、既知kind/version/flags、絶対上限内のbody lengthを確認できた場合、readerはそのbodyをexactに消費してからkind固有fieldを検査する。したがって、例えば絶対上限内だが1 MiBを超えるchunkやwrong sequenceは次のframe境界を保持したrequest-level failureとして分類できる。session層はoffending streamだけを終了し、trustworthyなgenerated requestがある場合は#28/#29のgenerated outcomeを使い、それがない場合だけ`STREAM_ERROR`と`BUNDLE_END`を書く。
 
 次はframing-fatalであり、以後のreadを禁止する。
 
@@ -106,9 +106,30 @@ readerは40-byte headerをexact-readする。headerを1 byteも読まないframe
 
 fatal後に`LDSP` magicをscanしてresynchronizeしてはならない。任意blob payload内に同じ4 bytesが存在できるため、scanはblob内部を偽headerとして選ぶ可能性がある。
 
-writerはframe全体を検証してから、header、Name、Payloadの順にexact bytesを書く。合法なpartial writeは残りを継続し、zero-progress、invalid byte count、error付きpartial writeをfatalとする。公開`Encoder`はframe単位でconcurrent callerをserializeし、header / Name / Payloadのinterleaveを防ぐ。複数frameからなるresponse bundle全体のwriter leaseは将来のsession integrationが所有する。
+writerはframe全体を検証してから、header、Name、Payloadの順にexact bytesを書く。合法なpartial writeは残りを継続し、zero-progress、invalid byte count、error付きpartial writeをfatalとする。公開`Encoder`はframe単位とbundle単位のconcurrent callerをserializeする。sessionは`RESPONSE_CONTROL`、全output blob、`BUNDLE_END`を単一bundle leaseで書くため、別streamのresponse bytesはinterleaveしない。
 
-## 7. Compatibilityとgolden corpus
+## 7. Connection、admission、process lifecycle
+
+connectionは`pre_handshake`、`negotiated`、`draining`、`closed`または`fatal`のいずれかである。最初のsuccessful operationは`engine.handshake`でなければならず、成功時の#28 `NegotiatedContext`をconnectionへ一度だけbindする。handshake rejection後は再試行できる。negotiated後のsecond handshakeはcontextを置換せず、#28のgenerated rejectionになる。handshake前compileは#29のgenerated unnegotiated failureになる。
+
+clientはnonzero `stream_id`をprocess lifetime内で再利用してはならない。再利用はcorrelationを一意にできないためconnection fatalである。`request_id`はnonterminal request間で一意であり、同時重複のlater requestだけを#28 endpoint-owned generated failureにする。terminal後の同じ`request_id`はlogical retryとして許可する。
+
+sessionは次を固定上限として実装する。
+
+- nonterminal compile controlは最大64個
+- 保持するcontrol payload総量は最大16 MiB
+- upload creditを持つstreamは同時に正確に1個
+- uploadまたはdispatch slotは最大4個
+- admitted requestのdeclared input予約総量は最大576 MiB
+- response output blob保持量はrequestごとに最大512 MiB
+
+eligible requestはcontrol arrivalのFIFO順に`REQUEST_READY`を得る。credit以前のblob、wrong stream、wrong sequence / offsetはそのrequestだけを失敗させる。unreferenced、missing、size/digest/lifetime mismatchはcollectorがbounded bytesをsealした後、#29が同じgenerated failureへ変換し、compilerを呼ばない。input bufferはrequest-ownedであり、cancel、failure、dispatch完了時に解放する。
+
+`CANCEL`はunknown / terminal streamではno-opである。pending、upload、dispatchのrequest contextとplanをcancel / abortし、publication前ならgenerated `cancelled` responseを一度だけ書く。`deadline_at`のvalidationとcontext conversionは#28 endpoint facadeだけが所有し、stdio側は別policyを作らない。
+
+`CLOSE`またはframe境界のstdin EOFはadmissionを停止し、pending / partial uploadをcancelし、sealed / dispatching requestのterminal bundleを完了してexit 0になる。partial header/body、bad magic/version/kind/flag、absolute length overflow、broken stdoutは全requestをcancelし、resyncせずexit 1になる。SIGINTは130、SIGTERMは143、CLI usage errorは2である。stdoutはLDSP bytes専用であり、stderrへ出せるのはdata-independentな固定operation codeだけで、control、source、blob、path、stack、underlying errorを出してはならない。
+
+## 8. Compatibilityとgolden corpus
 
 framing majorの変更は、既存parserがframe境界または必須意味を安全に理解できない変更である。header width / field offsetの変更、kind値の再割当、既存fieldの意味変更、上限を既存peerと非互換にする変更はmajorを上げる。
 

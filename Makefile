@@ -7,6 +7,8 @@ PNPM ?= corepack pnpm
 GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
 VERSION ?= 0.0.0-dev
 SOURCE_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || printf 'unknown')
+RELEASE_MANIFEST_DIGEST ?= sha256:0000000000000000000000000000000000000000000000000000000000000000
+ENDPOINT_INSTANCE_ID ?= layerdraw-engine-stdio
 COVERAGE_BASE_REF ?= origin/main
 ENGINE_BINARY := dist/layerdraw-engine
 LICENSE_REPORT := reports/dependency-licenses.json
@@ -88,7 +90,7 @@ integration:
 build:
 	@mkdir -p dist
 	CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false \
-		-ldflags "-s -w -X main.releaseVersion=$(VERSION) -X main.sourceRevision=$(SOURCE_REVISION)" \
+		-ldflags "-s -w -X main.releaseVersion=$(VERSION) -X main.sourceRevision=$(SOURCE_REVISION) -X main.releaseManifestDigest=$(RELEASE_MANIFEST_DIGEST) -X main.endpointInstanceID=$(ENDPOINT_INSTANCE_ID)" \
 		-o $(ENGINE_BINARY) ./cmd/layerdraw-engine
 	$(PNPM) exec turbo run build
 
