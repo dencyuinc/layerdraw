@@ -26,6 +26,7 @@ bootstrap:
 
 generate:
 	$(GO) run ./tools/protocolgen generate
+	$(GO) run ./tools/wasmparity -output tests/conformance/testdata/engine_compile_parity_v1.json
 	$(GO) generate ./...
 	$(PNPM) exec turbo run generate
 

@@ -25,6 +25,7 @@ const manifestBytes = await readFile(new URL("../dist/engine-wasm.manifest.json"
 const manifestBuffer = manifestBytes.buffer.slice(manifestBytes.byteOffset, manifestBytes.byteOffset + manifestBytes.byteLength);
 const artifactManifestDigest = await sha256(manifestBuffer);
 const artifactManifest = JSON.parse(manifestBytes);
+const parityCorpus = JSON.parse(await readFile(new URL("../../../tests/conformance/testdata/engine_compile_parity_v1.json", import.meta.url), "utf8"));
 const expectedLimitKeys = [
   "max_blob_id_bytes", "max_buffers", "max_control_bytes", "max_control_depth",
   "max_input_blob_bytes", "max_input_total_bytes", "max_output_blob_bytes",
@@ -70,7 +71,7 @@ test("real Node worker_threads owns the packaged Go/WASM lifecycle", {timeout: 1
   assert.equal(staleControl.byteLength, 0);
   assert.deepEqual((await staleFailure).failure, {code: "engine.worker.stale_generation", phase: "lifecycle", retryable: true});
 
-  const firstEndpointID = await handshakeAndCompileProjectAndPack(first.transport, artifactManifest.protocol.schema_digest, "node-first");
+  const firstEndpointID = await handshakeAndCompileProjectAndPack(first.transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-first");
   const firstDispose = first.transport.dispose();
   assert.equal(firstDispose, first.transport.dispose());
   await firstDispose;
@@ -90,7 +91,7 @@ test("real Node worker_threads owns the packaged Go/WASM lifecycle", {timeout: 1
   const replacement = createEndpoint("node-real-generation-replacement");
   exits.push(replacement.adapter.exited);
   await replacement.transport.ready;
-  const replacementEndpointID = await handshakeAndCompileProjectAndPack(replacement.transport, artifactManifest.protocol.schema_digest, "node-replacement");
+  const replacementEndpointID = await handshakeAndCompileProjectAndPack(replacement.transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-replacement");
   assert.notEqual(replacementEndpointID, firstEndpointID);
   await replacement.transport.dispose();
 
@@ -129,7 +130,7 @@ test("Node executes the verified wasm_exec byte snapshot after its source path c
     });
     await transport.ready;
     assert.match(await readFile(join(artifactRoot, "wasm_exec.js"), "utf8"), /__layerdrawUnverifiedWasmExecRan/);
-    assert.equal(await handshakeAndCompileProjectAndPack(transport, artifactManifest.protocol.schema_digest, "node-snapshot-race").then(() => true), true);
+    assert.equal(await handshakeAndCompileProjectAndPack(transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-snapshot-race").then(() => true), true);
     await transport.dispose();
     await adapter.exited;
   } finally {

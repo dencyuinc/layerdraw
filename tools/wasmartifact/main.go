@@ -34,6 +34,22 @@ const (
 	legacySBOMName         = "layerdraw-engine.wasm.cdx.json"
 )
 
+var requiredBrowserPrimitives = []string{
+	"Blob",
+	"TextDecoder",
+	"TextEncoder",
+	"URL.createObjectURL",
+	"URL.revokeObjectURL",
+	"WebAssembly",
+	"crypto.getRandomValues",
+	"crypto.subtle.digest",
+	"dedicated_module_worker",
+	"fetch",
+	"performance.now",
+	"structuredClone",
+	"transferable_fixed_ArrayBuffer",
+}
+
 type artifactManifest struct {
 	ArtifactID              string                  `json:"artifact_id"`
 	ArtifactManifestVersion int                     `json:"artifact_manifest_version"`
@@ -202,27 +218,8 @@ func verify(output string) error {
 	if !bytes.Equal(data, canonical) {
 		return errors.New("artifact manifest is not canonical JSON")
 	}
-	if manifest.ArtifactID != "@layerdraw/engine-wasm" || manifest.ArtifactManifestVersion != 1 || manifest.Build.GoVersion != expectedGoVersion || manifest.Protocol.SchemaDigest != engineprotocol.SchemaDigest {
-		return errors.New("artifact manifest authority mismatch")
-	}
-	if _, err := protocolcommon.EncodeReleaseVersion(protocolcommon.ReleaseVersion(manifest.Build.ReleaseVersion)); err != nil ||
-		!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(manifest.Build.SourceRevision) ||
-		manifest.Build.CGOEnabled || manifest.Build.GoExperiment != "" || manifest.Build.GOOSGOARCH != "js/wasm" || manifest.Build.MainPackage != "./cmd/layerdraw-engine" {
-		return errors.New("artifact manifest build identity mismatch")
-	}
-	expectedFlags := []string{
-		"-trimpath",
-		"-buildvcs=false",
-		"-ldflags=-buildid= -s -w -X main.releaseVersion=" + manifest.Build.ReleaseVersion + " -X main.sourceRevision=" + manifest.Build.SourceRevision,
-	}
-	if !slices.Equal(manifest.Build.Flags, expectedFlags) ||
-		manifest.Protocol.Name != string(engineprotocol.EngineProtocolRefNameValue) ||
-		manifest.Protocol.Version != string(engineprotocol.EngineProtocolRefVersionValue) ||
-		manifest.RuntimeSupport != (manifestRuntimeSupport{File: "wasm_exec.js", GoVersion: expectedGoVersion, Digest: "sha256:" + expectedWasmExecSHA256}) {
-		return errors.New("artifact manifest generated/build authority mismatch")
-	}
-	if manifest.Transport != transportManifest() || manifest.CompilerLimits != compilerLimitsManifest() {
-		return errors.New("artifact manifest limit drift")
+	if err := verifyManifestAuthority(manifest); err != nil {
+		return err
 	}
 	seen := make(map[string]bool, len(manifest.Files))
 	for _, file := range manifest.Files {
@@ -255,8 +252,40 @@ func verify(output string) error {
 	if !slices.Equal(manifest.Files, actualFiles) {
 		return errors.New("artifact manifest does not describe the exact output file set")
 	}
-	if err := verifySBOM(output); err != nil {
+	if err := verifySBOM(output, manifest.Build.ReleaseVersion); err != nil {
 		return err
+	}
+	return nil
+}
+
+func verifyManifestAuthority(manifest artifactManifest) error {
+	if manifest.ArtifactID != "@layerdraw/engine-wasm" || manifest.ArtifactManifestVersion != 1 || manifest.Build.GoVersion != expectedGoVersion || manifest.Protocol.SchemaDigest != engineprotocol.SchemaDigest {
+		return errors.New("artifact manifest authority mismatch")
+	}
+	if _, err := protocolcommon.EncodeReleaseVersion(protocolcommon.ReleaseVersion(manifest.Build.ReleaseVersion)); err != nil ||
+		!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(manifest.Build.SourceRevision) ||
+		manifest.Build.CGOEnabled || manifest.Build.GoExperiment != "" || manifest.Build.GOOSGOARCH != "js/wasm" || manifest.Build.MainPackage != "./cmd/layerdraw-engine" {
+		return errors.New("artifact manifest build identity mismatch")
+	}
+	expectedFlags := []string{
+		"-trimpath",
+		"-buildvcs=false",
+		"-ldflags=-buildid= -s -w -X main.releaseVersion=" + manifest.Build.ReleaseVersion + " -X main.sourceRevision=" + manifest.Build.SourceRevision,
+	}
+	if !slices.Equal(manifest.Build.Flags, expectedFlags) ||
+		manifest.Protocol.Name != string(engineprotocol.EngineProtocolRefNameValue) ||
+		manifest.Protocol.Version != string(engineprotocol.EngineProtocolRefVersionValue) ||
+		manifest.RuntimeSupport != (manifestRuntimeSupport{File: "wasm_exec.js", GoVersion: expectedGoVersion, Digest: "sha256:" + expectedWasmExecSHA256}) {
+		return errors.New("artifact manifest generated/build authority mismatch")
+	}
+	if manifest.Transport != transportManifest() || manifest.CompilerLimits != compilerLimitsManifest() {
+		return errors.New("artifact manifest limit drift")
+	}
+	if !reflectBrowserContract(manifest.BrowserContract) {
+		return errors.New("artifact manifest browser contract drift")
+	}
+	if manifest.Licenses != licenseManifest() {
+		return errors.New("artifact manifest license authority drift")
 	}
 	return nil
 }
@@ -293,26 +322,33 @@ func buildManifest(output, version, sourceRevision string) (artifactManifest, er
 			GoVersion: expectedGoVersion,
 			Digest:    "sha256:" + expectedWasmExecSHA256,
 		},
-		Files:          files,
-		Transport:      transportManifest(),
-		CompilerLimits: compilerLimitsManifest(),
-		BrowserContract: manifestBrowserContract{
-			ModuleDedicatedWorker: true,
-			SharedArrayBuffer:     false,
-			WASMThreads:           false,
-			RequiredPrimitives: []string{
-				"transferable_fixed_ArrayBuffer",
-				"TextDecoder",
-				"TextEncoder",
-				"WebAssembly",
-				"crypto.getRandomValues",
-				"dedicated_module_worker",
-				"fetch_or_verified_bytes",
-				"performance.now",
-			},
-		},
-		Licenses: manifestLicenses{Product: "LicenseRef-LayerDraw-1.0", RuntimeSupport: "BSD-3-Clause", SBOM: sbomName},
+		Files:           files,
+		Transport:       transportManifest(),
+		CompilerLimits:  compilerLimitsManifest(),
+		BrowserContract: browserContractManifest(),
+		Licenses:        licenseManifest(),
 	}, nil
+}
+
+func browserContractManifest() manifestBrowserContract {
+	return manifestBrowserContract{
+		ModuleDedicatedWorker: true,
+		SharedArrayBuffer:     false,
+		WASMThreads:           false,
+		RequiredPrimitives:    slices.Clone(requiredBrowserPrimitives),
+	}
+}
+
+func reflectBrowserContract(value manifestBrowserContract) bool {
+	expected := browserContractManifest()
+	return value.ModuleDedicatedWorker == expected.ModuleDedicatedWorker &&
+		value.SharedArrayBuffer == expected.SharedArrayBuffer &&
+		value.WASMThreads == expected.WASMThreads &&
+		slices.Equal(value.RequiredPrimitives, expected.RequiredPrimitives)
+}
+
+func licenseManifest() manifestLicenses {
+	return manifestLicenses{Product: "LicenseRef-LayerDraw-1.0", RuntimeSupport: "BSD-3-Clause", SBOM: sbomName}
 }
 
 func transportManifest() manifestTransport {
@@ -620,7 +656,7 @@ func copyFile(source, destination string) error {
 	return os.WriteFile(destination, data, 0o644)
 }
 
-func verifySBOM(output string) error {
+func verifySBOM(output, expectedVersion string) error {
 	data, err := os.ReadFile(filepath.Join(output, sbomName))
 	if err != nil {
 		return err
@@ -633,8 +669,36 @@ func verifySBOM(output string) error {
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(data, canonical) || document["bomFormat"] != "CycloneDX" || document["specVersion"] != "1.6" {
+	if !bytes.Equal(data, canonical) || document["$schema"] != "http://cyclonedx.org/schema/bom-1.6.schema.json" || document["bomFormat"] != "CycloneDX" || document["specVersion"] != "1.6" || document["version"] != float64(1) {
 		return errors.New("artifact SBOM is not canonical CycloneDX 1.6")
+	}
+	metadata, ok := document["metadata"].(map[string]any)
+	if !ok || len(metadata) != 1 {
+		return errors.New("artifact SBOM metadata is not closed")
+	}
+	root, ok := metadata["component"].(map[string]any)
+	if !ok {
+		return errors.New("artifact SBOM root component is missing")
+	}
+	rootRef := "pkg:npm/%40layerdraw/engine-wasm@" + expectedVersion
+	if len(root) != 7 || root["type"] != "application" || root["name"] != "@layerdraw/engine-wasm" || root["version"] != expectedVersion || root["purl"] != rootRef || root["bom-ref"] != rootRef {
+		return errors.New("artifact SBOM root release authority mismatch")
+	}
+	wasmDigest, err := fileDigest(filepath.Join(output, "layerdraw-engine.wasm"))
+	if err != nil {
+		return err
+	}
+	hashes, hashesOK := root["hashes"].([]any)
+	licenses, licensesOK := root["licenses"].([]any)
+	if !hashesOK || len(hashes) != 1 || !licensesOK || len(licenses) != 1 {
+		return errors.New("artifact SBOM root hash/license authority mismatch")
+	}
+	hash, hashOK := hashes[0].(map[string]any)
+	licenseEntry, licenseOK := licenses[0].(map[string]any)
+	license, licenseValueOK := licenseEntry["license"].(map[string]any)
+	if !hashOK || len(hash) != 2 || hash["alg"] != "SHA-256" || hash["content"] != wasmDigest ||
+		!licenseOK || len(licenseEntry) != 1 || !licenseValueOK || len(license) != 1 || license["name"] != "LayerDraw License 1.0" {
+		return errors.New("artifact SBOM root hash/license authority mismatch")
 	}
 	components, ok := document["components"].([]any)
 	if !ok {

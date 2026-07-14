@@ -29,6 +29,7 @@ import {
 } from "./worker-runtime.js";
 
 const expectedWasmExecDigest = "sha256:0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14";
+const expectedProtocolSchemaDigest = "sha256:e9cd89ba2aacbdc7b5ea88017b0749e48a020674e38da90c476b839972813403";
 const requiredArtifactFiles = Object.freeze([
   "LICENSE",
   "LICENSING.md",
@@ -39,6 +40,43 @@ const requiredArtifactFiles = Object.freeze([
   "layerdraw-engine.wasm",
   "licenses/Apache-2.0.txt",
   "wasm_exec.js",
+]);
+const expectedArtifactMediaTypes: Readonly<Record<string, string>> = Object.freeze({
+  "LICENSE": "text/plain; charset=utf-8",
+  "LICENSING.md": "text/markdown; charset=utf-8",
+  "NOTICE": "text/plain; charset=utf-8",
+  "THIRD_PARTY_NOTICES.txt": "text/plain; charset=utf-8",
+  "engine-wasm-worker-v1.json": "application/json",
+  "engine-wasm.cdx.json": "application/json",
+  "layerdraw-engine.wasm": "application/wasm",
+  "licenses/Apache-2.0.txt": "text/plain; charset=utf-8",
+  "wasm_exec.js": "text/javascript",
+});
+const expectedCompilerLimits: Readonly<Record<string, number>> = Object.freeze({
+  max_project_source_files: 512,
+  max_project_source_bytes: 16_777_216,
+  max_pack_files: 1_024,
+  max_pack_bytes: 33_554_432,
+  max_assets: 256,
+  max_asset_bytes: 16_777_216,
+  max_raster_dimension: 8_192,
+  max_raster_pixels: 16_777_216,
+  max_declarations: 250_000,
+});
+const requiredBrowserPrimitives = Object.freeze([
+  "Blob",
+  "TextDecoder",
+  "TextEncoder",
+  "URL.createObjectURL",
+  "URL.revokeObjectURL",
+  "WebAssembly",
+  "crypto.getRandomValues",
+  "crypto.subtle.digest",
+  "dedicated_module_worker",
+  "fetch",
+  "performance.now",
+  "structuredClone",
+  "transferable_fixed_ArrayBuffer",
 ]);
 
 export interface VerifiedArtifactLoaderOptions {
@@ -185,8 +223,10 @@ function validateArtifactFiles(value: unknown): readonly ArtifactFile[] {
   const result: ArtifactFile[] = [];
   const seen = new Set<string>();
   for (const candidate of value) {
+    const path = isPlainRecord(candidate) && typeof candidate.path === "string" ? candidate.path : "";
+    const expectedMediaType = expectedArtifactMediaTypes[path];
     if (!isPlainRecord(candidate) || !hasExactKeys(candidate, ["path", "media_type", "size", "digest"]) ||
-        !isSafeArtifactPath(candidate.path) || typeof candidate.media_type !== "string" || candidate.media_type.length === 0 ||
+        !isSafeArtifactPath(candidate.path) || expectedMediaType === undefined || candidate.media_type !== expectedMediaType ||
         typeof candidate.size !== "number" || !Number.isSafeInteger(candidate.size) || candidate.size < 0 || !isDigest(candidate.digest) || seen.has(candidate.path)) artifactMismatch();
     seen.add(candidate.path);
     result.push(candidate as unknown as ArtifactFile);
@@ -198,6 +238,16 @@ function validateArtifactFiles(value: unknown): readonly ArtifactFile[] {
 
 function exactStringArray(value: unknown, expected: readonly string[]): boolean {
   return isArrayRecord(value) && value.length === expected.length && expected.every((item, index) => value[index] === item);
+}
+
+function isReleaseVersion(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 255 &&
+    /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(value);
+}
+
+interface ValidatedManifest {
+  readonly files: readonly ArtifactFile[];
+  readonly releaseVersion: string;
 }
 
 function validateContractCorpus(value: unknown): EngineWorkerTransportLimits {
@@ -230,9 +280,21 @@ function validateContractCorpus(value: unknown): EngineWorkerTransportLimits {
   return value.transport_limits;
 }
 
-function validateManifest(value: unknown): readonly ArtifactFile[] {
+function validateManifest(value: unknown): ValidatedManifest {
   const keys = ["artifact_id", "artifact_manifest_version", "build", "protocol", "runtime_support", "files", "transport", "compiler_limits", "browser_contract", "licenses"];
   if (!isPlainRecord(value) || !hasExactKeys(value, keys) || value.artifact_id !== "@layerdraw/engine-wasm" || value.artifact_manifest_version !== 1) artifactMismatch();
+  const build = value.build;
+  if (!isPlainRecord(build) || !hasExactKeys(build, ["cgo_enabled", "go_version", "goexperiment", "goos_goarch", "main_package", "source_revision", "release_version", "flags"]) ||
+      build.cgo_enabled !== false || build.go_version !== "go1.26.5" || build.goexperiment !== "" || build.goos_goarch !== "js/wasm" ||
+      build.main_package !== "./cmd/layerdraw-engine" || typeof build.source_revision !== "string" || !/^[0-9a-f]{40}$/.test(build.source_revision) ||
+      !isReleaseVersion(build.release_version) || !exactStringArray(build.flags, [
+        "-trimpath",
+        "-buildvcs=false",
+        `-ldflags=-buildid= -s -w -X main.releaseVersion=${build.release_version} -X main.sourceRevision=${build.source_revision}`,
+      ])) artifactMismatch();
+  const protocol = value.protocol;
+  if (!isPlainRecord(protocol) || !hasExactKeys(protocol, ["name", "version", "schema_digest"]) || protocol.name !== "engine" ||
+      protocol.version !== "1.0" || protocol.schema_digest !== expectedProtocolSchemaDigest) artifactMismatch();
   const runtime = value.runtime_support;
   if (!isPlainRecord(runtime) || !hasExactKeys(runtime, ["file", "go_version", "digest"]) || runtime.file !== "wasm_exec.js" || runtime.go_version !== "go1.26.5" || runtime.digest !== expectedWasmExecDigest) artifactMismatch();
   const transport = value.transport;
@@ -244,7 +306,36 @@ function validateManifest(value: unknown): readonly ArtifactFile[] {
       transport.endpoint_instance_id_provenance !== "runtime_crypto_rand" || transport.release_manifest_digest_provenance !== "verified_worker_input" ||
       transport.single_flight !== true || transport.transfer !== "array_buffer") artifactMismatch();
   for (const key of transportLimitKeys) if (transport[key] !== browserTransportLimits[key]) artifactMismatch();
-  return validateArtifactFiles(value.files);
+  const compiler = value.compiler_limits;
+  const compilerKeys = Object.keys(expectedCompilerLimits);
+  if (!isPlainRecord(compiler) || !hasExactKeys(compiler, compilerKeys)) artifactMismatch();
+  for (const key of compilerKeys) if (compiler[key] !== expectedCompilerLimits[key]) artifactMismatch();
+  const browser = value.browser_contract;
+  if (!isPlainRecord(browser) || !hasExactKeys(browser, ["module_dedicated_worker", "shared_array_buffer", "wasm_threads", "required_primitives"]) ||
+      browser.module_dedicated_worker !== true || browser.shared_array_buffer !== false || browser.wasm_threads !== false ||
+      !exactStringArray(browser.required_primitives, requiredBrowserPrimitives)) artifactMismatch();
+  const licenses = value.licenses;
+  if (!isPlainRecord(licenses) || !hasExactKeys(licenses, ["product", "runtime_support", "sbom"]) ||
+      licenses.product !== "LicenseRef-LayerDraw-1.0" || licenses.runtime_support !== "BSD-3-Clause" || licenses.sbom !== "engine-wasm.cdx.json") artifactMismatch();
+  return Object.freeze({files: validateArtifactFiles(value.files), releaseVersion: build.release_version});
+}
+
+function validateSBOM(value: unknown, releaseVersion: string, wasmDigest: string): void {
+  if (!isPlainRecord(value) || !hasExactKeys(value, ["$schema", "bomFormat", "specVersion", "version", "metadata", "components", "dependencies"]) ||
+      value.$schema !== "http://cyclonedx.org/schema/bom-1.6.schema.json" || value.bomFormat !== "CycloneDX" || value.specVersion !== "1.6" ||
+      value.version !== 1 || !isArrayRecord(value.components) || !isArrayRecord(value.dependencies)) artifactMismatch();
+  const metadata = value.metadata;
+  if (!isPlainRecord(metadata) || !hasExactKeys(metadata, ["component"])) artifactMismatch();
+  const component = metadata.component;
+  const rootRef = `pkg:npm/%40layerdraw/engine-wasm@${releaseVersion}`;
+  if (!isPlainRecord(component) || !hasExactKeys(component, ["type", "name", "version", "purl", "bom-ref", "hashes", "licenses"]) ||
+      component.type !== "application" || component.name !== "@layerdraw/engine-wasm" || component.version !== releaseVersion ||
+      component.purl !== rootRef || component["bom-ref"] !== rootRef || !isArrayRecord(component.hashes) || component.hashes.length !== 1 ||
+      !isPlainRecord(component.hashes[0]) || !hasExactKeys(component.hashes[0], ["alg", "content"]) || component.hashes[0].alg !== "SHA-256" ||
+      component.hashes[0].content !== wasmDigest.slice("sha256:".length) || !isArrayRecord(component.licenses) || component.licenses.length !== 1) artifactMismatch();
+  const licenseEntry = component.licenses[0];
+  if (!isPlainRecord(licenseEntry) || !hasExactKeys(licenseEntry, ["license"]) || !isPlainRecord(licenseEntry.license) ||
+      !hasExactKeys(licenseEntry.license, ["name"]) || licenseEntry.license.name !== "LayerDraw License 1.0") artifactMismatch();
 }
 
 function validateBridge(value: unknown): WasmBridge {
@@ -311,7 +402,8 @@ export async function createVerifiedWasmEndpoint(init: EngineByteEndpointInit, o
     return initializationFailure();
   }
   if (await sha256(manifestBytes) !== init.expectedArtifactManifestDigest) artifactMismatch();
-  const files = validateManifest(decodeJSON(manifestBytes));
+  const manifest = validateManifest(decodeJSON(manifestBytes));
+  const files = manifest.files;
   const loaded = new Map<string, ArrayBuffer>();
   for (const file of files) {
     let bytes: ArrayBuffer;
@@ -324,9 +416,12 @@ export async function createVerifiedWasmEndpoint(init: EngineByteEndpointInit, o
     loaded.set(file.path, bytes);
   }
   const corpus = loaded.get("engine-wasm-worker-v1.json");
+  const sbom = loaded.get("engine-wasm.cdx.json");
   const wasm = loaded.get("layerdraw-engine.wasm");
   const wasmExec = loaded.get("wasm_exec.js");
-  if (corpus === undefined || wasm === undefined || wasmExec === undefined || await sha256(wasmExec) !== expectedWasmExecDigest) artifactMismatch();
+  const wasmFile = files.find((file) => file.path === "layerdraw-engine.wasm");
+  if (corpus === undefined || sbom === undefined || wasm === undefined || wasmExec === undefined || wasmFile === undefined || await sha256(wasmExec) !== expectedWasmExecDigest) artifactMismatch();
+  validateSBOM(decodeJSON(sbom), manifest.releaseVersion, wasmFile.digest);
   const limits = validateContractCorpus(decodeJSON(corpus));
   try {
     await executeVerifiedJavaScript(wasmExec);

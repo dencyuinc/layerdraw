@@ -234,13 +234,24 @@ test("default environment probe is fail-closed for every required primitive", as
     ["fetch", undefined],
     ["Blob", undefined],
     ["URL", {}],
+    ["URL", {createObjectURL() { return "blob:test"; }}],
+    ["URL", {revokeObjectURL() {}}],
     ["crypto", {}],
+    ["crypto", {getRandomValues() {}, subtle: {}}],
+    ["crypto", {subtle: {digest() {}}}],
     ["performance", {}],
   ]) await replaceGlobal(name, value, async () => {
     const scope = new RecordingScope();
     installEngineWorker(scope, () => makeEchoEndpoint());
     scope.message(init());
     assert.equal(scope.posted[0].message.failure.code, "engine.worker.unsupported");
+  });
+  await replaceGlobal("structuredClone", undefined, async () => {
+    const scope = new RecordingScope();
+    installEngineWorker(scope, () => makeEchoEndpoint());
+    scope.message(init());
+    assert.equal(scope.posted.length, 0);
+    assert.equal(scope.closed, true);
   });
   await replaceGlobal("structuredClone", () => { throw new Error("clone failed"); }, async () => {
     const scope = new RecordingScope();

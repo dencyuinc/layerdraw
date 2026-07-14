@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -120,6 +121,7 @@ func mapCompileSnapshotWithBudget(snapshot engine.Snapshot, budget *compileMappi
 	if err := validateUniqueOutputBlobs(blobs); err != nil {
 		return engineprotocol.CompileResult{}, nil, err
 	}
+	sort.Slice(blobs, func(left, right int) bool { return blobs[left].Ref.BlobID < blobs[right].Ref.BlobID })
 	return result, blobs, nil
 }
 

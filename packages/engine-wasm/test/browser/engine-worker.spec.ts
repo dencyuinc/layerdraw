@@ -5,7 +5,7 @@ import {expect, test} from "@playwright/test";
 declare global {
   interface Window {
     layerDrawHarnessReady: boolean;
-    runLayerDrawRealArtifactCorpus(): Promise<{limitKeys: string[]; endpointID: string; replacementID: string}>;
+    runLayerDrawRealArtifactCorpus(): Promise<{limitKeys: string[]; parityCases: string[]; endpointID: string; replacementID: string}>;
     runLayerDrawDirectLifecycle(): Promise<{staleFailure: {code: string; phase: string; retryable: boolean}; staleDetached: number; crashCode: string}>;
     runLayerDrawVerifiedSnapshotRace(): Promise<{wasmExecReads: number; revoked: number}>;
   }
@@ -23,6 +23,7 @@ test("packaged module Worker handshakes and compiles Project and Pack through re
     "max_input_blob_bytes", "max_input_total_bytes", "max_output_blob_bytes",
     "max_output_total_bytes", "max_response_publish_bytes",
   ]);
+  expect(result.parityCases).toEqual(["canonical_project", "canonical_root_pack"]);
   expect(result.endpointID).not.toBe(result.replacementID);
   expect(failures).toEqual([]);
 });

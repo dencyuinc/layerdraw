@@ -7,6 +7,7 @@ import {extname, resolve, sep} from "node:path";
 import {fileURLToPath} from "node:url";
 
 const root = resolve(fileURLToPath(new URL("../", import.meta.url)));
+const repositoryRoot = resolve(root, "../..");
 const types = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
@@ -19,6 +20,13 @@ const raceWasmExecReads = new Map();
 const server = createServer(async (request, response) => {
   try {
     const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
+    if (pathname === "/__layerdraw/engine-compile-parity-v1.json") {
+      const path = resolve(repositoryRoot, "tests/conformance/testdata/engine_compile_parity_v1.json");
+      const info = await stat(path);
+      response.writeHead(200, {"cache-control": "no-store", "content-length": info.size, "content-type": "application/json; charset=utf-8"});
+      createReadStream(path).pipe(response);
+      return;
+    }
     const race = /^\/test\/browser\/race-artifact\/([a-z0-9-]+)\/(.+)$/.exec(pathname);
     if (race !== null) {
       const [, token, relative] = race;

@@ -9,6 +9,9 @@ if (!manifestResponse.ok) throw new Error("packaged artifact manifest was not se
 const manifestBytes = await manifestResponse.arrayBuffer();
 const artifactManifestDigest = await sha256(manifestBytes);
 const artifactManifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+const parityResponse = await fetch("/__layerdraw/engine-compile-parity-v1.json", {cache: "no-store"});
+if (!parityResponse.ok) throw new Error("Go-produced parity corpus was not served");
+const parityCorpus = await parityResponse.json();
 
 function createTransport(endpointGeneration) {
   return createEngineWorkerTransport({
@@ -46,7 +49,7 @@ async function nextWorkerMessage(worker, predicate) {
 globalThis.runLayerDrawRealArtifactCorpus = async () => {
   const first = createTransport("browser-real-generation-1");
   const limits = await first.ready;
-  const endpointID = await handshakeAndCompileProjectAndPack(first, artifactManifest.protocol.schema_digest, "browser-first");
+  const endpointID = await handshakeAndCompileProjectAndPack(first, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "browser-first");
   const dispose = first.dispose();
   if (dispose !== first.dispose()) throw new Error("dispose was not idempotent");
   await dispose;
@@ -69,10 +72,10 @@ globalThis.runLayerDrawRealArtifactCorpus = async () => {
 
   const replacement = createTransport("browser-real-generation-replacement");
   await replacement.ready;
-  const replacementID = await handshakeAndCompileProjectAndPack(replacement, artifactManifest.protocol.schema_digest, "browser-replacement");
+  const replacementID = await handshakeAndCompileProjectAndPack(replacement, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "browser-replacement");
   if (replacementID === endpointID) throw new Error("replacement reused the Go/WASM endpoint identity");
   await replacement.dispose();
-  return {limitKeys: Object.keys(limits).sort(), endpointID, replacementID};
+  return {limitKeys: Object.keys(limits).sort(), parityCases: parityCorpus.cases.map((testCase) => testCase.name), endpointID, replacementID};
 };
 
 globalThis.runLayerDrawDirectLifecycle = async () => {

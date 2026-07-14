@@ -10,7 +10,9 @@ if (!artifactDirectory) throw new Error("artifact directory argument is required
 
 const digest = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const manifestBytes = await readFile(join(artifactDirectory, "engine-wasm.manifest.json"));
+const artifactManifest = JSON.parse(manifestBytes);
 const artifactManifestDigest = digest(manifestBytes);
+const expectedEngineRelease = process.argv[3] ?? artifactManifest.build.release_version;
 const releaseManifestDigest = `sha256:${"5".repeat(64)}`;
 let exchangeSequence = 0;
 
@@ -118,6 +120,7 @@ async function handshakeAndCompile(endpoint, suffix) {
   const handshake = await request(endpoint, handshakeControl(initialized.protocol_schema_digest, `node-handshake-${suffix}`));
   const envelope = handshake.ok ? decode(handshake.control) : undefined;
   if (!handshake.ok || envelope.outcome !== "success") throw new Error("generated handshake failed");
+  if (envelope.engine_release !== expectedEngineRelease || envelope.payload.host_release !== expectedEngineRelease) throw new Error("Go/WASM engine release differs from the artifact/package authority");
   if (!/^wasm-[0-9a-f]{32}$/.test(envelope.payload.endpoint_instance_id)) throw new Error("endpoint identity was not minted inside Go/WASM");
   if (envelope.payload.release_manifest_digest !== releaseManifestDigest) throw new Error("verified release pin did not reach the descriptor");
 

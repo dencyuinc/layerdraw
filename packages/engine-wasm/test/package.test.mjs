@@ -61,6 +61,10 @@ test("packed package is closed, legal-complete, offline-installable, and SSR-saf
   );
   const artifactManifestBytes = await readFile(join(artifactRoot, "engine-wasm.manifest.json"));
   const artifactManifest = JSON.parse(artifactManifestBytes);
+  const sbom = JSON.parse(await readFile(join(artifactRoot, "engine-wasm.cdx.json"), "utf8"));
+  assert.equal(artifactManifest.build.release_version, manifest.version);
+  assert.equal(sbom.metadata.component.version, manifest.version);
+  assert.equal(sbom.metadata.component.name, manifest.name);
   assert.deepEqual(artifactManifest.files.map((file) => file.path).sort(), [
     "LICENSE", "LICENSING.md", "NOTICE", "THIRD_PARTY_NOTICES.txt",
     "engine-wasm-worker-v1.json", "engine-wasm.cdx.json", "layerdraw-engine.wasm",
@@ -73,6 +77,11 @@ test("packed package is closed, legal-complete, offline-installable, and SSR-saf
   }
   const {stdout: goroot} = await execute("go", ["env", "GOROOT"]);
   assert.deepEqual(await readFile(join(artifactRoot, "wasm_exec.js")), await readFile(join(goroot.trim(), "lib", "wasm", "wasm_exec.js")));
+  await execute("node", [
+    new URL("tests/integration/testdata/wasm_bridge_node.mjs", repositoryRoot).pathname,
+    artifactRoot,
+    manifest.version,
+  ], {cwd: repositoryRoot, maxBuffer: 10 * 1024 * 1024});
 
   const consumer = join(temporary, "consumer");
   await execute("mkdir", [consumer]);
@@ -92,4 +101,11 @@ test("packed package is closed, legal-complete, offline-installable, and SSR-saf
 
   await assert.rejects(readFile(new URL("LICENSE", packageRoot)), (error) => error?.code === "ENOENT");
   await assert.rejects(readFile(new URL("NOTICE", packageRoot)), (error) => error?.code === "ENOENT");
+});
+
+test("package build rejects an explicit release version that differs from package.json", async () => {
+  await assert.rejects(execute("node", ["tools/build-package.mjs", "--allow-dirty"], {
+    cwd: packageRoot,
+    env: {...process.env, VERSION: "9.9.9-mismatch"},
+  }), /VERSION must exactly equal package\.json version/);
 });
