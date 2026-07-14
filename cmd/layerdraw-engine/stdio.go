@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/internal/engine"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	transport "github.com/dencyuinc/layerdraw/internal/transport/stdio"
@@ -16,14 +15,13 @@ import (
 
 func serveStdio(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	compiler := engine.New(engine.BuildInfo{ReleaseVersion: releaseVersion, SourceRevision: sourceRevision})
-	descriptor, err := endpoint.NewDescriptor(endpoint.DescriptorConfig{
-		EngineRelease:         protocolcommon.ReleaseVersion(compiler.Describe().ReleaseVersion),
-		SourceRevision:        compiler.Describe().SourceRevision,
-		ReleaseManifestDigest: protocolcommon.Digest(releaseManifestDigest),
-		EndpointInstanceID:    protocolcommon.EndpointInstanceID(endpointInstanceID),
-		Transports:            []string{transport.TransportID},
-		Limits:                endpoint.DefaultLimitPolicy(),
-	})
+	descriptor, err := endpoint.NewCompilerDescriptor(
+		compiler,
+		releaseManifestDigest,
+		endpointInstanceID,
+		[]string{transport.TransportID},
+		endpoint.DefaultLimitPolicy(),
+	)
 	if err != nil {
 		return &transport.SessionError{Code: transport.SessionErrorConfiguration}
 	}

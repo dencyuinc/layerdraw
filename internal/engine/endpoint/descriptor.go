@@ -117,6 +117,22 @@ func NewDescriptor(config DescriptorConfig) (*Descriptor, error) {
 	}, nil
 }
 
+// NewCompilerDescriptor is the composition-root constructor for a canonical
+// Engine facade. It keeps generated wire scalar conversions inside the
+// endpoint boundary while preserving the fully explicit DescriptorConfig API
+// for endpoint-native callers.
+func NewCompilerDescriptor(compiler engine.Engine, releaseManifestDigest, endpointInstanceID string, transports []string, limits LimitPolicy) (*Descriptor, error) {
+	described := compiler.Describe()
+	return NewDescriptor(DescriptorConfig{
+		EngineRelease:         protocolcommon.ReleaseVersion(described.ReleaseVersion),
+		SourceRevision:        described.SourceRevision,
+		ReleaseManifestDigest: protocolcommon.Digest(releaseManifestDigest),
+		EndpointInstanceID:    protocolcommon.EndpointInstanceID(endpointInstanceID),
+		Transports:            transports,
+		Limits:                limits,
+	})
+}
+
 // EngineRelease returns the endpoint release copied into every response.
 func (d *Descriptor) EngineRelease() protocolcommon.ReleaseVersion {
 	if d == nil {
