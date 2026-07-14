@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -18,6 +19,10 @@ import (
 )
 
 func mapCompileSnapshot(snapshot engine.Snapshot) (engineprotocol.CompileResult, []OutputBlob, error) {
+	return mapCompileSnapshotWithBudget(snapshot, newCompileMappingBudget(math.MaxInt64))
+}
+
+func mapCompileSnapshotWithBudget(snapshot engine.Snapshot, budget *compileMappingBudget) (engineprotocol.CompileResult, []OutputBlob, error) {
 	if snapshot.Mode != engine.CompileProject && snapshot.Mode != engine.CompilePack {
 		return engineprotocol.CompileResult{}, nil, fmt.Errorf("invalid successful compile mode")
 	}
@@ -25,15 +30,15 @@ func mapCompileSnapshot(snapshot engine.Snapshot) (engineprotocol.CompileResult,
 	if err != nil {
 		return engineprotocol.CompileResult{}, nil, err
 	}
-	sourceMap, err := mapSourceMap(snapshot.SourceMap)
+	sourceMap, err := mapSourceMapWithBudget(snapshot.SourceMap, budget)
 	if err != nil {
 		return engineprotocol.CompileResult{}, nil, err
 	}
-	semanticIndex, err := mapSemanticIndex(snapshot.SemanticIndex)
+	semanticIndex, err := mapSemanticIndexWithBudget(snapshot.SemanticIndex, budget)
 	if err != nil {
 		return engineprotocol.CompileResult{}, nil, err
 	}
-	searchDocuments, err := mapSearchDocuments(snapshot.SearchDocuments)
+	searchDocuments, err := mapSearchDocumentsWithBudget(snapshot.SearchDocuments, budget)
 	if err != nil {
 		return engineprotocol.CompileResult{}, nil, err
 	}
@@ -41,44 +46,75 @@ func mapCompileSnapshot(snapshot engine.Snapshot) (engineprotocol.CompileResult,
 	if err != nil {
 		return engineprotocol.CompileResult{}, nil, err
 	}
-	compiledRecipes, recipeBlobs, err := mapCompiledRecipes(snapshot)
+	normalizedAccounting := normalized
+	normalizedAccounting.SearchDocuments = []semantic.SearchDocument{}
+	if err := budget.claim(normalizedAccounting); err != nil {
+		return engineprotocol.CompileResult{}, nil, err
+	}
+	compiledRecipes, recipeBlobs, err := mapCompiledRecipesWithBudget(snapshot, budget)
 	if err != nil {
 		return engineprotocol.CompileResult{}, nil, err
 	}
 
 	result := engineprotocol.CompileResult{
-		AuthoringSubjectClassification: make([]semantic.AuthoringSubjectClassification, len(snapshot.AuthoringSubjectClassification)),
-		ChildSetHashes:                 make([]semantic.ChildSetHash, len(snapshot.ChildSetHashes)),
+		AuthoringSubjectClassification: make([]semantic.AuthoringSubjectClassification, 0, min(len(snapshot.AuthoringSubjectClassification), 256)),
+		ChildSetHashes:                 make([]semantic.ChildSetHash, 0, min(len(snapshot.ChildSetHashes), 256)),
 		CompiledRecipes:                compiledRecipes,
 		DefinitionHash:                 protocolcommon.Digest(snapshot.DefinitionHash),
 		EffectiveLimits:                limits,
 		NormalizedArtifact:             normalized,
 		SemanticIndex:                  semanticIndex,
 		SourceMap:                      sourceMap,
-		StableAddresses:                stableAddresses(snapshot.StableAddresses),
-		SubjectSemanticHashes:          make([]semantic.SubjectHash, len(snapshot.SubjectSemanticHashes)),
-		SubtreeHashes:                  make([]semantic.SubtreeHash, len(snapshot.SubtreeHashes)),
+		StableAddresses:                make([]semantic.StableAddress, 0, min(len(snapshot.StableAddresses), 256)),
+		SubjectSemanticHashes:          make([]semantic.SubjectHash, 0, min(len(snapshot.SubjectSemanticHashes), 256)),
+		SubtreeHashes:                  make([]semantic.SubtreeHash, 0, min(len(snapshot.SubtreeHashes), 256)),
 	}
-	for i, item := range snapshot.AuthoringSubjectClassification {
-		result.AuthoringSubjectClassification[i] = semantic.AuthoringSubjectClassification{
+	for _, item := range snapshot.AuthoringSubjectClassification {
+		mapped := semantic.AuthoringSubjectClassification{
 			Address:    semantic.StableAddress(item.Address),
 			Capability: semantic.AuthoringCapability(item.Capability),
 			Kind:       semantic.SubjectKind(item.Kind),
 		}
+		if err := budget.claim(mapped); err != nil {
+			return engineprotocol.CompileResult{}, nil, err
+		}
+		result.AuthoringSubjectClassification = append(result.AuthoringSubjectClassification, mapped)
 	}
-	for i, item := range snapshot.SubjectSemanticHashes {
-		result.SubjectSemanticHashes[i] = semantic.SubjectHash{Address: semantic.StableAddress(item.Address), Hash: protocolcommon.Digest(item.Hash), Kind: semantic.SubjectKind(item.Kind)}
+	for _, item := range snapshot.StableAddresses {
+		mapped := semantic.StableAddress(item)
+		if err := budget.claim(mapped); err != nil {
+			return engineprotocol.CompileResult{}, nil, err
+		}
+		result.StableAddresses = append(result.StableAddresses, mapped)
 	}
-	for i, item := range snapshot.SubtreeHashes {
-		result.SubtreeHashes[i] = semantic.SubtreeHash{OwnerAddress: semantic.StableAddress(item.OwnerAddress), Hash: protocolcommon.Digest(item.Hash)}
+	for _, item := range snapshot.SubjectSemanticHashes {
+		mapped := semantic.SubjectHash{Address: semantic.StableAddress(item.Address), Hash: protocolcommon.Digest(item.Hash), Kind: semantic.SubjectKind(item.Kind)}
+		if err := budget.claim(mapped); err != nil {
+			return engineprotocol.CompileResult{}, nil, err
+		}
+		result.SubjectSemanticHashes = append(result.SubjectSemanticHashes, mapped)
 	}
-	for i, item := range snapshot.ChildSetHashes {
-		result.ChildSetHashes[i] = semantic.ChildSetHash{
+	for _, item := range snapshot.SubtreeHashes {
+		mapped := semantic.SubtreeHash{OwnerAddress: semantic.StableAddress(item.OwnerAddress), Hash: protocolcommon.Digest(item.Hash)}
+		if err := budget.claim(mapped); err != nil {
+			return engineprotocol.CompileResult{}, nil, err
+		}
+		result.SubtreeHashes = append(result.SubtreeHashes, mapped)
+	}
+	for _, item := range snapshot.ChildSetHashes {
+		if err := ensureStableAddressArraysWithinWire(budget.maximum, item.Addresses); err != nil {
+			return engineprotocol.CompileResult{}, nil, err
+		}
+		mapped := semantic.ChildSetHash{
 			OwnerAddress:   semantic.StableAddress(item.OwnerAddress),
 			ChildKind:      semantic.SubjectKind(item.ChildKind),
 			ChildAddresses: stableAddresses(item.Addresses),
 			Hash:           protocolcommon.Digest(item.Hash),
 		}
+		if err := budget.claim(mapped); err != nil {
+			return engineprotocol.CompileResult{}, nil, err
+		}
+		result.ChildSetHashes = append(result.ChildSetHashes, mapped)
 	}
 	blobs := append(artifactBlobs, recipeBlobs...)
 	if err := validateUniqueOutputBlobs(blobs); err != nil {
@@ -186,58 +222,112 @@ func validateUniqueOutputBlobs(blobs []OutputBlob) error {
 }
 
 func mapDiagnostics(input []engine.Diagnostic) ([]semantic.Diagnostic, error) {
-	result := make([]semantic.Diagnostic, len(input))
-	for i, diagnostic := range input {
-		arguments := make(map[string]semantic.DiagnosticArgumentValue, len(diagnostic.Arguments))
-		for key, value := range diagnostic.Arguments {
-			copyValue := value
-			arguments[key] = semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindString, StringValue: &copyValue}
+	result, err := mapDiagnosticsWithBudget(input, newCompileMappingBudget(math.MaxInt64))
+	return result, err
+}
+
+// mapDiagnosticsWithBudget maps one diagnostic at a time and accounts for its
+// exact generated Go JSON representation before retaining it. Budget failure
+// is based on bytes that must occur in the eventual response, so this cannot
+// reject a response which would fit merely because it has many items.
+func mapDiagnosticsWithBudget(input []engine.Diagnostic, budget *compileMappingBudget) ([]semantic.Diagnostic, error) {
+	capacity := min(len(input), 256)
+	if budget != nil {
+		minimum, err := mapDiagnostic(engine.Diagnostic{})
+		if err != nil {
+			return nil, err
 		}
-		mapped := semantic.Diagnostic{
-			Arguments: arguments, Code: diagnostic.Code, MessageKey: diagnostic.MessageKey,
-			ProtocolVersion: 1, Related: make([]semantic.DiagnosticRelated, len(diagnostic.Related)),
-			Severity: semantic.DiagnosticSeverity(diagnostic.Severity),
+		stats, err := measureCompileWireJSON(minimum)
+		if err != nil {
+			return nil, err
 		}
-		if diagnostic.Message != "" {
-			mapped.Message = stringPointer(diagnostic.Message)
+		remaining := max(int64(0), budget.maximum-budget.used)
+		capacity = min(len(input), int(remaining/max(int64(1), stats.bytes)))
+	}
+	result := make([]semantic.Diagnostic, 0, capacity)
+	for _, diagnostic := range input {
+		mapped, err := mapDiagnosticWithMaximum(diagnostic, budget.maximum)
+		if err != nil {
+			return nil, err
 		}
-		if diagnostic.Range != nil {
-			value, rangeErr := mapSourceRange(*diagnostic.Range)
-			if rangeErr != nil {
-				return nil, rangeErr
-			}
-			mapped.Range = &value
+		if err := budget.claim(mapped); err != nil {
+			return nil, err
 		}
-		mapped.SubjectAddress = stableAddressPointer(diagnostic.SubjectAddress)
-		mapped.OwnerAddress = stableAddressPointer(diagnostic.OwnerAddress)
-		for relatedIndex, related := range diagnostic.Related {
-			mappedRelated := semantic.DiagnosticRelated{Relation: semantic.DiagnosticRelation(related.Relation)}
-			if related.Message != "" {
-				mappedRelated.Message = stringPointer(related.Message)
-			}
-			if related.Range != nil {
-				value, rangeErr := mapSourceRange(*related.Range)
-				if rangeErr != nil {
-					return nil, rangeErr
-				}
-				mappedRelated.Range = &value
-			}
-			mappedRelated.SubjectAddress = stableAddressPointer(related.SubjectAddress)
-			mappedRelated.OwnerAddress = stableAddressPointer(related.OwnerAddress)
-			mapped.Related[relatedIndex] = mappedRelated
-		}
-		result[i] = mapped
+		result = append(result, mapped)
 	}
 	return result, nil
 }
 
-func mapSourceMap(input engine.SourceMap) (semantic.SourceMap, error) {
-	result := semantic.SourceMap{
-		SchemaVersion: int64(input.SchemaVersion), Files: make([]semantic.SourceFileRecord, len(input.Files)),
-		Subjects: make([]semantic.SourceSubjectRecord, len(input.Subjects)), Bindings: make([]semantic.SourceBindingRecord, len(input.Bindings)),
-		Exports: make([]semantic.ExportBindingRecord, len(input.Exports)), Assets: make([]semantic.SourceAssetRecord, len(input.Assets)),
+func mapDiagnostic(diagnostic engine.Diagnostic) (semantic.Diagnostic, error) {
+	return mapDiagnosticWithMaximum(diagnostic, math.MaxInt64)
+}
+
+func mapDiagnosticWithMaximum(diagnostic engine.Diagnostic, maximum int64) (semantic.Diagnostic, error) {
+	mapped := semantic.Diagnostic{
+		Arguments: make(map[string]semantic.DiagnosticArgumentValue, min(len(diagnostic.Arguments), 64)), Code: diagnostic.Code, MessageKey: diagnostic.MessageKey,
+		ProtocolVersion: 1, Related: make([]semantic.DiagnosticRelated, 0, min(len(diagnostic.Related), 64)),
+		Severity: semantic.DiagnosticSeverity(diagnostic.Severity),
 	}
-	for i, file := range input.Files {
+	if diagnostic.Message != "" {
+		mapped.Message = stringPointer(diagnostic.Message)
+	}
+	if diagnostic.Range != nil {
+		value, rangeErr := mapSourceRange(*diagnostic.Range)
+		if rangeErr != nil {
+			return semantic.Diagnostic{}, rangeErr
+		}
+		mapped.Range = &value
+	}
+	mapped.SubjectAddress = stableAddressPointer(diagnostic.SubjectAddress)
+	mapped.OwnerAddress = stableAddressPointer(diagnostic.OwnerAddress)
+	localBudget := newCompileMappingBudget(maximum)
+	if err := localBudget.claim(mapped); err != nil {
+		return semantic.Diagnostic{}, err
+	}
+	for key, value := range diagnostic.Arguments {
+		copyValue := value
+		mappedValue := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindString, StringValue: &copyValue}
+		if err := localBudget.claim(key); err != nil {
+			return semantic.Diagnostic{}, err
+		}
+		if err := localBudget.claim(mappedValue); err != nil {
+			return semantic.Diagnostic{}, err
+		}
+		mapped.Arguments[key] = mappedValue
+	}
+	for _, related := range diagnostic.Related {
+		mappedRelated := semantic.DiagnosticRelated{Relation: semantic.DiagnosticRelation(related.Relation)}
+		if related.Message != "" {
+			mappedRelated.Message = stringPointer(related.Message)
+		}
+		if related.Range != nil {
+			value, rangeErr := mapSourceRange(*related.Range)
+			if rangeErr != nil {
+				return semantic.Diagnostic{}, rangeErr
+			}
+			mappedRelated.Range = &value
+		}
+		mappedRelated.SubjectAddress = stableAddressPointer(related.SubjectAddress)
+		mappedRelated.OwnerAddress = stableAddressPointer(related.OwnerAddress)
+		if err := localBudget.claim(mappedRelated); err != nil {
+			return semantic.Diagnostic{}, err
+		}
+		mapped.Related = append(mapped.Related, mappedRelated)
+	}
+	return mapped, nil
+}
+
+func mapSourceMap(input engine.SourceMap) (semantic.SourceMap, error) {
+	return mapSourceMapWithBudget(input, newCompileMappingBudget(math.MaxInt64))
+}
+
+func mapSourceMapWithBudget(input engine.SourceMap, budget *compileMappingBudget) (semantic.SourceMap, error) {
+	result := semantic.SourceMap{
+		SchemaVersion: int64(input.SchemaVersion), Files: make([]semantic.SourceFileRecord, 0, min(len(input.Files), 256)),
+		Subjects: make([]semantic.SourceSubjectRecord, 0, min(len(input.Subjects), 256)), Bindings: make([]semantic.SourceBindingRecord, 0, min(len(input.Bindings), 256)),
+		Exports: make([]semantic.ExportBindingRecord, 0, min(len(input.Exports), 256)), Assets: make([]semantic.SourceAssetRecord, 0, min(len(input.Assets), 256)),
+	}
+	for _, file := range input.Files {
 		origin, err := mapSourceOrigin(file.Origin)
 		if err != nil {
 			return semantic.SourceMap{}, err
@@ -246,10 +336,14 @@ func mapSourceMap(input engine.SourceMap) (semantic.SourceMap, error) {
 		if err != nil {
 			return semantic.SourceMap{}, err
 		}
-		result.Files[i] = semantic.SourceFileRecord{Origin: origin, ModulePath: file.ModulePath, Digest: protocolcommon.Digest(file.Digest), ByteLength: length}
+		mapped := semantic.SourceFileRecord{Origin: origin, ModulePath: file.ModulePath, Digest: protocolcommon.Digest(file.Digest), ByteLength: length}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SourceMap{}, err
+		}
+		result.Files = append(result.Files, mapped)
 	}
-	for i, subject := range input.Subjects {
-		mapped := semantic.SourceSubjectRecord{Address: semantic.StableAddress(subject.Address), Kind: semantic.SubjectKind(subject.Kind), ManifestRoot: subject.ManifestRoot, CommentRanges: make([]semantic.SourceRange, len(subject.CommentRanges))}
+	for _, subject := range input.Subjects {
+		mapped := semantic.SourceSubjectRecord{Address: semantic.StableAddress(subject.Address), Kind: semantic.SubjectKind(subject.Kind), ManifestRoot: subject.ManifestRoot, CommentRanges: make([]semantic.SourceRange, 0, min(len(subject.CommentRanges), 256))}
 		mapped.OwnerAddress = stringStableAddressPointer(subject.OwnerAddress)
 		if subject.Module != nil {
 			value, err := mapModuleRef(*subject.Module)
@@ -265,16 +359,26 @@ func mapSourceMap(input engine.SourceMap) (semantic.SourceMap, error) {
 			}
 			mapped.DeclarationRange = &value
 		}
-		for rangeIndex, item := range subject.CommentRanges {
+		localBudget := newCompileMappingBudget(budget.maximum)
+		if err := localBudget.claim(mapped); err != nil {
+			return semantic.SourceMap{}, err
+		}
+		for _, item := range subject.CommentRanges {
 			value, err := mapSourceRange(item)
 			if err != nil {
 				return semantic.SourceMap{}, err
 			}
-			mapped.CommentRanges[rangeIndex] = value
+			if err := localBudget.claim(value); err != nil {
+				return semantic.SourceMap{}, err
+			}
+			mapped.CommentRanges = append(mapped.CommentRanges, value)
 		}
-		result.Subjects[i] = mapped
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SourceMap{}, err
+		}
+		result.Subjects = append(result.Subjects, mapped)
 	}
-	for i, binding := range input.Bindings {
+	for _, binding := range input.Bindings {
 		module, err := mapModuleRef(binding.Module)
 		if err != nil {
 			return semantic.SourceMap{}, err
@@ -283,9 +387,13 @@ func mapSourceMap(input engine.SourceMap) (semantic.SourceMap, error) {
 		if err != nil {
 			return semantic.SourceMap{}, err
 		}
-		result.Bindings[i] = semantic.SourceBindingRecord{SourceAddress: semantic.StableAddress(binding.SourceAddress), TargetAddress: semantic.StableAddress(binding.TargetAddress), TargetKind: semantic.SubjectKind(binding.TargetKind), TargetOwnerAddress: stableAddressPointer(binding.TargetOwnerAddress), Via: binding.Via, Module: module, Range: rangeValue}
+		mapped := semantic.SourceBindingRecord{SourceAddress: semantic.StableAddress(binding.SourceAddress), TargetAddress: semantic.StableAddress(binding.TargetAddress), TargetKind: semantic.SubjectKind(binding.TargetKind), TargetOwnerAddress: stableAddressPointer(binding.TargetOwnerAddress), Via: binding.Via, Module: module, Range: rangeValue}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SourceMap{}, err
+		}
+		result.Bindings = append(result.Bindings, mapped)
 	}
-	for i, binding := range input.Exports {
+	for _, binding := range input.Exports {
 		module, err := mapModuleRef(binding.Module)
 		if err != nil {
 			return semantic.SourceMap{}, err
@@ -294,9 +402,13 @@ func mapSourceMap(input engine.SourceMap) (semantic.SourceMap, error) {
 		if err != nil {
 			return semantic.SourceMap{}, err
 		}
-		result.Exports[i] = semantic.ExportBindingRecord{PublicName: binding.PublicName, TargetAddress: semantic.StableAddress(binding.TargetAddress), Module: module, Range: rangeValue, ReExport: binding.ReExport}
+		mapped := semantic.ExportBindingRecord{PublicName: binding.PublicName, TargetAddress: semantic.StableAddress(binding.TargetAddress), Module: module, Range: rangeValue, ReExport: binding.ReExport}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SourceMap{}, err
+		}
+		result.Exports = append(result.Exports, mapped)
 	}
-	for i, asset := range input.Assets {
+	for _, asset := range input.Assets {
 		origin, err := mapSourceOrigin(asset.Origin)
 		if err != nil {
 			return semantic.SourceMap{}, err
@@ -309,18 +421,39 @@ func mapSourceMap(input engine.SourceMap) (semantic.SourceMap, error) {
 		if err != nil {
 			return semantic.SourceMap{}, err
 		}
-		result.Assets[i] = semantic.SourceAssetRecord{SubjectAddress: semantic.StableAddress(asset.SubjectAddress), AuthoredPath: asset.AuthoredPath, Locator: asset.Locator, Origin: origin, ModulePath: asset.ModulePath, Range: rangeValue, Digest: protocolcommon.Digest(asset.Digest), MediaType: asset.MediaType, ByteLength: length}
+		mapped := semantic.SourceAssetRecord{SubjectAddress: semantic.StableAddress(asset.SubjectAddress), AuthoredPath: asset.AuthoredPath, Locator: asset.Locator, Origin: origin, ModulePath: asset.ModulePath, Range: rangeValue, Digest: protocolcommon.Digest(asset.Digest), MediaType: asset.MediaType, ByteLength: length}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SourceMap{}, err
+		}
+		result.Assets = append(result.Assets, mapped)
 	}
 	return result, nil
 }
 
 func mapSemanticIndex(input engine.SemanticIndex) (semantic.SemanticIndex, error) {
+	return mapSemanticIndexWithBudget(input, newCompileMappingBudget(math.MaxInt64))
+}
+
+func mapSemanticIndexWithBudget(input engine.SemanticIndex, budget *compileMappingBudget) (semantic.SemanticIndex, error) {
 	result := semantic.SemanticIndex{
-		SchemaVersion: int64(input.SchemaVersion), Subjects: make([]semantic.SemanticSubject, len(input.Subjects)), References: make([]semantic.SemanticReference, len(input.References)),
-		Children: mapOwnerMembers(input.Children), Rows: mapOwnerMembers(input.Rows), Columns: mapOwnerMembers(input.Columns), TypeMembership: mapOwnerMembers(input.TypeMembership), LayerMembership: mapOwnerMembers(input.LayerMembership),
-		ReferenceIDs: make([]semantic.ReferenceIdRecord, len(input.ReferenceIDs)), Adjacency: make([]semantic.AdjacencyRecord, len(input.Adjacency)), Dependencies: make([]semantic.DependencyRecord, len(input.Dependencies)),
+		SchemaVersion: int64(input.SchemaVersion), Subjects: make([]semantic.SemanticSubject, 0, min(len(input.Subjects), 256)), References: make([]semantic.SemanticReference, 0, min(len(input.References), 256)),
+		ReferenceIDs: make([]semantic.ReferenceIdRecord, 0, min(len(input.ReferenceIDs), 256)), Adjacency: make([]semantic.AdjacencyRecord, 0, min(len(input.Adjacency), 256)), Dependencies: make([]semantic.DependencyRecord, 0, min(len(input.Dependencies), 256)),
 	}
-	for i, subject := range input.Subjects {
+	ownerGroups := []struct {
+		input  []index.OwnerMembers
+		target *[]semantic.OwnerMembers
+	}{
+		{input.Children, &result.Children}, {input.Rows, &result.Rows}, {input.Columns, &result.Columns},
+		{input.TypeMembership, &result.TypeMembership}, {input.LayerMembership, &result.LayerMembership},
+	}
+	for _, group := range ownerGroups {
+		mapped, err := mapOwnerMembersWithBudget(group.input, budget)
+		if err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		*group.target = mapped
+	}
+	for _, subject := range input.Subjects {
 		mapped := semantic.SemanticSubject{Address: semantic.StableAddress(subject.Address), Kind: semantic.SubjectKind(subject.Kind), OwnerAddress: stringStableAddressPointer(subject.OwnerAddress), OwnHash: protocolcommon.Digest(subject.OwnHash)}
 		if subject.Module != nil {
 			value, err := mapModuleRef(*subject.Module)
@@ -332,26 +465,54 @@ func mapSemanticIndex(input engine.SemanticIndex) (semantic.SemanticIndex, error
 		if subject.SubtreeHash != nil {
 			mapped.SubtreeHash = digestPointer(*subject.SubtreeHash)
 		}
-		result.Subjects[i] = mapped
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		result.Subjects = append(result.Subjects, mapped)
 	}
-	for i, reference := range input.References {
+	for _, reference := range input.References {
 		rangeValue, err := mapSourceRange(reference.Range)
 		if err != nil {
 			return semantic.SemanticIndex{}, err
 		}
-		result.References[i] = semantic.SemanticReference{SourceAddress: semantic.StableAddress(reference.SourceAddress), TargetAddress: semantic.StableAddress(reference.TargetAddress), TargetKind: semantic.SubjectKind(reference.TargetKind), Via: reference.Via, Range: rangeValue}
+		mapped := semantic.SemanticReference{SourceAddress: semantic.StableAddress(reference.SourceAddress), TargetAddress: semantic.StableAddress(reference.TargetAddress), TargetKind: semantic.SubjectKind(reference.TargetKind), Via: reference.Via, Range: rangeValue}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		result.References = append(result.References, mapped)
 	}
-	for i, record := range input.ReferenceIDs {
-		result.ReferenceIDs[i] = semantic.ReferenceIdRecord{ID: record.ID, Addresses: stableAddresses(record.Addresses)}
+	for _, record := range input.ReferenceIDs {
+		if err := ensureStableAddressArraysWithinWire(budget.maximum, record.Addresses); err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		mapped := semantic.ReferenceIdRecord{ID: record.ID, Addresses: stableAddresses(record.Addresses)}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		result.ReferenceIDs = append(result.ReferenceIDs, mapped)
 	}
-	for i, record := range input.Adjacency {
-		result.Adjacency[i] = semantic.AdjacencyRecord{EntityAddress: semantic.StableAddress(record.EntityAddress), Outgoing: stableAddresses(record.Outgoing), Incoming: stableAddresses(record.Incoming)}
+	for _, record := range input.Adjacency {
+		if err := ensureStableAddressArraysWithinWire(budget.maximum, record.Outgoing, record.Incoming); err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		mapped := semantic.AdjacencyRecord{EntityAddress: semantic.StableAddress(record.EntityAddress), Outgoing: stableAddresses(record.Outgoing), Incoming: stableAddresses(record.Incoming)}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		result.Adjacency = append(result.Adjacency, mapped)
 	}
-	for i, dependency := range input.Dependencies {
-		result.Dependencies[i] = mapDependencyRecord(dependency)
+	for _, dependency := range input.Dependencies {
+		if err := ensureDependencyWithinWire(dependency, budget.maximum); err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		mapped := mapDependencyRecord(dependency)
+		if err := budget.claim(mapped); err != nil {
+			return semantic.SemanticIndex{}, err
+		}
+		result.Dependencies = append(result.Dependencies, mapped)
 	}
 	var err error
-	result.ScopedReads, err = mapScopedReads(input.ScopedReads)
+	result.ScopedReads, err = mapScopedReadsWithBudget(input.ScopedReads, budget)
 	if err != nil {
 		return semantic.SemanticIndex{}, err
 	}
@@ -367,40 +528,102 @@ func mapDependencyRecord(input index.DependencyRecord) semantic.DependencyRecord
 }
 
 func mapScopedReads(input index.ScopedReadIndexes) (semantic.ScopedReadIndexes, error) {
+	return mapScopedReadsWithBudget(input, newCompileMappingBudget(math.MaxInt64))
+}
+
+func mapScopedReadsWithBudget(input index.ScopedReadIndexes, budget *compileMappingBudget) (semantic.ScopedReadIndexes, error) {
 	result := semantic.ScopedReadIndexes{
-		ByModule: make([]semantic.ScopeAddresses, len(input.ByModule)), ByKind: make([]semantic.KindAddresses, len(input.ByKind)), ChildrenByOwner: mapOwnerMembers(input.ChildrenByOwner), RowsByOwner: mapOwnerMembers(input.RowsByOwner), ColumnsByOwner: mapOwnerMembers(input.ColumnsByOwner),
-		MembersByType: mapOwnerMembers(input.MembersByType), MembersByLayer: mapOwnerMembers(input.MembersByLayer), ReferencesByID: make([]semantic.ReferenceIdRecord, len(input.ReferencesByID)), OutgoingByEntity: mapOwnerMembers(input.OutgoingByEntity), IncomingByEntity: mapOwnerMembers(input.IncomingByEntity),
-		UsagesByTarget: mapOwnerMembers(input.UsagesByTarget), QueriesByDependency: mapOwnerMembers(input.QueriesByDependency), ViewsByDependency: mapOwnerMembers(input.ViewsByDependency),
+		ByModule: make([]semantic.ScopeAddresses, 0, min(len(input.ByModule), 256)), ByKind: make([]semantic.KindAddresses, 0, min(len(input.ByKind), 256)), ReferencesByID: make([]semantic.ReferenceIdRecord, 0, min(len(input.ReferencesByID), 256)),
 	}
-	for i, item := range input.ByModule {
+	ownerGroups := []struct {
+		input  []index.OwnerMembers
+		target *[]semantic.OwnerMembers
+	}{
+		{input.ChildrenByOwner, &result.ChildrenByOwner}, {input.RowsByOwner, &result.RowsByOwner}, {input.ColumnsByOwner, &result.ColumnsByOwner},
+		{input.MembersByType, &result.MembersByType}, {input.MembersByLayer, &result.MembersByLayer}, {input.OutgoingByEntity, &result.OutgoingByEntity},
+		{input.IncomingByEntity, &result.IncomingByEntity}, {input.UsagesByTarget, &result.UsagesByTarget}, {input.QueriesByDependency, &result.QueriesByDependency},
+		{input.ViewsByDependency, &result.ViewsByDependency},
+	}
+	for _, group := range ownerGroups {
+		mapped, err := mapOwnerMembersWithBudget(group.input, budget)
+		if err != nil {
+			return semantic.ScopedReadIndexes{}, err
+		}
+		*group.target = mapped
+	}
+	for _, item := range input.ByModule {
 		module, err := mapModuleRef(item.Module)
 		if err != nil {
 			return semantic.ScopedReadIndexes{}, err
 		}
-		result.ByModule[i] = semantic.ScopeAddresses{Module: module, Addresses: stableAddresses(item.Addresses)}
+		if err := ensureStableAddressArraysWithinWire(budget.maximum, item.Addresses); err != nil {
+			return semantic.ScopedReadIndexes{}, err
+		}
+		mapped := semantic.ScopeAddresses{Module: module, Addresses: stableAddresses(item.Addresses)}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.ScopedReadIndexes{}, err
+		}
+		result.ByModule = append(result.ByModule, mapped)
 	}
-	for i, item := range input.ByKind {
-		result.ByKind[i] = semantic.KindAddresses{Kind: semantic.SubjectKind(item.Kind), Addresses: stableAddresses(item.Addresses)}
+	for _, item := range input.ByKind {
+		if err := ensureStableAddressArraysWithinWire(budget.maximum, item.Addresses); err != nil {
+			return semantic.ScopedReadIndexes{}, err
+		}
+		mapped := semantic.KindAddresses{Kind: semantic.SubjectKind(item.Kind), Addresses: stableAddresses(item.Addresses)}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.ScopedReadIndexes{}, err
+		}
+		result.ByKind = append(result.ByKind, mapped)
 	}
-	for i, item := range input.ReferencesByID {
-		result.ReferencesByID[i] = semantic.ReferenceIdRecord{ID: item.ID, Addresses: stableAddresses(item.Addresses)}
+	for _, item := range input.ReferencesByID {
+		if err := ensureStableAddressArraysWithinWire(budget.maximum, item.Addresses); err != nil {
+			return semantic.ScopedReadIndexes{}, err
+		}
+		mapped := semantic.ReferenceIdRecord{ID: item.ID, Addresses: stableAddresses(item.Addresses)}
+		if err := budget.claim(mapped); err != nil {
+			return semantic.ScopedReadIndexes{}, err
+		}
+		result.ReferencesByID = append(result.ReferencesByID, mapped)
 	}
 	return result, nil
 }
 
 func mapOwnerMembers(input []index.OwnerMembers) []semantic.OwnerMembers {
-	result := make([]semantic.OwnerMembers, len(input))
-	for i, item := range input {
-		result[i] = semantic.OwnerMembers{OwnerAddress: semantic.StableAddress(item.OwnerAddress), Addresses: stableAddresses(item.Addresses)}
-	}
+	result, _ := mapOwnerMembersWithBudget(input, newCompileMappingBudget(math.MaxInt64))
 	return result
 }
 
+func mapOwnerMembersWithBudget(input []index.OwnerMembers, budget *compileMappingBudget) ([]semantic.OwnerMembers, error) {
+	result := make([]semantic.OwnerMembers, 0, min(len(input), 256))
+	for _, item := range input {
+		if err := ensureStableAddressArraysWithinWire(budget.maximum, item.Addresses); err != nil {
+			return nil, err
+		}
+		mapped := semantic.OwnerMembers{OwnerAddress: semantic.StableAddress(item.OwnerAddress), Addresses: stableAddresses(item.Addresses)}
+		if err := budget.claim(mapped); err != nil {
+			return nil, err
+		}
+		result = append(result, mapped)
+	}
+	return result, nil
+}
+
 func mapSearchDocuments(input []engine.SearchDocument) ([]semantic.SearchDocument, error) {
-	result := make([]semantic.SearchDocument, len(input))
-	for i, document := range input {
-		mapped := semantic.SearchDocument{SchemaVersion: int64(document.SchemaVersion), SubjectAddress: semantic.StableAddress(document.SubjectAddress), SubjectKind: semantic.SubjectKind(document.SubjectKind), OwnerAddress: stringStableAddressPointer(document.OwnerAddress), GraphEntryAddresses: stableAddresses(document.GraphEntryAddresses), TypeAddresses: stableAddresses(document.TypeAddresses), LayerAddresses: stableAddresses(document.LayerAddresses), Fields: make([]semantic.SearchField, len(document.Fields)), ContentHash: protocolcommon.Digest(document.ContentHash)}
-		for fieldIndex, field := range document.Fields {
+	return mapSearchDocumentsWithBudget(input, newCompileMappingBudget(math.MaxInt64))
+}
+
+func mapSearchDocumentsWithBudget(input []engine.SearchDocument, budget *compileMappingBudget) ([]semantic.SearchDocument, error) {
+	result := make([]semantic.SearchDocument, 0, min(len(input), 256))
+	for _, document := range input {
+		if err := ensureStableAddressArraysWithinWire(budget.maximum, document.GraphEntryAddresses, document.TypeAddresses, document.LayerAddresses); err != nil {
+			return nil, err
+		}
+		mapped := semantic.SearchDocument{SchemaVersion: int64(document.SchemaVersion), SubjectAddress: semantic.StableAddress(document.SubjectAddress), SubjectKind: semantic.SubjectKind(document.SubjectKind), OwnerAddress: stringStableAddressPointer(document.OwnerAddress), GraphEntryAddresses: stableAddresses(document.GraphEntryAddresses), TypeAddresses: stableAddresses(document.TypeAddresses), LayerAddresses: stableAddresses(document.LayerAddresses), Fields: make([]semantic.SearchField, 0, min(len(document.Fields), 256)), ContentHash: protocolcommon.Digest(document.ContentHash)}
+		localBudget := newCompileMappingBudget(budget.maximum)
+		if err := localBudget.claim(mapped); err != nil {
+			return nil, err
+		}
+		for _, field := range document.Fields {
 			mappedField := semantic.SearchField{FieldPath: field.FieldPath, Text: field.Text, LexicalWeight: int64(field.LexicalWeight), IncludeInEmbedding: field.IncludeInEmbedding}
 			if field.SourceRef != nil {
 				value, err := mapSourceRange(*field.SourceRef)
@@ -409,9 +632,15 @@ func mapSearchDocuments(input []engine.SearchDocument) ([]semantic.SearchDocumen
 				}
 				mappedField.SourceRef = &value
 			}
-			mapped.Fields[fieldIndex] = mappedField
+			if err := localBudget.claim(mappedField); err != nil {
+				return nil, err
+			}
+			mapped.Fields = append(mapped.Fields, mappedField)
 		}
-		result[i] = mapped
+		if err := budget.claim(mapped); err != nil {
+			return nil, err
+		}
+		result = append(result, mapped)
 	}
 	return result, nil
 }
@@ -471,6 +700,39 @@ func mapStateReads(input []query.StateReadDependency) []semantic.StateReadDepend
 		}
 	}
 	return result
+}
+
+func ensureDependencyWithinWire(input index.DependencyRecord, maximum int64) error {
+	budget := newCompileMappingBudget(maximum)
+	if err := claimStableAddressArrays(budget,
+		input.QueryAddresses, input.ParameterAddresses, input.LayerAddresses, input.EntityTypeAddresses,
+		input.RelationTypeAddresses, input.EntityAddresses, input.RelationAddresses, input.ColumnAddresses,
+		input.ExportAddresses,
+	); err != nil {
+		return err
+	}
+	for _, item := range input.StateReads {
+		mapped := semantic.StateReadDependency{SubjectKind: semantic.StateSubjectKind(item.SubjectKind), FieldPath: string(item.FieldPath), ValueType: semantic.ValueType(item.ValueType)}
+		if err := budget.claim(mapped); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureStableAddressArraysWithinWire(maximum int64, inputs ...[]string) error {
+	return claimStableAddressArrays(newCompileMappingBudget(maximum), inputs...)
+}
+
+func claimStableAddressArrays(budget *compileMappingBudget, inputs ...[]string) error {
+	for _, input := range inputs {
+		for _, item := range input {
+			if err := budget.claim(semantic.StableAddress(item)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func canonicalUint64FromInt64(value int64) (protocolcommon.CanonicalUint64, error) {

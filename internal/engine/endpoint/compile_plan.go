@@ -11,6 +11,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 )
 
 const (
@@ -314,19 +315,25 @@ func (p *CompilePlan) executePrepared(ctx context.Context, prepared *preparedCom
 		return mapCompileError(p.requestID, p.release, compileErr)
 	}
 
-	mappedDiagnostics, mapErr := mapDiagnostics(snapshot.Diagnostics)
+	mappingBudget := newCompileMappingBudget(int64(engineprotocol.MaxWireJSONBytes))
+	if snapshot.Mode == "" {
+		if claimErr := mappingBudget.claim(compileRejectedEnvelope(p.requestID, p.release, []semantic.Diagnostic{})); claimErr != nil {
+			return p.finalizeCompileMappingFailure(ctx, claimErr)
+		}
+	}
+	mappedDiagnostics, mapErr := mapDiagnosticsWithBudget(snapshot.Diagnostics, mappingBudget)
 	if mapErr != nil {
-		return compileFailedResponse(p.requestID, p.release, invariantProtocolFailure())
+		return p.finalizeCompileMappingFailure(ctx, mapErr)
 	}
 	if snapshot.Mode == "" {
 		if !isRejectedCompileSnapshot(snapshot) || len(mappedDiagnostics) == 0 {
-			return compileFailedResponse(p.requestID, p.release, invariantProtocolFailure())
+			return p.finalizeCompileFailure(ctx, invariantProtocolFailure())
 		}
 		return p.finalizeCompileResponse(ctx, compileRejectedEnvelope(p.requestID, p.release, mappedDiagnostics))
 	}
-	payload, blobs, mapErr := mapCompileSnapshot(snapshot)
+	payload, blobs, mapErr := mapCompileSnapshotWithBudget(snapshot, mappingBudget)
 	if mapErr != nil {
-		return compileFailedResponse(p.requestID, p.release, invariantProtocolFailure())
+		return p.finalizeCompileMappingFailure(ctx, mapErr)
 	}
 	response, err = p.finalizeCompileResponse(ctx, compileSuccessEnvelope(p.requestID, p.release, payload, mappedDiagnostics))
 	if err != nil || response.Outcome != protocolcommon.OutcomeSuccess {
@@ -368,11 +375,34 @@ func (p *CompilePlan) finalizeCompileResponse(ctx context.Context, candidate eng
 	if representation == compileResponseControlExhausted {
 		failure = controlOutputProtocolFailure(limit)
 	}
+	return p.finalizeCompileFailure(ctx, failure)
+}
+
+// finalizeCompileFailure is the one terminal selector for every post-Engine
+// mapping, validation, and representability failure. Rechecking on both sides
+// of fallback construction ensures cancellation or Abort observed during that
+// work takes precedence over the invariant/resource fallback.
+func (p *CompilePlan) finalizeCompileFailure(ctx context.Context, failure protocolcommon.ProtocolFailure) (engineprotocol.CompileResponseEnvelope, error) {
+	if ctx.Err() != nil || p.abortWasRequested() {
+		return compileCancelledResponse(p.requestID, p.release)
+	}
 	response, err := compileFailedResponse(p.requestID, p.release, failure)
 	if err != nil {
 		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("compile response fallback construction failed: %w", err)
 	}
+	if ctx.Err() != nil || p.abortWasRequested() {
+		return compileCancelledResponse(p.requestID, p.release)
+	}
 	return response, nil
+}
+
+func (p *CompilePlan) finalizeCompileMappingFailure(ctx context.Context, mappingErr error) (engineprotocol.CompileResponseEnvelope, error) {
+	failure := invariantProtocolFailure()
+	var exhausted *compileMappingLimitError
+	if errors.As(mappingErr, &exhausted) {
+		failure = controlOutputProtocolFailure(exhausted.limit)
+	}
+	return p.finalizeCompileFailure(ctx, failure)
 }
 
 // Abort is idempotent. It releases retained preparation state immediately for

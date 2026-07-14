@@ -585,6 +585,129 @@ func TestCompileSnapshotInvariantBranchesAndOutputBlobValidation(t *testing.T) {
 	}
 }
 
+func TestBoundedMappersStopOnCanonicalWireProof(t *testing.T) {
+	assertLimit := func(name string, err error) {
+		t.Helper()
+		var exhausted *compileMappingLimitError
+		if !errors.As(err, &exhausted) || exhausted.limit.resource != "control_output_bytes" || exhausted.limit.observed <= exhausted.limit.limit {
+			t.Fatalf("%s did not return a proven wire limit: %v", name, err)
+		}
+	}
+	budget := func() *compileMappingBudget { return newCompileMappingBudget(1) }
+	projectOrigin := resolve.SourceOrigin{Kind: resolve.OriginProject}
+	rangeValue := resolve.SourceRange{Origin: projectOrigin, ModulePath: "document.ldl", StartByte: 0, EndByte: 1}
+
+	_, err := mapDiagnosticsWithBudget([]engine.Diagnostic{{Arguments: map[string]string{"key": "value"}, Code: "LDL1001", MessageKey: "test", Severity: "error"}}, budget())
+	assertLimit("diagnostics", err)
+	_, err = mapSourceMapWithBudget(index.SourceMapV1{Files: []index.SourceFileRecord{{Origin: projectOrigin, ModulePath: "document.ldl", Digest: "digest", ByteLength: 1}}}, budget())
+	assertLimit("source map", err)
+	for name, sourceMap := range map[string]index.SourceMapV1{
+		"source subject": {Subjects: []index.SourceSubjectRecord{{Address: "ldl:project:p", Kind: materialize.SubjectProject, CommentRanges: []resolve.SourceRange{rangeValue}}}},
+		"source binding": {Bindings: []index.SourceBindingRecord{{SourceAddress: "ldl:project:p", TargetAddress: "ldl:project:p", TargetKind: materialize.SubjectProject, Via: "self", Module: index.ModuleRef{Origin: projectOrigin, ModulePath: "document.ldl"}, Range: rangeValue}}},
+		"source export":  {Exports: []index.ExportBindingRecord{{PublicName: "p", TargetAddress: "ldl:project:p", Module: index.ModuleRef{Origin: projectOrigin, ModulePath: "document.ldl"}, Range: rangeValue}}},
+		"source asset":   {Assets: []index.SourceAssetRecord{{SubjectAddress: "ldl:project:p", Origin: projectOrigin, Range: rangeValue, ByteLength: 1}}},
+	} {
+		_, err = mapSourceMapWithBudget(sourceMap, budget())
+		assertLimit(name, err)
+	}
+	_, err = mapOwnerMembersWithBudget([]index.OwnerMembers{{OwnerAddress: "ldl:project:p", Addresses: []string{"ldl:project:p:entity:e"}}}, budget())
+	assertLimit("owner members", err)
+	_, err = mapScopedReadsWithBudget(index.ScopedReadIndexes{ByKind: []index.KindAddresses{{Kind: materialize.SubjectProject, Addresses: []string{"ldl:project:p"}}}}, budget())
+	assertLimit("scoped reads", err)
+	_, err = mapSemanticIndexWithBudget(index.SemanticIndexV1{References: []index.SemanticReference{{SourceAddress: "ldl:project:p", TargetAddress: "ldl:project:p", TargetKind: materialize.SubjectProject, Via: "self", Range: rangeValue}}}, budget())
+	assertLimit("semantic index", err)
+	for name, semanticIndex := range map[string]index.SemanticIndexV1{
+		"semantic subject":      {Subjects: []index.SemanticSubject{{Address: "ldl:project:p", Kind: materialize.SubjectProject, OwnHash: "hash"}}},
+		"semantic reference id": {ReferenceIDs: []index.ReferenceIDRecord{{ID: "p", Addresses: []string{"ldl:project:p"}}}},
+		"semantic adjacency":    {Adjacency: []index.AdjacencyRecord{{EntityAddress: "ldl:project:p", Outgoing: []string{"ldl:project:p"}, Incoming: []string{}}}},
+		"semantic dependency":   {Dependencies: []index.DependencyRecord{{Kind: index.DependencyQuery, SubjectAddress: "ldl:project:p:query:q", QueryAddresses: []string{"ldl:project:p:query:q"}}}},
+		"semantic scoped":       {ScopedReads: index.ScopedReadIndexes{ByKind: []index.KindAddresses{{Kind: materialize.SubjectProject, Addresses: []string{"ldl:project:p"}}}}},
+	} {
+		_, err = mapSemanticIndexWithBudget(semanticIndex, budget())
+		assertLimit(name, err)
+	}
+	for name, scoped := range map[string]index.ScopedReadIndexes{
+		"scoped module": {ByModule: []index.ScopeAddresses{{Module: index.ModuleRef{Origin: projectOrigin, ModulePath: "document.ldl"}, Addresses: []string{"ldl:project:p"}}}},
+		"scoped id":     {ReferencesByID: []index.ReferenceIDRecord{{ID: "p", Addresses: []string{"ldl:project:p"}}}},
+	} {
+		_, err = mapScopedReadsWithBudget(scoped, budget())
+		assertLimit(name, err)
+	}
+	_, err = mapSearchDocumentsWithBudget([]engine.SearchDocument{{SchemaVersion: 1, SubjectAddress: "ldl:project:p", SubjectKind: materialize.SubjectProject, GraphEntryAddresses: []string{}, TypeAddresses: []string{}, LayerAddresses: []string{}, Fields: []index.SearchField{{FieldPath: "name", Text: "value"}}}}, budget())
+	assertLimit("search documents", err)
+	_, err = mapSearchDocumentsWithBudget([]engine.SearchDocument{{GraphEntryAddresses: []string{"ldl:project:p"}}}, budget())
+	assertLimit("search addresses", err)
+	assertLimit("dependency", ensureDependencyWithinWire(index.DependencyRecord{QueryAddresses: []string{"ldl:project:p:query:q"}, StateReads: []query.StateReadDependency{{SubjectKind: query.StateSubjectEntity, FieldPath: query.StateSystemCreatedAt, ValueType: definition.ScalarDatetime}}}, 1))
+	assertLimit("addresses", ensureStableAddressArraysWithinWire(1, []string{"ldl:project:p"}))
+
+	querySnapshot := engine.Snapshot{CompileOutput: engine.CompileOutput{Mode: engine.CompileProject, NormalizedDocument: &materialize.NormalizedDocument{Queries: []materialize.Query{{Address: "ldl:project:p:query:q"}}}, CompiledQueryRecipes: []engine.CompiledQueryRecipe{{Address: "ldl:project:p:query:q"}}}}
+	_, _, err = mapCompiledRecipesWithBudget(querySnapshot, budget())
+	assertLimit("query recipes", err)
+	viewSnapshot := engine.Snapshot{CompileOutput: engine.CompileOutput{Mode: engine.CompileProject, NormalizedDocument: &materialize.NormalizedDocument{Views: []materialize.View{{Address: "ldl:project:p:view:v"}}}, CompiledViewRecipes: []engine.CompiledViewRecipe{{Address: "ldl:project:p:view:v"}}}}
+	_, _, err = mapCompiledRecipesWithBudget(viewSnapshot, budget())
+	assertLimit("view recipes", err)
+	exportSnapshot := engine.Snapshot{CompileOutput: engine.CompileOutput{Mode: engine.CompileProject, NormalizedDocument: &materialize.NormalizedDocument{Views: []materialize.View{{Address: "ldl:project:p:view:v", Exports: []materialize.ExportRecipe{{Address: "ldl:project:p:view:v:export:e"}}}}}, CompiledViewRecipes: []engine.CompiledViewRecipe{{Address: "ldl:project:p:view:v"}}, CompiledExportRecipes: []engine.CompiledExportRecipe{{Address: "ldl:project:p:view:v:export:e"}}}}
+	_, _, err = mapCompiledRecipesWithBudget(exportSnapshot, newCompileMappingBudget(200))
+	assertLimit("export recipes", err)
+
+	graphHash := "sha256:" + strings.Repeat("a", 64)
+	minimalSuccess := engine.Snapshot{CompileOutput: engine.CompileOutput{
+		Mode: engine.CompileProject, EffectiveLimits: engine.DefaultResourceLimits(),
+		NormalizedDocument: &materialize.NormalizedDocument{}, GraphHash: &graphHash,
+	}}
+	if _, _, err := mapCompileSnapshotWithBudget(minimalSuccess, newCompileMappingBudget(math.MaxInt64)); err != nil {
+		t.Fatalf("minimal success mapping: %v", err)
+	}
+	_, _, err = mapCompileSnapshotWithBudget(minimalSuccess, budget())
+	assertLimit("success normalized", err)
+	large := strings.Repeat("x", 2_000)
+	sourceLimited := minimalSuccess
+	sourceLimited.SourceMap.Files = []index.SourceFileRecord{{Origin: projectOrigin, ModulePath: large, ByteLength: 1}}
+	_, _, err = mapCompileSnapshotWithBudget(sourceLimited, budget())
+	assertLimit("success source map", err)
+	semanticLimited := minimalSuccess
+	semanticLimited.SemanticIndex.Subjects = []index.SemanticSubject{{Address: large}}
+	_, _, err = mapCompileSnapshotWithBudget(semanticLimited, budget())
+	assertLimit("success semantic index", err)
+	searchLimited := minimalSuccess
+	searchLimited.SearchDocuments = []engine.SearchDocument{{SubjectAddress: large, GraphEntryAddresses: []string{}, TypeAddresses: []string{}, LayerAddresses: []string{}}}
+	_, _, err = mapCompileSnapshotWithBudget(searchLimited, budget())
+	assertLimit("success search", err)
+	for name, mutate := range map[string]func(*engine.Snapshot){
+		"success authoring": func(snapshot *engine.Snapshot) {
+			snapshot.AuthoringSubjectClassification = []engine.AuthoringSubjectClassification{{Address: large}}
+		},
+		"success addresses": func(snapshot *engine.Snapshot) { snapshot.StableAddresses = []string{large} },
+		"success subject hashes": func(snapshot *engine.Snapshot) {
+			snapshot.SubjectSemanticHashes = []engine.SubjectHash{{Address: large}}
+		},
+		"success subtree hashes": func(snapshot *engine.Snapshot) {
+			snapshot.SubtreeHashes = []engine.SubtreeHash{{OwnerAddress: large}}
+		},
+		"success child hashes": func(snapshot *engine.Snapshot) {
+			snapshot.ChildSetHashes = []engine.ChildSetHash{{OwnerAddress: large, Addresses: []string{large}}}
+		},
+	} {
+		snapshot := minimalSuccess
+		mutate(&snapshot)
+		_, _, err = mapCompileSnapshotWithBudget(snapshot, newCompileMappingBudget(1_024))
+		assertLimit(name, err)
+	}
+
+	if _, err := mapScopedReads(index.ScopedReadIndexes{}); err != nil {
+		t.Fatal(err)
+	}
+	if mapped := mapOwnerMembers(nil); len(mapped) != 0 {
+		t.Fatalf("owner wrapper=%+v", mapped)
+	}
+	if mapped, err := mapSearchDocuments(nil); err != nil || len(mapped) != 0 {
+		t.Fatalf("search wrapper=%+v err=%v", mapped, err)
+	}
+	if _, err := compileSuccessResponse("request", protocolcommon.ReleaseVersion(engine.DevelopmentVersion), engineprotocol.CompileResult{}, []semantic.Diagnostic{}); err == nil {
+		t.Fatal("invalid direct success unexpectedly validated")
+	}
+}
+
 func TestMapperInvalidSourceFamiliesAndRecipeSetInvariants(t *testing.T) {
 	for _, origin := range []resolve.SourceOrigin{{Kind: resolve.OriginProject, PackAddress: "ldl:pack:x:y"}, {Kind: resolve.OriginPack}, {Kind: "bad"}} {
 		if _, err := mapSourceOrigin(origin); err == nil {

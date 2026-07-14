@@ -22,9 +22,38 @@ import (
 const maxSafeInteger = int64(9_007_199_254_740_991)
 
 func mapCompiledRecipes(snapshot engine.Snapshot) (engineprotocol.CompiledRecipes, []OutputBlob, error) {
+	return mapCompiledRecipesWithBudget(snapshot, newCompileMappingBudget(math.MaxInt64))
+}
+
+func mapCompiledRecipesWithBudget(snapshot engine.Snapshot, budget *compileMappingBudget) (engineprotocol.CompiledRecipes, []OutputBlob, error) {
 	queries, views, err := normalizedRecipeSets(snapshot)
 	if err != nil {
 		return engineprotocol.CompiledRecipes{}, nil, err
+	}
+	normalizedExportCount := 0
+	for _, value := range views {
+		normalizedExportCount += len(value.Exports)
+	}
+	if len(queries) != len(snapshot.CompiledQueryRecipes) || len(views) != len(snapshot.CompiledViewRecipes) || normalizedExportCount != len(snapshot.CompiledExportRecipes) {
+		return engineprotocol.CompiledRecipes{}, nil, fmt.Errorf("compiled recipe sets do not match normalized counterparts")
+	}
+	for _, compiled := range snapshot.CompiledQueryRecipes {
+		minimum := engineprotocol.CompiledQueryRecipeArtifact{Address: semantic.StableAddress(compiled.Address)}
+		if err := budget.claim(minimum); err != nil {
+			return engineprotocol.CompiledRecipes{}, nil, err
+		}
+	}
+	for _, compiled := range snapshot.CompiledViewRecipes {
+		minimum := engineprotocol.CompiledViewRecipeArtifact{Address: semantic.StableAddress(compiled.Address)}
+		if err := budget.claim(minimum); err != nil {
+			return engineprotocol.CompiledRecipes{}, nil, err
+		}
+	}
+	for _, compiled := range snapshot.CompiledExportRecipes {
+		minimum := engineprotocol.CompiledExportRecipeArtifact{Address: semantic.StableAddress(compiled.Address)}
+		if err := budget.claim(minimum); err != nil {
+			return engineprotocol.CompiledRecipes{}, nil, err
+		}
 	}
 	if err := uniqueRecipeAddresses(queries, views, snapshot.CompiledQueryRecipes, snapshot.CompiledViewRecipes, snapshot.CompiledExportRecipes); err != nil {
 		return engineprotocol.CompiledRecipes{}, nil, err
@@ -48,12 +77,12 @@ func mapCompiledRecipes(snapshot engine.Snapshot) (engineprotocol.CompiledRecipe
 	}
 
 	result := engineprotocol.CompiledRecipes{
-		Queries: make([]engineprotocol.CompiledQueryRecipeArtifact, len(snapshot.CompiledQueryRecipes)),
-		Views:   make([]engineprotocol.CompiledViewRecipeArtifact, len(snapshot.CompiledViewRecipes)),
-		Exports: make([]engineprotocol.CompiledExportRecipeArtifact, len(snapshot.CompiledExportRecipes)),
+		Queries: make([]engineprotocol.CompiledQueryRecipeArtifact, 0, min(len(snapshot.CompiledQueryRecipes), 256)),
+		Views:   make([]engineprotocol.CompiledViewRecipeArtifact, 0, min(len(snapshot.CompiledViewRecipes), 256)),
+		Exports: make([]engineprotocol.CompiledExportRecipeArtifact, 0, min(len(snapshot.CompiledExportRecipes), 256)),
 	}
-	blobs := make([]OutputBlob, 0, len(result.Queries)+len(result.Views)+len(result.Exports))
-	for index, compiled := range snapshot.CompiledQueryRecipes {
+	blobs := make([]OutputBlob, 0, min(len(snapshot.CompiledQueryRecipes)+len(snapshot.CompiledViewRecipes)+len(snapshot.CompiledExportRecipes), 256))
+	for _, compiled := range snapshot.CompiledQueryRecipes {
 		normalized, found := queryByAddress[compiled.Address]
 		if !found {
 			return engineprotocol.CompiledRecipes{}, nil, fmt.Errorf("compiled Query lacks normalized counterpart")
@@ -69,10 +98,11 @@ func mapCompiledRecipes(snapshot engine.Snapshot) (engineprotocol.CompiledRecipe
 		}
 		blob := newOutputBlob(recipeBlobID("query", compiled.Address), encoded)
 		blob.Ref.MediaType = string(engineprotocol.QueryRecipeBlobRefMediaTypeValue)
-		result.Queries[index] = engineprotocol.CompiledQueryRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: queryRecipeRef(blob.Ref)}
+		mapped := engineprotocol.CompiledQueryRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: queryRecipeRef(blob.Ref)}
+		result.Queries = append(result.Queries, mapped)
 		blobs = append(blobs, blob)
 	}
-	for index, compiled := range snapshot.CompiledViewRecipes {
+	for _, compiled := range snapshot.CompiledViewRecipes {
 		normalized, found := viewByAddress[compiled.Address]
 		if !found {
 			return engineprotocol.CompiledRecipes{}, nil, fmt.Errorf("compiled View lacks normalized counterpart")
@@ -88,10 +118,11 @@ func mapCompiledRecipes(snapshot engine.Snapshot) (engineprotocol.CompiledRecipe
 		}
 		blob := newOutputBlob(recipeBlobID("view", compiled.Address), encoded)
 		blob.Ref.MediaType = string(engineprotocol.ViewRecipeBlobRefMediaTypeValue)
-		result.Views[index] = engineprotocol.CompiledViewRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: viewRecipeRef(blob.Ref)}
+		mapped := engineprotocol.CompiledViewRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: viewRecipeRef(blob.Ref)}
+		result.Views = append(result.Views, mapped)
 		blobs = append(blobs, blob)
 	}
-	for index, compiled := range snapshot.CompiledExportRecipes {
+	for _, compiled := range snapshot.CompiledExportRecipes {
 		normalized, found := exportByAddress[compiled.Address]
 		if !found {
 			return engineprotocol.CompiledRecipes{}, nil, fmt.Errorf("compiled Export lacks normalized counterpart")
@@ -107,7 +138,8 @@ func mapCompiledRecipes(snapshot engine.Snapshot) (engineprotocol.CompiledRecipe
 		}
 		blob := newOutputBlob(recipeBlobID("export", compiled.Address), encoded)
 		blob.Ref.MediaType = string(engineprotocol.ExportRecipeBlobRefMediaTypeValue)
-		result.Exports[index] = engineprotocol.CompiledExportRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: exportRecipeRef(blob.Ref)}
+		mapped := engineprotocol.CompiledExportRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: exportRecipeRef(blob.Ref)}
+		result.Exports = append(result.Exports, mapped)
 		blobs = append(blobs, blob)
 	}
 	return result, blobs, nil

@@ -4,7 +4,6 @@ package endpoint
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -260,63 +259,28 @@ func validateCompileResponse(response engineprotocol.CompileResponseEnvelope) (e
 }
 
 func classifyCompileResponse(response engineprotocol.CompileResponseEnvelope) (compileResponseRepresentation, compileResponseLimit, error) {
-	_, encodeErr := engineprotocol.EncodeCompileResponseEnvelope(response)
-	if encodeErr == nil {
-		return compileResponseRepresentable, compileResponseLimit{}, nil
+	stats, measureErr := measureCompileWireJSON(response)
+	if measureErr != nil {
+		return compileResponseInvalid, compileResponseLimit{}, measureErr
 	}
-	encoded, marshalErr := json.Marshal(response)
-	if marshalErr != nil {
-		return compileResponseInvalid, compileResponseLimit{}, encodeErr
-	}
-	if observed := int64(len(encoded)); observed > int64(engineprotocol.MaxWireJSONBytes) {
+	if stats.bytes > int64(engineprotocol.MaxWireJSONBytes) {
 		return compileResponseControlExhausted, compileResponseLimit{
 			resource: "control_output_bytes",
 			limit:    int64(engineprotocol.MaxWireJSONBytes),
-			observed: observed,
+			observed: stats.bytes,
 		}, nil
 	}
-	if observed := compileResponseJSONDepth(encoded); observed > int64(engineprotocol.MaxWireJSONDepth) {
+	if stats.depth > int64(engineprotocol.MaxWireJSONDepth) {
 		return compileResponseControlExhausted, compileResponseLimit{
 			resource: "control_output_depth",
 			limit:    int64(engineprotocol.MaxWireJSONDepth),
-			observed: observed,
+			observed: stats.depth,
 		}, nil
 	}
-	return compileResponseInvalid, compileResponseLimit{}, encodeErr
-}
-
-// compileResponseJSONDepth mirrors the generated wire codec's container-depth
-// accounting over json.Marshal output. The input is valid JSON by construction.
-func compileResponseJSONDepth(encoded []byte) int64 {
-	var depth, maximum int64
-	inString := false
-	escaped := false
-	for _, value := range encoded {
-		if inString {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if value == '\\' {
-				escaped = true
-			} else if value == '"' {
-				inString = false
-			}
-			continue
-		}
-		switch value {
-		case '"':
-			inString = true
-		case '{', '[':
-			depth++
-			if depth > maximum {
-				maximum = depth
-			}
-		case '}', ']':
-			depth--
-		}
+	if _, encodeErr := engineprotocol.EncodeCompileResponseEnvelope(response); encodeErr != nil {
+		return compileResponseInvalid, compileResponseLimit{}, encodeErr
 	}
-	return maximum
+	return compileResponseRepresentable, compileResponseLimit{}, nil
 }
 
 func protocolFailure(category protocolcommon.ProtocolFailureCategory, code, message string, retryable bool, details protocolcommon.JsonObject) protocolcommon.ProtocolFailure {
