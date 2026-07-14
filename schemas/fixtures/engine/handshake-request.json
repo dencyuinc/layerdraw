@@ -1,0 +1,22 @@
+{
+  "operation": "engine.handshake",
+  "payload": {
+    "client_release": "9.8.7",
+    "optional_capabilities": [],
+    "protocols": [
+      {
+        "name": "engine",
+        "supported_range": "1.0..1.0",
+        "versions": [
+          {
+            "schema_digest": "sha256:e9cd89ba2aacbdc7b5ea88017b0749e48a020674e38da90c476b839972813403",
+            "version": "1.0"
+          }
+        ]
+      }
+    ],
+    "required_capabilities": ["engine.compile"]
+  },
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-handshake-success"
+}

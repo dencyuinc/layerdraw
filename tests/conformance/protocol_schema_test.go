@@ -82,6 +82,19 @@ func TestProtocolFixturesRoundTripInGeneratedGoTypes(t *testing.T) {
 			},
 		},
 		{
+			name: "handshake request", fixture: "handshake-request.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeHandshakeRequestEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeHandshakeRequestEnvelope(raw.(engineprotocol.HandshakeRequestEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.HandshakeRequestEnvelope)
+				if value.Operation != "engine.handshake" || len(value.Payload.Protocols) != 1 || value.Payload.Protocols[0].Versions[0].SchemaDigest != protocolcommon.Digest(engineprotocol.SchemaDigest) {
+					t.Fatalf("invalid handshake request: %+v", value)
+				}
+			},
+		},
+		{
 			name: "handshake success", fixture: "handshake-success.json",
 			decode: func(data []byte) (any, error) { return engineprotocol.DecodeHandshakeResponseEnvelope(data) },
 			encode: func(raw any) ([]byte, error) {
@@ -306,6 +319,13 @@ func TestGeneratedGoMatchesSharedCanonicalEngineEnvelopes(t *testing.T) {
 				return nil, err
 			}
 			return engineprotocol.EncodeCompileResponseEnvelope(value)
+		}},
+		{"handshake-request.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeHandshakeRequestEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeHandshakeRequestEnvelope(value)
 		}},
 		{"handshake-success.json", func(data []byte) ([]byte, error) {
 			value, err := engineprotocol.DecodeHandshakeResponseEnvelope(data)

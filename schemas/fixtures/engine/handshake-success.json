@@ -17,18 +17,26 @@
         "max_raster_dimension": {"default_value": "32768", "effective_maximum": "32768", "hard_maximum": "32768", "unit": "pixels_per_axis"},
         "max_raster_pixels": {"default_value": "67108864", "effective_maximum": "67108864", "hard_maximum": "67108864", "unit": "pixels"}
       },
-      "manifest_etag": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "manifest_etag": "sha256:a1e7385b7fd79faffb3e3ecb9c085246ae8e3f51dca886babc7a2985eb5a754d",
       "manifest_scope": "endpoint",
       "manifest_version": 1,
       "operations": {
         "engine.compile": {
           "enabled": true,
+          "limits": {
+            "max_asset_bytes": "268435456",
+            "max_assets": "4096",
+            "max_declarations": "1000000",
+            "max_pack_bytes": "268435456",
+            "max_pack_files": "16384",
+            "max_project_source_bytes": "67108864",
+            "max_project_source_files": "4096",
+            "max_raster_dimension": "32768",
+            "max_raster_pixels": "67108864"
+          },
           "protocol_version": "1.0"
         },
-        "engine.handshake": {
-          "enabled": true,
-          "protocol_version": "1.0"
-        }
+        "engine.handshake": {"enabled": true, "protocol_version": "1.0"}
       },
       "query_adapters": [],
       "realtime_profiles": [],
@@ -53,9 +61,6 @@
     ],
     "release_manifest_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
   },
-  "protocol": {
-    "name": "engine",
-    "version": "1.0"
-  },
+  "protocol": {"name": "engine", "version": "1.0"},
   "request_id": "fixture-handshake-success"
 }

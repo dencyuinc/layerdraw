@@ -13,6 +13,7 @@ import {
   decodeCanonicalSourcePath,
   decodeEffectiveResourceLimits,
   decodeExportRecipeBlobRef,
+  decodeHandshakeRequestEnvelope,
   decodeNormalizedPackArtifactBlobRef,
   decodeNormalizedPackCanonicalBlobRef,
   decodeNormalizedProjectArtifactBlobRef,
@@ -27,6 +28,7 @@ import {
   encodeCanonicalSourcePath,
   encodeEffectiveResourceLimits,
   encodeExportRecipeBlobRef,
+  encodeHandshakeRequestEnvelope,
   encodeNormalizedPackArtifactBlobRef,
   encodeNormalizedPackCanonicalBlobRef,
   encodeNormalizedProjectArtifactBlobRef,
@@ -36,6 +38,7 @@ import {
   encodeHandshakeResponseEnvelope,
   isCompileRequestEnvelope,
   isCompileResponseEnvelope,
+  isHandshakeRequestEnvelope,
   isHandshakeResponseEnvelope,
 } from "../dist/engine.gen.js";
 import {
@@ -225,6 +228,7 @@ for (const [name, validate, decode, encode] of [
   ["compile-success.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
   ["compile-success-pack.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
   ["compile-rejected.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
+  ["handshake-request.json", isHandshakeRequestEnvelope, decodeHandshakeRequestEnvelope, encodeHandshakeRequestEnvelope],
   ["handshake-success.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
   ["handshake-rejected.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
 ]) {
@@ -318,6 +322,7 @@ test("TypeScript matches shared canonical Go/TypeScript engine-envelope bytes", 
     ["compile-request.json", decodeCompileRequestEnvelope, encodeCompileRequestEnvelope],
     ["compile-rejected.json", decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
     ["compile-success-pack.json", decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
+    ["handshake-request.json", decodeHandshakeRequestEnvelope, encodeHandshakeRequestEnvelope],
     ["handshake-success.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
     ["handshake-rejected.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
   ]) await context.test(name, async () => {
