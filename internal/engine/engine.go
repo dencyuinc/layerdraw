@@ -14,9 +14,12 @@ const (
 
 	// CapabilityDescribe identifies the bootstrap component-description operation.
 	CapabilityDescribe = "engine.describe"
+
+	// CapabilityCompile identifies the transport-neutral closed-input compiler.
+	CapabilityCompile = "engine.compile"
 )
 
-var bootstrapCapabilities = []string{CapabilityDescribe}
+var bootstrapCapabilities = []string{CapabilityCompile, CapabilityDescribe}
 
 // BuildInfo identifies the source used to build an Engine instance.
 type BuildInfo struct {

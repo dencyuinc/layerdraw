@@ -90,6 +90,13 @@ func extractModule(file SourceFile) moduleAST {
 	return ast
 }
 
+// AuthoredDeclarationCount returns every syntactically extracted declaration,
+// including duplicate identities and owner-scoped children. The facade uses
+// this before resolution so invalid identity sets cannot bypass its work cap.
+func AuthoredDeclarationCount(file SourceFile) int64 {
+	return int64(len(extractModule(file).declarations))
+}
+
 func extractImport(n *syntax.Node) ImportDecl {
 	toks := nodeTokens(n)
 	decl := ImportDecl{Range: n.Span}

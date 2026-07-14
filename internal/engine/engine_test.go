@@ -21,7 +21,7 @@ func TestNewUsesDevelopmentDefaults(t *testing.T) {
 	if descriptor.SourceRevision != UnknownSourceRevision {
 		t.Fatalf("SourceRevision = %q, want %q", descriptor.SourceRevision, UnknownSourceRevision)
 	}
-	if want := []string{CapabilityDescribe}; !reflect.DeepEqual(descriptor.Capabilities, want) {
+	if want := []string{CapabilityCompile, CapabilityDescribe}; !reflect.DeepEqual(descriptor.Capabilities, want) {
 		t.Fatalf("Capabilities = %v, want %v", descriptor.Capabilities, want)
 	}
 }
@@ -34,7 +34,7 @@ func TestDescribeReturnsCapabilitySnapshot(t *testing.T) {
 	first.Capabilities[0] = "modified"
 	second := instance.Describe()
 
-	if second.Capabilities[0] != CapabilityDescribe {
+	if second.Capabilities[0] != CapabilityCompile {
 		t.Fatalf("Describe returned mutable shared state: %v", second.Capabilities)
 	}
 	if second.ReleaseVersion != "1.2.3" || second.SourceRevision != "abc123" {
