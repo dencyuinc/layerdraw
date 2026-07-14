@@ -5,6 +5,8 @@
   "title": "LayerDraw Engine Protocol v1",
   "x-layerdraw-go-package": "engineprotocol",
   "x-layerdraw-ts-module": "engine",
+  "x-layerdraw-max-json-bytes": 8388608,
+  "x-layerdraw-max-json-depth": 128,
   "$defs": {
     "AssetInput": {
       "type": "object",
@@ -21,7 +23,7 @@
     },
     "CompileInput": {
       "type": "object",
-      "description": "One closed compiler input. Blob references resolve only against bytes supplied with the same request/session.",
+      "description": "One closed compiler input. Blob references resolve only against bytes supplied with the same request/session. In every ResourceLimits field, omission or the canonical value 0 selects the Go facade default; a positive value overrides it.",
       "properties": {
         "entry_path": {"type": "string", "minLength": 1},
         "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
@@ -31,21 +33,139 @@
         "referenced_assets": {"type": "array", "items": {"$ref": "#/$defs/AssetInput"}},
         "resolved_dependencies": {"$ref": "#/$defs/ResolvedDependencies"},
         "resource_limits": {"$ref": "#/$defs/ResourceLimits"},
-        "root_pack_id": {"type": "string"}
+        "root_pack_id": {"type": "string", "minLength": 1}
       },
       "required": ["mode", "entry_path", "project_source_tree", "installed_pack_tree", "resolved_dependencies", "referenced_assets", "resource_limits"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "mode",
+        "variants": {
+          "pack": {"required": ["root_pack_id"]},
+          "project": {"forbidden": ["root_pack_id"]}
+        }
+      }
     },
     "CompileMode": {
       "type": "string",
       "enum": ["pack", "project"]
     },
-    "CompiledRecipeArtifact": {
+    "ExportRecipeBlobRef": {
       "type": "object",
-      "description": "A compiled renderer-independent recipe bound to canonical JSON bytes supplied out of band.",
+      "description": "A request-lifetime canonical CompiledExportRecipeDocument. The media type is role-specific even when bytes happen to equal a subobject of another artifact.",
+      "properties": {
+        "blob_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "media_type": {"type": "string", "const": "application/vnd.layerdraw.export-recipe.v1+json"},
+        "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob_id", "digest", "lifetime", "media_type", "size"],
+      "additionalProperties": false
+    },
+    "NormalizedPackArtifactBlobRef": {
+      "type": "object",
+      "description": "The public normalized Pack artifact bytes; they may equal canonical bytes, but retain their distinct role and media type.",
+      "properties": {
+        "blob_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "media_type": {"type": "string", "const": "application/vnd.layerdraw.pack.v1+json"},
+        "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob_id", "digest", "lifetime", "media_type", "size"],
+      "additionalProperties": false
+    },
+    "NormalizedPackCanonicalBlobRef": {
+      "type": "object",
+      "description": "The canonical normalized Pack document bytes.",
+      "properties": {
+        "blob_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "media_type": {"type": "string", "const": "application/vnd.layerdraw.normalized-pack.v1+json"},
+        "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob_id", "digest", "lifetime", "media_type", "size"],
+      "additionalProperties": false
+    },
+    "NormalizedProjectArtifactBlobRef": {
+      "type": "object",
+      "description": "The public normalized Project artifact bytes; they may equal canonical bytes, but retain their distinct role and media type.",
+      "properties": {
+        "blob_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "media_type": {"type": "string", "const": "application/vnd.layerdraw.project.v1+json"},
+        "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob_id", "digest", "lifetime", "media_type", "size"],
+      "additionalProperties": false
+    },
+    "NormalizedProjectCanonicalBlobRef": {
+      "type": "object",
+      "description": "The canonical normalized Project document bytes.",
+      "properties": {
+        "blob_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "media_type": {"type": "string", "const": "application/vnd.layerdraw.normalized-project.v1+json"},
+        "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob_id", "digest", "lifetime", "media_type", "size"],
+      "additionalProperties": false
+    },
+    "QueryRecipeBlobRef": {
+      "type": "object",
+      "description": "A request-lifetime canonical CompiledQueryRecipeDocument. The media type is role-specific even when bytes happen to equal a subobject of another artifact.",
+      "properties": {
+        "blob_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "media_type": {"type": "string", "const": "application/vnd.layerdraw.query-recipe.v1+json"},
+        "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob_id", "digest", "lifetime", "media_type", "size"],
+      "additionalProperties": false
+    },
+    "ViewRecipeBlobRef": {
+      "type": "object",
+      "description": "A request-lifetime canonical CompiledViewRecipeDocument. The media type is role-specific even when bytes happen to equal a subobject of another artifact.",
+      "properties": {
+        "blob_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "media_type": {"type": "string", "const": "application/vnd.layerdraw.view-recipe.v1+json"},
+        "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob_id", "digest", "lifetime", "media_type", "size"],
+      "additionalProperties": false
+    },
+    "CompiledExportRecipeArtifact": {
+      "type": "object",
+      "description": "A compiled Export recipe bound to a CompiledExportRecipeDocument encoded as canonical JSON bytes supplied out of band.",
       "properties": {
         "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
-        "canonical_json": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"}
+        "canonical_json": {"$ref": "#/$defs/ExportRecipeBlobRef"}
+      },
+      "required": ["address", "canonical_json"],
+      "additionalProperties": false
+    },
+    "CompiledQueryRecipeArtifact": {
+      "type": "object",
+      "description": "A compiled Query recipe bound to a CompiledQueryRecipeDocument encoded as canonical JSON bytes supplied out of band.",
+      "properties": {
+        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "canonical_json": {"$ref": "#/$defs/QueryRecipeBlobRef"}
+      },
+      "required": ["address", "canonical_json"],
+      "additionalProperties": false
+    },
+    "CompiledViewRecipeArtifact": {
+      "type": "object",
+      "description": "A compiled View recipe bound to a CompiledViewRecipeDocument encoded as canonical JSON bytes supplied out of band.",
+      "properties": {
+        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "canonical_json": {"$ref": "#/$defs/ViewRecipeBlobRef"}
       },
       "required": ["address", "canonical_json"],
       "additionalProperties": false
@@ -54,9 +174,9 @@
       "type": "object",
       "description": "The complete ordered compiled Query, View, and Export recipe sets.",
       "properties": {
-        "exports": {"type": "array", "items": {"$ref": "#/$defs/CompiledRecipeArtifact"}},
-        "queries": {"type": "array", "items": {"$ref": "#/$defs/CompiledRecipeArtifact"}},
-        "views": {"type": "array", "items": {"$ref": "#/$defs/CompiledRecipeArtifact"}}
+        "exports": {"type": "array", "items": {"$ref": "#/$defs/CompiledExportRecipeArtifact"}},
+        "queries": {"type": "array", "items": {"$ref": "#/$defs/CompiledQueryRecipeArtifact"}},
+        "views": {"type": "array", "items": {"$ref": "#/$defs/CompiledViewRecipeArtifact"}}
       },
       "required": ["queries", "views", "exports"],
       "additionalProperties": false
@@ -66,16 +186,18 @@
       "description": "A validated tagged union retaining the normalized Project or Pack artifact without exposing compiler-domain structs.",
       "properties": {
         "kind": {"$ref": "#/$defs/CompileMode"},
+        "graph_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "pack": {"$ref": "#/$defs/NormalizedPackArtifact"},
-        "project": {"$ref": "#/$defs/NormalizedProjectArtifact"}
+        "project": {"$ref": "#/$defs/NormalizedProjectArtifact"},
+        "search_documents": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SearchDocument"}}
       },
-      "required": ["kind"],
+      "required": ["kind", "search_documents"],
       "additionalProperties": false,
       "x-layerdraw-tagged-union": {
         "property": "kind",
         "variants": {
-          "pack": {"required": ["pack"], "forbidden": ["project"]},
-          "project": {"required": ["project"], "forbidden": ["pack"]}
+          "pack": {"required": ["pack"], "forbidden": ["graph_hash", "project"], "empty": ["search_documents"]},
+          "project": {"required": ["graph_hash", "project"], "forbidden": ["pack"]}
         }
       }
     },
@@ -83,8 +205,8 @@
       "type": "object",
       "description": "The complete normalized Pack artifact as canonical and public artifact JSON blob bindings.",
       "properties": {
-        "artifact_json": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
-        "canonical_json": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "artifact_json": {"$ref": "#/$defs/NormalizedPackArtifactBlobRef"},
+        "canonical_json": {"$ref": "#/$defs/NormalizedPackCanonicalBlobRef"},
         "pack_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}
       },
       "required": ["pack_address", "canonical_json", "artifact_json"],
@@ -94,8 +216,8 @@
       "type": "object",
       "description": "The complete normalized Project artifact as canonical and public artifact JSON blob bindings.",
       "properties": {
-        "artifact_json": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
-        "canonical_json": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "artifact_json": {"$ref": "#/$defs/NormalizedProjectArtifactBlobRef"},
+        "canonical_json": {"$ref": "#/$defs/NormalizedProjectCanonicalBlobRef"},
         "project_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}
       },
       "required": ["project_address", "canonical_json", "artifact_json"],
@@ -109,18 +231,16 @@
         "child_set_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ChildSetHash"}},
         "compiled_recipes": {"$ref": "#/$defs/CompiledRecipes"},
         "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "effective_limits": {"$ref": "#/$defs/ResourceLimits"},
+        "effective_limits": {"$ref": "#/$defs/EffectiveResourceLimits"},
         "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
-        "graph_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "normalized_artifact": {"$ref": "#/$defs/NormalizedArtifact"},
-        "search_documents": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SearchDocument"}},
         "semantic_index": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SemanticIndex"},
         "source_map": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceMap"},
         "stable_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}},
         "subject_semantic_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectHash"}},
         "subtree_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubtreeHash"}}
       },
-      "required": ["effective_limits", "normalized_artifact", "source_map", "semantic_index", "stable_addresses", "definition_hash", "subject_semantic_hashes", "subtree_hashes", "child_set_hashes", "authoring_subject_classification", "compiled_recipes", "search_documents"],
+      "required": ["effective_limits", "normalized_artifact", "source_map", "semantic_index", "stable_addresses", "definition_hash", "subject_semantic_hashes", "subtree_hashes", "child_set_hashes", "authoring_subject_classification", "compiled_recipes"],
       "additionalProperties": false
     },
     "CompileRequestEnvelope": {
@@ -170,7 +290,7 @@
     "HandshakeResponseEnvelope": {
       "type": "object",
       "properties": {
-        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}},
         "engine_release": {"type": "string"},
         "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
         "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
@@ -187,9 +307,9 @@
       "type": "object",
       "properties": {
         "format": {"type": "string", "const": "layerdraw-resolved"},
-        "format_version": {"type": "integer", "minimum": 1},
+        "format_version": {"type": "integer", "minimum": 1, "maximum": 2147483647},
         "installs": {"type": "array", "items": {"$ref": "#/$defs/ResolvedPack"}},
-        "language": {"type": "integer", "minimum": 1}
+        "language": {"type": "integer", "minimum": 1, "maximum": 2147483647}
       },
       "required": ["format", "format_version", "language", "installs"],
       "additionalProperties": false
@@ -231,19 +351,36 @@
     },
     "ResourceLimits": {
       "type": "object",
-      "description": "Every compiler quantity is an optional canonical unsigned decimal string; absence selects the Engine default.",
+      "description": "Optional non-negative signed-64-bit compiler limit overrides; absence selects the Engine default.",
       "properties": {
-        "max_asset_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
-        "max_assets": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
-        "max_declarations": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
-        "max_pack_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
-        "max_pack_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
-        "max_project_source_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
-        "max_project_source_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
-        "max_raster_dimension": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
-        "max_raster_pixels": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+        "max_asset_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_assets": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_declarations": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_pack_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_pack_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_project_source_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_project_source_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_raster_dimension": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_raster_pixels": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"}
       },
       "required": [],
+      "additionalProperties": false
+    },
+    "EffectiveResourceLimits": {
+      "type": "object",
+      "description": "The complete non-negative signed-64-bit resource limits actually applied to a successful compile.",
+      "properties": {
+        "max_asset_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_assets": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_declarations": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_pack_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_pack_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_project_source_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_project_source_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_raster_dimension": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_raster_pixels": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"}
+      },
+      "required": ["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"],
       "additionalProperties": false
     },
     "SourceFileInput": {

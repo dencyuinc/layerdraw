@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "LICENSE", "README.md"],
+  "files": ["dist/*.gen.js", "dist/*.gen.js.map", "dist/*.gen.d.ts", "dist/*.gen.d.ts.map", "LICENSE", "README.md"],
   "exports": {
     "./common": {
       "types": "./dist/common.gen.d.ts",
@@ -21,14 +21,14 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "generate": "node -e \"\"",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "typescript": "5.9.3"
+    "typescript": "7.0.2"
   },
   "engines": {
     "node": ">=24.18.0 <25"

@@ -7,7 +7,17 @@
     "child_set_hashes": [],
     "compiled_recipes": {"exports": [], "queries": [], "views": []},
     "definition_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
-    "effective_limits": {},
+    "effective_limits": {
+      "max_asset_bytes": "268435456",
+      "max_assets": "4096",
+      "max_declarations": "1000000",
+      "max_pack_bytes": "268435456",
+      "max_pack_files": "16384",
+      "max_project_source_bytes": "67108864",
+      "max_project_source_files": "4096",
+      "max_raster_dimension": "32768",
+      "max_raster_pixels": "67108864"
+    },
     "normalized_artifact": {
       "kind": "pack",
       "pack": {
@@ -15,20 +25,20 @@
           "blob_id": "compile/pack-artifact-json",
           "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
           "lifetime": "request",
-          "media_type": "application/vnd.layerdraw.pack+json",
+          "media_type": "application/vnd.layerdraw.pack.v1+json",
           "size": "96"
         },
         "canonical_json": {
           "blob_id": "compile/pack-canonical-json",
           "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
           "lifetime": "request",
-          "media_type": "application/vnd.layerdraw.pack+json",
+          "media_type": "application/vnd.layerdraw.normalized-pack.v1+json",
           "size": "96"
         },
         "pack_address": "ldl:pack:fixture"
-      }
+      },
+      "search_documents": []
     },
-    "search_documents": [],
     "semantic_index": {
       "adjacency": [], "children": [], "columns": [], "dependencies": [],
       "layer_membership": [], "reference_ids": [], "references": [], "rows": [],

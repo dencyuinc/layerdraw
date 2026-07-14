@@ -5,6 +5,8 @@
   "title": "LayerDraw Protocol Common v1",
   "x-layerdraw-go-package": "protocolcommon",
   "x-layerdraw-ts-module": "common",
+  "x-layerdraw-max-json-bytes": 8388608,
+  "x-layerdraw-max-json-depth": 128,
   "$defs": {
     "BlobLifetime": {
       "type": "string",
@@ -27,8 +29,14 @@
     "CanonicalInt64": {
       "type": "string",
       "format": "int64-decimal",
-      "pattern": "^-?(0|[1-9][0-9]*)$",
+      "pattern": "^(0|-[1-9][0-9]*|[1-9][0-9]*)$",
       "description": "A signed 64-bit integer serialized as a canonical decimal string."
+    },
+    "CanonicalNonNegativeInt64": {
+      "type": "string",
+      "format": "nonnegative-int64-decimal",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "description": "A non-negative signed 64-bit compiler-domain quantity serialized as canonical decimal."
     },
     "CanonicalUint64": {
       "type": "string",
@@ -53,7 +61,7 @@
         "limits": {"$ref": "#/$defs/CapabilityLimitMap"},
         "manifest_etag": {"type": "string", "minLength": 1},
         "manifest_scope": {"$ref": "#/$defs/ManifestScope"},
-        "manifest_version": {"type": "integer", "minimum": 1},
+        "manifest_version": {"type": "integer", "minimum": 1, "maximum": 2147483647},
         "operations": {
           "type": "object",
           "additionalProperties": {"$ref": "#/$defs/OperationCapability"}
@@ -177,6 +185,55 @@
       "required": ["id", "version", "enabled"],
       "additionalProperties": false
     },
+    "ProtocolDiagnostic": {
+      "type": "object",
+      "description": "A non-LDL protocol, compatibility, policy, or operation diagnostic. LDL compiler diagnostics use semantic.Diagnostic instead.",
+      "properties": {
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"},
+        "data": {"$ref": "#/$defs/JsonObject"},
+        "message": {"type": "string"},
+        "related": {"type": "array", "items": {"$ref": "#/$defs/ProtocolDiagnosticRelated"}},
+        "remediation": {"type": "string"},
+        "severity": {"$ref": "#/$defs/ProtocolDiagnosticSeverity"},
+        "source": {"$ref": "#/$defs/ProtocolDiagnosticSource"}
+      },
+      "required": ["code", "severity", "message", "related"],
+      "additionalProperties": false
+    },
+    "ProtocolDiagnosticRelated": {
+      "type": "object",
+      "properties": {
+        "message": {"type": "string"},
+        "relation": {"type": "string", "minLength": 1},
+        "source": {"$ref": "#/$defs/ProtocolDiagnosticSource"}
+      },
+      "required": ["relation", "message"],
+      "additionalProperties": false
+    },
+    "ProtocolDiagnosticSeverity": {
+      "type": "string",
+      "enum": ["error", "hint", "information", "warning"]
+    },
+    "ProtocolDiagnosticSource": {
+      "type": "object",
+      "properties": {
+        "module_path": {"type": "string"},
+        "span": {"$ref": "#/$defs/ProtocolDiagnosticSpan"},
+        "stable_address": {"type": "string"}
+      },
+      "required": ["module_path", "span"],
+      "additionalProperties": false
+    },
+    "ProtocolDiagnosticSpan": {
+      "type": "object",
+      "properties": {
+        "end_byte": {"$ref": "#/$defs/CanonicalUint64"},
+        "start_byte": {"$ref": "#/$defs/CanonicalUint64"}
+      },
+      "required": ["start_byte", "end_byte"],
+      "additionalProperties": false,
+      "x-layerdraw-ordered-range": true
+    },
     "ProtocolFailure": {
       "type": "object",
       "description": "A safe transport or execution-platform failure, never a source diagnostic.",
@@ -247,7 +304,8 @@
     "Rfc3339Time": {
       "type": "string",
       "format": "date-time",
-      "description": "A UTC RFC 3339 timestamp."
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "A real-calendar UTC RFC 3339 timestamp with a required Z suffix and at most nine fractional digits."
     },
     "TotalItems": {
       "type": "object",

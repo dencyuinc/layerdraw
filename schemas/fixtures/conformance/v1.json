@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "max_json_bytes": 8388608,
+  "max_json_depth": 128,
+  "canonical_cases": [
+    {
+      "name": "int64_minimum",
+      "type": "CanonicalInt64",
+      "input": "\"-9223372036854775808\"",
+      "expected": "\"-9223372036854775808\""
+    },
+    {
+      "name": "int64_maximum",
+      "type": "CanonicalInt64",
+      "input": "\"9223372036854775807\"",
+      "expected": "\"9223372036854775807\""
+    },
+    {
+      "name": "nonnegative_int64_maximum",
+      "type": "CanonicalNonNegativeInt64",
+      "input": "\"9223372036854775807\"",
+      "expected": "\"9223372036854775807\""
+    },
+    {
+      "name": "valid_sha256_digest",
+      "type": "Digest",
+      "input": "\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+      "expected": "\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
+    },
+    {
+      "name": "optional_collection_absent",
+      "type": "OperationCapability",
+      "input": "{\"protocol_version\":\"1.0\",\"enabled\":true}",
+      "expected": "{\"enabled\":true,\"protocol_version\":\"1.0\"}"
+    },
+    {
+      "name": "optional_collection_present_empty",
+      "type": "OperationCapability",
+      "input": "{\"required_authoring_capabilities\":[],\"protocol_version\":\"1.0\",\"enabled\":true}",
+      "expected": "{\"enabled\":true,\"protocol_version\":\"1.0\",\"required_authoring_capabilities\":[]}"
+    },
+    {
+      "name": "unknown_capability_identifier_preserved",
+      "type": "OperationCapability",
+      "input": "{\"required_authoring_capabilities\":[\"future.capability.v9\"],\"protocol_version\":\"1.0\",\"enabled\":false}",
+      "expected": "{\"enabled\":false,\"protocol_version\":\"1.0\",\"required_authoring_capabilities\":[\"future.capability.v9\"]}"
+    },
+    {
+      "name": "utc_leap_day_fraction",
+      "type": "Rfc3339Time",
+      "input": "\"2024-02-29T23:59:59.123456789Z\"",
+      "expected": "\"2024-02-29T23:59:59.123456789Z\""
+    },
+    {
+      "name": "unicode_pair_and_reordered_object",
+      "type": "JsonValue",
+      "input": "{\"z\":\"\\ud83d\\ude00\",\"a\":[null,true]}",
+      "expected": "{\"a\":[null,true],\"z\":\"😀\"}"
+    },
+    {
+      "name": "portable_integer_maximum",
+      "type": "SearchField",
+      "input": "{\"text\":\"t\",\"lexical_weight\":2147483647,\"include_in_embedding\":false,\"field_path\":\"p\"}",
+      "expected": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":2147483647,\"text\":\"t\"}"
+    },
+    {
+      "name": "ordered_diagnostic_related_locations",
+      "type": "Diagnostic",
+      "input": "{\"severity\":\"warning\",\"related\":[{\"subject_address\":\"ldl:project:p:query:q\",\"relation\":\"target\"},{\"message\":\"why\",\"relation\":\"cause\"}],\"range\":{\"start_byte\":\"2\",\"origin\":{\"pack_address\":\"ldl:pack:pub:name\",\"kind\":\"pack\"},\"module_path\":\"query.ldl\",\"end_byte\":\"9\"},\"protocol_version\":1,\"message_key\":\"invalid_structure_syntax\",\"code\":\"LDL1101\",\"arguments\":{\"token\":{\"string_value\":\"x\",\"kind\":\"string\"}}}",
+      "expected": "{\"arguments\":{\"token\":{\"kind\":\"string\",\"string_value\":\"x\"}},\"code\":\"LDL1101\",\"message_key\":\"invalid_structure_syntax\",\"protocol_version\":1,\"range\":{\"end_byte\":\"9\",\"module_path\":\"query.ldl\",\"origin\":{\"kind\":\"pack\",\"pack_address\":\"ldl:pack:pub:name\"},\"start_byte\":\"2\"},\"related\":[{\"relation\":\"target\",\"subject_address\":\"ldl:project:p:query:q\"},{\"message\":\"why\",\"relation\":\"cause\"}],\"severity\":\"warning\"}"
+    },
+    {
+      "name": "typed_query_recipe_document",
+      "type": "CompiledQueryRecipeDocument",
+      "input": "{\"schema_version\":1,\"recipe\":{\"where\":{\"children\":[],\"kind\":\"all\"},\"tags\":[],\"state_input\":\"none\",\"select\":{},\"result\":[],\"reserved_parameter_ids\":[],\"relation_where\":{\"kind\":\"all\",\"children\":[]},\"parameters\":[],\"id\":\"all\",\"display_name\":\"All\",\"dependencies\":{\"state_reads\":[],\"relation_type_addresses\":[],\"relation_addresses\":[],\"parameter_addresses\":[],\"layer_addresses\":[],\"entity_type_addresses\":[],\"entity_addresses\":[],\"column_addresses\":[]},\"annotations\":{},\"address\":\"ldl:project:p:query:all\"},\"format\":\"layerdraw-query-recipe\"}",
+      "expected": "{\"format\":\"layerdraw-query-recipe\",\"recipe\":{\"address\":\"ldl:project:p:query:all\",\"annotations\":{},\"dependencies\":{\"column_addresses\":[],\"entity_addresses\":[],\"entity_type_addresses\":[],\"layer_addresses\":[],\"parameter_addresses\":[],\"relation_addresses\":[],\"relation_type_addresses\":[],\"state_reads\":[]},\"display_name\":\"All\",\"id\":\"all\",\"parameters\":[],\"relation_where\":{\"children\":[],\"kind\":\"all\"},\"reserved_parameter_ids\":[],\"result\":[],\"select\":{},\"state_input\":\"none\",\"tags\":[],\"where\":{\"children\":[],\"kind\":\"all\"}},\"schema_version\":1}"
+    },
+    {
+      "name": "typed_view_recipe_document",
+      "type": "CompiledViewRecipeDocument",
+      "input": "{\"schema_version\":1,\"recipe\":{\"tags\":[],\"state_requirement\":\"none\",\"state_input\":\"none\",\"source\":{\"query_address\":\"ldl:project:p:query:all\",\"kind\":\"query\",\"arguments\":{}},\"shape\":{\"kind\":\"context\",\"context\":{\"outgoing\":true,\"incoming\":true,\"include_relation_rows\":false,\"include_entity_rows\":false,\"group_by\":\"none\"}},\"reserved_table_column_ids\":[],\"reserved_export_ids\":[],\"relation_projection_overrides\":{},\"id\":\"overview\",\"exports\":[],\"display_name\":\"Overview\",\"dependencies\":{\"state_reads\":[],\"relation_type_addresses\":[],\"relation_addresses\":[],\"query_addresses\":[],\"parameter_addresses\":[],\"layer_addresses\":[],\"export_addresses\":[],\"entity_type_addresses\":[],\"entity_addresses\":[],\"column_addresses\":[]},\"category\":\"context\",\"annotations\":{},\"address\":\"ldl:project:p:view:overview\"},\"format\":\"layerdraw-view-recipe\"}",
+      "expected": "{\"format\":\"layerdraw-view-recipe\",\"recipe\":{\"address\":\"ldl:project:p:view:overview\",\"annotations\":{},\"category\":\"context\",\"dependencies\":{\"column_addresses\":[],\"entity_addresses\":[],\"entity_type_addresses\":[],\"export_addresses\":[],\"layer_addresses\":[],\"parameter_addresses\":[],\"query_addresses\":[],\"relation_addresses\":[],\"relation_type_addresses\":[],\"state_reads\":[]},\"display_name\":\"Overview\",\"exports\":[],\"id\":\"overview\",\"relation_projection_overrides\":{},\"reserved_export_ids\":[],\"reserved_table_column_ids\":[],\"shape\":{\"context\":{\"group_by\":\"none\",\"include_entity_rows\":false,\"include_relation_rows\":false,\"incoming\":true,\"outgoing\":true},\"kind\":\"context\"},\"source\":{\"arguments\":{},\"kind\":\"query\",\"query_address\":\"ldl:project:p:query:all\"},\"state_input\":\"none\",\"state_requirement\":\"none\",\"tags\":[]},\"schema_version\":1}"
+    },
+    {
+      "name": "typed_export_recipe_document",
+      "type": "CompiledExportRecipeDocument",
+      "input": "{\"schema_version\":1,\"recipe\":{\"view_address\":\"ldl:project:p:view:overview\",\"source_refs\":true,\"requires_source_manifest\":false,\"options\":{\"state_summary\":false,\"kind\":\"json\",\"diagnostics\":false},\"native_maximum_fidelity\":\"lossless\",\"id\":\"json\",\"format\":\"json\",\"filename\":\"overview.json\",\"fidelity_basis\":\"native\",\"fidelity\":\"lossless\",\"extension\":\".json\",\"exporter_profile\":{\"specification_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"registry_schema_version\":1,\"registry_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"builtin.json\",\"format\":\"json\"},\"effective_maximum_fidelity\":\"lossless\",\"address\":\"ldl:project:p:view:overview:export:json\"},\"format\":\"layerdraw-export-recipe\"}",
+      "expected": "{\"format\":\"layerdraw-export-recipe\",\"recipe\":{\"address\":\"ldl:project:p:view:overview:export:json\",\"effective_maximum_fidelity\":\"lossless\",\"exporter_profile\":{\"format\":\"json\",\"id\":\"builtin.json\",\"registry_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"registry_schema_version\":1,\"specification_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"extension\":\".json\",\"fidelity\":\"lossless\",\"fidelity_basis\":\"native\",\"filename\":\"overview.json\",\"format\":\"json\",\"id\":\"json\",\"native_maximum_fidelity\":\"lossless\",\"options\":{\"diagnostics\":false,\"kind\":\"json\",\"state_summary\":false},\"requires_source_manifest\":false,\"source_refs\":true,\"view_address\":\"ldl:project:p:view:overview\"},\"schema_version\":1}"
+    }
+  ],
+  "rejection_cases": [
+    {"name": "int64_negative_zero", "type": "CanonicalInt64", "input": "\"-0\""},
+    {"name": "int64_below_minimum", "type": "CanonicalInt64", "input": "\"-9223372036854775809\""},
+    {"name": "int64_above_maximum", "type": "CanonicalInt64", "input": "\"9223372036854775808\""},
+    {"name": "nonnegative_int64_negative", "type": "CanonicalNonNegativeInt64", "input": "\"-1\""},
+    {"name": "nonnegative_int64_uint64_max", "type": "CanonicalNonNegativeInt64", "input": "\"18446744073709551615\""},
+    {"name": "digest_uppercase", "type": "Digest", "input": "\"sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789\""},
+    {"name": "digest_wrong_algorithm", "type": "Digest", "input": "\"md5:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""},
+    {"name": "digest_wrong_length", "type": "Digest", "input": "\"sha256:0123456789abcdef\""},
+    {"name": "json_number_negative_zero", "type": "SearchField", "input": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":-0,\"text\":\"t\"}"},
+    {"name": "json_number_exponent", "type": "SearchField", "input": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":1e0,\"text\":\"t\"}"},
+    {"name": "json_number_fraction", "type": "SearchField", "input": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":1.0,\"text\":\"t\"}"},
+    {"name": "portable_integer_above_maximum", "type": "SearchField", "input": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":2147483648,\"text\":\"t\"}"},
+    {"name": "optional_collection_null", "type": "OperationCapability", "input": "{\"enabled\":true,\"protocol_version\":\"1.0\",\"required_authoring_capabilities\":null}"},
+    {"name": "utc_offset_forbidden", "type": "Rfc3339Time", "input": "\"2024-01-01T00:00:00+09:00\""},
+    {"name": "invalid_non_leap_day", "type": "Rfc3339Time", "input": "\"2023-02-29T00:00:00Z\""},
+    {"name": "invalid_calendar_day", "type": "Rfc3339Time", "input": "\"2024-04-31T00:00:00Z\""},
+    {"name": "fraction_too_precise", "type": "Rfc3339Time", "input": "\"2024-01-01T00:00:00.1234567890Z\""},
+    {"name": "lowercase_utc_suffix", "type": "Rfc3339Time", "input": "\"2024-01-01T00:00:00z\""},
+    {"name": "unpaired_high_surrogate", "type": "JsonValue", "input": "\"\\ud800\""},
+    {"name": "unpaired_low_surrogate", "type": "JsonValue", "input": "\"\\udc00\""},
+    {"name": "number_in_json_value", "type": "JsonValue", "input": "1"}
+    ,{"name": "diagnostic_code_not_ldl", "type": "Diagnostic", "input": "{\"arguments\":{},\"code\":\"engine.compile.invalid\",\"message_key\":\"invalid_structure_syntax\",\"protocol_version\":1,\"related\":[],\"severity\":\"error\"}"}
+    ,{"name": "diagnostic_non_normative_information", "type": "Diagnostic", "input": "{\"arguments\":{},\"code\":\"LDL1101\",\"message_key\":\"invalid_structure_syntax\",\"protocol_version\":1,\"related\":[],\"severity\":\"information\"}"}
+    ,{"name": "diagnostic_reversed_range", "type": "Diagnostic", "input": "{\"arguments\":{},\"code\":\"LDL1101\",\"message_key\":\"invalid_structure_syntax\",\"protocol_version\":1,\"range\":{\"end_byte\":\"3\",\"module_path\":\"a.ldl\",\"origin\":{\"kind\":\"project\"},\"start_byte\":\"4\"},\"related\":[],\"severity\":\"error\"}"}
+    ,{"name": "diagnostic_pack_origin_without_address", "type": "Diagnostic", "input": "{\"arguments\":{},\"code\":\"LDL1101\",\"message_key\":\"invalid_structure_syntax\",\"protocol_version\":1,\"range\":{\"end_byte\":\"3\",\"module_path\":\"a.ldl\",\"origin\":{\"kind\":\"pack\"},\"start_byte\":\"1\"},\"related\":[],\"severity\":\"error\"}"}
+    ,{"name": "query_recipe_unknown_wire_format", "type": "CompiledQueryRecipeDocument", "input": "{\"format\":\"internal-query.Recipe\",\"recipe\":{},\"schema_version\":1}"}
+    ,{"name": "view_recipe_mixed_shape_union", "type": "CompiledViewRecipeDocument", "input": "{\"format\":\"layerdraw-view-recipe\",\"recipe\":{\"address\":\"ldl:project:p:view:v\",\"annotations\":{},\"category\":\"context\",\"dependencies\":{\"column_addresses\":[],\"entity_addresses\":[],\"entity_type_addresses\":[],\"export_addresses\":[],\"layer_addresses\":[],\"parameter_addresses\":[],\"query_addresses\":[],\"relation_addresses\":[],\"relation_type_addresses\":[],\"state_reads\":[]},\"display_name\":\"V\",\"exports\":[],\"id\":\"v\",\"relation_projection_overrides\":{},\"reserved_export_ids\":[],\"reserved_table_column_ids\":[],\"shape\":{\"context\":{\"group_by\":\"none\",\"include_entity_rows\":false,\"include_relation_rows\":false,\"incoming\":true,\"outgoing\":true},\"diagram\":{\"abstraction\":\"normal\",\"composed\":false,\"direction\":\"left_to_right\",\"layout\":\"layered\",\"placements\":[]},\"kind\":\"context\"},\"source\":{\"arguments\":{},\"kind\":\"query\",\"query_address\":\"ldl:project:p:query:q\"},\"state_input\":\"none\",\"state_requirement\":\"none\",\"tags\":[]},\"schema_version\":1}"}
+    ,{"name": "recipe_decimal_trailing_zero", "type": "CompiledExportRecipeDocument", "input": "{\"format\":\"layerdraw-export-recipe\",\"recipe\":{\"address\":\"ldl:project:p:view:v:export:e\",\"effective_maximum_fidelity\":\"lossless\",\"exporter_profile\":{\"format\":\"png\",\"id\":\"p\",\"registry_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"registry_schema_version\":1,\"specification_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"extension\":\".png\",\"fidelity\":\"lossless\",\"fidelity_basis\":\"native\",\"filename\":\"v.png\",\"format\":\"png\",\"id\":\"e\",\"native_maximum_fidelity\":\"lossless\",\"options\":{\"kind\":\"png\",\"scale\":\"1.0\"},\"requires_source_manifest\":false,\"source_refs\":true,\"view_address\":\"ldl:project:p:view:v\"},\"schema_version\":1}"}
+  ],
+  "mutation_cases": [
+    {"name": "success_with_valid_failure", "fixture": "compile-success.json", "mutation": "add_valid_failure"},
+    {"name": "mixed_normalized_artifact", "fixture": "compile-success.json", "mutation": "add_valid_pack_variant"},
+    {"name": "pack_variant_missing_payload", "fixture": "compile-success-pack.json", "mutation": "remove_pack_variant"},
+    {"name": "failed_without_failure", "fixture": "compile-rejected.json", "mutation": "set_failed"},
+    {"name": "cancelled_without_failure", "fixture": "compile-rejected.json", "mutation": "set_cancelled"},
+    {"name": "rejected_with_valid_payload", "fixture": "compile-rejected.json", "mutation": "add_valid_success_payload"},
+    {"name": "project_without_graph_hash", "fixture": "compile-success.json", "mutation": "remove_project_graph"},
+    {"name": "pack_with_graph_hash", "fixture": "compile-success-pack.json", "mutation": "add_pack_graph"},
+    {"name": "pack_with_search_documents", "fixture": "compile-success-pack.json", "mutation": "add_pack_search_document"},
+    {"name": "project_with_wrong_artifact_media_type", "fixture": "compile-success.json", "mutation": "corrupt_project_media_type"}
+  ],
+  "request_mutation_cases": [
+    {"name": "project_with_root_pack_id", "fixture": "compile-request.json", "mutation": "add_project_root"},
+    {"name": "pack_without_root_pack_id", "fixture": "compile-request.json", "mutation": "set_pack_without_root"},
+    {"name": "pack_with_empty_root_pack_id", "fixture": "compile-request.json", "mutation": "set_pack_empty_root"}
+  ]
+}

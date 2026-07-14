@@ -1,21 +1,24 @@
 {
   "diagnostics": [
     {
-      "code": "engine.compile.syntax_error",
-      "data": {
-        "expected": "project"
-      },
-      "message": "expected a project declaration",
-      "related": [],
-      "remediation": "Add a project declaration to the entry module.",
-      "severity": "error",
-      "source": {
-        "module_path": "document.ldl",
-        "span": {
-          "end_byte": "7",
-          "start_byte": "0"
+      "arguments": {
+        "expected": {
+          "kind": "string",
+          "string_value": "project"
         }
-      }
+      },
+      "code": "LDL1101",
+      "message": "expected a project declaration",
+      "message_key": "invalid_structure_syntax",
+      "protocol_version": 1,
+      "range": {
+        "end_byte": "7",
+        "module_path": "document.ldl",
+        "origin": {"kind": "project"},
+        "start_byte": "0"
+      },
+      "related": [],
+      "severity": "error"
     }
   ],
   "engine_release": "0.0.0-dev",

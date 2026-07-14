@@ -92,8 +92,7 @@ build:
 	$(PNPM) exec turbo run build
 
 protocol-package-check: build
-	cd packages/protocol && $(PNPM) pack --dry-run --json >/dev/null
-	cd packages/protocol && node --input-type=module -e 'await Promise.all([import("./dist/common.gen.js"), import("./dist/semantic.gen.js"), import("./dist/engine.gen.js")])'
+	./tools/check-protocol-package.sh
 
 package: build
 	$(GO) run ./tools/licensecheck bundle \

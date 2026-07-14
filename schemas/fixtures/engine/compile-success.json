@@ -20,7 +20,7 @@
             "blob_id": "compile/query/all",
             "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
             "lifetime": "request",
-            "media_type": "application/vnd.layerdraw.query-recipe+json",
+            "media_type": "application/vnd.layerdraw.query-recipe.v1+json",
             "size": "64"
           }
         }
@@ -39,29 +39,27 @@
       "max_raster_dimension": "32768",
       "max_raster_pixels": "67108864"
     },
-    "graph_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "normalized_artifact": {
+      "graph_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "kind": "project",
       "project": {
         "artifact_json": {
           "blob_id": "compile/artifact-json",
           "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "lifetime": "request",
-          "media_type": "application/vnd.layerdraw.normalized+json",
+          "media_type": "application/vnd.layerdraw.project.v1+json",
           "size": "128"
         },
         "canonical_json": {
           "blob_id": "compile/canonical-json",
           "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "lifetime": "request",
-          "media_type": "application/vnd.layerdraw.normalized+json",
+          "media_type": "application/vnd.layerdraw.normalized-project.v1+json",
           "size": "128"
         },
         "project_address": "ldl:project:fixture"
-      }
-    },
-    "search_documents": [
-      {
+      },
+      "search_documents": [{
         "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "fields": [
           {
@@ -77,8 +75,8 @@
         "subject_address": "ldl:project:fixture",
         "subject_kind": "project",
         "type_addresses": []
-      }
-    ],
+      }]
+    },
     "semantic_index": {
       "adjacency": [],
       "children": [],
