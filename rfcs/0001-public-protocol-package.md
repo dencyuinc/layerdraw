@@ -1,10 +1,10 @@
 # RFC 0001: Public protocol package and generation boundary
 
-- Status: Accepted
+- Status: Proposed
 - Authors: LayerDraw maintainers
-- Approval: Dencyuman, protocol/release maintainer, 2026-07-15
+- Approval: Pending the approvals required by `OWNERS.yaml` and repository policy
 - Tracking issue: #27
-- Target release: the first release containing `@layerdraw/protocol`
+- Target release: a future release after the approval and release-package gates below
 
 ## Context
 
@@ -22,7 +22,7 @@ and the checks that keep published artifacts aligned with committed source.
 
 ## Decision
 
-LayerDraw will publish `@layerdraw/protocol` as the transport-neutral
+This RFC proposes that LayerDraw publish `@layerdraw/protocol` as the transport-neutral
 TypeScript representation of its generated wire contracts. The package is
 Apache-2.0 licensed, has no runtime dependencies, and supports browser and SSR
 consumers without Node, DOM, Worker, transport, framework, compiler, or Runtime
@@ -54,22 +54,31 @@ tool caches live outside the cloned repository. Dependency copies are also
 manifested so mutation attempts fail without exposing caller dependency state.
 Package verification builds and packs the actual npm artifact, checks its
 export boundary in Node and browser conditions, and rejects source maps whose
-source is neither packaged nor embedded. Release jobs publish the already
-verified artifact rather than regenerating it.
+source is neither packaged nor embedded. Issue #27 does not add a release or
+publish workflow. Before stable publication, later release/package work,
+especially Issue #33, must add and test jobs that publish those exact verified
+artifact bytes rather than regenerating them.
 
 Protocol compatibility and npm package compatibility are related but distinct
 version axes. Wire documents follow the `major.minor` rules in
 `schemas/README.md`: breaking shape or canonicalization changes require a new
 protocol major, while additive documented changes may use a protocol minor.
-The npm package follows SemVer through Changesets and remains part of the
-repository's fixed LayerDraw release set. A package release must not imply that
-an endpoint supports a protocol version; negotiation remains explicit in the
-wire contract.
+The npm package follows SemVer through Changesets. The intended policy is for
+it to join the repository's fixed LayerDraw release set only after later
+release/package work, especially Issue #33, implements and verifies lockstep
+versioning and a bound release manifest. The current Changesets configuration
+has no fixed group and does not enforce that intent. A package release must not
+imply that an endpoint supports a protocol version; negotiation remains
+explicit in the wire contract.
 
-## Approval record
+## Approval requirements
 
-On 2026-07-15, Dencyuman approved RFC 0001 in the protocol/release maintainer
-role, covering both the public protocol boundary and its release policy.
+This RFC remains Proposed. The canonical `OWNERS.yaml` currently names no
+approvers for either the `engine` paths that own schemas/generated bindings or
+the `web-and-sdk` paths that own the public package, and no qualifying
+two-person approval record exists. Acceptance requires at least two actual
+approvals, including an applicable component approver, recorded only after the
+ownership mapping can satisfy repository policy.
 
 ## Alternatives considered
 
@@ -109,5 +118,7 @@ Only named package subpaths are compatibility commitments.
   and wire compatibility rules are honored.
 - Adding a public package expands release, licensing, provenance, and packaged
   artifact verification responsibilities for every LayerDraw release.
-- RFC acceptance authorizes the package boundary and stable-channel release
-  policy; each release must still pass the repository delivery gates.
+- If the required approvals are later recorded, RFC acceptance will authorize
+  the package boundary decision but not stable publication by itself. Stable
+  publication remains gated on the release/package implementation (especially
+  Issue #33) and all repository delivery gates.
