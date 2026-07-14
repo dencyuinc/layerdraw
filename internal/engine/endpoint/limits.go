@@ -22,6 +22,25 @@ type limitValues struct {
 	maxDeclarations       int64
 }
 
+// FixedLimitPolicy converts the endpoint's exported transport-neutral limit
+// value into a policy whose defaults and hard maxima are identical. It lets a
+// composition package inject literal limits without importing Engine domain
+// types or recreating limit semantics.
+func FixedLimitPolicy(limits CompileEffectiveLimits) LimitPolicy {
+	values := engine.ResourceLimits{
+		MaxProjectSourceFiles: limits.MaxProjectSourceFiles,
+		MaxProjectSourceBytes: limits.MaxProjectSourceBytes,
+		MaxPackFiles:          limits.MaxPackFiles,
+		MaxPackBytes:          limits.MaxPackBytes,
+		MaxAssets:             limits.MaxAssets,
+		MaxAssetBytes:         limits.MaxAssetBytes,
+		MaxRasterDimension:    limits.MaxRasterDimension,
+		MaxRasterPixels:       limits.MaxRasterPixels,
+		MaxDeclarations:       limits.MaxDeclarations,
+	}
+	return LimitPolicy{Defaults: values, HardMaximums: values}
+}
+
 func limitsToValues(limits engine.ResourceLimits) limitValues {
 	return limitValues{
 		maxProjectSourceFiles: limits.MaxProjectSourceFiles,
