@@ -26,6 +26,75 @@ if tar -tzf "$archive" | LC_ALL=C sort | rg '(\.tsbuildinfo$|/src/|/test/)' >/de
   exit 1
 fi
 
+unpacked="$temporary/unpacked"
+mkdir -p "$unpacked"
+tar -xzf "$archive" -C "$unpacked"
+node --input-type=module - "$unpacked/package" <<'EOF'
+import fs from "node:fs";
+import path from "node:path";
+
+const packageRoot = fs.realpathSync(process.argv[2]);
+const failures = [];
+
+function filesBelow(directory) {
+  return fs.readdirSync(directory, {withFileTypes: true}).flatMap((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    return entry.isDirectory() ? filesBelow(entryPath) : [entryPath];
+  });
+}
+
+for (const mapPath of filesBelow(packageRoot).filter((entryPath) => entryPath.endsWith(".map"))) {
+  const relativeMapPath = path.relative(packageRoot, mapPath);
+  let map;
+  try {
+    map = JSON.parse(fs.readFileSync(mapPath, "utf8"));
+  } catch (error) {
+    failures.push(`${relativeMapPath}: invalid JSON (${error instanceof Error ? error.message : String(error)})`);
+    continue;
+  }
+
+  if (!Array.isArray(map.sources) || !map.sources.every((source) => typeof source === "string")) {
+    failures.push(`${relativeMapPath}: sources must be an array of strings`);
+    continue;
+  }
+  if (map.sourceRoot !== undefined && typeof map.sourceRoot !== "string") {
+    failures.push(`${relativeMapPath}: sourceRoot must be a string when present`);
+    continue;
+  }
+  if (map.sourcesContent !== undefined &&
+      (!Array.isArray(map.sourcesContent) || map.sourcesContent.length !== map.sources.length)) {
+    failures.push(`${relativeMapPath}: sourcesContent must align with sources when present`);
+    continue;
+  }
+
+  map.sources.forEach((source, index) => {
+    if (typeof map.sourcesContent?.[index] === "string" || source.startsWith("data:")) return;
+
+    const sourceRoot = map.sourceRoot ?? "";
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(sourceRoot) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(source)) {
+      failures.push(`${relativeMapPath}: ${source} is external and has no embedded sourcesContent`);
+      return;
+    }
+
+    const resolvedSource = path.resolve(path.dirname(mapPath), sourceRoot, source);
+    const relativeSource = path.relative(packageRoot, resolvedSource);
+    if (relativeSource === "" || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
+      failures.push(`${relativeMapPath}: ${source} resolves outside the published package`);
+      return;
+    }
+    if (!fs.existsSync(resolvedSource) || !fs.statSync(resolvedSource).isFile()) {
+      failures.push(`${relativeMapPath}: ${source} is neither published nor embedded`);
+    }
+  });
+}
+
+if (failures.length > 0) {
+  failures.forEach((failure) => console.error(failure));
+  console.error("Protocol package contains source maps with unavailable sources.");
+  process.exit(1);
+}
+EOF
+
 consumer="$temporary/consumer"
 mkdir -p "$consumer"
 printf '{"name":"layerdraw-protocol-smoke","private":true,"type":"module"}\n' >"$consumer/package.json"

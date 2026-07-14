@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
-  "files": ["dist/*.gen.js", "dist/*.gen.js.map", "dist/*.gen.d.ts", "dist/*.gen.d.ts.map", "LICENSE", "README.md"],
+  "files": ["dist/*.gen.js", "dist/*.gen.d.ts", "LICENSE", "README.md"],
   "exports": {
     "./common": {
       "types": "./dist/common.gen.d.ts",

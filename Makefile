@@ -27,6 +27,7 @@ generate:
 	$(PNPM) exec turbo run generate
 
 generate-check:
+	./tools/check-generated.sh --self-test
 	./tools/check-generated.sh $(MAKE) generate
 
 format:
