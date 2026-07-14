@@ -309,6 +309,37 @@ func TestSchemaLoaderNormalizesCRLFAndRejectsAmbiguousInputs(t *testing.T) {
 			t.Fatalf("extra schema was accepted: %v", err)
 		}
 	})
+	t.Run("missing schema", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, nil)
+		if err := os.Remove(filepath.Join(temporary, "schemas", "engine-protocol", "v1.schema.json")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "exactly v1.schema.json") {
+			t.Fatalf("missing schema was accepted: %v", err)
+		}
+	})
+	t.Run("malformed schema", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, func(group string, data []byte) []byte {
+			if group == "protocol-common" {
+				return []byte("{")
+			}
+			return data
+		})
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "decode") {
+			t.Fatalf("malformed schema was accepted: %v", err)
+		}
+	})
+	t.Run("unexpected schema identity", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, func(group string, data []byte) []byte {
+			if group == "protocol-common" {
+				return bytes.Replace(data, []byte(`https://schemas.layerdraw.dev/protocol-common/v1`), []byte(`https://schemas.layerdraw.dev/protocol-common/v2`), 1)
+			}
+			return data
+		})
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "unexpected group identity") {
+			t.Fatalf("unexpected schema identity was accepted: %v", err)
+		}
+	})
 	t.Run("trailing JSON", func(t *testing.T) {
 		temporary := copyProtocolSchemas(t, root, func(group string, data []byte) []byte {
 			if group == "protocol-common" {
@@ -374,6 +405,31 @@ func TestSchemaLoaderNormalizesCRLFAndRejectsAmbiguousInputs(t *testing.T) {
 		}
 		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "trailing JSON value") {
 			t.Fatalf("trailing dialect JSON was accepted: %v", err)
+		}
+	})
+	t.Run("malformed dialect", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, nil)
+		path := filepath.Join(temporary, filepath.FromSlash(schemaDialectPath))
+		if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "decode") {
+			t.Fatalf("malformed dialect was accepted: %v", err)
+		}
+	})
+	t.Run("dialect identity", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, nil)
+		path := filepath.Join(temporary, filepath.FromSlash(schemaDialectPath))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = bytes.Replace(data, []byte(schemaDialectID), []byte("https://schemas.layerdraw.dev/meta/protocol/v2"), 1)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "unexpected identity") {
+			t.Fatalf("unexpected dialect identity was accepted: %v", err)
 		}
 	})
 	t.Run("dialect vocabulary", func(t *testing.T) {
