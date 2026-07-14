@@ -19,12 +19,14 @@
     {"$ref": "https://json-schema.org/draft/2020-12/schema"}
   ],
   "properties": {
+    "x-layerdraw-address-terminal-id": {"$ref": "#/$defs/addressTerminalIDRule"},
     "x-layerdraw-address-owners": {
       "type": "array",
       "items": {"$ref": "#/$defs/addressOwnerRule"},
       "minItems": 1,
       "uniqueItems": true
     },
+    "x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
     "x-layerdraw-go-package": {"type": "string", "minLength": 1},
     "x-layerdraw-disjoint-arrays": {
       "type": "array",
@@ -32,7 +34,14 @@
       "minItems": 1,
       "uniqueItems": true
     },
+    "x-layerdraw-disjoint-array-keys": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/disjointArrayKey"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
     "x-layerdraw-diff-source": {"type": "boolean"},
+    "x-layerdraw-export-recipe": {"type": "boolean", "const": true},
     "x-layerdraw-limit-capability": {"type": "boolean"},
     "x-layerdraw-max-json-bytes": {"type": "integer", "minimum": 1024},
     "x-layerdraw-max-json-depth": {"type": "integer", "minimum": 1},
@@ -45,7 +54,6 @@
       "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."
     },
     "x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
-    "x-layerdraw-scalar-order": {"type": "boolean", "const": true},
     "x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
     "x-layerdraw-ts-module": {"type": "string", "minLength": 1},
     "x-layerdraw-unique-array-keys": {
@@ -54,6 +62,15 @@
     }
   },
   "$defs": {
+    "addressTerminalIDRule": {
+      "type": "object",
+      "properties": {
+        "address": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "required": ["address", "id"],
+      "additionalProperties": false
+    },
     "addressOwnerRule": {
       "type": "object",
       "properties": {
@@ -71,6 +88,16 @@
         "right": {"type": "string", "minLength": 1}
       },
       "required": ["left", "right"],
+      "additionalProperties": false
+    },
+    "disjointArrayKey": {
+      "type": "object",
+      "properties": {
+        "array": {"type": "string", "minLength": 1},
+        "property": {"type": "string", "minLength": 1},
+        "strings": {"type": "string", "minLength": 1}
+      },
+      "required": ["array", "property", "strings"],
       "additionalProperties": false
     },
     "fieldNames": {

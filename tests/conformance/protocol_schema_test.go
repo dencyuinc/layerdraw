@@ -928,7 +928,7 @@ func TestSharedViewExportSemanticCorpus(t *testing.T) {
 	if err := json.Unmarshal(data, &corpus); err != nil {
 		t.Fatal(err)
 	}
-	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 19 || len(corpus.Rejections) != 50 {
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 34 || len(corpus.Rejections) != 94 {
 		t.Fatalf("incomplete View/Export semantic corpus: version=%d canonical=%d rejection=%d", corpus.SchemaVersion, len(corpus.Canonical), len(corpus.Rejections))
 	}
 	for _, vector := range corpus.Canonical {
@@ -1722,8 +1722,7 @@ func TestGeneratedProtocolPackagesHaveNoHandwrittenOrForbiddenDependencies(t *te
 		for _, spec := range parsed.Imports {
 			importPath := strings.Trim(spec.Path.Value, `"`)
 			isStandardLibrary := !strings.Contains(strings.Split(importPath, "/")[0], ".")
-			isGeneratedRuntimeDependency := importPath == "golang.org/x/text/unicode/norm"
-			if !isStandardLibrary && !isGeneratedRuntimeDependency && !strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/gen/go/") {
+			if !isStandardLibrary && !strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/gen/go/") {
 				t.Errorf("generated Go package imports non-generated dependency %q in %s", importPath, path)
 			}
 		}

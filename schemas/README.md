@@ -53,6 +53,9 @@ Its assertion keywords have these exact meanings:
   have distinct values for its configured key.
 - `x-layerdraw-disjoint-arrays` requires the two configured string-array
   properties to have no value in common.
+- `x-layerdraw-disjoint-array-keys` requires every configured string key from
+  an object-array property to be absent from the configured string-array
+  property.
 - `x-layerdraw-stable-address-order` applies to an array and requires strictly
   ascending Language 1 StableSymbol order. Its value is `$item` for an array
   of StableAddress strings or the name of the StableAddress-valued property
@@ -60,10 +63,15 @@ Its assertion keywords have these exact meanings:
   ordinary `items`, `propertyNames`, `uniqueItems`, or
   `x-layerdraw-unique-array-keys` assertions; this keyword exists only because
   JSON Schema draft 2020-12 cannot express cross-item canonical ordering.
-- `x-layerdraw-scalar-order: true` applies to an array of strings and requires
-  strict Unicode scalar lexicographic order after NFC normalization. Equal NFC
-  forms therefore reject as noncanonical even when their source spellings
-  differ.
+- `x-layerdraw-canonical-identifier-order: true` applies to an array and
+  requires every item to match the ASCII local-identifier grammar
+  `[a-z][a-z0-9_]*` in strict byte-lexicographic order. It performs no Unicode
+  normalization and therefore has no host Unicode-version dependency.
+- `x-layerdraw-address-terminal-id` requires the configured local-ID property
+  to equal the final ID segment of the configured typed StableAddress exactly.
+- `x-layerdraw-export-recipe: true` binds `format`, `options.kind`, and
+  `exporter_profile.format`, and requires the exact Language 1 extension plus
+  a case-sensitive canonical basename whose suffix equals that extension.
 - `x-layerdraw-address-owners` applies to an object and requires each selected
   child StableAddress to have the configured owner StableAddress as its direct
   parent. A selector is `$value` for one string property, `$propertyNames` for

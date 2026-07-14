@@ -56,9 +56,13 @@ var (
 		"https://schemas.layerdraw.dev/vocab/protocol/v1": true
 	}`)
 	requiredDialectKeywordSchemas = mustDecodeDialectObject(`{
+		"x-layerdraw-address-terminal-id": {"$ref": "#/$defs/addressTerminalIDRule"},
 		"x-layerdraw-address-owners": {"type": "array", "items": {"$ref": "#/$defs/addressOwnerRule"}, "minItems": 1, "uniqueItems": true},
+		"x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
 		"x-layerdraw-diff-source": {"type": "boolean"},
+		"x-layerdraw-disjoint-array-keys": {"type": "array", "items": {"$ref": "#/$defs/disjointArrayKey"}, "minItems": 1, "uniqueItems": true},
 		"x-layerdraw-disjoint-arrays": {"type": "array", "items": {"$ref": "#/$defs/disjointArrayPair"}, "minItems": 1, "uniqueItems": true},
+		"x-layerdraw-export-recipe": {"type": "boolean", "const": true},
 		"x-layerdraw-go-package": {"type": "string", "minLength": 1},
 		"x-layerdraw-limit-capability": {"type": "boolean"},
 		"x-layerdraw-max-json-bytes": {"type": "integer", "minimum": 1024},
@@ -68,13 +72,18 @@ var (
 		"x-layerdraw-outcome-envelope": {"type": "boolean"},
 		"x-layerdraw-protocol-offer": {"type": "boolean"},
 		"x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
-		"x-layerdraw-scalar-order": {"type": "boolean", "const": true},
 		"x-layerdraw-stable-address-order": {"type": "string", "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."},
 		"x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
 		"x-layerdraw-ts-module": {"type": "string", "minLength": 1},
 		"x-layerdraw-unique-array-keys": {"type": "array", "items": {"$ref": "#/$defs/uniqueArrayKey"}}
 	}`)
 	requiredDialectDefinitions = mustDecodeDialectObject(`{
+		"addressTerminalIDRule": {
+			"type": "object",
+			"properties": {"address": {"type": "string", "minLength": 1}, "id": {"type": "string", "minLength": 1}},
+			"required": ["address", "id"],
+			"additionalProperties": false
+		},
 		"addressOwnerRule": {
 			"type": "object",
 			"properties": {
@@ -89,6 +98,16 @@ var (
 			"type": "object",
 			"properties": {"left": {"type": "string", "minLength": 1}, "right": {"type": "string", "minLength": 1}},
 			"required": ["left", "right"],
+			"additionalProperties": false
+		},
+		"disjointArrayKey": {
+			"type": "object",
+			"properties": {
+				"array": {"type": "string", "minLength": 1},
+				"property": {"type": "string", "minLength": 1},
+				"strings": {"type": "string", "minLength": 1}
+			},
+			"required": ["array", "property", "strings"],
 			"additionalProperties": false
 		},
 		"fieldNames": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
@@ -178,6 +197,17 @@ type disjointArrayPair struct {
 	Right string `json:"right"`
 }
 
+type disjointArrayKey struct {
+	Array    string `json:"array"`
+	Property string `json:"property"`
+	Strings  string `json:"strings"`
+}
+
+type addressTerminalIDRule struct {
+	Address string `json:"address"`
+	ID      string `json:"id"`
+}
+
 type addressOwnerRule struct {
 	Owner    string `json:"owner"`
 	Children string `json:"children"`
@@ -212,10 +242,13 @@ type schemaType struct {
 	LimitCapability      bool                   `json:"x-layerdraw-limit-capability,omitempty"`
 	UniqueArrayKeys      []uniqueArrayKey       `json:"x-layerdraw-unique-array-keys,omitempty"`
 	DisjointArrays       []disjointArrayPair    `json:"x-layerdraw-disjoint-arrays,omitempty"`
+	DisjointArrayKeys    []disjointArrayKey     `json:"x-layerdraw-disjoint-array-keys,omitempty"`
 	DiffSource           bool                   `json:"x-layerdraw-diff-source,omitempty"`
 	StableAddressOrder   string                 `json:"x-layerdraw-stable-address-order,omitempty"`
-	ScalarOrder          bool                   `json:"x-layerdraw-scalar-order,omitempty"`
+	CanonicalIDOrder     bool                   `json:"x-layerdraw-canonical-identifier-order,omitempty"`
 	AddressOwners        []addressOwnerRule     `json:"x-layerdraw-address-owners,omitempty"`
+	AddressTerminalID    *addressTerminalIDRule `json:"x-layerdraw-address-terminal-id,omitempty"`
+	ExportRecipe         bool                   `json:"x-layerdraw-export-recipe,omitempty"`
 }
 
 type schemaSet struct {
@@ -957,6 +990,49 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				}
 			}
 		}
+		for _, rule := range value.DisjointArrayKeys {
+			objects := resolvedType(set, document, value.Properties[rule.Array])
+			stringsArray := resolvedType(set, document, value.Properties[rule.Strings])
+			if objects == nil || stringsArray == nil || rule.Array == rule.Strings || rule.Property == "" {
+				return fmt.Errorf("%s has invalid disjoint array-key rule", context)
+			}
+			objectsType, objectsErr := scalarType(objects.Type)
+			objectItem := resolvedType(set, document, objects.Items)
+			stringsType, stringsErr := scalarType(stringsArray.Type)
+			stringItem := resolvedType(set, document, stringsArray.Items)
+			if objectsErr != nil || objectsType != "array" || objectItem == nil || stringsErr != nil || stringsType != "array" || stringItem == nil {
+				return fmt.Errorf("%s disjoint array-key rule requires array properties", context)
+			}
+			objectItemType, objectItemErr := scalarType(objectItem.Type)
+			key := resolvedType(set, document, objectItem.Properties[rule.Property])
+			keyType, keyErr := "", error(nil)
+			if key != nil {
+				keyType, keyErr = scalarType(key.Type)
+			}
+			stringItemType, stringItemErr := scalarType(stringItem.Type)
+			if objectItemErr != nil || objectItemType != "object" || keyErr != nil || keyType != "string" || stringItemErr != nil || stringItemType != "string" {
+				return fmt.Errorf("%s disjoint array-key rule requires object string keys and string-array values", context)
+			}
+		}
+		if value.AddressTerminalID != nil {
+			rule := value.AddressTerminalID
+			address := resolvedType(set, document, value.Properties[rule.Address])
+			id := resolvedType(set, document, value.Properties[rule.ID])
+			required := stringSet(value.Required)
+			if address == nil || id == nil || rule.Address == rule.ID || !required[rule.Address] || !required[rule.ID] {
+				return fmt.Errorf("%s has invalid address terminal-ID rule", context)
+			}
+			addressType, addressErr := scalarType(address.Type)
+			idType, idErr := scalarType(id.Type)
+			if addressErr != nil || addressType != "string" || idErr != nil || idType != "string" {
+				return fmt.Errorf("%s address terminal-ID rule requires string properties", context)
+			}
+		}
+		if value.ExportRecipe {
+			if err := validateExportRecipeAssertionShape(set, document, context, value); err != nil {
+				return err
+			}
+		}
 		if value.OutcomeEnvelope {
 			for _, property := range []string{"outcome", "payload", "failure", "diagnostics"} {
 				if value.Properties[property] == nil {
@@ -1058,17 +1134,61 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				return fmt.Errorf("%s uniqueItems currently requires string items", context)
 			}
 		}
-		if value.ScalarOrder {
+		if value.CanonicalIDOrder {
 			item := resolvedType(set, document, value.Items)
 			itemType, err := "", error(nil)
 			if item != nil {
 				itemType, err = scalarType(item.Type)
 			}
 			if err != nil || itemType != "string" || !value.UniqueItems {
-				return fmt.Errorf("%s scalar order requires string items and uniqueItems", context)
+				return fmt.Errorf("%s canonical identifier order requires string items and uniqueItems", context)
 			}
 		}
 		return validateType(set, document, context+"[]", value.Items, seen)
+	}
+	return nil
+}
+
+func validateExportRecipeAssertionShape(set schemaSet, document *schemaDocument, context string, value *schemaType) error {
+	required := stringSet(value.Required)
+	for _, property := range []string{"exporter_profile", "extension", "filename", "format", "options"} {
+		if value.Properties[property] == nil || !required[property] {
+			return fmt.Errorf("%s export recipe assertion requires %s", context, property)
+		}
+	}
+	format := resolvedType(set, document, value.Properties["format"])
+	extension := resolvedType(set, document, value.Properties["extension"])
+	filename := resolvedType(set, document, value.Properties["filename"])
+	options := resolvedType(set, document, value.Properties["options"])
+	profile := resolvedType(set, document, value.Properties["exporter_profile"])
+	if format == nil || extension == nil || filename == nil || options == nil || profile == nil {
+		return fmt.Errorf("%s has unresolved export recipe assertion properties", context)
+	}
+	formatType, formatErr := scalarType(format.Type)
+	extensionType, extensionErr := scalarType(extension.Type)
+	filenameType, filenameErr := scalarType(filename.Type)
+	optionsType, optionsErr := scalarType(options.Type)
+	profileType, profileErr := scalarType(profile.Type)
+	if formatErr != nil || formatType != "string" || extensionErr != nil || extensionType != "string" || filenameErr != nil || filenameType != "string" || optionsErr != nil || optionsType != "object" || profileErr != nil || profileType != "object" {
+		return fmt.Errorf("%s has invalid export recipe assertion property types", context)
+	}
+	expectedFormats := stringSet([]string{"bpmn", "csv", "docx", "drawio", "html", "json", "markdown", "mermaid", "pdf", "png", "pptx", "svg", "tsv", "xlsx", "yaml"})
+	if !reflect.DeepEqual(stringSet(format.Enum), expectedFormats) {
+		return fmt.Errorf("%s export recipe assertion requires the complete format enum", context)
+	}
+	for name, object := range map[string]*schemaType{"options": options, "exporter_profile": profile} {
+		kind := "kind"
+		if name == "exporter_profile" {
+			kind = "format"
+		}
+		selected := resolvedType(set, document, object.Properties[kind])
+		selectedType, selectedErr := "", error(nil)
+		if selected != nil {
+			selectedType, selectedErr = scalarType(selected.Type)
+		}
+		if selectedErr != nil || selectedType != "string" || !stringSet(object.Required)[kind] {
+			return fmt.Errorf("%s export recipe assertion requires %s.%s", context, name, kind)
+		}
 	}
 	return nil
 }
@@ -1486,11 +1606,9 @@ func generateGoCodec(set schemaSet, document *schemaDocument) ([]byte, error) {
 	"sort"
 	"strconv"
 	"strings"
-	"time"
-	"unicode/utf16"
+		"time"
+		"unicode/utf16"
 		"unicode/utf8"
-
-		"golang.org/x/text/unicode/norm"
 	)
 
 `)
@@ -2035,12 +2153,13 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 				if !leftOK || !rightOK || !compared || comparison >= 0 { return fmt.Errorf("%s is not in strict StableSymbol order", path) }
 			}
 		}
-		if ordered, _ := schema["x-layerdraw-scalar-order"].(bool); ordered {
+		if ordered, _ := schema["x-layerdraw-canonical-identifier-order"].(bool); ordered {
 			for index := 1; index < len(items); index++ {
 				left, leftOK := items[index-1].(string)
 				right, rightOK := items[index].(string)
-				if !leftOK || !rightOK || compareScalarStrings(left, right) >= 0 { return fmt.Errorf("%s is not in strict canonical scalar order", path) }
+				if !leftOK || !rightOK || !isCanonicalLocalIdentifier(left) || !isCanonicalLocalIdentifier(right) || left >= right { return fmt.Errorf("%s is not in strict canonical identifier order", path) }
 			}
+			if len(items) == 1 { if text, ok := items[0].(string); !ok || !isCanonicalLocalIdentifier(text) { return fmt.Errorf("%s contains a noncanonical identifier", path) } }
 		}
 	case "object":
 		object, ok := value.(map[string]any)
@@ -2129,6 +2248,9 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 				}
 			}
 		}
+		if rules, ok := schema["x-layerdraw-disjoint-array-keys"].([]any); ok {
+			if err := validateDisjointArrayKeys(path, object, rules); err != nil { return err }
+		}
 		if enabled, _ := schema["x-layerdraw-outcome-envelope"].(bool); enabled {
 			outcome, _ := object["outcome"].(string)
 			switch outcome {
@@ -2155,6 +2277,17 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		if rules, ok := schema["x-layerdraw-address-owners"].([]any); ok {
 			if err := validateAddressOwners(path, object, rules); err != nil { return err }
 		}
+		if rule, ok := schema["x-layerdraw-address-terminal-id"].(map[string]any); ok {
+			addressProperty, _ := rule["address"].(string)
+			idProperty, _ := rule["id"].(string)
+			address, addressOK := object[addressProperty].(string)
+			id, idOK := object[idProperty].(string)
+			parts := strings.Split(address, ":")
+			if !addressOK || !idOK || len(parts) == 0 || parts[len(parts)-1] != id { return fmt.Errorf("%s.%s must equal the terminal ID of %s.%s", path, idProperty, path, addressProperty) }
+		}
+		if enabled, _ := schema["x-layerdraw-export-recipe"].(bool); enabled {
+			if err := validateExportRecipeConsistency(path, object); err != nil { return err }
+		}
 	default:
 		return fmt.Errorf("%s uses unsupported generated schema type %q", path, typeName)
 	}
@@ -2172,16 +2305,40 @@ func stableAddressOrderValue(value any, selector string) (string, bool) {
 	return text, ok
 }
 
-func compareScalarStrings(left, right string) int {
-	leftRunes := []rune(norm.NFC.String(left))
-	rightRunes := []rune(norm.NFC.String(right))
-	for index := 0; index < len(leftRunes) && index < len(rightRunes); index++ {
-		if leftRunes[index] < rightRunes[index] { return -1 }
-		if leftRunes[index] > rightRunes[index] { return 1 }
+func isCanonicalLocalIdentifier(value string) bool { return regexp.MustCompile(` + "`" + `^[a-z][a-z0-9_]*$` + "`" + `).MatchString(value) }
+
+func validateDisjointArrayKeys(path string, object map[string]any, rules []any) error {
+	for _, rawRule := range rules {
+		rule, _ := rawRule.(map[string]any)
+		arrayProperty, _ := rule["array"].(string)
+		keyProperty, _ := rule["property"].(string)
+		stringsProperty, _ := rule["strings"].(string)
+		items, itemsOK := object[arrayProperty].([]any)
+		stringsArray, stringsOK := object[stringsProperty].([]any)
+		if !itemsOK || !stringsOK { return fmt.Errorf("%s disjoint array-key assertion requires arrays", path) }
+		reserved := map[string]bool{}
+		for _, raw := range stringsArray { text, ok := raw.(string); if !ok { return fmt.Errorf("%s.%s contains a non-string", path, stringsProperty) }; reserved[text] = true }
+		for _, raw := range items {
+			item, ok := raw.(map[string]any); if !ok { return fmt.Errorf("%s.%s contains a non-object", path, arrayProperty) }
+			key, ok := item[keyProperty].(string); if !ok { return fmt.Errorf("%s.%s item has no string %s", path, arrayProperty, keyProperty) }
+			if reserved[key] { return fmt.Errorf("%s.%s %s %q overlaps %s", path, arrayProperty, keyProperty, key, stringsProperty) }
+		}
 	}
-	if len(leftRunes) < len(rightRunes) { return -1 }
-	if len(leftRunes) > len(rightRunes) { return 1 }
-	return 0
+	return nil
+}
+
+func validateExportRecipeConsistency(path string, object map[string]any) error {
+	format, formatOK := object["format"].(string)
+	options, optionsOK := object["options"].(map[string]any)
+	profile, profileOK := object["exporter_profile"].(map[string]any)
+	extension, extensionOK := object["extension"].(string)
+	filename, filenameOK := object["filename"].(string)
+	if !formatOK || !optionsOK || !profileOK || !extensionOK || !filenameOK || options["kind"] != format || profile["format"] != format { return fmt.Errorf("%s has inconsistent Export format authority", path) }
+	expected, exists := map[string]string{"json":".json","yaml":".yaml","svg":".svg","png":".png","pdf":".pdf","html":".html","csv":".csv","tsv":".tsv","xlsx":".xlsx","markdown":".md","pptx":".pptx","docx":".docx","mermaid":".mmd","bpmn":".bpmn","drawio":".drawio"}[format]
+	if !exists || extension != expected { return fmt.Errorf("%s extension does not match Export format", path) }
+	stem := strings.TrimSuffix(filename, extension)
+	if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, "/\\\x00") || !strings.HasSuffix(filename, extension) || stem == "" { return fmt.Errorf("%s filename is not a canonical Export basename", path) }
+	return nil
 }
 
 func validateAddressOwners(path string, object map[string]any, rules []any) error {
@@ -2498,8 +2655,8 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { return new Set(value).size === value.length; }\n\n")
 	body.WriteString("function stableAddressOrderValue(value: unknown, selector: string): string | undefined { if (selector === \"$item\") return typeof value === \"string\" ? value : undefined; return isObject(value) && typeof value[selector] === \"string\" ? value[selector] : undefined; }\n\n")
 	body.WriteString("function hasStableAddressOrder(value: ReadonlyArray<unknown>, selector: string): boolean { for (let index = 1; index < value.length; index++) { const left = stableAddressOrderValue(value[index - 1], selector); const right = stableAddressOrderValue(value[index], selector); if (left === undefined || right === undefined || compareStableAddresses(left, right) >= 0) return false; } return true; }\n\n")
-	body.WriteString("function hasScalarOrder(value: ReadonlyArray<unknown>): boolean { for (let index = 1; index < value.length; index++) { const left = value[index - 1]; const right = value[index]; if (typeof left !== \"string\" || typeof right !== \"string\" || compareScalarStrings(left, right) >= 0) return false; } return true; }\n\n")
-	body.WriteString("function compareScalarStrings(left: string, right: string): number { const leftPoints = Array.from(left.normalize(\"NFC\"), (value) => value.codePointAt(0)!); const rightPoints = Array.from(right.normalize(\"NFC\"), (value) => value.codePointAt(0)!); for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index++) { if (leftPoints[index] !== rightPoints[index]) return leftPoints[index]! - rightPoints[index]!; } return leftPoints.length - rightPoints.length; }\n\n")
+	body.WriteString("function isCanonicalLocalIdentifier(value: unknown): value is string { return typeof value === \"string\" && /^[a-z][a-z0-9_]*$/.test(value); }\n\n")
+	body.WriteString("function hasCanonicalIdentifierOrder(value: ReadonlyArray<unknown>): boolean { return value.every(isCanonicalLocalIdentifier) && value.every((item, index) => index === 0 || (value[index - 1] as string) < (item as string)); }\n\n")
 	body.WriteString("function hasDirectStableAddressOwner(owner: string, child: string): boolean { const parts = child.split(\":\"); return parts.length >= 2 && parts.slice(0, -2).join(\":\") === owner; }\n\n")
 	body.WriteString("function hasAddressOwner(value: Record<string, unknown>, ownerProperty: string, childrenProperty: string, selector: string): boolean { if (!hasOwn(value, ownerProperty)) return true; const owner = value[ownerProperty]; if (typeof owner !== \"string\") return false; const rawChildren = value[childrenProperty]; let children: ReadonlyArray<unknown>; if (selector === \"$value\") children = [rawChildren]; else if (selector === \"$propertyNames\") { if (!isObject(rawChildren)) return false; children = Object.keys(rawChildren); } else { if (!isJSONArray(rawChildren)) return false; children = rawChildren.map((item) => isObject(item) ? item[selector] : undefined); } return children.every((child) => typeof child === \"string\" && hasDirectStableAddressOwner(owner, child)); }\n\n")
 	body.WriteString("function compareStableAddresses(left: string, right: string): number { const leftTuple = stableAddressTuple(left); const rightTuple = stableAddressTuple(right); if (leftTuple === undefined || rightTuple === undefined) return 0; if (leftTuple.origin !== rightTuple.origin) return leftTuple.origin - rightTuple.origin; for (let index = 0; index < Math.min(leftTuple.components.length, rightTuple.components.length); index++) { const compared = compareASCII(leftTuple.components[index]!, rightTuple.components[index]!); if (compared !== 0) return compared; } if (leftTuple.components.length !== rightTuple.components.length) return leftTuple.components.length - rightTuple.components.length; if (leftTuple.path.length !== rightTuple.path.length) return leftTuple.path.length - rightTuple.path.length; for (let index = 0; index < leftTuple.path.length; index++) { const leftSegment = leftTuple.path[index]!; const rightSegment = rightTuple.path[index]!; const kind = stableAddressKindRank(leftSegment[0]) - stableAddressKindRank(rightSegment[0]); if (kind !== 0) return kind; const id = compareASCII(leftSegment[1], rightSegment[1]); if (id !== 0) return id; } return 0; }\n\n")
@@ -2507,6 +2664,9 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function stableAddressKindRank(kind: string): number { return new Map<string, number>([[\"entity-type\",0],[\"relation-type\",1],[\"layer\",2],[\"entity\",3],[\"relation\",4],[\"query\",5],[\"view\",6],[\"reference\",7],[\"column\",8],[\"constraint\",9],[\"row\",10],[\"parameter\",11],[\"table-column\",12],[\"export\",13]]).get(kind) ?? Number.MAX_SAFE_INTEGER; }\n\n")
 	body.WriteString("function compareASCII(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }\n\n")
 	body.WriteString("function hasDisjointArrays(value: Record<string, unknown>, leftProperty: string, rightProperty: string): boolean { const left = value[leftProperty]; const right = value[rightProperty]; if (!isJSONArray(left) || !isJSONArray(right)) return false; const seen = new Set(left); return right.every((item) => !seen.has(item)); }\n\n")
+	body.WriteString("function hasDisjointArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string, stringsProperty: string): boolean { const items = value[arrayProperty]; const strings = value[stringsProperty]; if (!isJSONArray(items) || !isJSONArray(strings) || !strings.every((item) => typeof item === \"string\")) return false; const reserved = new Set(strings); return items.every((item) => isObject(item) && typeof item[keyProperty] === \"string\" && !reserved.has(item[keyProperty])); }\n\n")
+	body.WriteString("function hasAddressTerminalID(value: Record<string, unknown>, addressProperty: string, idProperty: string): boolean { const address = value[addressProperty]; const id = value[idProperty]; return typeof address === \"string\" && typeof id === \"string\" && address.split(\":\").at(-1) === id; }\n\n")
+	body.WriteString("function hasValidExportRecipe(value: Record<string, unknown>): boolean { const format = value[\"format\"]; const options = value[\"options\"]; const profile = value[\"exporter_profile\"]; const extension = value[\"extension\"]; const filename = value[\"filename\"]; if (typeof format !== \"string\" || !isObject(options) || !isObject(profile) || options[\"kind\"] !== format || profile[\"format\"] !== format || typeof extension !== \"string\" || typeof filename !== \"string\") return false; const expected = new Map<string, string>([[\"json\",\".json\"],[\"yaml\",\".yaml\"],[\"svg\",\".svg\"],[\"png\",\".png\"],[\"pdf\",\".pdf\"],[\"html\",\".html\"],[\"csv\",\".csv\"],[\"tsv\",\".tsv\"],[\"xlsx\",\".xlsx\"],[\"markdown\",\".md\"],[\"pptx\",\".pptx\"],[\"docx\",\".docx\"],[\"mermaid\",\".mmd\"],[\"bpmn\",\".bpmn\"],[\"drawio\",\".drawio\"]]).get(format); return expected !== undefined && extension === expected && filename !== \"\" && filename !== \".\" && filename !== \"..\" && !/[\\\\/\\u0000]/.test(filename) && filename.endsWith(extension) && filename.slice(0, -extension.length).length > 0; }\n\n")
 	body.WriteString("function hasValidDiffSource(value: Record<string, unknown>): boolean { if (value[\"kind\"] !== \"diff\") return true; const before = value[\"before\"]; const after = value[\"after\"]; if (typeof before !== \"string\" || typeof after !== \"string\" || before.length === 0 || after.length === 0 || before === after) return false; return hasOwn(value, \"query_address\") || (isObject(value[\"arguments\"]) && Object.keys(value[\"arguments\"]).length === 0); }\n\n")
 	body.WriteString("function isRFC3339(value: string): boolean {\n")
 	body.WriteString("  const match = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$/.exec(value);\n")
@@ -2846,8 +3006,8 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.StableAddressOrder != "" {
 			parts = append(parts, fmt.Sprintf("hasStableAddressOrder(%s, %q)", expression, value.StableAddressOrder))
 		}
-		if value.ScalarOrder {
-			parts = append(parts, "hasScalarOrder("+expression+")")
+		if value.CanonicalIDOrder {
+			parts = append(parts, "hasCanonicalIdentifierOrder("+expression+")")
 		}
 		return strings.Join(parts, " && "), nil
 	case "object":
@@ -2960,8 +3120,17 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		for _, rule := range value.DisjointArrays {
 			parts = append(parts, fmt.Sprintf("hasDisjointArrays(%s, %q, %q)", expression, rule.Left, rule.Right))
 		}
+		for _, rule := range value.DisjointArrayKeys {
+			parts = append(parts, fmt.Sprintf("hasDisjointArrayKey(%s, %q, %q, %q)", expression, rule.Array, rule.Property, rule.Strings))
+		}
 		for _, rule := range value.AddressOwners {
 			parts = append(parts, fmt.Sprintf("hasAddressOwner(%s, %q, %q, %q)", expression, rule.Owner, rule.Children, rule.Selector))
+		}
+		if value.AddressTerminalID != nil {
+			parts = append(parts, fmt.Sprintf("hasAddressTerminalID(%s, %q, %q)", expression, value.AddressTerminalID.Address, value.AddressTerminalID.ID))
+		}
+		if value.ExportRecipe {
+			parts = append(parts, "hasValidExportRecipe("+expression+")")
 		}
 		return strings.Join(parts, " && "), nil
 	default:

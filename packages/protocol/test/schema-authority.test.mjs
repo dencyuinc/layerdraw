@@ -85,13 +85,21 @@ function compareStableAddresses(left, right) {
   return 0;
 }
 
-function compareScalarStrings(left, right) {
-  const leftPoints = Array.from(left.normalize("NFC"), (value) => value.codePointAt(0));
-  const rightPoints = Array.from(right.normalize("NFC"), (value) => value.codePointAt(0));
-  for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index++) {
-    if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] - rightPoints[index];
-  }
-  return leftPoints.length - rightPoints.length;
+function canonicalLocalIdentifier(value) {
+  return typeof value === "string" && /^[a-z][a-z0-9_]*$/.test(value);
+}
+
+function validExportRecipe(value) {
+  const extensions = new Map([
+    ["json", ".json"], ["yaml", ".yaml"], ["svg", ".svg"], ["png", ".png"], ["pdf", ".pdf"],
+    ["html", ".html"], ["csv", ".csv"], ["tsv", ".tsv"], ["xlsx", ".xlsx"], ["markdown", ".md"],
+    ["pptx", ".pptx"], ["docx", ".docx"], ["mermaid", ".mmd"], ["bpmn", ".bpmn"], ["drawio", ".drawio"],
+  ]);
+  const extension = extensions.get(value.format);
+  return extension !== undefined && value.extension === extension && value.options?.kind === value.format &&
+    value.exporter_profile?.format === value.format && typeof value.filename === "string" &&
+    value.filename !== "" && value.filename !== "." && value.filename !== ".." &&
+    !/[\\/\0]/.test(value.filename) && value.filename.endsWith(extension) && value.filename.slice(0, -extension.length).length > 0;
 }
 
 function hasDirectStableAddressOwner(owner, child) {
@@ -347,12 +355,9 @@ function addLayerDrawVocabulary(ajv, meta) {
   register({keyword: "x-layerdraw-scalar-unicode", schemaType: "boolean", rootValidate: (value) => value === true, errors: false, validate(enabled, data) {
     return !enabled || hasScalarUnicodeTree(data);
   }});
-  register({keyword: "x-layerdraw-scalar-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data) {
+  register({keyword: "x-layerdraw-canonical-identifier-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data) {
     if (!enabled) return true;
-    for (let index = 1; index < data.length; index++) {
-      if (typeof data[index - 1] !== "string" || typeof data[index] !== "string" || compareScalarStrings(data[index - 1], data[index]) >= 0) return false;
-    }
-    return true;
+    return data.every(canonicalLocalIdentifier) && data.every((item, index) => index === 0 || data[index - 1] < item);
   }});
   register({keyword: "x-layerdraw-stable-address-order", schemaType: "string", type: "array", errors: false, validate(selector, data) {
     const address = (item) => selector === "$item" ? item : item?.[selector];
@@ -382,12 +387,26 @@ function addLayerDrawVocabulary(ajv, meta) {
       return children.every((child) => typeof child === "string" && hasDirectStableAddressOwner(owner, child));
     });
   }});
+  register({keyword: "x-layerdraw-address-terminal-id", schemaType: "object", type: "object", errors: false, validate(rule, data) {
+    if (data === null || Array.isArray(data)) return true;
+    return typeof data[rule.address] === "string" && typeof data[rule.id] === "string" && data[rule.address].split(":").at(-1) === data[rule.id];
+  }});
   register({keyword: "x-layerdraw-disjoint-arrays", schemaType: "array", errors: false, validate(rules, data) {
     if (data === null || typeof data !== "object" || Array.isArray(data)) return true;
     return rules.every((rule) => {
       if (!Array.isArray(data[rule.left]) || !Array.isArray(data[rule.right])) return false;
       const left = new Set(data[rule.left]);
       return data[rule.right].every((item) => !left.has(item));
+    });
+  }});
+  register({keyword: "x-layerdraw-disjoint-array-keys", schemaType: "array", type: "object", errors: false, validate(rules, data) {
+    if (data === null || Array.isArray(data)) return true;
+    return rules.every((rule) => {
+      const items = data[rule.array];
+      const strings = data[rule.strings];
+      if (!Array.isArray(items) || !Array.isArray(strings) || !strings.every((item) => typeof item === "string")) return false;
+      const reserved = new Set(strings);
+      return items.every((item) => item !== null && typeof item === "object" && typeof item[rule.property] === "string" && !reserved.has(item[rule.property]));
     });
   }});
   register({keyword: "x-layerdraw-tagged-union", schemaType: "object", errors: false, validate(rule, data) {
@@ -404,6 +423,9 @@ function addLayerDrawVocabulary(ajv, meta) {
     if (!enabled || data === null || typeof data !== "object" || Array.isArray(data) || data.kind !== "diff") return true;
     return typeof data.before === "string" && data.before.length > 0 && typeof data.after === "string" && data.after.length > 0 && data.before !== data.after &&
       (Object.prototype.hasOwnProperty.call(data, "query_address") || (data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments) && Object.keys(data.arguments).length === 0));
+  }});
+  register({keyword: "x-layerdraw-export-recipe", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
+    return !enabled || data === null || Array.isArray(data) || validExportRecipe(data);
   }});
   register({keyword: "x-layerdraw-outcome-envelope", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object" || Array.isArray(data)) return true;
@@ -700,8 +722,8 @@ test("independent schema authority matches the complete View and Export semantic
   const semantic = "https://schemas.layerdraw.dev/semantic/v1";
   const corpus = await readJSON("fixtures/conformance/view-export-semantics-v1.json");
   assert.equal(corpus.schema_version, 1);
-  assert.equal(corpus.canonical_cases.length, 19);
-  assert.equal(corpus.rejection_cases.length, 50);
+  assert.equal(corpus.canonical_cases.length, 34);
+  assert.equal(corpus.rejection_cases.length, 94);
   for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
     assert.equal(compile(semantic, vector.type)(vector.value), true);
   });

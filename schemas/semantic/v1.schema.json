@@ -453,12 +453,12 @@
         "address": {"$ref": "#/$defs/ViewExportAddress"},
         "effective_maximum_fidelity": {"$ref": "#/$defs/ExportFidelity"},
         "exporter_profile": {"$ref": "#/$defs/ExporterProfileRef"},
-        "extension": {"type": "string"},
+        "extension": {"type": "string", "description": "The exact canonical extension selected by format."},
         "fidelity": {"$ref": "#/$defs/ExportFidelity"},
         "fidelity_basis": {"type": "string", "enum": ["embedded_viewdata", "native"]},
-        "filename": {"type": "string"},
+        "filename": {"type": "string", "description": "The already-normalized case-sensitive canonical basename ending in extension."},
         "format": {"$ref": "#/$defs/ExportFormat"},
-        "id": {"type": "string"},
+        "id": {"$ref": "#/$defs/LocalIdentifier"},
         "native_maximum_fidelity": {"$ref": "#/$defs/ExportFidelity"},
         "options": {"$ref": "#/$defs/ExportOptions"},
         "requires_source_manifest": {"type": "boolean"},
@@ -467,7 +467,9 @@
       },
       "required": ["id", "address", "view_address", "format", "extension", "filename", "fidelity", "source_refs", "exporter_profile", "options", "native_maximum_fidelity", "effective_maximum_fidelity", "fidelity_basis", "requires_source_manifest"],
       "additionalProperties": false,
-      "x-layerdraw-address-owners": [{"owner": "view_address", "children": "address", "selector": "$value"}]
+      "x-layerdraw-address-owners": [{"owner": "view_address", "children": "address", "selector": "$value"}],
+      "x-layerdraw-address-terminal-id": {"address": "address", "id": "id"},
+      "x-layerdraw-export-recipe": true
     },
     "EntityAddress": {
       "type": "string",
@@ -496,7 +498,7 @@
       "type": "object",
       "properties": {
         "format": {"$ref": "#/$defs/ExportFormat"},
-        "id": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]*@[1-9][0-9]*$"},
         "registry_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "registry_schema_version": {"type": "integer", "minimum": 1, "maximum": 2147483647},
         "specification_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
@@ -579,11 +581,11 @@
         "description": {"type": "string"},
         "display_name": {"type": "string"},
         "exports": {"type": "array", "items": {"$ref": "#/$defs/ExportRecipe"}},
-        "id": {"type": "string"},
+        "id": {"$ref": "#/$defs/LocalIdentifier"},
         "intent": {"type": "string"},
         "relation_projection_overrides": {"type": "object", "propertyNames": {"$ref": "#/$defs/RelationTypeAddress"}, "additionalProperties": {"$ref": "#/$defs/ViewProjectionOverride"}},
-        "reserved_export_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-scalar-order": true},
-        "reserved_table_column_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-scalar-order": true},
+        "reserved_export_ids": {"type": "array", "items": {"$ref": "#/$defs/LocalIdentifier"}, "uniqueItems": true, "x-layerdraw-canonical-identifier-order": true},
+        "reserved_table_column_ids": {"type": "array", "items": {"$ref": "#/$defs/LocalIdentifier"}, "uniqueItems": true, "x-layerdraw-canonical-identifier-order": true},
         "shape": {"$ref": "#/$defs/ViewRecipeShape"},
         "source": {"$ref": "#/$defs/ViewRecipeSource"},
         "state_input": {"type": "string", "enum": ["none", "optional", "required"]},
@@ -592,7 +594,14 @@
       },
       "required": ["id", "address", "display_name", "tags", "annotations", "category", "state_input", "state_requirement", "source", "relation_projection_overrides", "shape", "exports", "reserved_table_column_ids", "reserved_export_ids", "dependencies"],
       "additionalProperties": false,
-      "x-layerdraw-address-owners": [{"owner": "address", "children": "exports", "selector": "address"}]
+      "x-layerdraw-address-owners": [{"owner": "address", "children": "exports", "selector": "address"}],
+      "x-layerdraw-address-terminal-id": {"address": "address", "id": "id"},
+      "x-layerdraw-unique-array-keys": [
+        {"array": "exports", "property": "id"},
+        {"array": "exports", "property": "address"},
+        {"array": "exports", "property": "filename"}
+      ],
+      "x-layerdraw-disjoint-array-keys": [{"array": "exports", "property": "id", "strings": "reserved_export_ids"}]
     },
     "ViewRecipeSource": {
       "type": "object",
@@ -1081,6 +1090,11 @@
       "type": "string",
       "pattern": "^ldl:project:[a-z][a-z0-9_]*:layer:[a-z][a-z0-9_]*$",
       "description": "The exact canonical address of a Project-origin Layer."
+    },
+    "LocalIdentifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "A canonical ASCII Language 1 local identifier."
     },
     "ParameterAddress": {
       "type": "string",

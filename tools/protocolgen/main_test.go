@@ -348,8 +348,23 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 			value.DisjointArrays = []disjointArrayPair{{Left: "left", Right: "right"}}
 			return value
 		}},
-		{"scalar order without unique strings", "scalar order requires string items and uniqueItems", func() *schemaType {
-			return &schemaType{Type: "array", Items: &schemaType{Type: "string"}, ScalarOrder: true}
+		{"canonical identifier order without unique strings", "canonical identifier order requires string items and uniqueItems", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "string"}, CanonicalIDOrder: true}
+		}},
+		{"disjoint array-key missing arrays", "invalid disjoint array-key rule", func() *schemaType {
+			value := validObject()
+			value.DisjointArrayKeys = []disjointArrayKey{{Array: "missing", Property: "id", Strings: "also_missing"}}
+			return value
+		}},
+		{"address terminal ID missing property", "invalid address terminal-ID rule", func() *schemaType {
+			value := validObject()
+			value.AddressTerminalID = &addressTerminalIDRule{Address: "missing", ID: "kind"}
+			return value
+		}},
+		{"export recipe assertion missing fields", "export recipe assertion requires exporter_profile", func() *schemaType {
+			value := validObject()
+			value.ExportRecipe = true
+			return value
 		}},
 		{"address owner missing property", "invalid address-owner rule", func() *schemaType {
 			value := validObject()

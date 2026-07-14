@@ -527,8 +527,8 @@ test("every View source and address-bearing shape contract has shared bytes", as
 test("complete View and Export semantics match the shared adversarial corpus", async (context) => {
   const corpus = JSON.parse(await readFile(viewExportSemanticsCorpusURL, "utf8"));
   assert.equal(corpus.schema_version, 1);
-  assert.equal(corpus.canonical_cases.length, 19);
-  assert.equal(corpus.rejection_cases.length, 50);
+  assert.equal(corpus.canonical_cases.length, 34);
+  assert.equal(corpus.rejection_cases.length, 94);
   for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
     const codec = sharedCodecs[vector.type];
     assert.ok(codec, `unknown View/Export codec ${vector.type}`);
