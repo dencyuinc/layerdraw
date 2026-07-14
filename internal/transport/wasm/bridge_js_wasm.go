@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"unicode/utf8"
 
 	"syscall/js"
@@ -113,7 +114,7 @@ func (bridge *jsBridge) request(args []js.Value) any {
 	if failure := bridge.session.PreflightGeneration(generation); failure != nil {
 		return failureValue(failure)
 	}
-	ids, buffers, failure := decodeBlobArguments(args[2], args[3], bridge.session.Limits())
+	ids, buffers, failure := decodeBlobArguments(args[1], args[2], args[3], bridge.session.Limits())
 	if failure != nil {
 		return failureValue(failure)
 	}
@@ -195,7 +196,7 @@ func arrayValue(value js.Value) bool {
 	return value.Type() == js.TypeObject && js.Global().Get("Array").Call("isArray", value).Bool()
 }
 
-func decodeBlobArguments(idsValue, buffersValue js.Value, limits TransportLimits) ([]string, []js.Value, *LocalFailure) {
+func decodeBlobArguments(controlValue, idsValue, buffersValue js.Value, limits TransportLimits) ([]string, []js.Value, *LocalFailure) {
 	if idsValue.Length() != buffersValue.Length() || int64(idsValue.Length()) > limits.MaxBuffers {
 		return nil, nil, localFailure(FailureMalformedMessage)
 	}
@@ -210,6 +211,17 @@ func decodeBlobArguments(idsValue, buffersValue js.Value, limits TransportLimits
 		id := idValue.String()
 		if id == "" || !utf8.ValidString(id) || int64(len(id)) > limits.MaxBlobIDBytes {
 			return nil, nil, localFailure(FailureMalformedMessage)
+		}
+		if index > 0 && ids[index-1] >= id {
+			return nil, nil, localFailure(FailureMalformedMessage)
+		}
+		if buffer.Equal(controlValue) {
+			return nil, nil, localFailure(FailureMalformedMessage)
+		}
+		for previous := 0; previous < index; previous++ {
+			if buffer.Equal(buffers[previous]) {
+				return nil, nil, localFailure(FailureMalformedMessage)
+			}
 		}
 		length := int64(buffer.Get("byteLength").Int())
 		if length < 0 || length > limits.MaxInputBlobBytes || total > limits.MaxInputTotalBytes-length {
@@ -261,13 +273,21 @@ type jsBlobTable struct {
 
 func (table *jsBlobTable) Count() int { return len(table.ids) }
 
-func (table *jsBlobTable) Bind(_ []endpoint.BlobRequirement, limits TransportLimits) *LocalFailure {
+func (table *jsBlobTable) Bind(requirements []endpoint.BlobRequirement, limits TransportLimits) *LocalFailure {
 	if table == nil || table.released || table.bound || int64(len(table.ids)) > limits.MaxBuffers {
 		return localFailure(FailureMalformedMessage)
 	}
+	if len(requirements) != len(table.ids) {
+		return localFailure(FailureTransferFailed)
+	}
 	var total int64
-	for _, length := range table.lengths {
+	for index, length := range table.lengths {
 		if length < 0 || int64(length) > limits.MaxInputBlobBytes || total > limits.MaxInputTotalBytes-int64(length) {
+			return localFailure(FailureTransferFailed)
+		}
+		requirement := requirements[index]
+		expected, err := strconv.ParseUint(string(requirement.Ref.Size), 10, 64)
+		if err != nil || requirement.References <= 0 || requirement.Ref.BlobID != table.ids[index] || expected != uint64(length) {
 			return localFailure(FailureTransferFailed)
 		}
 		total += int64(length)

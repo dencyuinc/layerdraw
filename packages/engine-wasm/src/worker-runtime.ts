@@ -86,6 +86,8 @@ function defaultEnvironmentCheck(): boolean {
   const globals = globalThis as unknown as Record<string, unknown>;
   if (typeof globals.WebAssembly !== "object" || typeof globals.TextEncoder !== "function" || typeof globals.TextDecoder !== "function") return false;
   if (typeof globals.fetch !== "function" || typeof globals.structuredClone !== "function") return false;
+  const urlValue = globals.URL as {createObjectURL?: unknown; revokeObjectURL?: unknown} | undefined;
+  if (typeof globals.Blob !== "function" || typeof urlValue?.createObjectURL !== "function" || typeof urlValue.revokeObjectURL !== "function") return false;
   const cryptoValue = globals.crypto as {getRandomValues?: unknown; subtle?: {digest?: unknown}} | undefined;
   const performanceValue = globals.performance as {now?: unknown} | undefined;
   if (typeof cryptoValue?.getRandomValues !== "function" || typeof cryptoValue.subtle?.digest !== "function" || typeof performanceValue?.now !== "function") return false;
@@ -287,7 +289,12 @@ export function installEngineWorker(
         crash(route);
         return;
       }
-      postFailure(result.failure.code, route);
+      if (!postFailure(result.failure.code, route)) {
+        state = "crashed";
+        safeDisposeEndpoint();
+        close();
+        return;
+      }
       if (result.failure.code === "engine.worker.malformed_message" || result.failure.code === "engine.worker.stale_generation") {
         state = "idle";
       } else {

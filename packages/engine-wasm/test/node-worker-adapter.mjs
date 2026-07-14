@@ -7,8 +7,8 @@ export class NodeWorkerAdapter {
   #listeners = new Map();
   #exit;
 
-  constructor(moduleURL, options) {
-    this.#worker = new Worker(new URL(moduleURL), {name: options.name});
+  constructor(moduleURL, options, workerData) {
+    this.#worker = new Worker(new URL(moduleURL), {name: options.name, workerData});
     this.#exit = new Promise((resolve) => this.#worker.once("exit", resolve));
   }
 

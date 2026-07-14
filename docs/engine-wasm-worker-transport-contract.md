@@ -162,10 +162,12 @@ artifact は Go `1.26.5`、`GOOS=js`、`GOARCH=wasm`、`CGO_ENABLED=0`、`GOWORK
 
 artifact-local manifest は canonical JSON で、build flags、source/release、生成 Engine schema digest、固定 transport/compiler limits、`layerdraw-engine.wasm`、`wasm_exec.js`、legal files、artifact SBOM の size/media type/SHA-256 を含む。manifest 自身の digest field は持たない。CycloneDX 1.6 SBOM は runtime Go module と co-distributed Go WASM runtime support を区別し、`LICENSE`、`NOTICE`、`LICENSING.md`、`THIRD_PARTY_NOTICES.txt` を同梱する。
 
+loader は取得直後に各 artifact の fixed `ArrayBuffer` を Worker-owned snapshot へ複製し、その snapshot を hash 検証する。検証後に path/URL を再取得してはならず、`wasm_exec.js` は検証済み snapshot から作った一時 Blob module だけを評価して object URL を直ちに revoke し、WASM は検証済み snapshot そのものから instantiate する。source が検証と実行の間に変化しても未検証 bytes を実行してはならない。
+
 同一 clean revision を二つの隔離 directory に展開して build し、WASM、support JS、manifest、SBOM、legal output を byte-for-byte 比較しなければならない。release build は dirty tree を拒否する。
 
 ## browser feature contract
 
-初期 profile は dedicated module Worker、WebAssembly `js/wasm`、固定 transferable `ArrayBuffer`、structured clone、`crypto.getRandomValues`、`performance.now`、`TextEncoder`、`TextDecoder`、same-origin/CORS 対応 fetch または事前検証済み bytes を要求する。`SharedArrayBuffer`、Atomics、WASM threads、cross-origin isolation、SharedWorker、Service Worker、Node production transport は要求も広告もしない。
+初期 profile は dedicated module Worker、WebAssembly `js/wasm`、固定 transferable `ArrayBuffer`、structured clone、`crypto.getRandomValues`、`performance.now`、`TextEncoder`、`TextDecoder`、`Blob` object URL の create/revoke、same-origin/CORS 対応 fetch または事前検証済み bytes を要求する。`SharedArrayBuffer`、Atomics、WASM threads、cross-origin isolation、SharedWorker、Service Worker、Node production transport は要求も広告もしない。
 
 不足 primitive は `engine.worker.unsupported` とし、remote fallback や TypeScript compiler fallback をしてはならない。Node は同じ browser artifact を検証する test host に限る。

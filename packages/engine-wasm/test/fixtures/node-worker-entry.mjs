@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-import {readFile} from "node:fs/promises";
+import {readFile, writeFile} from "node:fs/promises";
 import {fileURLToPath} from "node:url";
-import {parentPort} from "node:worker_threads";
+import {parentPort, workerData} from "node:worker_threads";
 
 import {createVerifiedWasmEndpoint} from "../../dist/artifact.js";
 import {installEngineWorker} from "../../dist/worker-runtime.js";
@@ -33,11 +33,15 @@ parentPort.on("messageerror", () => {
   for (const listener of listeners.get("messageerror")) listener();
 });
 
-const artifactBaseURL = new URL("../../dist/", import.meta.url).href;
+const artifactBaseURL = typeof workerData?.artifactBaseURL === "string" ? workerData.artifactBaseURL : new URL("../../dist/", import.meta.url).href;
 installEngineWorker(scope, (init) => createVerifiedWasmEndpoint(init, {
   artifactBaseURL,
   async loadBytes(url) {
     const bytes = await readFile(fileURLToPath(url));
-    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const snapshot = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    if (workerData?.replaceWasmExecAfterRead === true && new URL(url).pathname.endsWith("/wasm_exec.js")) {
+      await writeFile(fileURLToPath(url), "globalThis.__layerdrawUnverifiedWasmExecRan = true;\n");
+    }
+    return snapshot;
   },
 }), {checkEnvironment: () => true});

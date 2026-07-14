@@ -232,6 +232,8 @@ test("default environment probe is fail-closed for every required primitive", as
     ["TextEncoder", undefined],
     ["TextDecoder", undefined],
     ["fetch", undefined],
+    ["Blob", undefined],
+    ["URL", {}],
     ["crypto", {}],
     ["performance", {}],
   ]) await replaceGlobal(name, value, async () => {
@@ -311,6 +313,21 @@ test("worker redacts factory, disposal, and postMessage failures across lifecycl
   responseFailure.message(request({blobs: []}));
   assert.equal(responseFailure.posted.at(-1).message.failure.code, "engine.worker.transfer_failed");
   assert.equal(responseFailure.closed, true);
+
+  const failurePostFailure = new RecordingScope();
+  const failureEndpoint = makeEchoEndpoint({
+    request: () => ({ok: false, failure: failure("engine.worker.malformed_message")}),
+  });
+  failurePostFailure.postMessage = (message, transfer) => {
+    if (message.kind === "transport_failure") throw new Error("failure post failed");
+    RecordingScope.prototype.postMessage.call(failurePostFailure, message, transfer);
+  };
+  installEngineWorker(failurePostFailure, () => failureEndpoint, {checkEnvironment: () => true});
+  failurePostFailure.message(init());
+  await nextTask();
+  failurePostFailure.message(request({blobs: []}));
+  assert.equal(failurePostFailure.closed, true);
+  assert.equal(failureEndpoint.disposed, true);
 });
 
 test("dispose during async initialization releases the eventual endpoint and stale dispose is rejected", async () => {

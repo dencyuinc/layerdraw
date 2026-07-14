@@ -14,10 +14,39 @@ const types = new Map([
   [".json", "application/json; charset=utf-8"],
   [".wasm", "application/wasm"],
 ]);
+const raceWasmExecReads = new Map();
 
 const server = createServer(async (request, response) => {
   try {
     const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
+    const race = /^\/test\/browser\/race-artifact\/([a-z0-9-]+)\/(.+)$/.exec(pathname);
+    if (race !== null) {
+      const [, token, relative] = race;
+      if (token === undefined || relative === undefined || relative.includes("..")) throw new Error("invalid race artifact path");
+      if (relative === "wasm_exec.js") {
+        const reads = (raceWasmExecReads.get(token) ?? 0) + 1;
+        raceWasmExecReads.set(token, reads);
+        if (reads > 1) {
+          const body = "globalThis.__layerdrawUnverifiedWasmExecRan = true;\n";
+          response.writeHead(200, {"cache-control": "no-store", "content-length": Buffer.byteLength(body), "content-type": "text/javascript; charset=utf-8"});
+          response.end(body);
+          return;
+        }
+      }
+      const path = resolve(root, "dist", relative);
+      if (!path.startsWith(`${resolve(root, "dist")}${sep}`)) throw new Error("outside artifact root");
+      const info = await stat(path);
+      response.writeHead(200, {"cache-control": "no-store", "content-length": info.size, "content-type": types.get(extname(path)) ?? "application/octet-stream"});
+      createReadStream(path).pipe(response);
+      return;
+    }
+    const status = /^\/test\/browser\/race-status\/([a-z0-9-]+)$/.exec(pathname);
+    if (status !== null) {
+      const body = JSON.stringify({wasmExecReads: raceWasmExecReads.get(status[1]) ?? 0});
+      response.writeHead(200, {"cache-control": "no-store", "content-length": Buffer.byteLength(body), "content-type": "application/json"});
+      response.end(body);
+      return;
+    }
     const requested = pathname === "/" ? "/test/browser/harness.html" : pathname;
     const path = resolve(root, `.${requested}`);
     if (path !== root && !path.startsWith(`${root}${sep}`)) throw new Error("outside root");

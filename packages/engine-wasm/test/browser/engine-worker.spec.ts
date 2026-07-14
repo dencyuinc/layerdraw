@@ -7,6 +7,7 @@ declare global {
     layerDrawHarnessReady: boolean;
     runLayerDrawRealArtifactCorpus(): Promise<{limitKeys: string[]; endpointID: string; replacementID: string}>;
     runLayerDrawDirectLifecycle(): Promise<{staleFailure: {code: string; phase: string; retryable: boolean}; staleDetached: number; crashCode: string}>;
+    runLayerDrawVerifiedSnapshotRace(): Promise<{wasmExecReads: number; revoked: number}>;
   }
 }
 
@@ -24,6 +25,13 @@ test("packaged module Worker handshakes and compiles Project and Pack through re
   ]);
   expect(result.endpointID).not.toBe(result.replacementID);
   expect(failures).toEqual([]);
+});
+
+test("verified runtime bytes remain authoritative when the source changes after validation", async ({page}) => {
+  await page.goto("/test/browser/harness.html");
+  await page.waitForFunction(() => window.layerDrawHarnessReady === true);
+  const result = await page.evaluate(() => window.runLayerDrawVerifiedSnapshotRace());
+  expect(result).toEqual({wasmExecReads: 1, revoked: 1});
 });
 
 test("real Worker rejects stale ownership, cleans up, and surfaces an isolated runtime crash", async ({page}) => {

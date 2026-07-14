@@ -135,4 +135,27 @@ globalThis.runLayerDrawDirectLifecycle = async () => {
   return {staleFailure: staleFailure.failure, staleDetached: staleControl.byteLength, crashCode};
 };
 
+globalThis.runLayerDrawVerifiedSnapshotRace = async () => {
+  const token = `snapshot-${crypto.randomUUID()}`;
+  const worker = new Worker(new URL(`./race-worker-entry.js?token=${token}`, import.meta.url), {type: "module"});
+  try {
+    const ready = nextWorkerMessage(worker, (message) => message.kind === "ready");
+    const resource = nextWorkerMessage(worker, (message) => message.kind === "__layerdraw_snapshot_resource");
+    worker.postMessage({
+      worker_protocol: "layerdraw.engine_worker",
+      worker_protocol_version: 1,
+      kind: "init",
+      endpoint_generation: "browser-verified-snapshot-race",
+      expected_artifact_manifest_digest: artifactManifestDigest,
+      release_manifest_digest: releaseManifestDigest,
+    });
+    await ready;
+    const resourceResult = await resource;
+    const status = await fetch(`./race-status/${token}`, {cache: "no-store"}).then((response) => response.json());
+    return {wasmExecReads: status.wasmExecReads, revoked: resourceResult.revoked};
+  } finally {
+    worker.terminate();
+  }
+};
+
 globalThis.layerDrawHarnessReady = true;

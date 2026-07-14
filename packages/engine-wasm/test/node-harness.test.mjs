@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import assert from "node:assert/strict";
-import {readFile} from "node:fs/promises";
+import {chmod, cp, mkdtemp, readFile, rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {pathToFileURL} from "node:url";
 import test from "node:test";
 
 import {EngineWorkerTransportError} from "../dist/index.js";
 import {createEngineWorkerTransportWithFactory} from "../dist/host.js";
-import {encode, handshakeAndCompileProjectAndPack, releaseManifestDigest, sha256} from "./shared/real-engine.mjs";
+import {
+  encode,
+  handshakeAndCompileProjectAndPack,
+  handshakeControl,
+  performRequest,
+  projectCompileCase,
+  releaseManifestDigest,
+  sha256,
+} from "./shared/real-engine.mjs";
 import {NodeWorkerAdapter} from "./node-worker-adapter.mjs";
 
 const workerModuleURL = new URL("./fixtures/node-worker-entry.mjs", import.meta.url).href;
@@ -95,4 +106,55 @@ test("real Node worker_threads owns the packaged Go/WASM lifecycle", {timeout: 1
   await crashed.transport.dispose();
 
   await Promise.all(exits);
+});
+
+test("Node executes the verified wasm_exec byte snapshot after its source path changes", {timeout: 120_000}, async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "layerdraw-engine-wasm-snapshot-"));
+  const artifactRoot = join(temporary, "dist");
+  await cp(new URL("../dist/", import.meta.url), artifactRoot, {recursive: true});
+  await chmod(join(artifactRoot, "wasm_exec.js"), 0o644);
+  let adapter;
+  try {
+    const transport = createEngineWorkerTransportWithFactory({
+      endpointGeneration: "node-verified-snapshot-race",
+      expectedArtifactManifestDigest: artifactManifestDigest,
+      releaseManifestDigest,
+      disposeTimeoutMilliseconds: 2_000,
+    }, workerModuleURL, (url, options) => {
+      adapter = new NodeWorkerAdapter(url, options, {
+        artifactBaseURL: `${pathToFileURL(artifactRoot).href}/`,
+        replaceWasmExecAfterRead: true,
+      });
+      return adapter;
+    });
+    await transport.ready;
+    assert.match(await readFile(join(artifactRoot, "wasm_exec.js"), "utf8"), /__layerdrawUnverifiedWasmExecRan/);
+    assert.equal(await handshakeAndCompileProjectAndPack(transport, artifactManifest.protocol.schema_digest, "node-snapshot-race").then(() => true), true);
+    await transport.dispose();
+    await adapter.exited;
+  } finally {
+    adapter?.terminate();
+    await rm(temporary, {recursive: true, force: true});
+  }
+});
+
+test("Go bridge rejects an outer attachment size mismatch before attachment acquisition", {timeout: 120_000}, async () => {
+  const endpoint = createEndpoint("node-attachment-bind-mismatch");
+  await endpoint.transport.ready;
+  await performRequest(endpoint.transport, "node-bind-handshake-exchange", {
+    control: handshakeControl(artifactManifest.protocol.schema_digest, "node-bind-handshake-request"),
+    blobs: [],
+  });
+  const input = await projectCompileCase("node-bind-project-request");
+  const wrongBytes = new ArrayBuffer(1);
+  const exchange = endpoint.transport.request({
+    exchangeID: "node-bind-project-exchange",
+    control: input.control,
+    blobs: [{blob_id: input.blobs[0].blob_id, bytes: wrongBytes}],
+  });
+  assert.equal(wrongBytes.byteLength, 0);
+  await exchange.accepted;
+  await assert.rejects(exchange.response, isFailure("engine.worker.transfer_failed"));
+  await endpoint.transport.dispose();
+  await endpoint.adapter.exited;
 });

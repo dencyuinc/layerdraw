@@ -78,6 +78,13 @@ function artifactMismatch(): never {
   throw new EngineEndpointInitializationError("engine.worker.artifact_mismatch");
 }
 
+function snapshotBytes(value: unknown): ArrayBuffer {
+  if (!isFixedArrayBuffer(value)) initializationFailure();
+  const snapshot = value.slice(0);
+  if (!isFixedArrayBuffer(snapshot)) initializationFailure();
+  return snapshot;
+}
+
 async function defaultLoadBytes(url: string): Promise<ArrayBuffer> {
   const fetchValue = Reflect.get(globalThis, "fetch");
   if (typeof fetchValue !== "function") initializationFailure();
@@ -109,6 +116,62 @@ function decodeJSON(value: ArrayBuffer): unknown {
     return JSON.parse(text) as unknown;
   } catch {
     return initializationFailure();
+  }
+}
+
+const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function base64(value: ArrayBuffer): string {
+  const bytes = new Uint8Array(value);
+  let encoded = "";
+  for (let offset = 0; offset < bytes.length; offset += 3) {
+    const first = bytes[offset];
+    if (first === undefined) initializationFailure();
+    const second = bytes[offset + 1];
+    const third = bytes[offset + 2];
+    encoded += base64Alphabet.charAt(first >>> 2);
+    encoded += base64Alphabet.charAt(((first & 0x03) << 4) | ((second ?? 0) >>> 4));
+    encoded += second === undefined ? "=" : base64Alphabet.charAt(((second & 0x0f) << 2) | ((third ?? 0) >>> 6));
+    encoded += third === undefined ? "=" : base64Alphabet.charAt(third & 0x3f);
+  }
+  return encoded;
+}
+
+interface VerifiedModuleResource {
+  readonly url: string;
+  release(): void;
+}
+
+function createVerifiedModuleResource(value: ArrayBuffer): VerifiedModuleResource {
+  if (Reflect.get(globalThis, "self") === globalThis) {
+    const BlobValue = Reflect.get(globalThis, "Blob") as typeof Blob | undefined;
+    const URLValue = Reflect.get(globalThis, "URL") as typeof URL | undefined;
+    if (typeof BlobValue !== "function" || typeof URLValue?.createObjectURL !== "function" || typeof URLValue.revokeObjectURL !== "function") {
+      initializationFailure();
+    }
+    const blob = new BlobValue([value], {type: "text/javascript"});
+    const url = URLValue.createObjectURL(blob);
+    if (typeof url !== "string" || url.length === 0) initializationFailure();
+    let released = false;
+    return Object.freeze({
+      url,
+      release(): void {
+        if (released) return;
+        released = true;
+        URLValue.revokeObjectURL(url);
+      },
+    });
+  }
+  const url = `data:text/javascript;base64,${base64(value)}`;
+  return Object.freeze({url, release(): void { /* Data URLs have no external resource handle. */ }});
+}
+
+async function executeVerifiedJavaScript(value: ArrayBuffer): Promise<void> {
+  const resource = createVerifiedModuleResource(value);
+  try {
+    await import(resource.url);
+  } finally {
+    resource.release();
   }
 }
 
@@ -243,21 +306,21 @@ export async function createVerifiedWasmEndpoint(init: EngineByteEndpointInit, o
   const resolveURL = (path: string): string => new URL(path, options.artifactBaseURL).href;
   let manifestBytes: ArrayBuffer;
   try {
-    manifestBytes = await loadBytes(resolveURL("engine-wasm.manifest.json"));
+    manifestBytes = snapshotBytes(await loadBytes(resolveURL("engine-wasm.manifest.json")));
   } catch {
     return initializationFailure();
   }
-  if (!isFixedArrayBuffer(manifestBytes) || await sha256(manifestBytes) !== init.expectedArtifactManifestDigest) artifactMismatch();
+  if (await sha256(manifestBytes) !== init.expectedArtifactManifestDigest) artifactMismatch();
   const files = validateManifest(decodeJSON(manifestBytes));
   const loaded = new Map<string, ArrayBuffer>();
   for (const file of files) {
     let bytes: ArrayBuffer;
     try {
-      bytes = await loadBytes(resolveURL(file.path));
+      bytes = snapshotBytes(await loadBytes(resolveURL(file.path)));
     } catch {
       return artifactMismatch();
     }
-    if (!isFixedArrayBuffer(bytes) || bytes.byteLength !== file.size || await sha256(bytes) !== file.digest) artifactMismatch();
+    if (bytes.byteLength !== file.size || await sha256(bytes) !== file.digest) artifactMismatch();
     loaded.set(file.path, bytes);
   }
   const corpus = loaded.get("engine-wasm-worker-v1.json");
@@ -266,8 +329,7 @@ export async function createVerifiedWasmEndpoint(init: EngineByteEndpointInit, o
   if (corpus === undefined || wasm === undefined || wasmExec === undefined || await sha256(wasmExec) !== expectedWasmExecDigest) artifactMismatch();
   const limits = validateContractCorpus(decodeJSON(corpus));
   try {
-    const wasmExecURL = resolveURL("wasm_exec.js");
-    await import(wasmExecURL);
+    await executeVerifiedJavaScript(wasmExec);
     const GoValue = Reflect.get(globalThis, "Go") as GoRuntimeConstructor | undefined;
     if (typeof GoValue !== "function") initializationFailure();
     const go = new GoValue();
