@@ -1,0 +1,50 @@
+{
+  "diagnostics": [],
+  "engine_release": "0.0.0-dev",
+  "outcome": "success",
+  "payload": {
+    "capability_manifest": {
+      "embedding_profiles": [],
+      "exporter_profiles": [],
+      "limits": {
+        "max_project_source_bytes": "67108864"
+      },
+      "manifest_etag": "fixture-etag",
+      "manifest_scope": "endpoint",
+      "manifest_version": 1,
+      "operations": {
+        "engine.compile": {
+          "enabled": true,
+          "protocol_version": "1.0"
+        },
+        "engine.handshake": {
+          "enabled": true,
+          "protocol_version": "1.0"
+        }
+      },
+      "query_adapters": [],
+      "realtime_profiles": [],
+      "registry_sources": [],
+      "renderer_profiles": [],
+      "required_ladybug_primitives": [],
+      "search_profiles": [],
+      "storage_capabilities": [],
+      "transports": ["in_process"]
+    },
+    "endpoint_instance_id": "fixture-engine",
+    "host_release": "0.0.0-dev",
+    "negotiated_protocols": [
+      {
+        "name": "engine",
+        "schema_digest": "sha256:732b1011b668623462f7cb9eb6f417636d921d6d7fdb50459e89b0b068e76da4",
+        "version": "1.0"
+      }
+    ],
+    "release_manifest_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-success"
+}

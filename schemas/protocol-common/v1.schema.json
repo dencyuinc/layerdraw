@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.layerdraw.dev/protocol-common/v1",
+  "$comment": "SPDX-License-Identifier: Apache-2.0",
+  "title": "LayerDraw Protocol Common v1",
+  "x-layerdraw-go-package": "protocolcommon",
+  "x-layerdraw-ts-module": "common",
+  "$defs": {
+    "BlobLifetime": {
+      "type": "string",
+      "enum": ["persistent", "request", "session"],
+      "description": "The maximum lifetime for which a blob reference remains valid."
+    },
+    "BlobRef": {
+      "type": "object",
+      "description": "A transport-neutral reference to bytes transferred outside a JSON control envelope.",
+      "properties": {
+        "blob_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/Digest"},
+        "lifetime": {"$ref": "#/$defs/BlobLifetime"},
+        "media_type": {"type": "string", "minLength": 1},
+        "size": {"$ref": "#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob_id", "digest", "lifetime", "media_type", "size"],
+      "additionalProperties": false
+    },
+    "CanonicalInt64": {
+      "type": "string",
+      "format": "int64-decimal",
+      "pattern": "^-?(0|[1-9][0-9]*)$",
+      "description": "A signed 64-bit integer serialized as a canonical decimal string."
+    },
+    "CanonicalUint64": {
+      "type": "string",
+      "format": "uint64-decimal",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "description": "An unsigned 64-bit integer serialized as a canonical decimal string."
+    },
+    "CapabilityLimitMap": {
+      "type": "object",
+      "description": "Named effective limits; every quantity uses canonical unsigned decimal encoding.",
+      "additionalProperties": {"$ref": "#/$defs/CanonicalUint64"}
+    },
+    "CapabilityManifest": {
+      "type": "object",
+      "description": "The capabilities this endpoint can actually execute for the negotiated scope.",
+      "properties": {
+        "actor_scope_digest": {"$ref": "#/$defs/Digest"},
+        "authoring_grant_summary": {"$ref": "#/$defs/JsonObject"},
+        "embedding_profiles": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
+        "exporter_profiles": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
+        "extensions": {"$ref": "#/$defs/Extensions"},
+        "limits": {"$ref": "#/$defs/CapabilityLimitMap"},
+        "manifest_etag": {"type": "string", "minLength": 1},
+        "manifest_scope": {"$ref": "#/$defs/ManifestScope"},
+        "manifest_version": {"type": "integer", "minimum": 1},
+        "operations": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/OperationCapability"}
+        },
+        "query_adapters": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
+        "realtime_profiles": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
+        "registry_sources": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
+        "renderer_profiles": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
+        "required_ladybug_primitives": {"type": "array", "items": {"type": "string"}},
+        "search_profiles": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
+        "storage_capabilities": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
+        "transports": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["manifest_version", "manifest_etag", "manifest_scope", "operations", "transports", "limits", "query_adapters", "realtime_profiles", "registry_sources", "renderer_profiles", "exporter_profiles", "search_profiles", "embedding_profiles", "required_ladybug_primitives", "storage_capabilities"],
+      "additionalProperties": false
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "A SHA-256 digest with an exact lowercase 64-hex payload."
+    },
+    "Extensions": {
+      "type": "object",
+      "description": "Explicit namespaced compatible-minor extension data. Unknown top-level fields are rejected.",
+      "additionalProperties": {"$ref": "#/$defs/JsonValue"}
+    },
+    "HandshakeRequest": {
+      "type": "object",
+      "description": "Client protocol ranges, exact schema digests, capability requirements, and limits.",
+      "properties": {
+        "client_limits": {"$ref": "#/$defs/CapabilityLimitMap"},
+        "client_release": {"type": "string", "minLength": 1},
+        "extensions": {"$ref": "#/$defs/Extensions"},
+        "optional_capabilities": {"type": "array", "items": {"type": "string"}},
+        "protocols": {"type": "array", "items": {"$ref": "#/$defs/ProtocolOffer"}, "minItems": 1},
+        "required_capabilities": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["client_release", "protocols", "required_capabilities", "optional_capabilities"],
+      "additionalProperties": false
+    },
+    "HandshakeResult": {
+      "type": "object",
+      "description": "The host identity, negotiated versions, effective manifest, and release manifest digest.",
+      "properties": {
+        "capability_manifest": {"$ref": "#/$defs/CapabilityManifest"},
+        "endpoint_instance_id": {"type": "string", "minLength": 1},
+        "extensions": {"$ref": "#/$defs/Extensions"},
+        "host_release": {"type": "string", "minLength": 1},
+        "negotiated_protocols": {"type": "array", "items": {"$ref": "#/$defs/NegotiatedProtocol"}},
+        "release_manifest_digest": {"$ref": "#/$defs/Digest"}
+      },
+      "required": ["host_release", "endpoint_instance_id", "negotiated_protocols", "capability_manifest", "release_manifest_digest"],
+      "additionalProperties": false
+    },
+    "JsonObject": {
+      "type": "object",
+      "description": "An explicitly open JSON object used only for safe diagnostic or extension data.",
+      "additionalProperties": {"$ref": "#/$defs/JsonValue"}
+    },
+    "JsonValue": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "string"},
+        {"type": "array", "items": {"$ref": "#/$defs/JsonValue"}},
+        {"type": "object", "additionalProperties": {"$ref": "#/$defs/JsonValue"}}
+      ],
+      "description": "A recursive canonical JSON value excluding numbers so JavaScript precision cannot change diagnostic or extension data."
+    },
+    "ManifestScope": {
+      "type": "string",
+      "enum": ["client", "effective", "endpoint"]
+    },
+    "NegotiatedProtocol": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+        "schema_digest": {"$ref": "#/$defs/Digest"},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}
+      },
+      "required": ["name", "version", "schema_digest"],
+      "additionalProperties": false
+    },
+    "OperationCapability": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "extensions": {"$ref": "#/$defs/Extensions"},
+        "limits": {"$ref": "#/$defs/CapabilityLimitMap"},
+        "protocol_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "required_authoring_capabilities": {"type": "array", "items": {"type": "string"}},
+        "unavailable_reason": {"$ref": "#/$defs/UnavailableReason"}
+      },
+      "required": ["enabled", "protocol_version"],
+      "additionalProperties": false
+    },
+    "Outcome": {
+      "type": "string",
+      "enum": ["cancelled", "failed", "rejected", "success"]
+    },
+    "PageInfo": {
+      "type": "object",
+      "properties": {
+        "next_cursor": {"type": "string"},
+        "result_truncated": {"type": "boolean"},
+        "returned_bytes": {"$ref": "#/$defs/CanonicalUint64"},
+        "returned_items": {"$ref": "#/$defs/CanonicalUint64"},
+        "total_items": {"$ref": "#/$defs/TotalItems"}
+      },
+      "required": ["result_truncated", "returned_items", "returned_bytes"],
+      "additionalProperties": false
+    },
+    "ProfileCapability": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "extensions": {"$ref": "#/$defs/Extensions"},
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      },
+      "required": ["id", "version", "enabled"],
+      "additionalProperties": false
+    },
+    "ProtocolFailure": {
+      "type": "object",
+      "description": "A safe transport or execution-platform failure, never a source diagnostic.",
+      "properties": {
+        "category": {"$ref": "#/$defs/ProtocolFailureCategory"},
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"},
+        "correlation_id": {"type": "string"},
+        "extensions": {"$ref": "#/$defs/Extensions"},
+        "message": {"type": "string"},
+        "retry_after_ms": {"$ref": "#/$defs/CanonicalUint64"},
+        "retryable": {"type": "boolean"},
+        "safe_details": {"$ref": "#/$defs/JsonObject"}
+      },
+      "required": ["code", "category", "message", "retryable"],
+      "additionalProperties": false
+    },
+    "ProtocolFailureCategory": {
+      "type": "string",
+      "enum": ["adapter", "cancelled", "invariant", "io", "resource", "transport"]
+    },
+    "ProtocolOffer": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+        "schema_digests": {"type": "array", "items": {"$ref": "#/$defs/Digest"}, "minItems": 1},
+        "supported_range": {"type": "string", "minLength": 1}
+      },
+      "required": ["name", "supported_range", "schema_digests"],
+      "additionalProperties": false
+    },
+    "ProtocolRef": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}
+      },
+      "required": ["name", "version"],
+      "additionalProperties": false
+    },
+    "RequestMetadata": {
+      "type": "object",
+      "description": "The common top-level metadata copied into every operation request envelope.",
+      "properties": {
+        "deadline_at": {"$ref": "#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "#/$defs/Extensions"},
+        "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"},
+        "protocol": {"$ref": "#/$defs/ProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1},
+        "trace_context": {"$ref": "#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation"],
+      "additionalProperties": false
+    },
+    "ResponseMetadata": {
+      "type": "object",
+      "description": "The common top-level metadata copied into every operation response envelope.",
+      "properties": {
+        "engine_release": {"type": "string"},
+        "extensions": {"$ref": "#/$defs/Extensions"},
+        "host_release": {"type": "string"},
+        "outcome": {"$ref": "#/$defs/Outcome"},
+        "protocol": {"$ref": "#/$defs/ProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1}
+      },
+      "required": ["protocol", "request_id", "outcome"],
+      "additionalProperties": false
+    },
+    "Rfc3339Time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "A UTC RFC 3339 timestamp."
+    },
+    "TotalItems": {
+      "type": "object",
+      "description": "An explicit unknown or exact item count; omission is never used to imply truncation.",
+      "properties": {
+        "exact": {"$ref": "#/$defs/CanonicalUint64"},
+        "known": {"type": "boolean"}
+      },
+      "required": ["known"],
+      "additionalProperties": false
+    },
+    "UnavailableReason": {
+      "type": "string",
+      "enum": ["degraded", "incompatible", "not_authorized", "not_configured", "not_entitled", "not_linked", "offline"]
+    },
+    "UpgradeDiagnosticData": {
+      "type": "object",
+      "description": "Safe structured data for protocol range, schema digest, and release compatibility rejection.",
+      "properties": {
+        "available_schema_digests": {"type": "array", "items": {"$ref": "#/$defs/Digest"}},
+        "client_release": {"type": "string"},
+        "host_release": {"type": "string"},
+        "protocol_name": {"type": "string"},
+        "required_capabilities": {"type": "array", "items": {"type": "string"}},
+        "supported_range": {"type": "string"}
+      },
+      "required": ["protocol_name", "supported_range", "available_schema_digests", "required_capabilities"],
+      "additionalProperties": false
+    }
+  }
+}

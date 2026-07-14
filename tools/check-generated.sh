@@ -10,8 +10,9 @@ if (( $# == 0 )); then
 fi
 
 before="$(mktemp)"
-after="$(mktemp)"
-trap 'rm -f "$before" "$after"' EXIT
+after_first="$(mktemp)"
+after_second="$(mktemp)"
+trap 'rm -f "$before" "$after_first" "$after_second"' EXIT
 
 snapshot() {
   local root
@@ -27,9 +28,16 @@ snapshot() {
 
 snapshot >"$before"
 "$@"
-snapshot >"$after"
+snapshot >"$after_first"
+"$@"
+snapshot >"$after_second"
 
-if ! diff -u "$before" "$after"; then
-  printf 'Generated files changed. Run make generate and commit the result.\n' >&2
+if ! diff -u "$before" "$after_first"; then
+	printf 'Generated files changed. Run make generate and commit the result.\n' >&2
+	exit 1
+fi
+
+if ! diff -u "$after_first" "$after_second"; then
+  printf 'Two consecutive generations were not byte-identical.\n' >&2
   exit 1
 fi

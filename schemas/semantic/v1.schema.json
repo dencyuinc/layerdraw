@@ -1,0 +1,406 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.layerdraw.dev/semantic/v1",
+  "$comment": "SPDX-License-Identifier: Apache-2.0",
+  "title": "LayerDraw Semantic Wire Values v1",
+  "x-layerdraw-go-package": "semantic",
+  "x-layerdraw-ts-module": "semantic",
+  "$defs": {
+    "AdjacencyRecord": {
+      "type": "object",
+      "properties": {
+        "entity_address": {"$ref": "#/$defs/StableAddress"},
+        "incoming": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "outgoing": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}
+      },
+      "required": ["entity_address", "outgoing", "incoming"],
+      "additionalProperties": false
+    },
+    "AuthoringCapability": {
+      "type": "string",
+      "enum": ["graph:write", "project:configure", "query:write", "reference:write", "schema:write", "view:write"]
+    },
+    "AuthoringSubjectClassification": {
+      "type": "object",
+      "properties": {
+        "address": {"$ref": "#/$defs/StableAddress"},
+        "capability": {"$ref": "#/$defs/AuthoringCapability"},
+        "kind": {"$ref": "#/$defs/SubjectKind"}
+      },
+      "required": ["address", "kind", "capability"],
+      "additionalProperties": false
+    },
+    "ChildSetHash": {
+      "type": "object",
+      "properties": {
+        "child_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "child_kind": {"$ref": "#/$defs/SubjectKind"},
+        "hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "owner_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["owner_address", "child_kind", "child_addresses", "hash"],
+      "additionalProperties": false
+    },
+    "DependencyKind": {
+      "type": "string",
+      "enum": ["query", "view"]
+    },
+    "DependencyRecord": {
+      "type": "object",
+      "properties": {
+        "column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "entity_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "export_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "kind": {"$ref": "#/$defs/DependencyKind"},
+        "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "parameter_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "query_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "relation_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "state_reads": {"type": "array", "items": {"$ref": "#/$defs/StateReadDependency"}},
+        "subject_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["kind", "subject_address", "query_addresses", "parameter_addresses", "layer_addresses", "entity_type_addresses", "relation_type_addresses", "entity_addresses", "relation_addresses", "column_addresses", "export_addresses", "state_reads"],
+      "additionalProperties": false
+    },
+    "Diagnostic": {
+      "type": "object",
+      "description": "A deterministic source, operation, policy, version, or state problem that a caller can correct.",
+      "properties": {
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"},
+        "data": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "message": {"type": "string"},
+        "related": {"type": "array", "items": {"$ref": "#/$defs/DiagnosticRelated"}},
+        "remediation": {"type": "string"},
+        "severity": {"$ref": "#/$defs/DiagnosticSeverity"},
+        "source": {"$ref": "#/$defs/DiagnosticSource"}
+      },
+      "required": ["code", "severity", "message", "related"],
+      "additionalProperties": false
+    },
+    "DiagnosticRelated": {
+      "type": "object",
+      "properties": {
+        "message": {"type": "string"},
+        "relation": {"type": "string"},
+        "source": {"$ref": "#/$defs/DiagnosticSource"}
+      },
+      "required": ["relation", "message"],
+      "additionalProperties": false
+    },
+    "DiagnosticSeverity": {
+      "type": "string",
+      "enum": ["error", "hint", "information", "warning"]
+    },
+    "DiagnosticSource": {
+      "type": "object",
+      "properties": {
+        "module_path": {"type": "string"},
+        "span": {"$ref": "#/$defs/SourceSpan"},
+        "stable_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["module_path", "span"],
+      "additionalProperties": false
+    },
+    "ExportBindingRecord": {
+      "type": "object",
+      "properties": {
+        "module": {"$ref": "#/$defs/ModuleRef"},
+        "public_name": {"type": "string"},
+        "range": {"$ref": "#/$defs/SourceRange"},
+        "re_export": {"type": "boolean"},
+        "target_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["public_name", "target_address", "module", "range", "re_export"],
+      "additionalProperties": false
+    },
+    "KindAddresses": {
+      "type": "object",
+      "properties": {
+        "addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "kind": {"$ref": "#/$defs/SubjectKind"}
+      },
+      "required": ["kind", "addresses"],
+      "additionalProperties": false
+    },
+    "ModuleRef": {
+      "type": "object",
+      "properties": {
+        "module_path": {"type": "string"},
+        "origin": {"$ref": "#/$defs/SourceOrigin"}
+      },
+      "required": ["origin", "module_path"],
+      "additionalProperties": false
+    },
+    "OriginKind": {
+      "type": "string",
+      "enum": ["pack", "project"]
+    },
+    "OwnerMembers": {
+      "type": "object",
+      "properties": {
+        "addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "owner_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["owner_address", "addresses"],
+      "additionalProperties": false
+    },
+    "ReferenceIdRecord": {
+      "type": "object",
+      "properties": {
+        "addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "id": {"type": "string"}
+      },
+      "required": ["id", "addresses"],
+      "additionalProperties": false
+    },
+    "ScopeAddresses": {
+      "type": "object",
+      "properties": {
+        "addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "module": {"$ref": "#/$defs/ModuleRef"}
+      },
+      "required": ["module", "addresses"],
+      "additionalProperties": false
+    },
+    "ScopedReadIndexes": {
+      "type": "object",
+      "properties": {
+        "by_kind": {"type": "array", "items": {"$ref": "#/$defs/KindAddresses"}},
+        "by_module": {"type": "array", "items": {"$ref": "#/$defs/ScopeAddresses"}},
+        "children_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "columns_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "incoming_by_entity": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "members_by_layer": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "members_by_type": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "outgoing_by_entity": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "queries_by_dependency": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "references_by_id": {"type": "array", "items": {"$ref": "#/$defs/ReferenceIdRecord"}},
+        "rows_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "usages_by_target": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "views_by_dependency": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}}
+      },
+      "required": ["by_module", "by_kind", "children_by_owner", "rows_by_owner", "columns_by_owner", "members_by_type", "members_by_layer", "references_by_id", "outgoing_by_entity", "incoming_by_entity", "usages_by_target", "queries_by_dependency", "views_by_dependency"],
+      "additionalProperties": false
+    },
+    "SearchDocument": {
+      "type": "object",
+      "description": "A deterministic, access-unfiltered search document created only by the Go Engine.",
+      "properties": {
+        "content_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/SearchField"}},
+        "graph_entry_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "owner_address": {"$ref": "#/$defs/StableAddress"},
+        "schema_version": {"type": "integer", "minimum": 1},
+        "subject_address": {"$ref": "#/$defs/StableAddress"},
+        "subject_kind": {"$ref": "#/$defs/SubjectKind"},
+        "type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}
+      },
+      "required": ["schema_version", "subject_address", "subject_kind", "graph_entry_addresses", "type_addresses", "layer_addresses", "fields", "content_hash"],
+      "additionalProperties": false
+    },
+    "SearchField": {
+      "type": "object",
+      "properties": {
+        "field_path": {"type": "string"},
+        "include_in_embedding": {"type": "boolean"},
+        "lexical_weight": {"type": "integer", "minimum": 0},
+        "source_ref": {"$ref": "#/$defs/SourceRange"},
+        "text": {"type": "string"}
+      },
+      "required": ["field_path", "text", "lexical_weight", "include_in_embedding"],
+      "additionalProperties": false
+    },
+    "SemanticIndex": {
+      "type": "object",
+      "description": "Canonical StableAddress ownership, membership, reference, adjacency, and dependency indexes.",
+      "properties": {
+        "adjacency": {"type": "array", "items": {"$ref": "#/$defs/AdjacencyRecord"}},
+        "children": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "columns": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/DependencyRecord"}},
+        "layer_membership": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "reference_ids": {"type": "array", "items": {"$ref": "#/$defs/ReferenceIdRecord"}},
+        "references": {"type": "array", "items": {"$ref": "#/$defs/SemanticReference"}},
+        "rows": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
+        "schema_version": {"type": "integer", "minimum": 1},
+        "scoped_reads": {"$ref": "#/$defs/ScopedReadIndexes"},
+        "subjects": {"type": "array", "items": {"$ref": "#/$defs/SemanticSubject"}},
+        "type_membership": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}}
+      },
+      "required": ["schema_version", "subjects", "references", "children", "rows", "columns", "type_membership", "layer_membership", "reference_ids", "adjacency", "dependencies", "scoped_reads"],
+      "additionalProperties": false
+    },
+    "SemanticReference": {
+      "type": "object",
+      "properties": {
+        "range": {"$ref": "#/$defs/SourceRange"},
+        "source_address": {"$ref": "#/$defs/StableAddress"},
+        "target_address": {"$ref": "#/$defs/StableAddress"},
+        "target_kind": {"$ref": "#/$defs/SubjectKind"},
+        "via": {"type": "string"}
+      },
+      "required": ["source_address", "target_address", "target_kind", "via", "range"],
+      "additionalProperties": false
+    },
+    "SemanticSubject": {
+      "type": "object",
+      "properties": {
+        "address": {"$ref": "#/$defs/StableAddress"},
+        "kind": {"$ref": "#/$defs/SubjectKind"},
+        "module": {"$ref": "#/$defs/ModuleRef"},
+        "own_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "owner_address": {"$ref": "#/$defs/StableAddress"},
+        "subtree_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["address", "kind", "own_hash"],
+      "additionalProperties": false
+    },
+    "SourceAssetRecord": {
+      "type": "object",
+      "properties": {
+        "authored_path": {"type": "string"},
+        "byte_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "locator": {"type": "string"},
+        "media_type": {"type": "string"},
+        "module_path": {"type": "string"},
+        "origin": {"$ref": "#/$defs/SourceOrigin"},
+        "range": {"$ref": "#/$defs/SourceRange"},
+        "subject_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["subject_address", "authored_path", "locator", "origin", "module_path", "range", "digest", "media_type", "byte_length"],
+      "additionalProperties": false
+    },
+    "SourceBindingRecord": {
+      "type": "object",
+      "properties": {
+        "module": {"$ref": "#/$defs/ModuleRef"},
+        "range": {"$ref": "#/$defs/SourceRange"},
+        "source_address": {"$ref": "#/$defs/StableAddress"},
+        "target_address": {"$ref": "#/$defs/StableAddress"},
+        "target_kind": {"$ref": "#/$defs/SubjectKind"},
+        "target_owner_address": {"$ref": "#/$defs/StableAddress"},
+        "via": {"type": "string"}
+      },
+      "required": ["source_address", "target_address", "target_kind", "via", "module", "range"],
+      "additionalProperties": false
+    },
+    "SourceFileRecord": {
+      "type": "object",
+      "properties": {
+        "byte_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "module_path": {"type": "string"},
+        "origin": {"$ref": "#/$defs/SourceOrigin"}
+      },
+      "required": ["origin", "module_path", "digest", "byte_length"],
+      "additionalProperties": false
+    },
+    "SourceMap": {
+      "type": "object",
+      "properties": {
+        "assets": {"type": "array", "items": {"$ref": "#/$defs/SourceAssetRecord"}},
+        "bindings": {"type": "array", "items": {"$ref": "#/$defs/SourceBindingRecord"}},
+        "exports": {"type": "array", "items": {"$ref": "#/$defs/ExportBindingRecord"}},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/SourceFileRecord"}},
+        "schema_version": {"type": "integer", "minimum": 1},
+        "subjects": {"type": "array", "items": {"$ref": "#/$defs/SourceSubjectRecord"}}
+      },
+      "required": ["schema_version", "files", "subjects", "bindings", "exports", "assets"],
+      "additionalProperties": false
+    },
+    "SourceOrigin": {
+      "type": "object",
+      "properties": {
+        "kind": {"$ref": "#/$defs/OriginKind"},
+        "pack_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "SourceRange": {
+      "type": "object",
+      "properties": {
+        "end_byte": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "module_path": {"type": "string"},
+        "origin": {"$ref": "#/$defs/SourceOrigin"},
+        "start_byte": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["origin", "module_path", "start_byte", "end_byte"],
+      "additionalProperties": false
+    },
+    "SourceSpan": {
+      "type": "object",
+      "properties": {
+        "end_byte": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "start_byte": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["start_byte", "end_byte"],
+      "additionalProperties": false
+    },
+    "SourceSubjectRecord": {
+      "type": "object",
+      "properties": {
+        "address": {"$ref": "#/$defs/StableAddress"},
+        "comment_ranges": {"type": "array", "items": {"$ref": "#/$defs/SourceRange"}},
+        "declaration_range": {"$ref": "#/$defs/SourceRange"},
+        "kind": {"$ref": "#/$defs/SubjectKind"},
+        "manifest_root": {"type": "boolean"},
+        "module": {"$ref": "#/$defs/ModuleRef"},
+        "owner_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["address", "kind", "comment_ranges", "manifest_root"],
+      "additionalProperties": false
+    },
+    "StableAddress": {
+      "type": "string",
+      "pattern": "^ldl:[^\\s]+$",
+      "description": "A canonical LDL StableAddress computed only by the Go Engine."
+    },
+    "StateReadDependency": {
+      "type": "object",
+      "properties": {
+        "field_path": {"type": "string"},
+        "subject_kind": {"$ref": "#/$defs/StateSubjectKind"},
+        "value_type": {"$ref": "#/$defs/ValueType"}
+      },
+      "required": ["subject_kind", "field_path", "value_type"],
+      "additionalProperties": false
+    },
+    "StateSubjectKind": {
+      "type": "string",
+      "enum": ["entity", "entity_row", "relation", "relation_row"]
+    },
+    "SubjectHash": {
+      "type": "object",
+      "properties": {
+        "address": {"$ref": "#/$defs/StableAddress"},
+        "hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "kind": {"$ref": "#/$defs/SubjectKind"}
+      },
+      "required": ["address", "kind", "hash"],
+      "additionalProperties": false
+    },
+    "SubjectKind": {
+      "type": "string",
+      "enum": ["entity", "entity_row", "entity_type", "entity_type_column", "entity_type_constraint", "layer", "pack", "project", "query", "query_parameter", "reference", "relation", "relation_row", "relation_type", "relation_type_column", "relation_type_constraint", "view", "view_export", "view_table_column"]
+    },
+    "SubtreeHash": {
+      "type": "object",
+      "properties": {
+        "hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "owner_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["owner_address", "hash"],
+      "additionalProperties": false
+    },
+    "ValueType": {
+      "type": "string",
+      "enum": ["boolean", "date", "datetime", "enum", "integer", "number", "string"]
+    }
+  }
+}

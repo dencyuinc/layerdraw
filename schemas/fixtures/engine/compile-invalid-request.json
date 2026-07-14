@@ -1,0 +1,25 @@
+{
+  "actor_context_ref": "forbidden-for-pure-engine",
+  "operation": "engine.compile",
+  "payload": {
+    "entry_path": "document.ldl",
+    "installed_pack_tree": [],
+    "mode": "project",
+    "project_source_tree": [],
+    "referenced_assets": [],
+    "resolved_dependencies": {
+      "format": "layerdraw-resolved",
+      "format_version": 1,
+      "installs": [],
+      "language": 1
+    },
+    "resource_limits": {
+      "max_assets": "-1"
+    }
+  },
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-invalid"
+}

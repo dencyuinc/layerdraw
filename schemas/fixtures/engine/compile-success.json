@@ -1,0 +1,174 @@
+{
+  "diagnostics": [],
+  "engine_release": "0.0.0-dev",
+  "outcome": "success",
+  "payload": {
+    "authoring_subject_classification": [
+      {
+        "address": "ldl:project:fixture",
+        "capability": "project:configure",
+        "kind": "project"
+      }
+    ],
+    "child_set_hashes": [],
+    "compiled_recipes": {
+      "exports": [],
+      "queries": [
+        {
+          "address": "ldl:project:fixture:query:all",
+          "canonical_json": {
+            "blob_id": "compile/query/all",
+            "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "lifetime": "request",
+            "media_type": "application/vnd.layerdraw.query-recipe+json",
+            "size": "64"
+          }
+        }
+      ],
+      "views": []
+    },
+    "definition_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "effective_limits": {
+      "max_asset_bytes": "268435456",
+      "max_assets": "4096",
+      "max_declarations": "1000000",
+      "max_pack_bytes": "268435456",
+      "max_pack_files": "16384",
+      "max_project_source_bytes": "67108864",
+      "max_project_source_files": "4096",
+      "max_raster_dimension": "32768",
+      "max_raster_pixels": "67108864"
+    },
+    "graph_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "normalized_artifact": {
+      "kind": "project",
+      "project": {
+        "artifact_json": {
+          "blob_id": "compile/artifact-json",
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "lifetime": "request",
+          "media_type": "application/vnd.layerdraw.normalized+json",
+          "size": "128"
+        },
+        "canonical_json": {
+          "blob_id": "compile/canonical-json",
+          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "lifetime": "request",
+          "media_type": "application/vnd.layerdraw.normalized+json",
+          "size": "128"
+        },
+        "project_address": "ldl:project:fixture"
+      }
+    },
+    "search_documents": [
+      {
+        "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "fields": [
+          {
+            "field_path": "display_name",
+            "include_in_embedding": true,
+            "lexical_weight": 100,
+            "text": "Fixture"
+          }
+        ],
+        "graph_entry_addresses": [],
+        "layer_addresses": [],
+        "schema_version": 1,
+        "subject_address": "ldl:project:fixture",
+        "subject_kind": "project",
+        "type_addresses": []
+      }
+    ],
+    "semantic_index": {
+      "adjacency": [],
+      "children": [],
+      "columns": [],
+      "dependencies": [],
+      "layer_membership": [],
+      "reference_ids": [],
+      "references": [],
+      "rows": [],
+      "schema_version": 1,
+      "scoped_reads": {
+        "by_kind": [],
+        "by_module": [],
+        "children_by_owner": [],
+        "columns_by_owner": [],
+        "incoming_by_entity": [],
+        "members_by_layer": [],
+        "members_by_type": [],
+        "outgoing_by_entity": [],
+        "queries_by_dependency": [],
+        "references_by_id": [],
+        "rows_by_owner": [],
+        "usages_by_target": [],
+        "views_by_dependency": []
+      },
+      "subjects": [
+        {
+          "address": "ldl:project:fixture",
+          "kind": "project",
+          "own_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ],
+      "type_membership": []
+    },
+    "source_map": {
+      "assets": [],
+      "bindings": [],
+      "exports": [],
+      "files": [
+        {
+          "byte_length": "28",
+          "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "module_path": "document.ldl",
+          "origin": {
+            "kind": "project"
+          }
+        }
+      ],
+      "schema_version": 1,
+      "subjects": [
+        {
+          "address": "ldl:project:fixture",
+          "comment_ranges": [],
+          "declaration_range": {
+            "end_byte": "28",
+            "module_path": "document.ldl",
+            "origin": {
+              "kind": "project"
+            },
+            "start_byte": "0"
+          },
+          "kind": "project",
+          "manifest_root": false,
+          "module": {
+            "module_path": "document.ldl",
+            "origin": {
+              "kind": "project"
+            }
+          }
+        }
+      ]
+    },
+    "stable_addresses": ["ldl:project:fixture"],
+    "subject_semantic_hashes": [
+      {
+        "address": "ldl:project:fixture",
+        "hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "kind": "project"
+      }
+    ],
+    "subtree_hashes": [
+      {
+        "hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "owner_address": "ldl:project:fixture"
+      }
+    ]
+  },
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-compile-success"
+}

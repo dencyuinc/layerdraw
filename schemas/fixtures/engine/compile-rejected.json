@@ -1,0 +1,28 @@
+{
+  "diagnostics": [
+    {
+      "code": "engine.compile.syntax_error",
+      "data": {
+        "expected": "project"
+      },
+      "message": "expected a project declaration",
+      "related": [],
+      "remediation": "Add a project declaration to the entry module.",
+      "severity": "error",
+      "source": {
+        "module_path": "document.ldl",
+        "span": {
+          "end_byte": "7",
+          "start_byte": "0"
+        }
+      }
+    }
+  ],
+  "engine_release": "0.0.0-dev",
+  "outcome": "rejected",
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-compile-rejected"
+}

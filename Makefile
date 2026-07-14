@@ -10,18 +10,19 @@ SOURCE_REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || printf 'unknown')
 COVERAGE_BASE_REF ?= origin/main
 ENGINE_BINARY := dist/layerdraw-engine
 LICENSE_REPORT := reports/dependency-licenses.json
-GO_PACKAGES := ./cmd/... ./internal/...
+GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen
 
 .DEFAULT_GOAL := build
 
 .PHONY: bootstrap generate generate-check format format-check lint typecheck test coverage coverage-check license-check license-report security \
-	conformance integration build package verify-packaged ci clean
+	conformance integration build protocol-package-check package verify-packaged ci clean
 
 bootstrap:
 	$(GO) mod download all
 	$(PNPM) install --frozen-lockfile
 
 generate:
+	$(GO) run ./tools/protocolgen generate
 	$(GO) generate ./...
 	$(PNPM) exec turbo run generate
 
@@ -90,6 +91,10 @@ build:
 		-o $(ENGINE_BINARY) ./cmd/layerdraw-engine
 	$(PNPM) exec turbo run build
 
+protocol-package-check: build
+	cd packages/protocol && $(PNPM) pack --dry-run --json >/dev/null
+	cd packages/protocol && node --input-type=module -e 'await Promise.all([import("./dist/common.gen.js"), import("./dist/semantic.gen.js"), import("./dist/engine.gen.js")])'
+
 package: build
 	$(GO) run ./tools/licensecheck bundle \
 		-binary $(ENGINE_BINARY) \
@@ -101,7 +106,7 @@ verify-packaged: package
 		LAYERDRAW_BUNDLE_DIR="$(CURDIR)/dist" \
 		$(GO) test ./tests/packaged/...
 
-ci: generate-check format-check lint typecheck coverage-check conformance integration license-check security package verify-packaged
+ci: generate-check format-check lint typecheck coverage-check conformance integration license-check security protocol-package-check package verify-packaged
 
 clean:
 	rm -rf dist coverage reports .turbo

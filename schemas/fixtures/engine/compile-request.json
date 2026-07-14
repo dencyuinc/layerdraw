@@ -1,0 +1,33 @@
+{
+  "operation": "engine.compile",
+  "payload": {
+    "entry_path": "document.ldl",
+    "installed_pack_tree": [],
+    "mode": "project",
+    "project_source_tree": [
+      {
+        "blob": {
+          "blob_id": "compile/source/document.ldl",
+          "digest": "sha256:103daccad2c24c2b1cccb5be7ec68eec01f6b68b2a037a25efb3a365e64d623f",
+          "lifetime": "request",
+          "media_type": "text/plain; charset=utf-8",
+          "size": "28"
+        },
+        "path": "document.ldl"
+      }
+    ],
+    "referenced_assets": [],
+    "resolved_dependencies": {
+      "format": "layerdraw-resolved",
+      "format_version": 1,
+      "installs": [],
+      "language": 1
+    },
+    "resource_limits": {}
+  },
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-compile-request"
+}
