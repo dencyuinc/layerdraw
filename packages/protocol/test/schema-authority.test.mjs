@@ -129,6 +129,168 @@ function hasScalarUnicodeTree(root) {
   return true;
 }
 
+function utf8ByteLength(value) {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) bytes++;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      const low = value.charCodeAt(index + 1);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new TypeError("protocol JSON contains an unpaired high surrogate");
+      bytes += 4;
+      index++;
+    } else if (code >= 0xdc00 && code <= 0xdfff) throw new TypeError("protocol JSON contains an unpaired low surrogate");
+    else bytes += 3;
+  }
+  return bytes;
+}
+
+function hasContainerDepth(root, maximum) {
+  const active = new Set();
+  const visit = (value, depth) => {
+    if (value === null || typeof value !== "object") return true;
+    if (active.has(value) || depth >= maximum) return false;
+    active.add(value);
+    const children = Array.isArray(value) ? value : Object.values(value);
+    const valid = children.every((child) => visit(child, depth + 1));
+    active.delete(value);
+    return valid;
+  };
+  return visit(root, 0);
+}
+
+function fitsCanonicalJSONBytes(value, maximum) {
+  try {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined || !hasScalarUnicodeTree(value)) return false;
+    const canonicalEscapes = encoded.replace(/[\u2028\u2029]/g, (character) => character === "\u2028" ? "\\u2028" : "\\u2029");
+    return utf8ByteLength(canonicalEscapes) <= maximum;
+  } catch {
+    return false;
+  }
+}
+
+function skipJSONWhitespace(input, start) {
+  let index = start;
+  while (index < input.length && /[ \t\r\n]/.test(input[index])) index++;
+  return index;
+}
+
+function scanJSONToken(input, start) {
+  let index = start;
+  while (index < input.length && !/[{}\[\],:\s]/.test(input[index])) index++;
+  return index;
+}
+
+function parseHexCodeUnit(input, start) {
+  const text = input.slice(start, start + 4);
+  if (!/^[0-9a-fA-F]{4}$/.test(text)) throw new TypeError("protocol JSON string has an invalid Unicode escape");
+  return Number.parseInt(text, 16);
+}
+
+function scanJSONString(input, start) {
+  for (let index = start + 1; index < input.length; index++) {
+    const code = input.charCodeAt(index);
+    if (code === 0x22) return index;
+    if (code < 0x20) throw new TypeError("protocol JSON string contains an unescaped control character");
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const low = input.charCodeAt(index + 1);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) throw new TypeError("protocol JSON string has an unpaired high surrogate");
+      index++;
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) throw new TypeError("protocol JSON string has an unpaired low surrogate");
+    if (code !== 0x5c) continue;
+    index++;
+    if (index >= input.length) throw new TypeError("protocol JSON string has a truncated escape");
+    if (input[index] !== "u") continue;
+    const unit = parseHexCodeUnit(input, index + 1);
+    index += 4;
+    if (unit >= 0xdc00 && unit <= 0xdfff) throw new TypeError("protocol JSON string has an unpaired low surrogate");
+    if (unit < 0xd800 || unit > 0xdbff) continue;
+    if (input[index + 1] !== "\\" || input[index + 2] !== "u") throw new TypeError("protocol JSON string has an unpaired high surrogate");
+    const low = parseHexCodeUnit(input, index + 3);
+    if (low < 0xdc00 || low > 0xdfff) throw new TypeError("protocol JSON string has an invalid surrogate pair");
+    index += 6;
+  }
+  throw new TypeError("protocol JSON string is unterminated");
+}
+
+function scanUniqueJSONValue(input, start) {
+  let index = skipJSONWhitespace(input, start);
+  const character = input[index];
+  if (character === '"') return scanJSONString(input, index) + 1;
+  if (character === "[") {
+    index = skipJSONWhitespace(input, index + 1);
+    if (input[index] === "]") return index + 1;
+    for (;;) {
+      index = skipJSONWhitespace(input, scanUniqueJSONValue(input, index));
+      if (input[index] === "]") return index + 1;
+      if (input[index] !== ",") throw new TypeError("protocol JSON array is malformed");
+      index++;
+    }
+  }
+  if (character === "{") {
+    const keys = new Set();
+    index = skipJSONWhitespace(input, index + 1);
+    if (input[index] === "}") return index + 1;
+    for (;;) {
+      if (input[index] !== '"') throw new TypeError("protocol JSON object key must be a string");
+      const keyEnd = scanJSONString(input, index);
+      const key = JSON.parse(input.slice(index, keyEnd + 1));
+      if (typeof key !== "string") throw new TypeError("protocol JSON object key must be a string");
+      if (keys.has(key)) throw new TypeError(`protocol JSON contains duplicate object key ${key}`);
+      keys.add(key);
+      index = skipJSONWhitespace(input, keyEnd + 1);
+      if (input[index] !== ":") throw new TypeError("protocol JSON object is missing a colon");
+      index = skipJSONWhitespace(input, scanUniqueJSONValue(input, index + 1));
+      if (input[index] === "}") return index + 1;
+      if (input[index] !== ",") throw new TypeError("protocol JSON object is malformed");
+      index = skipJSONWhitespace(input, index + 1);
+    }
+  }
+  const end = scanJSONToken(input, index);
+  if (end === index) throw new TypeError("protocol JSON value is malformed");
+  return end;
+}
+
+function validateCanonicalJSONNumber(value) {
+  if (!/^(0|-[1-9][0-9]*|[1-9][0-9]*)$/.test(value)) throw new TypeError(`protocol JSON number ${value} is not a canonical integer`);
+  const parsed = BigInt(value);
+  if (parsed < -9007199254740991n || parsed > 9007199254740991n) throw new TypeError(`protocol JSON number ${value} is outside the portable safe range`);
+}
+
+function parseWireJSON(input, maximumBytes, maximumDepth) {
+  if (typeof input !== "string") throw new TypeError("protocol JSON input must be a string");
+  if (utf8ByteLength(input) > maximumBytes) throw new TypeError(`protocol JSON exceeds ${maximumBytes} UTF-8 bytes`);
+  let depth = 0;
+  for (let index = 0; index < input.length; index++) {
+    const character = input[index];
+    if (character === '"') {
+      index = scanJSONString(input, index);
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      depth++;
+      if (depth > maximumDepth) throw new TypeError(`protocol JSON exceeds depth ${maximumDepth}`);
+      continue;
+    }
+    if (character === "}" || character === "]") {
+      depth--;
+      continue;
+    }
+    if (character === "-" || (character >= "0" && character <= "9")) {
+      const end = scanJSONToken(input, index);
+      validateCanonicalJSONNumber(input.slice(index, end));
+      index = end - 1;
+    }
+  }
+  const end = scanUniqueJSONValue(input, skipJSONWhitespace(input, 0));
+  if (skipJSONWhitespace(input, end) !== input.length) throw new TypeError("protocol JSON must contain exactly one value");
+  return JSON.parse(input);
+}
+
 function dialectKeywordSchemaType(meta, schema) {
   let resolved = schema;
   if (typeof schema.$ref === "string" && schema.$ref.startsWith("#/$defs/")) {
@@ -165,10 +327,10 @@ function addLayerDrawVocabulary(ajv, meta) {
     registrations.set(definition.keyword, definition);
   };
   register({keyword: "x-layerdraw-go-package", schemaType: "string", errors: false, validate: () => true});
-  register({keyword: "x-layerdraw-max-json-bytes", schemaType: "number", errors: false, validate: () => true});
-  register({keyword: "x-layerdraw-max-json-depth", schemaType: "number", errors: false, validate: () => true});
+  register({keyword: "x-layerdraw-max-json-bytes", schemaType: "number", rootValidate: (value) => Number.isSafeInteger(value) && value > 0, errors: false, validate: (maximum, data) => fitsCanonicalJSONBytes(data, maximum)});
+  register({keyword: "x-layerdraw-max-json-depth", schemaType: "number", rootValidate: (value) => Number.isSafeInteger(value) && value > 0, errors: false, validate: (maximum, data) => hasContainerDepth(data, maximum)});
   register({keyword: "x-layerdraw-ts-module", schemaType: "string", errors: false, validate: () => true});
-  register({keyword: "x-layerdraw-scalar-unicode", schemaType: "boolean", rootRequired: true, errors: false, validate(enabled, data) {
+  register({keyword: "x-layerdraw-scalar-unicode", schemaType: "boolean", rootValidate: (value) => value === true, errors: false, validate(enabled, data) {
     return !enabled || hasScalarUnicodeTree(data);
   }});
   register({keyword: "x-layerdraw-stable-address-order", schemaType: "string", type: "array", errors: false, validate(selector, data) {
@@ -245,16 +407,16 @@ function addLayerDrawVocabulary(ajv, meta) {
   }});
   const inventory = Object.keys(meta.properties).filter((keyword) => keyword.startsWith("x-layerdraw-")).sort();
   assert.deepEqual([...registrations.keys()].sort(), inventory, "Ajv LayerDraw keyword implementations must exactly match the published dialect inventory");
-  const rootRequired = [];
+  const rootRequirements = new Map();
   for (const keyword of inventory) {
     const registration = registrations.get(keyword);
     const schemaType = dialectKeywordSchemaType(meta, meta.properties[keyword]);
     assert.equal(registration.schemaType, schemaType, `Ajv schema type for ${keyword} must derive from the published dialect`);
-    const {rootRequired: required = false, ...definition} = registration;
+    const {rootValidate, ...definition} = registration;
     ajv.addKeyword({...definition, schemaType});
-    if (required) rootRequired.push(keyword);
+    if (rootValidate !== undefined) rootRequirements.set(keyword, rootValidate);
   }
-  return rootRequired;
+  return rootRequirements;
 }
 
 async function authority() {
@@ -265,14 +427,29 @@ async function authority() {
     readJSON("engine-protocol/v1.schema.json"),
   ]);
   const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: true});
-  const rootRequired = addLayerDrawVocabulary(ajv, meta);
+  const rootRequirements = addLayerDrawVocabulary(ajv, meta);
   addLayerDrawFormats(ajv);
   ajv.addMetaSchema(meta);
   for (const document of documents) {
-    for (const keyword of rootRequired) assert.equal(document[keyword], true, `${document.$id} must assert ${keyword}: true`);
+    for (const [keyword, validate] of rootRequirements) assert.equal(validate(document[keyword]), true, `${document.$id} must assert a valid ${keyword}`);
     ajv.addSchema(document);
   }
-  return (id, name) => ajv.compile({allOf: [{$ref: `${id}#/$defs/${name}`}, {$ref: id}]});
+  const byID = new Map(documents.map((document) => [document.$id, document]));
+  const compile = (id, name) => ajv.compile({allOf: [{$ref: id}, {$ref: `${id}#/$defs/${name}`}]});
+  compile.wire = (id, name) => {
+    const document = byID.get(id);
+    assert.ok(document, `unknown schema resource ${id}`);
+    const validate = compile(id, name);
+    return (input) => {
+      try {
+        const value = parseWireJSON(input, document["x-layerdraw-max-json-bytes"], document["x-layerdraw-max-json-depth"]);
+        return validate(value);
+      } catch {
+        return false;
+      }
+    };
+  };
+  return compile;
 }
 
 test("Ajv registration fails closed against the published dialect inventory and shapes", async () => {
@@ -430,11 +607,52 @@ test("independent schema authority matches every shared View source vector", asy
   assert.equal(corpus.canonical_cases.length, 30);
   assert.equal(corpus.rejection_cases.length, 59);
   for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
-    assert.equal(compile(semantic, vector.type)(JSON.parse(vector.input)), true);
+    assert.equal(compile.wire(semantic, vector.type)(vector.input), true);
   });
   for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
-    assert.equal(compile(semantic, vector.type)(JSON.parse(vector.input)), false);
+    assert.equal(compile.wire(semantic, vector.type)(vector.input), false);
   });
+});
+
+test("independent schema authority enforces exact raw wire bounds and hostile object syntax", async (context) => {
+  const common = "https://schemas.layerdraw.dev/protocol-common/v1";
+  const document = await readJSON("protocol-common/v1.schema.json");
+  const corpus = await readJSON("fixtures/conformance/v1.json");
+  const compile = await authority();
+  const validateValue = compile(common, "JsonValue");
+  const validateWire = compile.wire(common, "JsonValue");
+  const maximumBytes = document["x-layerdraw-max-json-bytes"];
+  const maximumDepth = document["x-layerdraw-max-json-depth"];
+  assert.equal(maximumBytes, corpus.max_json_bytes);
+  assert.equal(maximumDepth, corpus.max_json_depth);
+
+  const exactBytes = `"${"a".repeat(maximumBytes - 2)}"`;
+  const excessiveBytes = `"${"a".repeat(maximumBytes - 1)}"`;
+  let exactDepth = '"x"';
+  for (let depth = 0; depth < maximumDepth; depth++) exactDepth = `[${exactDepth}]`;
+  const excessiveDepth = `[${exactDepth}]`;
+  for (const [name, input, valid] of [
+    ["max JSON bytes", exactBytes, true],
+    ["max JSON bytes plus one", excessiveBytes, false],
+    ["depth 128", exactDepth, true],
+    ["depth 129", excessiveDepth, false],
+  ]) await context.test(name, () => {
+    assert.equal(validateWire(input), valid);
+  });
+
+  assert.equal(validateValue(JSON.parse(exactBytes)), true, "max-byte keyword exact boundary");
+  assert.equal(validateValue(JSON.parse(excessiveBytes)), false, "max-byte keyword rejects rather than annotates");
+  assert.equal(validateValue(JSON.parse(exactDepth)), true, "max-depth keyword exact boundary");
+  assert.equal(validateValue(JSON.parse(excessiveDepth)), false, "max-depth keyword rejects rather than annotates");
+
+  const hostileNames = new Set(["duplicate_object_key", "escaped_equivalent_duplicate_object_key", "nested_duplicate_object_key", "unpaired_high_surrogate", "unpaired_low_surrogate"]);
+  const hostile = corpus.rejection_cases.filter((vector) => hostileNames.has(vector.name));
+  assert.equal(hostile.length, hostileNames.size);
+  for (const vector of hostile) await context.test(vector.name, () => {
+    assert.equal(validateWire(vector.input), false);
+  });
+  assert.equal(validateWire(`"${String.fromCharCode(0xd800)}"`), false, "raw unpaired high surrogate");
+  assert.equal(validateWire(`{"${String.fromCharCode(0xdc00)}":null}`), false, "raw unpaired low surrogate member name");
 });
 
 test("independent schema authority enforces the published recursive scalar-Unicode profile", async (context) => {
@@ -446,9 +664,9 @@ test("independent schema authority enforces the published recursive scalar-Unico
   assert.equal(corpus.canonical_cases.length, 2);
   assert.equal(corpus.rejection_cases.length, 9);
   for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
-    assert.equal(compile(vector.schema_id, vector.type)(JSON.parse(vector.input)), true);
+    assert.equal(compile.wire(vector.schema_id, vector.type)(vector.input), true);
   });
   for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
-    assert.equal(compile(vector.schema_id, vector.type)(JSON.parse(vector.input)), false);
+    assert.equal(compile.wire(vector.schema_id, vector.type)(vector.input), false);
   });
 });
