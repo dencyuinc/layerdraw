@@ -641,7 +641,7 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 	}
 }
 
-func TestEveryGeneratedEncoderAndRecursiveDefinitionUsesBoundedPreflight(t *testing.T) {
+func TestEveryGeneratedCodecAndRecursivePredicateUsesBoundedPreflight(t *testing.T) {
 	t.Parallel()
 	set, err := loadSchemas(testRepositoryRoot(t))
 	if err != nil {
@@ -716,21 +716,72 @@ func TestEveryGeneratedEncoderAndRecursiveDefinitionUsesBoundedPreflight(t *test
 	if len(recursive) == 0 {
 		t.Fatal("schema recursion audit unexpectedly found no recursive definitions")
 	}
+	recursiveNames := map[string]bool{}
+	for id := range recursive {
+		recursiveNames[set.byID[id.documentID].Module+"."+id.name] = true
+	}
+	for _, name := range []string{
+		"common.JsonValue",
+		"semantic.DiagnosticArgumentValue",
+		"semantic.RecipePredicate",
+		"semantic.RecipeRowPredicate",
+	} {
+		if !recursiveNames[name] {
+			t.Errorf("schema recursion audit did not find %s", name)
+		}
+	}
+	if len(recursiveNames) != 4 {
+		t.Errorf("schema recursion audit found %d recursive definitions, want 4: %v", len(recursiveNames), recursiveNames)
+	}
 
+	reachesRecursive := map[definitionID]bool{}
+	for start := range adjacency {
+		var reaches func(definitionID, map[definitionID]bool) bool
+		reaches = func(current definitionID, visited map[definitionID]bool) bool {
+			if recursive[current] {
+				return true
+			}
+			for next := range adjacency[current] {
+				if !visited[next] {
+					visited[next] = true
+					if reaches(next, visited) {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		reachesRecursive[start] = reaches(start, map[definitionID]bool{start: true})
+	}
+
+	reachingCount := 0
 	for _, document := range set.documents {
 		typeScript := byPath["packages/protocol/src/"+document.Module+".gen.ts"]
 		goCodec := byPath["gen/go/"+document.Package+"/codec.gen.go"]
 		for name := range document.Definitions {
+			predicatePrefix := "export function is" + name + "(value: unknown): value is " + name + " {\n  return isProgrammaticWireValue(value, () => "
+			if !strings.Contains(typeScript, predicatePrefix) {
+				t.Errorf("generated TypeScript predicate %s.%s lacks the total bounded preflight", document.Module, name)
+			}
 			if !strings.Contains(typeScript, "export function encode"+name+"(value: "+name+"): string {\n  validateProgrammaticWireValue(value);") {
 				t.Errorf("generated TypeScript encoder %s.%s lacks the bounded preflight", document.Module, name)
 			}
 			if !strings.Contains(goCodec, "func Encode"+name+"(value "+name+") ([]byte, error) {\n\tif err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {") {
 				t.Errorf("generated Go encoder %s.%s lacks the bounded preflight", document.Package, name)
 			}
-			if recursive[definitionID{documentID: document.ID, name: name}] {
-				t.Logf("audited recursive definition %s.%s", document.Module, name)
+			id := definitionID{documentID: document.ID, name: name}
+			if reachesRecursive[id] {
+				reachingCount++
+				t.Logf("audited bounded predicate for %s.%s, which reaches schema recursion", document.Module, name)
 			}
 		}
+	}
+	if reachingCount <= len(recursive) {
+		t.Fatalf("schema graph audit found no non-recursive definitions reaching recursion: recursive=%d reaching=%d", len(recursive), reachingCount)
+	}
+	commonTypeScript := byPath["packages/protocol/src/common.gen.ts"]
+	if !strings.Contains(commonTypeScript, "export function isJsonValue(value: unknown): value is JsonValue {\n  return isProgrammaticWireValue(value, () => isJSONCompatible(value));") {
+		t.Error("generated JsonValue predicate no longer composes its specialized validator with the bounded preflight")
 	}
 }
 

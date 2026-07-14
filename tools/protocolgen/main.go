@@ -1871,7 +1871,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function isObject(value: unknown): value is Record<string, unknown> {\n")
 	body.WriteString("  if (typeof value !== \"object\" || value === null || Array.isArray(value)) return false;\n")
 	body.WriteString("  const prototype = Object.getPrototypeOf(value); if (prototype !== Object.prototype && prototype !== null) return false;\n")
-	body.WriteString("  for (const key of Reflect.ownKeys(value)) { if (typeof key !== \"string\") return false; const descriptor = Object.getOwnPropertyDescriptor(value, key); if (descriptor === undefined || !descriptor.enumerable || !(\"value\" in descriptor)) return false; }\n")
+	body.WriteString("  for (const key of Reflect.ownKeys(value)) { if (typeof key !== \"string\" || !hasScalarUnicode(key)) return false; const descriptor = Object.getOwnPropertyDescriptor(value, key); if (descriptor === undefined || !descriptor.enumerable || !(\"value\" in descriptor)) return false; }\n")
 	body.WriteString("  return true;\n")
 	body.WriteString("}\n\n")
 	body.WriteString("function isJSONArray(value: unknown): value is ReadonlyArray<unknown> {\n")
@@ -1895,7 +1895,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("}\n\n")
 	body.WriteString("function hasScalarUnicode(value: unknown): value is string {\n")
 	body.WriteString("  if (typeof value !== \"string\") return false;\n")
-	body.WriteString("  for (let index = 0; index < value.length; index++) { const code = value.charCodeAt(index); if (code >= 0xd800 && code <= 0xdbff) { const low = value.charCodeAt(index + 1); if (low < 0xdc00 || low > 0xdfff) return false; index++; } else if (code >= 0xdc00 && code <= 0xdfff) return false; }\n")
+	body.WriteString("  for (let index = 0; index < value.length; index++) { const code = value.charCodeAt(index); if (code >= 0xd800 && code <= 0xdbff) { const low = value.charCodeAt(index + 1); if (!(low >= 0xdc00 && low <= 0xdfff)) return false; index++; } else if (code >= 0xdc00 && code <= 0xdfff) return false; }\n")
 	body.WriteString("  return true;\n")
 	body.WriteString("}\n\n")
 	body.WriteString("function matchesCanonicalInt64(value: string): boolean {\n")
@@ -1968,7 +1968,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 		if name == "JsonValue" {
 			predicate = "isJSONCompatible(value)"
 		}
-		fmt.Fprintf(&body, "\nexport function is%s(value: unknown): value is %s {\n  return %s;\n}\n", name, name, predicate)
+		fmt.Fprintf(&body, "\nexport function is%s(value: unknown): value is %s {\n  return isProgrammaticWireValue(value, () => %s);\n}\n", name, name, predicate)
 		fmt.Fprintf(&body, "\nexport function decode%s(input: string): %s {\n  validateWireJSONText(input);\n  const value: unknown = JSON.parse(input);\n  if (!is%s(value)) throw new TypeError(%q);\n  return value;\n}\n", name, name, name, "invalid "+name)
 		fmt.Fprintf(&body, "\nexport function encode%s(value: %s): string {\n  validateProgrammaticWireValue(value);\n  if (!is%s(value)) throw new TypeError(%q);\n  const encoded = canonicalJSONStringify(value);\n  validateWireJSONText(encoded);\n  const emitted: unknown = JSON.parse(encoded);\n  if (!is%s(emitted)) throw new TypeError(%q);\n  return encoded;\n}\n", name, name, name, "invalid "+name, name, "encoded value is invalid "+name)
 		body.WriteString("\n")
@@ -1982,7 +1982,7 @@ const tsWirePreflight = `function utf8ByteLength(value: string): number {
     const code = value.charCodeAt(index);
     if (code <= 0x7f) bytes++;
     else if (code <= 0x7ff) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff) { const low = value.charCodeAt(index + 1); if (low < 0xdc00 || low > 0xdfff) throw new TypeError("protocol JSON contains an unpaired high surrogate"); bytes += 4; index++; }
+    else if (code >= 0xd800 && code <= 0xdbff) { const low = value.charCodeAt(index + 1); if (!(low >= 0xdc00 && low <= 0xdfff)) throw new TypeError("protocol JSON contains an unpaired high surrogate"); bytes += 4; index++; }
     else if (code >= 0xdc00 && code <= 0xdfff) throw new TypeError("protocol JSON contains an unpaired low surrogate");
     else bytes += 3;
   }
@@ -2001,6 +2001,10 @@ function validateProgrammaticWireValue(value: unknown, active: Set<object> = new
     if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
     else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
   } finally { active.delete(value); }
+}
+
+function isProgrammaticWireValue(value: unknown, predicate: () => boolean): boolean {
+  try { validateProgrammaticWireValue(value); return predicate(); } catch { return false; }
 }
 
 function validateWireJSONText(input: string): void {

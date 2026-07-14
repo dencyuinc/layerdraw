@@ -15,7 +15,7 @@ export const maxWireJSONDepth = 128 as const;
 function isObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value); if (prototype !== Object.prototype && prototype !== null) return false;
-  for (const key of Reflect.ownKeys(value)) { if (typeof key !== "string") return false; const descriptor = Object.getOwnPropertyDescriptor(value, key); if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) return false; }
+  for (const key of Reflect.ownKeys(value)) { if (typeof key !== "string" || !hasScalarUnicode(key)) return false; const descriptor = Object.getOwnPropertyDescriptor(value, key); if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) return false; }
   return true;
 }
 
@@ -44,7 +44,7 @@ function isJSONCompatible(value: unknown, active: Set<object> = new Set<object>(
 
 function hasScalarUnicode(value: unknown): value is string {
   if (typeof value !== "string") return false;
-  for (let index = 0; index < value.length; index++) { const code = value.charCodeAt(index); if (code >= 0xd800 && code <= 0xdbff) { const low = value.charCodeAt(index + 1); if (low < 0xdc00 || low > 0xdfff) return false; index++; } else if (code >= 0xdc00 && code <= 0xdfff) return false; }
+  for (let index = 0; index < value.length; index++) { const code = value.charCodeAt(index); if (code >= 0xd800 && code <= 0xdbff) { const low = value.charCodeAt(index + 1); if (!(low >= 0xdc00 && low <= 0xdfff)) return false; index++; } else if (code >= 0xdc00 && code <= 0xdfff) return false; }
   return true;
 }
 
@@ -120,7 +120,7 @@ function utf8ByteLength(value: string): number {
     const code = value.charCodeAt(index);
     if (code <= 0x7f) bytes++;
     else if (code <= 0x7ff) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff) { const low = value.charCodeAt(index + 1); if (low < 0xdc00 || low > 0xdfff) throw new TypeError("protocol JSON contains an unpaired high surrogate"); bytes += 4; index++; }
+    else if (code >= 0xd800 && code <= 0xdbff) { const low = value.charCodeAt(index + 1); if (!(low >= 0xdc00 && low <= 0xdfff)) throw new TypeError("protocol JSON contains an unpaired high surrogate"); bytes += 4; index++; }
     else if (code >= 0xdc00 && code <= 0xdfff) throw new TypeError("protocol JSON contains an unpaired low surrogate");
     else bytes += 3;
   }
@@ -139,6 +139,10 @@ function validateProgrammaticWireValue(value: unknown, active: Set<object> = new
     if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
     else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
   } finally { active.delete(value); }
+}
+
+function isProgrammaticWireValue(value: unknown, predicate: () => boolean): boolean {
+  try { validateProgrammaticWireValue(value); return predicate(); } catch { return false; }
 }
 
 function validateWireJSONText(input: string): void {
@@ -238,7 +242,7 @@ export interface AssetInput {
 }
 
 export function isAssetInput(value: unknown): value is AssetInput {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob", "digest", "locator", "media_type", "origin", "pack_id"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "locator") && (typeof value["locator"] === "string" && hasScalarUnicode(value["locator"]) && Array.from(value["locator"]).length >= 1) && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && Array.from(value["media_type"]).length >= 1) && hasOwn(value, "origin") && (isSourceOriginKind(value["origin"])) && (!hasOwn(value, "pack_id") || (isCanonicalPackSelector(value["pack_id"]))) && ((value["origin"] === "pack" && hasOwn(value, "pack_id")) || (value["origin"] === "project" && !hasOwn(value, "pack_id")));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob", "digest", "locator", "media_type", "origin", "pack_id"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "locator") && (typeof value["locator"] === "string" && hasScalarUnicode(value["locator"]) && Array.from(value["locator"]).length >= 1) && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && Array.from(value["media_type"]).length >= 1) && hasOwn(value, "origin") && (isSourceOriginKind(value["origin"])) && (!hasOwn(value, "pack_id") || (isCanonicalPackSelector(value["pack_id"]))) && ((value["origin"] === "pack" && hasOwn(value, "pack_id")) || (value["origin"] === "project" && !hasOwn(value, "pack_id"))));
 }
 
 export function decodeAssetInput(input: string): AssetInput {
@@ -262,7 +266,7 @@ export function encodeAssetInput(value: AssetInput): string {
 export type CanonicalPackSelector = string;
 
 export function isCanonicalPackSelector(value: unknown): value is CanonicalPackSelector {
-  return typeof value === "string" && hasScalarUnicode(value) && new RegExp("^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$").test(value);
+  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && new RegExp("^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$").test(value));
 }
 
 export function decodeCanonicalPackSelector(input: string): CanonicalPackSelector {
@@ -286,7 +290,7 @@ export function encodeCanonicalPackSelector(value: CanonicalPackSelector): strin
 export type CanonicalSourcePath = string;
 
 export function isCanonicalSourcePath(value: unknown): value is CanonicalSourcePath {
-  return typeof value === "string" && hasScalarUnicode(value) && Array.from(value).length >= 1 && matchesCanonicalSourcePath(value);
+  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && Array.from(value).length >= 1 && matchesCanonicalSourcePath(value));
 }
 
 export function decodeCanonicalSourcePath(input: string): CanonicalSourcePath {
@@ -320,7 +324,7 @@ export interface CompileInput {
 }
 
 export function isCompileInput(value: unknown): value is CompileInput {
-  return isObject(value) && hasOnlyKeys(value, new Set(["entry_path", "extensions", "installed_pack_tree", "mode", "project_source_tree", "referenced_assets", "resolved_dependencies", "resource_limits", "root_pack_id"])) && hasOwn(value, "entry_path") && (isCanonicalSourcePath(value["entry_path"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "installed_pack_tree") && (isJSONArray(value["installed_pack_tree"]) && value["installed_pack_tree"].every((item) => isSourceFileInput(item))) && hasOwn(value, "mode") && (isCompileMode(value["mode"])) && hasOwn(value, "project_source_tree") && (isJSONArray(value["project_source_tree"]) && value["project_source_tree"].every((item) => isSourceFileInput(item))) && hasOwn(value, "referenced_assets") && (isJSONArray(value["referenced_assets"]) && value["referenced_assets"].every((item) => isAssetInput(item))) && hasOwn(value, "resolved_dependencies") && (isResolvedDependencies(value["resolved_dependencies"])) && hasOwn(value, "resource_limits") && (isResourceLimits(value["resource_limits"])) && (!hasOwn(value, "root_pack_id") || (isCanonicalPackSelector(value["root_pack_id"]))) && ((value["mode"] === "pack" && hasOwn(value, "root_pack_id") && isJSONArray(value["project_source_tree"]) && value["project_source_tree"].length === 0 && isJSONArray(value["installed_pack_tree"]) && value["installed_pack_tree"].length > 0) || (value["mode"] === "project" && !hasOwn(value, "root_pack_id") && isJSONArray(value["project_source_tree"]) && value["project_source_tree"].length > 0));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["entry_path", "extensions", "installed_pack_tree", "mode", "project_source_tree", "referenced_assets", "resolved_dependencies", "resource_limits", "root_pack_id"])) && hasOwn(value, "entry_path") && (isCanonicalSourcePath(value["entry_path"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "installed_pack_tree") && (isJSONArray(value["installed_pack_tree"]) && value["installed_pack_tree"].every((item) => isSourceFileInput(item))) && hasOwn(value, "mode") && (isCompileMode(value["mode"])) && hasOwn(value, "project_source_tree") && (isJSONArray(value["project_source_tree"]) && value["project_source_tree"].every((item) => isSourceFileInput(item))) && hasOwn(value, "referenced_assets") && (isJSONArray(value["referenced_assets"]) && value["referenced_assets"].every((item) => isAssetInput(item))) && hasOwn(value, "resolved_dependencies") && (isResolvedDependencies(value["resolved_dependencies"])) && hasOwn(value, "resource_limits") && (isResourceLimits(value["resource_limits"])) && (!hasOwn(value, "root_pack_id") || (isCanonicalPackSelector(value["root_pack_id"]))) && ((value["mode"] === "pack" && hasOwn(value, "root_pack_id") && isJSONArray(value["project_source_tree"]) && value["project_source_tree"].length === 0 && isJSONArray(value["installed_pack_tree"]) && value["installed_pack_tree"].length > 0) || (value["mode"] === "project" && !hasOwn(value, "root_pack_id") && isJSONArray(value["project_source_tree"]) && value["project_source_tree"].length > 0)));
 }
 
 export function decodeCompileInput(input: string): CompileInput {
@@ -343,7 +347,7 @@ export function encodeCompileInput(value: CompileInput): string {
 export type CompileMode = "pack" | "project";
 
 export function isCompileMode(value: unknown): value is CompileMode {
-  return typeof value === "string" && hasScalarUnicode(value) && ["pack", "project"].includes(value);
+  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["pack", "project"].includes(value));
 }
 
 export function decodeCompileMode(input: string): CompileMode {
@@ -374,7 +378,7 @@ export interface CompileRequestEnvelope {
 }
 
 export function isCompileRequestEnvelope(value: unknown): value is CompileRequestEnvelope {
-  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.compile") && hasOwn(value, "payload") && (isCompileInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.compile") && hasOwn(value, "payload") && (isCompileInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
 }
 
 export function decodeCompileRequestEnvelope(input: string): CompileRequestEnvelope {
@@ -406,7 +410,7 @@ export interface CompileResponseEnvelope {
 }
 
 export function isCompileResponseEnvelope(value: unknown): value is CompileResponseEnvelope {
-  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isProtocolFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isCompileResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1) && ((value["outcome"] === "success" && hasOwn(value, "payload") && !hasOwn(value, "failure")) || (value["outcome"] === "rejected" && !hasOwn(value, "payload") && !hasOwn(value, "failure") && isJSONArray(value["diagnostics"]) && value["diagnostics"].length > 0) || ((value["outcome"] === "failed" || value["outcome"] === "cancelled") && !hasOwn(value, "payload") && hasOwn(value, "failure")));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isProtocolFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isCompileResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1) && ((value["outcome"] === "success" && hasOwn(value, "payload") && !hasOwn(value, "failure")) || (value["outcome"] === "rejected" && !hasOwn(value, "payload") && !hasOwn(value, "failure") && isJSONArray(value["diagnostics"]) && value["diagnostics"].length > 0) || ((value["outcome"] === "failed" || value["outcome"] === "cancelled") && !hasOwn(value, "payload") && hasOwn(value, "failure"))));
 }
 
 export function decodeCompileResponseEnvelope(input: string): CompileResponseEnvelope {
@@ -443,7 +447,7 @@ export interface CompileResult {
 }
 
 export function isCompileResult(value: unknown): value is CompileResult {
-  return isObject(value) && hasOnlyKeys(value, new Set(["authoring_subject_classification", "child_set_hashes", "compiled_recipes", "definition_hash", "effective_limits", "extensions", "normalized_artifact", "semantic_index", "source_map", "stable_addresses", "subject_semantic_hashes", "subtree_hashes"])) && hasOwn(value, "authoring_subject_classification") && (isJSONArray(value["authoring_subject_classification"]) && value["authoring_subject_classification"].every((item) => isAuthoringSubjectClassification(item))) && hasOwn(value, "child_set_hashes") && (isJSONArray(value["child_set_hashes"]) && value["child_set_hashes"].every((item) => isChildSetHash(item))) && hasOwn(value, "compiled_recipes") && (isCompiledRecipes(value["compiled_recipes"])) && hasOwn(value, "definition_hash") && (isDigest(value["definition_hash"])) && hasOwn(value, "effective_limits") && (isEffectiveResourceLimits(value["effective_limits"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "normalized_artifact") && (isNormalizedArtifact(value["normalized_artifact"])) && hasOwn(value, "semantic_index") && (isSemanticIndex(value["semantic_index"])) && hasOwn(value, "source_map") && (isSourceMap(value["source_map"])) && hasOwn(value, "stable_addresses") && (isJSONArray(value["stable_addresses"]) && value["stable_addresses"].every((item) => isStableAddress(item))) && hasOwn(value, "subject_semantic_hashes") && (isJSONArray(value["subject_semantic_hashes"]) && value["subject_semantic_hashes"].every((item) => isSubjectHash(item))) && hasOwn(value, "subtree_hashes") && (isJSONArray(value["subtree_hashes"]) && value["subtree_hashes"].every((item) => isSubtreeHash(item)));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["authoring_subject_classification", "child_set_hashes", "compiled_recipes", "definition_hash", "effective_limits", "extensions", "normalized_artifact", "semantic_index", "source_map", "stable_addresses", "subject_semantic_hashes", "subtree_hashes"])) && hasOwn(value, "authoring_subject_classification") && (isJSONArray(value["authoring_subject_classification"]) && value["authoring_subject_classification"].every((item) => isAuthoringSubjectClassification(item))) && hasOwn(value, "child_set_hashes") && (isJSONArray(value["child_set_hashes"]) && value["child_set_hashes"].every((item) => isChildSetHash(item))) && hasOwn(value, "compiled_recipes") && (isCompiledRecipes(value["compiled_recipes"])) && hasOwn(value, "definition_hash") && (isDigest(value["definition_hash"])) && hasOwn(value, "effective_limits") && (isEffectiveResourceLimits(value["effective_limits"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "normalized_artifact") && (isNormalizedArtifact(value["normalized_artifact"])) && hasOwn(value, "semantic_index") && (isSemanticIndex(value["semantic_index"])) && hasOwn(value, "source_map") && (isSourceMap(value["source_map"])) && hasOwn(value, "stable_addresses") && (isJSONArray(value["stable_addresses"]) && value["stable_addresses"].every((item) => isStableAddress(item))) && hasOwn(value, "subject_semantic_hashes") && (isJSONArray(value["subject_semantic_hashes"]) && value["subject_semantic_hashes"].every((item) => isSubjectHash(item))) && hasOwn(value, "subtree_hashes") && (isJSONArray(value["subtree_hashes"]) && value["subtree_hashes"].every((item) => isSubtreeHash(item))));
 }
 
 export function decodeCompileResult(input: string): CompileResult {
@@ -470,7 +474,7 @@ export interface CompiledExportRecipeArtifact {
 }
 
 export function isCompiledExportRecipeArtifact(value: unknown): value is CompiledExportRecipeArtifact {
-  return isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "canonical_json") && (isExportRecipeBlobRef(value["canonical_json"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "canonical_json") && (isExportRecipeBlobRef(value["canonical_json"])));
 }
 
 export function decodeCompiledExportRecipeArtifact(input: string): CompiledExportRecipeArtifact {
@@ -497,7 +501,7 @@ export interface CompiledQueryRecipeArtifact {
 }
 
 export function isCompiledQueryRecipeArtifact(value: unknown): value is CompiledQueryRecipeArtifact {
-  return isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "canonical_json") && (isQueryRecipeBlobRef(value["canonical_json"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "canonical_json") && (isQueryRecipeBlobRef(value["canonical_json"])));
 }
 
 export function decodeCompiledQueryRecipeArtifact(input: string): CompiledQueryRecipeArtifact {
@@ -525,7 +529,7 @@ export interface CompiledRecipes {
 }
 
 export function isCompiledRecipes(value: unknown): value is CompiledRecipes {
-  return isObject(value) && hasOnlyKeys(value, new Set(["exports", "queries", "views"])) && hasOwn(value, "exports") && (isJSONArray(value["exports"]) && value["exports"].every((item) => isCompiledExportRecipeArtifact(item))) && hasOwn(value, "queries") && (isJSONArray(value["queries"]) && value["queries"].every((item) => isCompiledQueryRecipeArtifact(item))) && hasOwn(value, "views") && (isJSONArray(value["views"]) && value["views"].every((item) => isCompiledViewRecipeArtifact(item)));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["exports", "queries", "views"])) && hasOwn(value, "exports") && (isJSONArray(value["exports"]) && value["exports"].every((item) => isCompiledExportRecipeArtifact(item))) && hasOwn(value, "queries") && (isJSONArray(value["queries"]) && value["queries"].every((item) => isCompiledQueryRecipeArtifact(item))) && hasOwn(value, "views") && (isJSONArray(value["views"]) && value["views"].every((item) => isCompiledViewRecipeArtifact(item))));
 }
 
 export function decodeCompiledRecipes(input: string): CompiledRecipes {
@@ -552,7 +556,7 @@ export interface CompiledViewRecipeArtifact {
 }
 
 export function isCompiledViewRecipeArtifact(value: unknown): value is CompiledViewRecipeArtifact {
-  return isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "canonical_json") && (isViewRecipeBlobRef(value["canonical_json"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "canonical_json") && (isViewRecipeBlobRef(value["canonical_json"])));
 }
 
 export function decodeCompiledViewRecipeArtifact(input: string): CompiledViewRecipeArtifact {
@@ -586,7 +590,7 @@ export interface EffectiveResourceLimits {
 }
 
 export function isEffectiveResourceLimits(value: unknown): value is EffectiveResourceLimits {
-  return isObject(value) && hasOnlyKeys(value, new Set(["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"])) && hasOwn(value, "max_asset_bytes") && (isCanonicalPositiveInt64(value["max_asset_bytes"])) && hasOwn(value, "max_assets") && (isCanonicalPositiveInt64(value["max_assets"])) && hasOwn(value, "max_declarations") && (isCanonicalPositiveInt64(value["max_declarations"])) && hasOwn(value, "max_pack_bytes") && (isCanonicalPositiveInt64(value["max_pack_bytes"])) && hasOwn(value, "max_pack_files") && (isCanonicalPositiveInt64(value["max_pack_files"])) && hasOwn(value, "max_project_source_bytes") && (isCanonicalPositiveInt64(value["max_project_source_bytes"])) && hasOwn(value, "max_project_source_files") && (isCanonicalPositiveInt64(value["max_project_source_files"])) && hasOwn(value, "max_raster_dimension") && (isCanonicalPositiveInt64(value["max_raster_dimension"])) && hasOwn(value, "max_raster_pixels") && (isCanonicalPositiveInt64(value["max_raster_pixels"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"])) && hasOwn(value, "max_asset_bytes") && (isCanonicalPositiveInt64(value["max_asset_bytes"])) && hasOwn(value, "max_assets") && (isCanonicalPositiveInt64(value["max_assets"])) && hasOwn(value, "max_declarations") && (isCanonicalPositiveInt64(value["max_declarations"])) && hasOwn(value, "max_pack_bytes") && (isCanonicalPositiveInt64(value["max_pack_bytes"])) && hasOwn(value, "max_pack_files") && (isCanonicalPositiveInt64(value["max_pack_files"])) && hasOwn(value, "max_project_source_bytes") && (isCanonicalPositiveInt64(value["max_project_source_bytes"])) && hasOwn(value, "max_project_source_files") && (isCanonicalPositiveInt64(value["max_project_source_files"])) && hasOwn(value, "max_raster_dimension") && (isCanonicalPositiveInt64(value["max_raster_dimension"])) && hasOwn(value, "max_raster_pixels") && (isCanonicalPositiveInt64(value["max_raster_pixels"])));
 }
 
 export function decodeEffectiveResourceLimits(input: string): EffectiveResourceLimits {
@@ -613,7 +617,7 @@ export interface EngineProtocolRef {
 }
 
 export function isEngineProtocolRef(value: unknown): value is EngineProtocolRef {
-  return isObject(value) && hasOnlyKeys(value, new Set(["name", "version"])) && hasOwn(value, "name") && (typeof value["name"] === "string" && hasScalarUnicode(value["name"]) && value["name"] === "engine") && hasOwn(value, "version") && (typeof value["version"] === "string" && hasScalarUnicode(value["version"]) && value["version"] === "1.0");
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["name", "version"])) && hasOwn(value, "name") && (typeof value["name"] === "string" && hasScalarUnicode(value["name"]) && value["name"] === "engine") && hasOwn(value, "version") && (typeof value["version"] === "string" && hasScalarUnicode(value["version"]) && value["version"] === "1.0"));
 }
 
 export function decodeEngineProtocolRef(input: string): EngineProtocolRef {
@@ -643,7 +647,7 @@ export interface ExportRecipeBlobRef {
 }
 
 export function isExportRecipeBlobRef(value: unknown): value is ExportRecipeBlobRef {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.export-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.export-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
 }
 
 export function decodeExportRecipeBlobRef(input: string): ExportRecipeBlobRef {
@@ -674,7 +678,7 @@ export interface HandshakeRequestEnvelope {
 }
 
 export function isHandshakeRequestEnvelope(value: unknown): value is HandshakeRequestEnvelope {
-  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.handshake") && hasOwn(value, "payload") && (isHandshakeRequest(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.handshake") && hasOwn(value, "payload") && (isHandshakeRequest(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
 }
 
 export function decodeHandshakeRequestEnvelope(input: string): HandshakeRequestEnvelope {
@@ -706,7 +710,7 @@ export interface HandshakeResponseEnvelope {
 }
 
 export function isHandshakeResponseEnvelope(value: unknown): value is HandshakeResponseEnvelope {
-  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isProtocolDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isProtocolFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isHandshakeResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1) && ((value["outcome"] === "success" && hasOwn(value, "payload") && !hasOwn(value, "failure")) || (value["outcome"] === "rejected" && !hasOwn(value, "payload") && !hasOwn(value, "failure") && isJSONArray(value["diagnostics"]) && value["diagnostics"].length > 0) || ((value["outcome"] === "failed" || value["outcome"] === "cancelled") && !hasOwn(value, "payload") && hasOwn(value, "failure")));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isProtocolDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isProtocolFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isHandshakeResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1) && ((value["outcome"] === "success" && hasOwn(value, "payload") && !hasOwn(value, "failure")) || (value["outcome"] === "rejected" && !hasOwn(value, "payload") && !hasOwn(value, "failure") && isJSONArray(value["diagnostics"]) && value["diagnostics"].length > 0) || ((value["outcome"] === "failed" || value["outcome"] === "cancelled") && !hasOwn(value, "payload") && hasOwn(value, "failure"))));
 }
 
 export function decodeHandshakeResponseEnvelope(input: string): HandshakeResponseEnvelope {
@@ -736,7 +740,7 @@ export interface NormalizedArtifact {
 }
 
 export function isNormalizedArtifact(value: unknown): value is NormalizedArtifact {
-  return isObject(value) && hasOnlyKeys(value, new Set(["graph_hash", "kind", "pack", "project", "search_documents"])) && (!hasOwn(value, "graph_hash") || (isDigest(value["graph_hash"]))) && hasOwn(value, "kind") && (isCompileMode(value["kind"])) && (!hasOwn(value, "pack") || (isNormalizedPackArtifact(value["pack"]))) && (!hasOwn(value, "project") || (isNormalizedProjectArtifact(value["project"]))) && hasOwn(value, "search_documents") && (isJSONArray(value["search_documents"]) && value["search_documents"].every((item) => isSearchDocument(item))) && ((value["kind"] === "pack" && hasOwn(value, "pack") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project") && isJSONArray(value["search_documents"]) && value["search_documents"].length === 0) || (value["kind"] === "project" && hasOwn(value, "graph_hash") && hasOwn(value, "project") && !hasOwn(value, "pack")));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["graph_hash", "kind", "pack", "project", "search_documents"])) && (!hasOwn(value, "graph_hash") || (isDigest(value["graph_hash"]))) && hasOwn(value, "kind") && (isCompileMode(value["kind"])) && (!hasOwn(value, "pack") || (isNormalizedPackArtifact(value["pack"]))) && (!hasOwn(value, "project") || (isNormalizedProjectArtifact(value["project"]))) && hasOwn(value, "search_documents") && (isJSONArray(value["search_documents"]) && value["search_documents"].every((item) => isSearchDocument(item))) && ((value["kind"] === "pack" && hasOwn(value, "pack") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project") && isJSONArray(value["search_documents"]) && value["search_documents"].length === 0) || (value["kind"] === "project" && hasOwn(value, "graph_hash") && hasOwn(value, "project") && !hasOwn(value, "pack"))));
 }
 
 export function decodeNormalizedArtifact(input: string): NormalizedArtifact {
@@ -764,7 +768,7 @@ export interface NormalizedPackArtifact {
 }
 
 export function isNormalizedPackArtifact(value: unknown): value is NormalizedPackArtifact {
-  return isObject(value) && hasOnlyKeys(value, new Set(["artifact_json", "canonical_json", "pack_address"])) && hasOwn(value, "artifact_json") && (isNormalizedPackArtifactBlobRef(value["artifact_json"])) && hasOwn(value, "canonical_json") && (isNormalizedPackCanonicalBlobRef(value["canonical_json"])) && hasOwn(value, "pack_address") && (isPackRootAddress(value["pack_address"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["artifact_json", "canonical_json", "pack_address"])) && hasOwn(value, "artifact_json") && (isNormalizedPackArtifactBlobRef(value["artifact_json"])) && hasOwn(value, "canonical_json") && (isNormalizedPackCanonicalBlobRef(value["canonical_json"])) && hasOwn(value, "pack_address") && (isPackRootAddress(value["pack_address"])));
 }
 
 export function decodeNormalizedPackArtifact(input: string): NormalizedPackArtifact {
@@ -794,7 +798,7 @@ export interface NormalizedPackArtifactBlobRef {
 }
 
 export function isNormalizedPackArtifactBlobRef(value: unknown): value is NormalizedPackArtifactBlobRef {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.pack.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.pack.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
 }
 
 export function decodeNormalizedPackArtifactBlobRef(input: string): NormalizedPackArtifactBlobRef {
@@ -824,7 +828,7 @@ export interface NormalizedPackCanonicalBlobRef {
 }
 
 export function isNormalizedPackCanonicalBlobRef(value: unknown): value is NormalizedPackCanonicalBlobRef {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.normalized-pack.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.normalized-pack.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
 }
 
 export function decodeNormalizedPackCanonicalBlobRef(input: string): NormalizedPackCanonicalBlobRef {
@@ -852,7 +856,7 @@ export interface NormalizedProjectArtifact {
 }
 
 export function isNormalizedProjectArtifact(value: unknown): value is NormalizedProjectArtifact {
-  return isObject(value) && hasOnlyKeys(value, new Set(["artifact_json", "canonical_json", "project_address"])) && hasOwn(value, "artifact_json") && (isNormalizedProjectArtifactBlobRef(value["artifact_json"])) && hasOwn(value, "canonical_json") && (isNormalizedProjectCanonicalBlobRef(value["canonical_json"])) && hasOwn(value, "project_address") && (isProjectRootAddress(value["project_address"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["artifact_json", "canonical_json", "project_address"])) && hasOwn(value, "artifact_json") && (isNormalizedProjectArtifactBlobRef(value["artifact_json"])) && hasOwn(value, "canonical_json") && (isNormalizedProjectCanonicalBlobRef(value["canonical_json"])) && hasOwn(value, "project_address") && (isProjectRootAddress(value["project_address"])));
 }
 
 export function decodeNormalizedProjectArtifact(input: string): NormalizedProjectArtifact {
@@ -882,7 +886,7 @@ export interface NormalizedProjectArtifactBlobRef {
 }
 
 export function isNormalizedProjectArtifactBlobRef(value: unknown): value is NormalizedProjectArtifactBlobRef {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.project.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.project.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
 }
 
 export function decodeNormalizedProjectArtifactBlobRef(input: string): NormalizedProjectArtifactBlobRef {
@@ -912,7 +916,7 @@ export interface NormalizedProjectCanonicalBlobRef {
 }
 
 export function isNormalizedProjectCanonicalBlobRef(value: unknown): value is NormalizedProjectCanonicalBlobRef {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.normalized-project.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.normalized-project.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
 }
 
 export function decodeNormalizedProjectCanonicalBlobRef(input: string): NormalizedProjectCanonicalBlobRef {
@@ -942,7 +946,7 @@ export interface QueryRecipeBlobRef {
 }
 
 export function isQueryRecipeBlobRef(value: unknown): value is QueryRecipeBlobRef {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.query-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.query-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
 }
 
 export function decodeQueryRecipeBlobRef(input: string): QueryRecipeBlobRef {
@@ -970,7 +974,7 @@ export interface ResolvedDependencies {
 }
 
 export function isResolvedDependencies(value: unknown): value is ResolvedDependencies {
-  return isObject(value) && hasOnlyKeys(value, new Set(["format", "format_version", "installs", "language"])) && hasOwn(value, "format") && (typeof value["format"] === "string" && hasScalarUnicode(value["format"]) && value["format"] === "layerdraw-resolved") && hasOwn(value, "format_version") && (typeof value["format_version"] === "number" && Number.isSafeInteger(value["format_version"]) && !Object.is(value["format_version"], -0) && value["format_version"] >= 1 && value["format_version"] <= 2.147483647e+09) && hasOwn(value, "installs") && (isJSONArray(value["installs"]) && value["installs"].every((item) => isResolvedPack(item))) && hasOwn(value, "language") && (typeof value["language"] === "number" && Number.isSafeInteger(value["language"]) && !Object.is(value["language"], -0) && value["language"] >= 1 && value["language"] <= 2.147483647e+09);
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["format", "format_version", "installs", "language"])) && hasOwn(value, "format") && (typeof value["format"] === "string" && hasScalarUnicode(value["format"]) && value["format"] === "layerdraw-resolved") && hasOwn(value, "format_version") && (typeof value["format_version"] === "number" && Number.isSafeInteger(value["format_version"]) && !Object.is(value["format_version"], -0) && value["format_version"] >= 1 && value["format_version"] <= 2.147483647e+09) && hasOwn(value, "installs") && (isJSONArray(value["installs"]) && value["installs"].every((item) => isResolvedPack(item))) && hasOwn(value, "language") && (typeof value["language"] === "number" && Number.isSafeInteger(value["language"]) && !Object.is(value["language"], -0) && value["language"] >= 1 && value["language"] <= 2.147483647e+09));
 }
 
 export function decodeResolvedDependencies(input: string): ResolvedDependencies {
@@ -1004,7 +1008,7 @@ export interface ResolvedPack {
 }
 
 export function isResolvedPack(value: unknown): value is ResolvedPack {
-  return isObject(value) && hasOnlyKeys(value, new Set(["canonical_id", "dependencies", "digest", "entry", "files", "install_name", "manifest", "manifest_path", "path", "version"])) && hasOwn(value, "canonical_id") && (isCanonicalPackSelector(value["canonical_id"])) && hasOwn(value, "dependencies") && (isJSONArray(value["dependencies"]) && value["dependencies"].every((item) => isResolvedPackDependency(item))) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "entry") && (typeof value["entry"] === "string" && hasScalarUnicode(value["entry"])) && hasOwn(value, "files") && (isJSONArray(value["files"]) && value["files"].every((item) => isResolvedPackFile(item))) && hasOwn(value, "install_name") && (typeof value["install_name"] === "string" && hasScalarUnicode(value["install_name"])) && hasOwn(value, "manifest") && (isBlobRef(value["manifest"])) && hasOwn(value, "manifest_path") && (typeof value["manifest_path"] === "string" && hasScalarUnicode(value["manifest_path"])) && hasOwn(value, "path") && (typeof value["path"] === "string" && hasScalarUnicode(value["path"])) && hasOwn(value, "version") && (typeof value["version"] === "string" && hasScalarUnicode(value["version"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["canonical_id", "dependencies", "digest", "entry", "files", "install_name", "manifest", "manifest_path", "path", "version"])) && hasOwn(value, "canonical_id") && (isCanonicalPackSelector(value["canonical_id"])) && hasOwn(value, "dependencies") && (isJSONArray(value["dependencies"]) && value["dependencies"].every((item) => isResolvedPackDependency(item))) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "entry") && (typeof value["entry"] === "string" && hasScalarUnicode(value["entry"])) && hasOwn(value, "files") && (isJSONArray(value["files"]) && value["files"].every((item) => isResolvedPackFile(item))) && hasOwn(value, "install_name") && (typeof value["install_name"] === "string" && hasScalarUnicode(value["install_name"])) && hasOwn(value, "manifest") && (isBlobRef(value["manifest"])) && hasOwn(value, "manifest_path") && (typeof value["manifest_path"] === "string" && hasScalarUnicode(value["manifest_path"])) && hasOwn(value, "path") && (typeof value["path"] === "string" && hasScalarUnicode(value["path"])) && hasOwn(value, "version") && (typeof value["version"] === "string" && hasScalarUnicode(value["version"])));
 }
 
 export function decodeResolvedPack(input: string): ResolvedPack {
@@ -1030,7 +1034,7 @@ export interface ResolvedPackDependency {
 }
 
 export function isResolvedPackDependency(value: unknown): value is ResolvedPackDependency {
-  return isObject(value) && hasOnlyKeys(value, new Set(["install_name", "local_name"])) && hasOwn(value, "install_name") && (typeof value["install_name"] === "string" && hasScalarUnicode(value["install_name"])) && hasOwn(value, "local_name") && (typeof value["local_name"] === "string" && hasScalarUnicode(value["local_name"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["install_name", "local_name"])) && hasOwn(value, "install_name") && (typeof value["install_name"] === "string" && hasScalarUnicode(value["install_name"])) && hasOwn(value, "local_name") && (typeof value["local_name"] === "string" && hasScalarUnicode(value["local_name"])));
 }
 
 export function decodeResolvedPackDependency(input: string): ResolvedPackDependency {
@@ -1056,7 +1060,7 @@ export interface ResolvedPackFile {
 }
 
 export function isResolvedPackFile(value: unknown): value is ResolvedPackFile {
-  return isObject(value) && hasOnlyKeys(value, new Set(["digest", "path"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "path") && (typeof value["path"] === "string" && hasScalarUnicode(value["path"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["digest", "path"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "path") && (typeof value["path"] === "string" && hasScalarUnicode(value["path"])));
 }
 
 export function decodeResolvedPackFile(input: string): ResolvedPackFile {
@@ -1090,7 +1094,7 @@ export interface ResourceLimits {
 }
 
 export function isResourceLimits(value: unknown): value is ResourceLimits {
-  return isObject(value) && hasOnlyKeys(value, new Set(["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"])) && (!hasOwn(value, "max_asset_bytes") || (isCanonicalNonNegativeInt64(value["max_asset_bytes"]))) && (!hasOwn(value, "max_assets") || (isCanonicalNonNegativeInt64(value["max_assets"]))) && (!hasOwn(value, "max_declarations") || (isCanonicalNonNegativeInt64(value["max_declarations"]))) && (!hasOwn(value, "max_pack_bytes") || (isCanonicalNonNegativeInt64(value["max_pack_bytes"]))) && (!hasOwn(value, "max_pack_files") || (isCanonicalNonNegativeInt64(value["max_pack_files"]))) && (!hasOwn(value, "max_project_source_bytes") || (isCanonicalNonNegativeInt64(value["max_project_source_bytes"]))) && (!hasOwn(value, "max_project_source_files") || (isCanonicalNonNegativeInt64(value["max_project_source_files"]))) && (!hasOwn(value, "max_raster_dimension") || (isCanonicalNonNegativeInt64(value["max_raster_dimension"]))) && (!hasOwn(value, "max_raster_pixels") || (isCanonicalNonNegativeInt64(value["max_raster_pixels"])));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"])) && (!hasOwn(value, "max_asset_bytes") || (isCanonicalNonNegativeInt64(value["max_asset_bytes"]))) && (!hasOwn(value, "max_assets") || (isCanonicalNonNegativeInt64(value["max_assets"]))) && (!hasOwn(value, "max_declarations") || (isCanonicalNonNegativeInt64(value["max_declarations"]))) && (!hasOwn(value, "max_pack_bytes") || (isCanonicalNonNegativeInt64(value["max_pack_bytes"]))) && (!hasOwn(value, "max_pack_files") || (isCanonicalNonNegativeInt64(value["max_pack_files"]))) && (!hasOwn(value, "max_project_source_bytes") || (isCanonicalNonNegativeInt64(value["max_project_source_bytes"]))) && (!hasOwn(value, "max_project_source_files") || (isCanonicalNonNegativeInt64(value["max_project_source_files"]))) && (!hasOwn(value, "max_raster_dimension") || (isCanonicalNonNegativeInt64(value["max_raster_dimension"]))) && (!hasOwn(value, "max_raster_pixels") || (isCanonicalNonNegativeInt64(value["max_raster_pixels"]))));
 }
 
 export function decodeResourceLimits(input: string): ResourceLimits {
@@ -1116,7 +1120,7 @@ export interface SourceFileInput {
 }
 
 export function isSourceFileInput(value: unknown): value is SourceFileInput {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob", "path"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "path") && (isCanonicalSourcePath(value["path"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob", "path"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "path") && (isCanonicalSourcePath(value["path"])));
 }
 
 export function decodeSourceFileInput(input: string): SourceFileInput {
@@ -1139,7 +1143,7 @@ export function encodeSourceFileInput(value: SourceFileInput): string {
 export type SourceOriginKind = "pack" | "project";
 
 export function isSourceOriginKind(value: unknown): value is SourceOriginKind {
-  return typeof value === "string" && hasScalarUnicode(value) && ["pack", "project"].includes(value);
+  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["pack", "project"].includes(value));
 }
 
 export function decodeSourceOriginKind(input: string): SourceOriginKind {
@@ -1169,7 +1173,7 @@ export interface ViewRecipeBlobRef {
 }
 
 export function isViewRecipeBlobRef(value: unknown): value is ViewRecipeBlobRef {
-  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.view-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.view-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
 }
 
 export function decodeViewRecipeBlobRef(input: string): ViewRecipeBlobRef {

@@ -103,7 +103,11 @@ implementation-specific pre-encoding escape policy cannot change acceptance.
 Programmatic inputs to every generated encoder reject active-container cycles
 and container depth 129 with validation errors before schema recursion or
 serialization; container depth 128 and acyclic shared aliases remain valid.
-The same rules apply to the specialized recursive `JsonValue` representation.
+Every generated TypeScript `is*` predicate applies the same bounded traversal
+and returns `false` for those invalid graphs without throwing. Public object
+predicates and encoders also reject any own enumerable member name that is not
+Unicode scalar text. The same rules apply to the specialized recursive
+`JsonValue` representation.
 
 Protocol versions use `major.minor`. Removing or requiring a field, changing a
 closed enum, or changing canonicalization requires a new major version.

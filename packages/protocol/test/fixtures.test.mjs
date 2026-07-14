@@ -86,6 +86,12 @@ import {
   encodeRfc3339Time,
   encodeTotalItems,
   encodeUpgradeDiagnosticData,
+  encodeExtensions,
+  encodeJsonObject,
+  isExtensions,
+  isJsonObject,
+  isJsonValue,
+  isOperationCapability,
   maxWireJSONBytes,
   maxWireJSONDepth,
 } from "../dist/common.gen.js";
@@ -128,6 +134,9 @@ import {
   encodeViewTableColumnSource,
   encodeViewPlacement,
   encodeViewRenderSet,
+  isDiagnosticArgumentValue,
+  isRecipePredicate,
+  isRecipeRowPredicate,
 } from "../dist/semantic.gen.js";
 
 const fixtureRoot = new URL("../../../schemas/fixtures/engine/", import.meta.url);
@@ -208,25 +217,74 @@ test("legacy scalar negatives remain enforced", async () => {
 
 test("TypeScript encoders inspect exactly own enumerable data properties", () => {
   const inherited = Object.create({enabled: true, protocol_version: "1.0"});
+  assert.equal(isOperationCapability(inherited), false);
   assert.throws(() => encodeOperationCapability(inherited));
 
   const hidden = {};
   Object.defineProperty(hidden, "enabled", {value: true, enumerable: false});
   Object.defineProperty(hidden, "protocol_version", {value: "1.0", enumerable: true});
+  assert.equal(isOperationCapability(hidden), false);
   assert.throws(() => encodeOperationCapability(hidden));
 
   const symbol = {enabled: true, protocol_version: "1.0"};
   symbol[Symbol("extension")] = true;
+  assert.equal(isOperationCapability(symbol), false);
   assert.throws(() => encodeOperationCapability(symbol));
 
   let getterCalled = false;
   const getter = {protocol_version: "1.0"};
   Object.defineProperty(getter, "enabled", {enumerable: true, get() { getterCalled = true; return true; }});
+  assert.equal(isOperationCapability(getter), false);
   assert.throws(() => encodeOperationCapability(getter));
   assert.equal(getterCalled, false);
 
   const nullPrototype = Object.assign(Object.create(null), {enabled: true, protocol_version: "1.0"});
+  assert.equal(isOperationCapability(nullPrototype), true);
   assert.equal(encodeOperationCapability(nullPrototype), '{"enabled":true,"protocol_version":"1.0"}');
+
+  for (const hostile of [
+    new Proxy({}, {getPrototypeOf() { throw new Error("prototype trap"); }}),
+    new Proxy({}, {ownKeys() { throw new Error("ownKeys trap"); }}),
+    new Proxy({enabled: true, protocol_version: "1.0"}, {getOwnPropertyDescriptor() { throw new Error("descriptor trap"); }}),
+  ]) assert.equal(isOperationCapability(hostile), false);
+});
+
+test("public object predicates reject non-scalar Unicode keys at every object surface", async () => {
+  const compileRequest = await readFixture("compile-request.json");
+  const invalidCases = [];
+  for (const badKey of ["\ud800", "\udc00"]) {
+    invalidCases.push(
+      ["JsonValue root map", isJsonValue, encodeJsonValue, {[badKey]: null}],
+      ["JsonObject root map", isJsonObject, encodeJsonObject, {[badKey]: null}],
+      ["Extensions additionalProperties map", isExtensions, encodeExtensions, {[badKey]: null}],
+      ["DiagnosticArgumentValue recursive object map", isDiagnosticArgumentValue, encodeDiagnosticArgumentValue, {kind: "object", object_value: {[badKey]: {kind: "string", string_value: "leaf"}}}],
+      ["closed root object", isCompileRequestEnvelope, encodeCompileRequestEnvelope, {...compileRequest, [badKey]: null}],
+      ["nested closed object", isCompileRequestEnvelope, encodeCompileRequestEnvelope, {...compileRequest, payload: {...compileRequest.payload, [badKey]: null}}],
+      ["nested extension map", isCompileRequestEnvelope, encodeCompileRequestEnvelope, {...compileRequest, extensions: {[badKey]: null}}],
+    );
+  }
+  for (const [name, predicate, encode, value] of invalidCases) {
+    assert.equal(predicate(value), false, name);
+    assert.throws(() => encode(value), TypeError, name);
+  }
+
+  const sharedJSON = {enabled: true};
+  const validExtensions = {"example.界": sharedJSON, "example.😀": sharedJSON};
+  assert.equal(isJsonValue(validExtensions), true);
+  assert.equal(isJsonObject(validExtensions), true);
+  assert.equal(isExtensions(validExtensions), true);
+  assert.doesNotThrow(() => encodeJsonValue(validExtensions));
+  assert.doesNotThrow(() => encodeJsonObject(validExtensions));
+  assert.doesNotThrow(() => encodeExtensions(validExtensions));
+
+  const sharedDiagnostic = {kind: "string", string_value: "shared"};
+  const validDiagnostic = {kind: "object", object_value: {"界": sharedDiagnostic, "😀": sharedDiagnostic}};
+  assert.equal(isDiagnosticArgumentValue(validDiagnostic), true);
+  assert.doesNotThrow(() => encodeDiagnosticArgumentValue(validDiagnostic));
+
+  const validCompileRequest = {...compileRequest, extensions: validExtensions};
+  assert.equal(isCompileRequestEnvelope(validCompileRequest), true);
+  assert.doesNotThrow(() => encodeCompileRequestEnvelope(validCompileRequest));
 });
 
 const sharedCodecs = {
@@ -469,6 +527,88 @@ test("semantic recursive codecs reject self and mutual cycles while preserving a
   }
 });
 
+test("every recursive public predicate is total and enforces exact wire graph bounds", () => {
+  const jsonAtLimit = () => {
+    let value = "leaf";
+    for (let depth = 0; depth < maxWireJSONDepth; depth++) value = [value];
+    return value;
+  };
+  const diagnosticAtLimit = () => {
+    let value = {kind: "array", array_value: []};
+    for (let depth = 0; depth < 63; depth++) value = {kind: "array", array_value: [value]};
+    return value;
+  };
+  const predicateAtLimit = (leaf) => {
+    let value = leaf;
+    for (let depth = 1; depth < maxWireJSONDepth; depth++) value = {kind: "not", child: value};
+    return value;
+  };
+  const cases = [
+    {
+      name: "JsonValue",
+      predicate: isJsonValue,
+      encode: encodeJsonValue,
+      self: () => { const value = {}; value.self = value; return value; },
+      mutual: () => { const left = {}; const right = {left}; left.right = right; return left; },
+      alias: () => { const shared = {value: "shared"}; return {left: shared, right: shared}; },
+      atLimit: jsonAtLimit,
+      tooDeep: () => [jsonAtLimit()],
+    },
+    {
+      name: "DiagnosticArgumentValue",
+      predicate: isDiagnosticArgumentValue,
+      encode: encodeDiagnosticArgumentValue,
+      self: () => { const value = {kind: "array", array_value: []}; value.array_value.push(value); return value; },
+      mutual: () => { const left = {kind: "array", array_value: []}; const right = {kind: "array", array_value: [left]}; left.array_value.push(right); return left; },
+      alias: () => { const shared = {kind: "string", string_value: "shared"}; return {kind: "array", array_value: [shared, shared]}; },
+      atLimit: diagnosticAtLimit,
+      tooDeep: () => { let value = {kind: "string", string_value: "leaf"}; for (let depth = 0; depth < 64; depth++) value = {kind: "array", array_value: [value]}; return value; },
+    },
+    {
+      name: "RecipePredicate",
+      predicate: isRecipePredicate,
+      encode: encodeRecipePredicate,
+      self: () => { const value = {kind: "not"}; value.child = value; return value; },
+      mutual: () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
+      alias: () => { const shared = {kind: "field", field: "name", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+      atLimit: () => predicateAtLimit({kind: "field", field: "name", operator: "exists"}),
+      tooDeep: () => ({kind: "not", child: predicateAtLimit({kind: "field", field: "name", operator: "exists"})}),
+    },
+    {
+      name: "RecipeRowPredicate",
+      predicate: isRecipeRowPredicate,
+      encode: encodeRecipeRowPredicate,
+      self: () => { const value = {kind: "not"}; value.child = value; return value; },
+      mutual: () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
+      alias: () => { const shared = {kind: "state", field_path: "name", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+      atLimit: () => predicateAtLimit({kind: "state", field_path: "name", operator: "exists"}),
+      tooDeep: () => ({kind: "not", child: predicateAtLimit({kind: "state", field_path: "name", operator: "exists"})}),
+    },
+  ];
+
+  for (const {name, predicate, encode, self, mutual, alias, atLimit, tooDeep} of cases) {
+    for (const [cycleName, cycle] of [["self", self], ["mutual", mutual]]) {
+      const value = cycle();
+      assert.doesNotThrow(() => predicate(value), `${name} ${cycleName} cycle predicate threw`);
+      assert.equal(predicate(value), false, `${name} ${cycleName} cycle`);
+      expectCycleError(() => encode(value), `${name} ${cycleName} cycle encoder`);
+    }
+    const aliased = alias();
+    assert.equal(predicate(aliased), true, `${name} shared alias`);
+    assert.doesNotThrow(() => encode(aliased), `${name} shared alias encoder`);
+
+    const exact = atLimit();
+    assert.equal(containerDepth(exact), maxWireJSONDepth, `${name} exact depth`);
+    assert.equal(predicate(exact), true, `${name} exact depth predicate`);
+    assert.doesNotThrow(() => encode(exact), `${name} exact depth encoder`);
+
+    const excessive = tooDeep();
+    assert.equal(containerDepth(excessive), maxWireJSONDepth + 1, `${name} excessive depth`);
+    assert.equal(predicate(excessive), false, `${name} excessive depth predicate`);
+    expectDepthError(() => encode(excessive), `${name} excessive depth encoder`);
+  }
+});
+
 test("semantic recursive codecs enforce exact programmatic wire depth", () => {
   let diagnosticAtLimit = {kind: "array", array_value: []};
   for (let depth = 0; depth < 63; depth++) diagnosticAtLimit = {kind: "array", array_value: [diagnosticAtLimit]};
@@ -499,12 +639,14 @@ test("engine codecs apply the shared cycle and depth preflight", async () => {
   const aliased = await readFixture("compile-request.json");
   const shared = {enabled: true};
   aliased.extensions = {"example.left": shared, "example.right": shared};
+  assert.equal(isCompileRequestEnvelope(aliased), true);
   assert.doesNotThrow(() => encodeCompileRequestEnvelope(aliased));
 
   const cyclic = await readFixture("compile-request.json");
   const self = {};
   self.self = self;
   cyclic.extensions = {"example.cycle": self};
+  assert.equal(isCompileRequestEnvelope(cyclic), false);
   expectCycleError(() => encodeCompileRequestEnvelope(cyclic));
 
   const atLimit = await readFixture("compile-request.json");
@@ -512,11 +654,13 @@ test("engine codecs apply the shared cycle and depth preflight", async () => {
   for (let depth = 0; depth < maxWireJSONDepth - 2; depth++) extension = [extension];
   atLimit.extensions = {"example.depth": extension};
   assert.equal(containerDepth(atLimit), maxWireJSONDepth);
+  assert.equal(isCompileRequestEnvelope(atLimit), true);
   assert.doesNotThrow(() => encodeCompileRequestEnvelope(atLimit));
 
   const tooDeep = await readFixture("compile-request.json");
   tooDeep.extensions = {"example.depth": [extension]};
   assert.equal(containerDepth(tooDeep), maxWireJSONDepth + 1);
+  assert.equal(isCompileRequestEnvelope(tooDeep), false);
   expectDepthError(() => encodeCompileRequestEnvelope(tooDeep));
 });
 
