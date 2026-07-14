@@ -95,7 +95,13 @@ function addLayerDrawVocabulary(ajv) {
     const own = (key) => Object.prototype.hasOwnProperty.call(data, key);
     return (variant.required ?? []).every(own) && (variant.forbidden ?? []).every((key) => !own(key)) &&
       (variant.empty ?? []).every((key) => Array.isArray(data[key]) && data[key].length === 0) &&
-      (variant.non_empty ?? []).every((key) => Array.isArray(data[key]) && data[key].length > 0);
+      (variant.non_empty ?? []).every((key) => Array.isArray(data[key]) && data[key].length > 0) &&
+      Object.entries(variant.allowed_values ?? {}).every(([key, values]) => !own(key) || values.includes(data[key]));
+  }});
+  ajv.addKeyword({keyword: "x-layerdraw-diff-source", schemaType: "boolean", errors: false, validate(enabled, data) {
+    if (!enabled || data === null || typeof data !== "object" || Array.isArray(data) || data.kind !== "diff") return true;
+    return typeof data.before === "string" && data.before.length > 0 && typeof data.after === "string" && data.after.length > 0 && data.before !== data.after &&
+      (Object.prototype.hasOwnProperty.call(data, "query_address") || (data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments) && Object.keys(data.arguments).length === 0));
   }});
   ajv.addKeyword({keyword: "x-layerdraw-outcome-envelope", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object" || Array.isArray(data)) return true;
@@ -213,6 +219,58 @@ test("published LayerDraw schema vocabulary asserts unions, outcomes, ranges, an
   assert.equal(stableAddress("ldl:pack:publisher:pack:entity:e"), false);
   assert.equal(stableAddress("ldl:project:p:entity-type:t:row:r"), false);
 
+  const projectRoot = compile(semantic, "ProjectRootAddress");
+  assert.equal(projectRoot("ldl:project:p"), true);
+  assert.equal(projectRoot("ldl:pack:publisher:pack"), false);
+  assert.equal(projectRoot("ldl:project:p:view:v"), false);
+  const packRoot = compile(semantic, "PackRootAddress");
+  assert.equal(packRoot("ldl:pack:publisher:pack"), true);
+  assert.equal(packRoot("ldl:project:p"), false);
+  assert.equal(packRoot("ldl:pack:publisher:pack:view:v"), false);
+  const publicationRef = (media_type) => ({blob_id: "b", digest, lifetime: "request", media_type, size: "1"});
+  const normalizedProject = compile(engine, "NormalizedProjectArtifact");
+  const projectPublication = {project_address: "ldl:project:p", canonical_json: publicationRef("application/vnd.layerdraw.normalized-project.v1+json"), artifact_json: publicationRef("application/vnd.layerdraw.project.v1+json")};
+  assert.equal(normalizedProject(projectPublication), true);
+  assert.equal(normalizedProject({...projectPublication, project_address: "ldl:pack:publisher:pack"}), false);
+  assert.equal(normalizedProject({...projectPublication, project_address: "ldl:project:p:view:v"}), false);
+  const normalizedPack = compile(engine, "NormalizedPackArtifact");
+  const packPublication = {pack_address: "ldl:pack:publisher:pack", canonical_json: publicationRef("application/vnd.layerdraw.normalized-pack.v1+json"), artifact_json: publicationRef("application/vnd.layerdraw.pack.v1+json")};
+  assert.equal(normalizedPack(packPublication), true);
+  assert.equal(normalizedPack({...packPublication, pack_address: "ldl:project:p"}), false);
+  assert.equal(normalizedPack({...packPublication, pack_address: "ldl:pack:publisher:pack:view:v"}), false);
+
+  const columnSource = compile(semantic, "ViewTableColumnSource");
+  for (const value of [
+    {kind: "field", field: "tags"},
+    {kind: "attribute", column_addresses: ["ldl:project:p:entity-type:t:column:c"]},
+    {kind: "relation_endpoint", endpoint: "from", field: "display_name"},
+    {kind: "derived_count", direction: "both", relation_type_addresses: ["ldl:project:p:relation-type:r"]},
+    {kind: "state", field_path: "review.status"},
+  ]) assert.equal(columnSource(value), true);
+  for (const value of [
+    {kind: "field"},
+    {kind: "field", field: "not_a_field"},
+    {kind: "attribute"},
+    {kind: "attribute", column_addresses: [], field: "id"},
+    {kind: "relation_endpoint", endpoint: "from"},
+    {kind: "relation_endpoint", endpoint: "from", field: "description"},
+    {kind: "derived_count"},
+    {kind: "derived_count", direction: "both", field_path: "review.status"},
+    {kind: "state"},
+    {kind: "state", field_path: "review.status", relation_type_addresses: []},
+  ]) assert.equal(columnSource(value), false);
+
+  const viewSource = compile(semantic, "ViewRecipeSource");
+  const parameter = "ldl:project:p:query:q:parameter:x";
+  const query = "ldl:project:p:query:q";
+  const argumentsWithValue = {[parameter]: {kind: "string", string_value: "x"}};
+  assert.equal(viewSource({kind: "diff", before: "base", after: "head", arguments: {}}), true);
+  assert.equal(viewSource({kind: "diff", before: "base", after: "head", query_address: query, arguments: argumentsWithValue}), true);
+  assert.equal(viewSource({kind: "diff", before: "", after: "head", arguments: {}}), false);
+  assert.equal(viewSource({kind: "diff", before: "base", after: "", arguments: {}}), false);
+  assert.equal(viewSource({kind: "diff", before: "same", after: "same", arguments: {}}), false);
+  assert.equal(viewSource({kind: "diff", before: "base", after: "head", arguments: argumentsWithValue}), false);
+
   const predicate = compile(semantic, "RecipePredicate");
   assert.equal(predicate({kind: "field", field: "id", operator: "eq", value: {kind: "scalar", scalar_value: {kind: "string", string_value: "x"}}}), true);
   assert.equal(predicate({kind: "field"}), false);
@@ -230,4 +288,19 @@ test("published LayerDraw schema vocabulary asserts unions, outcomes, ranges, an
     assert.equal(recipeRef({...value, lifetime: "session"}), false);
     assert.equal(recipeRef({...value, lifetime: "persistent"}), false);
   }
+});
+
+test("independent schema authority matches every shared View source vector", async (context) => {
+  const compile = await authority();
+  const semantic = "https://schemas.layerdraw.dev/semantic/v1";
+  const corpus = await readJSON("fixtures/conformance/view-sources-v1.json");
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 8);
+  assert.equal(corpus.rejection_cases.length, 19);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
+    assert.equal(compile(semantic, vector.type)(JSON.parse(vector.input)), true);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
+    assert.equal(compile(semantic, vector.type)(JSON.parse(vector.input)), false);
+  });
 });

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "canonical_cases": [
+    {"name":"column_field","type":"ViewTableColumnSource","input":"{\"kind\":\"field\",\"field\":\"tags\"}","expected":"{\"field\":\"tags\",\"kind\":\"field\"}"},
+    {"name":"column_attribute","type":"ViewTableColumnSource","input":"{\"kind\":\"attribute\",\"column_addresses\":[\"ldl:project:p:entity-type:t:column:c\"]}","expected":"{\"column_addresses\":[\"ldl:project:p:entity-type:t:column:c\"],\"kind\":\"attribute\"}"},
+    {"name":"column_relation_endpoint","type":"ViewTableColumnSource","input":"{\"kind\":\"relation_endpoint\",\"field\":\"display_name\",\"endpoint\":\"from\"}","expected":"{\"endpoint\":\"from\",\"field\":\"display_name\",\"kind\":\"relation_endpoint\"}"},
+    {"name":"column_derived_count","type":"ViewTableColumnSource","input":"{\"relation_type_addresses\":[\"ldl:project:p:relation-type:r\"],\"kind\":\"derived_count\",\"direction\":\"both\"}","expected":"{\"direction\":\"both\",\"kind\":\"derived_count\",\"relation_type_addresses\":[\"ldl:project:p:relation-type:r\"]}"},
+    {"name":"column_state","type":"ViewTableColumnSource","input":"{\"kind\":\"state\",\"field_path\":\"review.status\"}","expected":"{\"field_path\":\"review.status\",\"kind\":\"state\"}"},
+    {"name":"diff_without_query","type":"ViewRecipeSource","input":"{\"kind\":\"diff\",\"before\":\"base\",\"after\":\"head\",\"arguments\":{}}","expected":"{\"after\":\"head\",\"arguments\":{},\"before\":\"base\",\"kind\":\"diff\"}"},
+    {"name":"diff_query_without_arguments","type":"ViewRecipeSource","input":"{\"query_address\":\"ldl:project:p:query:q\",\"kind\":\"diff\",\"before\":\"base\",\"after\":\"head\",\"arguments\":{}}","expected":"{\"after\":\"head\",\"arguments\":{},\"before\":\"base\",\"kind\":\"diff\",\"query_address\":\"ldl:project:p:query:q\"}"},
+    {"name":"diff_query_with_arguments","type":"ViewRecipeSource","input":"{\"query_address\":\"ldl:project:p:query:q\",\"kind\":\"diff\",\"before\":\"base\",\"after\":\"head\",\"arguments\":{\"ldl:project:p:query:q:parameter:x\":{\"string_value\":\"x\",\"kind\":\"string\"}}}","expected":"{\"after\":\"head\",\"arguments\":{\"ldl:project:p:query:q:parameter:x\":{\"kind\":\"string\",\"string_value\":\"x\"}},\"before\":\"base\",\"kind\":\"diff\",\"query_address\":\"ldl:project:p:query:q\"}"}
+  ],
+  "rejection_cases": [
+    {"name":"field_missing_field","type":"ViewTableColumnSource","input":"{\"kind\":\"field\"}"},
+    {"name":"field_unknown_field","type":"ViewTableColumnSource","input":"{\"kind\":\"field\",\"field\":\"not_a_field\"}"},
+    {"name":"field_forbids_endpoint","type":"ViewTableColumnSource","input":"{\"kind\":\"field\",\"field\":\"id\",\"endpoint\":\"from\"}"},
+    {"name":"attribute_missing_columns","type":"ViewTableColumnSource","input":"{\"kind\":\"attribute\"}"},
+    {"name":"attribute_forbids_field","type":"ViewTableColumnSource","input":"{\"kind\":\"attribute\",\"column_addresses\":[],\"field\":\"id\"}"},
+    {"name":"relation_endpoint_missing_endpoint","type":"ViewTableColumnSource","input":"{\"kind\":\"relation_endpoint\",\"field\":\"id\"}"},
+    {"name":"relation_endpoint_missing_field","type":"ViewTableColumnSource","input":"{\"kind\":\"relation_endpoint\",\"endpoint\":\"from\"}"},
+    {"name":"relation_endpoint_field_from_field_branch","type":"ViewTableColumnSource","input":"{\"kind\":\"relation_endpoint\",\"endpoint\":\"from\",\"field\":\"description\"}"},
+    {"name":"relation_endpoint_forbids_relation_types","type":"ViewTableColumnSource","input":"{\"kind\":\"relation_endpoint\",\"endpoint\":\"from\",\"field\":\"id\",\"relation_type_addresses\":[]}"},
+    {"name":"derived_count_missing_direction","type":"ViewTableColumnSource","input":"{\"kind\":\"derived_count\"}"},
+    {"name":"derived_count_forbids_columns","type":"ViewTableColumnSource","input":"{\"kind\":\"derived_count\",\"direction\":\"both\",\"column_addresses\":[]}"},
+    {"name":"state_missing_field_path","type":"ViewTableColumnSource","input":"{\"kind\":\"state\"}"},
+    {"name":"state_forbids_field","type":"ViewTableColumnSource","input":"{\"kind\":\"state\",\"field_path\":\"review.status\",\"field\":\"id\"}"},
+    {"name":"diff_missing_before","type":"ViewRecipeSource","input":"{\"kind\":\"diff\",\"after\":\"head\",\"arguments\":{}}"},
+    {"name":"diff_missing_after","type":"ViewRecipeSource","input":"{\"kind\":\"diff\",\"before\":\"base\",\"arguments\":{}}"},
+    {"name":"diff_empty_before","type":"ViewRecipeSource","input":"{\"kind\":\"diff\",\"before\":\"\",\"after\":\"head\",\"arguments\":{}}"},
+    {"name":"diff_empty_after","type":"ViewRecipeSource","input":"{\"kind\":\"diff\",\"before\":\"base\",\"after\":\"\",\"arguments\":{}}"},
+    {"name":"diff_equal_selectors","type":"ViewRecipeSource","input":"{\"kind\":\"diff\",\"before\":\"same\",\"after\":\"same\",\"arguments\":{}}"},
+    {"name":"diff_arguments_without_query","type":"ViewRecipeSource","input":"{\"kind\":\"diff\",\"before\":\"base\",\"after\":\"head\",\"arguments\":{\"ldl:project:p:query:q:parameter:x\":{\"kind\":\"string\",\"string_value\":\"x\"}}}"}
+  ]
+}

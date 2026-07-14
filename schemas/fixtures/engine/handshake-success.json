@@ -47,7 +47,7 @@
     "negotiated_protocols": [
       {
         "name": "engine",
-          "schema_digest": "sha256:84eb6f5a29d544afd9750feef4445277a341172bced1618de1bc5521c26f2d26",
+          "schema_digest": "sha256:b1d6b7b361e8417f534f3f0a28dd167be17c4bb22b219efc249fa06a50373677",
         "version": "1.0"
       }
     ],

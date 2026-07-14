@@ -32,7 +32,11 @@ Its assertion keywords have these exact meanings:
 - `x-layerdraw-tagged-union` selects one variant from the value of `property`;
   that variant's `required` and `forbidden` members must respectively be
   present and absent, while `empty` and `non_empty` members must be arrays with
-  the stated cardinality.
+  the stated cardinality. When a member named by `allowed_values` is present,
+  its string value must belong to that variant-specific set.
+- `x-layerdraw-diff-source: true` requires every `kind: "diff"` source to have
+  nonempty unequal `before` and `after` selectors and, when `query_address` is
+  absent, an empty `arguments` object.
 - `x-layerdraw-outcome-envelope: true` requires success to contain `payload`
   but no `failure`, rejection to contain neither and at least one diagnostic,
   and failure/cancellation to contain `failure` but no `payload`.

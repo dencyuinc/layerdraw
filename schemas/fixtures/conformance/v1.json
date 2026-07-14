@@ -220,6 +220,18 @@
       "expected": "\"ldl:pack:publisher-name:pack-name:view:overview:export:svg\""
     },
     {
+      "name": "canonical_project_root_address",
+      "type": "ProjectRootAddress",
+      "input": "\"ldl:project:source_id\"",
+      "expected": "\"ldl:project:source_id\""
+    },
+    {
+      "name": "canonical_pack_root_address",
+      "type": "PackRootAddress",
+      "input": "\"ldl:pack:publisher-name:pack-name\"",
+      "expected": "\"ldl:pack:publisher-name:pack-name\""
+    },
+    {
       "name": "closed_handshake_capability_sets",
       "type": "HandshakeRequest",
       "input": "{\"required_capabilities\":[\"engine.compile\"],\"protocols\":[{\"versions\":[{\"version\":\"1.0\",\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],\"supported_range\":\"1.0..1.0\",\"name\":\"engine\"}],\"optional_capabilities\":[\"renderer.svg\"],\"client_release\":\"1.0.0\"}",
@@ -328,6 +340,10 @@
     ,{"name": "stable_address_wrong_owner_child", "type": "StableAddress", "input": "\"ldl:project:p:entity-type:t:row:r\""}
     ,{"name": "stable_address_pack_project_only_top_kind", "type": "StableAddress", "input": "\"ldl:pack:publisher:pack:entity:e\""}
     ,{"name": "stable_address_child_on_reference", "type": "StableAddress", "input": "\"ldl:project:p:reference:r:export:e\""}
+    ,{"name": "project_root_cross_origin", "type": "ProjectRootAddress", "input": "\"ldl:pack:publisher:pack\""}
+    ,{"name": "project_root_non_root", "type": "ProjectRootAddress", "input": "\"ldl:project:p:view:v\""}
+    ,{"name": "pack_root_cross_origin", "type": "PackRootAddress", "input": "\"ldl:project:p\""}
+    ,{"name": "pack_root_non_root", "type": "PackRootAddress", "input": "\"ldl:pack:publisher:pack:view:v\""}
     ,{"name": "handshake_duplicate_required_capability", "type": "HandshakeRequest", "input": "{\"client_release\":\"1.0.0\",\"protocols\":[{\"name\":\"engine\",\"supported_range\":\"1.0..1.0\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"}]}],\"required_capabilities\":[\"engine.compile\",\"engine.compile\"],\"optional_capabilities\":[]}"}
     ,{"name": "handshake_duplicate_optional_capability", "type": "HandshakeRequest", "input": "{\"client_release\":\"1.0.0\",\"protocols\":[{\"name\":\"engine\",\"supported_range\":\"1.0..1.0\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"}]}],\"required_capabilities\":[],\"optional_capabilities\":[\"engine.compile\",\"engine.compile\"]}"}
     ,{"name": "handshake_required_optional_overlap", "type": "HandshakeRequest", "input": "{\"client_release\":\"1.0.0\",\"protocols\":[{\"name\":\"engine\",\"supported_range\":\"1.0..1.0\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"}]}],\"required_capabilities\":[\"engine.compile\"],\"optional_capabilities\":[\"engine.compile\"]}"}

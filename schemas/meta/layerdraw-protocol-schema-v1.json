@@ -26,6 +26,7 @@
       "minItems": 1,
       "uniqueItems": true
     },
+    "x-layerdraw-diff-source": {"type": "boolean"},
     "x-layerdraw-limit-capability": {"type": "boolean"},
     "x-layerdraw-max-json-bytes": {"type": "integer", "minimum": 1024},
     "x-layerdraw-max-json-depth": {"type": "integer", "minimum": 1},
@@ -86,6 +87,16 @@
     "taggedVariant": {
       "type": "object",
       "properties": {
+        "allowed_values": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        },
         "empty": {"$ref": "#/$defs/fieldNames"},
         "forbidden": {"$ref": "#/$defs/fieldNames"},
         "non_empty": {"$ref": "#/$defs/fieldNames"},

@@ -777,6 +777,141 @@ func TestSharedPredicateVariantCorpus(t *testing.T) {
 	}
 }
 
+func TestSharedViewSourceVariantCorpus(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "view-sources-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int                                            `json:"schema_version"`
+		Canonical     []struct{ Name, Type, Input, Expected string } `json:"canonical_cases"`
+		Rejections    []struct{ Name, Type, Input string }           `json:"rejection_cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 8 || len(corpus.Rejections) != 19 {
+		t.Fatalf("incomplete View source corpus: %+v", corpus)
+	}
+	for _, vector := range corpus.Canonical {
+		vector := vector
+		t.Run(vector.Name+" canonical", func(t *testing.T) {
+			encoded, err := roundTripSharedWire(vector.Type, []byte(vector.Input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != vector.Expected {
+				t.Fatalf("canonical View source bytes differ\nwant=%s\ngot=%s", vector.Expected, encoded)
+			}
+		})
+	}
+	for _, vector := range corpus.Rejections {
+		vector := vector
+		t.Run(vector.Name+" rejection", func(t *testing.T) {
+			if _, err := roundTripSharedWire(vector.Type, []byte(vector.Input)); err == nil {
+				t.Fatal("invalid View source variant accepted")
+			}
+		})
+	}
+}
+
+func TestGeneratedTypedRootAndViewSourceInputsAreClosed(t *testing.T) {
+	t.Parallel()
+	root := protocolRepositoryRoot(t)
+	projectEnvelope, err := engineprotocol.DecodeCompileResponseEnvelope(readRepositoryFile(t, root, "schemas/fixtures/engine/compile-success.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packEnvelope, err := engineprotocol.DecodeCompileResponseEnvelope(readRepositoryFile(t, root, "schemas/fixtures/engine/compile-success-pack.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := *projectEnvelope.Payload.NormalizedArtifact.Project
+	pack := *packEnvelope.Payload.NormalizedArtifact.Pack
+	for name, address := range map[string]semantic.ProjectRootAddress{
+		"cross_origin": "ldl:pack:publisher:pack",
+		"non_root":     "ldl:project:p:view:v",
+	} {
+		t.Run("project_"+name, func(t *testing.T) {
+			candidate := project
+			candidate.ProjectAddress = address
+			if _, err := engineprotocol.EncodeNormalizedProjectArtifact(candidate); err == nil {
+				t.Fatal("invalid typed Project normalized root accepted")
+			}
+		})
+	}
+	for name, address := range map[string]semantic.PackRootAddress{
+		"cross_origin": "ldl:project:p",
+		"non_root":     "ldl:pack:publisher:pack:view:v",
+	} {
+		t.Run("pack_"+name, func(t *testing.T) {
+			candidate := pack
+			candidate.PackAddress = address
+			if _, err := engineprotocol.EncodeNormalizedPackArtifact(candidate); err == nil {
+				t.Fatal("invalid typed Pack normalized root accepted")
+			}
+		})
+	}
+
+	column := []semantic.StableAddress{"ldl:project:p:entity-type:t:column:c"}
+	relationType := []semantic.StableAddress{"ldl:project:p:relation-type:r"}
+	validColumns := []semantic.ViewTableColumnSource{
+		{Kind: "field", Field: protocolTestString("tags")},
+		{Kind: "attribute", ColumnAddresses: &column},
+		{Kind: "relation_endpoint", Endpoint: protocolTestString("from"), Field: protocolTestString("display_name")},
+		{Kind: "derived_count", Direction: protocolTestString("both"), RelationTypeAddresses: &relationType},
+		{Kind: "state", FieldPath: protocolTestString("review.status")},
+	}
+	for index, value := range validColumns {
+		if _, err := semantic.EncodeViewTableColumnSource(value); err != nil {
+			t.Fatalf("valid typed column branch %d rejected: %v", index, err)
+		}
+	}
+	invalidColumns := []semantic.ViewTableColumnSource{
+		{Kind: "field"},
+		{Kind: "attribute", ColumnAddresses: &column, Field: protocolTestString("id")},
+		{Kind: "relation_endpoint", Endpoint: protocolTestString("from"), Field: protocolTestString("description")},
+		{Kind: "derived_count"},
+		{Kind: "state"},
+	}
+	for index, value := range invalidColumns {
+		if _, err := semantic.EncodeViewTableColumnSource(value); err == nil {
+			t.Fatalf("invalid typed column branch %d accepted", index)
+		}
+	}
+
+	queryAddress := semantic.StableAddress("ldl:project:p:query:q")
+	arguments := map[string]semantic.RecipeScalar{
+		"ldl:project:p:query:q:parameter:x": {Kind: "string", StringValue: protocolTestString("x")},
+	}
+	validDiffs := []semantic.ViewRecipeSource{
+		{Kind: "diff", Before: protocolTestString("base"), After: protocolTestString("head"), Arguments: map[string]semantic.RecipeScalar{}},
+		{Kind: "diff", Before: protocolTestString("base"), After: protocolTestString("head"), QueryAddress: &queryAddress, Arguments: map[string]semantic.RecipeScalar{}},
+		{Kind: "diff", Before: protocolTestString("base"), After: protocolTestString("head"), QueryAddress: &queryAddress, Arguments: arguments},
+	}
+	for index, value := range validDiffs {
+		if _, err := semantic.EncodeViewRecipeSource(value); err != nil {
+			t.Fatalf("valid typed Diff source %d rejected: %v", index, err)
+		}
+	}
+	invalidDiffs := []semantic.ViewRecipeSource{
+		{Kind: "diff", After: protocolTestString("head"), Arguments: map[string]semantic.RecipeScalar{}},
+		{Kind: "diff", Before: protocolTestString("base"), Arguments: map[string]semantic.RecipeScalar{}},
+		{Kind: "diff", Before: protocolTestString(""), After: protocolTestString("head"), Arguments: map[string]semantic.RecipeScalar{}},
+		{Kind: "diff", Before: protocolTestString("base"), After: protocolTestString(""), Arguments: map[string]semantic.RecipeScalar{}},
+		{Kind: "diff", Before: protocolTestString("same"), After: protocolTestString("same"), Arguments: map[string]semantic.RecipeScalar{}},
+		{Kind: "diff", Before: protocolTestString("base"), After: protocolTestString("head"), Arguments: arguments},
+	}
+	for index, value := range invalidDiffs {
+		if _, err := semantic.EncodeViewRecipeSource(value); err == nil {
+			t.Fatalf("invalid typed Diff source %d accepted", index)
+		}
+	}
+}
+
+func protocolTestString(value string) *string { return &value }
+
 func TestSharedRecursiveValueLimits(t *testing.T) {
 	t.Parallel()
 	corpus := readSharedConformanceCorpus(t)
@@ -1064,6 +1199,18 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeStableAddress(value)
+	case "PackRootAddress":
+		value, err := semantic.DecodePackRootAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodePackRootAddress(value)
+	case "ProjectRootAddress":
+		value, err := semantic.DecodeProjectRootAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeProjectRootAddress(value)
 	case "EffectiveResourceLimits":
 		value, err := engineprotocol.DecodeEffectiveResourceLimits(input)
 		if err != nil {
@@ -1136,6 +1283,18 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeRecipeRowPredicate(value)
+	case "ViewRecipeSource":
+		value, err := semantic.DecodeViewRecipeSource(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewRecipeSource(value)
+	case "ViewTableColumnSource":
+		value, err := semantic.DecodeViewTableColumnSource(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewTableColumnSource(value)
 	case "Diagnostic":
 		value, err := semantic.DecodeDiagnostic(input)
 		if err != nil {

@@ -569,9 +569,9 @@
     "ViewRecipeSource": {
       "type": "object",
       "properties": {
-        "after": {"type": "string"},
+        "after": {"type": "string", "minLength": 1},
         "arguments": {"type": "object", "additionalProperties": {"$ref": "#/$defs/RecipeScalar"}},
-        "before": {"type": "string"},
+        "before": {"type": "string", "minLength": 1},
         "kind": {"type": "string", "enum": ["diff", "query"]},
         "query_address": {"$ref": "#/$defs/StableAddress"}
       },
@@ -583,7 +583,8 @@
           "diff": {"required": ["after", "before"]},
           "query": {"required": ["query_address"], "forbidden": ["after", "before"]}
         }
-      }
+      },
+      "x-layerdraw-diff-source": true
     },
     "ViewRecipeDependencies": {
       "type": "object",
@@ -753,9 +754,19 @@
     },
     "ViewTableColumnSource": {
       "type": "object",
-      "properties": {"column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}, "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]}, "endpoint": {"type": "string", "enum": ["from", "to"]}, "field": {"type": "string"}, "field_path": {"type": "string"}, "kind": {"type": "string", "enum": ["attribute", "derived_count", "field", "relation_endpoint", "state"]}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}},
+      "properties": {"column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}, "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]}, "endpoint": {"type": "string", "enum": ["from", "to"]}, "field": {"type": "string", "enum": ["address", "description", "display_name", "id", "layer", "tags", "type"]}, "field_path": {"type": "string"}, "kind": {"type": "string", "enum": ["attribute", "derived_count", "field", "relation_endpoint", "state"]}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}},
       "required": ["kind"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "attribute": {"required": ["column_addresses"], "forbidden": ["direction", "endpoint", "field", "field_path", "relation_type_addresses"]},
+          "derived_count": {"required": ["direction"], "forbidden": ["column_addresses", "endpoint", "field", "field_path"]},
+          "field": {"required": ["field"], "forbidden": ["column_addresses", "direction", "endpoint", "field_path", "relation_type_addresses"], "allowed_values": {"field": ["address", "description", "display_name", "id", "layer", "tags", "type"]}},
+          "relation_endpoint": {"required": ["endpoint", "field"], "forbidden": ["column_addresses", "direction", "field_path", "relation_type_addresses"], "allowed_values": {"field": ["address", "display_name", "id", "layer", "type"]}},
+          "state": {"required": ["field_path"], "forbidden": ["column_addresses", "direction", "endpoint", "field", "relation_type_addresses"]}
+        }
+      }
     },
     "ViewTableSort": {
       "type": "object",
@@ -1012,6 +1023,16 @@
       },
       "required": ["address", "kind", "comment_ranges", "manifest_root"],
       "additionalProperties": false
+    },
+    "PackRootAddress": {
+      "type": "string",
+      "pattern": "^ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "description": "The exact canonical root address of an LDL Pack."
+    },
+    "ProjectRootAddress": {
+      "type": "string",
+      "pattern": "^ldl:project:[a-z][a-z0-9_]*$",
+      "description": "The exact canonical root address of an LDL Project."
     },
     "StableAddress": {
       "type": "string",

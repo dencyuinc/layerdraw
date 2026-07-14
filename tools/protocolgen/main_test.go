@@ -256,6 +256,43 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 			}}
 			return value
 		}},
+		{"tagged allowed values on non-enum", "allowed_values requires string-enum", func() *schemaType {
+			value := validObject()
+			value.TaggedUnion = &taggedUnion{Property: "kind", Variants: map[string]taggedVariant{
+				"a": {AllowedValues: map[string][]string{"payload": {"x"}}}, "b": {},
+			}}
+			return value
+		}},
+		{"tagged unknown allowed value", "invalid allowed value", func() *schemaType {
+			value := validObject()
+			value.Properties["payload"].Enum = []string{"x", "y"}
+			value.TaggedUnion = &taggedUnion{Property: "kind", Variants: map[string]taggedVariant{
+				"a": {AllowedValues: map[string][]string{"payload": {"z"}}}, "b": {},
+			}}
+			return value
+		}},
+		{"tagged allowed forbidden property", "invalid allowed_values", func() *schemaType {
+			value := validObject()
+			value.Properties["payload"].Enum = []string{"x", "y"}
+			value.TaggedUnion = &taggedUnion{Property: "kind", Variants: map[string]taggedVariant{
+				"a": {Forbidden: []string{"payload"}, AllowedValues: map[string][]string{"payload": {"x"}}}, "b": {},
+			}}
+			return value
+		}},
+		{"diff source missing shape", "diff source assertion requires before", func() *schemaType {
+			value := validObject()
+			value.DiffSource = true
+			return value
+		}},
+		{"diff source invalid shape", "invalid diff source assertion shape", func() *schemaType {
+			one := 1
+			return &schemaType{
+				Type: "object", Properties: map[string]*schemaType{
+					"kind": {Type: "string", Enum: []string{"diff", "query"}}, "before": {Type: "string"}, "after": {Type: "string", MinLength: &one},
+					"query_address": {Type: "string"}, "arguments": {Type: "object", AdditionalProperties: &schemaType{Type: "string"}},
+				}, Required: []string{"kind", "arguments"}, AdditionalProperties: false, DiffSource: true,
+			}
+		}},
 		{"operator rule missing properties", "invalid operator/value", func() *schemaType {
 			value := validObject()
 			value.OperatorValue = &operatorValueRule{Operator: "operator", Value: "value", Valueless: []string{"missing"}}
@@ -320,6 +357,26 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 	}
 	if err := validateType(set, document, "BooleanUnion", booleanUnion, map[*schemaType]bool{}); err != nil {
 		t.Fatalf("valid boolean tagged union rejected: %v", err)
+	}
+	document.Definitions["PayloadKind"] = &schemaType{Type: "string", Enum: []string{"x", "y"}}
+	allowedRefUnion := validObject()
+	allowedRefUnion.Properties["payload"] = &schemaType{Ref: "test#/$defs/PayloadKind"}
+	allowedRefUnion.TaggedUnion = &taggedUnion{Property: "kind", Variants: map[string]taggedVariant{
+		"a": {Required: []string{"payload"}, AllowedValues: map[string][]string{"payload": {"x"}}}, "b": {Forbidden: []string{"payload"}},
+	}}
+	if err := validateType(set, document, "AllowedRefUnion", allowedRefUnion, map[*schemaType]bool{}); err != nil {
+		t.Fatalf("valid tagged allowed_values reference rejected: %v", err)
+	}
+	one := 1
+	document.Definitions["DiffKind"] = &schemaType{Type: "string", Enum: []string{"diff", "query"}}
+	diffSource := &schemaType{
+		Type: "object", Properties: map[string]*schemaType{
+			"kind": {Ref: "test#/$defs/DiffKind"}, "before": {Type: "string", MinLength: &one}, "after": {Type: "string", MinLength: &one},
+			"query_address": {Type: "string"}, "arguments": {Type: "object", AdditionalProperties: &schemaType{Type: "string"}},
+		}, Required: []string{"kind", "arguments"}, AdditionalProperties: false, DiffSource: true,
+	}
+	if err := validateType(set, document, "DiffSource", diffSource, map[*schemaType]bool{}); err != nil {
+		t.Fatalf("valid diff source assertion rejected: %v", err)
 	}
 }
 

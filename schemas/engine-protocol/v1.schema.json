@@ -235,7 +235,7 @@
       "properties": {
         "artifact_json": {"$ref": "#/$defs/NormalizedPackArtifactBlobRef"},
         "canonical_json": {"$ref": "#/$defs/NormalizedPackCanonicalBlobRef"},
-        "pack_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}
+        "pack_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/PackRootAddress"}
       },
       "required": ["pack_address", "canonical_json", "artifact_json"],
       "additionalProperties": false
@@ -246,7 +246,7 @@
       "properties": {
         "artifact_json": {"$ref": "#/$defs/NormalizedProjectArtifactBlobRef"},
         "canonical_json": {"$ref": "#/$defs/NormalizedProjectCanonicalBlobRef"},
-        "project_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}
+        "project_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}
       },
       "required": ["project_address", "canonical_json", "artifact_json"],
       "additionalProperties": false

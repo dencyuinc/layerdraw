@@ -60,10 +60,11 @@ type taggedUnion struct {
 }
 
 type taggedVariant struct {
-	Required  []string `json:"required"`
-	Forbidden []string `json:"forbidden"`
-	Empty     []string `json:"empty"`
-	NonEmpty  []string `json:"non_empty"`
+	Required      []string            `json:"required"`
+	Forbidden     []string            `json:"forbidden"`
+	Empty         []string            `json:"empty"`
+	NonEmpty      []string            `json:"non_empty"`
+	AllowedValues map[string][]string `json:"allowed_values"`
 }
 
 type operatorValueRule struct {
@@ -109,6 +110,7 @@ type schemaType struct {
 	LimitCapability      bool                   `json:"x-layerdraw-limit-capability,omitempty"`
 	UniqueArrayKeys      []uniqueArrayKey       `json:"x-layerdraw-unique-array-keys,omitempty"`
 	DisjointArrays       []disjointArrayPair    `json:"x-layerdraw-disjoint-arrays,omitempty"`
+	DiffSource           bool                   `json:"x-layerdraw-diff-source,omitempty"`
 }
 
 type schemaSet struct {
@@ -599,6 +601,9 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				emptyVariant := stringSet(variant.Empty)
 				nonEmptyVariant := stringSet(variant.NonEmpty)
 				properties := append(append(append(append([]string{}, variant.Required...), variant.Forbidden...), variant.Empty...), variant.NonEmpty...)
+				for property := range variant.AllowedValues {
+					properties = append(properties, property)
+				}
 				for _, property := range properties {
 					if value.Properties[property] == nil {
 						return fmt.Errorf("%s tagged union refers to unknown property %q", context, property)
@@ -627,6 +632,60 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 						return fmt.Errorf("%s tagged union empty/non_empty rule requires array property %q", context, property)
 					}
 				}
+				for property, allowedValues := range variant.AllowedValues {
+					if forbiddenVariant[property] || len(allowedValues) == 0 {
+						return fmt.Errorf("%s tagged union has invalid allowed_values rule for %q", context, property)
+					}
+					propertyType := value.Properties[property]
+					if propertyType.Ref != "" {
+						target, name, err := resolveRef(set, document, propertyType.Ref)
+						if err != nil {
+							return err
+						}
+						propertyType = target.Definitions[name]
+					}
+					typeName, err := scalarType(propertyType.Type)
+					propertyValues := stringSet(propertyType.Enum)
+					seenValues := map[string]bool{}
+					if err != nil || typeName != "string" || len(propertyValues) == 0 {
+						return fmt.Errorf("%s tagged union allowed_values requires string-enum property %q", context, property)
+					}
+					for _, allowedValue := range allowedValues {
+						if !propertyValues[allowedValue] || seenValues[allowedValue] {
+							return fmt.Errorf("%s tagged union has invalid allowed value %q for %q", context, allowedValue, property)
+						}
+						seenValues[allowedValue] = true
+					}
+				}
+			}
+		}
+		if value.DiffSource {
+			required := stringSet(value.Required)
+			for _, property := range []string{"kind", "before", "after", "query_address", "arguments"} {
+				if value.Properties[property] == nil {
+					return fmt.Errorf("%s diff source assertion requires %s", context, property)
+				}
+			}
+			kind := value.Properties["kind"]
+			if kind.Ref != "" {
+				target, name, err := resolveRef(set, document, kind.Ref)
+				if err != nil {
+					return err
+				}
+				kind = target.Definitions[name]
+			}
+			before := value.Properties["before"]
+			after := value.Properties["after"]
+			arguments := value.Properties["arguments"]
+			kindType, kindErr := scalarType(kind.Type)
+			beforeType, beforeErr := scalarType(before.Type)
+			afterType, afterErr := scalarType(after.Type)
+			argumentsType, argumentsErr := scalarType(arguments.Type)
+			if kindErr != nil || kindType != "string" || !stringSet(kind.Enum)["diff"] ||
+				beforeErr != nil || beforeType != "string" || before.MinLength == nil || *before.MinLength < 1 ||
+				afterErr != nil || afterType != "string" || after.MinLength == nil || *after.MinLength < 1 ||
+				argumentsErr != nil || argumentsType != "object" || !required["arguments"] {
+				return fmt.Errorf("%s has invalid diff source assertion shape", context)
 			}
 		}
 		if value.OperatorValue != nil {
@@ -1577,6 +1636,9 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 			variant, _ := rawVariant.(map[string]any)
 			if err := validatePresenceRule(path, object, variant); err != nil { return err }
 		}
+		if enabled, _ := schema["x-layerdraw-diff-source"].(bool); enabled {
+			if err := validateDiffSource(path, object); err != nil { return err }
+		}
 		if rawRule, ok := schema["x-layerdraw-operator-value"].(map[string]any); ok {
 			operatorProperty, _ := rawRule["operator"].(string)
 			valueProperty, _ := rawRule["value"].(string)
@@ -1680,6 +1742,29 @@ func validatePresenceRule(path string, object map[string]any, rule map[string]an
 			items, ok := object[name].([]any)
 			if !ok || len(items) == 0 { return fmt.Errorf("%s tagged alternative requires non-empty %s", path, name) }
 		}
+	}
+	if rules, ok := rule["allowed_values"].(map[string]any); ok {
+		for property, rawValues := range rules {
+			value, present := object[property]
+			if !present { continue }
+			allowed := false
+			if values, ok := rawValues.([]any); ok { for _, candidate := range values { if value == candidate { allowed = true } } }
+			if !allowed { return fmt.Errorf("%s tagged alternative forbids value %q for %s", path, value, property) }
+		}
+	}
+	return nil
+}
+
+func validateDiffSource(path string, object map[string]any) error {
+	if object["kind"] != "diff" { return nil }
+	before, beforeOK := object["before"].(string)
+	after, afterOK := object["after"].(string)
+	if !beforeOK || !afterOK || before == "" || after == "" || before == after {
+		return fmt.Errorf("%s diff source requires nonempty unequal before and after", path)
+	}
+	if _, hasQuery := object["query_address"]; !hasQuery {
+		arguments, ok := object["arguments"].(map[string]any)
+		if !ok || len(arguments) != 0 { return fmt.Errorf("%s diff source without query_address requires empty arguments", path) }
 	}
 	return nil
 }
@@ -1854,6 +1939,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
 	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { return new Set(value).size === value.length; }\n\n")
 	body.WriteString("function hasDisjointArrays(value: Record<string, unknown>, leftProperty: string, rightProperty: string): boolean { const left = value[leftProperty]; const right = value[rightProperty]; if (!isJSONArray(left) || !isJSONArray(right)) return false; const seen = new Set(left); return right.every((item) => !seen.has(item)); }\n\n")
+	body.WriteString("function hasValidDiffSource(value: Record<string, unknown>): boolean { if (value[\"kind\"] !== \"diff\") return true; const before = value[\"before\"]; const after = value[\"after\"]; if (typeof before !== \"string\" || typeof after !== \"string\" || before.length === 0 || after.length === 0 || before === after) return false; return hasOwn(value, \"query_address\") || (isObject(value[\"arguments\"]) && Object.keys(value[\"arguments\"]).length === 0); }\n\n")
 	body.WriteString("function isRFC3339(value: string): boolean {\n")
 	body.WriteString("  const match = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$/.exec(value);\n")
 	body.WriteString("  if (match === null) return false; const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]); const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0); const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; return day >= 1 && day <= days[month - 1]!;\n")
@@ -2176,9 +2262,20 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 				for _, property := range variant.NonEmpty {
 					conditions = append(conditions, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].length > 0", expression, property, expression, property))
 				}
+				for _, property := range sortedKeys(variant.AllowedValues) {
+					values := variant.AllowedValues[property]
+					literals := make([]string, len(values))
+					for index, allowedValue := range values {
+						literals[index] = fmt.Sprintf("%q", allowedValue)
+					}
+					conditions = append(conditions, fmt.Sprintf("(!hasOwn(%s, %q) || new Set([%s]).has(%s[%q] as string))", expression, property, strings.Join(literals, ", "), expression, property))
+				}
 				variants = append(variants, "("+strings.Join(conditions, " && ")+")")
 			}
 			parts = append(parts, "("+strings.Join(variants, " || ")+")")
+		}
+		if value.DiffSource {
+			parts = append(parts, "hasValidDiffSource("+expression+")")
 		}
 		if value.OutcomeEnvelope {
 			outcome := expression + "[\"outcome\"]"

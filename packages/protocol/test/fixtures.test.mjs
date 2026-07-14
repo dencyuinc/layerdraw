@@ -19,6 +19,8 @@ import {
   decodeHandshakeResponseEnvelope,
   encodeCompileRequestEnvelope,
   encodeCompileResponseEnvelope,
+  encodeNormalizedPackArtifact,
+  encodeNormalizedProjectArtifact,
   encodeCanonicalSourcePath,
   encodeEffectiveResourceLimits,
   encodeExportRecipeBlobRef,
@@ -101,6 +103,10 @@ import {
   decodeRecipeRowPredicate,
   decodeSearchField,
   decodeStableAddress,
+  decodePackRootAddress,
+  decodeProjectRootAddress,
+  decodeViewRecipeSource,
+  decodeViewTableColumnSource,
   decodeViewPlacement,
   decodeViewRenderSet,
   encodeCompiledExportRecipeDocument,
@@ -116,6 +122,10 @@ import {
   encodeRecipeRowPredicate,
   encodeSearchField,
   encodeStableAddress,
+  encodePackRootAddress,
+  encodeProjectRootAddress,
+  encodeViewRecipeSource,
+  encodeViewTableColumnSource,
   encodeViewPlacement,
   encodeViewRenderSet,
 } from "../dist/semantic.gen.js";
@@ -126,6 +136,7 @@ const conformanceCorpusURL = new URL("../../../schemas/fixtures/conformance/v1.j
 const formatCorpusURL = new URL("../../../schemas/fixtures/conformance/formats-v1.json", import.meta.url);
 const exportOptionsCorpusURL = new URL("../../../schemas/fixtures/conformance/export-options-v1.json", import.meta.url);
 const predicateCorpusURL = new URL("../../../schemas/fixtures/conformance/predicates-v1.json", import.meta.url);
+const viewSourceCorpusURL = new URL("../../../schemas/fixtures/conformance/view-sources-v1.json", import.meta.url);
 const canonicalEngineRoot = new URL("../../../schemas/fixtures/conformance/engine/", import.meta.url);
 
 async function readFixture(name) {
@@ -261,11 +272,15 @@ const sharedCodecs = {
   Rfc3339Time: [decodeRfc3339Time, encodeRfc3339Time],
   SearchField: [decodeSearchField, encodeSearchField],
   StableAddress: [decodeStableAddress, encodeStableAddress],
+  PackRootAddress: [decodePackRootAddress, encodePackRootAddress],
+  ProjectRootAddress: [decodeProjectRootAddress, encodeProjectRootAddress],
   TotalItems: [decodeTotalItems, encodeTotalItems],
   UpgradeDiagnosticData: [decodeUpgradeDiagnosticData, encodeUpgradeDiagnosticData],
   ViewPlacement: [decodeViewPlacement, encodeViewPlacement],
   ViewRecipeBlobRef: [decodeViewRecipeBlobRef, encodeViewRecipeBlobRef],
   ViewRenderSet: [decodeViewRenderSet, encodeViewRenderSet],
+  ViewRecipeSource: [decodeViewRecipeSource, encodeViewRecipeSource],
+  ViewTableColumnSource: [decodeViewTableColumnSource, encodeViewTableColumnSource],
 };
 
 async function readCorpus() {
@@ -322,6 +337,64 @@ test("every predicate branch has shared canonical and rejection bytes", async (c
   for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
     assert.throws(() => sharedCodecs[vector.type][0](vector.input));
   });
+});
+
+test("every View column-source branch and Diff invariant has shared bytes", async (context) => {
+  const corpus = JSON.parse(await readFile(viewSourceCorpusURL, "utf8"));
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 8);
+  assert.equal(corpus.rejection_cases.length, 19);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.equal(codec[1](codec[0](vector.input)), vector.expected);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
+    assert.throws(() => sharedCodecs[vector.type][0](vector.input));
+  });
+});
+
+test("typed-programmatic normalized roots and View sources enforce semantic closure", async () => {
+  const project = structuredClone((await readFixture("compile-success.json")).payload.normalized_artifact.project);
+  const pack = structuredClone((await readFixture("compile-success-pack.json")).payload.normalized_artifact.pack);
+  for (const project_address of ["ldl:pack:publisher:pack", "ldl:project:p:view:v"]) {
+    assert.throws(() => encodeNormalizedProjectArtifact({...project, project_address}), TypeError);
+  }
+  for (const pack_address of ["ldl:project:p", "ldl:pack:publisher:pack:view:v"]) {
+    assert.throws(() => encodeNormalizedPackArtifact({...pack, pack_address}), TypeError);
+  }
+
+  const validColumns = [
+    {kind: "field", field: "tags"},
+    {kind: "attribute", column_addresses: ["ldl:project:p:entity-type:t:column:c"]},
+    {kind: "relation_endpoint", endpoint: "from", field: "display_name"},
+    {kind: "derived_count", direction: "both", relation_type_addresses: ["ldl:project:p:relation-type:r"]},
+    {kind: "state", field_path: "review.status"},
+  ];
+  for (const value of validColumns) assert.doesNotThrow(() => encodeViewTableColumnSource(value));
+  const invalidColumns = [
+    {kind: "field"},
+    {kind: "attribute", column_addresses: [], field: "id"},
+    {kind: "relation_endpoint", endpoint: "from", field: "description"},
+    {kind: "derived_count"},
+    {kind: "state"},
+  ];
+  for (const value of invalidColumns) assert.throws(() => encodeViewTableColumnSource(value), TypeError);
+
+  const query_address = "ldl:project:p:query:q";
+  const argumentsWithValue = {"ldl:project:p:query:q:parameter:x": {kind: "string", string_value: "x"}};
+  for (const value of [
+    {kind: "diff", before: "base", after: "head", arguments: {}},
+    {kind: "diff", before: "base", after: "head", query_address, arguments: {}},
+    {kind: "diff", before: "base", after: "head", query_address, arguments: argumentsWithValue},
+  ]) assert.doesNotThrow(() => encodeViewRecipeSource(value));
+  for (const value of [
+    {kind: "diff", after: "head", arguments: {}},
+    {kind: "diff", before: "base", arguments: {}},
+    {kind: "diff", before: "", after: "head", arguments: {}},
+    {kind: "diff", before: "base", after: "", arguments: {}},
+    {kind: "diff", before: "same", after: "same", arguments: {}},
+    {kind: "diff", before: "base", after: "head", arguments: argumentsWithValue},
+  ]) assert.throws(() => encodeViewRecipeSource(value), TypeError);
 });
 
 test("shared recursive JsonValue limits are exact", async () => {
