@@ -25,4 +25,7 @@ func TestBootstrapDescriptorIsDeterministic(t *testing.T) {
 	if !slices.IsSorted(first.Capabilities) {
 		t.Fatalf("Capabilities must be sorted: %v", first.Capabilities)
 	}
+	if !slices.Contains(first.Capabilities, engine.CapabilityCompile) {
+		t.Fatalf("Compile capability is not advertised: %v", first.Capabilities)
+	}
 }

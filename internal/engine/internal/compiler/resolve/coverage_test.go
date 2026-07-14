@@ -70,6 +70,9 @@ export { service } from "./schema.ldl"
 export * from "./schema.ldl"
 `)
 	ast := extractModule(file)
+	if got, want := AuthoredDeclarationCount(file), int64(len(ast.declarations)); got != want {
+		t.Fatalf("AuthoredDeclarationCount() = %d, want %d", got, want)
+	}
 	if len(ast.imports) != 0 {
 		t.Fatalf("imports = %+v, want none", ast.imports)
 	}
