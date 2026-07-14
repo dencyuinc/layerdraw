@@ -93,6 +93,16 @@ export { application_service, allows }
 func TestSupplementalCanonicalViewColumnAndExportChildren(t *testing.T) {
 	t.Parallel()
 	got := Resolve(Input{EntryPath: "document.ldl", Project: ProjectInput{Files: map[string]SourceFile{"document.ldl": parse(`project p "P" {}
+entity_type application_service "Application Service" {
+  columns {
+    environment "Environment" string
+  }
+}
+query production_scope "Production Scope" {
+  select {
+    entity_types [application_service]
+  }
+}
 view production_topology "Production Topology" topology {
   source query production_scope {}
   table {

@@ -480,8 +480,7 @@ func (c *compiler) dependencies(sourceAddress string) Dependencies {
 	c.sortAddresses(dep.RelationAddresses)
 	c.sortAddresses(dep.ColumnAddresses)
 	c.sortAddresses(dep.ParameterAddresses)
-	sortStateReads(dep.StateReads)
-	dep.StateReads = dedupeStateReads(dep.StateReads)
+	dep.StateReads = CanonicalStateReads(dep.StateReads)
 	c.stateReads = nil
 	c.statePredicates = 0
 	c.statePredicate = nil

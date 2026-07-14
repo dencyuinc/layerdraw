@@ -60,6 +60,7 @@ func TestMoveOwnerVariants(t *testing.T) {
 entity_type service "Service" {
   columns {
     name "Name" string
+    title "Title" string
   }
   unique unique_name [name]
 }
@@ -91,6 +92,7 @@ query q "Q" {
 view v "V" topology {
   table {
     rows entity_rows
+    entity_types [service]
     column title {
       source attribute title
     }

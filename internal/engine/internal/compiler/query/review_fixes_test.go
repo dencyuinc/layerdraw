@@ -9,7 +9,33 @@ import (
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/resolve"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
 )
+
+func TestStateFieldRegistryPublicContract(t *testing.T) {
+	schema, ok := LookupStateFieldSchema(StateSystemCreatedByKind)
+	want := []string{"user", "agent", "service_account", "anonymous"}
+	if !ok || schema.ValueType != definition.ScalarEnum || !reflect.DeepEqual(schema.EnumValues, want) {
+		t.Fatalf("state schema=%+v, want enum %v", schema, want)
+	}
+	schema.EnumValues[0] = "mutated"
+	again, ok := LookupStateFieldSchema(StateSystemCreatedByKind)
+	if !ok || !reflect.DeepEqual(again.EnumValues, want) {
+		t.Fatalf("state registry returned shared enum storage: %+v", again)
+	}
+	if _, ok := LookupStateFieldSchema(StateFieldPath("unknown")); ok {
+		t.Fatal("unknown state field resolved")
+	}
+
+	reads := CanonicalStateReads([]StateReadDependency{
+		{SubjectKind: StateSubjectEntity, FieldPath: StateSystemCreatedByKind, ValueType: definition.ScalarEnum},
+		{SubjectKind: StateSubjectEntity, FieldPath: StateSystemUpdatedAt, ValueType: definition.ScalarDatetime},
+		{SubjectKind: StateSubjectEntity, FieldPath: StateSystemUpdatedAt, ValueType: definition.ScalarDatetime},
+	})
+	if len(reads) != 2 || reads[0].FieldPath != StateSystemUpdatedAt || reads[1].FieldPath != StateSystemCreatedByKind {
+		t.Fatalf("canonical state reads=%+v", reads)
+	}
+}
 
 func TestAddressPredicateResolvesLiteralMatchingFieldName(t *testing.T) {
 	got := compileProject(t, map[string]string{"document.ldl": minimalSchema + `

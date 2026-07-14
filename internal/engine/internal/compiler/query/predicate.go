@@ -495,6 +495,15 @@ type stateFieldDefinition struct {
 	column definition.Column
 }
 
+// StateFieldSchema is the immutable value schema exposed by the closed
+// Language 1 state registry. Slice and pointer fields returned by
+// LookupStateFieldSchema are defensive copies.
+type StateFieldSchema struct {
+	ValueType  definition.ScalarType
+	EnumValues []string
+	Format     *definition.StringFormat
+}
+
 var stateFieldRegistry = []stateFieldDefinition{
 	{StateSystemCreatedAt, definition.Column{ValueType: definition.ScalarDatetime}},
 	{StateSystemUpdatedAt, definition.Column{ValueType: definition.ScalarDatetime}},
@@ -536,6 +545,26 @@ func stateField(path StateFieldPath) (stateFieldDefinition, bool) {
 	return stateFieldDefinition{}, false
 }
 
+// LookupStateFieldSchema returns the closed Language 1 value schema for a
+// state field. Query predicates and View columns therefore cannot drift in
+// enum options, option order, or string format.
+func LookupStateFieldSchema(path StateFieldPath) (StateFieldSchema, bool) {
+	field, ok := stateField(path)
+	if !ok {
+		return StateFieldSchema{}, false
+	}
+	var format *definition.StringFormat
+	if field.column.Format != nil {
+		value := *field.column.Format
+		format = &value
+	}
+	return StateFieldSchema{
+		ValueType:  field.column.ValueType,
+		EnumValues: append([]string{}, field.column.EnumValues...),
+		Format:     format,
+	}, true
+}
+
 func sortStateReads(reads []StateReadDependency) {
 	subjectRank := map[StateSubjectKind]int{StateSubjectEntity: 0, StateSubjectRelation: 1, StateSubjectEntityRow: 2, StateSubjectRelationRow: 3}
 	fieldRank := map[StateFieldPath]int{}
@@ -548,6 +577,14 @@ func sortStateReads(reads []StateReadDependency) {
 		}
 		return fieldRank[reads[i].FieldPath] < fieldRank[reads[j].FieldPath]
 	})
+}
+
+// CanonicalStateReads returns a sorted and deduplicated snapshot using the
+// single state-field registry order shared by Query and View compilation.
+func CanonicalStateReads(reads []StateReadDependency) []StateReadDependency {
+	out := append([]StateReadDependency{}, reads...)
+	sortStateReads(out)
+	return dedupeStateReads(out)
 }
 
 func dedupeStateReads(reads []StateReadDependency) []StateReadDependency {
