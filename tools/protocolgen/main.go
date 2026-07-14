@@ -56,6 +56,7 @@ var (
 		"https://schemas.layerdraw.dev/vocab/protocol/v1": true
 	}`)
 	requiredDialectKeywordSchemas = mustDecodeDialectObject(`{
+		"x-layerdraw-address-owners": {"type": "array", "items": {"$ref": "#/$defs/addressOwnerRule"}, "minItems": 1, "uniqueItems": true},
 		"x-layerdraw-diff-source": {"type": "boolean"},
 		"x-layerdraw-disjoint-arrays": {"type": "array", "items": {"$ref": "#/$defs/disjointArrayPair"}, "minItems": 1, "uniqueItems": true},
 		"x-layerdraw-go-package": {"type": "string", "minLength": 1},
@@ -67,12 +68,23 @@ var (
 		"x-layerdraw-outcome-envelope": {"type": "boolean"},
 		"x-layerdraw-protocol-offer": {"type": "boolean"},
 		"x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
+		"x-layerdraw-scalar-order": {"type": "boolean", "const": true},
 		"x-layerdraw-stable-address-order": {"type": "string", "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."},
 		"x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
 		"x-layerdraw-ts-module": {"type": "string", "minLength": 1},
 		"x-layerdraw-unique-array-keys": {"type": "array", "items": {"$ref": "#/$defs/uniqueArrayKey"}}
 	}`)
 	requiredDialectDefinitions = mustDecodeDialectObject(`{
+		"addressOwnerRule": {
+			"type": "object",
+			"properties": {
+				"children": {"type": "string", "minLength": 1},
+				"owner": {"type": "string", "minLength": 1},
+				"selector": {"type": "string", "minLength": 1}
+			},
+			"required": ["owner", "children", "selector"],
+			"additionalProperties": false
+		},
 		"disjointArrayPair": {
 			"type": "object",
 			"properties": {"left": {"type": "string", "minLength": 1}, "right": {"type": "string", "minLength": 1}},
@@ -166,6 +178,12 @@ type disjointArrayPair struct {
 	Right string `json:"right"`
 }
 
+type addressOwnerRule struct {
+	Owner    string `json:"owner"`
+	Children string `json:"children"`
+	Selector string `json:"selector"`
+}
+
 type schemaType struct {
 	Ref                  string                 `json:"$ref,omitempty"`
 	Comment              string                 `json:"$comment,omitempty"`
@@ -196,6 +214,8 @@ type schemaType struct {
 	DisjointArrays       []disjointArrayPair    `json:"x-layerdraw-disjoint-arrays,omitempty"`
 	DiffSource           bool                   `json:"x-layerdraw-diff-source,omitempty"`
 	StableAddressOrder   string                 `json:"x-layerdraw-stable-address-order,omitempty"`
+	ScalarOrder          bool                   `json:"x-layerdraw-scalar-order,omitempty"`
+	AddressOwners        []addressOwnerRule     `json:"x-layerdraw-address-owners,omitempty"`
 }
 
 type schemaSet struct {
@@ -950,6 +970,46 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				return fmt.Errorf("%s ordered range requires start_byte and end_byte", context)
 			}
 		}
+		for _, rule := range value.AddressOwners {
+			owner := resolvedType(set, document, value.Properties[rule.Owner])
+			children := resolvedType(set, document, value.Properties[rule.Children])
+			if owner == nil || children == nil || rule.Owner == rule.Children {
+				return fmt.Errorf("%s has invalid address-owner rule", context)
+			}
+			ownerType, ownerErr := scalarType(owner.Type)
+			if ownerErr != nil || ownerType != "string" {
+				return fmt.Errorf("%s address-owner rule owner %q must be a string property", context, rule.Owner)
+			}
+			switch rule.Selector {
+			case "$value":
+				childrenType, childrenErr := scalarType(children.Type)
+				if childrenErr != nil || childrenType != "string" {
+					return fmt.Errorf("%s address-owner $value rule requires string children property %q", context, rule.Children)
+				}
+			case "$propertyNames":
+				childrenType, childrenErr := scalarType(children.Type)
+				if childrenErr != nil || childrenType != "object" || children.PropertyNames == nil {
+					return fmt.Errorf("%s address-owner $propertyNames rule requires an object with propertyNames", context)
+				}
+			case "":
+				return fmt.Errorf("%s address-owner rule requires selector", context)
+			default:
+				childrenType, childrenErr := scalarType(children.Type)
+				item := resolvedType(set, document, children.Items)
+				if childrenErr != nil || childrenType != "array" || item == nil {
+					return fmt.Errorf("%s address-owner selector %q requires an array of objects", context, rule.Selector)
+				}
+				itemType, itemErr := scalarType(item.Type)
+				selected := resolvedType(set, document, item.Properties[rule.Selector])
+				selectedType, selectedErr := "", error(nil)
+				if selected != nil {
+					selectedType, selectedErr = scalarType(selected.Type)
+				}
+				if itemErr != nil || itemType != "object" || selectedErr != nil || selectedType != "string" {
+					return fmt.Errorf("%s address-owner selector %q must name a string item property", context, rule.Selector)
+				}
+			}
+		}
 	}
 	if typeValue == "array" {
 		if value.Items == nil {
@@ -998,6 +1058,16 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				return fmt.Errorf("%s uniqueItems currently requires string items", context)
 			}
 		}
+		if value.ScalarOrder {
+			item := resolvedType(set, document, value.Items)
+			itemType, err := "", error(nil)
+			if item != nil {
+				itemType, err = scalarType(item.Type)
+			}
+			if err != nil || itemType != "string" || !value.UniqueItems {
+				return fmt.Errorf("%s scalar order requires string items and uniqueItems", context)
+			}
+		}
 		return validateType(set, document, context+"[]", value.Items, seen)
 	}
 	return nil
@@ -1032,6 +1102,17 @@ func resolveRef(set schemaSet, current *schemaDocument, ref string) (*schemaDocu
 		return nil, "", fmt.Errorf("unknown definition in $ref %q", ref)
 	}
 	return target, parts[1], nil
+}
+
+func resolvedType(set schemaSet, document *schemaDocument, value *schemaType) *schemaType {
+	if value == nil || value.Ref == "" {
+		return value
+	}
+	target, name, err := resolveRef(set, document, value.Ref)
+	if err != nil {
+		return nil
+	}
+	return target.Definitions[name]
 }
 
 func generate(set schemaSet) ([]generatedFile, error) {
@@ -1101,11 +1182,148 @@ func generateGo(set schemaSet, document *schemaDocument) ([]byte, error) {
 		}
 		body.WriteString("\n")
 	}
+	if err := writeGoBlobCollectors(&body, set, document, aliases); err != nil {
+		return nil, err
+	}
 	formatted, err := format.Source([]byte(body.String()))
 	if err != nil {
 		return nil, fmt.Errorf("format generated Go for %s: %w\n%s", document.Package, err, body.String())
 	}
 	return formatted, nil
+}
+
+func writeGoBlobCollectors(body *strings.Builder, set schemaSet, document *schemaDocument, aliases map[string]string) error {
+	commonAlias := aliases["https://schemas.layerdraw.dev/protocol-common/v1"]
+	if commonAlias == "" || document.Definitions["CompileInput"] == nil || document.Definitions["CompileResult"] == nil {
+		return nil
+	}
+	for _, name := range []string{"CompileInput", "CompileResult"} {
+		fmt.Fprintf(body, "// Collect%sBlobRefs validates %s and returns detached BlobRefs in canonical wire-property traversal order.\n", name, name)
+		fmt.Fprintf(body, "func Collect%sBlobRefs(value %s) ([]%s.BlobRef, error) {\n", name, name, commonAlias)
+		fmt.Fprintf(body, "\tif _, err := Encode%s(value); err != nil { return nil, err }\n", name)
+		fmt.Fprintf(body, "\trefs := make([]%s.BlobRef, 0)\n", commonAlias)
+		counter := 0
+		if err := writeGoBlobCollectorStatements(body, set, document, document.Definitions[name], "value", "\t", commonAlias, &counter); err != nil {
+			return err
+		}
+		body.WriteString("\treturn refs, nil\n}\n\n")
+	}
+	return nil
+}
+
+func writeGoBlobCollectorStatements(body *strings.Builder, set schemaSet, document *schemaDocument, value *schemaType, expression, indent, commonAlias string, counter *int) error {
+	resolvedDocument, resolved, err := dereferenceSchemaType(set, document, value)
+	if err != nil {
+		return err
+	}
+	if isBlobRefSchema(resolved) {
+		fmt.Fprintf(body, "%srefs = append(refs, %s.BlobRef{BlobID: string(%s.BlobID), Digest: %s.Digest(%s.Digest), Lifetime: %s.BlobLifetime(%s.Lifetime), MediaType: string(%s.MediaType), Size: %s.CanonicalUint64(%s.Size)})\n", indent, commonAlias, expression, commonAlias, expression, commonAlias, expression, expression, commonAlias, expression)
+		return nil
+	}
+	typeValue, err := scalarType(resolved.Type)
+	if err != nil {
+		return err
+	}
+	switch typeValue {
+	case "array":
+		if !schemaContainsBlobRefs(set, resolvedDocument, resolved.Items, map[*schemaType]bool{}, map[*schemaType]bool{}) {
+			return nil
+		}
+		item := fmt.Sprintf("blobItem%d", *counter)
+		*counter++
+		fmt.Fprintf(body, "%sfor _, %s := range %s {\n", indent, item, expression)
+		if err := writeGoBlobCollectorStatements(body, set, resolvedDocument, resolved.Items, item, indent+"\t", commonAlias, counter); err != nil {
+			return err
+		}
+		fmt.Fprintf(body, "%s}\n", indent)
+	case "object":
+		required := stringSet(resolved.Required)
+		for _, propertyName := range sortedKeys(resolved.Properties) {
+			property := resolved.Properties[propertyName]
+			if !schemaContainsBlobRefs(set, resolvedDocument, property, map[*schemaType]bool{}, map[*schemaType]bool{}) {
+				continue
+			}
+			access := expression + "." + exportedName(propertyName)
+			if required[propertyName] {
+				if err := writeGoBlobCollectorStatements(body, set, resolvedDocument, property, access, indent, commonAlias, counter); err != nil {
+					return err
+				}
+				continue
+			}
+			fmt.Fprintf(body, "%sif %s != nil {\n", indent, access)
+			if err := writeGoBlobCollectorStatements(body, set, resolvedDocument, property, "(*"+access+")", indent+"\t", commonAlias, counter); err != nil {
+				return err
+			}
+			fmt.Fprintf(body, "%s}\n", indent)
+		}
+	}
+	return nil
+}
+
+func dereferenceSchemaType(set schemaSet, document *schemaDocument, value *schemaType) (*schemaDocument, *schemaType, error) {
+	for value != nil && value.Ref != "" {
+		target, name, err := resolveRef(set, document, value.Ref)
+		if err != nil {
+			return nil, nil, err
+		}
+		document, value = target, target.Definitions[name]
+	}
+	return document, value, nil
+}
+
+func isBlobRefSchema(value *schemaType) bool {
+	if value == nil || len(value.Properties) != 5 {
+		return false
+	}
+	required := stringSet(value.Required)
+	for _, property := range []string{"blob_id", "digest", "lifetime", "media_type", "size"} {
+		if value.Properties[property] == nil || !required[property] {
+			return false
+		}
+	}
+	return true
+}
+
+func schemaContainsBlobRefs(set schemaSet, document *schemaDocument, value *schemaType, visiting, memo map[*schemaType]bool) bool {
+	resolvedDocument, resolved, err := dereferenceSchemaType(set, document, value)
+	if err != nil || resolved == nil {
+		return false
+	}
+	if result, ok := memo[resolved]; ok {
+		return result
+	}
+	if visiting[resolved] {
+		return false
+	}
+	if isBlobRefSchema(resolved) {
+		memo[resolved] = true
+		return true
+	}
+	visiting[resolved] = true
+	defer delete(visiting, resolved)
+	found := false
+	typeValue, _ := scalarType(resolved.Type)
+	switch typeValue {
+	case "array":
+		found = schemaContainsBlobRefs(set, resolvedDocument, resolved.Items, visiting, memo)
+	case "object":
+		for _, property := range resolved.Properties {
+			if schemaContainsBlobRefs(set, resolvedDocument, property, visiting, memo) {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		for _, branch := range resolved.OneOf {
+			if schemaContainsBlobRefs(set, resolvedDocument, branch, visiting, memo) {
+				found = true
+				break
+			}
+		}
+	}
+	memo[resolved] = found
+	return found
 }
 
 func writeGoDefinition(body *strings.Builder, set schemaSet, document *schemaDocument, aliases map[string]string, name string, definition *schemaType) error {
@@ -1270,8 +1488,10 @@ func generateGoCodec(set schemaSet, document *schemaDocument) ([]byte, error) {
 	"strings"
 	"time"
 	"unicode/utf16"
-	"unicode/utf8"
-)
+		"unicode/utf8"
+
+		"golang.org/x/text/unicode/norm"
+	)
 
 `)
 	body.WriteString("var schemaDocuments = func() map[string]map[string]any {\n\tdocuments := map[string]map[string]any{}\n")
@@ -1815,6 +2035,13 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 				if !leftOK || !rightOK || !compared || comparison >= 0 { return fmt.Errorf("%s is not in strict StableSymbol order", path) }
 			}
 		}
+		if ordered, _ := schema["x-layerdraw-scalar-order"].(bool); ordered {
+			for index := 1; index < len(items); index++ {
+				left, leftOK := items[index-1].(string)
+				right, rightOK := items[index].(string)
+				if !leftOK || !rightOK || compareScalarStrings(left, right) >= 0 { return fmt.Errorf("%s is not in strict canonical scalar order", path) }
+			}
+		}
 	case "object":
 		object, ok := value.(map[string]any)
 		if !ok { return fmt.Errorf("%s must be an object", path) }
@@ -1925,6 +2152,9 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 			endValue, endErr := strconv.ParseUint(end, 10, 64)
 			if !startOK || !endOK || startErr != nil || endErr != nil || startValue > endValue { return fmt.Errorf("%s range start_byte must not exceed end_byte", path) }
 		}
+		if rules, ok := schema["x-layerdraw-address-owners"].([]any); ok {
+			if err := validateAddressOwners(path, object, rules); err != nil { return err }
+		}
 	default:
 		return fmt.Errorf("%s uses unsupported generated schema type %q", path, typeName)
 	}
@@ -1940,6 +2170,63 @@ func stableAddressOrderValue(value any, selector string) (string, bool) {
 	if !ok { return "", false }
 	text, ok := object[selector].(string)
 	return text, ok
+}
+
+func compareScalarStrings(left, right string) int {
+	leftRunes := []rune(norm.NFC.String(left))
+	rightRunes := []rune(norm.NFC.String(right))
+	for index := 0; index < len(leftRunes) && index < len(rightRunes); index++ {
+		if leftRunes[index] < rightRunes[index] { return -1 }
+		if leftRunes[index] > rightRunes[index] { return 1 }
+	}
+	if len(leftRunes) < len(rightRunes) { return -1 }
+	if len(leftRunes) > len(rightRunes) { return 1 }
+	return 0
+}
+
+func validateAddressOwners(path string, object map[string]any, rules []any) error {
+	for _, rawRule := range rules {
+		rule, _ := rawRule.(map[string]any)
+		ownerProperty, _ := rule["owner"].(string)
+		childrenProperty, _ := rule["children"].(string)
+		selector, _ := rule["selector"].(string)
+		rawOwner, ownerPresent := object[ownerProperty]
+		if !ownerPresent { continue }
+		owner, ownerOK := rawOwner.(string)
+		if !ownerOK { return fmt.Errorf("%s.%s must be a StableAddress owner", path, ownerProperty) }
+		rawChildren, childrenPresent := object[childrenProperty]
+		if !childrenPresent { continue }
+		var children []string
+		switch selector {
+		case "$value":
+			child, ok := rawChildren.(string)
+			if !ok { return fmt.Errorf("%s.%s must be a child StableAddress", path, childrenProperty) }
+			children = append(children, child)
+		case "$propertyNames":
+			values, ok := rawChildren.(map[string]any)
+			if !ok { return fmt.Errorf("%s.%s must be an address-keyed object", path, childrenProperty) }
+			for child := range values { children = append(children, child) }
+		default:
+			values, ok := rawChildren.([]any)
+			if !ok { return fmt.Errorf("%s.%s must be an array of child records", path, childrenProperty) }
+			for _, rawChild := range values {
+				childObject, ok := rawChild.(map[string]any)
+				if !ok { return fmt.Errorf("%s.%s contains a non-object child", path, childrenProperty) }
+				child, ok := childObject[selector].(string)
+				if !ok { return fmt.Errorf("%s.%s child has no address selector %s", path, childrenProperty, selector) }
+				children = append(children, child)
+			}
+		}
+		for _, child := range children {
+			if !hasDirectStableAddressOwner(owner, child) { return fmt.Errorf("%s child address %q is not directly owned by %q", path, child, owner) }
+		}
+	}
+	return nil
+}
+
+func hasDirectStableAddressOwner(owner, child string) bool {
+	parts := strings.Split(child, ":")
+	return len(parts) >= 2 && strings.Join(parts[:len(parts)-2], ":") == owner
 }
 
 func compareStableAddresses(left, right string) (int, bool) {
@@ -2211,6 +2498,10 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { return new Set(value).size === value.length; }\n\n")
 	body.WriteString("function stableAddressOrderValue(value: unknown, selector: string): string | undefined { if (selector === \"$item\") return typeof value === \"string\" ? value : undefined; return isObject(value) && typeof value[selector] === \"string\" ? value[selector] : undefined; }\n\n")
 	body.WriteString("function hasStableAddressOrder(value: ReadonlyArray<unknown>, selector: string): boolean { for (let index = 1; index < value.length; index++) { const left = stableAddressOrderValue(value[index - 1], selector); const right = stableAddressOrderValue(value[index], selector); if (left === undefined || right === undefined || compareStableAddresses(left, right) >= 0) return false; } return true; }\n\n")
+	body.WriteString("function hasScalarOrder(value: ReadonlyArray<unknown>): boolean { for (let index = 1; index < value.length; index++) { const left = value[index - 1]; const right = value[index]; if (typeof left !== \"string\" || typeof right !== \"string\" || compareScalarStrings(left, right) >= 0) return false; } return true; }\n\n")
+	body.WriteString("function compareScalarStrings(left: string, right: string): number { const leftPoints = Array.from(left.normalize(\"NFC\"), (value) => value.codePointAt(0)!); const rightPoints = Array.from(right.normalize(\"NFC\"), (value) => value.codePointAt(0)!); for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index++) { if (leftPoints[index] !== rightPoints[index]) return leftPoints[index]! - rightPoints[index]!; } return leftPoints.length - rightPoints.length; }\n\n")
+	body.WriteString("function hasDirectStableAddressOwner(owner: string, child: string): boolean { const parts = child.split(\":\"); return parts.length >= 2 && parts.slice(0, -2).join(\":\") === owner; }\n\n")
+	body.WriteString("function hasAddressOwner(value: Record<string, unknown>, ownerProperty: string, childrenProperty: string, selector: string): boolean { if (!hasOwn(value, ownerProperty)) return true; const owner = value[ownerProperty]; if (typeof owner !== \"string\") return false; const rawChildren = value[childrenProperty]; let children: ReadonlyArray<unknown>; if (selector === \"$value\") children = [rawChildren]; else if (selector === \"$propertyNames\") { if (!isObject(rawChildren)) return false; children = Object.keys(rawChildren); } else { if (!isJSONArray(rawChildren)) return false; children = rawChildren.map((item) => isObject(item) ? item[selector] : undefined); } return children.every((child) => typeof child === \"string\" && hasDirectStableAddressOwner(owner, child)); }\n\n")
 	body.WriteString("function compareStableAddresses(left: string, right: string): number { const leftTuple = stableAddressTuple(left); const rightTuple = stableAddressTuple(right); if (leftTuple === undefined || rightTuple === undefined) return 0; if (leftTuple.origin !== rightTuple.origin) return leftTuple.origin - rightTuple.origin; for (let index = 0; index < Math.min(leftTuple.components.length, rightTuple.components.length); index++) { const compared = compareASCII(leftTuple.components[index]!, rightTuple.components[index]!); if (compared !== 0) return compared; } if (leftTuple.components.length !== rightTuple.components.length) return leftTuple.components.length - rightTuple.components.length; if (leftTuple.path.length !== rightTuple.path.length) return leftTuple.path.length - rightTuple.path.length; for (let index = 0; index < leftTuple.path.length; index++) { const leftSegment = leftTuple.path[index]!; const rightSegment = rightTuple.path[index]!; const kind = stableAddressKindRank(leftSegment[0]) - stableAddressKindRank(rightSegment[0]); if (kind !== 0) return kind; const id = compareASCII(leftSegment[1], rightSegment[1]); if (id !== 0) return id; } return 0; }\n\n")
 	body.WriteString("function stableAddressTuple(value: string): { origin: number; components: ReadonlyArray<string>; path: ReadonlyArray<readonly [string, string]> } | undefined { const parts = value.split(\":\"); if (parts.length < 3 || parts[0] !== \"ldl\") return undefined; let origin: number; let components: ReadonlyArray<string>; let pathStart: number; if (parts[1] === \"project\") { origin = 0; components = [parts[2]!]; pathStart = 3; } else if (parts[1] === \"pack\" && parts.length >= 4) { origin = 1; components = [parts[2]!, parts[3]!]; pathStart = 4; } else return undefined; if ((parts.length - pathStart) % 2 !== 0) return undefined; const path: Array<readonly [string, string]> = []; for (let index = pathStart; index < parts.length; index += 2) path.push([parts[index]!, parts[index + 1]!]); return {origin, components, path}; }\n\n")
 	body.WriteString("function stableAddressKindRank(kind: string): number { return new Map<string, number>([[\"entity-type\",0],[\"relation-type\",1],[\"layer\",2],[\"entity\",3],[\"relation\",4],[\"query\",5],[\"view\",6],[\"reference\",7],[\"column\",8],[\"constraint\",9],[\"row\",10],[\"parameter\",11],[\"table-column\",12],[\"export\",13]]).get(kind) ?? Number.MAX_SAFE_INTEGER; }\n\n")
@@ -2250,7 +2541,77 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 		fmt.Fprintf(&body, "\nexport function encode%s(value: %s): string {\n  validateProgrammaticWireValue(value);\n  if (!is%s(value)) throw new TypeError(%q);\n  const encoded = canonicalJSONStringify(value);\n  validateWireJSONText(encoded);\n  const emitted: unknown = JSON.parse(encoded);\n  if (!is%s(emitted)) throw new TypeError(%q);\n  return encoded;\n}\n", name, name, name, "invalid "+name, name, "encoded value is invalid "+name)
 		body.WriteString("\n")
 	}
+	if err := writeTSBlobCollectors(&body, set, document); err != nil {
+		return nil, err
+	}
 	return append(bytes.TrimRight([]byte(body.String()), "\n"), '\n'), nil
+}
+
+func writeTSBlobCollectors(body *strings.Builder, set schemaSet, document *schemaDocument) error {
+	if document.Definitions["CompileInput"] == nil || document.Definitions["CompileResult"] == nil {
+		return nil
+	}
+	for _, name := range []string{"CompileInput", "CompileResult"} {
+		functionName := "collect" + name + "BlobRefs"
+		fmt.Fprintf(body, "export function %s(value: %s): ReadonlyArray<BlobRef> {\n", functionName, name)
+		fmt.Fprintf(body, "  validateProgrammaticWireValue(value);\n  if (!is%s(value)) throw new TypeError(%q);\n", name, "invalid "+name)
+		body.WriteString("  const refs: Array<BlobRef> = [];\n")
+		counter := 0
+		if err := writeTSBlobCollectorStatements(body, set, document, document.Definitions[name], "value", "  ", &counter); err != nil {
+			return err
+		}
+		body.WriteString("  return refs;\n}\n\n")
+	}
+	return nil
+}
+
+func writeTSBlobCollectorStatements(body *strings.Builder, set schemaSet, document *schemaDocument, value *schemaType, expression, indent string, counter *int) error {
+	resolvedDocument, resolved, err := dereferenceSchemaType(set, document, value)
+	if err != nil {
+		return err
+	}
+	if isBlobRefSchema(resolved) {
+		fmt.Fprintf(body, "%srefs.push({blob_id: %s.blob_id, digest: %s.digest, lifetime: %s.lifetime, media_type: %s.media_type, size: %s.size});\n", indent, expression, expression, expression, expression, expression)
+		return nil
+	}
+	typeValue, err := scalarType(resolved.Type)
+	if err != nil {
+		return err
+	}
+	switch typeValue {
+	case "array":
+		if !schemaContainsBlobRefs(set, resolvedDocument, resolved.Items, map[*schemaType]bool{}, map[*schemaType]bool{}) {
+			return nil
+		}
+		item := fmt.Sprintf("blobItem%d", *counter)
+		*counter++
+		fmt.Fprintf(body, "%sfor (const %s of %s) {\n", indent, item, expression)
+		if err := writeTSBlobCollectorStatements(body, set, resolvedDocument, resolved.Items, item, indent+"  ", counter); err != nil {
+			return err
+		}
+		fmt.Fprintf(body, "%s}\n", indent)
+	case "object":
+		required := stringSet(resolved.Required)
+		for _, propertyName := range sortedKeys(resolved.Properties) {
+			property := resolved.Properties[propertyName]
+			if !schemaContainsBlobRefs(set, resolvedDocument, property, map[*schemaType]bool{}, map[*schemaType]bool{}) {
+				continue
+			}
+			access := expression + "[" + fmt.Sprintf("%q", propertyName) + "]"
+			if required[propertyName] {
+				if err := writeTSBlobCollectorStatements(body, set, resolvedDocument, property, access, indent, counter); err != nil {
+					return err
+				}
+				continue
+			}
+			fmt.Fprintf(body, "%sif (%s !== undefined) {\n", indent, access)
+			if err := writeTSBlobCollectorStatements(body, set, resolvedDocument, property, access, indent+"  ", counter); err != nil {
+				return err
+			}
+			fmt.Fprintf(body, "%s}\n", indent)
+		}
+	}
+	return nil
 }
 
 const tsWirePreflight = `function utf8ByteLength(value: string): number {
@@ -2485,6 +2846,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.StableAddressOrder != "" {
 			parts = append(parts, fmt.Sprintf("hasStableAddressOrder(%s, %q)", expression, value.StableAddressOrder))
 		}
+		if value.ScalarOrder {
+			parts = append(parts, "hasScalarOrder("+expression+")")
+		}
 		return strings.Join(parts, " && "), nil
 	case "object":
 		if len(value.Properties) == 0 {
@@ -2595,6 +2959,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		}
 		for _, rule := range value.DisjointArrays {
 			parts = append(parts, fmt.Sprintf("hasDisjointArrays(%s, %q, %q)", expression, rule.Left, rule.Right))
+		}
+		for _, rule := range value.AddressOwners {
+			parts = append(parts, fmt.Sprintf("hasAddressOwner(%s, %q, %q, %q)", expression, rule.Owner, rule.Children, rule.Selector))
 		}
 		return strings.Join(parts, " && "), nil
 	default:

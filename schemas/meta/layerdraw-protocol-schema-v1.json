@@ -19,6 +19,12 @@
     {"$ref": "https://json-schema.org/draft/2020-12/schema"}
   ],
   "properties": {
+    "x-layerdraw-address-owners": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/addressOwnerRule"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
     "x-layerdraw-go-package": {"type": "string", "minLength": 1},
     "x-layerdraw-disjoint-arrays": {
       "type": "array",
@@ -39,6 +45,7 @@
       "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."
     },
     "x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
+    "x-layerdraw-scalar-order": {"type": "boolean", "const": true},
     "x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
     "x-layerdraw-ts-module": {"type": "string", "minLength": 1},
     "x-layerdraw-unique-array-keys": {
@@ -47,6 +54,16 @@
     }
   },
   "$defs": {
+    "addressOwnerRule": {
+      "type": "object",
+      "properties": {
+        "children": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1},
+        "selector": {"type": "string", "minLength": 1}
+      },
+      "required": ["owner", "children", "selector"],
+      "additionalProperties": false
+    },
     "disjointArrayPair": {
       "type": "object",
       "properties": {

@@ -348,6 +348,43 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 			value.DisjointArrays = []disjointArrayPair{{Left: "left", Right: "right"}}
 			return value
 		}},
+		{"scalar order without unique strings", "scalar order requires string items and uniqueItems", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "string"}, ScalarOrder: true}
+		}},
+		{"address owner missing property", "invalid address-owner rule", func() *schemaType {
+			value := validObject()
+			value.AddressOwners = []addressOwnerRule{{Owner: "missing", Children: "payload", Selector: "$value"}}
+			return value
+		}},
+		{"address owner is not a string", "must be a string property", func() *schemaType {
+			value := validObject()
+			value.Properties["owner"] = &schemaType{Type: "boolean"}
+			value.AddressOwners = []addressOwnerRule{{Owner: "owner", Children: "payload", Selector: "$value"}}
+			return value
+		}},
+		{"address owner value child is not a string", "$value rule requires string children", func() *schemaType {
+			value := validObject()
+			value.Properties["child"] = &schemaType{Type: "boolean"}
+			value.AddressOwners = []addressOwnerRule{{Owner: "payload", Children: "child", Selector: "$value"}}
+			return value
+		}},
+		{"address owner property names missing", "$propertyNames rule requires an object with propertyNames", func() *schemaType {
+			value := validObject()
+			value.Properties["children"] = &schemaType{Type: "object", AdditionalProperties: &schemaType{Type: "string"}}
+			value.AddressOwners = []addressOwnerRule{{Owner: "payload", Children: "children", Selector: "$propertyNames"}}
+			return value
+		}},
+		{"address owner selector missing", "requires selector", func() *schemaType {
+			value := validObject()
+			value.AddressOwners = []addressOwnerRule{{Owner: "payload", Children: "kind"}}
+			return value
+		}},
+		{"address owner selector missing from array item", "must name a string item property", func() *schemaType {
+			value := validObject()
+			value.Properties["children"] = &schemaType{Type: "array", Items: validObject()}
+			value.AddressOwners = []addressOwnerRule{{Owner: "payload", Children: "children", Selector: "address"}}
+			return value
+		}},
 	}
 	for _, test := range tests {
 		test := test
@@ -782,6 +819,10 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 		`const CompileRequestEnvelopeOperationValue CompileRequestEnvelopeOperation = "engine.compile"`,
 		`type QueryRecipeBlobRefMediaType string`,
 		`const QueryRecipeBlobRefLifetimeValue QueryRecipeBlobRefLifetime = "request"`,
+		`func CollectCompileInputBlobRefs(value CompileInput) ([]protocolcommon.BlobRef, error)`,
+		`if _, err := EncodeCompileInput(value); err != nil`,
+		`for _, blobItem3 := range value.ResolvedDependencies.Installs`,
+		`func CollectCompileResultBlobRefs(value CompileResult) ([]protocolcommon.BlobRef, error)`,
 	} {
 		if !strings.Contains(goTypes, expected) {
 			t.Errorf("generated Go const surface missing %q", expected)
@@ -795,6 +836,9 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 		`function matchesCanonicalBinary64`,
 		`lifetime: "request";`,
 		`function hasDisjointArrays`,
+		`export function collectCompileInputBlobRefs(value: CompileInput): ReadonlyArray<BlobRef>`,
+		`for (const blobItem3 of value["resolved_dependencies"]["installs"])`,
+		`export function collectCompileResultBlobRefs(value: CompileResult): ReadonlyArray<BlobRef>`,
 	} {
 		if !strings.Contains(tsTypes, expected) {
 			t.Errorf("generated TypeScript surface missing %q", expected)

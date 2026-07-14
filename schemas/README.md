@@ -60,6 +60,15 @@ Its assertion keywords have these exact meanings:
   ordinary `items`, `propertyNames`, `uniqueItems`, or
   `x-layerdraw-unique-array-keys` assertions; this keyword exists only because
   JSON Schema draft 2020-12 cannot express cross-item canonical ordering.
+- `x-layerdraw-scalar-order: true` applies to an array of strings and requires
+  strict Unicode scalar lexicographic order after NFC normalization. Equal NFC
+  forms therefore reject as noncanonical even when their source spellings
+  differ.
+- `x-layerdraw-address-owners` applies to an object and requires each selected
+  child StableAddress to have the configured owner StableAddress as its direct
+  parent. A selector is `$value` for one string property, `$propertyNames` for
+  the keys of an object property, or an item property name for an array of
+  child records. An absent optional owner makes the rule inapplicable.
 - `x-layerdraw-scalar-unicode: true` is required at every protocol schema root
   and recursively rejects any instance string or object member name containing
   an unpaired UTF-16 surrogate. This includes values produced by parsing
@@ -201,6 +210,13 @@ effective limits. It deliberately excludes the lossless CST and tokens,
 `TypedAST`, every compiler stage result/interface, mutable snapshots, Go
 errors, stack traces, and LDL behavior. Mapping compiler-domain values into
 these generated targets belongs exclusively to Issue #29.
+
+The generator emits `CompileInput` and `CompileResult` BlobRef graph
+collectors in Go and TypeScript. They first apply generated validation, then
+walk only schema-declared properties in canonical wire-property order and
+array items in their original order. Every occurrence is returned, including
+duplicates, as a detached `BlobRef`; the collectors never deduplicate, repair,
+resolve, or verify digests and never reflect over unknown object properties.
 
 The `NormalizedArtifact` union owns the mode-dependent result invariants.
 Project results require `graph_hash` and may carry SearchDocuments. Pack

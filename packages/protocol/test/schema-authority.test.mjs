@@ -85,6 +85,20 @@ function compareStableAddresses(left, right) {
   return 0;
 }
 
+function compareScalarStrings(left, right) {
+  const leftPoints = Array.from(left.normalize("NFC"), (value) => value.codePointAt(0));
+  const rightPoints = Array.from(right.normalize("NFC"), (value) => value.codePointAt(0));
+  for (let index = 0; index < Math.min(leftPoints.length, rightPoints.length); index++) {
+    if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] - rightPoints[index];
+  }
+  return leftPoints.length - rightPoints.length;
+}
+
+function hasDirectStableAddressOwner(owner, child) {
+  const parts = child.split(":");
+  return parts.length >= 2 && parts.slice(0, -2).join(":") === owner;
+}
+
 function realUTCDateTime(value) {
   const match = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?Z$/.exec(value);
   if (match === null) return false;
@@ -333,6 +347,13 @@ function addLayerDrawVocabulary(ajv, meta) {
   register({keyword: "x-layerdraw-scalar-unicode", schemaType: "boolean", rootValidate: (value) => value === true, errors: false, validate(enabled, data) {
     return !enabled || hasScalarUnicodeTree(data);
   }});
+  register({keyword: "x-layerdraw-scalar-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data) {
+    if (!enabled) return true;
+    for (let index = 1; index < data.length; index++) {
+      if (typeof data[index - 1] !== "string" || typeof data[index] !== "string" || compareScalarStrings(data[index - 1], data[index]) >= 0) return false;
+    }
+    return true;
+  }});
   register({keyword: "x-layerdraw-stable-address-order", schemaType: "string", type: "array", errors: false, validate(selector, data) {
     const address = (item) => selector === "$item" ? item : item?.[selector];
     for (let index = 1; index < data.length; index++) {
@@ -341,6 +362,25 @@ function addLayerDrawVocabulary(ajv, meta) {
       if (typeof left !== "string" || typeof right !== "string" || compareStableAddresses(left, right) >= 0) return false;
     }
     return true;
+  }});
+  register({keyword: "x-layerdraw-address-owners", schemaType: "array", type: "object", errors: false, validate(rules, data) {
+    if (data === null || Array.isArray(data)) return true;
+    return rules.every((rule) => {
+      if (!Object.prototype.hasOwnProperty.call(data, rule.owner)) return true;
+      const owner = data[rule.owner];
+      if (typeof owner !== "string") return false;
+      const rawChildren = data[rule.children];
+      let children;
+      if (rule.selector === "$value") children = [rawChildren];
+      else if (rule.selector === "$propertyNames") {
+        if (rawChildren === null || typeof rawChildren !== "object" || Array.isArray(rawChildren)) return false;
+        children = Object.keys(rawChildren);
+      } else {
+        if (!Array.isArray(rawChildren)) return false;
+        children = rawChildren.map((item) => item?.[rule.selector]);
+      }
+      return children.every((child) => typeof child === "string" && hasDirectStableAddressOwner(owner, child));
+    });
   }});
   register({keyword: "x-layerdraw-disjoint-arrays", schemaType: "array", errors: false, validate(rules, data) {
     if (data === null || typeof data !== "object" || Array.isArray(data)) return true;
@@ -653,6 +693,21 @@ test("independent schema authority enforces exact raw wire bounds and hostile ob
   });
   assert.equal(validateWire(`"${String.fromCharCode(0xd800)}"`), false, "raw unpaired high surrogate");
   assert.equal(validateWire(`{"${String.fromCharCode(0xdc00)}":null}`), false, "raw unpaired low surrogate member name");
+});
+
+test("independent schema authority matches the complete View and Export semantic corpus", async (context) => {
+  const compile = await authority();
+  const semantic = "https://schemas.layerdraw.dev/semantic/v1";
+  const corpus = await readJSON("fixtures/conformance/view-export-semantics-v1.json");
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 19);
+  assert.equal(corpus.rejection_cases.length, 50);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
+    assert.equal(compile(semantic, vector.type)(vector.value), true);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
+    assert.equal(compile(semantic, vector.type)(vector.value), false);
+  });
 });
 
 test("independent schema authority enforces the published recursive scalar-Unicode profile", async (context) => {

@@ -5,6 +5,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  collectCompileInputBlobRefs,
+  collectCompileResultBlobRefs,
   decodeCompileRequestEnvelope,
   decodeCompileResponseEnvelope,
   decodeCanonicalSourcePath,
@@ -96,56 +98,80 @@ import {
   maxWireJSONDepth,
 } from "../dist/common.gen.js";
 import {
+  decodeCanonicalFiniteDecimal,
+  decodeCanonicalPositiveFiniteDecimal,
+  decodeColor,
   decodeCompiledExportRecipeDocument,
   decodeCompiledQueryRecipeDocument,
   decodeCompiledViewRecipeDocument,
   decodeDiagnostic,
   decodeDiagnosticArgumentValue,
-  decodeCanonicalFiniteDecimal,
-  decodeCanonicalPositiveFiniteDecimal,
+  decodeEntityTypeColumnAddress,
   decodeExportDimension,
   decodeExportOptions,
-  decodeRecipePredicate,
-  decodeRecipeRowPredicate,
-  decodeSearchField,
-  decodeStableAddress,
+  decodeExportRecipe,
   decodePackRootAddress,
   decodeProjectRootAddress,
-  decodeViewRecipeSource,
+  decodeRasterBackground,
+  decodeRecipePredicate,
+  decodeRecipeRowPredicate,
+  decodeRelationTypeColumnAddress,
+  decodeSearchField,
+  decodeStableAddress,
+  decodeViewAddress,
+  decodeViewDiagramProjection,
   decodeViewDiagramShape,
+  decodeViewExportAddress,
+  decodeViewFlowProjection,
   decodeViewFlowShape,
   decodeViewMatrixAxis,
   decodeViewMatrixCell,
+  decodeViewPlacement,
+  decodeViewRecipe,
+  decodeViewRecipeDependencies,
+  decodeViewRecipeSource,
+  decodeViewRenderSet,
   decodeViewTableColumnSource,
+  decodeViewTableProjection,
   decodeViewTableShape,
   decodeViewTreeShape,
-  decodeViewPlacement,
-  decodeViewRenderSet,
+  encodeCanonicalFiniteDecimal,
+  encodeCanonicalPositiveFiniteDecimal,
+  encodeColor,
   encodeCompiledExportRecipeDocument,
   encodeCompiledQueryRecipeDocument,
   encodeCompiledViewRecipeDocument,
   encodeDiagnostic,
   encodeDiagnosticArgumentValue,
-  encodeCanonicalFiniteDecimal,
-  encodeCanonicalPositiveFiniteDecimal,
+  encodeEntityTypeColumnAddress,
   encodeExportDimension,
   encodeExportOptions,
-  encodeRecipePredicate,
-  encodeRecipeRowPredicate,
-  encodeSearchField,
-  encodeStableAddress,
+  encodeExportRecipe,
   encodePackRootAddress,
   encodeProjectRootAddress,
-  encodeViewRecipeSource,
+  encodeRasterBackground,
+  encodeRecipePredicate,
+  encodeRecipeRowPredicate,
+  encodeRelationTypeColumnAddress,
+  encodeSearchField,
+  encodeStableAddress,
+  encodeViewAddress,
+  encodeViewDiagramProjection,
   encodeViewDiagramShape,
+  encodeViewExportAddress,
+  encodeViewFlowProjection,
   encodeViewFlowShape,
   encodeViewMatrixAxis,
   encodeViewMatrixCell,
+  encodeViewPlacement,
+  encodeViewRecipe,
+  encodeViewRecipeDependencies,
+  encodeViewRecipeSource,
+  encodeViewRenderSet,
   encodeViewTableColumnSource,
+  encodeViewTableProjection,
   encodeViewTableShape,
   encodeViewTreeShape,
-  encodeViewPlacement,
-  encodeViewRenderSet,
   isDiagnosticArgumentValue,
   isRecipePredicate,
   isRecipeRowPredicate,
@@ -158,6 +184,7 @@ const formatCorpusURL = new URL("../../../schemas/fixtures/conformance/formats-v
 const exportOptionsCorpusURL = new URL("../../../schemas/fixtures/conformance/export-options-v1.json", import.meta.url);
 const predicateCorpusURL = new URL("../../../schemas/fixtures/conformance/predicates-v1.json", import.meta.url);
 const viewSourceCorpusURL = new URL("../../../schemas/fixtures/conformance/view-sources-v1.json", import.meta.url);
+const viewExportSemanticsCorpusURL = new URL("../../../schemas/fixtures/conformance/view-export-semantics-v1.json", import.meta.url);
 const unicodeScalarCorpusURL = new URL("../../../schemas/fixtures/conformance/unicode-scalars-v1.json", import.meta.url);
 const canonicalEngineRoot = new URL("../../../schemas/fixtures/conformance/engine/", import.meta.url);
 
@@ -186,6 +213,61 @@ for (const [name, validate, decode, encode] of [
 test("invalid compile input is rejected", async () => {
   const fixture = await readFixture("compile-invalid-request.json");
   assert.equal(isCompileRequestEnvelope(fixture), false);
+});
+
+test("generated CompileInput BlobRef collector preserves traversal, duplicates, and detachment", async () => {
+  const input = structuredClone((await readFixture("compile-request.json")).payload);
+  const shared = input.project_source_tree[0].blob;
+  input.installed_pack_tree = [{path: "pack.ldl", blob: shared}];
+  input.project_source_tree.push({path: "z.ldl", blob: shared});
+  input.referenced_assets = [{origin: "project", locator: "asset.txt", blob: shared, digest: shared.digest, media_type: shared.media_type}];
+  input.resolved_dependencies.installs = [{
+    install_name: "dep",
+    canonical_id: "publisher/pack",
+    version: "1.0.0",
+    digest: shared.digest,
+    path: "packs/dep",
+    entry: "main.ldl",
+    files: [],
+    dependencies: [],
+    manifest_path: "manifest.json",
+    manifest: shared,
+  }];
+
+  const refs = collectCompileInputBlobRefs(input);
+  assert.deepEqual(refs.map((ref) => ref.blob_id), Array(5).fill(shared.blob_id));
+  assert.equal(new Set(refs).size, refs.length);
+  assert.ok(refs.every((ref) => ref !== shared));
+  refs[0].blob_id = "mutated";
+  assert.equal(shared.blob_id, "compile/source/document.ldl");
+  assert.equal(refs[1].blob_id, shared.blob_id);
+
+  const hostile = structuredClone(input);
+  delete hostile.project_source_tree[0].blob;
+  assert.throws(() => collectCompileInputBlobRefs(hostile), TypeError);
+});
+
+test("generated CompileResult BlobRef collector preserves wire order, aliases, and validation", async () => {
+  const result = structuredClone((await readFixture("compile-success.json")).payload);
+  const shared = result.compiled_recipes.queries[0].canonical_json;
+  result.compiled_recipes.queries.push({address: "ldl:project:fixture:query:other", canonical_json: shared});
+
+  const refs = collectCompileResultBlobRefs(result);
+  assert.deepEqual(refs.map((ref) => ref.blob_id), [
+    shared.blob_id,
+    shared.blob_id,
+    result.normalized_artifact.project.artifact_json.blob_id,
+    result.normalized_artifact.project.canonical_json.blob_id,
+  ]);
+  assert.equal(new Set(refs).size, refs.length);
+  assert.ok(refs.every((ref) => ref !== shared));
+  refs[0].blob_id = "mutated";
+  assert.equal(result.compiled_recipes.queries[0].canonical_json.blob_id, "compile/query/all");
+  assert.equal(refs[1].blob_id, shared.blob_id);
+
+  const hostile = structuredClone(result);
+  delete hostile.compiled_recipes.queries[0].canonical_json;
+  assert.throws(() => collectCompileResultBlobRefs(hostile), TypeError);
 });
 
 test("unknown response fields are rejected while explicit extensions survive", async () => {
@@ -313,6 +395,7 @@ const sharedCodecs = {
   CanonicalSafeInteger: [decodeCanonicalSafeInteger, encodeCanonicalSafeInteger],
   CanonicalSourcePath: [decodeCanonicalSourcePath, encodeCanonicalSourcePath],
   CanonicalUint64: [decodeCanonicalUint64, encodeCanonicalUint64],
+  Color: [decodeColor, encodeColor],
   CompiledExportRecipeDocument: [decodeCompiledExportRecipeDocument, encodeCompiledExportRecipeDocument],
   CompiledQueryRecipeDocument: [decodeCompiledQueryRecipeDocument, encodeCompiledQueryRecipeDocument],
   CompiledViewRecipeDocument: [decodeCompiledViewRecipeDocument, encodeCompiledViewRecipeDocument],
@@ -323,6 +406,8 @@ const sharedCodecs = {
   ExportRecipeBlobRef: [decodeExportRecipeBlobRef, encodeExportRecipeBlobRef],
   ExportDimension: [decodeExportDimension, encodeExportDimension],
   ExportOptions: [decodeExportOptions, encodeExportOptions],
+  ExportRecipe: [decodeExportRecipe, encodeExportRecipe],
+  EntityTypeColumnAddress: [decodeEntityTypeColumnAddress, encodeEntityTypeColumnAddress],
   JsonValue: [decodeJsonValue, encodeJsonValue],
   HandshakeRequest: [decodeHandshakeRequest, encodeHandshakeRequest],
   ManifestETag: [decodeManifestETag, encodeManifestETag],
@@ -337,6 +422,8 @@ const sharedCodecs = {
   ProtocolVersionRange: [decodeProtocolVersionRange, encodeProtocolVersionRange],
   RecipePredicate: [decodeRecipePredicate, encodeRecipePredicate],
   RecipeRowPredicate: [decodeRecipeRowPredicate, encodeRecipeRowPredicate],
+  RasterBackground: [decodeRasterBackground, encodeRasterBackground],
+  RelationTypeColumnAddress: [decodeRelationTypeColumnAddress, encodeRelationTypeColumnAddress],
   RequestedCapabilityStatus: [decodeRequestedCapabilityStatus, encodeRequestedCapabilityStatus],
   QueryRecipeBlobRef: [decodeQueryRecipeBlobRef, encodeQueryRecipeBlobRef],
   ReleaseVersion: [decodeReleaseVersion, encodeReleaseVersion],
@@ -347,7 +434,13 @@ const sharedCodecs = {
   ProjectRootAddress: [decodeProjectRootAddress, encodeProjectRootAddress],
   TotalItems: [decodeTotalItems, encodeTotalItems],
   UpgradeDiagnosticData: [decodeUpgradeDiagnosticData, encodeUpgradeDiagnosticData],
+  ViewAddress: [decodeViewAddress, encodeViewAddress],
+  ViewDiagramProjection: [decodeViewDiagramProjection, encodeViewDiagramProjection],
+  ViewExportAddress: [decodeViewExportAddress, encodeViewExportAddress],
+  ViewFlowProjection: [decodeViewFlowProjection, encodeViewFlowProjection],
   ViewPlacement: [decodeViewPlacement, encodeViewPlacement],
+  ViewRecipe: [decodeViewRecipe, encodeViewRecipe],
+  ViewRecipeDependencies: [decodeViewRecipeDependencies, encodeViewRecipeDependencies],
   ViewRecipeBlobRef: [decodeViewRecipeBlobRef, encodeViewRecipeBlobRef],
   ViewRenderSet: [decodeViewRenderSet, encodeViewRenderSet],
   ViewRecipeSource: [decodeViewRecipeSource, encodeViewRecipeSource],
@@ -356,6 +449,7 @@ const sharedCodecs = {
   ViewMatrixAxis: [decodeViewMatrixAxis, encodeViewMatrixAxis],
   ViewMatrixCell: [decodeViewMatrixCell, encodeViewMatrixCell],
   ViewTableColumnSource: [decodeViewTableColumnSource, encodeViewTableColumnSource],
+  ViewTableProjection: [decodeViewTableProjection, encodeViewTableProjection],
   ViewTableShape: [decodeViewTableShape, encodeViewTableShape],
   ViewTreeShape: [decodeViewTreeShape, encodeViewTreeShape],
 };
@@ -427,6 +521,25 @@ test("every View source and address-bearing shape contract has shared bytes", as
   });
   for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
     assert.throws(() => sharedCodecs[vector.type][0](vector.input));
+  });
+});
+
+test("complete View and Export semantics match the shared adversarial corpus", async (context) => {
+  const corpus = JSON.parse(await readFile(viewExportSemanticsCorpusURL, "utf8"));
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 19);
+  assert.equal(corpus.rejection_cases.length, 50);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.ok(codec, `unknown View/Export codec ${vector.type}`);
+    const encoded = codec[1](codec[0](JSON.stringify(vector.value)));
+    assert.deepEqual(JSON.parse(encoded), vector.value);
+    assert.equal(codec[1](codec[0](encoded)), encoded);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.ok(codec, `unknown View/Export codec ${vector.type}`);
+    assert.throws(() => codec[0](JSON.stringify(vector.value)));
   });
 });
 

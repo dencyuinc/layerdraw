@@ -148,6 +148,95 @@ func TestProtocolFixturesRoundTripInGeneratedGoTypes(t *testing.T) {
 	}
 }
 
+func TestGeneratedCompileInputBlobRefCollector(t *testing.T) {
+	t.Parallel()
+	root := protocolRepositoryRoot(t)
+	envelope, err := engineprotocol.DecodeCompileRequestEnvelope(readRepositoryFile(t, root, "schemas/fixtures/engine/compile-request.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := envelope.Payload
+	shared := input.ProjectSourceTree[0].Blob
+	input.InstalledPackTree = []engineprotocol.SourceFileInput{{Path: "pack.ldl", Blob: shared}}
+	input.ProjectSourceTree = append(input.ProjectSourceTree, engineprotocol.SourceFileInput{Path: "z.ldl", Blob: shared})
+	input.ReferencedAssets = []engineprotocol.AssetInput{{
+		Origin: engineprotocol.SourceOriginKindProject, Locator: "asset.txt", Blob: shared,
+		Digest: shared.Digest, MediaType: shared.MediaType,
+	}}
+	input.ResolvedDependencies.Installs = []engineprotocol.ResolvedPack{{
+		InstallName: "dep", CanonicalID: "publisher/pack", Version: "1.0.0", Digest: shared.Digest,
+		Path: "packs/dep", Entry: "main.ldl", Files: []engineprotocol.ResolvedPackFile{},
+		Dependencies: []engineprotocol.ResolvedPackDependency{}, ManifestPath: "manifest.json", Manifest: shared,
+	}}
+
+	refs, err := engineprotocol.CollectCompileInputBlobRefs(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 5 {
+		t.Fatalf("collector returned %d refs, want 5", len(refs))
+	}
+	for index, ref := range refs {
+		if !reflect.DeepEqual(ref, shared) {
+			t.Fatalf("ref %d changed duplicate occurrence: got=%+v want=%+v", index, ref, shared)
+		}
+	}
+	refs[0].BlobID = "mutated"
+	if input.ProjectSourceTree[0].Blob.BlobID != shared.BlobID || refs[1].BlobID != shared.BlobID {
+		t.Fatal("collector returned aliased BlobRefs")
+	}
+
+	hostile := input
+	hostile.ProjectSourceTree = append([]engineprotocol.SourceFileInput(nil), input.ProjectSourceTree...)
+	hostile.ProjectSourceTree[0].Blob = protocolcommon.BlobRef{}
+	if _, err := engineprotocol.CollectCompileInputBlobRefs(hostile); err == nil {
+		t.Fatal("collector accepted missing/invalid nested BlobRef")
+	}
+}
+
+func TestGeneratedCompileResultBlobRefCollector(t *testing.T) {
+	t.Parallel()
+	root := protocolRepositoryRoot(t)
+	envelope, err := engineprotocol.DecodeCompileResponseEnvelope(readRepositoryFile(t, root, "schemas/fixtures/engine/compile-success.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := *envelope.Payload
+	shared := result.CompiledRecipes.Queries[0].CanonicalJSON
+	result.CompiledRecipes.Queries = append(result.CompiledRecipes.Queries, engineprotocol.CompiledQueryRecipeArtifact{
+		Address: "ldl:project:fixture:query:other", CanonicalJSON: shared,
+	})
+
+	refs, err := engineprotocol.CollectCompileResultBlobRefs(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := result.NormalizedArtifact.Project
+	if project == nil {
+		t.Fatal("compile-success fixture did not contain a project artifact")
+	}
+	want := []string{shared.BlobID, shared.BlobID, project.ArtifactJSON.BlobID, project.CanonicalJSON.BlobID}
+	if len(refs) != len(want) {
+		t.Fatalf("collector returned %d refs, want %d", len(refs), len(want))
+	}
+	for index := range want {
+		if refs[index].BlobID != want[index] {
+			t.Fatalf("ref %d traversal mismatch: got=%q want=%q", index, refs[index].BlobID, want[index])
+		}
+	}
+	refs[0].BlobID = "mutated"
+	if result.CompiledRecipes.Queries[0].CanonicalJSON.BlobID != shared.BlobID || refs[1].BlobID != shared.BlobID {
+		t.Fatal("collector returned aliased BlobRefs")
+	}
+
+	hostile := result
+	hostile.CompiledRecipes.Queries = append([]engineprotocol.CompiledQueryRecipeArtifact(nil), result.CompiledRecipes.Queries...)
+	hostile.CompiledRecipes.Queries[0].CanonicalJSON = engineprotocol.QueryRecipeBlobRef{}
+	if _, err := engineprotocol.CollectCompileResultBlobRefs(hostile); err == nil {
+		t.Fatal("collector accepted missing/invalid role-specific BlobRef")
+	}
+}
+
 func TestGeneratedGoStrictDecodeRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 	if _, err := engineprotocol.DecodeCompileRequestEnvelope(readProtocolFixture(t, "compile-invalid-request.json")); err == nil {
@@ -817,6 +906,63 @@ func TestSharedViewSourceVariantCorpus(t *testing.T) {
 	}
 }
 
+func TestSharedViewExportSemanticCorpus(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "view-export-semantics-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int `json:"schema_version"`
+		Canonical     []struct {
+			Name  string          `json:"name"`
+			Type  string          `json:"type"`
+			Value json.RawMessage `json:"value"`
+		} `json:"canonical_cases"`
+		Rejections []struct {
+			Name  string          `json:"name"`
+			Type  string          `json:"type"`
+			Value json.RawMessage `json:"value"`
+		} `json:"rejection_cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 19 || len(corpus.Rejections) != 50 {
+		t.Fatalf("incomplete View/Export semantic corpus: version=%d canonical=%d rejection=%d", corpus.SchemaVersion, len(corpus.Canonical), len(corpus.Rejections))
+	}
+	for _, vector := range corpus.Canonical {
+		vector := vector
+		t.Run(vector.Name+" canonical", func(t *testing.T) {
+			encoded, err := roundTripSharedWire(vector.Type, vector.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want, got any
+			if err := json.Unmarshal(vector.Value, &want); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("canonical View/Export value changed\nwant=%s\ngot=%s", vector.Value, encoded)
+			}
+			if _, err := roundTripSharedWire(vector.Type, encoded); err != nil {
+				t.Fatalf("canonical View/Export output was not stable: %v", err)
+			}
+		})
+	}
+	for _, vector := range corpus.Rejections {
+		vector := vector
+		t.Run(vector.Name+" rejection", func(t *testing.T) {
+			if _, err := roundTripSharedWire(vector.Type, vector.Value); err == nil {
+				t.Fatalf("invalid View/Export semantic vector accepted: %s", vector.Value)
+			}
+		})
+	}
+}
+
 func TestSharedScalarUnicodeCorpus(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "unicode-scalars-v1.json"))
@@ -1196,6 +1342,12 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return protocolcommon.EncodeCanonicalUint64(value)
+	case "Color":
+		value, err := semantic.DecodeColor(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeColor(value)
 	case "HandshakeRequest":
 		value, err := protocolcommon.DecodeHandshakeRequest(input)
 		if err != nil {
@@ -1334,6 +1486,18 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeExportOptions(value)
+	case "ExportRecipe":
+		value, err := semantic.DecodeExportRecipe(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeExportRecipe(value)
+	case "EntityTypeColumnAddress":
+		value, err := semantic.DecodeEntityTypeColumnAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeEntityTypeColumnAddress(value)
 	case "RecipePredicate":
 		value, err := semantic.DecodeRecipePredicate(input)
 		if err != nil {
@@ -1346,12 +1510,36 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeRecipeRowPredicate(value)
+	case "RasterBackground":
+		value, err := semantic.DecodeRasterBackground(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeRasterBackground(value)
+	case "RelationTypeColumnAddress":
+		value, err := semantic.DecodeRelationTypeColumnAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeRelationTypeColumnAddress(value)
 	case "ViewRecipeSource":
 		value, err := semantic.DecodeViewRecipeSource(input)
 		if err != nil {
 			return nil, err
 		}
 		return semantic.EncodeViewRecipeSource(value)
+	case "ViewAddress":
+		value, err := semantic.DecodeViewAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewAddress(value)
+	case "ViewDiagramProjection":
+		value, err := semantic.DecodeViewDiagramProjection(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewDiagramProjection(value)
 	case "ViewDiagramShape":
 		value, err := semantic.DecodeViewDiagramShape(input)
 		if err != nil {
@@ -1364,6 +1552,18 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeViewFlowShape(value)
+	case "ViewExportAddress":
+		value, err := semantic.DecodeViewExportAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewExportAddress(value)
+	case "ViewFlowProjection":
+		value, err := semantic.DecodeViewFlowProjection(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewFlowProjection(value)
 	case "ViewMatrixAxis":
 		value, err := semantic.DecodeViewMatrixAxis(input)
 		if err != nil {
@@ -1382,6 +1582,12 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeViewTableColumnSource(value)
+	case "ViewTableProjection":
+		value, err := semantic.DecodeViewTableProjection(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewTableProjection(value)
 	case "ViewTableShape":
 		value, err := semantic.DecodeViewTableShape(input)
 		if err != nil {
@@ -1466,6 +1672,18 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeViewRenderSet(value)
+	case "ViewRecipe":
+		value, err := semantic.DecodeViewRecipe(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewRecipe(value)
+	case "ViewRecipeDependencies":
+		value, err := semantic.DecodeViewRecipeDependencies(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewRecipeDependencies(value)
 	default:
 		return nil, fmt.Errorf("unknown shared conformance type %q", typeName)
 	}
@@ -1504,7 +1722,8 @@ func TestGeneratedProtocolPackagesHaveNoHandwrittenOrForbiddenDependencies(t *te
 		for _, spec := range parsed.Imports {
 			importPath := strings.Trim(spec.Path.Value, `"`)
 			isStandardLibrary := !strings.Contains(strings.Split(importPath, "/")[0], ".")
-			if !isStandardLibrary && !strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/gen/go/") {
+			isGeneratedRuntimeDependency := importPath == "golang.org/x/text/unicode/norm"
+			if !isStandardLibrary && !isGeneratedRuntimeDependency && !strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/gen/go/") {
 				t.Errorf("generated Go package imports non-generated dependency %q in %s", importPath, path)
 			}
 		}
