@@ -679,7 +679,6 @@ func TestCompilePlanningEdgeAccountingAndReleasePaths(t *testing.T) {
 		t.Fatalf("mapping release failure=%+v", releaseFailure)
 	}
 }
-
 func TestCompilePreparationLoopCancellationBoundaries(t *testing.T) {
 	value := []byte("x")
 	ref := testBlobRef("x", "application/octet-stream", value)

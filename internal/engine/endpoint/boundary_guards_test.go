@@ -100,34 +100,34 @@ func TestCompileInputAndBudgetFailureGuards(t *testing.T) {
 	if _, diagnostics, failure := mapCompileInput(context.Background(), negotiated, input, &memoryBlobSource{}); failure == nil || len(diagnostics) != 0 {
 		t.Fatalf("missing blob was not rejected: diagnostics=%+v failure=%+v", diagnostics, failure)
 	}
-	oversized := protocolcommon.BlobRef{BlobID: "oversized", Size: protocolcommon.CanonicalUint64("9223372036854775808")}
-	if _, _, failure := buildBlobRequirements([]blobUse{{ref: oversized}}); failure == nil || failure.Code != FailureCompileBlobOversized {
+	oversized := protocolcommon.BlobRef{BlobID: "oversized", Lifetime: protocolcommon.BlobLifetimeRequest, Size: protocolcommon.CanonicalUint64("9223372036854775808")}
+	if _, _, failure := buildBlobRequirements(context.Background(), []blobUse{{ref: oversized}}); failure == nil || failure.Code != FailureCompileBlobOversized {
 		t.Fatalf("oversized requirement failure=%+v", failure)
 	}
-	maximum := protocolcommon.BlobRef{BlobID: "a", Size: protocolcommon.CanonicalUint64("9223372036854775807")}
-	one := protocolcommon.BlobRef{BlobID: "b", Size: protocolcommon.CanonicalUint64("1")}
-	if _, _, failure := buildBlobRequirements([]blobUse{{ref: maximum}, {ref: one}}); failure == nil || failure.Code != FailureCompileBlobOversized {
+	maximum := protocolcommon.BlobRef{BlobID: "a", Lifetime: protocolcommon.BlobLifetimeRequest, Size: protocolcommon.CanonicalUint64("9223372036854775807")}
+	one := protocolcommon.BlobRef{BlobID: "b", Lifetime: protocolcommon.BlobLifetimeRequest, Size: protocolcommon.CanonicalUint64("1")}
+	if _, _, failure := buildBlobRequirements(context.Background(), []blobUse{{ref: maximum}, {ref: one}}); failure == nil || failure.Code != FailureCompileBlobOversized {
 		t.Fatalf("aggregate overflow failure=%+v", failure)
 	}
 	conflict := maximum
 	conflict.MediaType = "different"
-	if _, _, failure := buildBlobRequirements([]blobUse{{ref: maximum}, {ref: conflict}}); failure == nil || failure.Code != FailureCompileConflictingBlobRef {
+	if _, _, failure := buildBlobRequirements(context.Background(), []blobUse{{ref: maximum}, {ref: conflict}}); failure == nil || failure.Code != FailureCompileConflictingBlobRef {
 		t.Fatalf("conflicting requirement failure=%+v", failure)
 	}
 
 	limits := engine.DefaultResourceLimits()
 	limits.MaxProjectSourceFiles = 0
-	if _, failure := compileAdmissionBudget(input, limits, 1, int64(len(value))); failure == nil || failure.Code != engine.ErrorCodeProjectSourceFilesExceeded {
+	if _, failure := compileAdmissionBudget(context.Background(), input, limits, 1, int64(len(value))); failure == nil || failure.Code != engine.ErrorCodeProjectSourceFilesExceeded {
 		t.Fatalf("project file budget failure=%+v", failure)
 	}
 	limits = engine.DefaultResourceLimits()
 	limits.MaxProjectSourceBytes = 1
-	if _, failure := compileAdmissionBudget(input, limits, 1, int64(len(value))); failure == nil || failure.Code != engine.ErrorCodeProjectSourceBytesExceeded {
+	if _, failure := compileAdmissionBudget(context.Background(), input, limits, 1, int64(len(value))); failure == nil || failure.Code != engine.ErrorCodeProjectSourceBytesExceeded {
 		t.Fatalf("project byte budget failure=%+v", failure)
 	}
 	invalidSizeInput := input
 	invalidSizeInput.ProjectSourceTree[0].Blob.Size = protocolcommon.CanonicalUint64("not-an-integer")
-	if _, failure := compileAdmissionBudget(invalidSizeInput, engine.DefaultResourceLimits(), 1, 0); failure == nil || failure.Code != FailureCompileInvalidRequest {
+	if _, failure := compileAdmissionBudget(context.Background(), invalidSizeInput, engine.DefaultResourceLimits(), 1, 0); failure == nil || failure.Code != FailureCompileInvalidRequest {
 		t.Fatalf("invalid size budget failure=%+v", failure)
 	}
 	if got := saturatedAdd(math.MaxInt64, 1); got != math.MaxInt64 {
