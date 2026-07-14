@@ -2,7 +2,6 @@
 
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   EngineClientDecodeError,
@@ -11,15 +10,19 @@ import {
   EngineClientTransportError,
 } from "../dist/index.js";
 import { createInternalEngineClient } from "../dist/internal/client.js";
+import { defaultRuntime } from "../dist/internal/runtime.js";
 import {
   StrictFakeTransport,
   collectors,
+  completedDigestLease,
   creationOptions,
   limits,
   makeFactory,
   makePortableRequest,
   rejectedResponse,
+  rejectedDigestLease,
   sha256,
+  stalledDigestLease,
   successResponse,
   waitFor,
 } from "./support.mjs";
@@ -29,22 +32,11 @@ const encode = (value) =>
     typeof value === "string" ? value : JSON.stringify(value),
   ).buffer;
 
-const digestBytes = (bytes) =>
-  new Uint8Array(createHash("sha256").update(bytes).digest());
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((accepted) => {
-    resolve = accepted;
-  });
-  return { promise, resolve };
-}
-
-function runtimeWithSha256(sha256Override) {
+function runtimeWithSha256(startSha256) {
   return {
     now: () => Date.now(),
     randomBytes: (length) => new Uint8Array(length).fill(11),
-    sha256: sha256Override,
+    sha256: startSha256,
     transferArrayBuffer: (buffer) =>
       structuredClone(buffer, { transfer: [buffer] }),
     setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -61,6 +53,154 @@ async function create(overrides, options = {}, runtime) {
     ...(runtime === undefined ? {} : { runtime }),
   });
   return { client, factory };
+}
+
+function stalledRuntime(stallCall) {
+  let calls = 0;
+  let stalled;
+  return {
+    runtime: runtimeWithSha256((bytes) => {
+      calls++;
+      if (calls === stallCall) {
+        stalled = stalledDigestLease(bytes);
+        return stalled;
+      }
+      return completedDigestLease(bytes);
+    }),
+    get lease() {
+      return stalled;
+    },
+  };
+}
+
+async function bounded(promise, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} exceeded its lifecycle bound`)),
+          1_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function assertStalledLeaseJoined(harness) {
+  assert.ok(harness.lease);
+  assert.equal(harness.lease.abortCount, 1);
+  assert.equal(harness.lease.joinedSettled, true);
+  assert.equal(harness.lease.retainsInput, false);
+}
+
+function adversarialCloseCases() {
+  let rootAccessorCalls = 0;
+  let detailAccessorCalls = 0;
+  const rootAccessor = { retryable: true };
+  Object.defineProperty(rootAccessor, "code", {
+    enumerable: true,
+    get() {
+      rootAccessorCalls++;
+      throw new Error("SECRET /private/close-code");
+    },
+  });
+  const accessorDetails = {};
+  Object.defineProperty(accessorDetails, "signal", {
+    enumerable: true,
+    get() {
+      detailAccessorCalls++;
+      throw new Error("SECRET /private/close-detail");
+    },
+  });
+  return [
+    {
+      name: "unknown close key",
+      settle(transport) {
+        transport.closedBox.resolve({
+          code: "WORKER_CRASHED",
+          retryable: true,
+          secretPath: "/Users/private/worker",
+        });
+      },
+    },
+    {
+      name: "root accessor",
+      settle(transport) {
+        transport.closedBox.resolve(rootAccessor);
+      },
+      verify() {
+        assert.equal(rootAccessorCalls, 0);
+      },
+    },
+    {
+      name: "root Proxy trap",
+      settle(transport) {
+        transport.closedBox.resolve(new Proxy({}, {
+          ownKeys() {
+            throw new Error("SECRET /private/close-proxy");
+          },
+        }));
+      },
+    },
+    {
+      name: "invalid code",
+      settle(transport) {
+        transport.closedBox.resolve({
+          code: "SECRET_/Users/private/worker",
+          retryable: true,
+        });
+      },
+    },
+    {
+      name: "invalid retryability",
+      settle(transport) {
+        transport.closedBox.resolve({
+          code: "WORKER_CRASHED",
+          retryable: "true",
+        });
+      },
+    },
+    {
+      name: "hostile details Proxy",
+      settle(transport) {
+        transport.closedBox.resolve({
+          code: "WORKER_CRASHED",
+          retryable: true,
+          details: new Proxy({}, {
+            ownKeys() {
+              return ["signal"];
+            },
+            getOwnPropertyDescriptor() {
+              throw new Error("SECRET /private/close-details-proxy");
+            },
+          }),
+        });
+      },
+    },
+    {
+      name: "hostile details accessor",
+      settle(transport) {
+        transport.closedBox.resolve({
+          code: "WORKER_CRASHED",
+          retryable: true,
+          details: accessorDetails,
+        });
+      },
+      verify() {
+        assert.equal(detailAccessorCalls, 0);
+      },
+    },
+    {
+      name: "rejected close promise",
+      settle(transport) {
+        transport.closedBox.reject(new Error("SECRET /private/close-rejection"));
+      },
+    },
+  ];
 }
 
 function twoBlobRequest(ids = ["first", "second"]) {
@@ -86,16 +226,128 @@ function twoBlobRequest(ids = ["first", "second"]) {
   return { request, refs, firstBytes, secondBytes };
 }
 
+test("default SHA-256 leases are exact and hard-abortable", async () => {
+  const runtime = defaultRuntime();
+  for (const size of [0, 1, 55, 56, 64, 65, 20_000]) {
+    const bytes = Uint8Array.from({ length: size }, (_value, index) => index % 251);
+    const lease = runtime.sha256(bytes);
+    const digest = await lease.result;
+    await lease.joined;
+    assert.equal(`sha256:${Buffer.from(digest).toString("hex")}`, sha256(bytes));
+  }
+
+  const lease = runtime.sha256(new Uint8Array(20_000_000));
+  lease.abort();
+  lease.abort();
+  await assert.rejects(lease.result);
+  await lease.joined;
+});
+
+test("permanently stalled input digests are aborted and joined for every lifecycle interrupt", async (context) => {
+  await context.test("compile timeout", async () => {
+    const harness = stalledRuntime(1);
+    const { client, factory } = await create(
+      undefined,
+      { defaultCompileTimeoutMs: 15 },
+      harness.runtime,
+    );
+    const outcome = await bounded(
+      client.compile(makePortableRequest().request),
+      "compile timeout",
+    );
+    assert.equal(outcome.origin, "client");
+    assert.equal(outcome.reason, "timeout");
+    assert.equal(factory.endpoints[0].requests.length, 1);
+    assertStalledLeaseJoined(harness);
+    await client.dispose();
+  });
+
+  await context.test("restart", async () => {
+    const harness = stalledRuntime(1);
+    const { client, factory } = await create(undefined, {}, harness.runtime);
+    const compile = client.compile(makePortableRequest().request);
+    await waitFor(() => harness.lease !== undefined);
+    const restart = client.restart();
+    const outcome = await bounded(compile, "restart compile join");
+    await bounded(restart, "restart");
+    assert.equal(outcome.origin, "client");
+    assert.equal(outcome.reason, "restart");
+    assert.equal(factory.endpoints.length, 2);
+    assertStalledLeaseJoined(harness);
+    await client.dispose();
+  });
+
+  await context.test("dispose", async () => {
+    const harness = stalledRuntime(1);
+    const { client } = await create(undefined, {}, harness.runtime);
+    const compile = client.compile(makePortableRequest().request);
+    await waitFor(() => harness.lease !== undefined);
+    const disposal = client.dispose();
+    const outcome = await bounded(compile, "dispose compile join");
+    await bounded(disposal, "dispose");
+    assert.equal(outcome.origin, "client");
+    assert.equal(outcome.reason, "dispose");
+    assert.equal(client.state, "disposed");
+    assertStalledLeaseJoined(harness);
+  });
+
+  await context.test("endpoint close", async () => {
+    const harness = stalledRuntime(1);
+    const { client, factory } = await create(undefined, {}, harness.runtime);
+    const compile = client.compile(makePortableRequest().request);
+    await waitFor(() => harness.lease !== undefined);
+    factory.endpoints[0].closedBox.resolve({
+      code: "WORKER_CRASHED",
+      retryable: true,
+    });
+    await assert.rejects(bounded(compile, "endpoint close"), (error) => {
+      assert.ok(error instanceof EngineClientTransportError);
+      assert.equal(error.code, "WORKER_CRASHED");
+      assert.equal(error.details.replacementSucceeded, true);
+      return true;
+    });
+    assert.equal(client.state, "ready");
+    assert.equal(factory.endpoints.length, 2);
+    assertStalledLeaseJoined(harness);
+    await client.dispose();
+  });
+});
+
+test("cancellation hard-aborts and joins a permanently stalled output digest", async () => {
+  const harness = stalledRuntime(2);
+  const { client, factory } = await create(
+    {
+      async compile(request) {
+        return successResponse(request.request_id);
+      },
+    },
+    {},
+    harness.runtime,
+  );
+  const controller = new AbortController();
+  const compile = client.compile(makePortableRequest().request, {
+    signal: controller.signal,
+  });
+  await waitFor(() => harness.lease !== undefined);
+  controller.abort();
+  const outcome = await bounded(compile, "output digest cancellation");
+  assert.equal(outcome.origin, "client");
+  assert.equal(outcome.reason, "signal");
+  assert.equal(factory.endpoints.length, 2);
+  assertStalledLeaseJoined(harness);
+  await client.dispose();
+});
+
 test("abort remains live until output digest validation is terminal", async () => {
-  const gate = deferred();
   let digestCalls = 0;
   let outputDigestStarted = false;
-  const runtime = runtimeWithSha256(async (bytes) => {
+  let outputLease;
+  const runtime = runtimeWithSha256((bytes) => {
     digestCalls++;
-    if (digestCalls === 1) return digestBytes(bytes);
+    if (digestCalls === 1) return completedDigestLease(bytes);
     outputDigestStarted = true;
-    await gate.promise;
-    return digestBytes(bytes);
+    outputLease = stalledDigestLease(bytes);
+    return outputLease;
   });
   const { client, factory } = await create(
     {
@@ -123,20 +375,22 @@ test("abort remains live until output digest validation is terminal", async () =
   assert.equal(outcome.origin, "client");
   assert.equal(outcome.reason, "signal");
   assert.equal(factory.endpoints.length, 2);
-  gate.resolve();
+  assert.equal(outputLease.abortCount, 1);
+  assert.equal(outputLease.joinedSettled, true);
+  assert.equal(outputLease.retainsInput, false);
   await client.dispose();
 });
 
 test("compile timeout remains live while output digest validation is pending", async () => {
-  const gate = deferred();
   let digestCalls = 0;
   let outputDigestStarted = false;
-  const runtime = runtimeWithSha256(async (bytes) => {
+  let outputLease;
+  const runtime = runtimeWithSha256((bytes) => {
     digestCalls++;
-    if (digestCalls === 1) return digestBytes(bytes);
+    if (digestCalls === 1) return completedDigestLease(bytes);
     outputDigestStarted = true;
-    await gate.promise;
-    return digestBytes(bytes);
+    outputLease = stalledDigestLease(bytes);
+    return outputLease;
   });
   const { client, factory } = await create(
     {
@@ -155,7 +409,9 @@ test("compile timeout remains live while output digest validation is pending", a
   assert.equal(outcome.origin, "client");
   assert.equal(outcome.reason, "timeout");
   assert.equal(factory.endpoints.length, 2);
-  gate.resolve();
+  assert.equal(outputLease.abortCount, 1);
+  assert.equal(outputLease.joinedSettled, true);
+  assert.equal(outputLease.retainsInput, false);
   await client.dispose();
 });
 
@@ -176,6 +432,105 @@ test("a close racing a raw response always retires the endpoint", async () => {
   await waitFor(() => factory.endpoints.length === 2 && client.state === "ready");
   assert.equal(client.getEndpoint().generation, 2);
   await client.dispose();
+});
+
+test("valid transport close records are snapshotted and details are redacted", async () => {
+  const { client, factory } = await create({
+    compile() {
+      return StrictFakeTransport.PENDING;
+    },
+  });
+  const compile = client.compile(makePortableRequest().request);
+  await waitFor(() => factory.endpoints[0].requests.length === 2);
+  factory.endpoints[0].closedBox.resolve({
+    code: "PROCESS_EXITED",
+    retryable: false,
+    details: {
+      exitCode: 9,
+      path: "/Users/private/engine",
+    },
+  });
+  await assert.rejects(compile, (error) => {
+    assert.ok(error instanceof EngineClientTransportError);
+    assert.equal(error.code, "PROCESS_EXITED");
+    assert.equal(error.retryable, false);
+    assert.deepEqual({ ...error.details }, {
+      exitCode: 9,
+      replacementSucceeded: true,
+    });
+    return true;
+  });
+  assert.equal(factory.endpoints.length, 2);
+  assert.equal(client.getEndpoint().generation, 2);
+  await client.dispose();
+});
+
+test("active adversarial close notifications use one fallback and never reject the observer", async (context) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    for (const closeCase of adversarialCloseCases()) {
+      await context.test(closeCase.name, async () => {
+        const { client, factory } = await create({
+          compile() {
+            return StrictFakeTransport.PENDING;
+          },
+        });
+        const compile = client.compile(makePortableRequest().request);
+        await waitFor(() => factory.endpoints[0].requests.length === 2);
+        closeCase.settle(factory.endpoints[0]);
+        await assert.rejects(bounded(compile, closeCase.name), (error) => {
+          assert.ok(error instanceof EngineClientTransportError);
+          assert.equal(error.code, "WORKER_CRASHED");
+          assert.equal(error.retryable, true);
+          assert.equal(error.details.replacementSucceeded, true);
+          assert.equal(JSON.stringify(error).includes("SECRET"), false);
+          assert.equal(JSON.stringify(error).includes("private"), false);
+          return true;
+        });
+        closeCase.verify?.();
+        assert.equal(factory.endpoints.length, 2);
+        assert.equal(client.state, "ready");
+        assert.equal(client.getEndpoint().generation, 2);
+        await client.dispose();
+      });
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("idle adversarial close notifications retire the dead endpoint without unhandled rejection", async (context) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    for (const closeCase of adversarialCloseCases()) {
+      await context.test(closeCase.name, async () => {
+        const { client, factory } = await create();
+        const old = factory.endpoints[0];
+        closeCase.settle(old);
+        await Promise.resolve();
+        if (client.state === "ready") {
+          assert.notEqual(client.getEndpoint().generation, 1);
+        }
+        await waitFor(
+          () => factory.endpoints.length === 2 && client.state === "ready",
+        );
+        closeCase.verify?.();
+        assert.equal(old.stopped, true);
+        assert.equal(client.getEndpoint().generation, 2);
+        await client.dispose();
+      });
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
 });
 
 test("cancel join validates a fulfilled terminal response before reuse", async () => {
@@ -328,11 +683,12 @@ test("aliased request buffers are rejected before any transfer detaches", async 
 
 test("SHA-256 failures are redacted and sequential verification starts no sibling", async () => {
   let calls = 0;
-  const never = new Promise(() => {});
-  const runtime = runtimeWithSha256(async () => {
+  const runtime = runtimeWithSha256((bytes) => {
     calls++;
-    if (calls === 1) throw new Error("SECRET crypto /Users/private");
-    return never;
+    if (calls === 1) {
+      return rejectedDigestLease(new Error("SECRET crypto /Users/private"));
+    }
+    return stalledDigestLease(bytes);
   });
   const { client, factory } = await create(undefined, {}, runtime);
   await assert.rejects(client.compile(twoBlobRequest().request), (error) => {

@@ -66,8 +66,10 @@ import {
 import {
   defaultRuntime,
   type InternalClientRuntime,
+  type InternalDigestLease,
   type InternalTimerHandle,
 } from "./runtime.js";
+import { snapshotSafeDetails } from "./safe-details.js";
 import {
   InternalTransportFault,
   type InternalByteTransport,
@@ -150,6 +152,47 @@ interface Deferred<T> {
   resolve(value: T): void;
 }
 
+class DigestSequence {
+  private readonly runtime: InternalClientRuntime;
+  private current: InternalDigestLease | undefined;
+  private aborted = false;
+
+  constructor(runtime: InternalClientRuntime) {
+    this.runtime = runtime;
+  }
+
+  async sha256(bytes: Uint8Array): Promise<Uint8Array> {
+    if (this.aborted) throw new Error("Digest sequence aborted");
+    const lease = this.runtime.sha256(bytes);
+    this.current = lease;
+    let digest: Uint8Array;
+    try {
+      digest = await lease.result;
+    } finally {
+      await lease.joined;
+      if (this.current === lease) this.current = undefined;
+    }
+    if (this.aborted) throw new Error("Digest sequence aborted");
+    const source = uint8ViewSource(digest);
+    if (source === undefined || source.byteLength !== 32) {
+      throw new Error("Invalid SHA-256 result");
+    }
+    const snapshot = new Uint8Array(32);
+    snapshot.set(
+      new Uint8Array(source.buffer, source.byteOffset, source.byteLength),
+    );
+    return snapshot;
+  }
+
+  async abortAndJoin(): Promise<void> {
+    this.aborted = true;
+    const lease = this.current;
+    if (lease === undefined) return;
+    lease.abort();
+    await lease.joined;
+  }
+}
+
 function deferred<T>(): Deferred<T> {
   let resolvePromise!: (value: T) => void;
   let settled = false;
@@ -176,7 +219,7 @@ export interface CreateInternalEngineClientOptions {
   readonly transportFactory: InternalTransportFactory;
   readonly protocolCollectors: InternalProtocolBlobRefCollectors;
   readonly options: EngineClientCreationOptions;
-  /** Test-only deterministic runtime injection; future adapters omit it. */
+  /** Adapters may inject an isolated hard-terminable digest implementation. */
   readonly runtime?: InternalClientRuntime;
 }
 
@@ -697,6 +740,7 @@ class EngineClientImplementation implements EngineClient {
     let timer: InternalTimerHandle | undefined;
     let removeAbort: (() => void) | undefined;
     let exchange: InternalTransportExchange | undefined;
+    const digests = new DigestSequence(this.runtime);
     const deadlineMs = this.runtime.now() + options.timeoutMs;
     try {
       timer = this.runtime.setTimer(() => {
@@ -721,7 +765,7 @@ class EngineClientImplementation implements EngineClient {
         }
       }
 
-      const verified = this.verifyInputDigests(prepared);
+      const verified = this.verifyInputDigests(prepared, digests);
       const beforeSend = await Promise.race([
         verified.then(
           () => ({ kind: "verified" as const }),
@@ -730,14 +774,15 @@ class EngineClientImplementation implements EngineClient {
         active.interrupt.promise,
       ]);
       if (beforeSend.kind === "cancel") {
-        // WebCrypto cannot be interrupted. Join it before releasing the owned
-        // request snapshot so cancellation never leaves request bytes retained.
+        await digests.abortAndJoin();
         await verified.catch(() => undefined);
         active.joined.resolve();
         if (beforeSend.barrier !== undefined) await beforeSend.barrier;
         return clientCancellation(active, beforeSend.reason);
       }
       if (beforeSend.kind === "fault") {
+        await digests.abortAndJoin();
+        await verified.catch(() => undefined);
         active.joined.resolve();
         throw await this.replaceForFault(beforeSend.fault, active);
       }
@@ -773,6 +818,7 @@ class EngineClientImplementation implements EngineClient {
         exchange,
         endpoint,
         active.requestId,
+        digests,
       );
       const winner = await Promise.race([
         terminal.then((result) =>
@@ -783,6 +829,7 @@ class EngineClientImplementation implements EngineClient {
         active.interrupt.promise,
       ]);
       if (winner.kind === "cancel") {
+        await digests.abortAndJoin();
         const cancelResult = await this.cancelExchange(exchange);
         const terminalResult = await this.withBound(
           terminal,
@@ -812,28 +859,35 @@ class EngineClientImplementation implements EngineClient {
         return engineCancellation ?? clientCancellation(active, winner.reason);
       }
       if (winner.kind === "fault") {
+        await digests.abortAndJoin();
         active.joined.resolve();
         throw await this.replaceForFault(winner.fault, active);
       }
       if (winner.kind === "response-fault") {
+        await digests.abortAndJoin();
         active.joined.resolve();
         throw await this.replaceForFault(winner.error, active);
       }
 
+      await digests.abortAndJoin();
       active.joined.resolve();
       return winner.outcome;
     } finally {
       removeAbort?.();
       if (timer !== undefined) this.runtime.clearTimer(timer);
+      await digests.abortAndJoin();
       active.joined.resolve();
     }
   }
 
-  private async verifyInputDigests(prepared: PreparedCompile): Promise<void> {
+  private async verifyInputDigests(
+    prepared: PreparedCompile,
+    digests: DigestSequence,
+  ): Promise<void> {
     for (const blob of prepared.blobs) {
       let digestBytes: Uint8Array;
       try {
-        digestBytes = await this.runtime.sha256(new Uint8Array(blob.bytes));
+        digestBytes = await digests.sha256(new Uint8Array(blob.bytes));
       } catch {
         throw new EngineClientTransportError("DIGEST_FAILED");
       }
@@ -850,13 +904,19 @@ class EngineClientImplementation implements EngineClient {
     exchange: InternalTransportExchange,
     endpoint: EndpointContext,
     requestId: string,
+    digests: DigestSequence,
   ): Promise<CompileTerminal> {
     return exchange.response.then(
       async (raw): Promise<CompileTerminal> => {
         try {
           return {
             kind: "valid",
-            outcome: await this.decodeCompileOutcome(raw, endpoint, requestId),
+            outcome: await this.decodeCompileOutcome(
+              raw,
+              endpoint,
+              requestId,
+              digests,
+            ),
           };
         } catch (error) {
           return { kind: "invalid", error };
@@ -870,6 +930,7 @@ class EngineClientImplementation implements EngineClient {
     raw: InternalTransportResponse,
     endpoint: EndpointContext,
     requestId: string,
+    digests: DigestSequence,
   ): Promise<CompileOutcome> {
     const response = validateTransportResponse(raw, endpoint.limits);
     let envelope: CompileResponseEnvelope;
@@ -938,7 +999,13 @@ class EngineClientImplementation implements EngineClient {
       } catch {
         throw new EngineClientDecodeError("MALFORMED_MESSAGE");
       }
-      const digest = bytesToHex(await this.runtime.sha256(new Uint8Array(owned)));
+      let digestBytes: Uint8Array;
+      try {
+        digestBytes = await digests.sha256(new Uint8Array(owned));
+      } catch {
+        throw new EngineClientTransportError("DIGEST_FAILED");
+      }
+      const digest = bytesToHex(digestBytes);
       if (`sha256:${digest}` !== ref.digest) {
         throw new EngineClientDecodeError("OUTPUT_DIGEST_MISMATCH");
       }
@@ -1199,34 +1266,53 @@ class EngineClientImplementation implements EngineClient {
       endpoint.snapshot.handshake.endpoint_instance_id;
     this.endpoint = endpoint;
     this._state = "ready";
-    void endpoint.transport.closed.then(
-      (close) => this.handleUnexpectedClose(endpoint, close),
-      () =>
-        this.handleUnexpectedClose(endpoint, {
-          code: this.factory.transportId === "stdio" ? "BROKEN_PIPE" : "WORKER_CRASHED",
-          retryable: true,
-        }),
+    const observe = (raw: unknown): void => {
+      try {
+        const close = validateTransportClose(raw);
+        const error = close === undefined
+          ? this.unexpectedCloseFallback()
+          : new EngineClientTransportError(
+            close.code,
+            close.retryable,
+            close.details,
+          );
+        this.handleUnexpectedClose(endpoint, error);
+      } catch {
+        try {
+          this.handleUnexpectedClose(endpoint, this.unexpectedCloseFallback());
+        } catch {
+          // The close observer is a terminal safety boundary and never rejects.
+        }
+      }
+    };
+    let closed: Promise<InternalTransportClose>;
+    try {
+      closed = endpoint.transport.closed;
+    } catch {
+      observe(undefined);
+      return;
+    }
+    void Promise.resolve(closed).then(
+      (raw) => observe(raw),
+      () => observe(undefined),
+    ).catch(() => undefined);
+  }
+
+  private unexpectedCloseFallback(): EngineClientTransportError {
+    return new EngineClientTransportError(
+      this.factory.transportId === "stdio" ? "BROKEN_PIPE" : "WORKER_CRASHED",
+      true,
     );
   }
 
   private handleUnexpectedClose(
     endpoint: EndpointContext,
-    close: InternalTransportClose,
+    error: EngineClientTransportError,
   ): void {
     if (this.endpoint !== endpoint || this._state !== "ready") return;
-    const error = new EngineClientTransportError(
-      close.code,
-      close.retryable,
-      close.details,
-    );
     if (this.active !== undefined) {
-      const active = this.active;
-      active.interrupt.resolve({ kind: "fault", fault: error });
-      void active.joined.promise.then(() => {
-        if (this.endpoint === endpoint && this._state === "ready") {
-          void this.startReplacement().catch(() => undefined);
-        }
-      });
+      this.active.interrupt.resolve({ kind: "fault", fault: error });
+      void this.startReplacement().catch(() => undefined);
       return;
     }
     void this.startReplacement().catch(() => undefined);
@@ -1461,6 +1547,26 @@ function validateTransportResponse(
     blobs.push({ blobId: blob.blobId, bytes: blob.bytes as ArrayBuffer });
   }
   return { control: object.control as ArrayBuffer, blobs };
+}
+
+function validateTransportClose(value: unknown): InternalTransportClose | undefined {
+  const object = dataObject(value, ["code", "retryable"], ["details"]);
+  if (
+    object === undefined ||
+    (object.code !== "BROKEN_PIPE" &&
+      object.code !== "PROCESS_EXITED" &&
+      object.code !== "WORKER_CRASHED") ||
+    typeof object.retryable !== "boolean"
+  ) {
+    return undefined;
+  }
+  const details = snapshotSafeDetails(object.details);
+  if (!details.valid) return undefined;
+  return Object.freeze({
+    code: object.code,
+    retryable: object.retryable,
+    ...(details.details === undefined ? {} : { details: details.details }),
+  });
 }
 
 function validateHandshake(

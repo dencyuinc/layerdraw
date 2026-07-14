@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   EngineClientBackpressureError,
@@ -17,6 +16,7 @@ import {
   makeFactory,
   makePortableRequest,
   rejectedResponse,
+  stalledDigestLease,
   waitFor,
 } from "./support.mjs";
 
@@ -84,19 +84,17 @@ test("abort joins a reusable exchange without replacing the endpoint", async () 
   await client.dispose();
 });
 
-test("abort during SHA-256 joins the hash before releasing the request snapshot", async () => {
-  let resolveDigest;
+test("abort hard-stops and joins a permanently stalled input digest", async () => {
   let digestCalls = 0;
-  const digest = new Promise((resolve) => {
-    resolveDigest = resolve;
-  });
+  let digestLease;
   const timers = new Set();
   const runtime = {
     now: () => 1_700_000_000_000,
     randomBytes: (length) => new Uint8Array(length).fill(7),
-    sha256: async () => {
+    sha256: (bytes) => {
       digestCalls++;
-      return digest;
+      digestLease = stalledDigestLease(bytes);
+      return digestLease;
     },
     transferArrayBuffer: (buffer) =>
       structuredClone(buffer, { transfer: [buffer] }),
@@ -125,14 +123,12 @@ test("abort during SHA-256 joins the hash before releasing the request snapshot"
     });
   await waitFor(() => digestCalls === 1);
   controller.abort();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(settled, false);
-  const source = makePortableRequest().bytes;
-  resolveDigest(
-    new Uint8Array(createHash("sha256").update(source).digest()),
-  );
   const outcome = await compile;
+  assert.equal(settled, true);
   assert.equal(outcome.reason, "signal");
+  assert.equal(digestLease.abortCount, 1);
+  assert.equal(digestLease.joinedSettled, true);
+  assert.equal(digestLease.retainsInput, false);
   assert.equal(factory.endpoints[0].requests.length, 1);
   assert.equal(timers.size, 0);
   await client.dispose();

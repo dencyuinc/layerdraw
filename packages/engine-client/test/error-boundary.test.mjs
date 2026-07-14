@@ -57,6 +57,18 @@ test("exception taxonomy has stable names, kinds, codes, retryability, and detai
   });
   assert.deepEqual({ ...filtered.details }, { generation: 2 });
   assert.ok(Object.isFrozen(filtered.details));
+
+  const hostileDetails = new Proxy({}, {
+    ownKeys() {
+      throw new Error("SECRET /Users/private/error-details");
+    },
+  });
+  const sanitized = new EngineClientTransportError(
+    "BROKEN_PIPE",
+    true,
+    hostileDetails,
+  );
+  assert.equal(sanitized.details, undefined);
 });
 
 test("invalid creation arguments fail before an endpoint or bytes are retained", async () => {

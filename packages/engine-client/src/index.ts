@@ -14,6 +14,7 @@ import type {
   CompileResponseEnvelope,
   CompileResult,
 } from "@layerdraw/protocol/engine";
+import { snapshotSafeDetails } from "./internal/safe-details.js";
 
 export type EngineClientState =
   | "ready"
@@ -251,34 +252,12 @@ const messages = Object.freeze({
 } as const);
 
 function safeDetails(
-  details: EngineClientSafeDetails | undefined,
+  details: unknown,
 ): EngineClientSafeDetails | undefined {
-  if (details === undefined) return undefined;
-  const copy: Record<string, string | number | boolean> = Object.create(null);
-  const allowedKeys = new Set([
-    "outcome",
-    "diagnosticCount",
-    "failureCode",
-    "requestId",
-    "generation",
-    "blobCount",
-    "limit",
-    "exitCode",
-    "signal",
-    "replacementSucceeded",
-  ]);
-  for (const [key, value] of Object.entries(details)) {
-    if (
-      allowedKeys.has(key) &&
-      (typeof value === "string" ||
-        typeof value === "boolean" ||
-        (typeof value === "number" && Number.isFinite(value))) &&
-      /^[A-Za-z][A-Za-z0-9]*$/.test(key)
-    ) {
-      copy[key] = value;
-    }
-  }
-  return Object.freeze(copy);
+  const snapshot = snapshotSafeDetails(details);
+  return snapshot.valid
+    ? snapshot.details as EngineClientSafeDetails | undefined
+    : undefined;
 }
 
 export abstract class EngineClientError extends Error {

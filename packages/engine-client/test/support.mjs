@@ -58,6 +58,72 @@ export function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+export function completedDigestLease(bytes) {
+  let retained = bytes;
+  let aborted = false;
+  const result = Promise.resolve().then(() => {
+    if (aborted) throw new Error("digest lease aborted");
+    return new Uint8Array(createHash("sha256").update(retained).digest());
+  }).finally(() => {
+    retained = undefined;
+  });
+  const joined = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return Object.freeze({
+    result,
+    joined,
+    abort() {
+      aborted = true;
+    },
+  });
+}
+
+export function rejectedDigestLease(error) {
+  const result = Promise.reject(error);
+  const joined = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return Object.freeze({ result, joined, abort() {} });
+}
+
+export function stalledDigestLease(bytes) {
+  let retained = bytes;
+  let rejectResult;
+  let abortCount = 0;
+  let joinedSettled = false;
+  const result = new Promise((_resolve, reject) => {
+    rejectResult = reject;
+  });
+  const joined = result.then(
+    () => undefined,
+    () => undefined,
+  ).then(() => {
+    joinedSettled = true;
+  });
+  return Object.freeze({
+    result,
+    joined,
+    abort() {
+      if (retained === undefined) return;
+      abortCount++;
+      retained = undefined;
+      rejectResult(new Error("digest lease hard-aborted"));
+    },
+    get abortCount() {
+      return abortCount;
+    },
+    get joinedSettled() {
+      return joinedSettled;
+    },
+    get retainsInput() {
+      return retained !== undefined;
+    },
+  });
+}
+
 export function makePortableRequest(source = "project p \"P\" {}") {
   const bytes = new TextEncoder().encode(source);
   const ref = {
