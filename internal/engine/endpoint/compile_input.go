@@ -35,7 +35,7 @@ type preparedCompileInput struct {
 }
 
 func mapCompileInput(ctx context.Context, negotiated *NegotiatedContext, input engineprotocol.CompileInput, source BlobSource) (engine.CompileInput, []semantic.Diagnostic, *protocolcommon.ProtocolFailure) {
-	prepared, diagnostics, failure := prepareCompileInput(negotiated, input)
+	prepared, diagnostics, failure := prepareCompileInput(ctx, negotiated, input)
 	if failure != nil || len(diagnostics) != 0 {
 		return engine.CompileInput{}, diagnostics, failure
 	}
@@ -50,30 +50,46 @@ func mapCompileInput(ctx context.Context, negotiated *NegotiatedContext, input e
 	return mapped, nil, nil
 }
 
-func prepareCompileInput(negotiated *NegotiatedContext, input engineprotocol.CompileInput) (preparedCompileInput, []semantic.Diagnostic, *protocolcommon.ProtocolFailure) {
+func prepareCompileInput(ctx context.Context, negotiated *NegotiatedContext, input engineprotocol.CompileInput) (preparedCompileInput, []semantic.Diagnostic, *protocolcommon.ProtocolFailure) {
+	if failure := preparationCancellation(ctx); failure != nil {
+		return preparedCompileInput{}, nil, failure
+	}
 	limits, diagnostics, failure := mapRequestLimits(input.ResourceLimits, negotiated.defaultLimits, negotiated.effectiveMaximums)
 	if failure != nil || len(diagnostics) != 0 {
 		return preparedCompileInput{}, diagnostics, failure
 	}
 
-	duplicateDiagnostics := validateLogicalDuplicates(input)
+	duplicateDiagnostics, failure := validateLogicalDuplicates(ctx, input)
+	if failure != nil {
+		return preparedCompileInput{}, nil, failure
+	}
 	if len(duplicateDiagnostics) != 0 {
 		return preparedCompileInput{}, duplicateDiagnostics, nil
 	}
 
-	uses := enumerateBlobUses(input)
-	if failure := validateBlobAliases(uses); failure != nil {
-		return preparedCompileInput{}, nil, failure
-	}
-	requirements, requiredBytes, failure := buildBlobRequirements(uses)
+	uses, failure := enumerateBlobUses(ctx, input)
 	if failure != nil {
 		return preparedCompileInput{}, nil, failure
 	}
-	budget, failure := compileAdmissionBudget(input, limits, int64(len(requirements)), requiredBytes)
+	if failure := validateBlobAliases(ctx, uses); failure != nil {
+		return preparedCompileInput{}, nil, failure
+	}
+	requirements, requiredBytes, failure := buildBlobRequirements(ctx, uses)
+	if failure != nil {
+		return preparedCompileInput{}, nil, failure
+	}
+	budget, failure := compileAdmissionBudget(ctx, input, limits, int64(len(requirements)), requiredBytes)
 	if failure != nil {
 		return preparedCompileInput{}, nil, failure
 	}
 	return preparedCompileInput{input: input, limits: limits, uses: uses, requirements: requirements, budget: budget}, nil, nil
+}
+
+func preparationCancellation(ctx context.Context) *protocolcommon.ProtocolFailure {
+	if ctx.Err() == nil {
+		return nil
+	}
+	return cancelledProtocolFailure()
 }
 
 func mapPreparedCompileInput(prepared preparedCompileInput, owned map[string][]byte) engine.CompileInput {
@@ -186,28 +202,52 @@ func mapRequestLimits(input engineprotocol.ResourceLimits, defaults, maximums en
 	return result, nil, nil
 }
 
-func validateLogicalDuplicates(input engineprotocol.CompileInput) []semantic.Diagnostic {
+func validateLogicalDuplicates(ctx context.Context, input engineprotocol.CompileInput) ([]semantic.Diagnostic, *protocolcommon.ProtocolFailure) {
 	type duplicateCheck struct {
 		key     string
 		message string
 		values  []string
 	}
+	projectPaths, failure := sourcePaths(ctx, input.ProjectSourceTree)
+	if failure != nil {
+		return nil, failure
+	}
+	installedPaths, failure := sourcePaths(ctx, input.InstalledPackTree)
+	if failure != nil {
+		return nil, failure
+	}
 	checks := []duplicateCheck{
-		{"invalid_closed_input_duplicate_project_path", "Project source paths must be unique.", sourcePaths(input.ProjectSourceTree)},
-		{"invalid_closed_input_duplicate_installed_path", "Installed Pack tree paths must be unique.", sourcePaths(input.InstalledPackTree)},
+		{"invalid_closed_input_duplicate_project_path", "Project source paths must be unique.", projectPaths},
+		{"invalid_closed_input_duplicate_installed_path", "Installed Pack tree paths must be unique.", installedPaths},
 	}
 	installNames := make([]string, len(input.ResolvedDependencies.Installs))
-	resolvedFullPaths := make([]string, 0)
+	resolvedPathCanonicalIDs := make(map[string]string)
+	resolvedPathCollision := false
 	assetKeys := make([]string, len(input.ReferencedAssets))
 	for index, pack := range input.ResolvedDependencies.Installs {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, failure
+		}
 		installNames[index] = pack.InstallName
 		filePaths := make([]string, len(pack.Files))
 		for fileIndex, file := range pack.Files {
+			if failure := preparationCancellation(ctx); failure != nil {
+				return nil, failure
+			}
 			filePaths[fileIndex] = file.Path
-			resolvedFullPaths = append(resolvedFullPaths, pack.Path+"/"+file.Path)
+			fullPath := pack.Path + "/" + file.Path
+			canonicalID := string(pack.CanonicalID)
+			if previousCanonicalID, exists := resolvedPathCanonicalIDs[fullPath]; exists && previousCanonicalID != canonicalID {
+				resolvedPathCollision = true
+			} else if !exists {
+				resolvedPathCanonicalIDs[fullPath] = canonicalID
+			}
 		}
 		dependencyNames := make([]string, len(pack.Dependencies))
 		for dependencyIndex, dependency := range pack.Dependencies {
+			if failure := preparationCancellation(ctx); failure != nil {
+				return nil, failure
+			}
 			dependencyNames[dependencyIndex] = dependency.LocalName
 		}
 		checks = append(checks,
@@ -216,6 +256,9 @@ func validateLogicalDuplicates(input engineprotocol.CompileInput) []semantic.Dia
 		)
 	}
 	for index, asset := range input.ReferencedAssets {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, failure
+		}
 		packID := ""
 		if asset.PackID != nil {
 			packID = string(*asset.PackID)
@@ -224,15 +267,27 @@ func validateLogicalDuplicates(input engineprotocol.CompileInput) []semantic.Dia
 	}
 	checks = append(checks,
 		duplicateCheck{"invalid_closed_input_duplicate_install", "Resolved Pack install names must be unique.", installNames},
-		duplicateCheck{"invalid_closed_input_duplicate_pack_path", "Resolved Packs must not claim the same installed path.", resolvedFullPaths},
 		duplicateCheck{"invalid_closed_input_duplicate_asset", "Referenced assets must have unique origin, Pack, and locator bindings.", assetKeys},
 	)
 
 	diagnostics := make([]semantic.Diagnostic, 0)
+	if resolvedPathCollision {
+		diagnostics = append(diagnostics, closedInputDiagnostic(
+			"invalid_closed_input_duplicate_pack_path",
+			"Resolved Packs with different canonical IDs must not claim the same installed path.",
+			nil,
+		))
+	}
 	for _, check := range checks {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, failure
+		}
 		values := slices.Clone(check.values)
 		slices.Sort(values)
 		for index := 1; index < len(values); index++ {
+			if failure := preparationCancellation(ctx); failure != nil {
+				return nil, failure
+			}
 			if values[index] == values[index-1] {
 				diagnostics = append(diagnostics, closedInputDiagnostic(check.key, check.message, nil))
 				break
@@ -240,15 +295,18 @@ func validateLogicalDuplicates(input engineprotocol.CompileInput) []semantic.Dia
 		}
 	}
 	sort.SliceStable(diagnostics, func(i, j int) bool { return diagnostics[i].MessageKey < diagnostics[j].MessageKey })
-	return diagnostics
+	return diagnostics, preparationCancellation(ctx)
 }
 
-func sourcePaths(input []engineprotocol.SourceFileInput) []string {
+func sourcePaths(ctx context.Context, input []engineprotocol.SourceFileInput) ([]string, *protocolcommon.ProtocolFailure) {
 	result := make([]string, len(input))
 	for index, file := range input {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, failure
+		}
 		result[index] = string(file.Path)
 	}
-	return result
+	return result, nil
 }
 
 func closedInputDiagnostic(key, message string, arguments map[string]string) semantic.Diagnostic {
@@ -269,46 +327,67 @@ func closedInputDiagnostic(key, message string, arguments map[string]string) sem
 	}
 }
 
-func enumerateBlobUses(input engineprotocol.CompileInput) []blobUse {
+func enumerateBlobUses(ctx context.Context, input engineprotocol.CompileInput) ([]blobUse, *protocolcommon.ProtocolFailure) {
 	uses := make([]blobUse, 0, len(input.ProjectSourceTree)+len(input.InstalledPackTree)+len(input.ResolvedDependencies.Installs)+len(input.ReferencedAssets))
 	for _, file := range input.ProjectSourceTree {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, failure
+		}
 		uses = append(uses, blobUse{ref: file.Blob})
 	}
 	for _, file := range input.InstalledPackTree {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, failure
+		}
 		uses = append(uses, blobUse{ref: file.Blob})
 	}
 	for _, pack := range input.ResolvedDependencies.Installs {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, failure
+		}
 		uses = append(uses, blobUse{ref: pack.Manifest})
 	}
 	for _, asset := range input.ReferencedAssets {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, failure
+		}
 		uses = append(uses, blobUse{ref: asset.Blob})
 	}
-	return uses
+	return uses, nil
 }
 
-func validateBlobAliases(input []blobUse) *protocolcommon.ProtocolFailure {
+func validateBlobAliases(ctx context.Context, input []blobUse) *protocolcommon.ProtocolFailure {
 	// An identical BlobRef may be reused by multiple logical inputs. It is
 	// verified once, each mapped use receives owned bytes, and resource
 	// preflight charges every logical use to its applicable limit.
 	uses := slices.Clone(input)
 	sort.SliceStable(uses, func(i, j int) bool { return uses[i].ref.BlobID < uses[j].ref.BlobID })
 	for index := 1; index < len(uses); index++ {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return failure
+		}
 		if uses[index-1].ref.BlobID == uses[index].ref.BlobID && uses[index-1].ref != uses[index].ref {
 			failure := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileConflictingBlobRef, "One blob identity has conflicting metadata.", false, nil)
 			return &failure
 		}
 	}
-	return nil
+	return preparationCancellation(ctx)
 }
 
-func buildBlobRequirements(input []blobUse) ([]BlobRequirement, int64, *protocolcommon.ProtocolFailure) {
+func buildBlobRequirements(ctx context.Context, input []blobUse) ([]BlobRequirement, int64, *protocolcommon.ProtocolFailure) {
 	uses := slices.Clone(input)
 	sort.SliceStable(uses, func(i, j int) bool { return uses[i].ref.BlobID < uses[j].ref.BlobID })
 	requirements := make([]BlobRequirement, 0, len(uses))
 	var requiredBytes int64
 	for index := 0; index < len(uses); {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return nil, 0, failure
+		}
 		next := index + 1
 		for next < len(uses) && uses[next].ref.BlobID == uses[index].ref.BlobID {
+			if failure := preparationCancellation(ctx); failure != nil {
+				return nil, 0, failure
+			}
 			if uses[next].ref != uses[index].ref {
 				failure := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileConflictingBlobRef, "One blob identity has conflicting metadata.", false, nil)
 				return nil, 0, &failure
@@ -335,11 +414,14 @@ func buildBlobRequirements(input []blobUse) ([]BlobRequirement, int64, *protocol
 }
 
 func preflightBlobResources(input engineprotocol.CompileInput, limits engine.ResourceLimits) *protocolcommon.ProtocolFailure {
-	_, failure := compileAdmissionBudget(input, limits, 0, 0)
+	_, failure := compileAdmissionBudget(context.Background(), input, limits, 0, 0)
 	return failure
 }
 
-func compileAdmissionBudget(input engineprotocol.CompileInput, limits engine.ResourceLimits, requiredBlobCount, requiredBlobBytes int64) (CompileAdmissionBudget, *protocolcommon.ProtocolFailure) {
+func compileAdmissionBudget(ctx context.Context, input engineprotocol.CompileInput, limits engine.ResourceLimits, requiredBlobCount, requiredBlobBytes int64) (CompileAdmissionBudget, *protocolcommon.ProtocolFailure) {
+	if failure := preparationCancellation(ctx); failure != nil {
+		return CompileAdmissionBudget{}, failure
+	}
 	budget := CompileAdmissionBudget{
 		RequiredBlobCount:  requiredBlobCount,
 		RequiredBlobBytes:  requiredBlobBytes,
@@ -363,6 +445,9 @@ func compileAdmissionBudget(input engineprotocol.CompileInput, limits engine.Res
 	}
 	metadataFiles := int64(len(input.ResolvedDependencies.Installs))
 	for _, pack := range input.ResolvedDependencies.Installs {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return CompileAdmissionBudget{}, failure
+		}
 		if int64(len(pack.Files)) > math.MaxInt64-metadataFiles {
 			return CompileAdmissionBudget{}, resourceFailure(engine.ErrorCodePackFilesExceeded, "pack_files", limits.MaxPackFiles, math.MaxInt64)
 		}
@@ -378,6 +463,9 @@ func compileAdmissionBudget(input engineprotocol.CompileInput, limits engine.Res
 
 	projectBytes := int64(0)
 	for _, file := range input.ProjectSourceTree {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return CompileAdmissionBudget{}, failure
+		}
 		value, failure := blobSize(file.Blob)
 		if failure != nil {
 			return CompileAdmissionBudget{}, failure
@@ -390,6 +478,9 @@ func compileAdmissionBudget(input engineprotocol.CompileInput, limits engine.Res
 	budget.ProjectSourceBytes = projectBytes
 	packBytes := int64(0)
 	for _, file := range input.InstalledPackTree {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return CompileAdmissionBudget{}, failure
+		}
 		value, failure := blobSize(file.Blob)
 		if failure != nil {
 			return CompileAdmissionBudget{}, failure
@@ -400,6 +491,9 @@ func compileAdmissionBudget(input engineprotocol.CompileInput, limits engine.Res
 		packBytes += value
 	}
 	for _, pack := range input.ResolvedDependencies.Installs {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return CompileAdmissionBudget{}, failure
+		}
 		value, failure := blobSize(pack.Manifest)
 		if failure != nil {
 			return CompileAdmissionBudget{}, failure
@@ -411,6 +505,9 @@ func compileAdmissionBudget(input engineprotocol.CompileInput, limits engine.Res
 	}
 	assetBytes := int64(0)
 	for _, asset := range input.ReferencedAssets {
+		if failure := preparationCancellation(ctx); failure != nil {
+			return CompileAdmissionBudget{}, failure
+		}
 		if asset.Digest != asset.Blob.Digest || asset.MediaType != asset.Blob.MediaType {
 			failure := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileConflictingBlobRef, "An asset binding conflicts with its blob metadata.", false, nil)
 			return CompileAdmissionBudget{}, &failure
@@ -426,7 +523,7 @@ func compileAdmissionBudget(input engineprotocol.CompileInput, limits engine.Res
 	}
 	budget.PackBytes = packBytes
 	budget.AssetBytes = assetBytes
-	return budget, nil
+	return budget, preparationCancellation(ctx)
 }
 
 func blobSize(ref protocolcommon.BlobRef) (int64, *protocolcommon.ProtocolFailure) {
@@ -499,10 +596,15 @@ func safeBlobRelease(release func() error) (err error) {
 
 func acquireBlobUses(ctx context.Context, uses []blobUse, source BlobSource) (owned map[string][]byte, lease *blobLease, failure *protocolcommon.ProtocolFailure) {
 	definitions, err := source.Definitions(ctx)
-	if err != nil {
-		return nil, nil, blobSourceFailure(ctx, err)
-	}
 	lease = &blobLease{definitions: definitions}
+	if err != nil {
+		// The source error is authoritative. Cleanup is still exact-once and
+		// panic-safe, but a secondary cleanup failure must not rewrite the stable
+		// error selected from the acquisition result.
+		sourceFailure := blobSourceFailure(ctx, err)
+		_ = lease.Release(ctx)
+		return nil, nil, sourceFailure
+	}
 	defer func() {
 		if failure != nil {
 			_ = lease.Release(ctx)
@@ -513,7 +615,9 @@ func acquireBlobUses(ctx context.Context, uses []blobUse, source BlobSource) (ow
 
 	definitionIDs := make([]string, len(definitions))
 	for index, definition := range definitions {
-		if definition.BlobID == "" || (definition.Reader == nil) == (definition.Owned == nil) {
+		if definition.BlobID == "" ||
+			(definition.Reader == nil) == (definition.Owned == nil) ||
+			definition.Owned != nil && definition.Owned.Release == nil {
 			result := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileBlobSource, "The request blob source is invalid.", false, nil)
 			return nil, lease, &result
 		}

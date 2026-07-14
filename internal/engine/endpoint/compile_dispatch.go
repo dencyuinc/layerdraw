@@ -34,8 +34,8 @@ const (
 
 // OwnedBlob transfers one already-owned Go byte slice into Execute without a
 // redundant transport-layer copy. The source must relinquish all access until
-// Release is called; Release must not mutate Bytes and is invoked exactly once.
-// A nil Bytes slice is a valid transferred zero-byte blob.
+// Release is called; Release is required, must not mutate Bytes, and is invoked
+// exactly once. A nil Bytes slice is a valid transferred zero-byte blob.
 type OwnedBlob struct {
 	Bytes   []byte
 	Release func()

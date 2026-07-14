@@ -88,7 +88,7 @@ type CompilePlan struct {
 
 // PrepareCompile validates and owns one generated request without reading any
 // attachment or invoking Engine.Compile. Exactly one of plan or terminal is
-// non-nil when err is nil.
+// non-nil when err is nil; both are nil when caller misuse returns an error.
 func (d *CompileDispatcher) PrepareCompile(
 	ctx context.Context,
 	negotiated *NegotiatedContext,
@@ -105,18 +105,19 @@ func (d *CompileDispatcher) PrepareCompile(
 	}
 	requestID := request.RequestID
 	engineRelease := protocolcommon.ReleaseVersion(d.compiler.Describe().ReleaseVersion)
+	if _, releaseErr := protocolcommon.EncodeReleaseVersion(engineRelease); releaseErr != nil {
+		return nil, nil, fmt.Errorf("invalid Engine release: %w", releaseErr)
+	}
 	defer func() {
 		if recover() != nil {
 			response, responseErr := compileFailedResponse(requestID, engineRelease, invariantProtocolFailure())
-			plan = nil
-			terminal = &response
-			err = responseErr
+			plan, terminal, err = terminalCompilePreparation(response, responseErr)
 		}
 	}()
 
 	if ctx.Err() != nil {
 		response, responseErr := compileCancelledResponse(requestID, engineRelease)
-		return nil, &response, responseErr
+		return terminalCompilePreparation(response, responseErr)
 	}
 	encodedRequest, encodeErr := engineprotocol.EncodeCompileRequestEnvelope(request)
 	if encodeErr != nil {
@@ -127,14 +128,18 @@ func (d *CompileDispatcher) PrepareCompile(
 			false,
 			nil,
 		))
-		return nil, &response, responseErr
+		return terminalCompilePreparation(response, responseErr)
 	}
 	// The canonical generated round trip severs every caller-owned slice, map,
 	// and pointer before the request is retained by the plan.
 	request, encodeErr = engineprotocol.DecodeCompileRequestEnvelope(encodedRequest)
 	if encodeErr != nil {
 		response, responseErr := compileFailedResponse(requestID, engineRelease, invariantProtocolFailure())
-		return nil, &response, responseErr
+		return terminalCompilePreparation(response, responseErr)
+	}
+	if ctx.Err() != nil {
+		response, responseErr := compileCancelledResponse(requestID, engineRelease)
+		return terminalCompilePreparation(response, responseErr)
 	}
 	if negotiated == nil ||
 		negotiated.protocolName != ProtocolName ||
@@ -151,21 +156,29 @@ func (d *CompileDispatcher) PrepareCompile(
 			false,
 			nil,
 		))
-		return nil, &response, responseErr
+		return terminalCompilePreparation(response, responseErr)
 	}
 	if engineRelease != negotiated.engineRelease {
 		response, responseErr := compileFailedResponse(requestID, engineRelease, invariantProtocolFailure())
-		return nil, &response, responseErr
+		return terminalCompilePreparation(response, responseErr)
 	}
 
-	prepared, diagnostics, failure := prepareCompileInput(negotiated, request.Payload)
+	prepared, diagnostics, failure := prepareCompileInput(ctx, negotiated, request.Payload)
 	if failure != nil {
+		if failure.Category == protocolcommon.ProtocolFailureCategoryCancelled {
+			response, responseErr := compileCancelledResponse(requestID, engineRelease)
+			return terminalCompilePreparation(response, responseErr)
+		}
 		response, responseErr := compileFailedResponse(requestID, engineRelease, *failure)
-		return nil, &response, responseErr
+		return terminalCompilePreparation(response, responseErr)
 	}
 	if len(diagnostics) != 0 {
 		response, responseErr := compileRejectedResponse(requestID, engineRelease, diagnostics)
-		return nil, &response, responseErr
+		return terminalCompilePreparation(response, responseErr)
+	}
+	if ctx.Err() != nil {
+		response, responseErr := compileCancelledResponse(requestID, engineRelease)
+		return terminalCompilePreparation(response, responseErr)
 	}
 	return &CompilePlan{
 		compiler:     d.compiler,
@@ -176,6 +189,13 @@ func (d *CompileDispatcher) PrepareCompile(
 		budget:       prepared.budget,
 		state:        compilePlanReady,
 	}, nil, nil
+}
+
+func terminalCompilePreparation(response engineprotocol.CompileResponseEnvelope, responseErr error) (*CompilePlan, *engineprotocol.CompileResponseEnvelope, error) {
+	if responseErr != nil {
+		return nil, nil, responseErr
+	}
+	return nil, &response, nil
 }
 
 // BlobRequirements returns the exact unique, BlobID-sorted request attachment

@@ -252,27 +252,31 @@ func TestInputDuplicateEnumerationAndEveryResourcePreflight(t *testing.T) {
 	value := []byte("x")
 	ref := testBlobRef("blob", "text/plain", value)
 	packID := engineprotocol.CanonicalPackSelector("pub/p")
+	otherPackID := engineprotocol.CanonicalPackSelector("pub/other")
 	input := engineprotocol.CompileInput{
 		EntryPath: "document.ldl", Mode: engineprotocol.CompileModeProject,
 		ProjectSourceTree: []engineprotocol.SourceFileInput{{Path: "document.ldl", Blob: ref}, {Path: "document.ldl", Blob: ref}},
 		InstalledPackTree: []engineprotocol.SourceFileInput{{Path: "pack/p/a.ldl", Blob: ref}, {Path: "pack/p/a.ldl", Blob: ref}},
 		ResolvedDependencies: engineprotocol.ResolvedDependencies{Format: engineprotocol.ResolvedDependenciesFormatValue, FormatVersion: 1, Language: 1, Installs: []engineprotocol.ResolvedPack{
 			{InstallName: "p", CanonicalID: packID, Path: "pack/p", Manifest: ref, Files: []engineprotocol.ResolvedPackFile{{Path: "a.ldl"}, {Path: "a.ldl"}}, Dependencies: []engineprotocol.ResolvedPackDependency{{LocalName: "d"}, {LocalName: "d"}}},
-			{InstallName: "p", CanonicalID: packID, Path: "pack/p", Manifest: ref, Files: []engineprotocol.ResolvedPackFile{{Path: "a.ldl"}}, Dependencies: []engineprotocol.ResolvedPackDependency{}},
+			{InstallName: "p", CanonicalID: otherPackID, Path: "pack/p", Manifest: ref, Files: []engineprotocol.ResolvedPackFile{{Path: "a.ldl"}}, Dependencies: []engineprotocol.ResolvedPackDependency{}},
 		}},
 		ReferencedAssets: []engineprotocol.AssetInput{{Origin: engineprotocol.SourceOriginKindPack, PackID: &packID, Locator: "a", Blob: ref, Digest: ref.Digest, MediaType: ref.MediaType}, {Origin: engineprotocol.SourceOriginKindPack, PackID: &packID, Locator: "a", Blob: ref, Digest: ref.Digest, MediaType: ref.MediaType}},
 		ResourceLimits:   engineprotocol.ResourceLimits{},
 	}
-	if diagnostics := validateLogicalDuplicates(input); len(diagnostics) < 7 {
+	if diagnostics, failure := validateLogicalDuplicates(context.Background(), input); failure != nil || len(diagnostics) < 7 {
 		t.Fatalf("missing duplicate classes: %+v", diagnostics)
 	}
-	uses := enumerateBlobUses(input)
+	uses, failure := enumerateBlobUses(context.Background(), input)
+	if failure != nil {
+		t.Fatal(failure)
+	}
 	if len(uses) != len(input.ProjectSourceTree)+len(input.InstalledPackTree)+len(input.ResolvedDependencies.Installs)+len(input.ReferencedAssets) {
 		t.Fatalf("blob use enumeration incomplete: %d", len(uses))
 	}
 	conflict := uses[0]
 	conflict.ref.MediaType = "other"
-	if failure := validateBlobAliases([]blobUse{uses[0], conflict}); failure == nil || failure.Code != FailureCompileConflictingBlobRef {
+	if failure := validateBlobAliases(context.Background(), []blobUse{uses[0], conflict}); failure == nil || failure.Code != FailureCompileConflictingBlobRef {
 		t.Fatalf("conflict not rejected: %+v", failure)
 	}
 
