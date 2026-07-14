@@ -15,6 +15,16 @@ importers:
         specifier: 2.10.4
         version: 2.10.4
 
+  packages/engine-client:
+    dependencies:
+      '@layerdraw/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
   packages/engine-wasm:
     devDependencies:
       '@playwright/test':
