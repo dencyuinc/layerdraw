@@ -52,3 +52,36 @@ jobs:
         env:
           COVERAGE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
         run: make ci
+
+  engine-wasm-browsers:
+    name: Engine WASM Worker real-artifact matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .node-version
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Install pinned workspace dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Build Engine WASM Worker package
+        run: corepack pnpm --filter @layerdraw/engine-wasm build
+
+      - name: Install pinned Playwright browsers
+        run: corepack pnpm --filter @layerdraw/engine-wasm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Run real Go/WASM Worker in Chromium, Firefox, and WebKit
+        run: corepack pnpm --filter @layerdraw/engine-wasm test:browser

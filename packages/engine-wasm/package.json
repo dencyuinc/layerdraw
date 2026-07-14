@@ -1,0 +1,47 @@
+{
+  "name": "@layerdraw/engine-wasm",
+  "version": "0.0.0",
+  "description": "Low-level dedicated Worker transport for the LayerDraw Go WASM Engine.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "sideEffects": ["./dist/worker.js"],
+  "files": [
+    "dist/**",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.txt"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    }
+  },
+  "scripts": {
+    "build": "node tools/build-package.mjs --allow-dirty",
+    "generate": "node -e \"\"",
+    "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "prepack": "node tools/build-package.mjs && node tools/pack-legal.mjs prepare",
+    "postpack": "node tools/pack-legal.mjs clean",
+    "test": "node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=dist/host.js --test-coverage-include=dist/protocol.js --test-coverage-include=dist/worker-runtime.js --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=90 test/*.test.mjs",
+    "test:browser": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
