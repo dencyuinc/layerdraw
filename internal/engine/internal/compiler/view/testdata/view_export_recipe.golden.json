@@ -1,0 +1,131 @@
+{
+  "exports": [
+    {
+      "ID": "data",
+      "Address": "ldl:project:p:view:v:export:data",
+      "ViewAddress": "ldl:project:p:view:v",
+      "Format": "json",
+      "Extension": ".json",
+      "Filename": "view.json",
+      "Fidelity": "lossless",
+      "SourceRefs": true,
+      "ExporterProfile": {
+        "ID": "layerdraw/json@1",
+        "Format": "json",
+        "RegistrySchemaVersion": 1,
+        "RegistryDigest": "sha256:064941009d55baaa542dd72819107d60f47782f7fec9cc7735260f512cba0c9f",
+        "SpecificationDigest": "sha256:9140bcd68dd8172a6520b4d6ad468cd1a52006e487e2276997768f06f14375b7"
+      },
+      "Options": {
+        "Kind": "json",
+        "Structured": {
+          "Diagnostics": true,
+          "StateSummary": false
+        },
+        "Image": null,
+        "Page": null,
+        "HTML": null,
+        "Delimited": null,
+        "XLSX": null,
+        "Manifest": null
+      },
+      "NativeMaximumFidelity": "lossless",
+      "EffectiveMaximumFidelity": "lossless",
+      "FidelityBasis": "native",
+      "RequiresSourceManifest": false
+    }
+  ],
+  "views": [
+    {
+      "Description": null,
+      "Tags": [],
+      "Annotations": {},
+      "ID": "v",
+      "Address": "ldl:project:p:view:v",
+      "DisplayName": "View",
+      "Category": "topology",
+      "Intent": "Golden static recipe",
+      "StateInput": "none",
+      "StateRequirement": "none",
+      "Source": {
+        "Kind": "query",
+        "Query": {
+          "QueryAddress": "ldl:project:p:query:q",
+          "Arguments": []
+        },
+        "Diff": null
+      },
+      "RelationProjections": [],
+      "Shape": {
+        "Kind": "diagram",
+        "Diagram": {
+          "Layout": "layered",
+          "Direction": "top_to_bottom",
+          "Abstraction": "normal",
+          "Composed": false,
+          "Placements": []
+        },
+        "Table": null,
+        "Matrix": null,
+        "Tree": null,
+        "Flow": null,
+        "Context": null,
+        "Diff": null
+      },
+      "Exports": [
+        {
+          "ID": "data",
+          "Address": "ldl:project:p:view:v:export:data",
+          "ViewAddress": "ldl:project:p:view:v",
+          "Format": "json",
+          "Extension": ".json",
+          "Filename": "view.json",
+          "Fidelity": "lossless",
+          "SourceRefs": true,
+          "ExporterProfile": {
+            "ID": "layerdraw/json@1",
+            "Format": "json",
+            "RegistrySchemaVersion": 1,
+            "RegistryDigest": "sha256:064941009d55baaa542dd72819107d60f47782f7fec9cc7735260f512cba0c9f",
+            "SpecificationDigest": "sha256:9140bcd68dd8172a6520b4d6ad468cd1a52006e487e2276997768f06f14375b7"
+          },
+          "Options": {
+            "Kind": "json",
+            "Structured": {
+              "Diagnostics": true,
+              "StateSummary": false
+            },
+            "Image": null,
+            "Page": null,
+            "HTML": null,
+            "Delimited": null,
+            "XLSX": null,
+            "Manifest": null
+          },
+          "NativeMaximumFidelity": "lossless",
+          "EffectiveMaximumFidelity": "lossless",
+          "FidelityBasis": "native",
+          "RequiresSourceManifest": false
+        }
+      ],
+      "ReservedTableColumnIDs": [],
+      "ReservedExportIDs": [],
+      "Dependencies": {
+        "QueryAddresses": [
+          "ldl:project:p:query:q"
+        ],
+        "ParameterAddresses": [],
+        "LayerAddresses": [],
+        "EntityTypeAddresses": [],
+        "RelationTypeAddresses": [],
+        "EntityAddresses": [],
+        "RelationAddresses": [],
+        "ColumnAddresses": [],
+        "ExportAddresses": [
+          "ldl:project:p:view:v:export:data"
+        ],
+        "StateReads": []
+      }
+    }
+  ]
+}

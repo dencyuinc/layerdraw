@@ -875,6 +875,10 @@ func (r *resolver) resolveAny(st *moduleState, text string) (DeclarationSymbol, 
 }
 
 func (r *resolver) bindDeclarationRefs(st *moduleState) {
+	// Query bindings must be complete before View owner inference reads them.
+	// Declarations are authored in arbitrary order, so binding Query and View
+	// bodies in one source-order pass makes a View before its Query observe an
+	// incomplete selector set.
 	for _, decl := range st.ast.declarations {
 		sourceAddress := st.declarationAddress(decl)
 		for _, ref := range decl.refs {
@@ -889,6 +893,12 @@ func (r *resolver) bindDeclarationRefs(st *moduleState) {
 		}
 		if decl.kind == KindQuery && decl.node != nil && sourceAddress != "" {
 			r.resolveQueryRefs(st, decl, sourceAddress, true, false)
+		}
+	}
+	for _, decl := range st.ast.declarations {
+		sourceAddress := st.declarationAddress(decl)
+		if decl.kind == KindView && decl.node != nil && sourceAddress != "" {
+			r.resolveViewRefs(st, decl, sourceAddress, true, false)
 		}
 	}
 }
@@ -915,6 +925,9 @@ func (r *resolver) validateDeclarationRefs(st *moduleState, selectedOnly bool) {
 		}
 		if decl.kind == KindQuery && decl.node != nil && sourceAddress != "" {
 			r.resolveQueryRefs(st, decl, sourceAddress, false, true)
+		}
+		if decl.kind == KindView && decl.node != nil && sourceAddress != "" {
+			r.resolveViewRefs(st, decl, sourceAddress, false, true)
 		}
 	}
 }
@@ -1687,7 +1700,7 @@ func (r *resolver) selectDecl(decl DeclarationSymbol) {
 			if b.Module == decl.Module && b.SourceAddress == decl.Address {
 				if target, ok := r.symbols[b.TargetAddress]; ok {
 					r.selectDecl(target)
-					if decl.Kind == KindQuery && target.Owner != nil {
+					if target.Owner != nil {
 						if owner, exists := r.symbols[addressOf(*target.Owner)]; exists {
 							r.selectDecl(owner)
 						}

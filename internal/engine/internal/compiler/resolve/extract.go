@@ -266,7 +266,7 @@ func extractDeclaration(n *syntax.Node, ast *moduleAST) {
 		extractNamedBlockChildren(n, d, "parameters", KindParameter, ast)
 		extractOwnerReservations(n, d, ast)
 	case "view":
-		d := rawDecl{kind: KindView, span: n.Span}
+		d := rawDecl{kind: KindView, span: n.Span, node: n}
 		if len(toks) > 1 {
 			d.id = toks[1].Raw
 		}
