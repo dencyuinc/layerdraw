@@ -203,8 +203,10 @@ HandshakeRequest
   client_release
   protocols[]
     name
-    supported_range
-    schema_digests[]
+    supported_range: canonical "major.minor..major.minor", lower <= upper
+    versions[]
+      version: exact major.minor within supported_range
+      schema_digest: exact digest for that version
   required_capabilities[]
   optional_capabilities[]
   client_limits?
@@ -213,6 +215,11 @@ HandshakeResult
   host_release
   endpoint_instance_id
   negotiated_protocols[]
+  capability_statuses[]
+    capability_id
+    enabled
+    protocol_version
+    unavailable_reason?
   capability_manifest
   release_manifest_digest
 ```
@@ -241,11 +248,35 @@ CapabilityManifest
 
 OperationCapability
   enabled
-  unavailable_reason?: not_linked | not_configured | not_authorized | not_entitled | incompatible | offline | degraded
+  unavailable_reason?: not_linked | not_configured | not_authorized | not_entitled | incompatible | offline | degraded | unsupported
   protocol_version
   limits?
   required_authoring_capabilities[]?
 ```
+
+`enabled=true`は`unavailable_reason`を禁止し、`enabled=false`は理由を必須とする。
+`capability_statuses`はrequestのrequired / optional capability IDごとに一意な結果を返す。
+未知のoptional IDはrequest全体を失敗させず、`enabled=false`かつ
+`unavailable_reason=unsupported`として明示する。選択アルゴリズムとoverlap policyはIssue #28が所有する。
+
+`supported_range`は両端を含む単一major内のcanonical rangeで、各端はunsigned 32-bitの
+major/minorをleading zeroなしで表す。majorを跨ぐ場合は別offerを使う。range中の各advertise versionは`versions`の
+一意なentryでexact schema digestへ結び付ける。Engine handshake envelopeのbootstrap
+`protocol`は成功・拒否のどちらも`{name:"engine", version:"1.0"}`であり、これは
+version選択結果ではなくhandshake wire自体のversionである。
+
+Engine 1.0のlimit keyは9個に閉じる。byte、item、axis pixel、total pixelのunitを
+schemaどおりに固定し、endpoint descriptorはhard maximum、default、client-scoped
+effective maximumを区別する。effective maximumはclient ceilingがあればhost hard
+maximumとの最小値、なければhost hard maximumである。compile requestの正のoverrideが
+effective maximumを超える場合はrejectし、zeroまたは省略は
+`min(default_value, effective_maximum)`を適用する。dispatch時の診断生成はIssue #29で行う。
+
+release fieldはcanonical SemVer 2.0.0、release manifest identityと`manifest_etag`は
+lowercase SHA-256 digestである。`manifest_etag`は自身を除くcanonical effective manifest
+projectionのdigestとし、その構築はIssue #28が所有する。`endpoint_instance_id`は128文字以下の
+opaque non-secret identifierで、process / Worker instanceの生存期間だけ安定する。生成、restart時の
+更新、release metadataとの整合はIssue #28が所有し、schema/codegenはshapeだけを固定する。
 
 manifestはActorとentitlementに応じて変わる。authorization情報を漏らす場合、存在自体を返さず`not_authorized`を一般化してよい。manifest変更時は`manifest_etag`を変更し、long-lived clientへcapability changed eventを通知する。
 
@@ -2106,7 +2137,9 @@ LayerDrawReleaseManifest
   protocols[]
     name
     supported_range
-    schema_digest
+    versions[]
+      version
+      schema_digest
   ldl_generations[]
   container_versions[]
   renderer_profiles[]

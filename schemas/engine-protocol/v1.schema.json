@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "https://schemas.layerdraw.dev/meta/protocol/v1",
   "$id": "https://schemas.layerdraw.dev/engine-protocol/v1",
   "$comment": "SPDX-License-Identifier: Apache-2.0",
   "title": "LayerDraw Engine Protocol v1",
@@ -13,19 +13,26 @@
       "properties": {
         "blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "locator": {"type": "string"},
-        "media_type": {"type": "string"},
+        "locator": {"type": "string", "minLength": 1},
+        "media_type": {"type": "string", "minLength": 1},
         "origin": {"$ref": "#/$defs/SourceOriginKind"},
-        "pack_id": {"type": "string"}
+        "pack_id": {"$ref": "#/$defs/CanonicalPackSelector"}
       },
       "required": ["origin", "locator", "blob", "digest", "media_type"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "origin",
+        "variants": {
+          "pack": {"required": ["pack_id"]},
+          "project": {"forbidden": ["pack_id"]}
+        }
+      }
     },
     "CompileInput": {
       "type": "object",
       "description": "One closed compiler input. Blob references resolve only against bytes supplied with the same request/session. In every ResourceLimits field, omission or the canonical value 0 selects the Go facade default; a positive value overrides it.",
       "properties": {
-        "entry_path": {"type": "string", "minLength": 1},
+        "entry_path": {"$ref": "#/$defs/CanonicalSourcePath"},
         "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
         "installed_pack_tree": {"type": "array", "items": {"$ref": "#/$defs/SourceFileInput"}},
         "mode": {"$ref": "#/$defs/CompileMode"},
@@ -33,21 +40,42 @@
         "referenced_assets": {"type": "array", "items": {"$ref": "#/$defs/AssetInput"}},
         "resolved_dependencies": {"$ref": "#/$defs/ResolvedDependencies"},
         "resource_limits": {"$ref": "#/$defs/ResourceLimits"},
-        "root_pack_id": {"type": "string", "minLength": 1}
+        "root_pack_id": {"$ref": "#/$defs/CanonicalPackSelector"}
       },
       "required": ["mode", "entry_path", "project_source_tree", "installed_pack_tree", "resolved_dependencies", "referenced_assets", "resource_limits"],
       "additionalProperties": false,
       "x-layerdraw-tagged-union": {
         "property": "mode",
         "variants": {
-          "pack": {"required": ["root_pack_id"]},
-          "project": {"forbidden": ["root_pack_id"]}
+          "pack": {"required": ["root_pack_id"], "empty": ["project_source_tree"], "non_empty": ["installed_pack_tree"]},
+          "project": {"forbidden": ["root_pack_id"], "non_empty": ["project_source_tree"]}
         }
       }
+    },
+    "CanonicalPackSelector": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$",
+      "description": "A canonical nonempty publisher/pack-name selector."
+    },
+    "CanonicalSourcePath": {
+      "type": "string",
+      "format": "canonical-source-path",
+      "minLength": 1,
+      "description": "A canonical relative slash-separated source-tree path with no dot, dot-dot, empty, absolute, backslash, or NUL segment."
     },
     "CompileMode": {
       "type": "string",
       "enum": ["pack", "project"]
+    },
+    "EngineProtocolRef": {
+      "type": "object",
+      "description": "The fixed Engine 1.0 bootstrap reference used by handshake and by a no-overlap rejection response; successful 1.0 operations use the same exact reference.",
+      "properties": {
+        "name": {"type": "string", "const": "engine"},
+        "version": {"type": "string", "const": "1.0"}
+      },
+      "required": ["name", "version"],
+      "additionalProperties": false
     },
     "ExportRecipeBlobRef": {
       "type": "object",
@@ -250,7 +278,7 @@
         "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
         "operation": {"type": "string", "const": "engine.compile"},
         "payload": {"$ref": "#/$defs/CompileInput"},
-        "protocol": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolRef"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
         "request_id": {"type": "string", "minLength": 1},
         "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
       },
@@ -261,12 +289,12 @@
       "type": "object",
       "properties": {
         "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
-        "engine_release": {"type": "string"},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
         "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
         "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
         "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
         "payload": {"$ref": "#/$defs/CompileResult"},
-        "protocol": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolRef"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
         "request_id": {"type": "string", "minLength": 1}
       },
       "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
@@ -280,7 +308,7 @@
         "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
         "operation": {"type": "string", "const": "engine.handshake"},
         "payload": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/HandshakeRequest"},
-        "protocol": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolRef"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
         "request_id": {"type": "string", "minLength": 1},
         "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
       },
@@ -291,12 +319,12 @@
       "type": "object",
       "properties": {
         "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}},
-        "engine_release": {"type": "string"},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
         "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
         "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
         "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
         "payload": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/HandshakeResult"},
-        "protocol": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolRef"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
         "request_id": {"type": "string", "minLength": 1}
       },
       "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
@@ -317,7 +345,7 @@
     "ResolvedPack": {
       "type": "object",
       "properties": {
-        "canonical_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$"},
+        "canonical_id": {"$ref": "#/$defs/CanonicalPackSelector"},
         "dependencies": {"type": "array", "items": {"$ref": "#/$defs/ResolvedPackDependency"}},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "entry": {"type": "string"},
@@ -368,17 +396,17 @@
     },
     "EffectiveResourceLimits": {
       "type": "object",
-      "description": "The complete non-negative signed-64-bit resource limits actually applied to a successful compile.",
+      "description": "The complete positive signed-64-bit resource limits actually applied to a successful compile.",
       "properties": {
-        "max_asset_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "max_assets": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "max_declarations": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "max_pack_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "max_pack_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "max_project_source_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "max_project_source_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "max_raster_dimension": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "max_raster_pixels": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"}
+        "max_asset_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_assets": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_declarations": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_pack_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_pack_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_project_source_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_project_source_files": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_raster_dimension": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_raster_pixels": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"}
       },
       "required": ["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"],
       "additionalProperties": false
@@ -387,7 +415,7 @@
       "type": "object",
       "properties": {
         "blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
-        "path": {"type": "string", "minLength": 1}
+        "path": {"$ref": "#/$defs/CanonicalSourcePath"}
       },
       "required": ["path", "blob"],
       "additionalProperties": false

@@ -25,6 +25,12 @@ import (
 
 const generatorVersion = "layerdraw-protocolgen/1"
 
+const (
+	schemaDialectID   = "https://schemas.layerdraw.dev/meta/protocol/v1"
+	schemaVocabulary  = "https://schemas.layerdraw.dev/vocab/protocol/v1"
+	schemaDialectPath = "schemas/meta/layerdraw-protocol-schema-v1.json"
+)
+
 var (
 	snakeCase = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
 	typeName  = regexp.MustCompile(`^[A-Z][A-Za-z0-9]*$`)
@@ -56,6 +62,18 @@ type taggedVariant struct {
 	Required  []string `json:"required"`
 	Forbidden []string `json:"forbidden"`
 	Empty     []string `json:"empty"`
+	NonEmpty  []string `json:"non_empty"`
+}
+
+type operatorValueRule struct {
+	Operator  string   `json:"operator"`
+	Value     string   `json:"value"`
+	Valueless []string `json:"valueless"`
+}
+
+type uniqueArrayKey struct {
+	Array    string `json:"array"`
+	Property string `json:"property"`
 }
 
 type schemaType struct {
@@ -79,12 +97,23 @@ type schemaType struct {
 	TaggedUnion          *taggedUnion           `json:"x-layerdraw-tagged-union,omitempty"`
 	OutcomeEnvelope      bool                   `json:"x-layerdraw-outcome-envelope,omitempty"`
 	OrderedRange         bool                   `json:"x-layerdraw-ordered-range,omitempty"`
+	OperatorValue        *operatorValueRule     `json:"x-layerdraw-operator-value,omitempty"`
+	ProtocolOffer        bool                   `json:"x-layerdraw-protocol-offer,omitempty"`
+	LimitCapability      bool                   `json:"x-layerdraw-limit-capability,omitempty"`
+	UniqueArrayKeys      []uniqueArrayKey       `json:"x-layerdraw-unique-array-keys,omitempty"`
 }
 
 type schemaSet struct {
 	documents []*schemaDocument
 	byID      map[string]*schemaDocument
+	dialect   digestSource
 	digest    string
+}
+
+type digestSource struct {
+	path       string
+	raw        []byte
+	fileDigest string
 }
 
 type generatedFile struct {
@@ -153,8 +182,11 @@ func loadSchemas(root string) (schemaSet, error) {
 		expectedByPath[filepath.ToSlash(group.path)] = struct{ id, packageName, module string }{group.id, group.packageName, group.module}
 	}
 	sort.Strings(paths)
-	set := schemaSet{byID: map[string]*schemaDocument{}}
-	aggregate := sha256.New()
+	dialect, err := loadSchemaDialect(root)
+	if err != nil {
+		return schemaSet{}, err
+	}
+	set := schemaSet{byID: map[string]*schemaDocument{}, dialect: dialect}
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -209,16 +241,53 @@ func loadSchemas(root string) (schemaSet, error) {
 	}
 	for _, document := range set.documents {
 		closure := schemaClosure(set, document)
-		document.digest = digestDocuments(closure)
+		document.digest = digestDocuments(closure, set.dialect)
 	}
+	aggregateSources := []digestSource{set.dialect}
 	for _, document := range set.documents {
-		aggregate.Write([]byte(document.path))
-		aggregate.Write([]byte{0})
-		aggregate.Write(document.raw)
-		aggregate.Write([]byte{0})
+		aggregateSources = append(aggregateSources, digestSource{path: document.path, raw: document.raw, fileDigest: document.fileDigest})
 	}
-	set.digest = "sha256:" + hex.EncodeToString(aggregate.Sum(nil))
+	sort.Slice(aggregateSources, func(i, j int) bool { return aggregateSources[i].path < aggregateSources[j].path })
+	set.digest = digestSources(aggregateSources)
 	return set, nil
+}
+
+func loadSchemaDialect(root string) (digestSource, error) {
+	directory := filepath.Join(root, "schemas", "meta")
+	matches, err := filepath.Glob(filepath.Join(directory, "*.json"))
+	if err != nil {
+		return digestSource{}, err
+	}
+	wanted := filepath.Join(root, filepath.FromSlash(schemaDialectPath))
+	if len(matches) != 1 || matches[0] != wanted {
+		return digestSource{}, fmt.Errorf("schemas/meta must contain exactly layerdraw-protocol-schema-v1.json, found %v", matches)
+	}
+	data, err := os.ReadFile(wanted)
+	if err != nil {
+		return digestSource{}, err
+	}
+	data, err = normalizeSchemaBytes(data)
+	if err != nil {
+		return digestSource{}, fmt.Errorf("normalize %s: %w", wanted, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		return digestSource{}, fmt.Errorf("decode %s: %w", wanted, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return digestSource{}, fmt.Errorf("decode %s: trailing JSON value", wanted)
+	}
+	if document["$schema"] != "https://json-schema.org/draft/2020-12/schema" || document["$id"] != schemaDialectID {
+		return digestSource{}, errors.New("LayerDraw schema dialect has an unexpected identity")
+	}
+	vocabulary, ok := document["$vocabulary"].(map[string]any)
+	if !ok || vocabulary[schemaVocabulary] != true {
+		return digestSource{}, fmt.Errorf("LayerDraw schema dialect must require vocabulary %s", schemaVocabulary)
+	}
+	digest := sha256.Sum256(data)
+	return digestSource{path: schemaDialectPath, raw: data, fileDigest: "sha256:" + hex.EncodeToString(digest[:])}, nil
 }
 
 func normalizeSchemaBytes(data []byte) ([]byte, error) {
@@ -285,20 +354,29 @@ func schemaClosure(set schemaSet, root *schemaDocument) []*schemaDocument {
 	return closure
 }
 
-func digestDocuments(documents []*schemaDocument) string {
-	hash := sha256.New()
+func digestDocuments(documents []*schemaDocument, dialect digestSource) string {
+	sources := []digestSource{dialect}
 	for _, document := range documents {
-		hash.Write([]byte(document.path))
+		sources = append(sources, digestSource{path: document.path, raw: document.raw, fileDigest: document.fileDigest})
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].path < sources[j].path })
+	return digestSources(sources)
+}
+
+func digestSources(sources []digestSource) string {
+	hash := sha256.New()
+	for _, source := range sources {
+		hash.Write([]byte(source.path))
 		hash.Write([]byte{0})
-		hash.Write(document.raw)
+		hash.Write(source.raw)
 		hash.Write([]byte{0})
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func validateDocument(document *schemaDocument) error {
-	if document.Schema != "https://json-schema.org/draft/2020-12/schema" {
-		return fmt.Errorf("$schema must pin JSON Schema draft 2020-12")
+	if document.Schema != schemaDialectID {
+		return fmt.Errorf("$schema must require the LayerDraw protocol dialect %s", schemaDialectID)
 	}
 	if document.ID == "" || document.Title == "" || document.Package == "" || document.Module == "" {
 		return errors.New("$id, title, x-layerdraw-go-package, and x-layerdraw-ts-module are required")
@@ -333,6 +411,9 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		return fmt.Errorf("%s: %w", context, err)
 	}
 	if len(value.OneOf) != 0 {
+		if context != "JsonValue" {
+			return fmt.Errorf("%s uses unsupported oneOf; only the generated JsonValue union is supported", context)
+		}
 		for index, branch := range value.OneOf {
 			if err := validateType(set, document, fmt.Sprintf("%s.oneOf[%d]", context, index), branch, seen); err != nil {
 				return err
@@ -347,7 +428,13 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		return fmt.Errorf("%s enum must have string type", context)
 	}
 	if value.Format != "" {
-		allowed := map[string]bool{"date-time": true, "int64-decimal": true, "nonnegative-int64-decimal": true, "uint64-decimal": true}
+		allowed := map[string]bool{
+			"canonical-source-path": true, "date-time": true, "finite-binary64-decimal": true,
+			"int64-decimal": true, "nonnegative-int64-decimal": true, "nonnegative-safe-integer-decimal": true,
+			"positive-finite-binary64-decimal": true, "positive-int64-decimal": true, "positive-safe-integer-decimal": true,
+			"protocol-version": true, "protocol-version-or-range": true, "protocol-version-range": true,
+			"safe-integer-decimal": true, "uint64-decimal": true,
+		}
 		if !allowed[value.Format] {
 			return fmt.Errorf("%s has unsupported format %q", context, value.Format)
 		}
@@ -415,7 +502,16 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				}
 				discriminator = target.Definitions[name]
 			}
+			discriminatorType, err := scalarType(discriminator.Type)
+			if err != nil {
+				return err
+			}
 			tags := stringSet(discriminator.Enum)
+			if discriminatorType == "boolean" {
+				tags = map[string]bool{"false": true, "true": true}
+			} else if discriminatorType != "string" {
+				return fmt.Errorf("%s tagged union discriminator must be a string enum or boolean", context)
+			}
 			if len(tags) != len(value.TaggedUnion.Variants) {
 				return fmt.Errorf("%s tagged union variants must exactly match discriminator enum", context)
 			}
@@ -424,16 +520,25 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 					return fmt.Errorf("%s has unknown tagged union value %q", context, tag)
 				}
 				requiredVariant := stringSet(variant.Required)
-				properties := append(append(append([]string{}, variant.Required...), variant.Forbidden...), variant.Empty...)
+				forbiddenVariant := stringSet(variant.Forbidden)
+				emptyVariant := stringSet(variant.Empty)
+				nonEmptyVariant := stringSet(variant.NonEmpty)
+				properties := append(append(append(append([]string{}, variant.Required...), variant.Forbidden...), variant.Empty...), variant.NonEmpty...)
 				for _, property := range properties {
 					if value.Properties[property] == nil {
 						return fmt.Errorf("%s tagged union refers to unknown property %q", context, property)
 					}
-					if requiredVariant[property] && stringSet(variant.Forbidden)[property] {
-						return fmt.Errorf("%s tagged union both requires and forbids %q", context, property)
+					memberships := 0
+					for _, set := range []map[string]bool{requiredVariant, forbiddenVariant, emptyVariant, nonEmptyVariant} {
+						if set[property] {
+							memberships++
+						}
+					}
+					if memberships > 1 && !(requiredVariant[property] && (emptyVariant[property] || nonEmptyVariant[property]) && memberships == 2) {
+						return fmt.Errorf("%s tagged union gives contradictory rules for %q", context, property)
 					}
 				}
-				for _, property := range variant.Empty {
+				for _, property := range append(append([]string{}, variant.Empty...), variant.NonEmpty...) {
 					propertyType := value.Properties[property]
 					if propertyType.Ref != "" {
 						target, name, err := resolveRef(set, document, propertyType.Ref)
@@ -444,9 +549,61 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 					}
 					typeName, err := scalarType(propertyType.Type)
 					if err != nil || typeName != "array" {
-						return fmt.Errorf("%s tagged union empty rule requires array property %q", context, property)
+						return fmt.Errorf("%s tagged union empty/non_empty rule requires array property %q", context, property)
 					}
 				}
+			}
+		}
+		if value.OperatorValue != nil {
+			rule := value.OperatorValue
+			operator := value.Properties[rule.Operator]
+			valueProperty := value.Properties[rule.Value]
+			if operator == nil || valueProperty == nil || len(rule.Valueless) == 0 {
+				return fmt.Errorf("%s has invalid operator/value rule", context)
+			}
+			if operator.Ref != "" {
+				target, name, err := resolveRef(set, document, operator.Ref)
+				if err != nil {
+					return err
+				}
+				operator = target.Definitions[name]
+			}
+			operators := stringSet(operator.Enum)
+			for _, valueless := range rule.Valueless {
+				if !operators[valueless] {
+					return fmt.Errorf("%s operator/value rule names unknown operator %q", context, valueless)
+				}
+			}
+		}
+		if value.ProtocolOffer {
+			if value.Properties["supported_range"] == nil || value.Properties["versions"] == nil {
+				return fmt.Errorf("%s protocol offer requires supported_range and versions", context)
+			}
+		}
+		if value.LimitCapability {
+			required := stringSet(value.Required)
+			for _, property := range []string{"default_value", "effective_maximum", "hard_maximum", "unit"} {
+				if value.Properties[property] == nil || !required[property] {
+					return fmt.Errorf("%s limit capability requires %s", context, property)
+				}
+			}
+		}
+		for _, rule := range value.UniqueArrayKeys {
+			array := value.Properties[rule.Array]
+			if array == nil || array.Items == nil || rule.Property == "" {
+				return fmt.Errorf("%s has invalid unique array key rule", context)
+			}
+			item := array.Items
+			if item.Ref != "" {
+				target, name, err := resolveRef(set, document, item.Ref)
+				if err != nil {
+					return err
+				}
+				item = target.Definitions[name]
+			}
+			itemType, err := scalarType(item.Type)
+			if err != nil || itemType != "object" || item.Properties[rule.Property] == nil {
+				return fmt.Errorf("%s unique array key rule does not name an object property", context)
 			}
 		}
 		if value.OutcomeEnvelope {
@@ -529,6 +686,7 @@ func generate(set schemaSet) ([]generatedFile, error) {
 		GroupDigests     map[string]string `json:"group_digests"`
 		FileDigests      map[string]string `json:"file_digests"`
 	}{SchemaVersion: 1, GeneratorVersion: generatorVersion, AggregateDigest: set.digest, GroupDigests: map[string]string{}, FileDigests: map[string]string{}}
+	manifest.FileDigests[set.dialect.path] = set.dialect.fileDigest
 	for _, document := range set.documents {
 		manifest.GroupDigests[document.Module] = document.digest
 		manifest.FileDigests[document.path] = document.fileDigest
@@ -588,13 +746,26 @@ func writeGoDefinition(body *strings.Builder, set schemaSet, document *schemaDoc
 		return err
 	}
 	if typeValue == "object" && len(definition.Properties) != 0 {
+		for _, propertyName := range sortedKeys(definition.Properties) {
+			property := definition.Properties[propertyName]
+			if constant, ok := property.Const.(string); ok {
+				constantType := name + exportedName(propertyName)
+				fmt.Fprintf(body, "type %s string\n\nconst %sValue %s = %q\n\n", constantType, constantType, constantType, constant)
+			}
+		}
 		fmt.Fprintf(body, "type %s struct {\n", name)
 		required := stringSet(definition.Required)
 		for _, propertyName := range sortedKeys(definition.Properties) {
 			property := definition.Properties[propertyName]
-			expression, err := goType(set, document, aliases, property)
-			if err != nil {
-				return err
+			expression := ""
+			if _, ok := property.Const.(string); ok {
+				expression = name + exportedName(propertyName)
+			} else {
+				var err error
+				expression, err = goType(set, document, aliases, property)
+				if err != nil {
+					return err
+				}
 			}
 			if !required[propertyName] && !strings.HasPrefix(expression, "*") {
 				expression = "*" + expression
@@ -716,6 +887,7 @@ func generateGoCodec(set schemaSet, document *schemaDocument) ([]byte, error) {
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
 	"regexp"
 	"sort"
@@ -874,6 +1046,7 @@ func validateGoUnicode(value reflect.Value, seen map[visit]bool) error {
 
 func decodeWireJSON(data []byte) (any, error) {
 	if err := validateWireJSONBytes(data); err != nil { return nil, err }
+	if err := rejectDuplicateJSONKeys(data); err != nil { return nil, err }
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var value any
@@ -881,6 +1054,50 @@ func decodeWireJSON(data []byte) (any, error) {
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) { return nil, errors.New("protocol JSON must contain exactly one value") }
 	return value, nil
+}
+
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := scanUniqueJSONValue(decoder); err != nil { return err }
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil { return errors.New("protocol JSON must contain exactly one value") }
+		return err
+	}
+	return nil
+}
+
+func scanUniqueJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil { return err }
+	delimiter, ok := token.(json.Delim)
+	if !ok { return nil }
+	switch delimiter {
+	case '{':
+		seen := map[string]bool{}
+		for decoder.More() {
+			rawKey, err := decoder.Token()
+			if err != nil { return err }
+			key, ok := rawKey.(string)
+			if !ok { return errors.New("protocol JSON object key must be a string") }
+			if seen[key] { return fmt.Errorf("protocol JSON contains duplicate object key %q", key) }
+			seen[key] = true
+			if err := scanUniqueJSONValue(decoder); err != nil { return err }
+		}
+		closing, err := decoder.Token()
+		if err != nil { return err }
+		if closing != json.Delim('}') { return errors.New("protocol JSON object is not closed") }
+	case '[':
+		for decoder.More() {
+			if err := scanUniqueJSONValue(decoder); err != nil { return err }
+		}
+		closing, err := decoder.Token()
+		if err != nil { return err }
+		if closing != json.Delim(']') { return errors.New("protocol JSON array is not closed") }
+	default:
+		return errors.New("protocol JSON has an unexpected delimiter")
+	}
+	return nil
 }
 
 func validateWireJSONBytes(data []byte) error {
@@ -929,6 +1146,71 @@ func validateCanonicalJSONNumber(token []byte) error {
 		return fmt.Errorf("protocol JSON number %q is outside the portable safe range", text)
 	}
 	return nil
+}
+
+func isCanonicalSourcePath(value string) bool {
+	if value == "" || strings.HasPrefix(value, "/") || strings.ContainsAny(value, "\\\x00") { return false }
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." { return false }
+	}
+	return true
+}
+
+func isCanonicalBinary64(text string, positive bool) bool {
+	if !regexp.MustCompile(` + "`" + `^-?(0|[1-9][0-9]*)(\.[0-9]+)?(e[+-][1-9][0-9]*)?$` + "`" + `).MatchString(text) { return false }
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsInf(value, 0) || math.IsNaN(value) || math.Signbit(value) && value == 0 || positive && value <= 0 { return false }
+	return canonicalBinary64(value) == text
+}
+
+func canonicalBinary64(value float64) string {
+	if value == 0 { return "0" }
+	negative := math.Signbit(value)
+	if negative { value = -value }
+	scientific := strconv.FormatFloat(value, 'e', -1, 64)
+	parts := strings.SplitN(scientific, "e", 2)
+	digits := strings.ReplaceAll(parts[0], ".", "")
+	exponent, _ := strconv.Atoi(parts[1])
+	decimalPosition := exponent + 1
+	var result string
+	switch {
+	case decimalPosition > 0 && decimalPosition <= 21:
+		if decimalPosition >= len(digits) { result = digits + strings.Repeat("0", decimalPosition-len(digits)) } else { result = digits[:decimalPosition] + "." + digits[decimalPosition:] }
+	case decimalPosition <= 0 && decimalPosition > -6:
+		result = "0." + strings.Repeat("0", -decimalPosition) + digits
+	default:
+		result = digits[:1]
+		if len(digits) > 1 { result += "." + digits[1:] }
+		if exponent >= 0 { result += "e+" + strconv.Itoa(exponent) } else { result += "e" + strconv.Itoa(exponent) }
+	}
+	if negative { return "-" + result }
+	return result
+}
+
+type protocolVersionValue struct { major, minor uint32 }
+
+func parseProtocolVersion(text string) (protocolVersionValue, string, bool) {
+	if !regexp.MustCompile(` + "`" + `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$` + "`" + `).MatchString(text) { return protocolVersionValue{}, "", false }
+	parts := strings.Split(text, ".")
+	major, majorErr := strconv.ParseUint(parts[0], 10, 32)
+	minor, minorErr := strconv.ParseUint(parts[1], 10, 32)
+	if majorErr != nil || minorErr != nil { return protocolVersionValue{}, "", false }
+	return protocolVersionValue{major: uint32(major), minor: uint32(minor)}, text, true
+}
+
+func parseProtocolVersionRange(text string) (protocolVersionValue, protocolVersionValue, bool) {
+	parts := strings.Split(text, "..")
+	if len(parts) != 2 { return protocolVersionValue{}, protocolVersionValue{}, false }
+	lower, _, lowerOK := parseProtocolVersion(parts[0])
+	upper, _, upperOK := parseProtocolVersion(parts[1])
+	if !lowerOK || !upperOK || lower.major != upper.major || compareProtocolVersions(lower, upper) > 0 { return protocolVersionValue{}, protocolVersionValue{}, false }
+	return lower, upper, true
+}
+
+func compareProtocolVersions(left, right protocolVersionValue) int {
+	if left.major < right.major || left.major == right.major && left.minor < right.minor { return -1 }
+	if left != right { return 1 }
+	return 0
 }
 
 func scanJSONString(data []byte, start int) (int, error) {
@@ -1003,10 +1285,12 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 			for _, candidate := range values { if text == candidate { matched = true; break } }
 			if !matched { return fmt.Errorf("%s has unknown enum value %q", path, text) }
 		}
-		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(text) { return fmt.Errorf("%s has invalid string form", path) }
+		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(strings.ReplaceAll(pattern, "(?:", "(")).MatchString(text) { return fmt.Errorf("%s has invalid string form", path) }
 		if minimum, ok := schema["minLength"].(float64); ok && utf8.RuneCountInString(text) < int(minimum) { return fmt.Errorf("%s is too short", path) }
 		if format, _ := schema["format"].(string); format != "" {
 			switch format {
+			case "canonical-source-path":
+				if !isCanonicalSourcePath(text) { return fmt.Errorf("%s is not a canonical source path", path) }
 			case "int64-decimal":
 				if !regexp.MustCompile(` + "`" + `^(0|-[1-9][0-9]*|[1-9][0-9]*)$` + "`" + `).MatchString(text) { return fmt.Errorf("%s is not a canonical int64", path) }
 				if _, err := strconv.ParseInt(text, 10, 64); err != nil { return fmt.Errorf("%s is outside int64", path) }
@@ -1016,8 +1300,30 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 			case "uint64-decimal":
 				if !regexp.MustCompile(` + "`" + `^(0|[1-9][0-9]*)$` + "`" + `).MatchString(text) { return fmt.Errorf("%s is not a canonical uint64", path) }
 				if _, err := strconv.ParseUint(text, 10, 64); err != nil { return fmt.Errorf("%s is outside uint64", path) }
+			case "positive-int64-decimal":
+				integer, err := strconv.ParseInt(text, 10, 64)
+				if err != nil || integer <= 0 { return fmt.Errorf("%s is not a positive canonical int64", path) }
+			case "safe-integer-decimal":
+				integer, err := strconv.ParseInt(text, 10, 64)
+				if err != nil || integer < -9007199254740991 || integer > 9007199254740991 { return fmt.Errorf("%s is outside the Language 1 safe-integer range", path) }
+			case "nonnegative-safe-integer-decimal":
+				integer, err := strconv.ParseInt(text, 10, 64)
+				if err != nil || integer < 0 || integer > 9007199254740991 { return fmt.Errorf("%s is outside the non-negative Language 1 safe-integer range", path) }
+			case "positive-safe-integer-decimal":
+				integer, err := strconv.ParseInt(text, 10, 64)
+				if err != nil || integer <= 0 || integer > 9007199254740991 { return fmt.Errorf("%s is outside the positive Language 1 safe-integer range", path) }
+			case "finite-binary64-decimal":
+				if !isCanonicalBinary64(text, false) { return fmt.Errorf("%s is not a canonical finite binary64", path) }
+			case "positive-finite-binary64-decimal":
+				if !isCanonicalBinary64(text, true) { return fmt.Errorf("%s is not a positive canonical finite binary64", path) }
+			case "protocol-version":
+				if _, _, ok := parseProtocolVersion(text); !ok { return fmt.Errorf("%s is not a canonical protocol version", path) }
+			case "protocol-version-range":
+				if _, _, ok := parseProtocolVersionRange(text); !ok { return fmt.Errorf("%s is not a canonical ordered protocol range", path) }
+			case "protocol-version-or-range":
+				if _, _, ok := parseProtocolVersion(text); !ok { if _, _, rangeOK := parseProtocolVersionRange(text); !rangeOK { return fmt.Errorf("%s is not a canonical protocol version or range", path) } }
 			case "date-time":
-				if !regexp.MustCompile(` + "`" + `^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,9})?Z$` + "`" + `).MatchString(text) { return fmt.Errorf("%s is not canonical UTC RFC 3339", path) }
+				if !regexp.MustCompile(` + "`" + `^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,9})?Z$` + "`" + `).MatchString(text) { return fmt.Errorf("%s is not canonical UTC RFC 3339", path) }
 				if _, err := time.Parse(time.RFC3339Nano, text); err != nil { return fmt.Errorf("%s is not a real UTC RFC 3339 calendar instant", path) }
 			}
 		}
@@ -1062,12 +1368,45 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		}
 		if rawUnion, ok := schema["x-layerdraw-tagged-union"].(map[string]any); ok {
 			property, _ := rawUnion["property"].(string)
-			tag, _ := object[property].(string)
+			tag := fmt.Sprint(object[property])
 			variants, _ := rawUnion["variants"].(map[string]any)
 			rawVariant, exists := variants[tag]
 			if !exists { return fmt.Errorf("%s has unknown tagged union value %q", path, tag) }
 			variant, _ := rawVariant.(map[string]any)
 			if err := validatePresenceRule(path, object, variant); err != nil { return err }
+		}
+		if rawRule, ok := schema["x-layerdraw-operator-value"].(map[string]any); ok {
+			operatorProperty, _ := rawRule["operator"].(string)
+			valueProperty, _ := rawRule["value"].(string)
+			operator, operatorPresent := object[operatorProperty].(string)
+			if operatorPresent {
+				valueless := false
+				if values, ok := rawRule["valueless"].([]any); ok { for _, candidate := range values { if operator == candidate { valueless = true } } }
+				_, valuePresent := object[valueProperty]
+				if valueless && valuePresent { return fmt.Errorf("%s operator %s forbids %s", path, operator, valueProperty) }
+				if !valueless && !valuePresent { return fmt.Errorf("%s operator %s requires %s", path, operator, valueProperty) }
+			}
+		}
+		if enabled, _ := schema["x-layerdraw-protocol-offer"].(bool); enabled {
+			if err := validateProtocolOffer(path, object); err != nil { return err }
+		}
+		if enabled, _ := schema["x-layerdraw-limit-capability"].(bool); enabled {
+			if err := validateLimitCapability(path, object); err != nil { return err }
+		}
+		if rules, ok := schema["x-layerdraw-unique-array-keys"].([]any); ok {
+			for _, rawRule := range rules {
+				rule, _ := rawRule.(map[string]any)
+				arrayName, _ := rule["array"].(string)
+				propertyName, _ := rule["property"].(string)
+				items, _ := object[arrayName].([]any)
+				seen := map[string]bool{}
+				for _, rawItem := range items {
+					item, _ := rawItem.(map[string]any)
+					key, _ := item[propertyName].(string)
+					if seen[key] { return fmt.Errorf("%s.%s repeats %s %q", path, arrayName, propertyName, key) }
+					seen[key] = true
+				}
+			}
 		}
 		if enabled, _ := schema["x-layerdraw-outcome-envelope"].(bool); enabled {
 			outcome, _ := object["outcome"].(string)
@@ -1118,6 +1457,38 @@ func validatePresenceRule(path string, object map[string]any, rule map[string]an
 			if !ok || len(items) != 0 { return fmt.Errorf("%s tagged alternative requires empty %s", path, name) }
 		}
 	}
+	if values, ok := rule["non_empty"].([]any); ok {
+		for _, rawName := range values {
+			name, _ := rawName.(string)
+			items, ok := object[name].([]any)
+			if !ok || len(items) == 0 { return fmt.Errorf("%s tagged alternative requires non-empty %s", path, name) }
+		}
+	}
+	return nil
+}
+
+func validateProtocolOffer(path string, object map[string]any) error {
+	rangeText, _ := object["supported_range"].(string)
+	lower, upper, ok := parseProtocolVersionRange(rangeText)
+	if !ok { return fmt.Errorf("%s has an invalid supported_range", path) }
+	versions, _ := object["versions"].([]any)
+	seen := map[string]bool{}
+	for _, rawBinding := range versions {
+		binding, _ := rawBinding.(map[string]any)
+		versionText, _ := binding["version"].(string)
+		version, _, valid := parseProtocolVersion(versionText)
+		if !valid || compareProtocolVersions(version, lower) < 0 || compareProtocolVersions(version, upper) > 0 { return fmt.Errorf("%s version %q is outside supported_range", path, versionText) }
+		if seen[versionText] { return fmt.Errorf("%s repeats protocol version %q", path, versionText) }
+		seen[versionText] = true
+	}
+	return nil
+}
+
+func validateLimitCapability(path string, object map[string]any) error {
+	defaultValue, defaultErr := strconv.ParseInt(fmt.Sprint(object["default_value"]), 10, 64)
+	effective, effectiveErr := strconv.ParseInt(fmt.Sprint(object["effective_maximum"]), 10, 64)
+	hard, hardErr := strconv.ParseInt(fmt.Sprint(object["hard_maximum"]), 10, 64)
+	if defaultErr != nil || effectiveErr != nil || hardErr != nil || defaultValue > hard || effective > hard { return fmt.Errorf("%s default and effective limits must not exceed the hard maximum", path) }
 	return nil
 }
 
@@ -1196,14 +1567,26 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	fmt.Fprintf(&body, "export const maxWireJSONBytes = %d as const;\n", document.MaxJSONBytes)
 	fmt.Fprintf(&body, "export const maxWireJSONDepth = %d as const;\n\n", document.MaxJSONDepth)
 	body.WriteString("function isObject(value: unknown): value is Record<string, unknown> {\n")
-	body.WriteString("  return typeof value === \"object\" && value !== null && !Array.isArray(value);\n")
+	body.WriteString("  if (typeof value !== \"object\" || value === null || Array.isArray(value)) return false;\n")
+	body.WriteString("  const prototype = Object.getPrototypeOf(value); if (prototype !== Object.prototype && prototype !== null) return false;\n")
+	body.WriteString("  for (const key of Reflect.ownKeys(value)) { if (typeof key !== \"string\") return false; const descriptor = Object.getOwnPropertyDescriptor(value, key); if (descriptor === undefined || !descriptor.enumerable || !(\"value\" in descriptor)) return false; }\n")
+	body.WriteString("  return true;\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function isJSONArray(value: unknown): value is ReadonlyArray<unknown> {\n")
+	body.WriteString("  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;\n")
+	body.WriteString("  const descriptors = Object.getOwnPropertyDescriptors(value); const keys = Reflect.ownKeys(value); if (keys.some((key) => typeof key !== \"string\") || keys.length !== value.length + 1) return false;\n")
+	body.WriteString("  for (let index = 0; index < value.length; index++) { const descriptor = descriptors[String(index)]; if (descriptor === undefined || !descriptor.enumerable || !(\"value\" in descriptor)) return false; }\n")
+	body.WriteString("  return Object.keys(value).length === value.length;\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function hasOwn(value: Record<string, unknown>, key: string): boolean {\n")
+	body.WriteString("  return Object.prototype.propertyIsEnumerable.call(value, key);\n")
 	body.WriteString("}\n\n")
 	body.WriteString("function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {\n")
 	body.WriteString("  return Object.keys(value).every((key) => allowed.has(key));\n")
 	body.WriteString("}\n\n")
 	body.WriteString("function isJSONCompatible(value: unknown): boolean {\n")
 	body.WriteString("  if (value === null || typeof value === \"string\" || typeof value === \"boolean\") return true;\n")
-	body.WriteString("  if (Array.isArray(value)) return value.every(isJSONCompatible);\n")
+	body.WriteString("  if (isJSONArray(value)) return value.every(isJSONCompatible);\n")
 	body.WriteString("  return isObject(value) && Object.values(value).every(isJSONCompatible);\n")
 	body.WriteString("}\n\n")
 	body.WriteString("function hasScalarUnicode(value: unknown): value is string {\n")
@@ -1223,16 +1606,43 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("  if (!/^(0|[1-9][0-9]*)$/.test(value)) return false;\n")
 	body.WriteString("  try { const parsed = BigInt(value); return parsed <= (2n ** 64n) - 1n; } catch { return false; }\n")
 	body.WriteString("}\n\n")
+	body.WriteString("function matchesCanonicalPositiveInt64(value: string): boolean {\n")
+	body.WriteString("  if (!/^[1-9][0-9]*$/.test(value)) return false; try { return BigInt(value) <= (2n ** 63n) - 1n; } catch { return false; }\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function matchesCanonicalSafeInteger(value: string, minimum = -(2n ** 53n) + 1n): boolean {\n")
+	body.WriteString("  if (!/^(0|-[1-9][0-9]*|[1-9][0-9]*)$/.test(value)) return false; try { const parsed = BigInt(value); return parsed >= minimum && parsed <= (2n ** 53n) - 1n; } catch { return false; }\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function matchesCanonicalNonNegativeSafeInteger(value: string): boolean {\n")
+	body.WriteString("  return /^(0|[1-9][0-9]*)$/.test(value) && matchesCanonicalSafeInteger(value, 0n);\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function matchesCanonicalPositiveSafeInteger(value: string): boolean {\n")
+	body.WriteString("  return /^[1-9][0-9]*$/.test(value) && matchesCanonicalSafeInteger(value, 1n);\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function matchesCanonicalBinary64(value: string, positive: boolean): boolean {\n")
+	body.WriteString("  if (!/^-?(0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:e[+-][1-9][0-9]*)?$/.test(value)) return false; const parsed = Number(value); return Number.isFinite(parsed) && !Object.is(parsed, -0) && (!positive || parsed > 0) && String(parsed) === value;\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function parseProtocolVersion(value: string): readonly [number, number] | undefined {\n")
+	body.WriteString("  const match = /^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$/.exec(value); if (match === null) return undefined; const major = Number(match[1]); const minor = Number(match[2]); if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor) || major > 0xffffffff || minor > 0xffffffff) return undefined; return [major, minor];\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function parseProtocolVersionRange(value: string): readonly [readonly [number, number], readonly [number, number]] | undefined {\n")
+	body.WriteString("  const parts = value.split(\"..\"); if (parts.length !== 2) return undefined; const lower = parseProtocolVersion(parts[0]!); const upper = parseProtocolVersion(parts[1]!); if (lower === undefined || upper === undefined || lower[0] !== upper[0] || compareProtocolVersions(lower, upper) > 0) return undefined; return [lower, upper];\n")
+	body.WriteString("}\n\n")
+	body.WriteString("function compareProtocolVersions(left: readonly [number, number], right: readonly [number, number]): number { return left[0] === right[0] ? left[1] - right[1] : left[0] - right[0]; }\n\n")
+	body.WriteString("function matchesCanonicalSourcePath(value: string): boolean { return value !== \"\" && !value.startsWith(\"/\") && !value.includes(\"\\\\\") && !value.includes(\"\\0\") && value.split(\"/\").every((segment) => segment !== \"\" && segment !== \".\" && segment !== \"..\"); }\n\n")
+	body.WriteString("function hasOperatorValueRule(value: Record<string, unknown>, operatorProperty: string, valueProperty: string, valueless: ReadonlySet<string>): boolean { const operator = value[operatorProperty]; if (typeof operator !== \"string\") return true; return valueless.has(operator) ? !hasOwn(value, valueProperty) : hasOwn(value, valueProperty); }\n\n")
+	body.WriteString("function hasValidProtocolOffer(value: Record<string, unknown>): boolean { const range = value[\"supported_range\"]; const bindings = value[\"versions\"]; if (typeof range !== \"string\" || !isJSONArray(bindings)) return false; const parsedRange = parseProtocolVersionRange(range); if (parsedRange === undefined) return false; const seen = new Set<string>(); for (const raw of bindings) { if (!isObject(raw) || typeof raw[\"version\"] !== \"string\") return false; const text = raw[\"version\"]; const version = parseProtocolVersion(text); if (version === undefined || compareProtocolVersions(version, parsedRange[0]) < 0 || compareProtocolVersions(version, parsedRange[1]) > 0 || seen.has(text)) return false; seen.add(text); } return true; }\n\n")
+	body.WriteString("function hasValidLimitCapability(value: Record<string, unknown>): boolean { try { const fallback = BigInt(String(value[\"default_value\"])); const effective = BigInt(String(value[\"effective_maximum\"])); const hard = BigInt(String(value[\"hard_maximum\"])); return fallback <= hard && effective <= hard; } catch { return false; } }\n\n")
+	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
 	body.WriteString("function isRFC3339(value: string): boolean {\n")
-	body.WriteString("  const match = /^([0-9]{4})-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$/.exec(value);\n")
-	body.WriteString("  if (match === null) return false; const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]); const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0); const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; return day <= days[month - 1]!;\n")
+	body.WriteString("  const match = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$/.exec(value);\n")
+	body.WriteString("  if (match === null) return false; const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]); const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0); const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; return day >= 1 && day <= days[month - 1]!;\n")
 	body.WriteString("}\n\n")
 	body.WriteString(tsWirePreflight)
 	body.WriteString("function canonicalJSONStringify(value: unknown): string {\n")
 	body.WriteString("  if (value === null || typeof value === \"boolean\") return JSON.stringify(value);\n")
 	body.WriteString("  if (typeof value === \"string\") { if (!hasScalarUnicode(value)) throw new TypeError(\"protocol strings must contain Unicode scalar values\"); return JSON.stringify(value).replace(/[\\u2028\\u2029]/g, (character) => character === \"\\u2028\" ? \"\\\\u2028\" : \"\\\\u2029\"); }\n")
 	body.WriteString("  if (typeof value === \"number\") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError(\"protocol numbers must be canonical safe integers\"); return String(value); }\n")
-	body.WriteString("  if (Array.isArray(value)) return `[${value.map(canonicalJSONStringify).join(\",\")}]`;\n")
+	body.WriteString("  if (isJSONArray(value)) return `[${value.map(canonicalJSONStringify).join(\",\")}]`;\n")
 	body.WriteString("  if (isObject(value)) return `{${Object.keys(value).sort().map((key) => `${canonicalJSONStringify(key)}:${canonicalJSONStringify(value[key])}`).join(\",\")}}`;\n")
 	body.WriteString("  throw new TypeError(\"unsupported protocol JSON value\");\n")
 	body.WriteString("}\n\n")
@@ -1250,7 +1660,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 		}
 		fmt.Fprintf(&body, "\nexport function is%s(value: unknown): value is %s {\n  return %s;\n}\n", name, name, predicate)
 		fmt.Fprintf(&body, "\nexport function decode%s(input: string): %s {\n  validateWireJSONText(input);\n  const value: unknown = JSON.parse(input);\n  if (!is%s(value)) throw new TypeError(%q);\n  return value;\n}\n", name, name, name, "invalid "+name)
-		fmt.Fprintf(&body, "\nexport function encode%s(value: %s): string {\n  if (!is%s(value)) throw new TypeError(%q);\n  const encoded = canonicalJSONStringify(value);\n  validateWireJSONText(encoded);\n  return encoded;\n}\n", name, name, name, "invalid "+name)
+		fmt.Fprintf(&body, "\nexport function encode%s(value: %s): string {\n  if (!is%s(value)) throw new TypeError(%q);\n  const encoded = canonicalJSONStringify(value);\n  validateWireJSONText(encoded);\n  const emitted: unknown = JSON.parse(encoded);\n  if (!is%s(emitted)) throw new TypeError(%q);\n  return encoded;\n}\n", name, name, name, "invalid "+name, name, "encoded value is invalid "+name)
 		body.WriteString("\n")
 	}
 	return append(bytes.TrimRight([]byte(body.String()), "\n"), '\n'), nil
@@ -1279,6 +1689,34 @@ function validateWireJSONText(input: string): void {
     if (character === "}" || character === "]") { depth--; continue; }
     if (character === "-" || (character >= "0" && character <= "9")) { const end = scanJSONToken(input, index); validateCanonicalJSONNumber(input.slice(index, end)); index = end - 1; }
   }
+	const end = scanUniqueJSONValue(input, skipJSONWhitespace(input, 0));
+	if (skipJSONWhitespace(input, end) !== input.length) throw new TypeError("protocol JSON must contain exactly one value");
+}
+
+function skipJSONWhitespace(input: string, start: number): number {
+  let index = start; while (index < input.length && /[ \t\r\n]/.test(input[index]!)) index++; return index;
+}
+
+function scanUniqueJSONValue(input: string, start: number): number {
+  let index = skipJSONWhitespace(input, start);
+  const character = input[index];
+  if (character === '"') return scanJSONString(input, index) + 1;
+  if (character === "[") {
+    index = skipJSONWhitespace(input, index + 1); if (input[index] === "]") return index + 1;
+    for (;;) { index = skipJSONWhitespace(input, scanUniqueJSONValue(input, index)); if (input[index] === "]") return index + 1; if (input[index] !== ",") throw new TypeError("protocol JSON array is malformed"); index++; }
+  }
+  if (character === "{") {
+    const keys = new Set<string>(); index = skipJSONWhitespace(input, index + 1); if (input[index] === "}") return index + 1;
+    for (;;) {
+      if (input[index] !== '"') throw new TypeError("protocol JSON object key must be a string");
+      const keyEnd = scanJSONString(input, index); const key: unknown = JSON.parse(input.slice(index, keyEnd + 1));
+      if (typeof key !== "string") throw new TypeError("protocol JSON object key must be a string");
+      if (keys.has(key)) throw new TypeError("protocol JSON contains duplicate object key " + key); keys.add(key);
+      index = skipJSONWhitespace(input, keyEnd + 1); if (input[index] !== ":") throw new TypeError("protocol JSON object is missing a colon");
+      index = skipJSONWhitespace(input, scanUniqueJSONValue(input, index + 1)); if (input[index] === "}") return index + 1; if (input[index] !== ",") throw new TypeError("protocol JSON object is malformed"); index = skipJSONWhitespace(input, index + 1);
+    }
+  }
+  const end = scanJSONToken(input, index); if (end === index) throw new TypeError("protocol JSON value is malformed"); return end;
 }
 
 function scanJSONToken(input: string, start: number): number {
@@ -1374,6 +1812,36 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.Format == "date-time" {
 			parts = append(parts, "isRFC3339("+expression+")")
 		}
+		if value.Format == "positive-int64-decimal" {
+			parts = append(parts, "matchesCanonicalPositiveInt64("+expression+")")
+		}
+		if value.Format == "safe-integer-decimal" {
+			parts = append(parts, "matchesCanonicalSafeInteger("+expression+")")
+		}
+		if value.Format == "nonnegative-safe-integer-decimal" {
+			parts = append(parts, "matchesCanonicalNonNegativeSafeInteger("+expression+")")
+		}
+		if value.Format == "positive-safe-integer-decimal" {
+			parts = append(parts, "matchesCanonicalPositiveSafeInteger("+expression+")")
+		}
+		if value.Format == "finite-binary64-decimal" {
+			parts = append(parts, "matchesCanonicalBinary64("+expression+", false)")
+		}
+		if value.Format == "positive-finite-binary64-decimal" {
+			parts = append(parts, "matchesCanonicalBinary64("+expression+", true)")
+		}
+		if value.Format == "protocol-version" {
+			parts = append(parts, "parseProtocolVersion("+expression+") !== undefined")
+		}
+		if value.Format == "protocol-version-range" {
+			parts = append(parts, "parseProtocolVersionRange("+expression+") !== undefined")
+		}
+		if value.Format == "protocol-version-or-range" {
+			parts = append(parts, "(parseProtocolVersion("+expression+") !== undefined || parseProtocolVersionRange("+expression+") !== undefined)")
+		}
+		if value.Format == "canonical-source-path" {
+			parts = append(parts, "matchesCanonicalSourcePath("+expression+")")
+		}
 		return strings.Join(parts, " && "), nil
 	case "integer":
 		parts := []string{"typeof " + expression + " === \"number\"", "Number.isSafeInteger(" + expression + ")", "!Object.is(" + expression + ", -0)"}
@@ -1402,7 +1870,7 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if err != nil {
 			return "", err
 		}
-		parts := []string{"Array.isArray(" + expression + ")", expression + ".every((item) => " + item + ")"}
+		parts := []string{"isJSONArray(" + expression + ")", expression + ".every((item) => " + item + ")"}
 		if value.MinItems != nil {
 			parts = append(parts, fmt.Sprintf("%s.length >= %d", expression, *value.MinItems))
 		}
@@ -1432,24 +1900,40 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 				return "", err
 			}
 			if required[key] {
-				parts = append(parts, fmt.Sprintf("%q in %s", key, expression), "("+predicate+")")
+				parts = append(parts, fmt.Sprintf("hasOwn(%s, %q)", expression, key), "("+predicate+")")
 			} else {
-				parts = append(parts, "(!("+fmt.Sprintf("%q", key)+" in "+expression+") || ("+predicate+"))")
+				parts = append(parts, "(!hasOwn("+expression+", "+fmt.Sprintf("%q", key)+") || ("+predicate+"))")
 			}
 		}
 		if value.TaggedUnion != nil {
 			var variants []string
 			for _, tag := range sortedKeys(value.TaggedUnion.Variants) {
 				variant := value.TaggedUnion.Variants[tag]
-				conditions := []string{expression + "[" + fmt.Sprintf("%q", value.TaggedUnion.Property) + "] === " + fmt.Sprintf("%q", tag)}
+				tagLiteral := fmt.Sprintf("%q", tag)
+				discriminator := value.Properties[value.TaggedUnion.Property]
+				if discriminator != nil {
+					resolved := discriminator
+					if resolved.Ref != "" {
+						if target, name, err := resolveRef(set, document, resolved.Ref); err == nil {
+							resolved = target.Definitions[name]
+						}
+					}
+					if discriminatorType, _ := scalarType(resolved.Type); discriminatorType == "boolean" {
+						tagLiteral = tag
+					}
+				}
+				conditions := []string{expression + "[" + fmt.Sprintf("%q", value.TaggedUnion.Property) + "] === " + tagLiteral}
 				for _, property := range variant.Required {
-					conditions = append(conditions, fmt.Sprintf("%q in %s", property, expression))
+					conditions = append(conditions, fmt.Sprintf("hasOwn(%s, %q)", expression, property))
 				}
 				for _, property := range variant.Forbidden {
-					conditions = append(conditions, fmt.Sprintf("!(%q in %s)", property, expression))
+					conditions = append(conditions, fmt.Sprintf("!hasOwn(%s, %q)", expression, property))
 				}
 				for _, property := range variant.Empty {
-					conditions = append(conditions, fmt.Sprintf("Array.isArray(%s[%q]) && %s[%q].length === 0", expression, property, expression, property))
+					conditions = append(conditions, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].length === 0", expression, property, expression, property))
+				}
+				for _, property := range variant.NonEmpty {
+					conditions = append(conditions, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].length > 0", expression, property, expression, property))
 				}
 				variants = append(variants, "("+strings.Join(conditions, " && ")+")")
 			}
@@ -1458,10 +1942,26 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.OutcomeEnvelope {
 			outcome := expression + "[\"outcome\"]"
 			diagnostics := expression + "[\"diagnostics\"]"
-			parts = append(parts, "(("+outcome+" === \"success\" && \"payload\" in "+expression+" && !(\"failure\" in "+expression+")) || ("+outcome+" === \"rejected\" && !(\"payload\" in "+expression+") && !(\"failure\" in "+expression+") && Array.isArray("+diagnostics+") && "+diagnostics+".length > 0) || (("+outcome+" === \"failed\" || "+outcome+" === \"cancelled\") && !(\"payload\" in "+expression+") && \"failure\" in "+expression+"))")
+			parts = append(parts, "(("+outcome+" === \"success\" && hasOwn("+expression+", \"payload\") && !hasOwn("+expression+", \"failure\")) || ("+outcome+" === \"rejected\" && !hasOwn("+expression+", \"payload\") && !hasOwn("+expression+", \"failure\") && isJSONArray("+diagnostics+") && "+diagnostics+".length > 0) || (("+outcome+" === \"failed\" || "+outcome+" === \"cancelled\") && !hasOwn("+expression+", \"payload\") && hasOwn("+expression+", \"failure\")))")
 		}
 		if value.OrderedRange {
 			parts = append(parts, "BigInt("+expression+"[\"start_byte\"]) <= BigInt("+expression+"[\"end_byte\"])")
+		}
+		if value.OperatorValue != nil {
+			values := make([]string, len(value.OperatorValue.Valueless))
+			for index, valueless := range value.OperatorValue.Valueless {
+				values[index] = fmt.Sprintf("%q", valueless)
+			}
+			parts = append(parts, fmt.Sprintf("hasOperatorValueRule(%s, %q, %q, new Set([%s]))", expression, value.OperatorValue.Operator, value.OperatorValue.Value, strings.Join(values, ", ")))
+		}
+		if value.ProtocolOffer {
+			parts = append(parts, "hasValidProtocolOffer("+expression+")")
+		}
+		if value.LimitCapability {
+			parts = append(parts, "hasValidLimitCapability("+expression+")")
+		}
+		for _, rule := range value.UniqueArrayKeys {
+			parts = append(parts, fmt.Sprintf("hasUniqueArrayKey(%s, %q, %q)", expression, rule.Array, rule.Property))
 		}
 		return strings.Join(parts, " && "), nil
 	default:
@@ -1521,6 +2021,9 @@ func tsType(set schemaSet, document *schemaDocument, value *schemaType) (string,
 	}
 	switch typeValue {
 	case "string":
+		if constant, ok := value.Const.(string); ok {
+			return fmt.Sprintf("%q", constant), nil
+		}
 		if len(value.Enum) != 0 {
 			values := make([]string, len(value.Enum))
 			for i, enumValue := range value.Enum {

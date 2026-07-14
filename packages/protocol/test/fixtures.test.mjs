@@ -7,9 +7,11 @@ import test from "node:test";
 import {
   decodeCompileRequestEnvelope,
   decodeCompileResponseEnvelope,
+  decodeEffectiveResourceLimits,
   decodeHandshakeResponseEnvelope,
   encodeCompileRequestEnvelope,
   encodeCompileResponseEnvelope,
+  encodeEffectiveResourceLimits,
   encodeHandshakeResponseEnvelope,
   isCompileRequestEnvelope,
   isCompileResponseEnvelope,
@@ -19,18 +21,42 @@ import {
   decodeBlobRef,
   decodeCanonicalInt64,
   decodeCanonicalNonNegativeInt64,
+  decodeCanonicalPositiveInt64,
+  decodeCanonicalSafeInteger,
   decodeCanonicalUint64,
+  decodeByteResourceLimitCapability,
+  decodeCapabilityID,
   decodeDigest,
+  decodeEndpointInstanceID,
   decodeJsonValue,
   decodeOperationCapability,
+  decodeManifestETag,
+  decodeProtocolOffer,
+  decodeProtocolVersionRange,
+  decodeRequestedCapabilityStatus,
+  decodeReleaseVersion,
   decodeRfc3339Time,
+  decodeTotalItems,
+  decodeUpgradeDiagnosticData,
   encodeBlobRef,
   encodeCanonicalInt64,
   encodeCanonicalNonNegativeInt64,
+  encodeCanonicalPositiveInt64,
+  encodeCanonicalSafeInteger,
+  encodeByteResourceLimitCapability,
+  encodeCapabilityID,
   encodeDigest,
+  encodeEndpointInstanceID,
   encodeJsonValue,
   encodeOperationCapability,
+  encodeManifestETag,
+  encodeProtocolOffer,
+  encodeProtocolVersionRange,
+  encodeRequestedCapabilityStatus,
+  encodeReleaseVersion,
   encodeRfc3339Time,
+  encodeTotalItems,
+  encodeUpgradeDiagnosticData,
   maxWireJSONBytes,
   maxWireJSONDepth,
 } from "../dist/common.gen.js";
@@ -39,17 +65,35 @@ import {
   decodeCompiledQueryRecipeDocument,
   decodeCompiledViewRecipeDocument,
   decodeDiagnostic,
+  decodeCanonicalFiniteDecimal,
+  decodeCanonicalPositiveFiniteDecimal,
+  decodeExportDimension,
+  decodeExportOptions,
+  decodeRecipePredicate,
+  decodeRecipeRowPredicate,
   decodeSearchField,
+  decodeViewPlacement,
+  decodeViewRenderSet,
   encodeCompiledExportRecipeDocument,
   encodeCompiledQueryRecipeDocument,
   encodeCompiledViewRecipeDocument,
   encodeDiagnostic,
+  encodeCanonicalFiniteDecimal,
+  encodeCanonicalPositiveFiniteDecimal,
+  encodeExportDimension,
+  encodeExportOptions,
+  encodeRecipePredicate,
+  encodeRecipeRowPredicate,
   encodeSearchField,
+  encodeViewPlacement,
+  encodeViewRenderSet,
 } from "../dist/semantic.gen.js";
 
 const fixtureRoot = new URL("../../../schemas/fixtures/engine/", import.meta.url);
 const commonFixtureRoot = new URL("../../../schemas/fixtures/common/", import.meta.url);
 const conformanceCorpusURL = new URL("../../../schemas/fixtures/conformance/v1.json", import.meta.url);
+const exportOptionsCorpusURL = new URL("../../../schemas/fixtures/conformance/export-options-v1.json", import.meta.url);
+const predicateCorpusURL = new URL("../../../schemas/fixtures/conformance/predicates-v1.json", import.meta.url);
 const canonicalEngineRoot = new URL("../../../schemas/fixtures/conformance/engine/", import.meta.url);
 
 async function readFixture(name) {
@@ -62,6 +106,7 @@ for (const [name, validate, decode, encode] of [
   ["compile-success-pack.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
   ["compile-rejected.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
   ["handshake-success.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
+  ["handshake-rejected.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
 ]) {
   test(`${name} validates and canonically round-trips without loss`, async () => {
     const text = await readFile(new URL(name, fixtureRoot), "utf8");
@@ -99,6 +144,7 @@ test("TypeScript matches shared canonical Go/TypeScript engine-envelope bytes", 
     ["compile-rejected.json", decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
     ["compile-success-pack.json", decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
     ["handshake-success.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
+    ["handshake-rejected.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
   ]) await context.test(name, async () => {
     const source = await readFile(new URL(name, fixtureRoot), "utf8");
     const canonical = (await readFile(new URL(name, canonicalEngineRoot), "utf8")).trim();
@@ -117,18 +163,62 @@ test("legacy scalar negatives remain enforced", async () => {
   ]) assert.throws(() => decodeDigest(JSON.stringify(invalid)));
 });
 
+test("TypeScript encoders inspect exactly own enumerable data properties", () => {
+  const inherited = Object.create({enabled: true, protocol_version: "1.0"});
+  assert.throws(() => encodeOperationCapability(inherited));
+
+  const hidden = {};
+  Object.defineProperty(hidden, "enabled", {value: true, enumerable: false});
+  Object.defineProperty(hidden, "protocol_version", {value: "1.0", enumerable: true});
+  assert.throws(() => encodeOperationCapability(hidden));
+
+  const symbol = {enabled: true, protocol_version: "1.0"};
+  symbol[Symbol("extension")] = true;
+  assert.throws(() => encodeOperationCapability(symbol));
+
+  let getterCalled = false;
+  const getter = {protocol_version: "1.0"};
+  Object.defineProperty(getter, "enabled", {enumerable: true, get() { getterCalled = true; return true; }});
+  assert.throws(() => encodeOperationCapability(getter));
+  assert.equal(getterCalled, false);
+
+  const nullPrototype = Object.assign(Object.create(null), {enabled: true, protocol_version: "1.0"});
+  assert.equal(encodeOperationCapability(nullPrototype), '{"enabled":true,"protocol_version":"1.0"}');
+});
+
 const sharedCodecs = {
+  ByteResourceLimitCapability: [decodeByteResourceLimitCapability, encodeByteResourceLimitCapability],
+  CapabilityID: [decodeCapabilityID, encodeCapabilityID],
+  CanonicalFiniteDecimal: [decodeCanonicalFiniteDecimal, encodeCanonicalFiniteDecimal],
   CanonicalInt64: [decodeCanonicalInt64, encodeCanonicalInt64],
   CanonicalNonNegativeInt64: [decodeCanonicalNonNegativeInt64, encodeCanonicalNonNegativeInt64],
+  CanonicalPositiveFiniteDecimal: [decodeCanonicalPositiveFiniteDecimal, encodeCanonicalPositiveFiniteDecimal],
+  CanonicalPositiveInt64: [decodeCanonicalPositiveInt64, encodeCanonicalPositiveInt64],
+  CanonicalSafeInteger: [decodeCanonicalSafeInteger, encodeCanonicalSafeInteger],
   CompiledExportRecipeDocument: [decodeCompiledExportRecipeDocument, encodeCompiledExportRecipeDocument],
   CompiledQueryRecipeDocument: [decodeCompiledQueryRecipeDocument, encodeCompiledQueryRecipeDocument],
   CompiledViewRecipeDocument: [decodeCompiledViewRecipeDocument, encodeCompiledViewRecipeDocument],
   Diagnostic: [decodeDiagnostic, encodeDiagnostic],
   Digest: [decodeDigest, encodeDigest],
+  EndpointInstanceID: [decodeEndpointInstanceID, encodeEndpointInstanceID],
+  EffectiveResourceLimits: [decodeEffectiveResourceLimits, encodeEffectiveResourceLimits],
+  ExportDimension: [decodeExportDimension, encodeExportDimension],
+  ExportOptions: [decodeExportOptions, encodeExportOptions],
   JsonValue: [decodeJsonValue, encodeJsonValue],
+  ManifestETag: [decodeManifestETag, encodeManifestETag],
   OperationCapability: [decodeOperationCapability, encodeOperationCapability],
+  ProtocolOffer: [decodeProtocolOffer, encodeProtocolOffer],
+  ProtocolVersionRange: [decodeProtocolVersionRange, encodeProtocolVersionRange],
+  RecipePredicate: [decodeRecipePredicate, encodeRecipePredicate],
+  RecipeRowPredicate: [decodeRecipeRowPredicate, encodeRecipeRowPredicate],
+  RequestedCapabilityStatus: [decodeRequestedCapabilityStatus, encodeRequestedCapabilityStatus],
+  ReleaseVersion: [decodeReleaseVersion, encodeReleaseVersion],
   Rfc3339Time: [decodeRfc3339Time, encodeRfc3339Time],
   SearchField: [decodeSearchField, encodeSearchField],
+  TotalItems: [decodeTotalItems, encodeTotalItems],
+  UpgradeDiagnosticData: [decodeUpgradeDiagnosticData, encodeUpgradeDiagnosticData],
+  ViewPlacement: [decodeViewPlacement, encodeViewPlacement],
+  ViewRenderSet: [decodeViewRenderSet, encodeViewRenderSet],
 };
 
 async function readCorpus() {
@@ -151,6 +241,28 @@ test("shared canonical and rejection corpus matches exact bytes", async (context
     const codec = sharedCodecs[vector.type];
     assert.ok(codec, `unknown shared codec ${vector.type}`);
     assert.throws(() => codec[0](vector.input));
+  });
+});
+
+test("every closed export-option variant has shared canonical and rejection bytes", async (context) => {
+  const corpus = JSON.parse(await readFile(exportOptionsCorpusURL, "utf8"));
+  assert.equal(corpus.schema_version, 1);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
+    assert.equal(encodeExportOptions(decodeExportOptions(vector.input)), vector.expected);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
+    assert.throws(() => decodeExportOptions(vector.input));
+  });
+});
+
+test("every predicate branch has shared canonical and rejection bytes", async (context) => {
+  const corpus = JSON.parse(await readFile(predicateCorpusURL, "utf8"));
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.equal(codec[1](codec[0](vector.input)), vector.expected);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
+    assert.throws(() => sharedCodecs[vector.type][0](vector.input));
   });
 });
 
@@ -226,6 +338,29 @@ test("shared compile request mode/root mutations are rejected", async (context) 
       case "set_pack_empty_root":
         value.payload.mode = "pack";
         value.payload.root_pack_id = "";
+        break;
+      case "set_pack_with_root":
+        value.payload.mode = "pack";
+        value.payload.root_pack_id = "publisher/root";
+        break;
+      case "set_pack_bad_root":
+        value.payload.mode = "pack";
+        value.payload.root_pack_id = "Bad";
+        value.payload.installed_pack_tree = value.payload.project_source_tree;
+        value.payload.project_source_tree = [];
+        break;
+      case "project_asset_pack_id": {
+        const source = value.payload.project_source_tree[0];
+        value.payload.referenced_assets = [{origin: "project", pack_id: "publisher/pack", locator: "asset.svg", blob: source.blob, digest: source.blob.digest, media_type: "image/svg+xml"}];
+        break;
+      }
+      case "pack_asset_without_id": {
+        const source = value.payload.project_source_tree[0];
+        value.payload.referenced_assets = [{origin: "pack", locator: "asset.svg", blob: source.blob, digest: source.blob.digest, media_type: "image/svg+xml"}];
+        break;
+      }
+      case "bad_source_path":
+        value.payload.project_source_tree[0].path = "../document.ldl";
         break;
       default:
         assert.fail(`unknown request mutation ${vector.mutation}`);

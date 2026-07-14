@@ -22,10 +22,70 @@
       "expected": "\"9223372036854775807\""
     },
     {
+      "name": "finite_binary64_negative_fraction",
+      "type": "CanonicalFiniteDecimal",
+      "input": "\"-0.5\"",
+      "expected": "\"-0.5\""
+    },
+    {
+      "name": "finite_binary64_negative_hundredth",
+      "type": "CanonicalFiniteDecimal",
+      "input": "\"-0.01\"",
+      "expected": "\"-0.01\""
+    },
+    {
+      "name": "finite_binary64_smallest_subnormal",
+      "type": "CanonicalFiniteDecimal",
+      "input": "\"5e-324\"",
+      "expected": "\"5e-324\""
+    },
+    {
+      "name": "finite_binary64_maximum",
+      "type": "CanonicalFiniteDecimal",
+      "input": "\"1.7976931348623157e+308\"",
+      "expected": "\"1.7976931348623157e+308\""
+    },
+    {
+      "name": "language_safe_integer_minimum",
+      "type": "CanonicalSafeInteger",
+      "input": "\"-9007199254740991\"",
+      "expected": "\"-9007199254740991\""
+    },
+    {
+      "name": "positive_int64_minimum",
+      "type": "CanonicalPositiveInt64",
+      "input": "\"1\"",
+      "expected": "\"1\""
+    },
+    {
       "name": "valid_sha256_digest",
       "type": "Digest",
       "input": "\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
       "expected": "\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
+    },
+    {
+      "name": "canonical_release_version",
+      "type": "ReleaseVersion",
+      "input": "\"1.2.3-rc.1+build.7\"",
+      "expected": "\"1.2.3-rc.1+build.7\""
+    },
+    {
+      "name": "opaque_endpoint_instance_id",
+      "type": "EndpointInstanceID",
+      "input": "\"worker:01.test\"",
+      "expected": "\"worker:01.test\""
+    },
+    {
+      "name": "manifest_etag_digest",
+      "type": "ManifestETag",
+      "input": "\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"",
+      "expected": "\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\""
+    },
+    {
+      "name": "namespaced_capability_id",
+      "type": "CapabilityID",
+      "input": "\"renderer:future_profile\"",
+      "expected": "\"renderer:future_profile\""
     },
     {
       "name": "optional_collection_absent",
@@ -42,14 +102,62 @@
     {
       "name": "unknown_capability_identifier_preserved",
       "type": "OperationCapability",
-      "input": "{\"required_authoring_capabilities\":[\"future.capability.v9\"],\"protocol_version\":\"1.0\",\"enabled\":false}",
-      "expected": "{\"enabled\":false,\"protocol_version\":\"1.0\",\"required_authoring_capabilities\":[\"future.capability.v9\"]}"
+      "input": "{\"unavailable_reason\":\"unsupported\",\"required_authoring_capabilities\":[\"future.capability.v9\"],\"protocol_version\":\"1.0\",\"enabled\":false}",
+      "expected": "{\"enabled\":false,\"protocol_version\":\"1.0\",\"required_authoring_capabilities\":[\"future.capability.v9\"],\"unavailable_reason\":\"unsupported\"}"
+    },
+    {
+      "name": "unknown_optional_capability_explicitly_unavailable",
+      "type": "RequestedCapabilityStatus",
+      "input": "{\"unavailable_reason\":\"unsupported\",\"protocol_version\":\"1.0\",\"enabled\":false,\"capability_id\":\"future.capability\"}",
+      "expected": "{\"capability_id\":\"future.capability\",\"enabled\":false,\"protocol_version\":\"1.0\",\"unavailable_reason\":\"unsupported\"}"
+    },
+    {
+      "name": "total_items_known",
+      "type": "TotalItems",
+      "input": "{\"known\":true,\"exact\":\"3\"}",
+      "expected": "{\"exact\":\"3\",\"known\":true}"
+    },
+    {
+      "name": "total_items_unknown",
+      "type": "TotalItems",
+      "input": "{\"known\":false}",
+      "expected": "{\"known\":false}"
+    },
+    {
+      "name": "protocol_offer_exact_version_digest_bindings",
+      "type": "ProtocolOffer",
+      "input": "{\"versions\":[{\"version\":\"1.0\",\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},{\"schema_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"version\":\"1.2\"}],\"supported_range\":\"1.0..1.2\",\"name\":\"engine\"}",
+      "expected": "{\"name\":\"engine\",\"supported_range\":\"1.0..1.2\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"},{\"schema_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"version\":\"1.2\"}]}"
+    },
+    {
+      "name": "upgrade_diagnostic_normative_shape",
+      "type": "UpgradeDiagnosticData",
+      "input": "{\"readonly_possible\":true,\"migration_available\":false,\"affected_artifacts\":[\"project:p\"],\"required_version_or_range\":\"1.1..1.3\",\"current_version\":\"1.0\"}",
+      "expected": "{\"affected_artifacts\":[\"project:p\"],\"current_version\":\"1.0\",\"migration_available\":false,\"readonly_possible\":true,\"required_version_or_range\":\"1.1..1.3\"}"
+    },
+    {
+      "name": "limit_capability_explicit_semantics",
+      "type": "ByteResourceLimitCapability",
+      "input": "{\"unit\":\"bytes\",\"hard_maximum\":\"20\",\"effective_maximum\":\"10\",\"default_value\":\"15\"}",
+      "expected": "{\"default_value\":\"15\",\"effective_maximum\":\"10\",\"hard_maximum\":\"20\",\"unit\":\"bytes\"}"
     },
     {
       "name": "utc_leap_day_fraction",
       "type": "Rfc3339Time",
       "input": "\"2024-02-29T23:59:59.123456789Z\"",
       "expected": "\"2024-02-29T23:59:59.123456789Z\""
+    },
+    {
+      "name": "utc_year_zero_boundary",
+      "type": "Rfc3339Time",
+      "input": "\"0000-01-01T00:00:00Z\"",
+      "expected": "\"0000-01-01T00:00:00Z\""
+    },
+    {
+      "name": "utc_year_maximum_boundary",
+      "type": "Rfc3339Time",
+      "input": "\"9999-12-31T23:59:59Z\"",
+      "expected": "\"9999-12-31T23:59:59Z\""
     },
     {
       "name": "unicode_pair_and_reordered_object",
@@ -86,6 +194,24 @@
       "type": "CompiledExportRecipeDocument",
       "input": "{\"schema_version\":1,\"recipe\":{\"view_address\":\"ldl:project:p:view:overview\",\"source_refs\":true,\"requires_source_manifest\":false,\"options\":{\"state_summary\":false,\"kind\":\"json\",\"diagnostics\":false},\"native_maximum_fidelity\":\"lossless\",\"id\":\"json\",\"format\":\"json\",\"filename\":\"overview.json\",\"fidelity_basis\":\"native\",\"fidelity\":\"lossless\",\"extension\":\".json\",\"exporter_profile\":{\"specification_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"registry_schema_version\":1,\"registry_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"builtin.json\",\"format\":\"json\"},\"effective_maximum_fidelity\":\"lossless\",\"address\":\"ldl:project:p:view:overview:export:json\"},\"format\":\"layerdraw-export-recipe\"}",
       "expected": "{\"format\":\"layerdraw-export-recipe\",\"recipe\":{\"address\":\"ldl:project:p:view:overview:export:json\",\"effective_maximum_fidelity\":\"lossless\",\"exporter_profile\":{\"format\":\"json\",\"id\":\"builtin.json\",\"registry_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"registry_schema_version\":1,\"specification_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"extension\":\".json\",\"fidelity\":\"lossless\",\"fidelity_basis\":\"native\",\"filename\":\"overview.json\",\"format\":\"json\",\"id\":\"json\",\"native_maximum_fidelity\":\"lossless\",\"options\":{\"diagnostics\":false,\"kind\":\"json\",\"state_summary\":false},\"requires_source_manifest\":false,\"source_refs\":true,\"view_address\":\"ldl:project:p:view:overview\"},\"schema_version\":1}"
+    },
+    {
+      "name": "closed_field_predicate",
+      "type": "RecipePredicate",
+      "input": "{\"value\":{\"scalar_value\":{\"string_value\":\"x\",\"kind\":\"string\"},\"kind\":\"scalar\"},\"operator\":\"eq\",\"kind\":\"field\",\"field\":\"id\"}",
+      "expected": "{\"field\":\"id\",\"kind\":\"field\",\"operator\":\"eq\",\"value\":{\"kind\":\"scalar\",\"scalar_value\":{\"kind\":\"string\",\"string_value\":\"x\"}}}"
+    },
+    {
+      "name": "closed_row_cell_predicate",
+      "type": "RecipeRowPredicate",
+      "input": "{\"operator\":\"exists\",\"kind\":\"cell\",\"column_addresses\":[\"ldl:project:p:entity_type:t:column:c\"]}",
+      "expected": "{\"column_addresses\":[\"ldl:project:p:entity_type:t:column:c\"],\"kind\":\"cell\",\"operator\":\"exists\"}"
+    },
+    {
+      "name": "closed_png_export_options",
+      "type": "ExportOptions",
+      "input": "{\"width\":{\"value\":\"640\",\"kind\":\"value\"},\"scale\":\"1\",\"kind\":\"png\",\"height\":{\"kind\":\"auto\"},\"background\":\"transparent\"}",
+      "expected": "{\"background\":\"transparent\",\"height\":{\"kind\":\"auto\"},\"kind\":\"png\",\"scale\":\"1\",\"width\":{\"kind\":\"value\",\"value\":\"640\"}}"
     }
   ],
   "rejection_cases": [
@@ -94,22 +220,53 @@
     {"name": "int64_above_maximum", "type": "CanonicalInt64", "input": "\"9223372036854775808\""},
     {"name": "nonnegative_int64_negative", "type": "CanonicalNonNegativeInt64", "input": "\"-1\""},
     {"name": "nonnegative_int64_uint64_max", "type": "CanonicalNonNegativeInt64", "input": "\"18446744073709551615\""},
+    {"name": "positive_int64_zero", "type": "CanonicalPositiveInt64", "input": "\"0\""},
+    {"name": "safe_integer_below_minimum", "type": "CanonicalSafeInteger", "input": "\"-9007199254740992\""},
+    {"name": "finite_binary64_negative_zero", "type": "CanonicalFiniteDecimal", "input": "\"-0\""},
+    {"name": "finite_binary64_negative_zero_fraction", "type": "CanonicalFiniteDecimal", "input": "\"-0.0\""},
+    {"name": "finite_binary64_alias", "type": "CanonicalFiniteDecimal", "input": "\"0.10000000000000001\""},
+    {"name": "finite_binary64_noncanonical_exponent", "type": "CanonicalFiniteDecimal", "input": "\"1e-06\""},
+    {"name": "finite_binary64_overflow", "type": "CanonicalFiniteDecimal", "input": "\"1e+309\""},
+    {"name": "positive_binary64_zero", "type": "CanonicalPositiveFiniteDecimal", "input": "\"0\""},
     {"name": "digest_uppercase", "type": "Digest", "input": "\"sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789\""},
     {"name": "digest_wrong_algorithm", "type": "Digest", "input": "\"md5:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""},
     {"name": "digest_wrong_length", "type": "Digest", "input": "\"sha256:0123456789abcdef\""},
+    {"name": "release_version_leading_zero", "type": "ReleaseVersion", "input": "\"01.2.3\""},
+    {"name": "release_version_numeric_prerelease_leading_zero", "type": "ReleaseVersion", "input": "\"1.2.3-01\""},
+    {"name": "endpoint_instance_id_whitespace", "type": "EndpointInstanceID", "input": "\"endpoint secret\""},
+    {"name": "manifest_etag_not_digest", "type": "ManifestETag", "input": "\"fixture-etag\""},
+    {"name": "capability_id_not_namespaced", "type": "CapabilityID", "input": "\"compile\""},
     {"name": "json_number_negative_zero", "type": "SearchField", "input": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":-0,\"text\":\"t\"}"},
     {"name": "json_number_exponent", "type": "SearchField", "input": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":1e0,\"text\":\"t\"}"},
     {"name": "json_number_fraction", "type": "SearchField", "input": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":1.0,\"text\":\"t\"}"},
     {"name": "portable_integer_above_maximum", "type": "SearchField", "input": "{\"field_path\":\"p\",\"include_in_embedding\":false,\"lexical_weight\":2147483648,\"text\":\"t\"}"},
     {"name": "optional_collection_null", "type": "OperationCapability", "input": "{\"enabled\":true,\"protocol_version\":\"1.0\",\"required_authoring_capabilities\":null}"},
+    {"name": "enabled_capability_with_unavailable_reason", "type": "OperationCapability", "input": "{\"enabled\":true,\"protocol_version\":\"1.0\",\"unavailable_reason\":\"offline\"}"},
+    {"name": "disabled_capability_without_unavailable_reason", "type": "OperationCapability", "input": "{\"enabled\":false,\"protocol_version\":\"1.0\"}"},
+    {"name": "unknown_optional_status_without_reason", "type": "RequestedCapabilityStatus", "input": "{\"capability_id\":\"future.capability\",\"enabled\":false,\"protocol_version\":\"1.0\"}"},
+    {"name": "total_items_known_without_exact", "type": "TotalItems", "input": "{\"known\":true}"},
+    {"name": "total_items_unknown_with_exact", "type": "TotalItems", "input": "{\"exact\":\"1\",\"known\":false}"},
+    {"name": "protocol_range_reversed", "type": "ProtocolVersionRange", "input": "\"1.2..1.0\""},
+    {"name": "protocol_range_leading_zero", "type": "ProtocolVersionRange", "input": "\"01.0..1.0\""},
+    {"name": "protocol_range_overflow", "type": "ProtocolVersionRange", "input": "\"1.0..4294967296.0\""},
+    {"name": "protocol_range_cross_major", "type": "ProtocolVersionRange", "input": "\"1.9..2.0\""},
+    {"name": "protocol_offer_version_outside_range", "type": "ProtocolOffer", "input": "{\"name\":\"engine\",\"supported_range\":\"1.0..1.1\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.2\"}]}"},
+    {"name": "protocol_offer_duplicate_version", "type": "ProtocolOffer", "input": "{\"name\":\"engine\",\"supported_range\":\"1.0..1.1\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"},{\"schema_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"version\":\"1.0\"}]}"},
+    {"name": "limit_default_above_hard", "type": "ByteResourceLimitCapability", "input": "{\"default_value\":\"21\",\"effective_maximum\":\"10\",\"hard_maximum\":\"20\",\"unit\":\"bytes\"}"},
+    {"name": "limit_wrong_unit", "type": "ByteResourceLimitCapability", "input": "{\"default_value\":\"10\",\"effective_maximum\":\"10\",\"hard_maximum\":\"20\",\"unit\":\"items\"}"},
     {"name": "utc_offset_forbidden", "type": "Rfc3339Time", "input": "\"2024-01-01T00:00:00+09:00\""},
+    {"name": "utc_day_zero", "type": "Rfc3339Time", "input": "\"2024-01-00T00:00:00Z\""},
     {"name": "invalid_non_leap_day", "type": "Rfc3339Time", "input": "\"2023-02-29T00:00:00Z\""},
     {"name": "invalid_calendar_day", "type": "Rfc3339Time", "input": "\"2024-04-31T00:00:00Z\""},
     {"name": "fraction_too_precise", "type": "Rfc3339Time", "input": "\"2024-01-01T00:00:00.1234567890Z\""},
     {"name": "lowercase_utc_suffix", "type": "Rfc3339Time", "input": "\"2024-01-01T00:00:00z\""},
+    {"name": "utc_year_out_of_range", "type": "Rfc3339Time", "input": "\"10000-01-01T00:00:00Z\""},
     {"name": "unpaired_high_surrogate", "type": "JsonValue", "input": "\"\\ud800\""},
     {"name": "unpaired_low_surrogate", "type": "JsonValue", "input": "\"\\udc00\""},
     {"name": "number_in_json_value", "type": "JsonValue", "input": "1"}
+    ,{"name": "duplicate_object_key", "type": "JsonValue", "input": "{\"a\":true,\"a\":false}"}
+    ,{"name": "escaped_equivalent_duplicate_object_key", "type": "JsonValue", "input": "{\"a\":true,\"\\u0061\":false}"}
+    ,{"name": "nested_duplicate_object_key", "type": "JsonValue", "input": "{\"outer\":{\"a\":true,\"a\":false}}"}
     ,{"name": "diagnostic_code_not_ldl", "type": "Diagnostic", "input": "{\"arguments\":{},\"code\":\"engine.compile.invalid\",\"message_key\":\"invalid_structure_syntax\",\"protocol_version\":1,\"related\":[],\"severity\":\"error\"}"}
     ,{"name": "diagnostic_non_normative_information", "type": "Diagnostic", "input": "{\"arguments\":{},\"code\":\"LDL1101\",\"message_key\":\"invalid_structure_syntax\",\"protocol_version\":1,\"related\":[],\"severity\":\"information\"}"}
     ,{"name": "diagnostic_reversed_range", "type": "Diagnostic", "input": "{\"arguments\":{},\"code\":\"LDL1101\",\"message_key\":\"invalid_structure_syntax\",\"protocol_version\":1,\"range\":{\"end_byte\":\"3\",\"module_path\":\"a.ldl\",\"origin\":{\"kind\":\"project\"},\"start_byte\":\"4\"},\"related\":[],\"severity\":\"error\"}"}
@@ -117,6 +274,21 @@
     ,{"name": "query_recipe_unknown_wire_format", "type": "CompiledQueryRecipeDocument", "input": "{\"format\":\"internal-query.Recipe\",\"recipe\":{},\"schema_version\":1}"}
     ,{"name": "view_recipe_mixed_shape_union", "type": "CompiledViewRecipeDocument", "input": "{\"format\":\"layerdraw-view-recipe\",\"recipe\":{\"address\":\"ldl:project:p:view:v\",\"annotations\":{},\"category\":\"context\",\"dependencies\":{\"column_addresses\":[],\"entity_addresses\":[],\"entity_type_addresses\":[],\"export_addresses\":[],\"layer_addresses\":[],\"parameter_addresses\":[],\"query_addresses\":[],\"relation_addresses\":[],\"relation_type_addresses\":[],\"state_reads\":[]},\"display_name\":\"V\",\"exports\":[],\"id\":\"v\",\"relation_projection_overrides\":{},\"reserved_export_ids\":[],\"reserved_table_column_ids\":[],\"shape\":{\"context\":{\"group_by\":\"none\",\"include_entity_rows\":false,\"include_relation_rows\":false,\"incoming\":true,\"outgoing\":true},\"diagram\":{\"abstraction\":\"normal\",\"composed\":false,\"direction\":\"left_to_right\",\"layout\":\"layered\",\"placements\":[]},\"kind\":\"context\"},\"source\":{\"arguments\":{},\"kind\":\"query\",\"query_address\":\"ldl:project:p:query:q\"},\"state_input\":\"none\",\"state_requirement\":\"none\",\"tags\":[]},\"schema_version\":1}"}
     ,{"name": "recipe_decimal_trailing_zero", "type": "CompiledExportRecipeDocument", "input": "{\"format\":\"layerdraw-export-recipe\",\"recipe\":{\"address\":\"ldl:project:p:view:v:export:e\",\"effective_maximum_fidelity\":\"lossless\",\"exporter_profile\":{\"format\":\"png\",\"id\":\"p\",\"registry_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"registry_schema_version\":1,\"specification_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"extension\":\".png\",\"fidelity\":\"lossless\",\"fidelity_basis\":\"native\",\"filename\":\"v.png\",\"format\":\"png\",\"id\":\"e\",\"native_maximum_fidelity\":\"lossless\",\"options\":{\"kind\":\"png\",\"scale\":\"1.0\"},\"requires_source_manifest\":false,\"source_refs\":true,\"view_address\":\"ldl:project:p:view:v\"},\"schema_version\":1}"}
+    ,{"name": "field_predicate_missing_operator", "type": "RecipePredicate", "input": "{\"field\":\"id\",\"kind\":\"field\"}"}
+    ,{"name": "field_predicate_exists_with_value", "type": "RecipePredicate", "input": "{\"field\":\"id\",\"kind\":\"field\",\"operator\":\"exists\",\"value\":{\"kind\":\"scalar\",\"scalar_value\":{\"kind\":\"string\",\"string_value\":\"x\"}}}"}
+    ,{"name": "row_predicate_eq_without_value", "type": "RecipeRowPredicate", "input": "{\"column_addresses\":[],\"kind\":\"cell\",\"operator\":\"eq\"}"}
+    ,{"name": "json_export_with_raster_scale", "type": "ExportOptions", "input": "{\"diagnostics\":false,\"kind\":\"json\",\"scale\":\"1\",\"state_summary\":false}"}
+    ,{"name": "png_export_missing_required_width", "type": "ExportOptions", "input": "{\"background\":\"transparent\",\"height\":{\"kind\":\"auto\"},\"kind\":\"png\",\"scale\":\"1\"}"}
+    ,{"name": "export_dimension_zero", "type": "ExportDimension", "input": "{\"kind\":\"value\",\"value\":\"0\"}"}
+    ,{"name": "export_dimension_negative", "type": "ExportDimension", "input": "{\"kind\":\"value\",\"value\":\"-1\"}"}
+    ,{"name": "manual_placement_zero_width", "type": "ViewPlacement", "input": "{\"entity_address\":\"ldl:project:p:entity:e\",\"height\":\"1\",\"width\":\"0\",\"x\":\"0\",\"y\":\"0\"}"}
+    ,{"name": "manual_placement_negative_height", "type": "ViewPlacement", "input": "{\"entity_address\":\"ldl:project:p:entity:e\",\"height\":\"-0.5\",\"width\":\"1\",\"x\":\"0\",\"y\":\"0\"}"}
+    ,{"name": "overlay_zero_max_items", "type": "ViewRenderSet", "input": "{\"badge_label\":\"none\",\"badge_position\":\"top_right\",\"edge_arrow\":\"forward\",\"edge_label\":\"none\",\"edge_line\":\"solid\",\"nested_frame_label\":\"none\",\"nested_frame_style\":\"none\",\"overlay_kind\":\"badge\",\"overlay_max_items\":\"0\",\"overlay_position\":\"top_right\"}"}
+    ,{"name": "overlay_negative_max_items", "type": "ViewRenderSet", "input": "{\"badge_label\":\"none\",\"badge_position\":\"top_right\",\"edge_arrow\":\"forward\",\"edge_label\":\"none\",\"edge_line\":\"solid\",\"nested_frame_label\":\"none\",\"nested_frame_style\":\"none\",\"overlay_kind\":\"badge\",\"overlay_max_items\":\"-1\",\"overlay_position\":\"top_right\"}"}
+    ,{"name": "png_export_zero_scale", "type": "ExportOptions", "input": "{\"background\":\"transparent\",\"height\":{\"kind\":\"auto\"},\"kind\":\"png\",\"scale\":\"0\",\"width\":{\"kind\":\"auto\"}}"}
+    ,{"name": "png_export_negative_scale", "type": "ExportOptions", "input": "{\"background\":\"transparent\",\"height\":{\"kind\":\"auto\"},\"kind\":\"png\",\"scale\":\"-0.5\",\"width\":{\"kind\":\"auto\"}}"}
+    ,{"name": "effective_limits_zero", "type": "EffectiveResourceLimits", "input": "{\"max_asset_bytes\":\"1\",\"max_assets\":\"1\",\"max_declarations\":\"1\",\"max_pack_bytes\":\"1\",\"max_pack_files\":\"1\",\"max_project_source_bytes\":\"1\",\"max_project_source_files\":\"1\",\"max_raster_dimension\":\"0\",\"max_raster_pixels\":\"1\"}"}
+    ,{"name": "upgrade_diagnostic_legacy_shape", "type": "UpgradeDiagnosticData", "input": "{\"available_schema_digests\":[],\"protocol_name\":\"engine\",\"required_capabilities\":[],\"supported_range\":\"1.0\"}"}
   ],
   "mutation_cases": [
     {"name": "success_with_valid_failure", "fixture": "compile-success.json", "mutation": "add_valid_failure"},
@@ -133,6 +305,11 @@
   "request_mutation_cases": [
     {"name": "project_with_root_pack_id", "fixture": "compile-request.json", "mutation": "add_project_root"},
     {"name": "pack_without_root_pack_id", "fixture": "compile-request.json", "mutation": "set_pack_without_root"},
-    {"name": "pack_with_empty_root_pack_id", "fixture": "compile-request.json", "mutation": "set_pack_empty_root"}
+    {"name": "pack_with_empty_root_pack_id", "fixture": "compile-request.json", "mutation": "set_pack_empty_root"},
+    {"name": "pack_retaining_project_tree", "fixture": "compile-request.json", "mutation": "set_pack_with_root"},
+    {"name": "pack_with_noncanonical_root", "fixture": "compile-request.json", "mutation": "set_pack_bad_root"},
+    {"name": "project_asset_with_pack_identity", "fixture": "compile-request.json", "mutation": "project_asset_pack_id"},
+    {"name": "pack_asset_without_pack_identity", "fixture": "compile-request.json", "mutation": "pack_asset_without_id"},
+    {"name": "source_tree_noncanonical_path", "fixture": "compile-request.json", "mutation": "bad_source_path"}
   ]
 }

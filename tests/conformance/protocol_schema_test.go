@@ -95,6 +95,19 @@ func TestProtocolFixturesRoundTripInGeneratedGoTypes(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "handshake rejected", fixture: "handshake-rejected.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeHandshakeResponseEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeHandshakeResponseEnvelope(raw.(engineprotocol.HandshakeResponseEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.HandshakeResponseEnvelope)
+				if value.Outcome != protocolcommon.OutcomeRejected || value.Payload != nil || len(value.Diagnostics) != 1 {
+					t.Fatalf("invalid handshake rejection: %+v", value)
+				}
+			},
+		},
 	}
 	for _, test := range tests {
 		test := test
@@ -212,6 +225,13 @@ func TestGeneratedGoMatchesSharedCanonicalEngineEnvelopes(t *testing.T) {
 			}
 			return engineprotocol.EncodeHandshakeResponseEnvelope(value)
 		}},
+		{"handshake-rejected.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeHandshakeResponseEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeHandshakeResponseEnvelope(value)
+		}},
 	}
 	for _, test := range tests {
 		test := test
@@ -293,6 +313,84 @@ func TestSharedCanonicalAndRejectionCorpus(t *testing.T) {
 	}
 	if _, err := protocolcommon.DecodeJsonValue([]byte{'"', 0xff, '"'}); err == nil {
 		t.Fatal("malformed UTF-8 was accepted")
+	}
+}
+
+func TestSharedExportOptionVariantCorpus(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "export-options-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int                                      `json:"schema_version"`
+		Canonical     []struct{ Name, Input, Expected string } `json:"canonical_cases"`
+		Rejections    []struct{ Name, Input string }           `json:"rejection_cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 15 || len(corpus.Rejections) != 15 {
+		t.Fatalf("incomplete export option corpus: %+v", corpus)
+	}
+	for _, vector := range corpus.Canonical {
+		vector := vector
+		t.Run(vector.Name+" canonical", func(t *testing.T) {
+			encoded, err := roundTripSharedWire("ExportOptions", []byte(vector.Input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != vector.Expected {
+				t.Fatalf("canonical export bytes differ\nwant=%s\ngot=%s", vector.Expected, encoded)
+			}
+		})
+	}
+	for _, vector := range corpus.Rejections {
+		vector := vector
+		t.Run(vector.Name+" rejection", func(t *testing.T) {
+			if _, err := roundTripSharedWire("ExportOptions", []byte(vector.Input)); err == nil {
+				t.Fatal("invalid export option variant accepted")
+			}
+		})
+	}
+}
+
+func TestSharedPredicateVariantCorpus(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "predicates-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int                                            `json:"schema_version"`
+		Canonical     []struct{ Name, Type, Input, Expected string } `json:"canonical_cases"`
+		Rejections    []struct{ Name, Type, Input string }           `json:"rejection_cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 11 || len(corpus.Rejections) != 11 {
+		t.Fatalf("incomplete predicate corpus: %+v", corpus)
+	}
+	for _, vector := range corpus.Canonical {
+		vector := vector
+		t.Run(vector.Name+" canonical", func(t *testing.T) {
+			encoded, err := roundTripSharedWire(vector.Type, []byte(vector.Input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != vector.Expected {
+				t.Fatalf("canonical predicate bytes differ\nwant=%s\ngot=%s", vector.Expected, encoded)
+			}
+		})
+	}
+	for _, vector := range corpus.Rejections {
+		vector := vector
+		t.Run(vector.Name+" rejection", func(t *testing.T) {
+			if _, err := roundTripSharedWire(vector.Type, []byte(vector.Input)); err == nil {
+				t.Fatal("invalid predicate variant accepted")
+			}
+		})
 	}
 }
 
@@ -395,6 +493,24 @@ func TestSharedOutcomeAndUnionMutationCorpus(t *testing.T) {
 			case "set_pack_empty_root":
 				payload["mode"] = "pack"
 				payload["root_pack_id"] = ""
+			case "set_pack_with_root":
+				payload["mode"] = "pack"
+				payload["root_pack_id"] = "publisher/root"
+			case "set_pack_bad_root":
+				payload["mode"] = "pack"
+				payload["root_pack_id"] = "Bad"
+				payload["installed_pack_tree"] = payload["project_source_tree"]
+				payload["project_source_tree"] = []any{}
+			case "project_asset_pack_id":
+				source := payload["project_source_tree"].([]any)[0].(map[string]any)
+				blob := source["blob"].(map[string]any)
+				payload["referenced_assets"] = []any{map[string]any{"origin": "project", "pack_id": "publisher/pack", "locator": "asset.svg", "blob": blob, "digest": blob["digest"], "media_type": "image/svg+xml"}}
+			case "pack_asset_without_id":
+				source := payload["project_source_tree"].([]any)[0].(map[string]any)
+				blob := source["blob"].(map[string]any)
+				payload["referenced_assets"] = []any{map[string]any{"origin": "pack", "locator": "asset.svg", "blob": blob, "digest": blob["digest"], "media_type": "image/svg+xml"}}
+			case "bad_source_path":
+				payload["project_source_tree"].([]any)[0].(map[string]any)["path"] = "../document.ldl"
 			default:
 				t.Fatalf("unknown request mutation %q", test.Mutation)
 			}
@@ -411,6 +527,24 @@ func TestSharedOutcomeAndUnionMutationCorpus(t *testing.T) {
 
 func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 	switch typeName {
+	case "ByteResourceLimitCapability":
+		value, err := protocolcommon.DecodeByteResourceLimitCapability(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeByteResourceLimitCapability(value)
+	case "CapabilityID":
+		value, err := protocolcommon.DecodeCapabilityID(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeCapabilityID(value)
+	case "CanonicalFiniteDecimal":
+		value, err := semantic.DecodeCanonicalFiniteDecimal(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeCanonicalFiniteDecimal(value)
 	case "CanonicalInt64":
 		value, err := protocolcommon.DecodeCanonicalInt64(input)
 		if err != nil {
@@ -423,12 +557,48 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return protocolcommon.EncodeCanonicalNonNegativeInt64(value)
+	case "CanonicalPositiveFiniteDecimal":
+		value, err := semantic.DecodeCanonicalPositiveFiniteDecimal(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeCanonicalPositiveFiniteDecimal(value)
+	case "CanonicalPositiveInt64":
+		value, err := protocolcommon.DecodeCanonicalPositiveInt64(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeCanonicalPositiveInt64(value)
+	case "CanonicalSafeInteger":
+		value, err := protocolcommon.DecodeCanonicalSafeInteger(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeCanonicalSafeInteger(value)
 	case "OperationCapability":
 		value, err := protocolcommon.DecodeOperationCapability(input)
 		if err != nil {
 			return nil, err
 		}
 		return protocolcommon.EncodeOperationCapability(value)
+	case "ProtocolOffer":
+		value, err := protocolcommon.DecodeProtocolOffer(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeProtocolOffer(value)
+	case "ProtocolVersionRange":
+		value, err := protocolcommon.DecodeProtocolVersionRange(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeProtocolVersionRange(value)
+	case "RequestedCapabilityStatus":
+		value, err := protocolcommon.DecodeRequestedCapabilityStatus(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeRequestedCapabilityStatus(value)
 	case "Rfc3339Time":
 		value, err := protocolcommon.DecodeRfc3339Time(input)
 		if err != nil {
@@ -447,6 +617,36 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeSearchField(value)
+	case "EffectiveResourceLimits":
+		value, err := engineprotocol.DecodeEffectiveResourceLimits(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeEffectiveResourceLimits(value)
+	case "ExportDimension":
+		value, err := semantic.DecodeExportDimension(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeExportDimension(value)
+	case "ExportOptions":
+		value, err := semantic.DecodeExportOptions(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeExportOptions(value)
+	case "RecipePredicate":
+		value, err := semantic.DecodeRecipePredicate(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeRecipePredicate(value)
+	case "RecipeRowPredicate":
+		value, err := semantic.DecodeRecipeRowPredicate(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeRecipeRowPredicate(value)
 	case "Diagnostic":
 		value, err := semantic.DecodeDiagnostic(input)
 		if err != nil {
@@ -477,6 +677,48 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return protocolcommon.EncodeDigest(value)
+	case "EndpointInstanceID":
+		value, err := protocolcommon.DecodeEndpointInstanceID(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeEndpointInstanceID(value)
+	case "ManifestETag":
+		value, err := protocolcommon.DecodeManifestETag(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeManifestETag(value)
+	case "ReleaseVersion":
+		value, err := protocolcommon.DecodeReleaseVersion(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeReleaseVersion(value)
+	case "TotalItems":
+		value, err := protocolcommon.DecodeTotalItems(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeTotalItems(value)
+	case "UpgradeDiagnosticData":
+		value, err := protocolcommon.DecodeUpgradeDiagnosticData(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeUpgradeDiagnosticData(value)
+	case "ViewPlacement":
+		value, err := semantic.DecodeViewPlacement(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewPlacement(value)
+	case "ViewRenderSet":
+		value, err := semantic.DecodeViewRenderSet(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewRenderSet(value)
 	default:
 		return nil, fmt.Errorf("unknown shared conformance type %q", typeName)
 	}

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "https://schemas.layerdraw.dev/meta/protocol/v1",
   "$id": "https://schemas.layerdraw.dev/semantic/v1",
   "$comment": "SPDX-License-Identifier: Apache-2.0",
   "title": "LayerDraw Semantic Wire Values v1",
@@ -97,9 +97,9 @@
       "properties": {
         "array_value": {"type": "array", "items": {"$ref": "#/$defs/DiagnosticArgumentValue"}},
         "boolean_value": {"type": "boolean"},
-        "integer_value": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalInt64"},
+        "integer_value": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalSafeInteger"},
         "kind": {"$ref": "#/$defs/DiagnosticArgumentKind"},
-        "number_value": {"type": "string", "pattern": "^(0|-?[1-9][0-9]*)(\\.[0-9]*[1-9])?$"},
+        "number_value": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
         "object_value": {"type": "object", "additionalProperties": {"$ref": "#/$defs/DiagnosticArgumentValue"}},
         "stable_address_value": {"$ref": "#/$defs/StableAddress"},
         "string_value": {"type": "string"}
@@ -194,8 +194,15 @@
     },
     "CanonicalFiniteDecimal": {
       "type": "string",
-      "pattern": "^(0|-?[1-9][0-9]*)(\\.[0-9]*[1-9])?$",
-      "description": "A finite canonical base-10 decimal string with no exponent, leading or trailing fractional zero, plus sign, or negative zero."
+      "format": "finite-binary64-decimal",
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?(e[+-][1-9][0-9]*)?$",
+      "description": "The shortest round-trippable ECMAScript finite-binary64 spelling, including canonical exponent form where required and excluding negative zero."
+    },
+    "CanonicalPositiveFiniteDecimal": {
+      "type": "string",
+      "format": "positive-finite-binary64-decimal",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?(e[+-][1-9][0-9]*)?$",
+      "description": "A CanonicalFiniteDecimal whose binary64 value is strictly greater than zero."
     },
     "CompiledQueryRecipeDocument": {
       "type": "object",
@@ -235,7 +242,7 @@
       "description": "A typed recipe scalar. Integer and number quantities are decimal strings so no host numeric conversion can change recipe bytes.",
       "properties": {
         "boolean_value": {"type": "boolean"},
-        "integer_value": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalInt64"},
+        "integer_value": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalSafeInteger"},
         "kind": {"type": "string", "enum": ["boolean", "date", "datetime", "enum", "integer", "number", "string"]},
         "number_value": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
         "string_value": {"type": "string"}
@@ -286,9 +293,9 @@
         "format": {"type": "string", "enum": ["cidr", "email", "hostname", "ipv4", "ipv6", "uri"]},
         "id": {"type": "string"},
         "max": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
-        "max_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
         "min": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
-        "min_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "min_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
         "required": {"type": "boolean"},
         "reserved_enum_values": {"type": "array", "items": {"type": "string"}},
         "value_type": {"$ref": "#/$defs/ValueType"}
@@ -312,8 +319,8 @@
       "properties": {
         "cycle_policy": {"type": "string", "enum": ["error", "include_cycle_ref", "visit_once"]},
         "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]},
-        "max_depth": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
-        "min_depth": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "max_depth": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
+        "min_depth": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
         "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}
       },
       "required": ["direction", "min_depth", "max_depth", "cycle_policy"],
@@ -382,8 +389,7 @@
         "children": {"type": "array", "items": {"$ref": "#/$defs/RecipePredicate"}},
         "field": {"type": "string"},
         "field_path": {"type": "string"},
-        "kind": {"type": "string", "enum": ["all", "any", "cell", "field", "not", "rows", "state"]},
-        "operand_type": {"$ref": "#/$defs/RecipeOperandType"},
+        "kind": {"type": "string", "enum": ["all", "any", "field", "not", "rows", "state"]},
         "operator": {"type": "string", "enum": ["contains", "ends_with", "eq", "exists", "gt", "gte", "in", "lt", "lte", "missing", "ne", "not_in", "starts_with"]},
         "predicate": {"$ref": "#/$defs/RecipeRowPredicate"},
         "quantifier": {"type": "string", "enum": ["all", "any", "none"]},
@@ -391,7 +397,19 @@
         "value": {"$ref": "#/$defs/RecipePredicateValue"}
       },
       "required": ["kind"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "all": {"required": ["children"], "forbidden": ["child", "field", "field_path", "operator", "predicate", "quantifier", "type_addresses", "value"]},
+          "any": {"required": ["children"], "forbidden": ["child", "field", "field_path", "operator", "predicate", "quantifier", "type_addresses", "value"]},
+          "field": {"required": ["field", "operator"], "forbidden": ["child", "children", "field_path", "predicate", "quantifier", "type_addresses"]},
+          "not": {"required": ["child"], "forbidden": ["children", "field", "field_path", "operator", "predicate", "quantifier", "type_addresses", "value"]},
+          "rows": {"required": ["predicate", "quantifier", "type_addresses"], "forbidden": ["child", "children", "field", "field_path", "operator", "value"]},
+          "state": {"required": ["field_path", "operator"], "forbidden": ["child", "children", "field", "predicate", "quantifier", "type_addresses"]}
+        }
+      },
+      "x-layerdraw-operator-value": {"operator": "operator", "value": "value", "valueless": ["exists", "missing"]}
     },
     "RecipeRowPredicate": {
       "type": "object",
@@ -405,7 +423,18 @@
         "value": {"$ref": "#/$defs/RecipePredicateValue"}
       },
       "required": ["kind"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "all": {"required": ["children"], "forbidden": ["child", "column_addresses", "field_path", "operator", "value"]},
+          "any": {"required": ["children"], "forbidden": ["child", "column_addresses", "field_path", "operator", "value"]},
+          "cell": {"required": ["column_addresses", "operator"], "forbidden": ["child", "children", "field_path"]},
+          "not": {"required": ["child"], "forbidden": ["children", "column_addresses", "field_path", "operator", "value"]},
+          "state": {"required": ["field_path", "operator"], "forbidden": ["child", "children", "column_addresses"]}
+        }
+      },
+      "x-layerdraw-operator-value": {"operator": "operator", "value": "value", "valueless": ["exists", "missing"]}
     },
     "ExportRecipe": {
       "type": "object",
@@ -452,7 +481,7 @@
       "type": "object",
       "properties": {
         "kind": {"type": "string", "enum": ["auto", "value"]},
-        "value": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"}
+        "value": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"}
       },
       "required": ["kind"],
       "additionalProperties": false,
@@ -466,7 +495,7 @@
     },
     "ExportOptions": {
       "type": "object",
-      "description": "Closed superset of the format-profile options; the Go compiler determines the valid subset for the selected format.",
+      "description": "The closed normalized option union for every Language 1 export format.",
       "properties": {
         "background": {"type": "string"},
         "bundle": {"type": "boolean"},
@@ -484,14 +513,34 @@
         "orientation": {"type": "string", "enum": ["landscape", "portrait"]},
         "page_size": {"type": "string", "enum": ["a3", "a4", "ledger", "legal", "letter"]},
         "profile": {"type": "string", "enum": ["composed_diagram_workbook", "context_workbook", "diagram_inventory_workbook", "diagram_workbook", "diff_workbook", "flow_workbook", "impact_workbook", "matrix_workbook", "tree_workbook", "type_workbook"]},
-        "scale": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
+        "scale": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"},
         "source_manifest": {"type": "boolean"},
         "state_summary": {"type": "boolean"},
         "view_data_json": {"type": "boolean"},
         "width": {"$ref": "#/$defs/ExportDimension"}
       },
       "required": ["kind"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "bpmn": {"required": ["source_manifest"], "forbidden": ["background", "bundle", "diagnostics", "embed_assets", "fit", "formulas", "header", "height", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "state_summary", "view_data_json", "width"]},
+          "csv": {"required": ["bundle", "header", "source_manifest"], "forbidden": ["background", "diagnostics", "embed_assets", "fit", "formulas", "height", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "state_summary", "view_data_json", "width"]},
+          "docx": {"required": ["fit", "legend", "orientation", "page_size"], "forbidden": ["background", "bundle", "diagnostics", "embed_assets", "formulas", "header", "height", "hidden_ids", "interactive", "lookup_sheets", "profile", "scale", "source_manifest", "state_summary", "view_data_json", "width"]},
+          "drawio": {"required": ["source_manifest"], "forbidden": ["background", "bundle", "diagnostics", "embed_assets", "fit", "formulas", "header", "height", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "state_summary", "view_data_json", "width"]},
+          "html": {"required": ["embed_assets", "interactive"], "forbidden": ["background", "bundle", "diagnostics", "fit", "formulas", "header", "height", "hidden_ids", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "source_manifest", "state_summary", "view_data_json", "width"]},
+          "json": {"required": ["diagnostics", "state_summary"], "forbidden": ["background", "bundle", "embed_assets", "fit", "formulas", "header", "height", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "source_manifest", "view_data_json", "width"]},
+          "markdown": {"required": ["source_manifest"], "forbidden": ["background", "bundle", "diagnostics", "embed_assets", "fit", "formulas", "header", "height", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "state_summary", "view_data_json", "width"]},
+          "mermaid": {"required": ["source_manifest"], "forbidden": ["background", "bundle", "diagnostics", "embed_assets", "fit", "formulas", "header", "height", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "state_summary", "view_data_json", "width"]},
+          "pdf": {"required": ["fit", "legend", "orientation", "page_size"], "forbidden": ["background", "bundle", "diagnostics", "embed_assets", "formulas", "header", "height", "hidden_ids", "interactive", "lookup_sheets", "profile", "scale", "source_manifest", "state_summary", "view_data_json", "width"]},
+          "png": {"required": ["background", "height", "scale", "width"], "forbidden": ["bundle", "diagnostics", "embed_assets", "fit", "formulas", "header", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "source_manifest", "state_summary", "view_data_json"]},
+          "pptx": {"required": ["fit", "legend", "orientation", "page_size"], "forbidden": ["background", "bundle", "diagnostics", "embed_assets", "formulas", "header", "height", "hidden_ids", "interactive", "lookup_sheets", "profile", "scale", "source_manifest", "state_summary", "view_data_json", "width"]},
+          "svg": {"required": ["background", "height", "scale", "width"], "forbidden": ["bundle", "diagnostics", "embed_assets", "fit", "formulas", "header", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "source_manifest", "state_summary", "view_data_json"]},
+          "tsv": {"required": ["bundle", "header", "source_manifest"], "forbidden": ["background", "diagnostics", "embed_assets", "fit", "formulas", "height", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "state_summary", "view_data_json", "width"]},
+          "xlsx": {"required": ["formulas", "hidden_ids", "lookup_sheets", "profile", "view_data_json"], "forbidden": ["background", "bundle", "diagnostics", "embed_assets", "fit", "header", "height", "interactive", "legend", "orientation", "page_size", "scale", "source_manifest", "state_summary", "width"]},
+          "yaml": {"required": ["diagnostics", "state_summary"], "forbidden": ["background", "bundle", "embed_assets", "fit", "formulas", "header", "height", "hidden_ids", "interactive", "legend", "lookup_sheets", "orientation", "page_size", "profile", "scale", "source_manifest", "view_data_json", "width"]}
+        }
+      }
     },
     "ViewRecipe": {
       "type": "object",
@@ -579,7 +628,7 @@
         "mode": {"type": "string", "enum": ["badge", "edge", "hide", "nest", "overlay"]},
         "overlay_endpoint": {"type": "string", "enum": ["from", "to"]},
         "parent_endpoint": {"type": "string", "enum": ["from", "to"]},
-        "priority": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalInt64"},
+        "priority": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalSafeInteger"},
         "target_endpoint": {"type": "string", "enum": ["from", "to"]}
       },
       "required": ["mode", "priority", "conflict", "keep_edge"],
@@ -634,7 +683,7 @@
         "badge_icon": {"type": "string"}, "badge_label": {"type": "string"}, "badge_position": {"type": "string"},
         "edge_arrow": {"type": "string"}, "edge_color": {"type": "string"}, "edge_label": {"type": "string"}, "edge_line": {"type": "string"},
         "nested_frame_label": {"type": "string"}, "nested_frame_style": {"type": "string"},
-        "overlay_kind": {"type": "string"}, "overlay_max_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"}, "overlay_position": {"type": "string"}
+        "overlay_kind": {"type": "string"}, "overlay_max_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveSafeInteger"}, "overlay_position": {"type": "string"}
       },
       "required": ["edge_arrow", "edge_line", "edge_label", "nested_frame_label", "nested_frame_style", "overlay_kind", "overlay_position", "overlay_max_items", "badge_label", "badge_position"],
       "additionalProperties": false
@@ -680,7 +729,7 @@
     },
     "ViewPlacement": {
       "type": "object",
-      "properties": {"entity_address": {"$ref": "#/$defs/StableAddress"}, "height": {"$ref": "#/$defs/CanonicalFiniteDecimal"}, "width": {"$ref": "#/$defs/CanonicalFiniteDecimal"}, "x": {"$ref": "#/$defs/CanonicalFiniteDecimal"}, "y": {"$ref": "#/$defs/CanonicalFiniteDecimal"}},
+      "properties": {"entity_address": {"$ref": "#/$defs/StableAddress"}, "height": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"}, "width": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"}, "x": {"$ref": "#/$defs/CanonicalFiniteDecimal"}, "y": {"$ref": "#/$defs/CanonicalFiniteDecimal"}},
       "required": ["entity_address", "x", "y", "width", "height"],
       "additionalProperties": false
     },

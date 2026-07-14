@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "canonical_cases": [
+    {"name":"json","input":"{\"kind\":\"json\",\"diagnostics\":false,\"state_summary\":false}","expected":"{\"diagnostics\":false,\"kind\":\"json\",\"state_summary\":false}"},
+    {"name":"yaml","input":"{\"kind\":\"yaml\",\"diagnostics\":false,\"state_summary\":false}","expected":"{\"diagnostics\":false,\"kind\":\"yaml\",\"state_summary\":false}"},
+    {"name":"svg","input":"{\"kind\":\"svg\",\"width\":{\"kind\":\"auto\"},\"height\":{\"kind\":\"auto\"},\"scale\":\"1\",\"background\":\"transparent\"}","expected":"{\"background\":\"transparent\",\"height\":{\"kind\":\"auto\"},\"kind\":\"svg\",\"scale\":\"1\",\"width\":{\"kind\":\"auto\"}}"},
+    {"name":"png","input":"{\"kind\":\"png\",\"width\":{\"kind\":\"value\",\"value\":\"640\"},\"height\":{\"kind\":\"value\",\"value\":\"480\"},\"scale\":\"1\",\"background\":\"transparent\"}","expected":"{\"background\":\"transparent\",\"height\":{\"kind\":\"value\",\"value\":\"480\"},\"kind\":\"png\",\"scale\":\"1\",\"width\":{\"kind\":\"value\",\"value\":\"640\"}}"},
+    {"name":"pdf","input":"{\"kind\":\"pdf\",\"page_size\":\"a4\",\"orientation\":\"portrait\",\"fit\":\"page\",\"legend\":false}","expected":"{\"fit\":\"page\",\"kind\":\"pdf\",\"legend\":false,\"orientation\":\"portrait\",\"page_size\":\"a4\"}"},
+    {"name":"pptx","input":"{\"kind\":\"pptx\",\"page_size\":\"a4\",\"orientation\":\"portrait\",\"fit\":\"page\",\"legend\":false}","expected":"{\"fit\":\"page\",\"kind\":\"pptx\",\"legend\":false,\"orientation\":\"portrait\",\"page_size\":\"a4\"}"},
+    {"name":"docx","input":"{\"kind\":\"docx\",\"page_size\":\"a4\",\"orientation\":\"portrait\",\"fit\":\"page\",\"legend\":false}","expected":"{\"fit\":\"page\",\"kind\":\"docx\",\"legend\":false,\"orientation\":\"portrait\",\"page_size\":\"a4\"}"},
+    {"name":"html","input":"{\"kind\":\"html\",\"interactive\":false,\"embed_assets\":false}","expected":"{\"embed_assets\":false,\"interactive\":false,\"kind\":\"html\"}"},
+    {"name":"csv","input":"{\"kind\":\"csv\",\"bundle\":false,\"header\":true,\"source_manifest\":false}","expected":"{\"bundle\":false,\"header\":true,\"kind\":\"csv\",\"source_manifest\":false}"},
+    {"name":"tsv","input":"{\"kind\":\"tsv\",\"bundle\":false,\"header\":true,\"source_manifest\":false}","expected":"{\"bundle\":false,\"header\":true,\"kind\":\"tsv\",\"source_manifest\":false}"},
+    {"name":"xlsx","input":"{\"kind\":\"xlsx\",\"profile\":\"type_workbook\",\"lookup_sheets\":false,\"hidden_ids\":false,\"formulas\":false,\"view_data_json\":false}","expected":"{\"formulas\":false,\"hidden_ids\":false,\"kind\":\"xlsx\",\"lookup_sheets\":false,\"profile\":\"type_workbook\",\"view_data_json\":false}"},
+    {"name":"markdown","input":"{\"kind\":\"markdown\",\"source_manifest\":false}","expected":"{\"kind\":\"markdown\",\"source_manifest\":false}"},
+    {"name":"mermaid","input":"{\"kind\":\"mermaid\",\"source_manifest\":false}","expected":"{\"kind\":\"mermaid\",\"source_manifest\":false}"},
+    {"name":"bpmn","input":"{\"kind\":\"bpmn\",\"source_manifest\":false}","expected":"{\"kind\":\"bpmn\",\"source_manifest\":false}"},
+    {"name":"drawio","input":"{\"kind\":\"drawio\",\"source_manifest\":false}","expected":"{\"kind\":\"drawio\",\"source_manifest\":false}"}
+  ],
+  "rejection_cases": [
+    {"name":"json_missing_state_summary","input":"{\"kind\":\"json\",\"diagnostics\":false}"},
+    {"name":"yaml_missing_state_summary","input":"{\"kind\":\"yaml\",\"diagnostics\":false}"},
+    {"name":"svg_missing_width","input":"{\"kind\":\"svg\",\"height\":{\"kind\":\"auto\"},\"scale\":\"1\",\"background\":\"transparent\"}"},
+    {"name":"png_missing_width","input":"{\"kind\":\"png\",\"height\":{\"kind\":\"auto\"},\"scale\":\"1\",\"background\":\"transparent\"}"},
+    {"name":"pdf_missing_legend","input":"{\"kind\":\"pdf\",\"page_size\":\"a4\",\"orientation\":\"portrait\",\"fit\":\"page\"}"},
+    {"name":"pptx_missing_legend","input":"{\"kind\":\"pptx\",\"page_size\":\"a4\",\"orientation\":\"portrait\",\"fit\":\"page\"}"},
+    {"name":"docx_missing_legend","input":"{\"kind\":\"docx\",\"page_size\":\"a4\",\"orientation\":\"portrait\",\"fit\":\"page\"}"},
+    {"name":"html_missing_embed_assets","input":"{\"kind\":\"html\",\"interactive\":false}"},
+    {"name":"csv_missing_header","input":"{\"kind\":\"csv\",\"bundle\":false,\"source_manifest\":false}"},
+    {"name":"tsv_missing_header","input":"{\"kind\":\"tsv\",\"bundle\":false,\"source_manifest\":false}"},
+    {"name":"xlsx_missing_formulas","input":"{\"kind\":\"xlsx\",\"profile\":\"type_workbook\",\"lookup_sheets\":false,\"hidden_ids\":false,\"view_data_json\":false}"},
+    {"name":"markdown_missing_source_manifest","input":"{\"kind\":\"markdown\"}"},
+    {"name":"mermaid_missing_source_manifest","input":"{\"kind\":\"mermaid\"}"},
+    {"name":"bpmn_missing_source_manifest","input":"{\"kind\":\"bpmn\"}"},
+    {"name":"drawio_missing_source_manifest","input":"{\"kind\":\"drawio\"}"}
+  ]
+}

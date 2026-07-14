@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "canonical_cases": [
+    {"name":"predicate_all","type":"RecipePredicate","input":"{\"kind\":\"all\",\"children\":[]}","expected":"{\"children\":[],\"kind\":\"all\"}"},
+    {"name":"predicate_any","type":"RecipePredicate","input":"{\"kind\":\"any\",\"children\":[]}","expected":"{\"children\":[],\"kind\":\"any\"}"},
+    {"name":"predicate_not","type":"RecipePredicate","input":"{\"kind\":\"not\",\"child\":{\"kind\":\"all\",\"children\":[]}}","expected":"{\"child\":{\"children\":[],\"kind\":\"all\"},\"kind\":\"not\"}"},
+    {"name":"predicate_field","type":"RecipePredicate","input":"{\"kind\":\"field\",\"field\":\"id\",\"operator\":\"exists\"}","expected":"{\"field\":\"id\",\"kind\":\"field\",\"operator\":\"exists\"}"},
+    {"name":"predicate_state","type":"RecipePredicate","input":"{\"kind\":\"state\",\"field_path\":\"system.updated_at\",\"operator\":\"missing\"}","expected":"{\"field_path\":\"system.updated_at\",\"kind\":\"state\",\"operator\":\"missing\"}"},
+    {"name":"predicate_rows","type":"RecipePredicate","input":"{\"kind\":\"rows\",\"quantifier\":\"any\",\"type_addresses\":[],\"predicate\":{\"kind\":\"all\",\"children\":[]}}","expected":"{\"kind\":\"rows\",\"predicate\":{\"children\":[],\"kind\":\"all\"},\"quantifier\":\"any\",\"type_addresses\":[]}"},
+    {"name":"row_all","type":"RecipeRowPredicate","input":"{\"kind\":\"all\",\"children\":[]}","expected":"{\"children\":[],\"kind\":\"all\"}"},
+    {"name":"row_any","type":"RecipeRowPredicate","input":"{\"kind\":\"any\",\"children\":[]}","expected":"{\"children\":[],\"kind\":\"any\"}"},
+    {"name":"row_not","type":"RecipeRowPredicate","input":"{\"kind\":\"not\",\"child\":{\"kind\":\"all\",\"children\":[]}}","expected":"{\"child\":{\"children\":[],\"kind\":\"all\"},\"kind\":\"not\"}"},
+    {"name":"row_cell","type":"RecipeRowPredicate","input":"{\"kind\":\"cell\",\"column_addresses\":[],\"operator\":\"exists\"}","expected":"{\"column_addresses\":[],\"kind\":\"cell\",\"operator\":\"exists\"}"},
+    {"name":"row_state","type":"RecipeRowPredicate","input":"{\"kind\":\"state\",\"field_path\":\"system.updated_at\",\"operator\":\"missing\"}","expected":"{\"field_path\":\"system.updated_at\",\"kind\":\"state\",\"operator\":\"missing\"}"}
+  ],
+  "rejection_cases": [
+    {"name":"predicate_all_missing_children","type":"RecipePredicate","input":"{\"kind\":\"all\"}"},
+    {"name":"predicate_any_with_child","type":"RecipePredicate","input":"{\"kind\":\"any\",\"children\":[],\"child\":{\"kind\":\"all\",\"children\":[]}}"},
+    {"name":"predicate_not_missing_child","type":"RecipePredicate","input":"{\"kind\":\"not\"}"},
+    {"name":"predicate_field_missing_operator","type":"RecipePredicate","input":"{\"kind\":\"field\",\"field\":\"id\"}"},
+    {"name":"predicate_state_with_field","type":"RecipePredicate","input":"{\"kind\":\"state\",\"field\":\"id\",\"field_path\":\"system.updated_at\",\"operator\":\"missing\"}"},
+    {"name":"predicate_rows_missing_predicate","type":"RecipePredicate","input":"{\"kind\":\"rows\",\"quantifier\":\"any\",\"type_addresses\":[]}"},
+    {"name":"row_all_missing_children","type":"RecipeRowPredicate","input":"{\"kind\":\"all\"}"},
+    {"name":"row_any_with_child","type":"RecipeRowPredicate","input":"{\"kind\":\"any\",\"children\":[],\"child\":{\"kind\":\"all\",\"children\":[]}}"},
+    {"name":"row_not_missing_child","type":"RecipeRowPredicate","input":"{\"kind\":\"not\"}"},
+    {"name":"row_cell_missing_operator","type":"RecipeRowPredicate","input":"{\"kind\":\"cell\",\"column_addresses\":[]}"},
+    {"name":"row_state_eq_without_value","type":"RecipeRowPredicate","input":"{\"kind\":\"state\",\"field_path\":\"system.updated_at\",\"operator\":\"eq\"}"}
+  ]
+}

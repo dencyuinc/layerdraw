@@ -4,7 +4,9 @@ Language-neutral protocol, container, release, and wire schema sources.
 
 Schemas are the source of truth for generated Go and TypeScript bindings.
 Handwritten Engine, Runtime, or UI semantics do not live here. The initial
-protocol authority is JSON Schema draft 2020-12 and is split into:
+protocol authority is the published LayerDraw Protocol Schema Dialect v1. The
+dialect composes JSON Schema draft 2020-12 with a required assertion vocabulary
+for invariants that stock JSON Schema cannot express, and is split into:
 
 - `protocol-common/`: envelopes, failures, blob references, pagination, and
   capability handshake primitives.
@@ -12,7 +14,39 @@ protocol authority is JSON Schema draft 2020-12 and is split into:
   projections, hashes, source maps, semantic indexes, and search documents.
 - `engine-protocol/`: `engine.handshake` and `engine.compile` operation payloads
   and concrete envelopes.
+- `meta/`: the dialect meta-schema and the schema for every required
+  `x-layerdraw-*` assertion keyword.
 - `fixtures/`: canonical cross-language request and response vectors.
+
+## LayerDraw assertion vocabulary
+
+Every protocol schema declares the required
+`https://schemas.layerdraw.dev/vocab/protocol/v1` vocabulary. A validator that
+does not implement a required vocabulary must refuse to process the schema.
+Its assertion keywords have these exact meanings:
+
+- `x-layerdraw-tagged-union` selects one variant from the value of `property`;
+  that variant's `required` and `forbidden` members must respectively be
+  present and absent, while `empty` and `non_empty` members must be arrays with
+  the stated cardinality.
+- `x-layerdraw-outcome-envelope: true` requires success to contain `payload`
+  but no `failure`, rejection to contain neither and at least one diagnostic,
+  and failure/cancellation to contain `failure` but no `payload`.
+- `x-layerdraw-ordered-range: true` requires canonical `start_byte` to be no
+  greater than canonical `end_byte`.
+- `x-layerdraw-operator-value` makes the configured value member absent for a
+  listed valueless operator and present for every other operator.
+- `x-layerdraw-protocol-offer: true` requires an ordered canonical inclusive
+  range and a nonempty, version-unique exact digest binding list whose versions
+  all fall within that range.
+- `x-layerdraw-limit-capability: true` requires both `default_value` and
+  `effective_maximum` to be no greater than `hard_maximum`.
+- `x-layerdraw-unique-array-keys` requires each configured array's objects to
+  have distinct values for its configured key.
+
+The root annotations `x-layerdraw-max-json-bytes` and
+`x-layerdraw-max-json-depth` define the shared recursive document limits;
+`x-layerdraw-go-package` and `x-layerdraw-ts-module` define generated targets.
 
 Canonical fields and enum values use `lower_snake_case`. Quantities that map to
 64-bit integers use canonical decimal strings. `CanonicalInt64` covers
@@ -35,6 +69,12 @@ values permit null, booleans, strings, arrays, and objects but deliberately no
 JSON numbers. Capability identifiers are strings and an unknown identifier is
 never treated as enabled behavior.
 
+Duplicate object members are invalid at every depth. Member identity is tested
+after JSON escape decoding, so `"name"` and `"\u006eame"` are duplicates.
+The TypeScript JSON value model is limited to own enumerable data properties:
+prototype-provided, non-enumerable, accessor, or symbol-keyed properties are
+not wire data.
+
 Every protocol JSON document is at most 8,388,608 UTF-8 bytes and at most 128
 nested array/object containers; a scalar has depth zero. The limits apply to
 envelopes, scalar codecs, and recursive `JsonValue` alike. Input must be valid
@@ -46,7 +86,10 @@ nine fractional-second digits; offsets and impossible dates are invalid.
 Protocol versions use `major.minor`. Removing or requiring a field, changing a
 closed enum, or changing canonicalization requires a new major version.
 Optional fields and documented extension values may be added in a minor
-version. Schema patch versions are not protocol versions.
+version. Schema patch versions are not protocol versions. One offer's inclusive
+`lower..upper` range is confined to one major; clients use separate offers for
+different majors, and every offered exact version has one associated Engine
+schema-closure digest.
 
 Generated encoders produce LayerDraw canonical JSON: no insignificant
 whitespace; object members sorted by UTF-16 code units; array order preserved;
@@ -56,14 +99,20 @@ fraction, `+`, leading zero, or negative zero. Optional absent properties are
 omitted; present empty collections remain present. TypeScript codecs return the
 canonical JSON string and Go codecs return its UTF-8 bytes.
 
+`CanonicalFiniteDecimal` is a string representation of one finite IEEE-754
+binary64 value. It is exactly the shortest round-trippable ECMAScript decimal
+spelling (including canonical exponent notation when required), accepts values
+such as `-0.5`, and rejects negative zero and longer aliases of the same value.
+
 ## Schema digests
 
 Schema source accepts LF or CRLF and deterministically normalizes CRLF to LF;
 bare carriage returns are invalid. Digests use the normalized LF bytes and a
 repository-relative slash-separated path. A group digest covers the transitive
 `$ref` import closure, sorted by path, by hashing each `path`, one NUL byte, the
-normalized file bytes, and one NUL byte with SHA-256. The aggregate digest
-applies the same recipe to all three schema files. `gen/schema-digests.json`
+normalized file bytes, and one NUL byte with SHA-256. The dialect meta-schema
+participates in every group closure. The aggregate digest applies the same
+recipe to the meta-schema and all three protocol schema files. `gen/schema-digests.json`
 records raw file, group-closure, and aggregate digests; generated Go and
 TypeScript metadata embeds the matching group digest. Engine imports common
 and semantic, semantic imports common, and common imports neither, so the graph
@@ -80,6 +129,17 @@ present values. For each request field, omission or canonical `"0"` selects
 the Go facade default and a positive value overrides it; a successful result
 never reports zero. Result `EffectiveResourceLimits` is a separate complete
 record whose nine applied positive limits are always present.
+
+The nine limit keys and units are closed: byte limits use `bytes`, count limits
+use `items`, `max_raster_dimension` uses `pixels_per_axis`, and
+`max_raster_pixels` uses `pixels`. A capability descriptor reports the endpoint
+`hard_maximum`, the endpoint `default_value`, and the client-scoped
+`effective_maximum = min(hard_maximum, client ceiling when present)`. Both the
+default and effective maximum must be no greater than the hard maximum. A
+positive compile override must be no greater than the effective maximum or the
+request is rejected; a zero/omitted override applies `min(default_value,
+effective_maximum)`. These are wire and combination semantics; enforcing them
+when dispatching a compile remains Issue #29.
 
 `CompileResult` retains a validated tagged normalized Project-or-Pack artifact,
 canonical/artifact blob bindings, source map, semantic index, addresses,

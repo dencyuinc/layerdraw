@@ -7,9 +7,17 @@
       "embedding_profiles": [],
       "exporter_profiles": [],
       "limits": {
-        "max_project_source_bytes": "67108864"
+        "max_asset_bytes": {"default_value": "268435456", "effective_maximum": "268435456", "hard_maximum": "268435456", "unit": "bytes"},
+        "max_assets": {"default_value": "4096", "effective_maximum": "4096", "hard_maximum": "4096", "unit": "items"},
+        "max_declarations": {"default_value": "1000000", "effective_maximum": "1000000", "hard_maximum": "1000000", "unit": "items"},
+        "max_pack_bytes": {"default_value": "268435456", "effective_maximum": "268435456", "hard_maximum": "268435456", "unit": "bytes"},
+        "max_pack_files": {"default_value": "16384", "effective_maximum": "16384", "hard_maximum": "16384", "unit": "items"},
+        "max_project_source_bytes": {"default_value": "67108864", "effective_maximum": "67108864", "hard_maximum": "67108864", "unit": "bytes"},
+        "max_project_source_files": {"default_value": "4096", "effective_maximum": "4096", "hard_maximum": "4096", "unit": "items"},
+        "max_raster_dimension": {"default_value": "32768", "effective_maximum": "32768", "hard_maximum": "32768", "unit": "pixels_per_axis"},
+        "max_raster_pixels": {"default_value": "67108864", "effective_maximum": "67108864", "hard_maximum": "67108864", "unit": "pixels"}
       },
-      "manifest_etag": "fixture-etag",
+      "manifest_etag": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "manifest_scope": "endpoint",
       "manifest_version": 1,
       "operations": {
@@ -31,12 +39,15 @@
       "storage_capabilities": [],
       "transports": ["in_process"]
     },
+    "capability_statuses": [
+      {"capability_id": "engine.compile", "enabled": true, "protocol_version": "1.0"}
+    ],
     "endpoint_instance_id": "fixture-engine",
     "host_release": "0.0.0-dev",
     "negotiated_protocols": [
       {
         "name": "engine",
-          "schema_digest": "sha256:6effb967ec3f2f49f75957322a817e3727de8790413fa93a4e7ced6ec04fd327",
+          "schema_digest": "sha256:e9cd89ba2aacbdc7b5ea88017b0749e48a020674e38da90c476b839972813403",
         "version": "1.0"
       }
     ],

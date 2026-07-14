@@ -49,7 +49,7 @@ func TestGenerationIsDeterministicAndCommitted(t *testing.T) {
 func TestSchemaValidationRejectsUnsafeShapes(t *testing.T) {
 	t.Parallel()
 	document := &schemaDocument{
-		Schema: "https://json-schema.org/draft/2020-12/schema",
+		Schema: schemaDialectID,
 		ID:     "test", Title: "test", Package: "test", Module: "test", MaxJSONBytes: 1024, MaxJSONDepth: 1,
 		Definitions: map[string]*schemaType{"Record": {
 			Type: "object",
@@ -102,7 +102,7 @@ func TestSchemaDocumentValidationFailures(t *testing.T) {
 	t.Parallel()
 	valid := func() *schemaDocument {
 		return &schemaDocument{
-			Schema: "https://json-schema.org/draft/2020-12/schema", ID: "test", Title: "test",
+			Schema: schemaDialectID, ID: "test", Title: "test",
 			Package: "test", Module: "test", MaxJSONBytes: 1024, MaxJSONDepth: 1,
 			Definitions: map[string]*schemaType{"Record": {Type: "string"}},
 		}
@@ -111,7 +111,7 @@ func TestSchemaDocumentValidationFailures(t *testing.T) {
 		name, want string
 		mutate     func(*schemaDocument)
 	}{
-		{"schema draft", "$schema", func(document *schemaDocument) { document.Schema = "draft-07" }},
+		{"schema dialect", "$schema", func(document *schemaDocument) { document.Schema = "draft-07" }},
 		{"identity", "$id", func(document *schemaDocument) { document.ID = "" }},
 		{"byte limit", "protocol limits", func(document *schemaDocument) { document.MaxJSONBytes = 100 }},
 		{"depth limit", "protocol limits", func(document *schemaDocument) { document.MaxJSONDepth = 0 }},
@@ -151,6 +151,7 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 		value      func() *schemaType
 	}{
 		{"missing shape", "neither", func() *schemaType { return &schemaType{} }},
+		{"unsupported oneOf", "unsupported oneOf", func() *schemaType { return &schemaType{OneOf: []*schemaType{{Type: "string"}, {Type: "boolean"}}} }},
 		{"non-string enum", "enum must", func() *schemaType { return &schemaType{Type: "boolean", Enum: []string{"x"}} }},
 		{"unknown format", "unsupported format", func() *schemaType { return &schemaType{Type: "string", Format: "uuid"} }},
 		{"integer without bounds", "explicit minimum", func() *schemaType { return &schemaType{Type: "integer"} }},
@@ -204,7 +205,7 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 			value.TaggedUnion = &taggedUnion{Property: "kind", Variants: map[string]taggedVariant{"a": {Required: []string{"missing"}}, "b": {}}}
 			return value
 		}},
-		{"contradictory tagged property", "requires and forbids", func() *schemaType {
+		{"contradictory tagged property", "contradictory rules", func() *schemaType {
 			value := validObject()
 			value.TaggedUnion = &taggedUnion{Property: "kind", Variants: map[string]taggedVariant{
 				"a": {Required: []string{"payload"}, Forbidden: []string{"payload"}}, "b": {},
@@ -216,11 +217,38 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 			value.OutcomeEnvelope = true
 			return value
 		}},
-		{"empty tagged rule on non-array", "empty rule requires array", func() *schemaType {
+		{"empty tagged rule on non-array", "empty/non_empty rule requires array", func() *schemaType {
 			value := validObject()
 			value.TaggedUnion = &taggedUnion{Property: "kind", Variants: map[string]taggedVariant{
 				"a": {Empty: []string{"payload"}}, "b": {},
 			}}
+			return value
+		}},
+		{"non-empty tagged rule on non-array", "empty/non_empty rule requires array", func() *schemaType {
+			value := validObject()
+			value.TaggedUnion = &taggedUnion{Property: "kind", Variants: map[string]taggedVariant{
+				"a": {NonEmpty: []string{"payload"}}, "b": {},
+			}}
+			return value
+		}},
+		{"operator rule missing properties", "invalid operator/value", func() *schemaType {
+			value := validObject()
+			value.OperatorValue = &operatorValueRule{Operator: "operator", Value: "value", Valueless: []string{"missing"}}
+			return value
+		}},
+		{"protocol offer metadata missing fields", "protocol offer requires", func() *schemaType {
+			value := validObject()
+			value.ProtocolOffer = true
+			return value
+		}},
+		{"limit metadata missing fields", "limit capability requires", func() *schemaType {
+			value := validObject()
+			value.LimitCapability = true
+			return value
+		}},
+		{"unique key metadata missing array", "invalid unique array key", func() *schemaType {
+			value := validObject()
+			value.UniqueArrayKeys = []uniqueArrayKey{{Array: "missing", Property: "id"}}
 			return value
 		}},
 		{"incomplete ordered range", "ordered range requires", func() *schemaType {
@@ -242,6 +270,14 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 	}
 	if _, err := scalarType(42); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported type declaration was accepted: %v", err)
+	}
+	booleanUnion := &schemaType{
+		Type: "object", Properties: map[string]*schemaType{"enabled": {Type: "boolean"}, "reason": {Type: "string"}},
+		Required: []string{"enabled"}, AdditionalProperties: false,
+		TaggedUnion: &taggedUnion{Property: "enabled", Variants: map[string]taggedVariant{"false": {Required: []string{"reason"}}, "true": {Forbidden: []string{"reason"}}}},
+	}
+	if err := validateType(set, document, "BooleanUnion", booleanUnion, map[*schemaType]bool{}); err != nil {
+		t.Fatalf("valid boolean tagged union rejected: %v", err)
 	}
 }
 
@@ -317,6 +353,81 @@ func TestSchemaLoaderNormalizesCRLFAndRejectsAmbiguousInputs(t *testing.T) {
 			t.Fatalf("mismatched schema limits were accepted: %v", err)
 		}
 	})
+	t.Run("extra dialect", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, nil)
+		if err := os.WriteFile(filepath.Join(temporary, "schemas", "meta", "extra.json"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "exactly layerdraw-protocol") {
+			t.Fatalf("extra dialect schema was accepted: %v", err)
+		}
+	})
+	t.Run("dialect trailing JSON", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, nil)
+		path := filepath.Join(temporary, filepath.FromSlash(schemaDialectPath))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(data, []byte("{}\n")...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "trailing JSON value") {
+			t.Fatalf("trailing dialect JSON was accepted: %v", err)
+		}
+	})
+	t.Run("dialect vocabulary", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, nil)
+		path := filepath.Join(temporary, filepath.FromSlash(schemaDialectPath))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = bytes.Replace(data, []byte(`"https://schemas.layerdraw.dev/vocab/protocol/v1": true`), []byte(`"https://schemas.layerdraw.dev/vocab/protocol/v1": false`), 1)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "must require vocabulary") {
+			t.Fatalf("optional dialect vocabulary was accepted: %v", err)
+		}
+	})
+}
+
+func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
+	t.Parallel()
+	set, err := loadSchemas(testRepositoryRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := generate(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]string{}
+	for _, file := range files {
+		byPath[file.path] = string(file.data)
+	}
+	goTypes := byPath["gen/go/engineprotocol/types.gen.go"]
+	for _, expected := range []string{
+		`type CompileRequestEnvelopeOperation string`,
+		`const CompileRequestEnvelopeOperationValue CompileRequestEnvelopeOperation = "engine.compile"`,
+		`type QueryRecipeBlobRefMediaType string`,
+	} {
+		if !strings.Contains(goTypes, expected) {
+			t.Errorf("generated Go const surface missing %q", expected)
+		}
+	}
+	tsTypes := byPath["packages/protocol/src/engine.gen.ts"]
+	for _, expected := range []string{
+		`operation: "engine.compile";`,
+		`media_type: "application/vnd.layerdraw.query-recipe.v1+json";`,
+		`function scanUniqueJSONValue`,
+		`function matchesCanonicalBinary64`,
+	} {
+		if !strings.Contains(tsTypes, expected) {
+			t.Errorf("generated TypeScript surface missing %q", expected)
+		}
+	}
 }
 
 func TestSchemaDigestChangesWithSchemaBytes(t *testing.T) {
@@ -340,6 +451,7 @@ func TestSchemaDigestChangesWithSchemaBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	copySchemaDialect(t, root, copyRoot)
 	original, err := loadSchemas(root)
 	if err != nil {
 		t.Fatal(err)
@@ -373,6 +485,7 @@ func TestImportedSchemaChangeUpdatesDependentGroupDigests(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	copySchemaDialect(t, root, copyRoot)
 	original, err := loadSchemas(root)
 	if err != nil {
 		t.Fatal(err)
@@ -405,6 +518,7 @@ func TestRunGeneratesEveryOutputAndRemovesOrphans(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	copySchemaDialect(t, root, temporary)
 	orphanGo := filepath.Join(temporary, "gen", "go", "orphan", "orphan.gen.go")
 	orphanTS := filepath.Join(temporary, "packages", "protocol", "src", "orphan.gen.ts")
 	for _, orphan := range []string{orphanGo, orphanTS} {
@@ -467,5 +581,21 @@ func copyProtocolSchemas(t *testing.T, root string, transform func(string, []byt
 			t.Fatal(err)
 		}
 	}
+	copySchemaDialect(t, root, temporary)
 	return temporary
+}
+
+func copySchemaDialect(t *testing.T, root, targetRoot string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(schemaDialectPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(targetRoot, filepath.FromSlash(schemaDialectPath))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
