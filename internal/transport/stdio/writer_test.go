@@ -113,6 +113,46 @@ func TestEncoderConcurrentFramesDoNotInterleave(t *testing.T) {
 	}
 }
 
+func TestEncoderConcurrentBundlesDoNotInterleave(t *testing.T) {
+	t.Parallel()
+	const count = 32
+	writer := &shortWriter{maximum: 2}
+	encoder := NewEncoder(writer)
+	var group sync.WaitGroup
+	for index := 1; index <= count; index++ {
+		index := index
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			frames := []Frame{
+				{Kind: KindResponseControl, StreamID: uint64(index), Payload: []byte(`{"outcome":"failed"}`)},
+				{Kind: KindBundleEnd, StreamID: uint64(index), Sequence: 1},
+			}
+			if err := encoder.WriteFrames(frames); err != nil {
+				t.Errorf("write bundle %d: %v", index, err)
+			}
+		}()
+	}
+	group.Wait()
+
+	decoder := NewDecoder(bytes.NewReader(writer.buffer.Bytes()))
+	seen := make(map[uint64]bool, count)
+	for len(seen) < count {
+		control, err := decoder.ReadFrame()
+		if err != nil {
+			t.Fatal(err)
+		}
+		end, err := decoder.ReadFrame()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if control.Kind != KindResponseControl || end.Kind != KindBundleEnd || control.StreamID != end.StreamID || seen[control.StreamID] {
+			t.Fatalf("interleaved bundle: %#v %#v", control, end)
+		}
+		seen[control.StreamID] = true
+	}
+}
+
 type shortWriter struct {
 	mu      sync.Mutex
 	maximum int

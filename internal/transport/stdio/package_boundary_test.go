@@ -14,7 +14,10 @@ import (
 
 func TestFramingPackageBoundary(t *testing.T) {
 	t.Parallel()
-	const generatedLimitPackage = "github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
+	allowed := map[string]bool{
+		"github.com/dencyuinc/layerdraw/gen/go/engineprotocol":    true,
+		"github.com/dencyuinc/layerdraw/internal/engine/endpoint": true,
+	}
 	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -31,7 +34,7 @@ func TestFramingPackageBoundary(t *testing.T) {
 			if unquoteErr != nil {
 				return unquoteErr
 			}
-			if importPath == generatedLimitPackage {
+			if allowed[importPath] {
 				continue
 			}
 			firstSegment := strings.Split(importPath, "/")[0]

@@ -26,9 +26,27 @@ func (encoder *Encoder) WriteFrame(frame Frame) error {
 	if encoder == nil || encoder.writer == nil {
 		return newError(ErrorInvalidWriter, StageWrite, true, nil)
 	}
-	encoded, err := encodeHeader(frame)
-	if err != nil {
-		return err
+	return encoder.WriteFrames([]Frame{frame})
+}
+
+// WriteFrames validates every frame before acquiring the writer and then
+// writes the complete sequence under one lease. This is the response-bundle
+// commit primitive: concurrent response bundles cannot interleave.
+func (encoder *Encoder) WriteFrames(frames []Frame) error {
+	if encoder == nil || encoder.writer == nil {
+		return newError(ErrorInvalidWriter, StageWrite, true, nil)
+	}
+	type encodedFrame struct {
+		header [HeaderSize]byte
+		frame  Frame
+	}
+	encoded := make([]encodedFrame, len(frames))
+	for index, frame := range frames {
+		header, err := encodeHeader(frame)
+		if err != nil {
+			return err
+		}
+		encoded[index] = encodedFrame{header: header, frame: frame}
 	}
 
 	encoder.mu.Lock()
@@ -36,14 +54,16 @@ func (encoder *Encoder) WriteFrame(frame Frame) error {
 	if encoder.failed != nil {
 		return encoder.failed
 	}
-	if err := writeAll(encoder.writer, encoded[:]); err != nil {
-		return encoder.poison(ErrorWriteHeader, err)
-	}
-	if err := writeAll(encoder.writer, frame.Name); err != nil {
-		return encoder.poison(ErrorWriteName, err)
-	}
-	if err := writeAll(encoder.writer, frame.Payload); err != nil {
-		return encoder.poison(ErrorWritePayload, err)
+	for _, item := range encoded {
+		if err := writeAll(encoder.writer, item.header[:]); err != nil {
+			return encoder.poison(ErrorWriteHeader, err)
+		}
+		if err := writeAll(encoder.writer, item.frame.Name); err != nil {
+			return encoder.poison(ErrorWriteName, err)
+		}
+		if err := writeAll(encoder.writer, item.frame.Payload); err != nil {
+			return encoder.poison(ErrorWritePayload, err)
+		}
 	}
 	return nil
 }
