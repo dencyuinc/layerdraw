@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "canonical_cases": [
+    {
+      "name": "view_source_scalar_pair",
+      "schema_id": "https://schemas.layerdraw.dev/semantic/v1",
+      "type": "ViewRecipeSource",
+      "input": "{\"kind\":\"diff\",\"before\":\"\\ud83d\\ude00\",\"after\":\"after\",\"arguments\":{}}",
+      "expected": "{\"after\":\"after\",\"arguments\":{},\"before\":\"😀\",\"kind\":\"diff\"}"
+    },
+    {
+      "name": "generic_nested_scalar_value_and_member_name",
+      "schema_id": "https://schemas.layerdraw.dev/protocol-common/v1",
+      "type": "JsonValue",
+      "input": "{\"outer\":{\"\\ud83d\\ude00\":\"\\ud83d\\ude00\"}}",
+      "expected": "{\"outer\":{\"😀\":\"😀\"}}"
+    }
+  ],
+  "rejection_cases": [
+    {
+      "name": "view_source_unpaired_high_surrogate",
+      "schema_id": "https://schemas.layerdraw.dev/semantic/v1",
+      "type": "ViewRecipeSource",
+      "input": "{\"kind\":\"diff\",\"before\":\"\\ud800\",\"after\":\"after\",\"arguments\":{}}"
+    },
+    {
+      "name": "view_source_unpaired_low_surrogate",
+      "schema_id": "https://schemas.layerdraw.dev/semantic/v1",
+      "type": "ViewRecipeSource",
+      "input": "{\"kind\":\"diff\",\"before\":\"\\udc00\",\"after\":\"after\",\"arguments\":{}}"
+    },
+    {
+      "name": "view_source_invalid_surrogate_pair",
+      "schema_id": "https://schemas.layerdraw.dev/semantic/v1",
+      "type": "ViewRecipeSource",
+      "input": "{\"kind\":\"diff\",\"before\":\"\\ud800\\u0041\",\"after\":\"after\",\"arguments\":{}}"
+    },
+    {
+      "name": "generic_nested_value_unpaired_high_surrogate",
+      "schema_id": "https://schemas.layerdraw.dev/protocol-common/v1",
+      "type": "JsonValue",
+      "input": "{\"outer\":{\"value\":\"\\ud800\"}}"
+    },
+    {
+      "name": "generic_nested_value_unpaired_low_surrogate",
+      "schema_id": "https://schemas.layerdraw.dev/protocol-common/v1",
+      "type": "JsonValue",
+      "input": "{\"outer\":{\"value\":\"\\udc00\"}}"
+    },
+    {
+      "name": "generic_nested_value_invalid_surrogate_pair",
+      "schema_id": "https://schemas.layerdraw.dev/protocol-common/v1",
+      "type": "JsonValue",
+      "input": "{\"outer\":{\"value\":\"\\ud800\\u0041\"}}"
+    },
+    {
+      "name": "generic_nested_member_unpaired_high_surrogate",
+      "schema_id": "https://schemas.layerdraw.dev/protocol-common/v1",
+      "type": "JsonValue",
+      "input": "{\"outer\":{\"\\ud800\":\"value\"}}"
+    },
+    {
+      "name": "generic_nested_member_unpaired_low_surrogate",
+      "schema_id": "https://schemas.layerdraw.dev/protocol-common/v1",
+      "type": "JsonValue",
+      "input": "{\"outer\":{\"\\udc00\":\"value\"}}"
+    },
+    {
+      "name": "generic_nested_member_invalid_surrogate_pair",
+      "schema_id": "https://schemas.layerdraw.dev/protocol-common/v1",
+      "type": "JsonValue",
+      "input": "{\"outer\":{\"\\ud800\\u0041\":\"value\"}}"
+    }
+  ]
+}

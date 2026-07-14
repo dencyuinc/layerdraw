@@ -93,6 +93,51 @@ function realUTCDateTime(value) {
   return day <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
 }
 
+function hasScalarUnicode(value) {
+  for (let index = 0; index < value.length; index++) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+    if (unit < 0xd800 || unit > 0xdbff) continue;
+    if (index + 1 >= value.length) return false;
+    const low = value.charCodeAt(index + 1);
+    if (low < 0xdc00 || low > 0xdfff) return false;
+    index++;
+  }
+  return true;
+}
+
+function hasScalarUnicodeTree(root) {
+  const pending = [root];
+  const seen = new Set();
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      if (!hasScalarUnicode(value)) return false;
+      continue;
+    }
+    if (value === null || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      pending.push(...value);
+      continue;
+    }
+    for (const key of Object.keys(value)) {
+      if (!hasScalarUnicode(key)) return false;
+      pending.push(value[key]);
+    }
+  }
+  return true;
+}
+
+function dialectKeywordSchemaType(meta, schema) {
+  let resolved = schema;
+  if (typeof schema.$ref === "string" && schema.$ref.startsWith("#/$defs/")) {
+    resolved = meta.$defs[schema.$ref.slice("#/$defs/".length)];
+  }
+  assert.ok(resolved && typeof resolved.type === "string", `keyword schema has no concrete type: ${JSON.stringify(schema)}`);
+  return resolved.type === "integer" ? "number" : resolved.type;
+}
+
 function addLayerDrawFormats(ajv) {
   const signed = /^(0|-[1-9][0-9]*|[1-9][0-9]*)$/;
   const unsigned = /^(0|[1-9][0-9]*)$/;
@@ -113,12 +158,20 @@ function addLayerDrawFormats(ajv) {
   ajv.addFormat("date-time", {type: "string", validate: realUTCDateTime});
 }
 
-function addLayerDrawVocabulary(ajv) {
-  ajv.addKeyword({keyword: "x-layerdraw-go-package", schemaType: "string", errors: false, validate: () => true});
-  ajv.addKeyword({keyword: "x-layerdraw-max-json-bytes", schemaType: "number", errors: false, validate: () => true});
-  ajv.addKeyword({keyword: "x-layerdraw-max-json-depth", schemaType: "number", errors: false, validate: () => true});
-  ajv.addKeyword({keyword: "x-layerdraw-ts-module", schemaType: "string", errors: false, validate: () => true});
-  ajv.addKeyword({keyword: "x-layerdraw-stable-address-order", schemaType: "string", type: "array", errors: false, validate(selector, data) {
+function addLayerDrawVocabulary(ajv, meta) {
+  const registrations = new Map();
+  const register = (definition) => {
+    assert.equal(registrations.has(definition.keyword), false, `duplicate LayerDraw keyword implementation ${definition.keyword}`);
+    registrations.set(definition.keyword, definition);
+  };
+  register({keyword: "x-layerdraw-go-package", schemaType: "string", errors: false, validate: () => true});
+  register({keyword: "x-layerdraw-max-json-bytes", schemaType: "number", errors: false, validate: () => true});
+  register({keyword: "x-layerdraw-max-json-depth", schemaType: "number", errors: false, validate: () => true});
+  register({keyword: "x-layerdraw-ts-module", schemaType: "string", errors: false, validate: () => true});
+  register({keyword: "x-layerdraw-scalar-unicode", schemaType: "boolean", rootRequired: true, errors: false, validate(enabled, data) {
+    return !enabled || hasScalarUnicodeTree(data);
+  }});
+  register({keyword: "x-layerdraw-stable-address-order", schemaType: "string", type: "array", errors: false, validate(selector, data) {
     const address = (item) => selector === "$item" ? item : item?.[selector];
     for (let index = 1; index < data.length; index++) {
       const left = address(data[index - 1]);
@@ -127,7 +180,7 @@ function addLayerDrawVocabulary(ajv) {
     }
     return true;
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-disjoint-arrays", schemaType: "array", errors: false, validate(rules, data) {
+  register({keyword: "x-layerdraw-disjoint-arrays", schemaType: "array", errors: false, validate(rules, data) {
     if (data === null || typeof data !== "object" || Array.isArray(data)) return true;
     return rules.every((rule) => {
       if (!Array.isArray(data[rule.left]) || !Array.isArray(data[rule.right])) return false;
@@ -135,7 +188,7 @@ function addLayerDrawVocabulary(ajv) {
       return data[rule.right].every((item) => !left.has(item));
     });
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-tagged-union", schemaType: "object", errors: false, validate(rule, data) {
+  register({keyword: "x-layerdraw-tagged-union", schemaType: "object", errors: false, validate(rule, data) {
     if (data === null || typeof data !== "object" || Array.isArray(data)) return true;
     const variant = rule.variants[String(data[rule.property])];
     if (variant === undefined) return false;
@@ -145,12 +198,12 @@ function addLayerDrawVocabulary(ajv) {
       (variant.non_empty ?? []).every((key) => Array.isArray(data[key]) && data[key].length > 0) &&
       Object.entries(variant.allowed_values ?? {}).every(([key, values]) => !own(key) || values.includes(data[key]));
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-diff-source", schemaType: "boolean", errors: false, validate(enabled, data) {
+  register({keyword: "x-layerdraw-diff-source", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object" || Array.isArray(data) || data.kind !== "diff") return true;
     return typeof data.before === "string" && data.before.length > 0 && typeof data.after === "string" && data.after.length > 0 && data.before !== data.after &&
       (Object.prototype.hasOwnProperty.call(data, "query_address") || (data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments) && Object.keys(data.arguments).length === 0));
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-outcome-envelope", schemaType: "boolean", errors: false, validate(enabled, data) {
+  register({keyword: "x-layerdraw-outcome-envelope", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object" || Array.isArray(data)) return true;
     const own = (key) => Object.prototype.hasOwnProperty.call(data, key);
     if (data.outcome === "success") return own("payload") && !own("failure");
@@ -158,16 +211,16 @@ function addLayerDrawVocabulary(ajv) {
     if (data.outcome === "failed" || data.outcome === "cancelled") return !own("payload") && own("failure");
     return true;
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-ordered-range", schemaType: "boolean", errors: false, validate(enabled, data) {
+  register({keyword: "x-layerdraw-ordered-range", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object") return true;
     try { return BigInt(data.start_byte) <= BigInt(data.end_byte); } catch { return false; }
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-operator-value", schemaType: "object", errors: false, validate(rule, data) {
+  register({keyword: "x-layerdraw-operator-value", schemaType: "object", errors: false, validate(rule, data) {
     if (data === null || typeof data !== "object" || typeof data[rule.operator] !== "string") return true;
     const present = Object.prototype.hasOwnProperty.call(data, rule.value);
     return rule.valueless.includes(data[rule.operator]) ? !present : present;
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-protocol-offer", schemaType: "boolean", errors: false, validate(enabled, data) {
+  register({keyword: "x-layerdraw-protocol-offer", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object") return true;
     const range = protocolRange(data.supported_range);
     if (range === undefined || !Array.isArray(data.versions)) return false;
@@ -179,17 +232,29 @@ function addLayerDrawVocabulary(ajv) {
       return true;
     });
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-limit-capability", schemaType: "boolean", errors: false, validate(enabled, data) {
+  register({keyword: "x-layerdraw-limit-capability", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object") return true;
     try { return BigInt(data.default_value) <= BigInt(data.hard_maximum) && BigInt(data.effective_maximum) <= BigInt(data.hard_maximum); } catch { return false; }
   }});
-  ajv.addKeyword({keyword: "x-layerdraw-unique-array-keys", schemaType: "array", errors: false, validate(rules, data) {
+  register({keyword: "x-layerdraw-unique-array-keys", schemaType: "array", errors: false, validate(rules, data) {
     if (data === null || typeof data !== "object") return true;
     return rules.every((rule) => {
       const seen = new Set();
       return Array.isArray(data[rule.array]) && data[rule.array].every((item) => !seen.has(item[rule.property]) && Boolean(seen.add(item[rule.property])));
     });
   }});
+  const inventory = Object.keys(meta.properties).filter((keyword) => keyword.startsWith("x-layerdraw-")).sort();
+  assert.deepEqual([...registrations.keys()].sort(), inventory, "Ajv LayerDraw keyword implementations must exactly match the published dialect inventory");
+  const rootRequired = [];
+  for (const keyword of inventory) {
+    const registration = registrations.get(keyword);
+    const schemaType = dialectKeywordSchemaType(meta, meta.properties[keyword]);
+    assert.equal(registration.schemaType, schemaType, `Ajv schema type for ${keyword} must derive from the published dialect`);
+    const {rootRequired: required = false, ...definition} = registration;
+    ajv.addKeyword({...definition, schemaType});
+    if (required) rootRequired.push(keyword);
+  }
+  return rootRequired;
 }
 
 async function authority() {
@@ -200,12 +265,31 @@ async function authority() {
     readJSON("engine-protocol/v1.schema.json"),
   ]);
   const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: true});
-  addLayerDrawVocabulary(ajv);
+  const rootRequired = addLayerDrawVocabulary(ajv, meta);
   addLayerDrawFormats(ajv);
   ajv.addMetaSchema(meta);
-  for (const document of documents) ajv.addSchema(document);
-  return (id, name) => ajv.compile({$ref: `${id}#/$defs/${name}`});
+  for (const document of documents) {
+    for (const keyword of rootRequired) assert.equal(document[keyword], true, `${document.$id} must assert ${keyword}: true`);
+    ajv.addSchema(document);
+  }
+  return (id, name) => ajv.compile({allOf: [{$ref: `${id}#/$defs/${name}`}, {$ref: id}]});
 }
+
+test("Ajv registration fails closed against the published dialect inventory and shapes", async () => {
+  const published = await readJSON("meta/layerdraw-protocol-schema-v1.json");
+  const missing = structuredClone(published);
+  delete missing.properties["x-layerdraw-diff-source"];
+  assert.throws(
+    () => addLayerDrawVocabulary(new Ajv2020({strict: true}), missing),
+    /must exactly match the published dialect inventory/,
+  );
+  const mistyped = structuredClone(published);
+  mistyped.properties["x-layerdraw-diff-source"] = {type: "string"};
+  assert.throws(
+    () => addLayerDrawVocabulary(new Ajv2020({strict: true}), mistyped),
+    /must derive from the published dialect/,
+  );
+});
 
 test("normalized schema and document authority require request lifetime and the exact byte profile", async () => {
   const engine = await readJSON("engine-protocol/v1.schema.json");
@@ -350,5 +434,21 @@ test("independent schema authority matches every shared View source vector", asy
   });
   for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
     assert.equal(compile(semantic, vector.type)(JSON.parse(vector.input)), false);
+  });
+});
+
+test("independent schema authority enforces the published recursive scalar-Unicode profile", async (context) => {
+  const meta = await readJSON("meta/layerdraw-protocol-schema-v1.json");
+  assert.deepEqual(meta.properties["x-layerdraw-scalar-unicode"], {type: "boolean", const: true});
+  const compile = await authority();
+  const corpus = await readJSON("fixtures/conformance/unicode-scalars-v1.json");
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 2);
+  assert.equal(corpus.rejection_cases.length, 9);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
+    assert.equal(compile(vector.schema_id, vector.type)(JSON.parse(vector.input)), true);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
+    assert.equal(compile(vector.schema_id, vector.type)(JSON.parse(vector.input)), false);
   });
 });

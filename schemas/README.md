@@ -60,10 +60,19 @@ Its assertion keywords have these exact meanings:
   ordinary `items`, `propertyNames`, `uniqueItems`, or
   `x-layerdraw-unique-array-keys` assertions; this keyword exists only because
   JSON Schema draft 2020-12 cannot express cross-item canonical ordering.
+- `x-layerdraw-scalar-unicode: true` is required at every protocol schema root
+  and recursively rejects any instance string or object member name containing
+  an unpaired UTF-16 surrogate. This includes values produced by parsing
+  `\ud800`, `\udc00`, and invalid high/low escape pairs.
 
 The root annotations `x-layerdraw-max-json-bytes` and
 `x-layerdraw-max-json-depth` define the shared recursive document limits;
 `x-layerdraw-go-package` and `x-layerdraw-ts-module` define generated targets.
+The generator accepts the dialect only when every required draft 2020-12
+vocabulary is present and boolean `true`, and when the custom keyword and
+supporting `$defs` inventories exactly match their published schemas. Missing,
+renamed, weakened, mistyped, disabled, extra, or contradictory declarations
+fail closed with stable `DIALECT_*` diagnostics.
 
 Canonical fields and enum values use `lower_snake_case`. Quantities that map to
 64-bit integers use canonical decimal strings. `CanonicalInt64` covers
@@ -115,6 +124,12 @@ and returns `false` for those invalid graphs without throwing. Public object
 predicates and encoders also reject any own enumerable member name that is not
 Unicode scalar text. The same rules apply to the specialized recursive
 `JsonValue` representation.
+Independent validators of a named `$defs` entry must apply the containing
+schema resource as well as the selected definition, so root-scoped dialect
+assertions such as `x-layerdraw-scalar-unicode` remain authoritative. The Ajv
+conformance authority derives its keyword registration inventory and schema
+types from the published dialect and refuses an implementation/inventory
+mismatch.
 
 Protocol versions use `major.minor`. Removing or requiring a field, changing a
 closed enum, or changing canonicalization requires a new major version.

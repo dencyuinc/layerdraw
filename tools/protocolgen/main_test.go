@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,7 @@ func TestSchemaValidationRejectsUnsafeShapes(t *testing.T) {
 	document := &schemaDocument{
 		Schema: schemaDialectID,
 		ID:     "test", Title: "test", Package: "test", Module: "test", MaxJSONBytes: 1024, MaxJSONDepth: 1,
+		ScalarUnicode: true,
 		Definitions: map[string]*schemaType{"Record": {
 			Type: "object",
 			Properties: map[string]*schemaType{
@@ -126,7 +128,8 @@ func TestSchemaDocumentValidationFailures(t *testing.T) {
 		return &schemaDocument{
 			Schema: schemaDialectID, ID: "test", Title: "test",
 			Package: "test", Module: "test", MaxJSONBytes: 1024, MaxJSONDepth: 1,
-			Definitions: map[string]*schemaType{"Record": {Type: "string"}},
+			ScalarUnicode: true,
+			Definitions:   map[string]*schemaType{"Record": {Type: "string"}},
 		}
 	}
 	tests := []struct {
@@ -137,6 +140,7 @@ func TestSchemaDocumentValidationFailures(t *testing.T) {
 		{"identity", "$id", func(document *schemaDocument) { document.ID = "" }},
 		{"byte limit", "protocol limits", func(document *schemaDocument) { document.MaxJSONBytes = 100 }},
 		{"depth limit", "protocol limits", func(document *schemaDocument) { document.MaxJSONDepth = 0 }},
+		{"scalar Unicode assertion", "DIALECT_SCHEMA_SCALAR_UNICODE", func(document *schemaDocument) { document.ScalarUnicode = false }},
 		{"empty definitions", "$defs", func(document *schemaDocument) { document.Definitions = nil }},
 		{"definition name", "UpperCamelCase", func(document *schemaDocument) {
 			document.Definitions = map[string]*schemaType{"not_upper": {Type: "string"}}
@@ -557,7 +561,7 @@ func TestSchemaLoaderNormalizesCRLFAndRejectsAmbiguousInputs(t *testing.T) {
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "unexpected identity") {
+		if _, err := loadSchemas(temporary); err == nil || !strings.HasPrefix(err.Error(), dialectIdentityCode+":") {
 			t.Fatalf("unexpected dialect identity was accepted: %v", err)
 		}
 	})
@@ -572,7 +576,7 @@ func TestSchemaLoaderNormalizesCRLFAndRejectsAmbiguousInputs(t *testing.T) {
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "must require vocabulary") {
+		if _, err := loadSchemas(temporary); err == nil || !strings.HasPrefix(err.Error(), dialectVocabularyValueCode+":") {
 			t.Fatalf("optional dialect vocabulary was accepted: %v", err)
 		}
 	})
@@ -608,6 +612,154 @@ func TestSchemaLoaderNormalizesCRLFAndRejectsAmbiguousInputs(t *testing.T) {
 			t.Fatalf("duplicate escaped-equivalent vocabulary entry was accepted: %v", err)
 		}
 	})
+}
+
+func TestSchemaDialectFailsClosedOverEveryRequiredVocabulary(t *testing.T) {
+	t.Parallel()
+	root := testRepositoryRoot(t)
+	for _, vocabulary := range sortedKeys(requiredDialectVocabularies) {
+		vocabulary := vocabulary
+		mutations := []struct {
+			name, code string
+			mutate     func(map[string]any)
+		}{
+			{"remove", dialectVocabularyCode, func(values map[string]any) { delete(values, vocabulary) }},
+			{"rename", dialectVocabularyCode, func(values map[string]any) {
+				values[vocabulary+"-renamed"] = values[vocabulary]
+				delete(values, vocabulary)
+			}},
+			{"weaken", dialectVocabularyValueCode, func(values map[string]any) { values[vocabulary] = false }},
+			{"wrong_type", dialectVocabularyValueCode, func(values map[string]any) { values[vocabulary] = "true" }},
+			{"disable", dialectVocabularyValueCode, func(values map[string]any) { values[vocabulary] = nil }},
+			{"contradictory", dialectVocabularyCode, func(values map[string]any) { values[vocabulary+"#contradictory"] = false }},
+		}
+		for _, mutation := range mutations {
+			mutation := mutation
+			t.Run(vocabulary+"/"+mutation.name, func(t *testing.T) {
+				temporary := mutateSchemaDialect(t, root, func(document map[string]any) {
+					mutation.mutate(document["$vocabulary"].(map[string]any))
+				})
+				assertDialectDiagnostic(t, temporary, mutation.code)
+			})
+		}
+	}
+}
+
+func TestSchemaDialectFailsClosedOverRootAndInventoryContainers(t *testing.T) {
+	t.Parallel()
+	root := testRepositoryRoot(t)
+	mutations := []struct {
+		name, code string
+		mutate     func(map[string]any)
+	}{
+		{"dynamic_anchor", dialectRootShapeCode, func(document map[string]any) { document["$dynamicAnchor"] = "other" }},
+		{"draft_applicator", dialectRootShapeCode, func(document map[string]any) { document["allOf"] = []any{} }},
+		{"vocabulary_container", dialectVocabularyCode, func(document map[string]any) { document["$vocabulary"] = []any{} }},
+		{"keyword_container", dialectKeywordCode, func(document map[string]any) { document["properties"] = []any{} }},
+		{"definition_container", dialectDefinitionCode, func(document map[string]any) { document["$defs"] = []any{} }},
+	}
+	for _, mutation := range mutations {
+		mutation := mutation
+		t.Run(mutation.name, func(t *testing.T) {
+			temporary := mutateSchemaDialect(t, root, mutation.mutate)
+			assertDialectDiagnostic(t, temporary, mutation.code)
+		})
+	}
+}
+
+func TestSchemaDialectFailsClosedOverEveryRequiredKeyword(t *testing.T) {
+	t.Parallel()
+	root := testRepositoryRoot(t)
+	for _, keyword := range sortedKeys(requiredDialectKeywordSchemas) {
+		keyword := keyword
+		mutations := []struct {
+			name, code string
+			mutate     func(map[string]any)
+		}{
+			{"remove", dialectKeywordCode, func(values map[string]any) { delete(values, keyword) }},
+			{"rename", dialectKeywordCode, func(values map[string]any) { values[keyword+"-renamed"] = values[keyword]; delete(values, keyword) }},
+			{"weaken", dialectKeywordShapeCode, func(values map[string]any) { values[keyword] = map[string]any{} }},
+			{"wrong_type", dialectKeywordShapeCode, func(values map[string]any) { values[keyword] = map[string]any{"type": "number"} }},
+			{"disable", dialectKeywordShapeCode, func(values map[string]any) { values[keyword] = false }},
+			{"contradictory", dialectKeywordShapeCode, func(values map[string]any) {
+				shape := cloneDialectObject(t, requiredDialectKeywordSchemas[keyword])
+				shape["not"] = map[string]any{}
+				values[keyword] = shape
+			}},
+		}
+		for _, mutation := range mutations {
+			mutation := mutation
+			t.Run(keyword+"/"+mutation.name, func(t *testing.T) {
+				temporary := mutateSchemaDialect(t, root, func(document map[string]any) {
+					mutation.mutate(document["properties"].(map[string]any))
+				})
+				assertDialectDiagnostic(t, temporary, mutation.code)
+			})
+		}
+	}
+}
+
+func TestSchemaDialectFailsClosedOverEveryRequiredKeywordDefinition(t *testing.T) {
+	t.Parallel()
+	root := testRepositoryRoot(t)
+	for _, definition := range sortedKeys(requiredDialectDefinitions) {
+		definition := definition
+		mutations := []struct {
+			name, code string
+			mutate     func(map[string]any)
+		}{
+			{"remove", dialectDefinitionCode, func(values map[string]any) { delete(values, definition) }},
+			{"rename", dialectDefinitionCode, func(values map[string]any) {
+				values[definition+"Renamed"] = values[definition]
+				delete(values, definition)
+			}},
+			{"weaken", dialectDefinitionShapeCode, func(values map[string]any) { values[definition] = map[string]any{} }},
+			{"wrong_type", dialectDefinitionShapeCode, func(values map[string]any) { values[definition] = map[string]any{"type": "string"} }},
+			{"disable", dialectDefinitionShapeCode, func(values map[string]any) { values[definition] = false }},
+			{"contradictory", dialectDefinitionShapeCode, func(values map[string]any) {
+				shape := cloneDialectObject(t, requiredDialectDefinitions[definition])
+				shape["not"] = map[string]any{}
+				values[definition] = shape
+			}},
+		}
+		for _, mutation := range mutations {
+			mutation := mutation
+			t.Run(definition+"/"+mutation.name, func(t *testing.T) {
+				temporary := mutateSchemaDialect(t, root, func(document map[string]any) {
+					mutation.mutate(document["$defs"].(map[string]any))
+				})
+				assertDialectDiagnostic(t, temporary, mutation.code)
+			})
+		}
+	}
+}
+
+func TestEveryProtocolSchemaMustAdvertiseScalarUnicodeAssertion(t *testing.T) {
+	t.Parallel()
+	root := testRepositoryRoot(t)
+	for _, group := range []string{"protocol-common", "semantic", "engine-protocol"} {
+		group := group
+		for _, replacement := range []struct {
+			name string
+			line []byte
+		}{
+			{"removed", nil},
+			{"disabled", []byte("  \"x-layerdraw-scalar-unicode\": false,\n")},
+		} {
+			replacement := replacement
+			t.Run(group+"/"+replacement.name, func(t *testing.T) {
+				temporary := copyProtocolSchemas(t, root, func(candidate string, data []byte) []byte {
+					if candidate != group {
+						return data
+					}
+					return bytes.Replace(data, []byte("  \"x-layerdraw-scalar-unicode\": true,\n"), replacement.line, 1)
+				})
+				if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "DIALECT_SCHEMA_SCALAR_UNICODE") {
+					t.Fatalf("protocol schema without scalar Unicode authority was accepted: %v", err)
+				}
+			})
+		}
+	}
 }
 
 func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
@@ -961,5 +1113,50 @@ func copySchemaDialect(t *testing.T, root, targetRoot string) {
 	}
 	if err := os.WriteFile(target, data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func mutateSchemaDialect(t *testing.T, root string, mutate func(map[string]any)) string {
+	t.Helper()
+	temporary := copyProtocolSchemas(t, root, nil)
+	path := filepath.Join(temporary, filepath.FromSlash(schemaDialectPath))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	mutate(document)
+	data, err = json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return temporary
+}
+
+func cloneDialectObject(t *testing.T, value any) map[string]any {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func assertDialectDiagnostic(t *testing.T, root, code string) {
+	t.Helper()
+	_, err := loadSchemas(root)
+	if err == nil || !strings.HasPrefix(err.Error(), code+": LayerDraw schema dialect ") {
+		t.Fatalf("dialect mutation did not return stable %s diagnostic: %v", code, err)
 	}
 }

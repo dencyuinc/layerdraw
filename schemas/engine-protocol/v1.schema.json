@@ -7,6 +7,7 @@
   "x-layerdraw-ts-module": "engine",
   "x-layerdraw-max-json-bytes": 8388608,
   "x-layerdraw-max-json-depth": 128,
+  "x-layerdraw-scalar-unicode": true,
   "$defs": {
     "AssetInput": {
       "type": "object",

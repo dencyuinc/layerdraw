@@ -817,6 +817,45 @@ func TestSharedViewSourceVariantCorpus(t *testing.T) {
 	}
 }
 
+func TestSharedScalarUnicodeCorpus(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "unicode-scalars-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int                                            `json:"schema_version"`
+		Canonical     []struct{ Name, Type, Input, Expected string } `json:"canonical_cases"`
+		Rejections    []struct{ Name, Type, Input string }           `json:"rejection_cases"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 2 || len(corpus.Rejections) != 9 {
+		t.Fatalf("incomplete scalar Unicode corpus: %+v", corpus)
+	}
+	for _, vector := range corpus.Canonical {
+		vector := vector
+		t.Run(vector.Name+" canonical", func(t *testing.T) {
+			encoded, err := roundTripSharedWire(vector.Type, []byte(vector.Input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != vector.Expected {
+				t.Fatalf("canonical scalar Unicode bytes differ\nwant=%s\ngot=%s", vector.Expected, encoded)
+			}
+		})
+	}
+	for _, vector := range corpus.Rejections {
+		vector := vector
+		t.Run(vector.Name+" rejection", func(t *testing.T) {
+			if _, err := roundTripSharedWire(vector.Type, []byte(vector.Input)); err == nil {
+				t.Fatal("non-scalar Unicode accepted")
+			}
+		})
+	}
+}
+
 func TestGeneratedTypedRootAndViewSourceInputsAreClosed(t *testing.T) {
 	t.Parallel()
 	root := protocolRepositoryRoot(t)

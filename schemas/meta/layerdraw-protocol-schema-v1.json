@@ -38,6 +38,7 @@
       "type": "string",
       "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."
     },
+    "x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
     "x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
     "x-layerdraw-ts-module": {"type": "string", "minLength": 1},
     "x-layerdraw-unique-array-keys": {

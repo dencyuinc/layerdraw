@@ -17,6 +17,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -26,15 +27,96 @@ import (
 const generatorVersion = "layerdraw-protocolgen/1"
 
 const (
-	schemaDialectID           = "https://schemas.layerdraw.dev/meta/protocol/v1"
-	schemaVocabulary          = "https://schemas.layerdraw.dev/vocab/protocol/v1"
-	formatAssertionVocabulary = "https://json-schema.org/draft/2020-12/vocab/format-assertion"
-	schemaDialectPath         = "schemas/meta/layerdraw-protocol-schema-v1.json"
+	schemaDialectID            = "https://schemas.layerdraw.dev/meta/protocol/v1"
+	schemaVocabulary           = "https://schemas.layerdraw.dev/vocab/protocol/v1"
+	formatAssertionVocabulary  = "https://json-schema.org/draft/2020-12/vocab/format-assertion"
+	schemaDialectPath          = "schemas/meta/layerdraw-protocol-schema-v1.json"
+	dialectIdentityCode        = "DIALECT_IDENTITY"
+	dialectRootShapeCode       = "DIALECT_ROOT_SHAPE"
+	dialectVocabularyCode      = "DIALECT_VOCABULARY_INVENTORY"
+	dialectVocabularyValueCode = "DIALECT_VOCABULARY_REQUIRED"
+	dialectKeywordCode         = "DIALECT_KEYWORD_INVENTORY"
+	dialectKeywordShapeCode    = "DIALECT_KEYWORD_SCHEMA"
+	dialectDefinitionCode      = "DIALECT_DEFINITION_INVENTORY"
+	dialectDefinitionShapeCode = "DIALECT_DEFINITION_SCHEMA"
 )
 
 var (
-	snakeCase = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
-	typeName  = regexp.MustCompile(`^[A-Z][A-Za-z0-9]*$`)
+	snakeCase                   = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
+	typeName                    = regexp.MustCompile(`^[A-Z][A-Za-z0-9]*$`)
+	requiredDialectVocabularies = mustDecodeDialectObject(`{
+		"https://json-schema.org/draft/2020-12/vocab/applicator": true,
+		"https://json-schema.org/draft/2020-12/vocab/content": true,
+		"https://json-schema.org/draft/2020-12/vocab/core": true,
+		"https://json-schema.org/draft/2020-12/vocab/format-annotation": true,
+		"https://json-schema.org/draft/2020-12/vocab/format-assertion": true,
+		"https://json-schema.org/draft/2020-12/vocab/meta-data": true,
+		"https://json-schema.org/draft/2020-12/vocab/unevaluated": true,
+		"https://json-schema.org/draft/2020-12/vocab/validation": true,
+		"https://schemas.layerdraw.dev/vocab/protocol/v1": true
+	}`)
+	requiredDialectKeywordSchemas = mustDecodeDialectObject(`{
+		"x-layerdraw-diff-source": {"type": "boolean"},
+		"x-layerdraw-disjoint-arrays": {"type": "array", "items": {"$ref": "#/$defs/disjointArrayPair"}, "minItems": 1, "uniqueItems": true},
+		"x-layerdraw-go-package": {"type": "string", "minLength": 1},
+		"x-layerdraw-limit-capability": {"type": "boolean"},
+		"x-layerdraw-max-json-bytes": {"type": "integer", "minimum": 1024},
+		"x-layerdraw-max-json-depth": {"type": "integer", "minimum": 1},
+		"x-layerdraw-operator-value": {"$ref": "#/$defs/operatorValue"},
+		"x-layerdraw-ordered-range": {"type": "boolean"},
+		"x-layerdraw-outcome-envelope": {"type": "boolean"},
+		"x-layerdraw-protocol-offer": {"type": "boolean"},
+		"x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
+		"x-layerdraw-stable-address-order": {"type": "string", "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."},
+		"x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
+		"x-layerdraw-ts-module": {"type": "string", "minLength": 1},
+		"x-layerdraw-unique-array-keys": {"type": "array", "items": {"$ref": "#/$defs/uniqueArrayKey"}}
+	}`)
+	requiredDialectDefinitions = mustDecodeDialectObject(`{
+		"disjointArrayPair": {
+			"type": "object",
+			"properties": {"left": {"type": "string", "minLength": 1}, "right": {"type": "string", "minLength": 1}},
+			"required": ["left", "right"],
+			"additionalProperties": false
+		},
+		"fieldNames": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+		"operatorValue": {
+			"type": "object",
+			"properties": {
+				"operator": {"type": "string", "minLength": 1},
+				"value": {"type": "string", "minLength": 1},
+				"valueless": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}
+			},
+			"required": ["operator", "value", "valueless"],
+			"additionalProperties": false
+		},
+		"taggedUnion": {
+			"type": "object",
+			"properties": {
+				"property": {"type": "string", "minLength": 1},
+				"variants": {"type": "object", "minProperties": 2, "additionalProperties": {"$ref": "#/$defs/taggedVariant"}}
+			},
+			"required": ["property", "variants"],
+			"additionalProperties": false
+		},
+		"taggedVariant": {
+			"type": "object",
+			"properties": {
+				"allowed_values": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}},
+				"empty": {"$ref": "#/$defs/fieldNames"},
+				"forbidden": {"$ref": "#/$defs/fieldNames"},
+				"non_empty": {"$ref": "#/$defs/fieldNames"},
+				"required": {"$ref": "#/$defs/fieldNames"}
+			},
+			"additionalProperties": false
+		},
+		"uniqueArrayKey": {
+			"type": "object",
+			"properties": {"array": {"type": "string", "minLength": 1}, "property": {"type": "string", "minLength": 1}},
+			"required": ["array", "property"],
+			"additionalProperties": false
+		}
+	}`)
 )
 
 type schemaDocument struct {
@@ -46,6 +128,7 @@ type schemaDocument struct {
 	Module        string                 `json:"x-layerdraw-ts-module"`
 	MaxJSONBytes  int                    `json:"x-layerdraw-max-json-bytes"`
 	MaxJSONDepth  int                    `json:"x-layerdraw-max-json-depth"`
+	ScalarUnicode bool                   `json:"x-layerdraw-scalar-unicode"`
 	Definitions   map[string]*schemaType `json:"$defs"`
 	AdditionalRaw map[string]any         `json:"-"`
 	path          string
@@ -298,14 +381,83 @@ func loadSchemaDialect(root string) (digestSource, error) {
 		return digestSource{}, fmt.Errorf("decode %s: trailing JSON value", wanted)
 	}
 	if document["$schema"] != "https://json-schema.org/draft/2020-12/schema" || document["$id"] != schemaDialectID {
-		return digestSource{}, errors.New("LayerDraw schema dialect has an unexpected identity")
+		return digestSource{}, dialectDiagnostic(dialectIdentityCode, "LayerDraw schema dialect must have $schema %q and $id %q", "https://json-schema.org/draft/2020-12/schema", schemaDialectID)
+	}
+	expectedRootApplicator := []any{map[string]any{"$ref": "https://json-schema.org/draft/2020-12/schema"}}
+	if document["$dynamicAnchor"] != "meta" || !reflect.DeepEqual(document["allOf"], expectedRootApplicator) {
+		return digestSource{}, dialectDiagnostic(dialectRootShapeCode, "LayerDraw schema dialect must retain $dynamicAnchor meta and the draft 2020-12 meta-schema applicator")
 	}
 	vocabulary, ok := document["$vocabulary"].(map[string]any)
-	if !ok || vocabulary[schemaVocabulary] != true || vocabulary[formatAssertionVocabulary] != true {
-		return digestSource{}, fmt.Errorf("LayerDraw schema dialect must require vocabulary %s and vocabulary %s", schemaVocabulary, formatAssertionVocabulary)
+	if !ok {
+		return digestSource{}, dialectDiagnostic(dialectVocabularyCode, "LayerDraw schema dialect $vocabulary must contain exactly %s", dialectInventory(requiredDialectVocabularies))
+	}
+	if err := validateDialectInventory(dialectVocabularyCode, "$vocabulary", vocabulary, requiredDialectVocabularies); err != nil {
+		return digestSource{}, err
+	}
+	for _, name := range sortedKeys(requiredDialectVocabularies) {
+		if vocabulary[name] != true {
+			return digestSource{}, dialectDiagnostic(dialectVocabularyValueCode, "LayerDraw schema dialect vocabulary %s must be boolean true", name)
+		}
+	}
+	properties, ok := document["properties"].(map[string]any)
+	if !ok {
+		return digestSource{}, dialectDiagnostic(dialectKeywordCode, "LayerDraw schema dialect properties must contain exactly %s", dialectInventory(requiredDialectKeywordSchemas))
+	}
+	if err := validateDialectInventory(dialectKeywordCode, "keyword", properties, requiredDialectKeywordSchemas); err != nil {
+		return digestSource{}, err
+	}
+	for _, name := range sortedKeys(requiredDialectKeywordSchemas) {
+		if !reflect.DeepEqual(properties[name], requiredDialectKeywordSchemas[name]) {
+			return digestSource{}, dialectDiagnostic(dialectKeywordShapeCode, "LayerDraw schema dialect keyword %s must have schema %s", name, dialectJSON(requiredDialectKeywordSchemas[name]))
+		}
+	}
+	definitions, ok := document["$defs"].(map[string]any)
+	if !ok {
+		return digestSource{}, dialectDiagnostic(dialectDefinitionCode, "LayerDraw schema dialect $defs must contain exactly %s", dialectInventory(requiredDialectDefinitions))
+	}
+	if err := validateDialectInventory(dialectDefinitionCode, "$defs", definitions, requiredDialectDefinitions); err != nil {
+		return digestSource{}, err
+	}
+	for _, name := range sortedKeys(requiredDialectDefinitions) {
+		if !reflect.DeepEqual(definitions[name], requiredDialectDefinitions[name]) {
+			return digestSource{}, dialectDiagnostic(dialectDefinitionShapeCode, "LayerDraw schema dialect definition %s must have schema %s", name, dialectJSON(requiredDialectDefinitions[name]))
+		}
 	}
 	digest := sha256.Sum256(data)
 	return digestSource{path: schemaDialectPath, raw: data, fileDigest: "sha256:" + hex.EncodeToString(digest[:])}, nil
+}
+
+func mustDecodeDialectObject(source string) map[string]any {
+	var result map[string]any
+	if err := json.Unmarshal([]byte(source), &result); err != nil {
+		panic(err)
+	}
+	return result
+}
+
+func dialectDiagnostic(code, format string, arguments ...any) error {
+	return fmt.Errorf("%s: %s", code, fmt.Sprintf(format, arguments...))
+}
+
+func dialectInventory(values map[string]any) string {
+	return strings.Join(sortedKeys(values), ", ")
+}
+
+func dialectJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func validateDialectInventory(code, label string, actual, expected map[string]any) error {
+	actualNames := sortedKeys(actual)
+	expectedNames := sortedKeys(expected)
+	if !reflect.DeepEqual(actualNames, expectedNames) {
+		return dialectDiagnostic(code, "LayerDraw schema dialect %s inventory must be exactly [%s], found [%s]", label, strings.Join(expectedNames, ", "), strings.Join(actualNames, ", "))
+	}
+	return nil
 }
 
 func normalizeSchemaBytes(data []byte) ([]byte, error) {
@@ -463,6 +615,9 @@ func validateDocument(document *schemaDocument) error {
 	}
 	if document.MaxJSONBytes < 1024 || document.MaxJSONDepth < 1 {
 		return errors.New("x-layerdraw-max-json-bytes and x-layerdraw-max-json-depth must be positive protocol limits")
+	}
+	if !document.ScalarUnicode {
+		return errors.New("DIALECT_SCHEMA_SCALAR_UNICODE: every protocol schema must assert x-layerdraw-scalar-unicode: true at its root")
 	}
 	if len(document.Definitions) == 0 {
 		return errors.New("$defs must not be empty")

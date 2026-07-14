@@ -158,6 +158,7 @@ const formatCorpusURL = new URL("../../../schemas/fixtures/conformance/formats-v
 const exportOptionsCorpusURL = new URL("../../../schemas/fixtures/conformance/export-options-v1.json", import.meta.url);
 const predicateCorpusURL = new URL("../../../schemas/fixtures/conformance/predicates-v1.json", import.meta.url);
 const viewSourceCorpusURL = new URL("../../../schemas/fixtures/conformance/view-sources-v1.json", import.meta.url);
+const unicodeScalarCorpusURL = new URL("../../../schemas/fixtures/conformance/unicode-scalars-v1.json", import.meta.url);
 const canonicalEngineRoot = new URL("../../../schemas/fixtures/conformance/engine/", import.meta.url);
 
 async function readFixture(name) {
@@ -429,6 +430,20 @@ test("every View source and address-bearing shape contract has shared bytes", as
   });
 });
 
+test("published scalar-Unicode vectors match TypeScript codecs recursively", async (context) => {
+  const corpus = JSON.parse(await readFile(unicodeScalarCorpusURL, "utf8"));
+  assert.equal(corpus.schema_version, 1);
+  assert.equal(corpus.canonical_cases.length, 2);
+  assert.equal(corpus.rejection_cases.length, 9);
+  for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.equal(codec[1](codec[0](vector.input)), vector.expected);
+  });
+  for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejection`, () => {
+    assert.throws(() => sharedCodecs[vector.type][0](vector.input));
+  });
+});
+
 test("typed-programmatic normalized roots and View sources enforce semantic closure", async () => {
   const project = structuredClone((await readFixture("compile-success.json")).payload.normalized_artifact.project);
   const pack = structuredClone((await readFixture("compile-success-pack.json")).payload.normalized_artifact.pack);
@@ -607,9 +622,9 @@ test("every recursive public predicate is total and enforces exact wire graph bo
       encode: encodeRecipeRowPredicate,
       self: () => { const value = {kind: "not"}; value.child = value; return value; },
       mutual: () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
-      alias: () => { const shared = {kind: "state", field_path: "name", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
-      atLimit: () => predicateAtLimit({kind: "state", field_path: "name", operator: "exists"}),
-      tooDeep: () => ({kind: "not", child: predicateAtLimit({kind: "state", field_path: "name", operator: "exists"})}),
+      alias: () => { const shared = {kind: "state", field_path: "system.updated_at", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+      atLimit: () => predicateAtLimit({kind: "state", field_path: "system.updated_at", operator: "exists"}),
+      tooDeep: () => ({kind: "not", child: predicateAtLimit({kind: "state", field_path: "system.updated_at", operator: "exists"})}),
     },
   ];
 
