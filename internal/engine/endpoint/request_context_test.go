@@ -59,6 +59,40 @@ func TestEndpointOwnsTransportStateOutcomes(t *testing.T) {
 	}
 }
 
+func TestCompilerDescriptorCompositionAndTransportOutcomeMisuse(t *testing.T) {
+	t.Parallel()
+	compiler := engine.New(engine.BuildInfo{})
+	descriptor, err := NewCompilerDescriptor(compiler, testReleaseDigest, "composed", []string{"stdio"}, DefaultLimitPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor.EngineRelease() != engine.DevelopmentVersion || descriptor.SourceRevision() != engine.UnknownSourceRevision || descriptor.EndpointInstanceID() != "composed" {
+		t.Fatalf("descriptor = %+v", descriptor)
+	}
+	if _, err := NewCompilerDescriptor(compiler, "invalid", "composed", []string{"stdio"}, DefaultLimitPolicy()); err == nil {
+		t.Fatal("invalid composition metadata was accepted")
+	}
+
+	var nilDispatcher *CompileDispatcher
+	if _, err := nilDispatcher.CompileTransportResponse("request", CompileTransportResourceLimit); err == nil {
+		t.Fatal("nil dispatcher was accepted")
+	}
+	dispatcher := NewCompileDispatcher(compiler)
+	if _, err := dispatcher.CompileTransportResponse("", CompileTransportResourceLimit); err == nil {
+		t.Fatal("empty request ID was accepted")
+	}
+	if _, err := dispatcher.CompileTransportResponse("request", CompileTransportFailure(255)); err == nil {
+		t.Fatal("unknown transport failure was accepted")
+	}
+	var nilDescriptor *Descriptor
+	if _, err := nilDescriptor.RejectNegotiatedHandshake("request"); err == nil {
+		t.Fatal("nil descriptor was accepted")
+	}
+	if _, err := descriptor.RejectNegotiatedHandshake(""); err == nil {
+		t.Fatal("empty handshake request ID was accepted")
+	}
+}
+
 func TestRequestContextRejectsInvalidGeneratedTime(t *testing.T) {
 	t.Parallel()
 	invalid := protocolcommon.Rfc3339Time("2026-07-15T12:34:56+09:00")

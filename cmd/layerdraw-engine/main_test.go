@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -44,6 +45,28 @@ func TestRunStdioCleanEOFAndFatalRedaction(t *testing.T) {
 	}
 	if stdout.Len() != 0 || stderr.String() != "layerdraw-engine: stdio_framing\n" || strings.Contains(stderr.String(), "secret-source") {
 		t.Fatalf("fatal stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunStdioConfigurationAndSafeOperationalErrors(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if got := runIO([]string{"stdio"}, nil, &stdout, &stderr, nil); got != 1 {
+		t.Fatalf("nil stdin exit = %d", got)
+	}
+	if stdout.Len() != 0 || stderr.String() != "layerdraw-engine: stdio_configuration\n" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if got := safeStdioError(errors.New("secret underlying failure")); got != "layerdraw-engine: stdio_invariant" {
+		t.Fatalf("fallback error = %q", got)
+	}
+	supported := processSignals()
+	if len(supported) == 0 {
+		t.Fatal("no process signal configured")
+	}
+	for _, current := range supported {
+		if code := signalExitCode(current); code != 130 && code != 143 {
+			t.Fatalf("signal %v exit = %d", current, code)
+		}
 	}
 }
 
