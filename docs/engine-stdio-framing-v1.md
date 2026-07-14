@@ -126,12 +126,15 @@ sessionは次を固定上限として実装する。
 - response output blob保持量はrequestごとに最大512 MiB
 - 一つのuploadが保持できるrequired blobは最大65,536個
 - 一つのuploadが保持できるrequired `blob_id` byte総量は最大8 MiB
+- 各required `blob_id`のexact UTF-8表現はframe `Name`上限と同じ4,096 byte以下
 
 eligible requestはcontrol arrivalのFIFO順に`REQUEST_READY`を得る。credit以前のblob、wrong stream、wrong sequence / offset、unreferenced blobはそのrequestだけをgenerated transport failureにする。missing、size/digest/lifetime mismatchはcollectorがbounded bytesをsealした後、#29がgenerated failureへ変換し、compilerを呼ばない。input bufferはrequest-ownedであり、cancel、failure、dispatch完了時に解放する。
 
 upload collectorは`CompilePlan.BlobRequirements`にないblobの最初のframeを、validator、blob map、ordered metadataへ保持する前にgenerated transport failureへ閉じる。required blob countとrequired `blob_id` byte総量はdeclared byte予約とは独立に検査するため、zero-byte blobでstate上限を回避できない。
 
-sealed dispatchではExecute result（successful output publicationを含む）、`CANCEL` / deadline、correlated framing failureがrequest-localな一度だけのterminal arbiterを競合する。output sinkのatomic commit、非publication Execute result、cancel/deadline event、framing eventのうち最初にarbiterを確定したeventだけがterminal authorityを持ち、session join前の後着eventは既決定のoutcomeを書き換えない。dispatch goroutineは必ずsessionへjoinし、選ばれたresponse bundleは`BUNDLE_END`を正確に一度だけ持ち、losing output setは一切書かない。
+generated Engine envelopeとして有効でも、required `blob_id`のUTF-8 byte列が4,096 byteを超えるrequestはLDSP 1.0の`BLOB_CHUNK.Name`でexact identityを表現できない。sessionは`REQUEST_CONTROL` admissionでこれをtransport resource failureにし、stream stateを登録せず`REQUEST_READY`を発行しない。4,096 byteちょうどはASCII、multi-byte Unicodeとも受理し、判定にcode point数、normalization、case foldingを使用しない。
+
+sealed dispatchではExecute result（successful output publicationを含む）、`CANCEL` / deadline、correlated framing failureがrequest-localな一度だけのterminal arbiterを競合する。output sinkのatomic commit、非publication Execute result、cancel/deadline event、framing eventのうち最初にarbiterを確定したeventだけがterminal authorityを持ち、arbiterはwinnerのexact generated responseを所有する。session join前の後着eventも、post-Execute / pre-claim gapで負けたExecute responseも既決定のoutcomeを書き換えない。dispatch goroutineは必ずsessionへjoinし、選ばれたresponse bundleは`BUNDLE_END`を正確に一度だけ持ち、losing responseとoutput setは一切書かない。
 
 `CANCEL`はunknown / terminal streamではno-opである。pending、upload、dispatchのrequest contextとplanをcancel / abortし、publication前ならgenerated `cancelled` responseを一度だけ書く。`deadline_at`のvalidationとcontext conversionは#28 endpoint facadeだけが所有し、stdio側は別policyを作らない。
 

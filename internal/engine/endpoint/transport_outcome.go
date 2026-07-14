@@ -66,6 +66,19 @@ func (d *CompileDispatcher) CompileTransportResponse(requestID string, reason Co
 	}
 }
 
+// CompileCancellationResponse constructs the exact generated terminal used
+// when a transport-owned cancel or deadline event wins dispatch arbitration.
+func (d *CompileDispatcher) CompileCancellationResponse(requestID string) (engineprotocol.CompileResponseEnvelope, error) {
+	if d == nil {
+		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("nil compile dispatcher")
+	}
+	if err := ValidateRequestID(requestID); err != nil {
+		return engineprotocol.CompileResponseEnvelope{}, fmt.Errorf("untrustworthy compile request ID: %w", err)
+	}
+	release := protocolcommon.ReleaseVersion(d.compiler.Describe().ReleaseVersion)
+	return compileCancelledResponse(requestID, release)
+}
+
 // RejectNegotiatedHandshake returns the endpoint-owned response for a second
 // handshake after a connection has already bound its immutable context.
 func (d *Descriptor) RejectNegotiatedHandshake(requestID string) (engineprotocol.HandshakeResponseEnvelope, error) {

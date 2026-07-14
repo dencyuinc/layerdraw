@@ -538,6 +538,120 @@ func TestSessionUploadCountAndMetadataLimitsRejectWithoutState(t *testing.T) {
 	}
 }
 
+func TestSessionBlobIDFrameBoundaryAcceptsExactMaximumBytes(t *testing.T) {
+	t.Parallel()
+	source := []byte("project p \"Project\" {}\n")
+	for _, test := range []struct {
+		name   string
+		blobID string
+	}{
+		{name: "ascii", blobID: strings.Repeat("a", int(MaxNameBytes))},
+		{name: "unicode", blobID: strings.Repeat("😀", int(MaxNameBytes)/len("😀"))},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if len(test.blobID) != int(MaxNameBytes) {
+				t.Fatalf("test blob ID bytes = %d", len(test.blobID))
+			}
+			input := marshalFrames(t,
+				controlFrame(t, 1, sessionHandshake(test.name+"-boundary-hs")),
+				controlFrame(t, 2, sessionCompile(test.name+"-boundary", test.blobID, source)),
+				Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte(test.blobID), Payload: source},
+				Frame{Kind: KindBundleEnd, StreamID: 2, Sequence: 2},
+				Frame{Kind: KindClose},
+			)
+			var output bytes.Buffer
+			if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{})); err != nil {
+				t.Fatal(err)
+			}
+			frames := decodeFrames(t, output.Bytes())
+			ready := 0
+			for _, frame := range frames {
+				if frame.Kind == KindRequestReady && frame.StreamID == 2 {
+					ready++
+				}
+			}
+			if ready != 1 {
+				t.Fatalf("REQUEST_READY count = %d", ready)
+			}
+			if response := compileResponseForStream(t, frames, 2); response.Outcome != protocolcommon.OutcomeSuccess {
+				t.Fatalf("boundary response = %+v", response)
+			}
+		})
+	}
+}
+
+func TestSessionBlobIDOverFrameBoundaryRejectsWithoutStateAndRecovers(t *testing.T) {
+	source := []byte("project p \"Project\" {}\n")
+	for _, test := range []struct {
+		name   string
+		blobID string
+	}{
+		{name: "ascii", blobID: strings.Repeat("a", int(MaxNameBytes)+1)},
+		{name: "unicode", blobID: strings.Repeat("😀", int(MaxNameBytes)/len("😀")) + "a"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			if len(test.blobID) != int(MaxNameBytes)+1 {
+				t.Fatalf("test blob ID bytes = %d", len(test.blobID))
+			}
+			limits := DefaultSessionLimits()
+			config := sessionConfig(t, limits)
+			root, cancelRoot := context.WithCancel(context.Background())
+			var output bytes.Buffer
+			s := &session{
+				config: config, limits: limits, root: root, encode: NewEncoder(&output),
+				streams: make(map[uint64]*requestStream), requestIDs: make(map[string]*requestStream),
+				results:   make(chan dispatchResult, limits.MaxConcurrentDispatch),
+				deadlines: make(chan uint64, limits.MaxActiveStreams),
+			}
+			defer func() { s.abortAll(); cancelRoot() }()
+			if err := s.acceptControl(controlFrame(t, 1, sessionHandshake(test.name+"-oversized-hs"))); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.acceptControl(controlFrame(t, 2, sessionCompile(test.name+"-oversized", test.blobID, source))); err != nil {
+				t.Fatal(err)
+			}
+			if len(s.streams) != 0 || len(s.requestIDs) != 0 || s.controls != 0 || s.controlSum != 0 || s.active != 0 || s.reserved != 0 || len(s.queue) != 0 || s.uploader != nil {
+				t.Fatalf("oversized blob ID retained state: streams=%d requests=%d controls=%d bytes=%d active=%d reserved=%d queue=%d uploader=%p", len(s.streams), len(s.requestIDs), s.controls, s.controlSum, s.active, s.reserved, len(s.queue), s.uploader)
+			}
+			frames := decodeFrames(t, output.Bytes())
+			for _, frame := range frames {
+				if frame.Kind == KindRequestReady && frame.StreamID == 2 {
+					t.Fatal("oversized blob ID received upload credit")
+				}
+			}
+			if response := compileResponseForStream(t, frames, 2); response.Failure == nil || response.Failure.Code != endpoint.FailureCompileTransportLimit {
+				t.Fatalf("oversized response = %+v", response)
+			}
+
+			if err := s.acceptControl(controlFrame(t, 3, sessionCompile(test.name+"-recovery", "source", source))); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.acceptUpload(Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 3, Sequence: 1, Name: []byte("source"), Payload: source}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.acceptUpload(Frame{Kind: KindBundleEnd, StreamID: 3, Sequence: 2}); err != nil {
+				t.Fatal(err)
+			}
+			var result dispatchResult
+			select {
+			case result = <-s.results:
+			case <-time.After(5 * time.Second):
+				t.Fatal("recovery dispatch did not finish")
+			}
+			if err := s.finishDispatch(result); err != nil {
+				t.Fatal(err)
+			}
+			frames = decodeFrames(t, output.Bytes())
+			if response := compileResponseForStream(t, frames, 3); response.Outcome != protocolcommon.OutcomeSuccess {
+				t.Fatalf("recovery response = %+v", response)
+			}
+		})
+	}
+}
+
 func TestSessionCommittedExecutionWinsLateFramingBeforeJoin(t *testing.T) {
 	limits := DefaultSessionLimits()
 	config := sessionConfig(t, limits)
@@ -566,17 +680,17 @@ func TestSessionCommittedExecutionWinsLateFramingBeforeJoin(t *testing.T) {
 	}
 	s.uploader = nil
 	stream.phase = phaseDispatching
-	sink := &captureSink{ctx: stream.ctx, maximum: limits.MaxOutputBlobBytes, commit: stream.terminal.claimExecution}
+	sink := &captureSink{ctx: stream.ctx, maximum: limits.MaxOutputBlobBytes, commit: stream.terminal.claimExecutionPublication}
 	response, err := stream.plan.Execute(stream.ctx, collectedSource{stream: stream}, sink)
 	if err != nil || response.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("execute = %+v, %v", response, err)
 	}
-	stream.terminal.claimExecution()
+	stream.terminal.claimExecution(response)
 	result := dispatchResult{stream: stream, response: response, blobs: sink.take()}
 	if err := s.failCorrelatedStream(stream); err != nil {
 		t.Fatal(err)
 	}
-	if kind, _ := stream.terminal.snapshot(); kind != terminalExecution || stream.ctx.Err() != nil {
+	if kind, terminal, responseSet := stream.terminal.snapshot(); kind != terminalExecution || !responseSet || terminal.Outcome != protocolcommon.OutcomeSuccess || stream.ctx.Err() != nil {
 		t.Fatalf("late framing changed terminal: kind=%d context=%v", kind, stream.ctx.Err())
 	}
 	if err := s.finishDispatch(result); err != nil {
@@ -603,9 +717,134 @@ func TestSessionCommittedExecutionWinsLateFramingBeforeJoin(t *testing.T) {
 	}
 }
 
+func TestSessionPostExecuteGapPublishesExactWinningTerminal(t *testing.T) {
+	validSource := []byte("project p \"Project\" {}\n")
+	for _, execution := range []struct {
+		name        string
+		declared    []byte
+		uploaded    []byte
+		wantOutcome protocolcommon.Outcome
+		wantCode    string
+	}{
+		{name: "rejected", declared: nil, uploaded: nil, wantOutcome: protocolcommon.OutcomeRejected},
+		{name: "failed", declared: validSource, uploaded: bytes.Repeat([]byte{'x'}, len(validSource)), wantOutcome: protocolcommon.OutcomeFailed, wantCode: endpoint.FailureCompileBlobDigestMismatch},
+	} {
+		execution := execution
+		for _, event := range []struct {
+			name        string
+			apply       func(*session, *requestStream) error
+			wantOutcome protocolcommon.Outcome
+			wantCode    string
+		}{
+			{
+				name: "cancellation", wantOutcome: protocolcommon.OutcomeCancelled, wantCode: endpoint.FailureCompileCancelled,
+				apply: func(s *session, stream *requestStream) error { return s.cancelStream(stream, true) },
+			},
+			{
+				name: "transport", wantOutcome: protocolcommon.OutcomeFailed, wantCode: endpoint.FailureCompileTransportProtocol,
+				apply: func(s *session, stream *requestStream) error { return s.failCorrelatedStream(stream) },
+			},
+		} {
+			event := event
+			t.Run(execution.name+"/"+event.name, func(t *testing.T) {
+				limits := DefaultSessionLimits()
+				config := sessionConfig(t, limits)
+				root, cancelRoot := context.WithCancel(context.Background())
+				var output bytes.Buffer
+				executeReturned := make(chan struct{})
+				releaseClaim := make(chan struct{})
+				released := false
+				s := &session{
+					config: config, limits: limits, root: root, encode: NewEncoder(&output),
+					streams: make(map[uint64]*requestStream), requestIDs: make(map[string]*requestStream),
+					results:   make(chan dispatchResult, limits.MaxConcurrentDispatch),
+					deadlines: make(chan uint64, limits.MaxActiveStreams),
+					beforeResultClaim: func() {
+						close(executeReturned)
+						<-releaseClaim
+					},
+				}
+				defer func() {
+					if !released {
+						close(releaseClaim)
+					}
+					s.abortAll()
+					cancelRoot()
+				}()
+				if err := s.acceptControl(controlFrame(t, 1, sessionHandshake(execution.name+"-"+event.name+"-hs"))); err != nil {
+					t.Fatal(err)
+				}
+				requestID := execution.name + "-" + event.name
+				if err := s.acceptControl(controlFrame(t, 2, sessionCompile(requestID, "source", execution.declared))); err != nil {
+					t.Fatal(err)
+				}
+				stream := s.streams[2]
+				if stream == nil || stream.phase != phaseUploading {
+					t.Fatalf("stream = %#v", stream)
+				}
+				if err := s.acceptUpload(Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte("source"), Payload: execution.uploaded}); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.acceptUpload(Frame{Kind: KindBundleEnd, StreamID: 2, Sequence: 2}); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-executeReturned:
+				case <-time.After(5 * time.Second):
+					t.Fatal("Execute did not reach the pre-claim hook")
+				}
+				if kind, _, responseSet := stream.terminal.snapshot(); kind != terminalUndecided || responseSet {
+					t.Fatalf("non-publication result claimed before hook: kind=%d set=%v", kind, responseSet)
+				}
+				if err := event.apply(s, stream); err != nil {
+					t.Fatal(err)
+				}
+				kind, terminal, responseSet := stream.terminal.snapshot()
+				if !responseSet || terminal.Outcome != event.wantOutcome || terminal.Failure == nil || terminal.Failure.Code != event.wantCode {
+					t.Fatalf("winner before join: kind=%d response=%+v set=%v", kind, terminal, responseSet)
+				}
+				close(releaseClaim)
+				released = true
+				var result dispatchResult
+				select {
+				case result = <-s.results:
+				case <-time.After(5 * time.Second):
+					t.Fatal("dispatch did not join")
+				}
+				if result.response.Outcome != execution.wantOutcome || (execution.wantCode != "" && (result.response.Failure == nil || result.response.Failure.Code != execution.wantCode)) {
+					t.Fatalf("losing Execute response = %+v", result.response)
+				}
+				if err := s.finishDispatch(result); err != nil {
+					t.Fatal(err)
+				}
+				frames := decodeFrames(t, output.Bytes())
+				published := compileResponseForStream(t, frames, 2)
+				if published.Outcome != event.wantOutcome || published.Failure == nil || published.Failure.Code != event.wantCode {
+					t.Fatalf("published winner = %+v", published)
+				}
+				controls, ends := 0, 0
+				for _, frame := range frames {
+					if frame.StreamID == 2 && frame.Kind == KindResponseControl {
+						controls++
+					}
+					if frame.StreamID == 2 && frame.Kind == KindBundleEnd {
+						ends++
+					}
+				}
+				if controls != 1 || ends != 1 {
+					t.Fatalf("terminal bundle controls=%d ends=%d", controls, ends)
+				}
+			})
+		}
+	}
+}
+
 func TestTerminalArbiterLinearizesConcurrentEventsExactlyOnce(t *testing.T) {
 	for iteration := 0; iteration < 1_000; iteration++ {
 		var arbiter terminalArbiter
+		execution := engineprotocol.CompileResponseEnvelope{RequestID: "execution"}
+		cancellation := engineprotocol.CompileResponseEnvelope{RequestID: "cancellation"}
+		transport := engineprotocol.CompileResponseEnvelope{RequestID: "transport"}
 		start := make(chan struct{})
 		claims := make(chan bool, 3)
 		var workers sync.WaitGroup
@@ -613,17 +852,25 @@ func TestTerminalArbiterLinearizesConcurrentEventsExactlyOnce(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			<-start
-			claims <- arbiter.claimExecution()
+			if iteration%2 == 0 {
+				claims <- arbiter.claimExecution(execution)
+				return
+			}
+			won := arbiter.claimExecutionPublication()
+			if won {
+				arbiter.claimExecution(execution)
+			}
+			claims <- won
 		}()
 		go func() {
 			defer workers.Done()
 			<-start
-			claims <- arbiter.claimCancellation()
+			claims <- arbiter.claimCancellation(cancellation)
 		}()
 		go func() {
 			defer workers.Done()
 			<-start
-			claims <- arbiter.claimTransport(engineprotocol.CompileResponseEnvelope{})
+			claims <- arbiter.claimTransport(transport)
 		}()
 		close(start)
 		workers.Wait()
@@ -634,9 +881,10 @@ func TestTerminalArbiterLinearizesConcurrentEventsExactlyOnce(t *testing.T) {
 				winners++
 			}
 		}
-		kind, _ := arbiter.snapshot()
-		if winners != 1 || kind == terminalUndecided {
-			t.Fatalf("iteration %d: winners=%d kind=%d", iteration, winners, kind)
+		kind, response, responseSet := arbiter.snapshot()
+		wantRequestID := map[terminalKind]string{terminalExecution: "execution", terminalCancellation: "cancellation", terminalTransport: "transport"}[kind]
+		if winners != 1 || kind == terminalUndecided || !responseSet || response.RequestID != wantRequestID {
+			t.Fatalf("iteration %d: winners=%d kind=%d response=%+v set=%v", iteration, winners, kind, response, responseSet)
 		}
 	}
 }

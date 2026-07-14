@@ -53,6 +53,13 @@ func TestEndpointOwnsTransportStateOutcomes(t *testing.T) {
 			t.Fatalf("reason %d response = %+v", reason, response)
 		}
 	}
+	cancelled, err := dispatcher.CompileCancellationResponse("request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Outcome != protocolcommon.OutcomeCancelled || cancelled.Failure == nil || cancelled.Failure.Code != FailureCompileCancelled {
+		t.Fatalf("cancellation response = %+v", cancelled)
+	}
 	response, err := newTestDescriptor(t).RejectNegotiatedHandshake("second")
 	if err != nil {
 		t.Fatal(err)
@@ -80,12 +87,18 @@ func TestCompilerDescriptorCompositionAndTransportOutcomeMisuse(t *testing.T) {
 	if _, err := nilDispatcher.CompileTransportResponse("request", CompileTransportResourceLimit); err == nil {
 		t.Fatal("nil dispatcher was accepted")
 	}
+	if _, err := nilDispatcher.CompileCancellationResponse("request"); err == nil {
+		t.Fatal("nil cancellation dispatcher was accepted")
+	}
 	dispatcher := NewCompileDispatcher(compiler)
 	if _, err := dispatcher.CompileTransportResponse("", CompileTransportResourceLimit); err == nil {
 		t.Fatal("empty request ID was accepted")
 	}
 	if _, err := dispatcher.CompileTransportResponse("request", CompileTransportFailure(255)); err == nil {
 		t.Fatal("unknown transport failure was accepted")
+	}
+	if _, err := dispatcher.CompileCancellationResponse(""); err == nil {
+		t.Fatal("empty cancellation request ID was accepted")
 	}
 	var nilDescriptor *Descriptor
 	if _, err := nilDescriptor.RejectNegotiatedHandshake("request"); err == nil {

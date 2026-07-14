@@ -100,12 +100,15 @@ const (
 // publication, cancellation/deadline, and correlated framing failures all
 // compete here; the first terminal kind is immutable.
 type terminalArbiter struct {
-	mu       sync.Mutex
-	kind     terminalKind
-	response engineprotocol.CompileResponseEnvelope
+	mu          sync.Mutex
+	kind        terminalKind
+	response    engineprotocol.CompileResponseEnvelope
+	responseSet bool
 }
 
-func (arbiter *terminalArbiter) claimExecution() bool {
+// claimExecutionPublication is the successful output sink's atomic commit
+// point. The exact generated response is attached when Execute returns.
+func (arbiter *terminalArbiter) claimExecutionPublication() bool {
 	if arbiter == nil {
 		return false
 	}
@@ -117,7 +120,28 @@ func (arbiter *terminalArbiter) claimExecution() bool {
 	return arbiter.kind == terminalExecution
 }
 
-func (arbiter *terminalArbiter) claimCancellation() bool {
+// claimExecution linearizes a non-publication Execute result, or completes an
+// already-committed publication with its exact generated response.
+func (arbiter *terminalArbiter) claimExecution(response engineprotocol.CompileResponseEnvelope) bool {
+	if arbiter == nil {
+		return false
+	}
+	arbiter.mu.Lock()
+	defer arbiter.mu.Unlock()
+	if arbiter.kind == terminalUndecided {
+		arbiter.kind = terminalExecution
+	}
+	if arbiter.kind != terminalExecution {
+		return false
+	}
+	if !arbiter.responseSet {
+		arbiter.response = response
+		arbiter.responseSet = true
+	}
+	return true
+}
+
+func (arbiter *terminalArbiter) claimCancellation(response engineprotocol.CompileResponseEnvelope) bool {
 	if arbiter == nil {
 		return false
 	}
@@ -127,6 +151,8 @@ func (arbiter *terminalArbiter) claimCancellation() bool {
 		return false
 	}
 	arbiter.kind = terminalCancellation
+	arbiter.response = response
+	arbiter.responseSet = true
 	return true
 }
 
@@ -141,16 +167,17 @@ func (arbiter *terminalArbiter) claimTransport(response engineprotocol.CompileRe
 	}
 	arbiter.kind = terminalTransport
 	arbiter.response = response
+	arbiter.responseSet = true
 	return true
 }
 
-func (arbiter *terminalArbiter) snapshot() (terminalKind, engineprotocol.CompileResponseEnvelope) {
+func (arbiter *terminalArbiter) snapshot() (terminalKind, engineprotocol.CompileResponseEnvelope, bool) {
 	if arbiter == nil {
-		return terminalUndecided, engineprotocol.CompileResponseEnvelope{}
+		return terminalUndecided, engineprotocol.CompileResponseEnvelope{}, false
 	}
 	arbiter.mu.Lock()
 	defer arbiter.mu.Unlock()
-	return arbiter.kind, arbiter.response
+	return arbiter.kind, arbiter.response, arbiter.responseSet
 }
 
 type requestStream struct {
@@ -190,20 +217,21 @@ type session struct {
 	decode *Decoder
 	encode *Encoder
 
-	negotiated       *endpoint.NegotiatedContext
-	streams          map[uint64]*requestStream
-	highWater        uint64
-	requestIDs       map[string]*requestStream
-	queue            []*requestStream
-	uploader         *requestStream
-	active           int
-	reserved         uint64
-	controls         int
-	controlSum       uint64
-	results          chan dispatchResult
-	deadlines        chan uint64
-	draining         bool
-	beforeSinkCommit func()
+	negotiated        *endpoint.NegotiatedContext
+	streams           map[uint64]*requestStream
+	highWater         uint64
+	requestIDs        map[string]*requestStream
+	queue             []*requestStream
+	uploader          *requestStream
+	active            int
+	reserved          uint64
+	controls          int
+	controlSum        uint64
+	results           chan dispatchResult
+	deadlines         chan uint64
+	draining          bool
+	beforeSinkCommit  func()
+	beforeResultClaim func()
 }
 
 // Serve runs one LDSP 1.0 connection until CLOSE or clean frame-boundary EOF.
@@ -542,7 +570,7 @@ func uploadMetadataBytes(requirements []endpoint.BlobRequirement, maximum uint64
 	var total uint64
 	for _, requirement := range requirements {
 		length := uint64(len(requirement.Ref.BlobID))
-		if total > math.MaxUint64-length || total+length > maximum {
+		if length > uint64(MaxNameBytes) || total > math.MaxUint64-length || total+length > maximum {
 			return 0, false
 		}
 		total += length
@@ -639,10 +667,13 @@ func (s *session) dispatch(stream *requestStream) {
 		source := collectedSource{stream: stream}
 		sink := &captureSink{
 			ctx: stream.ctx, maximum: s.limits.MaxOutputBlobBytes,
-			beforeCommit: s.beforeSinkCommit, commit: stream.terminal.claimExecution,
+			beforeCommit: s.beforeSinkCommit, commit: stream.terminal.claimExecutionPublication,
 		}
 		response, err := stream.plan.Execute(stream.ctx, source, sink)
-		stream.terminal.claimExecution()
+		if s.beforeResultClaim != nil {
+			s.beforeResultClaim()
+		}
+		stream.terminal.claimExecution(response)
 		blobs := sink.take()
 		for name := range stream.blobs {
 			delete(stream.blobs, name)
@@ -661,23 +692,23 @@ func (s *session) finishDispatch(result dispatchResult) error {
 		s.reserved -= stream.reserved
 	}
 	if !stream.suppress {
-		kind, terminal := stream.terminal.snapshot()
+		kind, terminal, responseSet := stream.terminal.snapshot()
+		if !responseSet {
+			s.releaseStream(stream)
+			return &SessionError{Code: SessionErrorInvariant}
+		}
 		switch kind {
-		case terminalTransport:
+		case terminalTransport, terminalCancellation:
 			if err := s.writeCompile(stream.id, terminal, nil); err != nil {
 				s.releaseStream(stream)
 				return err
 			}
-		case terminalExecution, terminalCancellation:
+		case terminalExecution:
 			if result.err != nil {
 				s.releaseStream(stream)
 				return &SessionError{Code: SessionErrorInvariant}
 			}
-			blobs := result.blobs
-			if kind == terminalCancellation {
-				blobs = nil
-			}
-			if err := s.writeCompile(stream.id, result.response, blobs); err != nil {
+			if err := s.writeCompile(stream.id, terminal, result.blobs); err != nil {
 				s.releaseStream(stream)
 				return err
 			}
@@ -702,14 +733,22 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 			stream.plan.Abort()
 			return nil
 		}
-		if !stream.terminal.claimCancellation() {
+		response, err := s.config.Dispatcher.CompileCancellationResponse(stream.requestID)
+		if err != nil {
+			return &SessionError{Code: SessionErrorInvariant}
+		}
+		if !stream.terminal.claimCancellation(response) {
 			return nil
 		}
 		stream.cancel()
 		stream.plan.Abort()
 		return nil
 	}
-	if !stream.terminal.claimCancellation() {
+	response, err := s.config.Dispatcher.CompileCancellationResponse(stream.requestID)
+	if err != nil {
+		return &SessionError{Code: SessionErrorInvariant}
+	}
+	if !stream.terminal.claimCancellation(response) {
 		return nil
 	}
 	stream.cancel()
@@ -727,10 +766,6 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 		if s.reserved >= stream.reserved {
 			s.reserved -= stream.reserved
 		}
-	}
-	response, err := stream.plan.Execute(stream.ctx, collectedSource{}, &captureSink{ctx: stream.ctx, maximum: s.limits.MaxOutputBlobBytes})
-	if err != nil {
-		return &SessionError{Code: SessionErrorInvariant}
 	}
 	stream.phase = phaseTerminal
 	if emit {
