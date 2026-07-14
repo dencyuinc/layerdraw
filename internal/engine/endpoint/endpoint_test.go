@@ -434,6 +434,12 @@ func TestDescriptorValidationAndDefensiveCopies(t *testing.T) {
 		{"missing transport", func(config *DescriptorConfig) { config.Transports = nil }},
 		{"invalid transport", func(config *DescriptorConfig) { config.Transports = []string{"HTTP Secret"} }},
 		{"long transport", func(config *DescriptorConfig) { config.Transports = []string{"a" + strings.Repeat("b", 64)} }},
+		{"too many transports", func(config *DescriptorConfig) {
+			config.Transports = make([]string, maxEndpointTransports+1)
+			for index := range config.Transports {
+				config.Transports[index] = fmt.Sprintf("transport_%02d", index)
+			}
+		}},
 		{"duplicate transport", func(config *DescriptorConfig) { config.Transports = []string{TransportInProcess, TransportInProcess} }},
 		{"zero default", func(config *DescriptorConfig) { config.Limits.Defaults.MaxAssets = 0 }},
 		{"zero hard maximum", func(config *DescriptorConfig) { config.Limits.HardMaximums.MaxAssets = 0 }},
@@ -851,63 +857,101 @@ func TestGeneratedCanonicalResponseIsRepeatable(t *testing.T) {
 func TestSharedCanonicalHandshakeFixturesMatchPolicy(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join("..", "..", "..")
-	requestBytes, err := os.ReadFile(filepath.Join(root, "schemas", "fixtures", "conformance", "engine", "handshake-request.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request, err := engineprotocol.DecodeHandshakeRequestEnvelope(requestBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	canonicalRequest, err := engineprotocol.EncodeHandshakeRequestEnvelope(request)
-	if err != nil || !bytes.Equal(canonicalRequest, bytes.TrimSpace(requestBytes)) {
-		t.Fatalf("request fixture is not canonical: %v\nwant=%s\ngot=%s", err, requestBytes, canonicalRequest)
-	}
-
 	config := validConfig()
 	config.EndpointInstanceID = "fixture-engine"
 	descriptor, err := NewDescriptor(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, context := negotiate(t, descriptor, request)
-	if context == nil {
-		t.Fatal("fixture request did not negotiate")
+	tests := []struct {
+		name         string
+		requestFile  string
+		responseFile string
+		invoke       func(engineprotocol.HandshakeRequestEnvelope) (engineprotocol.HandshakeResponseEnvelope, error)
+	}{
+		{name: "success", requestFile: "handshake-request.json", responseFile: "handshake-success.json"},
+		{name: "major mismatch", requestFile: "handshake-major-mismatch-request.json", responseFile: "handshake-rejected.json"},
+		{name: "same-major range mismatch", requestFile: "handshake-range-mismatch-request.json", responseFile: "handshake-range-mismatch-response.json"},
+		{name: "schema digest mismatch", requestFile: "handshake-schema-digest-mismatch-request.json", responseFile: "handshake-schema-digest-mismatch-response.json"},
+		{name: "missing required capability", requestFile: "handshake-required-capability-missing-request.json", responseFile: "handshake-required-capability-missing-response.json"},
+		{name: "unknown optional capability", requestFile: "handshake-unknown-optional-request.json", responseFile: "handshake-unknown-optional-response.json"},
+		{name: "client limits", requestFile: "handshake-client-limits-request.json", responseFile: "handshake-client-limits-response.json"},
+		{
+			name: "failed", requestFile: "handshake-failed-request.json", responseFile: "handshake-failed-response.json",
+			invoke: func(request engineprotocol.HandshakeRequestEnvelope) (engineprotocol.HandshakeResponseEnvelope, error) {
+				return descriptor.failedResponse(request.RequestID)
+			},
+		},
+		{
+			name: "cancelled", requestFile: "handshake-cancelled-request.json", responseFile: "handshake-cancelled-response.json",
+			invoke: func(request engineprotocol.HandshakeRequestEnvelope) (engineprotocol.HandshakeResponseEnvelope, error) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				response, _, err := descriptor.Negotiate(ctx, request)
+				return response, err
+			},
+		},
 	}
-	responseBytes, err := engineprotocol.EncodeHandshakeResponseEnvelope(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantSuccess, err := os.ReadFile(filepath.Join(root, "schemas", "fixtures", "conformance", "engine", "handshake-success.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(responseBytes, bytes.TrimSpace(wantSuccess)) {
-		t.Fatalf("success fixture differs from Go policy\nwant=%s\ngot=%s", wantSuccess, responseBytes)
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			fixtureRoot := filepath.Join(root, "schemas", "fixtures", "conformance", "engine")
+			requestBytes, err := os.ReadFile(filepath.Join(fixtureRoot, test.requestFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := engineprotocol.DecodeHandshakeRequestEnvelope(requestBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonicalRequest, err := engineprotocol.EncodeHandshakeRequestEnvelope(request)
+			if err != nil || !bytes.Equal(canonicalRequest, bytes.TrimSpace(requestBytes)) {
+				t.Fatalf("request fixture is not canonical: %v\nwant=%s\ngot=%s", err, requestBytes, canonicalRequest)
+			}
+
+			var response engineprotocol.HandshakeResponseEnvelope
+			if test.invoke != nil {
+				response, err = test.invoke(request)
+			} else {
+				response, _, err = descriptor.Negotiate(context.Background(), request)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			responseBytes, err := engineprotocol.EncodeHandshakeResponseEnvelope(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantResponse, err := os.ReadFile(filepath.Join(fixtureRoot, test.responseFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(responseBytes, bytes.TrimSpace(wantResponse)) {
+				t.Fatalf("response fixture differs from Go policy\nwant=%s\ngot=%s", wantResponse, responseBytes)
+			}
+		})
 	}
 
-	rejectedRequest := request
-	rejectedRequest.RequestID = "fixture-handshake-rejected"
-	rejectedRequest.Payload.Protocols = []protocolcommon.ProtocolOffer{{
-		Name:           ProtocolName,
-		SupportedRange: "2.0..2.1",
-		Versions:       []protocolcommon.ProtocolVersionBinding{{Version: "2.1", SchemaDigest: testWrongDigest}},
-	}}
-	rejected, rejectedContext := negotiate(t, descriptor, rejectedRequest)
-	if rejectedContext != nil {
-		t.Fatal("rejection fixture unexpectedly negotiated")
-	}
-	rejectedBytes, err := engineprotocol.EncodeHandshakeResponseEnvelope(rejected)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantRejected, err := os.ReadFile(filepath.Join(root, "schemas", "fixtures", "conformance", "engine", "handshake-rejected.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(rejectedBytes, bytes.TrimSpace(wantRejected)) {
-		t.Fatalf("rejection fixture differs from Go policy\nwant=%s\ngot=%s", wantRejected, rejectedBytes)
-	}
+	t.Run("policy limit", func(t *testing.T) {
+		request := validRequest()
+		request.RequestID = "fixture-handshake-policy-limit"
+		request.Payload.OptionalCapabilities = make([]protocolcommon.CapabilityID, maxOptionalCapabilities+1)
+		response, negotiated, err := descriptor.Negotiate(context.Background(), request)
+		if err != nil || negotiated != nil {
+			t.Fatalf("policy fixture did not reject: context=%v err=%v", negotiated, err)
+		}
+		responseBytes, err := engineprotocol.EncodeHandshakeResponseEnvelope(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantResponse, err := os.ReadFile(filepath.Join(root, "schemas", "fixtures", "conformance", "engine", "handshake-policy-limit-response.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(responseBytes, bytes.TrimSpace(wantResponse)) {
+			t.Fatalf("policy-limit response fixture differs from Go policy\nwant=%s\ngot=%s", wantResponse, responseBytes)
+		}
+	})
 }
 
 func TestNilGetterValuesAreSafe(t *testing.T) {
@@ -983,6 +1027,286 @@ func TestAllClientLimitKeysAreNegotiated(t *testing.T) {
 			t.Fatalf("invalid %s ceiling was not safely identified: %v", test.name, err)
 		}
 	}
+}
+
+func TestHandshakeGeneratedAndPolicyBounds(t *testing.T) {
+	descriptor := newTestDescriptor(t)
+
+	t.Run("request ID exact boundary", func(t *testing.T) {
+		request := validRequest()
+		request.RequestID = strings.Repeat("r", maxRequestIDLength)
+		response, negotiated, err := descriptor.Negotiate(context.Background(), request)
+		if err != nil || response.Outcome != protocolcommon.OutcomeSuccess || negotiated == nil {
+			t.Fatalf("maximum request ID did not negotiate: outcome=%s context=%v err=%v", response.Outcome, negotiated, err)
+		}
+
+		request.RequestID += "r"
+		if _, err := engineprotocol.EncodeHandshakeRequestEnvelope(request); err == nil {
+			t.Fatal("request ID above the schema maximum encoded")
+		}
+		response, negotiated, err = descriptor.Negotiate(context.Background(), request)
+		if err == nil || !reflect.DeepEqual(response, engineprotocol.HandshakeResponseEnvelope{}) || negotiated != nil {
+			t.Fatalf("unpreservable request ID did not fail closed: response=%+v context=%v err=%v", response, negotiated, err)
+		}
+	})
+
+	t.Run("capability ID exact boundary", func(t *testing.T) {
+		request := validRequest()
+		request.Payload.OptionalCapabilities = []protocolcommon.CapabilityID{maximumCapabilityID(0)}
+		response, negotiated := negotiate(t, descriptor, request)
+		if response.Outcome != protocolcommon.OutcomeSuccess || negotiated == nil {
+			t.Fatalf("maximum capability ID did not negotiate: %+v", response)
+		}
+
+		request.Payload.OptionalCapabilities[0] += "x"
+		assertSchemaRejectsAndPolicyRejects(t, descriptor, request)
+	})
+
+	t.Run("capability collection exact boundary", func(t *testing.T) {
+		request := validRequest()
+		request.Payload.OptionalCapabilities = maximumCapabilityIDs(maxOptionalCapabilities, 0)
+		response, negotiated := negotiate(t, descriptor, request)
+		if response.Outcome != protocolcommon.OutcomeSuccess || negotiated == nil || len(response.Payload.CapabilityStatuses) != maxOptionalCapabilities+1 {
+			t.Fatalf("maximum optional capability collection did not negotiate: %+v", response)
+		}
+
+		request.Payload.OptionalCapabilities = append(request.Payload.OptionalCapabilities, maximumCapabilityID(maxOptionalCapabilities))
+		assertSchemaRejectsAndPolicyRejects(t, descriptor, request)
+
+		request = validRequest()
+		request.Payload.RequiredCapabilities = maximumCapabilityIDs(maxRequiredCapabilities, 100)
+		if _, err := engineprotocol.EncodeHandshakeRequestEnvelope(request); err != nil {
+			t.Fatalf("maximum required capability collection did not encode: %v", err)
+		}
+		response, _ = negotiate(t, descriptor, request)
+		assertRejection(t, response, request.RequestID, descriptor.EngineRelease(), DiagnosticRequiredCapabilityMissing)
+		request.Payload.RequiredCapabilities = append(request.Payload.RequiredCapabilities, maximumCapabilityID(999))
+		assertSchemaRejectsAndPolicyRejects(t, descriptor, request)
+	})
+
+	t.Run("protocol collection exact boundary", func(t *testing.T) {
+		request := validRequest()
+		request.Payload.Protocols = maximumProtocolOffers(maxHandshakeProtocols, maxProtocolVersionsPerOffer)
+		response, negotiated := negotiate(t, descriptor, request)
+		if response.Outcome != protocolcommon.OutcomeSuccess || negotiated == nil {
+			t.Fatalf("maximum protocol offer collection did not negotiate: %+v", response)
+		}
+
+		request.Payload.Protocols = append(request.Payload.Protocols, maximumProtocolOffer("overflow", maxProtocolVersionsPerOffer))
+		assertSchemaRejectsAndPolicyRejects(t, descriptor, request)
+
+		request = validRequest()
+		request.Payload.Protocols = maximumProtocolOffers(1, maxProtocolVersionsPerOffer)
+		if _, err := engineprotocol.EncodeHandshakeRequestEnvelope(request); err != nil {
+			t.Fatalf("maximum version binding collection did not encode: %v", err)
+		}
+		request.Payload.Protocols[0].Versions = append(request.Payload.Protocols[0].Versions,
+			protocolcommon.ProtocolVersionBinding{Version: "1.16", SchemaDigest: testWrongDigest})
+		request.Payload.Protocols[0].SupportedRange = "1.0..1.16"
+		assertSchemaRejectsAndPolicyRejects(t, descriptor, request)
+	})
+
+	t.Run("protocol name exact boundary", func(t *testing.T) {
+		request := validRequest()
+		request.Payload.Protocols = []protocolcommon.ProtocolOffer{maximumProtocolOffer("p"+strings.Repeat("a", maxProtocolNameLength-1), 1)}
+		if _, err := engineprotocol.EncodeHandshakeRequestEnvelope(request); err != nil {
+			t.Fatalf("maximum protocol name did not encode: %v", err)
+		}
+		request.Payload.Protocols[0].Name += "a"
+		assertSchemaRejectsAndPolicyRejects(t, descriptor, request)
+	})
+
+	t.Run("release exact boundary", func(t *testing.T) {
+		request := validRequest()
+		request.Payload.ClientRelease = maximumReleaseVersion()
+		response, negotiated := negotiate(t, descriptor, request)
+		if response.Outcome != protocolcommon.OutcomeSuccess || negotiated == nil {
+			t.Fatalf("maximum client release did not negotiate: %+v", response)
+		}
+		request.Payload.ClientRelease += "x"
+		assertSchemaRejectsAndPolicyRejects(t, descriptor, request)
+	})
+
+	t.Run("fixed-shape string boundaries preflight", func(t *testing.T) {
+		tests := []struct {
+			name string
+			edit func(*engineprotocol.HandshakeRequestEnvelope)
+		}{
+			{"protocol range", func(request *engineprotocol.HandshakeRequestEnvelope) {
+				request.Payload.Protocols[0].SupportedRange = protocolcommon.ProtocolVersionRange(strings.Repeat("1", maxProtocolRangeLength+1))
+			}},
+			{"protocol version", func(request *engineprotocol.HandshakeRequestEnvelope) {
+				request.Payload.Protocols[0].Versions[0].Version = protocolcommon.ProtocolVersion(strings.Repeat("1", maxProtocolVersionLength+1))
+			}},
+			{"schema digest", func(request *engineprotocol.HandshakeRequestEnvelope) {
+				request.Payload.Protocols[0].Versions[0].SchemaDigest = protocolcommon.Digest(strings.Repeat("a", maxSchemaDigestLength+1))
+			}},
+			{"deadline", func(request *engineprotocol.HandshakeRequestEnvelope) {
+				value := protocolcommon.Rfc3339Time(strings.Repeat("1", maxRfc3339TimeLength+1))
+				request.DeadlineAt = &value
+			}},
+			{"client limit", func(request *engineprotocol.HandshakeRequestEnvelope) {
+				value := protocolcommon.CanonicalPositiveInt64(strings.Repeat("9", maxPositiveInt64Length+1))
+				request.Payload.ClientLimits = &protocolcommon.CompileResourceLimitConstraints{MaxAssets: &value}
+			}},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				request := validRequest()
+				test.edit(&request)
+				assertSchemaRejectsAndPolicyRejects(t, descriptor, request)
+			})
+		}
+	})
+
+	t.Run("large typed collection is rejected before materialization", func(t *testing.T) {
+		request := validRequest()
+		request.Payload.OptionalCapabilities = make([]protocolcommon.CapabilityID, 200_000)
+		response, negotiated, err := descriptor.Negotiate(context.Background(), request)
+		if err != nil || negotiated != nil {
+			t.Fatalf("oversized typed collection did not produce a bounded rejection: context=%v err=%v", negotiated, err)
+		}
+		assertPolicyLimitRejection(t, response, request.RequestID, descriptor.EngineRelease())
+	})
+}
+
+func TestMaximumHandshakeOutputsAndNearWireRequestAlwaysEncode(t *testing.T) {
+	config := validConfig()
+	config.EngineRelease = maximumReleaseVersion()
+	config.EndpointInstanceID = protocolcommon.EndpointInstanceID("e" + strings.Repeat("x", 127))
+	config.Transports = make([]string, maxEndpointTransports)
+	for index := range config.Transports {
+		prefix := fmt.Sprintf("transport_%02d_", index)
+		config.Transports[index] = prefix + strings.Repeat("x", maxEndpointTransportIDLength-len(prefix))
+	}
+	descriptor, err := NewDescriptor(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	maximumSuccess := validRequest()
+	maximumSuccess.RequestID = strings.Repeat("\x00", maxRequestIDLength)
+	maximumSuccess.Payload.ClientRelease = maximumReleaseVersion()
+	maximumSuccess.Payload.Protocols = maximumProtocolOffers(maxHandshakeProtocols, maxProtocolVersionsPerOffer)
+	maximumSuccess.Payload.RequiredCapabilities = []protocolcommon.CapabilityID{OperationCompile, OperationHandshake}
+	maximumSuccess.Payload.OptionalCapabilities = maximumCapabilityIDs(maxOptionalCapabilities, 0)
+	response, negotiated, err := descriptor.Negotiate(context.Background(), maximumSuccess)
+	if err != nil || response.Outcome != protocolcommon.OutcomeSuccess || negotiated == nil {
+		t.Fatalf("maximum compatible request did not succeed: outcome=%s context=%v err=%v", response.Outcome, negotiated, err)
+	}
+	maximumSuccessBytes := assertBoundedResponseEncoding(t, response)
+
+	maximumRejection := validRequest()
+	maximumRejection.RequestID = strings.Repeat("\x00", maxRequestIDLength)
+	maximumRejection.Payload.RequiredCapabilities = maximumCapabilityIDs(maxRequiredCapabilities, 100)
+	response, negotiated, err = descriptor.Negotiate(context.Background(), maximumRejection)
+	if err != nil || response.Outcome != protocolcommon.OutcomeRejected || negotiated != nil {
+		t.Fatalf("maximum missing-capability request did not reject: outcome=%s context=%v err=%v", response.Outcome, negotiated, err)
+	}
+	maximumRejectionBytes := assertBoundedResponseEncoding(t, response)
+
+	nearWire := validRequest()
+	extensions := protocolcommon.Extensions{"probe": {Kind: protocolcommon.JsonValueKindString}}
+	nearWire.Extensions = &extensions
+	base, err := engineprotocol.EncodeHandshakeRequestEnvelope(nearWire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := extensions["probe"]
+	value.String = strings.Repeat("x", engineprotocol.MaxWireJSONBytes-len(base))
+	extensions["probe"] = value
+	encoded, err := engineprotocol.EncodeHandshakeRequestEnvelope(nearWire)
+	if err != nil || len(encoded) != engineprotocol.MaxWireJSONBytes {
+		t.Fatalf("near-wire request is not exactly at the global boundary: bytes=%d err=%v", len(encoded), err)
+	}
+	response, negotiated, err = descriptor.Negotiate(context.Background(), nearWire)
+	if err != nil || response.Outcome != protocolcommon.OutcomeSuccess || negotiated == nil {
+		t.Fatalf("near-wire compatible request did not succeed: outcome=%s context=%v err=%v", response.Outcome, negotiated, err)
+	}
+	nearWireResponseBytes := assertBoundedResponseEncoding(t, response)
+	t.Logf("proved response sizes: maximum success=%d maximum missing-capability rejection=%d near-wire request response=%d", maximumSuccessBytes, maximumRejectionBytes, nearWireResponseBytes)
+}
+
+func maximumReleaseVersion() protocolcommon.ReleaseVersion {
+	const prefix = "1.0.0+"
+	return protocolcommon.ReleaseVersion(prefix + strings.Repeat("a", maxReleaseVersionLength-len(prefix)))
+}
+
+func maximumCapabilityID(index int) protocolcommon.CapabilityID {
+	prefix := fmt.Sprintf("future.c%06d", index)
+	return protocolcommon.CapabilityID(prefix + strings.Repeat("x", maxCapabilityIDLength-len(prefix)))
+}
+
+func maximumCapabilityIDs(count, offset int) []protocolcommon.CapabilityID {
+	result := make([]protocolcommon.CapabilityID, count)
+	for index := range result {
+		result[index] = maximumCapabilityID(index + offset)
+	}
+	return result
+}
+
+func maximumProtocolOffer(name string, versionCount int) protocolcommon.ProtocolOffer {
+	versions := make([]protocolcommon.ProtocolVersionBinding, versionCount)
+	for index := range versions {
+		digest := protocolcommon.Digest(testWrongDigest)
+		if index == 0 {
+			digest = protocolcommon.Digest(engineprotocol.SchemaDigest)
+		}
+		versions[index] = protocolcommon.ProtocolVersionBinding{
+			SchemaDigest: digest,
+			Version:      protocolcommon.ProtocolVersion(fmt.Sprintf("1.%d", index)),
+		}
+	}
+	return protocolcommon.ProtocolOffer{
+		Name:           name,
+		SupportedRange: protocolcommon.ProtocolVersionRange(fmt.Sprintf("1.0..1.%d", versionCount-1)),
+		Versions:       versions,
+	}
+}
+
+func maximumProtocolOffers(offerCount, versionCount int) []protocolcommon.ProtocolOffer {
+	result := make([]protocolcommon.ProtocolOffer, offerCount)
+	for index := range result {
+		name := fmt.Sprintf("future%d", index)
+		if index == 0 {
+			name = ProtocolName
+		}
+		result[index] = maximumProtocolOffer(name, versionCount)
+	}
+	return result
+}
+
+func assertSchemaRejectsAndPolicyRejects(t *testing.T, descriptor *Descriptor, request engineprotocol.HandshakeRequestEnvelope) {
+	t.Helper()
+	if _, err := engineprotocol.EncodeHandshakeRequestEnvelope(request); err == nil {
+		t.Fatal("value above the generated schema boundary encoded")
+	}
+	response, negotiated, err := descriptor.Negotiate(context.Background(), request)
+	if err != nil || negotiated != nil {
+		t.Fatalf("policy breach did not produce a rejection: context=%v err=%v", negotiated, err)
+	}
+	assertPolicyLimitRejection(t, response, request.RequestID, descriptor.EngineRelease())
+}
+
+func assertPolicyLimitRejection(t *testing.T, response engineprotocol.HandshakeResponseEnvelope, requestID string, release protocolcommon.ReleaseVersion) {
+	t.Helper()
+	assertRejection(t, response, requestID, release, DiagnosticInvalidHandshake)
+	data := response.Diagnostics[0].Data
+	if data == nil || (*data)[DiagnosticDataReason].Kind != protocolcommon.JsonValueKindString || (*data)[DiagnosticDataReason].String != DiagnosticReasonPolicyLimitExceeded {
+		t.Fatalf("policy rejection has unstable or unbounded details: %+v", response.Diagnostics[0])
+	}
+}
+
+func assertBoundedResponseEncoding(t *testing.T, response engineprotocol.HandshakeResponseEnvelope) int {
+	t.Helper()
+	encoded, err := engineprotocol.EncodeHandshakeResponseEnvelope(response)
+	if err != nil {
+		t.Fatalf("terminal response is not canonically encodable: %v", err)
+	}
+	if len(encoded) > maximumHandshakeResponseBytes || len(encoded) > engineprotocol.MaxWireJSONBytes {
+		t.Fatalf("terminal response exceeded its proved bound: %d bytes", len(encoded))
+	}
+	return len(encoded)
 }
 
 func TestInternalHelpersFailClosedAndCloneDeeply(t *testing.T) {

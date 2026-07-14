@@ -1,0 +1,23 @@
+{
+  "diagnostics": [
+    {
+      "code": "protocol.required_capability_missing",
+      "data": {
+        "missing_capabilities": [
+          "engine.future"
+        ]
+      },
+      "message": "One or more required capabilities are unavailable.",
+      "related": [],
+      "remediation": "Use an endpoint that provides the requested capabilities or make them optional.",
+      "severity": "error"
+    }
+  ],
+  "engine_release": "0.0.0-dev",
+  "outcome": "rejected",
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-required-capability-missing"
+}

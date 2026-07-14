@@ -1,6 +1,9 @@
 {
   "operation": "engine.handshake",
   "payload": {
+    "client_limits": {
+      "max_assets": "5"
+    },
     "client_release": "9.8.7",
     "optional_capabilities": [],
     "protocols": [
@@ -15,8 +18,13 @@
         ]
       }
     ],
-    "required_capabilities": ["engine.compile"]
+    "required_capabilities": [
+      "engine.compile"
+    ]
   },
-  "protocol": {"name": "engine", "version": "1.0"},
-  "request_id": "fixture-handshake-success"
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-client-limits"
 }

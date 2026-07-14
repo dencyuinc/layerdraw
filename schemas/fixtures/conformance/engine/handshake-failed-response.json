@@ -1,0 +1,1 @@
+{"diagnostics":[],"engine_release":"0.0.0-dev","failure":{"category":"invariant","code":"engine.handshake.invariant_failure","message":"The Engine could not complete the handshake.","retryable":false},"outcome":"failed","protocol":{"name":"engine","version":"1.0"},"request_id":"fixture-handshake-failed"}

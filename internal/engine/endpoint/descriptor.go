@@ -178,11 +178,14 @@ func validateTransports(input []string) ([]string, error) {
 	if len(input) == 0 {
 		return nil, fmt.Errorf("at least one endpoint transport is required")
 	}
+	if len(input) > maxEndpointTransports {
+		return nil, fmt.Errorf("endpoint transport count exceeds %d", maxEndpointTransports)
+	}
 	result := slices.Clone(input)
 	slices.Sort(result)
 	for index, transport := range result {
 		matched, err := regexp.MatchString(`^[a-z][a-z0-9_]*(?:[.-][a-z0-9_]+)*$`, transport)
-		if err != nil || !matched || len(transport) > 64 {
+		if err != nil || !matched || len(transport) > maxEndpointTransportIDLength {
 			return nil, fmt.Errorf("transport %q is not a safe stable identifier", transport)
 		}
 		if index > 0 && result[index-1] == transport {

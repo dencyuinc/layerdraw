@@ -15,8 +15,13 @@
         ]
       }
     ],
-    "required_capabilities": ["engine.compile"]
+    "required_capabilities": [
+      "engine.future"
+    ]
   },
-  "protocol": {"name": "engine", "version": "1.0"},
-  "request_id": "fixture-handshake-success"
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-required-capability-missing"
 }

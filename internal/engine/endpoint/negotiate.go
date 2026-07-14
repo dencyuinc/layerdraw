@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"unicode/utf8"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -24,11 +23,17 @@ func (d *Descriptor) Negotiate(ctx context.Context, request engineprotocol.Hands
 	if ctx == nil {
 		return engineprotocol.HandshakeResponseEnvelope{}, nil, fmt.Errorf("nil handshake context")
 	}
-	if request.RequestID == "" || !utf8.ValidString(request.RequestID) {
-		return engineprotocol.HandshakeResponseEnvelope{}, nil, fmt.Errorf("handshake request ID must be nonempty valid UTF-8")
+	if !trustworthyRequestID(request.RequestID) {
+		return engineprotocol.HandshakeResponseEnvelope{}, nil, fmt.Errorf("handshake request ID must contain 1..%d valid UTF-8 code points", maxRequestIDLength)
 	}
 	if ctx.Err() != nil {
 		return d.cancelled(request.RequestID)
+	}
+	if request.Operation != engineprotocol.HandshakeRequestEnvelopeOperationValue || request.Protocol != bootstrapProtocolRef() {
+		return d.reject(request.RequestID, invalidHandshakeDiagnostic(DiagnosticReasonInvalidEnvelope))
+	}
+	if exceedsHandshakePolicy(request) {
+		return d.reject(request.RequestID, invalidHandshakeDiagnostic(DiagnosticReasonPolicyLimitExceeded))
 	}
 	if _, err := engineprotocol.EncodeHandshakeRequestEnvelope(request); err != nil {
 		return d.reject(request.RequestID, invalidHandshakeDiagnostic(DiagnosticReasonInvalidEnvelope))

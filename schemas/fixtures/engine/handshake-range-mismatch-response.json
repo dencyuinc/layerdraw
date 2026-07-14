@@ -1,0 +1,27 @@
+{
+  "diagnostics": [
+    {
+      "code": "protocol.version_range_mismatch",
+      "data": {
+        "affected_artifacts": [
+          "engine"
+        ],
+        "current_version": "1.0",
+        "migration_available": false,
+        "readonly_possible": false,
+        "required_version_or_range": "1.1..1.2"
+      },
+      "message": "The client and Engine protocol version ranges do not overlap.",
+      "related": [],
+      "remediation": "Use client and Engine artifacts with overlapping Engine Protocol versions.",
+      "severity": "error"
+    }
+  ],
+  "engine_release": "0.0.0-dev",
+  "outcome": "rejected",
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-range-mismatch"
+}

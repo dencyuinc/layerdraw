@@ -49,6 +49,8 @@ const (
 	DiagnosticReasonCapabilityOverlap = "required_optional_overlap"
 	// DiagnosticReasonInvalidCapabilitySets identifies absent typed capability arrays.
 	DiagnosticReasonInvalidCapabilitySets = "invalid_capability_sets"
+	// DiagnosticReasonPolicyLimitExceeded identifies a bounded handshake collection or identifier that exceeds Engine Protocol 1.0 policy.
+	DiagnosticReasonPolicyLimitExceeded = "policy_limit_exceeded"
 )
 
 func bootstrapProtocolRef() engineprotocol.EngineProtocolRef {

@@ -363,6 +363,57 @@ func TestGeneratedGoMatchesSharedCanonicalEngineEnvelopes(t *testing.T) {
 	}
 }
 
+func TestHandshakeReviewFixturesRoundTripCanonicallyInGeneratedGo(t *testing.T) {
+	t.Parallel()
+	files := []string{
+		"handshake-major-mismatch-request.json",
+		"handshake-range-mismatch-request.json",
+		"handshake-range-mismatch-response.json",
+		"handshake-schema-digest-mismatch-request.json",
+		"handshake-schema-digest-mismatch-response.json",
+		"handshake-required-capability-missing-request.json",
+		"handshake-required-capability-missing-response.json",
+		"handshake-unknown-optional-request.json",
+		"handshake-unknown-optional-response.json",
+		"handshake-client-limits-request.json",
+		"handshake-client-limits-response.json",
+		"handshake-policy-limit-response.json",
+		"handshake-failed-request.json",
+		"handshake-failed-response.json",
+		"handshake-cancelled-request.json",
+		"handshake-cancelled-response.json",
+	}
+	for _, name := range files {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			data, readErr := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "engine", name))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			canonical := bytes.TrimSpace(data)
+			var encoded []byte
+			var err error
+			if strings.HasSuffix(name, "-request.json") {
+				value, decodeErr := engineprotocol.DecodeHandshakeRequestEnvelope(canonical)
+				if decodeErr != nil {
+					t.Fatal(decodeErr)
+				}
+				encoded, err = engineprotocol.EncodeHandshakeRequestEnvelope(value)
+			} else {
+				value, decodeErr := engineprotocol.DecodeHandshakeResponseEnvelope(canonical)
+				if decodeErr != nil {
+					t.Fatal(decodeErr)
+				}
+				encoded, err = engineprotocol.EncodeHandshakeResponseEnvelope(value)
+			}
+			if err != nil || !bytes.Equal(encoded, canonical) {
+				t.Fatalf("generated Go did not byte-identically round-trip fixture: %v\nwant=%s\ngot=%s", err, canonical, encoded)
+			}
+		})
+	}
+}
+
 func TestGeneratedGoJsonValueIsTyped(t *testing.T) {
 	t.Parallel()
 	value, err := protocolcommon.DecodeJsonValue([]byte(`{"array":[true,"text",null]}`))
@@ -1411,6 +1462,12 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return protocolcommon.EncodeCapabilityID(value)
+	case "HandshakeRequest":
+		value, err := protocolcommon.DecodeHandshakeRequest(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeHandshakeRequest(value)
 	case "CanonicalFiniteDecimal":
 		value, err := semantic.DecodeCanonicalFiniteDecimal(input)
 		if err != nil {

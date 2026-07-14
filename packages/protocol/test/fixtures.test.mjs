@@ -54,8 +54,8 @@ import {
   decodeCapabilityID,
   decodeDigest,
   decodeEndpointInstanceID,
-  decodeJsonValue,
   decodeHandshakeRequest,
+  decodeJsonValue,
   decodeOperationCapability,
   decodeManifestETag,
   decodeProtocolOffer,
@@ -79,8 +79,8 @@ import {
   encodeCapabilityID,
   encodeDigest,
   encodeEndpointInstanceID,
-  encodeJsonValue,
   encodeHandshakeRequest,
+  encodeJsonValue,
   encodeOperationCapability,
   encodeManifestETag,
   encodeProtocolOffer,
@@ -242,6 +242,38 @@ for (const [name, validate, decode, encode] of [
   });
 }
 
+test("review-repair handshake fixtures validate and byte-identically round-trip", async (context) => {
+  for (const name of [
+    "handshake-major-mismatch-request.json",
+    "handshake-range-mismatch-request.json",
+    "handshake-range-mismatch-response.json",
+    "handshake-schema-digest-mismatch-request.json",
+    "handshake-schema-digest-mismatch-response.json",
+    "handshake-required-capability-missing-request.json",
+    "handshake-required-capability-missing-response.json",
+    "handshake-unknown-optional-request.json",
+    "handshake-unknown-optional-response.json",
+    "handshake-client-limits-request.json",
+    "handshake-client-limits-response.json",
+    "handshake-policy-limit-response.json",
+    "handshake-failed-request.json",
+    "handshake-failed-response.json",
+    "handshake-cancelled-request.json",
+    "handshake-cancelled-response.json",
+  ]) await context.test(name, async () => {
+    const request = name.endsWith("-request.json");
+    const validate = request ? isHandshakeRequestEnvelope : isHandshakeResponseEnvelope;
+    const decode = request ? decodeHandshakeRequestEnvelope : decodeHandshakeResponseEnvelope;
+    const encode = request ? encodeHandshakeRequestEnvelope : encodeHandshakeResponseEnvelope;
+    const source = await readFile(new URL(name, fixtureRoot), "utf8");
+    const fixture = JSON.parse(source);
+    const canonical = (await readFile(new URL(name, canonicalEngineRoot), "utf8")).trim();
+    assert.equal(validate(fixture), true);
+    assert.equal(encode(decode(source)), canonical);
+    assert.equal(encode(decode(canonical)), canonical);
+  });
+});
+
 test("invalid compile input is rejected", async () => {
   const fixture = await readFixture("compile-invalid-request.json");
   assert.equal(isCompileRequestEnvelope(fixture), false);
@@ -300,6 +332,15 @@ test("generated CompileResult BlobRef collector preserves wire order, aliases, a
   const hostile = structuredClone(result);
   delete hostile.compiled_recipes.queries[0].canonical_json;
   assert.throws(() => collectCompileResultBlobRefs(hostile), TypeError);
+});
+
+test("generated handshake request-ID boundary is exact", async () => {
+  const fixture = await readFixture("handshake-request.json");
+  fixture.request_id = "r".repeat(128);
+  assert.equal(isHandshakeRequestEnvelope(fixture), true);
+  fixture.request_id += "r";
+  assert.equal(isHandshakeRequestEnvelope(fixture), false);
+  assert.throws(() => encodeHandshakeRequestEnvelope(fixture));
 });
 
 test("unknown response fields are rejected while explicit extensions survive", async () => {
@@ -418,6 +459,7 @@ test("public object predicates reject non-scalar Unicode keys at every object su
 const sharedCodecs = {
   ByteResourceLimitCapability: [decodeByteResourceLimitCapability, encodeByteResourceLimitCapability],
   CapabilityID: [decodeCapabilityID, encodeCapabilityID],
+  HandshakeRequest: [decodeHandshakeRequest, encodeHandshakeRequest],
   CanonicalFiniteDecimal: [decodeCanonicalFiniteDecimal, encodeCanonicalFiniteDecimal],
   CanonicalInt64: [decodeCanonicalInt64, encodeCanonicalInt64],
   CanonicalNonNegativeInt64: [decodeCanonicalNonNegativeInt64, encodeCanonicalNonNegativeInt64],

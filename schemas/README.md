@@ -107,6 +107,32 @@ supporting `$defs` inventories exactly match their published schemas. Missing,
 renamed, weakened, mistyped, disabled, extra, or contradictory declarations
 fail closed with stable `DIALECT_*` diagnostics.
 
+Engine Protocol 1.0 handshake expansion is additionally bounded by the schema:
+
+- request and response `request_id`: at most 128 Unicode code points;
+- `ReleaseVersion` and `CapabilityID`: at most 128 ASCII characters;
+- protocol names: at most 64 ASCII characters;
+- protocol versions: at most 21 ASCII characters, same-major ranges at most 44,
+  SHA-256 digests exactly 71, and canonical UTC deadlines at most 30;
+- one handshake: at most 8 protocol offers, 16 exact version bindings per
+  offer, 64 required capabilities, and 64 optional capabilities;
+- one capability manifest: at most 16 transport IDs of at most 64 characters;
+- one handshake result: at most 128 explicit capability statuses and 8
+  negotiated protocols.
+
+These bounds do not replace or weaken the 8 MiB recursive wire limit. They
+reserve ample response headroom: the only caller-controlled value copied to
+every response is the 128-code-point request ID; a successful Engine 1.0
+handshake can materialize at most 66 statuses (the two known operations plus 64
+unknown optional capabilities), and a missing-capability rejection can echo at
+most 64 bounded IDs. Protocol offers and client extensions are not echoed.
+Endpoint release, instance, and transport metadata are independently bounded,
+and the exact fixed operation/limit manifest plus all maximum status/diagnostic
+forms are continuously encoded under a conservative 128 KiB handshake-response
+test budget. Thus any schema-valid compatible handshake yields a canonically
+encodable success or documented rejection rather than discovering growth at
+response construction.
+
 Canonical fields and enum values use `lower_snake_case`. Quantities that map to
 64-bit integers use canonical decimal strings. `CanonicalInt64` covers
 `[-2^63, 2^63-1]`; `CanonicalUint64` covers `[0, 2^64-1]`; leading zeroes,

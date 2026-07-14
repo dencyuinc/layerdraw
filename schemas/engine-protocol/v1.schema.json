@@ -280,7 +280,7 @@
         "operation": {"type": "string", "const": "engine.compile"},
         "payload": {"$ref": "#/$defs/CompileInput"},
         "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
-        "request_id": {"type": "string", "minLength": 1},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
       },
       "required": ["protocol", "request_id", "operation", "payload"],
@@ -296,7 +296,7 @@
         "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
         "payload": {"$ref": "#/$defs/CompileResult"},
         "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
-        "request_id": {"type": "string", "minLength": 1}
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
       },
       "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
       "additionalProperties": false,
@@ -310,7 +310,7 @@
         "operation": {"type": "string", "const": "engine.handshake"},
         "payload": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/HandshakeRequest"},
         "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
-        "request_id": {"type": "string", "minLength": 1},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
       },
       "required": ["protocol", "request_id", "operation", "payload"],
@@ -326,7 +326,7 @@
         "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
         "payload": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/HandshakeResult"},
         "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
-        "request_id": {"type": "string", "minLength": 1}
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
       },
       "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
       "additionalProperties": false,
