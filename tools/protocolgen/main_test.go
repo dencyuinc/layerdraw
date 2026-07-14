@@ -584,6 +584,99 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 	}
 }
 
+func TestEveryGeneratedEncoderAndRecursiveDefinitionUsesBoundedPreflight(t *testing.T) {
+	t.Parallel()
+	set, err := loadSchemas(testRepositoryRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := generate(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]string{}
+	for _, file := range files {
+		byPath[file.path] = string(file.data)
+	}
+
+	type definitionID struct {
+		documentID string
+		name       string
+	}
+	adjacency := map[definitionID]map[definitionID]bool{}
+	for _, document := range set.documents {
+		for name, definition := range document.Definitions {
+			from := definitionID{documentID: document.ID, name: name}
+			adjacency[from] = map[definitionID]bool{}
+			var collectReferences func(*schemaType)
+			collectReferences = func(value *schemaType) {
+				if value == nil {
+					return
+				}
+				if value.Ref != "" {
+					target, targetName, resolveErr := resolveRef(set, document, value.Ref)
+					if resolveErr != nil {
+						t.Fatal(resolveErr)
+					}
+					adjacency[from][definitionID{documentID: target.ID, name: targetName}] = true
+				}
+				for _, property := range value.Properties {
+					collectReferences(property)
+				}
+				collectReferences(value.Items)
+				if additional, ok := value.AdditionalProperties.(*schemaType); ok {
+					collectReferences(additional)
+				}
+				for _, branch := range value.OneOf {
+					collectReferences(branch)
+				}
+			}
+			collectReferences(definition)
+		}
+	}
+
+	recursive := map[definitionID]bool{}
+	for start := range adjacency {
+		var reachesStart func(definitionID, map[definitionID]bool) bool
+		reachesStart = func(current definitionID, visited map[definitionID]bool) bool {
+			for next := range adjacency[current] {
+				if next == start {
+					return true
+				}
+				if !visited[next] {
+					visited[next] = true
+					if reachesStart(next, visited) {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		if reachesStart(start, map[definitionID]bool{start: true}) {
+			recursive[start] = true
+		}
+	}
+	if len(recursive) == 0 {
+		t.Fatal("schema recursion audit unexpectedly found no recursive definitions")
+	}
+
+	for _, document := range set.documents {
+		typeScript := byPath["packages/protocol/src/"+document.Module+".gen.ts"]
+		goCodec := byPath["gen/go/"+document.Package+"/codec.gen.go"]
+		for name := range document.Definitions {
+			if !strings.Contains(typeScript, "export function encode"+name+"(value: "+name+"): string {\n  validateProgrammaticWireValue(value);") {
+				t.Errorf("generated TypeScript encoder %s.%s lacks the bounded preflight", document.Module, name)
+			}
+			if !strings.Contains(goCodec, "func Encode"+name+"(value "+name+") ([]byte, error) {\n\tif err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {") {
+				t.Errorf("generated Go encoder %s.%s lacks the bounded preflight", document.Package, name)
+			}
+			if recursive[definitionID{documentID: document.ID, name: name}] {
+				t.Logf("audited recursive definition %s.%s", document.Module, name)
+			}
+		}
+	}
+}
+
 func TestSchemaDigestChangesWithSchemaBytes(t *testing.T) {
 	t.Parallel()
 	root := testRepositoryRoot(t)

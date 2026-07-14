@@ -120,6 +120,20 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
+function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0): void {
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return; }
+  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return; }
+  const array = isJSONArray(value); if (!array && !isObject(value)) throw new TypeError("unsupported protocol JSON value");
+  if (active.has(value)) throw new TypeError("protocol value contains a cycle");
+  if (depth >= maxWireJSONDepth) throw new TypeError("protocol value exceeds depth " + maxWireJSONDepth);
+  active.add(value);
+  try {
+    if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
+    else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
+  } finally { active.delete(value); }
+}
+
 function validateWireJSONText(input: string): void {
   if (utf8ByteLength(input) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   let depth = 0;
@@ -222,6 +236,7 @@ export function decodeBlobLifetime(input: string): BlobLifetime {
 }
 
 export function encodeBlobLifetime(value: BlobLifetime): string {
+  validateProgrammaticWireValue(value);
   if (!isBlobLifetime(value)) throw new TypeError("invalid BlobLifetime");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -251,6 +266,7 @@ export function decodeBlobRef(input: string): BlobRef {
 }
 
 export function encodeBlobRef(value: BlobRef): string {
+  validateProgrammaticWireValue(value);
   if (!isBlobRef(value)) throw new TypeError("invalid BlobRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -279,6 +295,7 @@ export function decodeByteResourceLimitCapability(input: string): ByteResourceLi
 }
 
 export function encodeByteResourceLimitCapability(value: ByteResourceLimitCapability): string {
+  validateProgrammaticWireValue(value);
   if (!isByteResourceLimitCapability(value)) throw new TypeError("invalid ByteResourceLimitCapability");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -302,6 +319,7 @@ export function decodeCanonicalInt64(input: string): CanonicalInt64 {
 }
 
 export function encodeCanonicalInt64(value: CanonicalInt64): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalInt64(value)) throw new TypeError("invalid CanonicalInt64");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -325,6 +343,7 @@ export function decodeCanonicalNonNegativeInt64(input: string): CanonicalNonNega
 }
 
 export function encodeCanonicalNonNegativeInt64(value: CanonicalNonNegativeInt64): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalNonNegativeInt64(value)) throw new TypeError("invalid CanonicalNonNegativeInt64");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -348,6 +367,7 @@ export function decodeCanonicalNonNegativeSafeInteger(input: string): CanonicalN
 }
 
 export function encodeCanonicalNonNegativeSafeInteger(value: CanonicalNonNegativeSafeInteger): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalNonNegativeSafeInteger(value)) throw new TypeError("invalid CanonicalNonNegativeSafeInteger");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -371,6 +391,7 @@ export function decodeCanonicalPositiveInt64(input: string): CanonicalPositiveIn
 }
 
 export function encodeCanonicalPositiveInt64(value: CanonicalPositiveInt64): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalPositiveInt64(value)) throw new TypeError("invalid CanonicalPositiveInt64");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -394,6 +415,7 @@ export function decodeCanonicalPositiveSafeInteger(input: string): CanonicalPosi
 }
 
 export function encodeCanonicalPositiveSafeInteger(value: CanonicalPositiveSafeInteger): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalPositiveSafeInteger(value)) throw new TypeError("invalid CanonicalPositiveSafeInteger");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -417,6 +439,7 @@ export function decodeCanonicalSafeInteger(input: string): CanonicalSafeInteger 
 }
 
 export function encodeCanonicalSafeInteger(value: CanonicalSafeInteger): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalSafeInteger(value)) throw new TypeError("invalid CanonicalSafeInteger");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -440,6 +463,7 @@ export function decodeCanonicalUint64(input: string): CanonicalUint64 {
 }
 
 export function encodeCanonicalUint64(value: CanonicalUint64): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalUint64(value)) throw new TypeError("invalid CanonicalUint64");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -463,6 +487,7 @@ export function decodeCapabilityID(input: string): CapabilityID {
 }
 
 export function encodeCapabilityID(value: CapabilityID): string {
+  validateProgrammaticWireValue(value);
   if (!isCapabilityID(value)) throw new TypeError("invalid CapabilityID");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -505,6 +530,7 @@ export function decodeCapabilityManifest(input: string): CapabilityManifest {
 }
 
 export function encodeCapabilityManifest(value: CapabilityManifest): string {
+  validateProgrammaticWireValue(value);
   if (!isCapabilityManifest(value)) throw new TypeError("invalid CapabilityManifest");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -538,6 +564,7 @@ export function decodeCompileResourceLimitCapabilities(input: string): CompileRe
 }
 
 export function encodeCompileResourceLimitCapabilities(value: CompileResourceLimitCapabilities): string {
+  validateProgrammaticWireValue(value);
   if (!isCompileResourceLimitCapabilities(value)) throw new TypeError("invalid CompileResourceLimitCapabilities");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -571,6 +598,7 @@ export function decodeCompileResourceLimitConstraints(input: string): CompileRes
 }
 
 export function encodeCompileResourceLimitConstraints(value: CompileResourceLimitConstraints): string {
+  validateProgrammaticWireValue(value);
   if (!isCompileResourceLimitConstraints(value)) throw new TypeError("invalid CompileResourceLimitConstraints");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -594,6 +622,7 @@ export function decodeDigest(input: string): Digest {
 }
 
 export function encodeDigest(value: Digest): string {
+  validateProgrammaticWireValue(value);
   if (!isDigest(value)) throw new TypeError("invalid Digest");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -617,6 +646,7 @@ export function decodeEndpointInstanceID(input: string): EndpointInstanceID {
 }
 
 export function encodeEndpointInstanceID(value: EndpointInstanceID): string {
+  validateProgrammaticWireValue(value);
   if (!isEndpointInstanceID(value)) throw new TypeError("invalid EndpointInstanceID");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -640,6 +670,7 @@ export function decodeExtensions(input: string): Extensions {
 }
 
 export function encodeExtensions(value: Extensions): string {
+  validateProgrammaticWireValue(value);
   if (!isExtensions(value)) throw new TypeError("invalid Extensions");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -670,6 +701,7 @@ export function decodeHandshakeRequest(input: string): HandshakeRequest {
 }
 
 export function encodeHandshakeRequest(value: HandshakeRequest): string {
+  validateProgrammaticWireValue(value);
   if (!isHandshakeRequest(value)) throw new TypeError("invalid HandshakeRequest");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -701,6 +733,7 @@ export function decodeHandshakeResult(input: string): HandshakeResult {
 }
 
 export function encodeHandshakeResult(value: HandshakeResult): string {
+  validateProgrammaticWireValue(value);
   if (!isHandshakeResult(value)) throw new TypeError("invalid HandshakeResult");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -729,6 +762,7 @@ export function decodeItemResourceLimitCapability(input: string): ItemResourceLi
 }
 
 export function encodeItemResourceLimitCapability(value: ItemResourceLimitCapability): string {
+  validateProgrammaticWireValue(value);
   if (!isItemResourceLimitCapability(value)) throw new TypeError("invalid ItemResourceLimitCapability");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -752,6 +786,7 @@ export function decodeJsonObject(input: string): JsonObject {
 }
 
 export function encodeJsonObject(value: JsonObject): string {
+  validateProgrammaticWireValue(value);
   if (!isJsonObject(value)) throw new TypeError("invalid JsonObject");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -775,6 +810,7 @@ export function decodeJsonValue(input: string): JsonValue {
 }
 
 export function encodeJsonValue(value: JsonValue): string {
+  validateProgrammaticWireValue(value);
   if (!isJsonValue(value)) throw new TypeError("invalid JsonValue");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -798,6 +834,7 @@ export function decodeManifestETag(input: string): ManifestETag {
 }
 
 export function encodeManifestETag(value: ManifestETag): string {
+  validateProgrammaticWireValue(value);
   if (!isManifestETag(value)) throw new TypeError("invalid ManifestETag");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -820,6 +857,7 @@ export function decodeManifestScope(input: string): ManifestScope {
 }
 
 export function encodeManifestScope(value: ManifestScope): string {
+  validateProgrammaticWireValue(value);
   if (!isManifestScope(value)) throw new TypeError("invalid ManifestScope");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -846,6 +884,7 @@ export function decodeNegotiatedProtocol(input: string): NegotiatedProtocol {
 }
 
 export function encodeNegotiatedProtocol(value: NegotiatedProtocol): string {
+  validateProgrammaticWireValue(value);
   if (!isNegotiatedProtocol(value)) throw new TypeError("invalid NegotiatedProtocol");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -875,6 +914,7 @@ export function decodeOperationCapability(input: string): OperationCapability {
 }
 
 export function encodeOperationCapability(value: OperationCapability): string {
+  validateProgrammaticWireValue(value);
   if (!isOperationCapability(value)) throw new TypeError("invalid OperationCapability");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -897,6 +937,7 @@ export function decodeOutcome(input: string): Outcome {
 }
 
 export function encodeOutcome(value: Outcome): string {
+  validateProgrammaticWireValue(value);
   if (!isOutcome(value)) throw new TypeError("invalid Outcome");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -925,6 +966,7 @@ export function decodePageInfo(input: string): PageInfo {
 }
 
 export function encodePageInfo(value: PageInfo): string {
+  validateProgrammaticWireValue(value);
   if (!isPageInfo(value)) throw new TypeError("invalid PageInfo");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -953,6 +995,7 @@ export function decodeProfileCapability(input: string): ProfileCapability {
 }
 
 export function encodeProfileCapability(value: ProfileCapability): string {
+  validateProgrammaticWireValue(value);
   if (!isProfileCapability(value)) throw new TypeError("invalid ProfileCapability");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -984,6 +1027,7 @@ export function decodeProtocolDiagnostic(input: string): ProtocolDiagnostic {
 }
 
 export function encodeProtocolDiagnostic(value: ProtocolDiagnostic): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolDiagnostic(value)) throw new TypeError("invalid ProtocolDiagnostic");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1010,6 +1054,7 @@ export function decodeProtocolDiagnosticRelated(input: string): ProtocolDiagnost
 }
 
 export function encodeProtocolDiagnosticRelated(value: ProtocolDiagnosticRelated): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolDiagnosticRelated(value)) throw new TypeError("invalid ProtocolDiagnosticRelated");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1032,6 +1077,7 @@ export function decodeProtocolDiagnosticSeverity(input: string): ProtocolDiagnos
 }
 
 export function encodeProtocolDiagnosticSeverity(value: ProtocolDiagnosticSeverity): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolDiagnosticSeverity(value)) throw new TypeError("invalid ProtocolDiagnosticSeverity");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1058,6 +1104,7 @@ export function decodeProtocolDiagnosticSource(input: string): ProtocolDiagnosti
 }
 
 export function encodeProtocolDiagnosticSource(value: ProtocolDiagnosticSource): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolDiagnosticSource(value)) throw new TypeError("invalid ProtocolDiagnosticSource");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1083,6 +1130,7 @@ export function decodeProtocolDiagnosticSpan(input: string): ProtocolDiagnosticS
 }
 
 export function encodeProtocolDiagnosticSpan(value: ProtocolDiagnosticSpan): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolDiagnosticSpan(value)) throw new TypeError("invalid ProtocolDiagnosticSpan");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1115,6 +1163,7 @@ export function decodeProtocolFailure(input: string): ProtocolFailure {
 }
 
 export function encodeProtocolFailure(value: ProtocolFailure): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolFailure(value)) throw new TypeError("invalid ProtocolFailure");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1137,6 +1186,7 @@ export function decodeProtocolFailureCategory(input: string): ProtocolFailureCat
 }
 
 export function encodeProtocolFailureCategory(value: ProtocolFailureCategory): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolFailureCategory(value)) throw new TypeError("invalid ProtocolFailureCategory");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1163,6 +1213,7 @@ export function decodeProtocolOffer(input: string): ProtocolOffer {
 }
 
 export function encodeProtocolOffer(value: ProtocolOffer): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolOffer(value)) throw new TypeError("invalid ProtocolOffer");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1188,6 +1239,7 @@ export function decodeProtocolRef(input: string): ProtocolRef {
 }
 
 export function encodeProtocolRef(value: ProtocolRef): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolRef(value)) throw new TypeError("invalid ProtocolRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1211,6 +1263,7 @@ export function decodeProtocolVersion(input: string): ProtocolVersion {
 }
 
 export function encodeProtocolVersion(value: ProtocolVersion): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolVersion(value)) throw new TypeError("invalid ProtocolVersion");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1237,6 +1290,7 @@ export function decodeProtocolVersionBinding(input: string): ProtocolVersionBind
 }
 
 export function encodeProtocolVersionBinding(value: ProtocolVersionBinding): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolVersionBinding(value)) throw new TypeError("invalid ProtocolVersionBinding");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1260,6 +1314,7 @@ export function decodeProtocolVersionOrRange(input: string): ProtocolVersionOrRa
 }
 
 export function encodeProtocolVersionOrRange(value: ProtocolVersionOrRange): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolVersionOrRange(value)) throw new TypeError("invalid ProtocolVersionOrRange");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1283,6 +1338,7 @@ export function decodeProtocolVersionRange(input: string): ProtocolVersionRange 
 }
 
 export function encodeProtocolVersionRange(value: ProtocolVersionRange): string {
+  validateProgrammaticWireValue(value);
   if (!isProtocolVersionRange(value)) throw new TypeError("invalid ProtocolVersionRange");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1311,6 +1367,7 @@ export function decodeRasterDimensionResourceLimitCapability(input: string): Ras
 }
 
 export function encodeRasterDimensionResourceLimitCapability(value: RasterDimensionResourceLimitCapability): string {
+  validateProgrammaticWireValue(value);
   if (!isRasterDimensionResourceLimitCapability(value)) throw new TypeError("invalid RasterDimensionResourceLimitCapability");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1339,6 +1396,7 @@ export function decodeRasterPixelResourceLimitCapability(input: string): RasterP
 }
 
 export function encodeRasterPixelResourceLimitCapability(value: RasterPixelResourceLimitCapability): string {
+  validateProgrammaticWireValue(value);
   if (!isRasterPixelResourceLimitCapability(value)) throw new TypeError("invalid RasterPixelResourceLimitCapability");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1362,6 +1420,7 @@ export function decodeReleaseVersion(input: string): ReleaseVersion {
 }
 
 export function encodeReleaseVersion(value: ReleaseVersion): string {
+  validateProgrammaticWireValue(value);
   if (!isReleaseVersion(value)) throw new TypeError("invalid ReleaseVersion");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1392,6 +1451,7 @@ export function decodeRequestMetadata(input: string): RequestMetadata {
 }
 
 export function encodeRequestMetadata(value: RequestMetadata): string {
+  validateProgrammaticWireValue(value);
   if (!isRequestMetadata(value)) throw new TypeError("invalid RequestMetadata");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1420,6 +1480,7 @@ export function decodeRequestedCapabilityStatus(input: string): RequestedCapabil
 }
 
 export function encodeRequestedCapabilityStatus(value: RequestedCapabilityStatus): string {
+  validateProgrammaticWireValue(value);
   if (!isRequestedCapabilityStatus(value)) throw new TypeError("invalid RequestedCapabilityStatus");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1450,6 +1511,7 @@ export function decodeResponseMetadata(input: string): ResponseMetadata {
 }
 
 export function encodeResponseMetadata(value: ResponseMetadata): string {
+  validateProgrammaticWireValue(value);
   if (!isResponseMetadata(value)) throw new TypeError("invalid ResponseMetadata");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1473,6 +1535,7 @@ export function decodeRfc3339Time(input: string): Rfc3339Time {
 }
 
 export function encodeRfc3339Time(value: Rfc3339Time): string {
+  validateProgrammaticWireValue(value);
   if (!isRfc3339Time(value)) throw new TypeError("invalid Rfc3339Time");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1499,6 +1562,7 @@ export function decodeTotalItems(input: string): TotalItems {
 }
 
 export function encodeTotalItems(value: TotalItems): string {
+  validateProgrammaticWireValue(value);
   if (!isTotalItems(value)) throw new TypeError("invalid TotalItems");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1521,6 +1585,7 @@ export function decodeUnavailableReason(input: string): UnavailableReason {
 }
 
 export function encodeUnavailableReason(value: UnavailableReason): string {
+  validateProgrammaticWireValue(value);
   if (!isUnavailableReason(value)) throw new TypeError("invalid UnavailableReason");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1552,6 +1617,7 @@ export function decodeUpgradeDiagnosticData(input: string): UpgradeDiagnosticDat
 }
 
 export function encodeUpgradeDiagnosticData(value: UpgradeDiagnosticData): string {
+  validateProgrammaticWireValue(value);
   if (!isUpgradeDiagnosticData(value)) throw new TypeError("invalid UpgradeDiagnosticData");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);

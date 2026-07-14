@@ -320,6 +320,246 @@ func TestGeneratedGoJsonValueRejectsContradictionsCyclesAndExcessDepth(t *testin
 	}
 }
 
+func TestGeneratedGoSemanticRecursiveCodecsRejectCyclesAndExcessDepth(t *testing.T) {
+	t.Parallel()
+	stringPointer := func(value string) *string { return &value }
+	expectCycle := func(name string, encode func() error) {
+		t.Helper()
+		if err := encode(); err == nil || !strings.Contains(err.Error(), "cycle") {
+			t.Errorf("%s did not return a stable cycle error: %v", name, err)
+		}
+	}
+	expectDepth := func(name string, encode func() error) {
+		t.Helper()
+		if err := encode(); err == nil || err.Error() != "protocol value exceeds depth 128" {
+			t.Errorf("%s did not return the stable depth error: %v", name, err)
+		}
+	}
+
+	selfItems := make([]semantic.DiagnosticArgumentValue, 1)
+	selfDiagnostic := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &selfItems}
+	selfItems[0] = selfDiagnostic
+	expectCycle("DiagnosticArgumentValue self cycle", func() error {
+		_, err := semantic.EncodeDiagnosticArgumentValue(selfDiagnostic)
+		return err
+	})
+	leftItems := make([]semantic.DiagnosticArgumentValue, 1)
+	rightItems := make([]semantic.DiagnosticArgumentValue, 1)
+	leftDiagnostic := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &leftItems}
+	rightDiagnostic := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &rightItems}
+	leftItems[0], rightItems[0] = rightDiagnostic, leftDiagnostic
+	expectCycle("DiagnosticArgumentValue mutual cycle", func() error {
+		_, err := semantic.EncodeDiagnosticArgumentValue(leftDiagnostic)
+		return err
+	})
+	sharedObject := map[string]semantic.DiagnosticArgumentValue{}
+	sharedDiagnostic := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindObject, ObjectValue: &sharedObject}
+	aliasedItems := []semantic.DiagnosticArgumentValue{sharedDiagnostic, sharedDiagnostic}
+	if _, err := semantic.EncodeDiagnosticArgumentValue(semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &aliasedItems}); err != nil {
+		t.Fatalf("DiagnosticArgumentValue rejected an acyclic shared alias: %v", err)
+	}
+
+	emptyItems := []semantic.DiagnosticArgumentValue{}
+	diagnosticAtLimit := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &emptyItems}
+	for range 63 {
+		items := []semantic.DiagnosticArgumentValue{diagnosticAtLimit}
+		diagnosticAtLimit = semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &items}
+	}
+	if _, err := semantic.EncodeDiagnosticArgumentValue(diagnosticAtLimit); err != nil {
+		t.Fatalf("DiagnosticArgumentValue rejected wire depth 128: %v", err)
+	}
+	diagnosticTooDeep := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindString, StringValue: stringPointer("leaf")}
+	for range 64 {
+		items := []semantic.DiagnosticArgumentValue{diagnosticTooDeep}
+		diagnosticTooDeep = semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &items}
+	}
+	expectDepth("DiagnosticArgumentValue wire depth 129", func() error {
+		_, err := semantic.EncodeDiagnosticArgumentValue(diagnosticTooDeep)
+		return err
+	})
+
+	selfPredicate := &semantic.RecipePredicate{Kind: "not"}
+	selfPredicate.Child = selfPredicate
+	expectCycle("RecipePredicate self cycle", func() error {
+		_, err := semantic.EncodeRecipePredicate(*selfPredicate)
+		return err
+	})
+	leftPredicate := &semantic.RecipePredicate{Kind: "not"}
+	rightPredicate := &semantic.RecipePredicate{Kind: "not", Child: leftPredicate}
+	leftPredicate.Child = rightPredicate
+	expectCycle("RecipePredicate mutual cycle", func() error {
+		_, err := semantic.EncodeRecipePredicate(*leftPredicate)
+		return err
+	})
+	sharedPredicate := &semantic.RecipePredicate{Kind: "field", Field: stringPointer("name"), Operator: stringPointer("exists")}
+	predicateAliases := []semantic.RecipePredicate{{Kind: "not", Child: sharedPredicate}, {Kind: "not", Child: sharedPredicate}}
+	if _, err := semantic.EncodeRecipePredicate(semantic.RecipePredicate{Kind: "all", Children: &predicateAliases}); err != nil {
+		t.Fatalf("RecipePredicate rejected an acyclic shared alias: %v", err)
+	}
+	predicateAtLimit := sharedPredicate
+	for range semantic.MaxWireJSONDepth - 1 {
+		predicateAtLimit = &semantic.RecipePredicate{Kind: "not", Child: predicateAtLimit}
+	}
+	if _, err := semantic.EncodeRecipePredicate(*predicateAtLimit); err != nil {
+		t.Fatalf("RecipePredicate rejected wire depth 128: %v", err)
+	}
+	expectDepth("RecipePredicate wire depth 129", func() error {
+		_, err := semantic.EncodeRecipePredicate(semantic.RecipePredicate{Kind: "not", Child: predicateAtLimit})
+		return err
+	})
+
+	selfRow := &semantic.RecipeRowPredicate{Kind: "not"}
+	selfRow.Child = selfRow
+	expectCycle("RecipeRowPredicate self cycle", func() error {
+		_, err := semantic.EncodeRecipeRowPredicate(*selfRow)
+		return err
+	})
+	leftRow := &semantic.RecipeRowPredicate{Kind: "not"}
+	rightRow := &semantic.RecipeRowPredicate{Kind: "not", Child: leftRow}
+	leftRow.Child = rightRow
+	expectCycle("RecipeRowPredicate mutual cycle", func() error {
+		_, err := semantic.EncodeRecipeRowPredicate(*leftRow)
+		return err
+	})
+	sharedRow := &semantic.RecipeRowPredicate{Kind: "state", FieldPath: stringPointer("name"), Operator: stringPointer("exists")}
+	rowAliases := []semantic.RecipeRowPredicate{{Kind: "not", Child: sharedRow}, {Kind: "not", Child: sharedRow}}
+	if _, err := semantic.EncodeRecipeRowPredicate(semantic.RecipeRowPredicate{Kind: "all", Children: &rowAliases}); err != nil {
+		t.Fatalf("RecipeRowPredicate rejected an acyclic shared alias: %v", err)
+	}
+	rowAtLimit := sharedRow
+	for range semantic.MaxWireJSONDepth - 1 {
+		rowAtLimit = &semantic.RecipeRowPredicate{Kind: "not", Child: rowAtLimit}
+	}
+	if _, err := semantic.EncodeRecipeRowPredicate(*rowAtLimit); err != nil {
+		t.Fatalf("RecipeRowPredicate rejected wire depth 128: %v", err)
+	}
+	expectDepth("RecipeRowPredicate wire depth 129", func() error {
+		_, err := semantic.EncodeRecipeRowPredicate(semantic.RecipeRowPredicate{Kind: "not", Child: rowAtLimit})
+		return err
+	})
+}
+
+func TestGeneratedGoEngineCodecAppliesSharedCycleAndDepthPreflight(t *testing.T) {
+	t.Parallel()
+	decodeRequest := func() engineprotocol.CompileRequestEnvelope {
+		t.Helper()
+		value, err := engineprotocol.DecodeCompileRequestEnvelope(readProtocolFixture(t, "compile-request.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+
+	aliased := decodeRequest()
+	sharedMap := map[string]protocolcommon.JsonValue{}
+	shared := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindObject, Object: sharedMap}
+	aliasExtensions := protocolcommon.Extensions{"example.left": shared, "example.right": shared}
+	aliased.Extensions = &aliasExtensions
+	if _, err := engineprotocol.EncodeCompileRequestEnvelope(aliased); err != nil {
+		t.Fatalf("engine codec rejected an acyclic shared alias: %v", err)
+	}
+
+	cyclic := decodeRequest()
+	selfMap := map[string]protocolcommon.JsonValue{}
+	self := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindObject, Object: selfMap}
+	selfMap["self"] = self
+	cycleExtensions := protocolcommon.Extensions{"example.cycle": self}
+	cyclic.Extensions = &cycleExtensions
+	if _, err := engineprotocol.EncodeCompileRequestEnvelope(cyclic); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("engine codec did not return a stable cycle error: %v", err)
+	}
+
+	atLimit := decodeRequest()
+	extension := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindString, String: "leaf"}
+	for range protocolcommon.MaxWireJSONDepth - 2 {
+		extension = protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindArray, Array: []protocolcommon.JsonValue{extension}}
+	}
+	depthExtensions := protocolcommon.Extensions{"example.depth": extension}
+	atLimit.Extensions = &depthExtensions
+	if _, err := engineprotocol.EncodeCompileRequestEnvelope(atLimit); err != nil {
+		t.Fatalf("engine codec rejected wire depth 128: %v", err)
+	}
+
+	tooDeep := decodeRequest()
+	tooDeepExtensions := protocolcommon.Extensions{"example.depth": {Kind: protocolcommon.JsonValueKindArray, Array: []protocolcommon.JsonValue{extension}}}
+	tooDeep.Extensions = &tooDeepExtensions
+	if _, err := engineprotocol.EncodeCompileRequestEnvelope(tooDeep); err == nil || err.Error() != "protocol value exceeds depth 128" {
+		t.Fatalf("engine codec did not return the stable depth error: %v", err)
+	}
+}
+
+func FuzzGeneratedGoRecursiveCodecBoundaries(f *testing.F) {
+	for _, seed := range []struct {
+		codec, depth uint8
+		cycle        bool
+	}{{0, 0, false}, {0, 64, false}, {1, 127, false}, {1, 128, false}, {2, 4, true}} {
+		f.Add(seed.codec, seed.depth, seed.cycle)
+	}
+	f.Fuzz(func(t *testing.T, codec, rawDepth uint8, cycle bool) {
+		codec %= 3
+		depth := int(rawDepth % 140)
+		var wireDepth int
+		var err error
+		switch codec {
+		case 0:
+			if cycle {
+				items := make([]semantic.DiagnosticArgumentValue, 1)
+				value := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &items}
+				items[0] = value
+				_, err = semantic.EncodeDiagnosticArgumentValue(value)
+				break
+			}
+			text := "leaf"
+			value := semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindString, StringValue: &text}
+			for range depth {
+				items := []semantic.DiagnosticArgumentValue{value}
+				value = semantic.DiagnosticArgumentValue{Kind: semantic.DiagnosticArgumentKindArray, ArrayValue: &items}
+			}
+			wireDepth = 1 + 2*depth
+			_, err = semantic.EncodeDiagnosticArgumentValue(value)
+		case 1:
+			field, operator := "name", "exists"
+			value := &semantic.RecipePredicate{Kind: "field", Field: &field, Operator: &operator}
+			if cycle {
+				value = &semantic.RecipePredicate{Kind: "not"}
+				value.Child = value
+			} else {
+				for range depth {
+					value = &semantic.RecipePredicate{Kind: "not", Child: value}
+				}
+				wireDepth = 1 + depth
+			}
+			_, err = semantic.EncodeRecipePredicate(*value)
+		case 2:
+			fieldPath, operator := "name", "exists"
+			value := &semantic.RecipeRowPredicate{Kind: "state", FieldPath: &fieldPath, Operator: &operator}
+			if cycle {
+				value = &semantic.RecipeRowPredicate{Kind: "not"}
+				value.Child = value
+			} else {
+				for range depth {
+					value = &semantic.RecipeRowPredicate{Kind: "not", Child: value}
+				}
+				wireDepth = 1 + depth
+			}
+			_, err = semantic.EncodeRecipeRowPredicate(*value)
+		}
+		if cycle {
+			if err == nil || !strings.Contains(err.Error(), "cycle") {
+				t.Fatalf("codec %d did not reject a cycle with a stable error: %v", codec, err)
+			}
+			return
+		}
+		if wireDepth <= semantic.MaxWireJSONDepth {
+			if err != nil {
+				t.Fatalf("codec %d rejected wire depth %d: %v", codec, wireDepth, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "depth 128") {
+			t.Fatalf("codec %d did not reject wire depth %d with a stable error: %v", codec, wireDepth, err)
+		}
+	})
+}
+
 func TestGeneratedGoCanonicalByteLimitUsesEmittedBytes(t *testing.T) {
 	for _, fill := range []string{"<", ">", "&", "\u2028", "\u2029"} {
 		fill := fill

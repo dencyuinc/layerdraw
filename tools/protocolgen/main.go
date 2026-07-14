@@ -1024,7 +1024,7 @@ func generateGoCodec(set schemaSet, document *schemaDocument) ([]byte, error) {
 		fmt.Fprintf(&body, "// Decode%s decodes and validates one %s JSON value.\n", name, name)
 		fmt.Fprintf(&body, "func Decode%s(data []byte) (%s, error) {\n\tvar result %s\n\traw, err := decodeWireJSON(data)\n\tif err != nil { return result, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return result, err }\n\tdecoder := json.NewDecoder(bytes.NewReader(data))\n\tdecoder.DisallowUnknownFields()\n\tif err := decoder.Decode(&result); err != nil { return result, err }\n\treturn result, nil\n}\n\n", name, name, name, name)
 		fmt.Fprintf(&body, "// Encode%s validates and emits canonical UTF-8 JSON.\n", name)
-		fmt.Fprintf(&body, "func Encode%s(value %s) ([]byte, error) {\n\tif err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil { return nil, err }\n\tencoded, err := marshalWireJSON(value)\n\tif err != nil { return nil, err }\n\traw, err := decodeWireJSON(encoded)\n\tif err != nil { return nil, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return nil, err }\n\tcanonical, err := appendCanonicalJSON(nil, raw)\n\tif err != nil { return nil, err }\n\tif err := validateWireJSONBytes(canonical); err != nil { return nil, err }\n\treturn canonical, nil\n}\n\n", name, name, name)
+		fmt.Fprintf(&body, "func Encode%s(value %s) ([]byte, error) {\n\tif err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil { return nil, err }\n\tencoded, err := marshalWireJSON(value)\n\tif err != nil { return nil, err }\n\traw, err := decodeWireJSON(encoded)\n\tif err != nil { return nil, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return nil, err }\n\tcanonical, err := appendCanonicalJSON(nil, raw)\n\tif err != nil { return nil, err }\n\tif err := validateWireJSONBytes(canonical); err != nil { return nil, err }\n\treturn canonical, nil\n}\n\n", name, name, name)
 	}
 	body.WriteString(goCodecRuntime)
 	formatted, err := format.Source([]byte(body.String()))
@@ -1169,41 +1169,72 @@ func marshalWireJSON(value any) ([]byte, error) {
 	return bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'}), nil
 }
 
-func validateGoUnicode(value reflect.Value, seen map[visit]bool) error {
+func validateGoWireValue(value reflect.Value, active map[visit]bool, depth int) error {
 	if !value.IsValid() { return nil }
-	switch value.Kind() {
-	case reflect.Interface, reflect.Pointer:
+	if value.Kind() == reflect.Interface {
 		if value.IsNil() { return nil }
+		return validateGoWireValue(value.Elem(), active, depth)
+	}
+	if value.Kind() == reflect.Pointer && value.IsNil() { return nil }
+	if value.CanInterface() {
+		if marshaler, ok := value.Interface().(json.Marshaler); ok {
+			encoded, err := marshaler.MarshalJSON()
+			if err != nil { return err }
+			raw, err := decodeWireJSON(encoded)
+			if err != nil { return err }
+			return validateGoWireValue(reflect.ValueOf(raw), active, depth)
+		}
+	}
+	switch value.Kind() {
+	case reflect.Pointer:
 		key := visit{pointer: value.Pointer(), kind: value.Kind()}
-		if seen[key] { return nil }
-		seen[key] = true
-		return validateGoUnicode(value.Elem(), seen)
+		if active[key] { return errors.New("protocol value contains a cycle") }
+		active[key] = true
+		defer delete(active, key)
+		return validateGoWireValue(value.Elem(), active, depth)
 	case reflect.String:
 		if !utf8.ValidString(value.String()) { return errors.New("protocol value contains malformed Unicode") }
 	case reflect.Struct:
+		if depth >= MaxWireJSONDepth { return fmt.Errorf("protocol value exceeds depth %d", MaxWireJSONDepth) }
 		for index := 0; index < value.NumField(); index++ {
-			if err := validateGoUnicode(value.Field(index), seen); err != nil { return err }
+			if value.Type().Field(index).PkgPath != "" { continue }
+			if err := validateGoWireValue(value.Field(index), active, depth+1); err != nil { return err }
 		}
 	case reflect.Slice:
 		if value.IsNil() { return nil }
+		if depth >= MaxWireJSONDepth { return fmt.Errorf("protocol value exceeds depth %d", MaxWireJSONDepth) }
 		key := visit{pointer: value.Pointer(), kind: value.Kind()}
-		if seen[key] { return nil }
-		seen[key] = true
-		fallthrough
-	case reflect.Array:
+		if active[key] { return errors.New("protocol value contains a cycle") }
+		active[key] = true
+		defer delete(active, key)
 		for index := 0; index < value.Len(); index++ {
-			if err := validateGoUnicode(value.Index(index), seen); err != nil { return err }
+			if err := validateGoWireValue(value.Index(index), active, depth+1); err != nil { return err }
+		}
+	case reflect.Array:
+		if depth >= MaxWireJSONDepth { return fmt.Errorf("protocol value exceeds depth %d", MaxWireJSONDepth) }
+		for index := 0; index < value.Len(); index++ {
+			if err := validateGoWireValue(value.Index(index), active, depth+1); err != nil { return err }
 		}
 	case reflect.Map:
 		if value.IsNil() { return nil }
+		if depth >= MaxWireJSONDepth { return fmt.Errorf("protocol value exceeds depth %d", MaxWireJSONDepth) }
 		key := visit{pointer: value.Pointer(), kind: value.Kind()}
-		if seen[key] { return nil }
-		seen[key] = true
+		if active[key] { return errors.New("protocol value contains a cycle") }
+		active[key] = true
+		defer delete(active, key)
 		iterator := value.MapRange()
 		for iterator.Next() {
-			if err := validateGoUnicode(iterator.Key(), seen); err != nil { return err }
-			if err := validateGoUnicode(iterator.Value(), seen); err != nil { return err }
+			if err := validateGoWireValue(iterator.Key(), active, depth+1); err != nil { return err }
+			if err := validateGoWireValue(iterator.Value(), active, depth+1); err != nil { return err }
 		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		integer := value.Int()
+		if integer < -9007199254740991 || integer > 9007199254740991 { return errors.New("protocol numbers must be canonical safe integers") }
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if value.Uint() > 9007199254740991 { return errors.New("protocol numbers must be canonical safe integers") }
+	case reflect.Float32, reflect.Float64:
+		number := value.Float()
+		if math.IsInf(number, 0) || math.IsNaN(number) || math.Trunc(number) != number || math.Signbit(number) && number == 0 || number < -9007199254740991 || number > 9007199254740991 { return errors.New("protocol numbers must be canonical safe integers") }
 	}
 	return nil
 }
@@ -1853,7 +1884,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 		}
 		fmt.Fprintf(&body, "\nexport function is%s(value: unknown): value is %s {\n  return %s;\n}\n", name, name, predicate)
 		fmt.Fprintf(&body, "\nexport function decode%s(input: string): %s {\n  validateWireJSONText(input);\n  const value: unknown = JSON.parse(input);\n  if (!is%s(value)) throw new TypeError(%q);\n  return value;\n}\n", name, name, name, "invalid "+name)
-		fmt.Fprintf(&body, "\nexport function encode%s(value: %s): string {\n  if (!is%s(value)) throw new TypeError(%q);\n  const encoded = canonicalJSONStringify(value);\n  validateWireJSONText(encoded);\n  const emitted: unknown = JSON.parse(encoded);\n  if (!is%s(emitted)) throw new TypeError(%q);\n  return encoded;\n}\n", name, name, name, "invalid "+name, name, "encoded value is invalid "+name)
+		fmt.Fprintf(&body, "\nexport function encode%s(value: %s): string {\n  validateProgrammaticWireValue(value);\n  if (!is%s(value)) throw new TypeError(%q);\n  const encoded = canonicalJSONStringify(value);\n  validateWireJSONText(encoded);\n  const emitted: unknown = JSON.parse(encoded);\n  if (!is%s(emitted)) throw new TypeError(%q);\n  return encoded;\n}\n", name, name, name, "invalid "+name, name, "encoded value is invalid "+name)
 		body.WriteString("\n")
 	}
 	return append(bytes.TrimRight([]byte(body.String()), "\n"), '\n'), nil
@@ -1870,6 +1901,20 @@ const tsWirePreflight = `function utf8ByteLength(value: string): number {
     else bytes += 3;
   }
   return bytes;
+}
+
+function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0): void {
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return; }
+  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return; }
+  const array = isJSONArray(value); if (!array && !isObject(value)) throw new TypeError("unsupported protocol JSON value");
+  if (active.has(value)) throw new TypeError("protocol value contains a cycle");
+  if (depth >= maxWireJSONDepth) throw new TypeError("protocol value exceeds depth " + maxWireJSONDepth);
+  active.add(value);
+  try {
+    if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
+    else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
+  } finally { active.delete(value); }
 }
 
 function validateWireJSONText(input: string): void {

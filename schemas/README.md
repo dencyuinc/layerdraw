@@ -96,8 +96,10 @@ nine fractional-second digits; offsets and impossible dates are invalid.
 Encoder byte/depth limits apply to the emitted canonical bytes. In particular,
 `<`, `>`, and `&` remain literal while U+2028/U+2029 remain escaped, so an
 implementation-specific pre-encoding escape policy cannot change acceptance.
-Programmatic recursive `JsonValue` inputs reject cycles and container depth 129
-with validation errors; container depth 128 remains valid.
+Programmatic inputs to every generated encoder reject active-container cycles
+and container depth 129 with validation errors before schema recursion or
+serialization; container depth 128 and acyclic shared aliases remain valid.
+The same rules apply to the specialized recursive `JsonValue` representation.
 
 Protocol versions use `major.minor`. Removing or requiring a field, changing a
 closed enum, or changing canonicalization requires a new major version.

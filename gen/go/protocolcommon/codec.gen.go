@@ -224,7 +224,7 @@ func DecodeBlobLifetime(data []byte) (BlobLifetime, error) {
 
 // EncodeBlobLifetime validates and emits canonical UTF-8 JSON.
 func EncodeBlobLifetime(value BlobLifetime) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -268,7 +268,7 @@ func DecodeBlobRef(data []byte) (BlobRef, error) {
 
 // EncodeBlobRef validates and emits canonical UTF-8 JSON.
 func EncodeBlobRef(value BlobRef) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -312,7 +312,7 @@ func DecodeByteResourceLimitCapability(data []byte) (ByteResourceLimitCapability
 
 // EncodeByteResourceLimitCapability validates and emits canonical UTF-8 JSON.
 func EncodeByteResourceLimitCapability(value ByteResourceLimitCapability) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -356,7 +356,7 @@ func DecodeCanonicalInt64(data []byte) (CanonicalInt64, error) {
 
 // EncodeCanonicalInt64 validates and emits canonical UTF-8 JSON.
 func EncodeCanonicalInt64(value CanonicalInt64) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -400,7 +400,7 @@ func DecodeCanonicalNonNegativeInt64(data []byte) (CanonicalNonNegativeInt64, er
 
 // EncodeCanonicalNonNegativeInt64 validates and emits canonical UTF-8 JSON.
 func EncodeCanonicalNonNegativeInt64(value CanonicalNonNegativeInt64) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -444,7 +444,7 @@ func DecodeCanonicalNonNegativeSafeInteger(data []byte) (CanonicalNonNegativeSaf
 
 // EncodeCanonicalNonNegativeSafeInteger validates and emits canonical UTF-8 JSON.
 func EncodeCanonicalNonNegativeSafeInteger(value CanonicalNonNegativeSafeInteger) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -488,7 +488,7 @@ func DecodeCanonicalPositiveInt64(data []byte) (CanonicalPositiveInt64, error) {
 
 // EncodeCanonicalPositiveInt64 validates and emits canonical UTF-8 JSON.
 func EncodeCanonicalPositiveInt64(value CanonicalPositiveInt64) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -532,7 +532,7 @@ func DecodeCanonicalPositiveSafeInteger(data []byte) (CanonicalPositiveSafeInteg
 
 // EncodeCanonicalPositiveSafeInteger validates and emits canonical UTF-8 JSON.
 func EncodeCanonicalPositiveSafeInteger(value CanonicalPositiveSafeInteger) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -576,7 +576,7 @@ func DecodeCanonicalSafeInteger(data []byte) (CanonicalSafeInteger, error) {
 
 // EncodeCanonicalSafeInteger validates and emits canonical UTF-8 JSON.
 func EncodeCanonicalSafeInteger(value CanonicalSafeInteger) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -620,7 +620,7 @@ func DecodeCanonicalUint64(data []byte) (CanonicalUint64, error) {
 
 // EncodeCanonicalUint64 validates and emits canonical UTF-8 JSON.
 func EncodeCanonicalUint64(value CanonicalUint64) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -664,7 +664,7 @@ func DecodeCapabilityID(data []byte) (CapabilityID, error) {
 
 // EncodeCapabilityID validates and emits canonical UTF-8 JSON.
 func EncodeCapabilityID(value CapabilityID) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -708,7 +708,7 @@ func DecodeCapabilityManifest(data []byte) (CapabilityManifest, error) {
 
 // EncodeCapabilityManifest validates and emits canonical UTF-8 JSON.
 func EncodeCapabilityManifest(value CapabilityManifest) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -752,7 +752,7 @@ func DecodeCompileResourceLimitCapabilities(data []byte) (CompileResourceLimitCa
 
 // EncodeCompileResourceLimitCapabilities validates and emits canonical UTF-8 JSON.
 func EncodeCompileResourceLimitCapabilities(value CompileResourceLimitCapabilities) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -796,7 +796,7 @@ func DecodeCompileResourceLimitConstraints(data []byte) (CompileResourceLimitCon
 
 // EncodeCompileResourceLimitConstraints validates and emits canonical UTF-8 JSON.
 func EncodeCompileResourceLimitConstraints(value CompileResourceLimitConstraints) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -840,7 +840,7 @@ func DecodeDigest(data []byte) (Digest, error) {
 
 // EncodeDigest validates and emits canonical UTF-8 JSON.
 func EncodeDigest(value Digest) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -884,7 +884,7 @@ func DecodeEndpointInstanceID(data []byte) (EndpointInstanceID, error) {
 
 // EncodeEndpointInstanceID validates and emits canonical UTF-8 JSON.
 func EncodeEndpointInstanceID(value EndpointInstanceID) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -928,7 +928,7 @@ func DecodeExtensions(data []byte) (Extensions, error) {
 
 // EncodeExtensions validates and emits canonical UTF-8 JSON.
 func EncodeExtensions(value Extensions) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -972,7 +972,7 @@ func DecodeHandshakeRequest(data []byte) (HandshakeRequest, error) {
 
 // EncodeHandshakeRequest validates and emits canonical UTF-8 JSON.
 func EncodeHandshakeRequest(value HandshakeRequest) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1016,7 +1016,7 @@ func DecodeHandshakeResult(data []byte) (HandshakeResult, error) {
 
 // EncodeHandshakeResult validates and emits canonical UTF-8 JSON.
 func EncodeHandshakeResult(value HandshakeResult) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1060,7 +1060,7 @@ func DecodeItemResourceLimitCapability(data []byte) (ItemResourceLimitCapability
 
 // EncodeItemResourceLimitCapability validates and emits canonical UTF-8 JSON.
 func EncodeItemResourceLimitCapability(value ItemResourceLimitCapability) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1104,7 +1104,7 @@ func DecodeJsonObject(data []byte) (JsonObject, error) {
 
 // EncodeJsonObject validates and emits canonical UTF-8 JSON.
 func EncodeJsonObject(value JsonObject) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1148,7 +1148,7 @@ func DecodeJsonValue(data []byte) (JsonValue, error) {
 
 // EncodeJsonValue validates and emits canonical UTF-8 JSON.
 func EncodeJsonValue(value JsonValue) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1192,7 +1192,7 @@ func DecodeManifestETag(data []byte) (ManifestETag, error) {
 
 // EncodeManifestETag validates and emits canonical UTF-8 JSON.
 func EncodeManifestETag(value ManifestETag) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1236,7 +1236,7 @@ func DecodeManifestScope(data []byte) (ManifestScope, error) {
 
 // EncodeManifestScope validates and emits canonical UTF-8 JSON.
 func EncodeManifestScope(value ManifestScope) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1280,7 +1280,7 @@ func DecodeNegotiatedProtocol(data []byte) (NegotiatedProtocol, error) {
 
 // EncodeNegotiatedProtocol validates and emits canonical UTF-8 JSON.
 func EncodeNegotiatedProtocol(value NegotiatedProtocol) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1324,7 +1324,7 @@ func DecodeOperationCapability(data []byte) (OperationCapability, error) {
 
 // EncodeOperationCapability validates and emits canonical UTF-8 JSON.
 func EncodeOperationCapability(value OperationCapability) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1368,7 +1368,7 @@ func DecodeOutcome(data []byte) (Outcome, error) {
 
 // EncodeOutcome validates and emits canonical UTF-8 JSON.
 func EncodeOutcome(value Outcome) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1412,7 +1412,7 @@ func DecodePageInfo(data []byte) (PageInfo, error) {
 
 // EncodePageInfo validates and emits canonical UTF-8 JSON.
 func EncodePageInfo(value PageInfo) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1456,7 +1456,7 @@ func DecodeProfileCapability(data []byte) (ProfileCapability, error) {
 
 // EncodeProfileCapability validates and emits canonical UTF-8 JSON.
 func EncodeProfileCapability(value ProfileCapability) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1500,7 +1500,7 @@ func DecodeProtocolDiagnostic(data []byte) (ProtocolDiagnostic, error) {
 
 // EncodeProtocolDiagnostic validates and emits canonical UTF-8 JSON.
 func EncodeProtocolDiagnostic(value ProtocolDiagnostic) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1544,7 +1544,7 @@ func DecodeProtocolDiagnosticRelated(data []byte) (ProtocolDiagnosticRelated, er
 
 // EncodeProtocolDiagnosticRelated validates and emits canonical UTF-8 JSON.
 func EncodeProtocolDiagnosticRelated(value ProtocolDiagnosticRelated) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1588,7 +1588,7 @@ func DecodeProtocolDiagnosticSeverity(data []byte) (ProtocolDiagnosticSeverity, 
 
 // EncodeProtocolDiagnosticSeverity validates and emits canonical UTF-8 JSON.
 func EncodeProtocolDiagnosticSeverity(value ProtocolDiagnosticSeverity) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1632,7 +1632,7 @@ func DecodeProtocolDiagnosticSource(data []byte) (ProtocolDiagnosticSource, erro
 
 // EncodeProtocolDiagnosticSource validates and emits canonical UTF-8 JSON.
 func EncodeProtocolDiagnosticSource(value ProtocolDiagnosticSource) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1676,7 +1676,7 @@ func DecodeProtocolDiagnosticSpan(data []byte) (ProtocolDiagnosticSpan, error) {
 
 // EncodeProtocolDiagnosticSpan validates and emits canonical UTF-8 JSON.
 func EncodeProtocolDiagnosticSpan(value ProtocolDiagnosticSpan) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1720,7 +1720,7 @@ func DecodeProtocolFailure(data []byte) (ProtocolFailure, error) {
 
 // EncodeProtocolFailure validates and emits canonical UTF-8 JSON.
 func EncodeProtocolFailure(value ProtocolFailure) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1764,7 +1764,7 @@ func DecodeProtocolFailureCategory(data []byte) (ProtocolFailureCategory, error)
 
 // EncodeProtocolFailureCategory validates and emits canonical UTF-8 JSON.
 func EncodeProtocolFailureCategory(value ProtocolFailureCategory) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1808,7 +1808,7 @@ func DecodeProtocolOffer(data []byte) (ProtocolOffer, error) {
 
 // EncodeProtocolOffer validates and emits canonical UTF-8 JSON.
 func EncodeProtocolOffer(value ProtocolOffer) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1852,7 +1852,7 @@ func DecodeProtocolRef(data []byte) (ProtocolRef, error) {
 
 // EncodeProtocolRef validates and emits canonical UTF-8 JSON.
 func EncodeProtocolRef(value ProtocolRef) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1896,7 +1896,7 @@ func DecodeProtocolVersion(data []byte) (ProtocolVersion, error) {
 
 // EncodeProtocolVersion validates and emits canonical UTF-8 JSON.
 func EncodeProtocolVersion(value ProtocolVersion) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1940,7 +1940,7 @@ func DecodeProtocolVersionBinding(data []byte) (ProtocolVersionBinding, error) {
 
 // EncodeProtocolVersionBinding validates and emits canonical UTF-8 JSON.
 func EncodeProtocolVersionBinding(value ProtocolVersionBinding) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -1984,7 +1984,7 @@ func DecodeProtocolVersionOrRange(data []byte) (ProtocolVersionOrRange, error) {
 
 // EncodeProtocolVersionOrRange validates and emits canonical UTF-8 JSON.
 func EncodeProtocolVersionOrRange(value ProtocolVersionOrRange) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2028,7 +2028,7 @@ func DecodeProtocolVersionRange(data []byte) (ProtocolVersionRange, error) {
 
 // EncodeProtocolVersionRange validates and emits canonical UTF-8 JSON.
 func EncodeProtocolVersionRange(value ProtocolVersionRange) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2072,7 +2072,7 @@ func DecodeRasterDimensionResourceLimitCapability(data []byte) (RasterDimensionR
 
 // EncodeRasterDimensionResourceLimitCapability validates and emits canonical UTF-8 JSON.
 func EncodeRasterDimensionResourceLimitCapability(value RasterDimensionResourceLimitCapability) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2116,7 +2116,7 @@ func DecodeRasterPixelResourceLimitCapability(data []byte) (RasterPixelResourceL
 
 // EncodeRasterPixelResourceLimitCapability validates and emits canonical UTF-8 JSON.
 func EncodeRasterPixelResourceLimitCapability(value RasterPixelResourceLimitCapability) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2160,7 +2160,7 @@ func DecodeReleaseVersion(data []byte) (ReleaseVersion, error) {
 
 // EncodeReleaseVersion validates and emits canonical UTF-8 JSON.
 func EncodeReleaseVersion(value ReleaseVersion) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2204,7 +2204,7 @@ func DecodeRequestMetadata(data []byte) (RequestMetadata, error) {
 
 // EncodeRequestMetadata validates and emits canonical UTF-8 JSON.
 func EncodeRequestMetadata(value RequestMetadata) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2248,7 +2248,7 @@ func DecodeRequestedCapabilityStatus(data []byte) (RequestedCapabilityStatus, er
 
 // EncodeRequestedCapabilityStatus validates and emits canonical UTF-8 JSON.
 func EncodeRequestedCapabilityStatus(value RequestedCapabilityStatus) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2292,7 +2292,7 @@ func DecodeResponseMetadata(data []byte) (ResponseMetadata, error) {
 
 // EncodeResponseMetadata validates and emits canonical UTF-8 JSON.
 func EncodeResponseMetadata(value ResponseMetadata) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2336,7 +2336,7 @@ func DecodeRfc3339Time(data []byte) (Rfc3339Time, error) {
 
 // EncodeRfc3339Time validates and emits canonical UTF-8 JSON.
 func EncodeRfc3339Time(value Rfc3339Time) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2380,7 +2380,7 @@ func DecodeTotalItems(data []byte) (TotalItems, error) {
 
 // EncodeTotalItems validates and emits canonical UTF-8 JSON.
 func EncodeTotalItems(value TotalItems) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2424,7 +2424,7 @@ func DecodeUnavailableReason(data []byte) (UnavailableReason, error) {
 
 // EncodeUnavailableReason validates and emits canonical UTF-8 JSON.
 func EncodeUnavailableReason(value UnavailableReason) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2468,7 +2468,7 @@ func DecodeUpgradeDiagnosticData(data []byte) (UpgradeDiagnosticData, error) {
 
 // EncodeUpgradeDiagnosticData validates and emits canonical UTF-8 JSON.
 func EncodeUpgradeDiagnosticData(value UpgradeDiagnosticData) ([]byte, error) {
-	if err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil {
+	if err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {
 		return nil, err
 	}
 	encoded, err := marshalWireJSON(value)
@@ -2507,28 +2507,54 @@ func marshalWireJSON(value any) ([]byte, error) {
 	return bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'}), nil
 }
 
-func validateGoUnicode(value reflect.Value, seen map[visit]bool) error {
+func validateGoWireValue(value reflect.Value, active map[visit]bool, depth int) error {
 	if !value.IsValid() {
 		return nil
 	}
-	switch value.Kind() {
-	case reflect.Interface, reflect.Pointer:
+	if value.Kind() == reflect.Interface {
 		if value.IsNil() {
 			return nil
 		}
-		key := visit{pointer: value.Pointer(), kind: value.Kind()}
-		if seen[key] {
-			return nil
+		return validateGoWireValue(value.Elem(), active, depth)
+	}
+	if value.Kind() == reflect.Pointer && value.IsNil() {
+		return nil
+	}
+	if value.CanInterface() {
+		if marshaler, ok := value.Interface().(json.Marshaler); ok {
+			encoded, err := marshaler.MarshalJSON()
+			if err != nil {
+				return err
+			}
+			raw, err := decodeWireJSON(encoded)
+			if err != nil {
+				return err
+			}
+			return validateGoWireValue(reflect.ValueOf(raw), active, depth)
 		}
-		seen[key] = true
-		return validateGoUnicode(value.Elem(), seen)
+	}
+	switch value.Kind() {
+	case reflect.Pointer:
+		key := visit{pointer: value.Pointer(), kind: value.Kind()}
+		if active[key] {
+			return errors.New("protocol value contains a cycle")
+		}
+		active[key] = true
+		defer delete(active, key)
+		return validateGoWireValue(value.Elem(), active, depth)
 	case reflect.String:
 		if !utf8.ValidString(value.String()) {
 			return errors.New("protocol value contains malformed Unicode")
 		}
 	case reflect.Struct:
+		if depth >= MaxWireJSONDepth {
+			return fmt.Errorf("protocol value exceeds depth %d", MaxWireJSONDepth)
+		}
 		for index := 0; index < value.NumField(); index++ {
-			if err := validateGoUnicode(value.Field(index), seen); err != nil {
+			if value.Type().Field(index).PkgPath != "" {
+				continue
+			}
+			if err := validateGoWireValue(value.Field(index), active, depth+1); err != nil {
 				return err
 			}
 		}
@@ -2536,15 +2562,26 @@ func validateGoUnicode(value reflect.Value, seen map[visit]bool) error {
 		if value.IsNil() {
 			return nil
 		}
-		key := visit{pointer: value.Pointer(), kind: value.Kind()}
-		if seen[key] {
-			return nil
+		if depth >= MaxWireJSONDepth {
+			return fmt.Errorf("protocol value exceeds depth %d", MaxWireJSONDepth)
 		}
-		seen[key] = true
-		fallthrough
-	case reflect.Array:
+		key := visit{pointer: value.Pointer(), kind: value.Kind()}
+		if active[key] {
+			return errors.New("protocol value contains a cycle")
+		}
+		active[key] = true
+		defer delete(active, key)
 		for index := 0; index < value.Len(); index++ {
-			if err := validateGoUnicode(value.Index(index), seen); err != nil {
+			if err := validateGoWireValue(value.Index(index), active, depth+1); err != nil {
+				return err
+			}
+		}
+	case reflect.Array:
+		if depth >= MaxWireJSONDepth {
+			return fmt.Errorf("protocol value exceeds depth %d", MaxWireJSONDepth)
+		}
+		for index := 0; index < value.Len(); index++ {
+			if err := validateGoWireValue(value.Index(index), active, depth+1); err != nil {
 				return err
 			}
 		}
@@ -2552,19 +2589,37 @@ func validateGoUnicode(value reflect.Value, seen map[visit]bool) error {
 		if value.IsNil() {
 			return nil
 		}
-		key := visit{pointer: value.Pointer(), kind: value.Kind()}
-		if seen[key] {
-			return nil
+		if depth >= MaxWireJSONDepth {
+			return fmt.Errorf("protocol value exceeds depth %d", MaxWireJSONDepth)
 		}
-		seen[key] = true
+		key := visit{pointer: value.Pointer(), kind: value.Kind()}
+		if active[key] {
+			return errors.New("protocol value contains a cycle")
+		}
+		active[key] = true
+		defer delete(active, key)
 		iterator := value.MapRange()
 		for iterator.Next() {
-			if err := validateGoUnicode(iterator.Key(), seen); err != nil {
+			if err := validateGoWireValue(iterator.Key(), active, depth+1); err != nil {
 				return err
 			}
-			if err := validateGoUnicode(iterator.Value(), seen); err != nil {
+			if err := validateGoWireValue(iterator.Value(), active, depth+1); err != nil {
 				return err
 			}
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		integer := value.Int()
+		if integer < -9007199254740991 || integer > 9007199254740991 {
+			return errors.New("protocol numbers must be canonical safe integers")
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if value.Uint() > 9007199254740991 {
+			return errors.New("protocol numbers must be canonical safe integers")
+		}
+	case reflect.Float32, reflect.Float64:
+		number := value.Float()
+		if math.IsInf(number, 0) || math.IsNaN(number) || math.Trunc(number) != number || math.Signbit(number) && number == 0 || number < -9007199254740991 || number > 9007199254740991 {
+			return errors.New("protocol numbers must be canonical safe integers")
 		}
 	}
 	return nil

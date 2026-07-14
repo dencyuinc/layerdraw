@@ -92,6 +92,7 @@ import {
   decodeCompiledQueryRecipeDocument,
   decodeCompiledViewRecipeDocument,
   decodeDiagnostic,
+  decodeDiagnosticArgumentValue,
   decodeCanonicalFiniteDecimal,
   decodeCanonicalPositiveFiniteDecimal,
   decodeExportDimension,
@@ -106,6 +107,7 @@ import {
   encodeCompiledQueryRecipeDocument,
   encodeCompiledViewRecipeDocument,
   encodeDiagnostic,
+  encodeDiagnosticArgumentValue,
   encodeCanonicalFiniteDecimal,
   encodeCanonicalPositiveFiniteDecimal,
   encodeExportDimension,
@@ -347,6 +349,102 @@ test("programmatic JsonValue cycles and depth fail with TypeError", () => {
   const encoded = encodeJsonValue(value);
   assert.deepEqual(decodeJsonValue(encoded), value);
   assert.throws(() => encodeJsonValue([value]), TypeError);
+});
+
+function containerDepth(value) {
+  if (value === null || typeof value !== "object") return 0;
+  const children = Array.isArray(value) ? value : Object.values(value);
+  return 1 + children.reduce((maximum, child) => Math.max(maximum, containerDepth(child)), 0);
+}
+
+function expectCycleError(callback) {
+  assert.throws(callback, (error) => error instanceof TypeError && error.message === "protocol value contains a cycle");
+}
+
+function expectDepthError(callback) {
+  assert.throws(callback, (error) => error instanceof TypeError && error.message === `protocol value exceeds depth ${maxWireJSONDepth}`);
+}
+
+test("semantic recursive codecs reject self and mutual cycles while preserving aliases", () => {
+  const cases = [
+    [
+      "DiagnosticArgumentValue",
+      encodeDiagnosticArgumentValue,
+      () => { const value = {kind: "array", array_value: []}; value.array_value.push(value); return value; },
+      () => { const left = {kind: "array", array_value: []}; const right = {kind: "array", array_value: [left]}; left.array_value.push(right); return left; },
+      () => { const shared = {kind: "string", string_value: "shared"}; return {kind: "array", array_value: [shared, shared]}; },
+    ],
+    [
+      "RecipePredicate",
+      encodeRecipePredicate,
+      () => { const value = {kind: "not"}; value.child = value; return value; },
+      () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
+      () => { const shared = {kind: "field", field: "name", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+    ],
+    [
+      "RecipeRowPredicate",
+      encodeRecipeRowPredicate,
+      () => { const value = {kind: "not"}; value.child = value; return value; },
+      () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
+      () => { const shared = {kind: "state", field_path: "name", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+    ],
+  ];
+  for (const [name, encode, self, mutual, alias] of cases) {
+    expectCycleError(() => encode(self()), `${name} self cycle`);
+    expectCycleError(() => encode(mutual()), `${name} mutual cycle`);
+    assert.doesNotThrow(() => encode(alias()), `${name} acyclic alias`);
+  }
+});
+
+test("semantic recursive codecs enforce exact programmatic wire depth", () => {
+  let diagnosticAtLimit = {kind: "array", array_value: []};
+  for (let depth = 0; depth < 63; depth++) diagnosticAtLimit = {kind: "array", array_value: [diagnosticAtLimit]};
+  assert.equal(containerDepth(diagnosticAtLimit), maxWireJSONDepth);
+  assert.doesNotThrow(() => encodeDiagnosticArgumentValue(diagnosticAtLimit));
+  assert.deepEqual(decodeDiagnosticArgumentValue(encodeDiagnosticArgumentValue(diagnosticAtLimit)), diagnosticAtLimit);
+
+  let diagnosticTooDeep = {kind: "string", string_value: "leaf"};
+  for (let depth = 0; depth < 64; depth++) diagnosticTooDeep = {kind: "array", array_value: [diagnosticTooDeep]};
+  assert.equal(containerDepth(diagnosticTooDeep), maxWireJSONDepth + 1);
+  expectDepthError(() => encodeDiagnosticArgumentValue(diagnosticTooDeep));
+
+  for (const [name, encode, leaf] of [
+    ["RecipePredicate", encodeRecipePredicate, {kind: "field", field: "name", operator: "exists"}],
+    ["RecipeRowPredicate", encodeRecipeRowPredicate, {kind: "state", field_path: "name", operator: "exists"}],
+  ]) {
+    let value = leaf;
+    for (let depth = 1; depth < maxWireJSONDepth; depth++) value = {kind: "not", child: value};
+    assert.equal(containerDepth(value), maxWireJSONDepth, name);
+    assert.doesNotThrow(() => encode(value), name);
+    const tooDeep = {kind: "not", child: value};
+    assert.equal(containerDepth(tooDeep), maxWireJSONDepth + 1, name);
+    expectDepthError(() => encode(tooDeep), name);
+  }
+});
+
+test("engine codecs apply the shared cycle and depth preflight", async () => {
+  const aliased = await readFixture("compile-request.json");
+  const shared = {enabled: true};
+  aliased.extensions = {"example.left": shared, "example.right": shared};
+  assert.doesNotThrow(() => encodeCompileRequestEnvelope(aliased));
+
+  const cyclic = await readFixture("compile-request.json");
+  const self = {};
+  self.self = self;
+  cyclic.extensions = {"example.cycle": self};
+  expectCycleError(() => encodeCompileRequestEnvelope(cyclic));
+
+  const atLimit = await readFixture("compile-request.json");
+  let extension = "leaf";
+  for (let depth = 0; depth < maxWireJSONDepth - 2; depth++) extension = [extension];
+  atLimit.extensions = {"example.depth": extension};
+  assert.equal(containerDepth(atLimit), maxWireJSONDepth);
+  assert.doesNotThrow(() => encodeCompileRequestEnvelope(atLimit));
+
+  const tooDeep = await readFixture("compile-request.json");
+  tooDeep.extensions = {"example.depth": [extension]};
+  assert.equal(containerDepth(tooDeep), maxWireJSONDepth + 1);
+  expectDepthError(() => encodeCompileRequestEnvelope(tooDeep));
 });
 
 test("canonical byte limit uses emitted bytes for escaped characters and multibyte keys", async (context) => {

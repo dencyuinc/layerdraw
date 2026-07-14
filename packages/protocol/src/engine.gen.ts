@@ -125,6 +125,20 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
+function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0): void {
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return; }
+  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return; }
+  const array = isJSONArray(value); if (!array && !isObject(value)) throw new TypeError("unsupported protocol JSON value");
+  if (active.has(value)) throw new TypeError("protocol value contains a cycle");
+  if (depth >= maxWireJSONDepth) throw new TypeError("protocol value exceeds depth " + maxWireJSONDepth);
+  active.add(value);
+  try {
+    if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
+    else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
+  } finally { active.delete(value); }
+}
+
 function validateWireJSONText(input: string): void {
   if (utf8ByteLength(input) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   let depth = 0;
@@ -233,6 +247,7 @@ export function decodeAssetInput(input: string): AssetInput {
 }
 
 export function encodeAssetInput(value: AssetInput): string {
+  validateProgrammaticWireValue(value);
   if (!isAssetInput(value)) throw new TypeError("invalid AssetInput");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -256,6 +271,7 @@ export function decodeCanonicalPackSelector(input: string): CanonicalPackSelecto
 }
 
 export function encodeCanonicalPackSelector(value: CanonicalPackSelector): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalPackSelector(value)) throw new TypeError("invalid CanonicalPackSelector");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -279,6 +295,7 @@ export function decodeCanonicalSourcePath(input: string): CanonicalSourcePath {
 }
 
 export function encodeCanonicalSourcePath(value: CanonicalSourcePath): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalSourcePath(value)) throw new TypeError("invalid CanonicalSourcePath");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -312,6 +329,7 @@ export function decodeCompileInput(input: string): CompileInput {
 }
 
 export function encodeCompileInput(value: CompileInput): string {
+  validateProgrammaticWireValue(value);
   if (!isCompileInput(value)) throw new TypeError("invalid CompileInput");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -334,6 +352,7 @@ export function decodeCompileMode(input: string): CompileMode {
 }
 
 export function encodeCompileMode(value: CompileMode): string {
+  validateProgrammaticWireValue(value);
   if (!isCompileMode(value)) throw new TypeError("invalid CompileMode");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -364,6 +383,7 @@ export function decodeCompileRequestEnvelope(input: string): CompileRequestEnvel
 }
 
 export function encodeCompileRequestEnvelope(value: CompileRequestEnvelope): string {
+  validateProgrammaticWireValue(value);
   if (!isCompileRequestEnvelope(value)) throw new TypeError("invalid CompileRequestEnvelope");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -395,6 +415,7 @@ export function decodeCompileResponseEnvelope(input: string): CompileResponseEnv
 }
 
 export function encodeCompileResponseEnvelope(value: CompileResponseEnvelope): string {
+  validateProgrammaticWireValue(value);
   if (!isCompileResponseEnvelope(value)) throw new TypeError("invalid CompileResponseEnvelope");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -431,6 +452,7 @@ export function decodeCompileResult(input: string): CompileResult {
 }
 
 export function encodeCompileResult(value: CompileResult): string {
+  validateProgrammaticWireValue(value);
   if (!isCompileResult(value)) throw new TypeError("invalid CompileResult");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -457,6 +479,7 @@ export function decodeCompiledExportRecipeArtifact(input: string): CompiledExpor
 }
 
 export function encodeCompiledExportRecipeArtifact(value: CompiledExportRecipeArtifact): string {
+  validateProgrammaticWireValue(value);
   if (!isCompiledExportRecipeArtifact(value)) throw new TypeError("invalid CompiledExportRecipeArtifact");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -483,6 +506,7 @@ export function decodeCompiledQueryRecipeArtifact(input: string): CompiledQueryR
 }
 
 export function encodeCompiledQueryRecipeArtifact(value: CompiledQueryRecipeArtifact): string {
+  validateProgrammaticWireValue(value);
   if (!isCompiledQueryRecipeArtifact(value)) throw new TypeError("invalid CompiledQueryRecipeArtifact");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -510,6 +534,7 @@ export function decodeCompiledRecipes(input: string): CompiledRecipes {
 }
 
 export function encodeCompiledRecipes(value: CompiledRecipes): string {
+  validateProgrammaticWireValue(value);
   if (!isCompiledRecipes(value)) throw new TypeError("invalid CompiledRecipes");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -536,6 +561,7 @@ export function decodeCompiledViewRecipeArtifact(input: string): CompiledViewRec
 }
 
 export function encodeCompiledViewRecipeArtifact(value: CompiledViewRecipeArtifact): string {
+  validateProgrammaticWireValue(value);
   if (!isCompiledViewRecipeArtifact(value)) throw new TypeError("invalid CompiledViewRecipeArtifact");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -569,6 +595,7 @@ export function decodeEffectiveResourceLimits(input: string): EffectiveResourceL
 }
 
 export function encodeEffectiveResourceLimits(value: EffectiveResourceLimits): string {
+  validateProgrammaticWireValue(value);
   if (!isEffectiveResourceLimits(value)) throw new TypeError("invalid EffectiveResourceLimits");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -595,6 +622,7 @@ export function decodeEngineProtocolRef(input: string): EngineProtocolRef {
 }
 
 export function encodeEngineProtocolRef(value: EngineProtocolRef): string {
+  validateProgrammaticWireValue(value);
   if (!isEngineProtocolRef(value)) throw new TypeError("invalid EngineProtocolRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -624,6 +652,7 @@ export function decodeExportRecipeBlobRef(input: string): ExportRecipeBlobRef {
 }
 
 export function encodeExportRecipeBlobRef(value: ExportRecipeBlobRef): string {
+  validateProgrammaticWireValue(value);
   if (!isExportRecipeBlobRef(value)) throw new TypeError("invalid ExportRecipeBlobRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -654,6 +683,7 @@ export function decodeHandshakeRequestEnvelope(input: string): HandshakeRequestE
 }
 
 export function encodeHandshakeRequestEnvelope(value: HandshakeRequestEnvelope): string {
+  validateProgrammaticWireValue(value);
   if (!isHandshakeRequestEnvelope(value)) throw new TypeError("invalid HandshakeRequestEnvelope");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -685,6 +715,7 @@ export function decodeHandshakeResponseEnvelope(input: string): HandshakeRespons
 }
 
 export function encodeHandshakeResponseEnvelope(value: HandshakeResponseEnvelope): string {
+  validateProgrammaticWireValue(value);
   if (!isHandshakeResponseEnvelope(value)) throw new TypeError("invalid HandshakeResponseEnvelope");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -714,6 +745,7 @@ export function decodeNormalizedArtifact(input: string): NormalizedArtifact {
 }
 
 export function encodeNormalizedArtifact(value: NormalizedArtifact): string {
+  validateProgrammaticWireValue(value);
   if (!isNormalizedArtifact(value)) throw new TypeError("invalid NormalizedArtifact");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -741,6 +773,7 @@ export function decodeNormalizedPackArtifact(input: string): NormalizedPackArtif
 }
 
 export function encodeNormalizedPackArtifact(value: NormalizedPackArtifact): string {
+  validateProgrammaticWireValue(value);
   if (!isNormalizedPackArtifact(value)) throw new TypeError("invalid NormalizedPackArtifact");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -770,6 +803,7 @@ export function decodeNormalizedPackArtifactBlobRef(input: string): NormalizedPa
 }
 
 export function encodeNormalizedPackArtifactBlobRef(value: NormalizedPackArtifactBlobRef): string {
+  validateProgrammaticWireValue(value);
   if (!isNormalizedPackArtifactBlobRef(value)) throw new TypeError("invalid NormalizedPackArtifactBlobRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -799,6 +833,7 @@ export function decodeNormalizedPackCanonicalBlobRef(input: string): NormalizedP
 }
 
 export function encodeNormalizedPackCanonicalBlobRef(value: NormalizedPackCanonicalBlobRef): string {
+  validateProgrammaticWireValue(value);
   if (!isNormalizedPackCanonicalBlobRef(value)) throw new TypeError("invalid NormalizedPackCanonicalBlobRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -826,6 +861,7 @@ export function decodeNormalizedProjectArtifact(input: string): NormalizedProjec
 }
 
 export function encodeNormalizedProjectArtifact(value: NormalizedProjectArtifact): string {
+  validateProgrammaticWireValue(value);
   if (!isNormalizedProjectArtifact(value)) throw new TypeError("invalid NormalizedProjectArtifact");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -855,6 +891,7 @@ export function decodeNormalizedProjectArtifactBlobRef(input: string): Normalize
 }
 
 export function encodeNormalizedProjectArtifactBlobRef(value: NormalizedProjectArtifactBlobRef): string {
+  validateProgrammaticWireValue(value);
   if (!isNormalizedProjectArtifactBlobRef(value)) throw new TypeError("invalid NormalizedProjectArtifactBlobRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -884,6 +921,7 @@ export function decodeNormalizedProjectCanonicalBlobRef(input: string): Normaliz
 }
 
 export function encodeNormalizedProjectCanonicalBlobRef(value: NormalizedProjectCanonicalBlobRef): string {
+  validateProgrammaticWireValue(value);
   if (!isNormalizedProjectCanonicalBlobRef(value)) throw new TypeError("invalid NormalizedProjectCanonicalBlobRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -913,6 +951,7 @@ export function decodeQueryRecipeBlobRef(input: string): QueryRecipeBlobRef {
 }
 
 export function encodeQueryRecipeBlobRef(value: QueryRecipeBlobRef): string {
+  validateProgrammaticWireValue(value);
   if (!isQueryRecipeBlobRef(value)) throw new TypeError("invalid QueryRecipeBlobRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -940,6 +979,7 @@ export function decodeResolvedDependencies(input: string): ResolvedDependencies 
 }
 
 export function encodeResolvedDependencies(value: ResolvedDependencies): string {
+  validateProgrammaticWireValue(value);
   if (!isResolvedDependencies(value)) throw new TypeError("invalid ResolvedDependencies");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -973,6 +1013,7 @@ export function decodeResolvedPack(input: string): ResolvedPack {
 }
 
 export function encodeResolvedPack(value: ResolvedPack): string {
+  validateProgrammaticWireValue(value);
   if (!isResolvedPack(value)) throw new TypeError("invalid ResolvedPack");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -998,6 +1039,7 @@ export function decodeResolvedPackDependency(input: string): ResolvedPackDepende
 }
 
 export function encodeResolvedPackDependency(value: ResolvedPackDependency): string {
+  validateProgrammaticWireValue(value);
   if (!isResolvedPackDependency(value)) throw new TypeError("invalid ResolvedPackDependency");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1023,6 +1065,7 @@ export function decodeResolvedPackFile(input: string): ResolvedPackFile {
 }
 
 export function encodeResolvedPackFile(value: ResolvedPackFile): string {
+  validateProgrammaticWireValue(value);
   if (!isResolvedPackFile(value)) throw new TypeError("invalid ResolvedPackFile");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1056,6 +1099,7 @@ export function decodeResourceLimits(input: string): ResourceLimits {
 }
 
 export function encodeResourceLimits(value: ResourceLimits): string {
+  validateProgrammaticWireValue(value);
   if (!isResourceLimits(value)) throw new TypeError("invalid ResourceLimits");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1081,6 +1125,7 @@ export function decodeSourceFileInput(input: string): SourceFileInput {
 }
 
 export function encodeSourceFileInput(value: SourceFileInput): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceFileInput(value)) throw new TypeError("invalid SourceFileInput");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1103,6 +1148,7 @@ export function decodeSourceOriginKind(input: string): SourceOriginKind {
 }
 
 export function encodeSourceOriginKind(value: SourceOriginKind): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceOriginKind(value)) throw new TypeError("invalid SourceOriginKind");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1132,6 +1178,7 @@ export function decodeViewRecipeBlobRef(input: string): ViewRecipeBlobRef {
 }
 
 export function encodeViewRecipeBlobRef(value: ViewRecipeBlobRef): string {
+  validateProgrammaticWireValue(value);
   if (!isViewRecipeBlobRef(value)) throw new TypeError("invalid ViewRecipeBlobRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);

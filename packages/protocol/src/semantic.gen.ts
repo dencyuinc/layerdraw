@@ -123,6 +123,20 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
+function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0): void {
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return; }
+  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return; }
+  const array = isJSONArray(value); if (!array && !isObject(value)) throw new TypeError("unsupported protocol JSON value");
+  if (active.has(value)) throw new TypeError("protocol value contains a cycle");
+  if (depth >= maxWireJSONDepth) throw new TypeError("protocol value exceeds depth " + maxWireJSONDepth);
+  active.add(value);
+  try {
+    if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
+    else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
+  } finally { active.delete(value); }
+}
+
 function validateWireJSONText(input: string): void {
   if (utf8ByteLength(input) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   let depth = 0;
@@ -228,6 +242,7 @@ export function decodeAdjacencyRecord(input: string): AdjacencyRecord {
 }
 
 export function encodeAdjacencyRecord(value: AdjacencyRecord): string {
+  validateProgrammaticWireValue(value);
   if (!isAdjacencyRecord(value)) throw new TypeError("invalid AdjacencyRecord");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -250,6 +265,7 @@ export function decodeAuthoringCapability(input: string): AuthoringCapability {
 }
 
 export function encodeAuthoringCapability(value: AuthoringCapability): string {
+  validateProgrammaticWireValue(value);
   if (!isAuthoringCapability(value)) throw new TypeError("invalid AuthoringCapability");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -276,6 +292,7 @@ export function decodeAuthoringSubjectClassification(input: string): AuthoringSu
 }
 
 export function encodeAuthoringSubjectClassification(value: AuthoringSubjectClassification): string {
+  validateProgrammaticWireValue(value);
   if (!isAuthoringSubjectClassification(value)) throw new TypeError("invalid AuthoringSubjectClassification");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -299,6 +316,7 @@ export function decodeCanonicalFiniteDecimal(input: string): CanonicalFiniteDeci
 }
 
 export function encodeCanonicalFiniteDecimal(value: CanonicalFiniteDecimal): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalFiniteDecimal(value)) throw new TypeError("invalid CanonicalFiniteDecimal");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -322,6 +340,7 @@ export function decodeCanonicalPositiveFiniteDecimal(input: string): CanonicalPo
 }
 
 export function encodeCanonicalPositiveFiniteDecimal(value: CanonicalPositiveFiniteDecimal): string {
+  validateProgrammaticWireValue(value);
   if (!isCanonicalPositiveFiniteDecimal(value)) throw new TypeError("invalid CanonicalPositiveFiniteDecimal");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -349,6 +368,7 @@ export function decodeChildSetHash(input: string): ChildSetHash {
 }
 
 export function encodeChildSetHash(value: ChildSetHash): string {
+  validateProgrammaticWireValue(value);
   if (!isChildSetHash(value)) throw new TypeError("invalid ChildSetHash");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -376,6 +396,7 @@ export function decodeCompiledExportRecipeDocument(input: string): CompiledExpor
 }
 
 export function encodeCompiledExportRecipeDocument(value: CompiledExportRecipeDocument): string {
+  validateProgrammaticWireValue(value);
   if (!isCompiledExportRecipeDocument(value)) throw new TypeError("invalid CompiledExportRecipeDocument");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -403,6 +424,7 @@ export function decodeCompiledQueryRecipeDocument(input: string): CompiledQueryR
 }
 
 export function encodeCompiledQueryRecipeDocument(value: CompiledQueryRecipeDocument): string {
+  validateProgrammaticWireValue(value);
   if (!isCompiledQueryRecipeDocument(value)) throw new TypeError("invalid CompiledQueryRecipeDocument");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -430,6 +452,7 @@ export function decodeCompiledViewRecipeDocument(input: string): CompiledViewRec
 }
 
 export function encodeCompiledViewRecipeDocument(value: CompiledViewRecipeDocument): string {
+  validateProgrammaticWireValue(value);
   if (!isCompiledViewRecipeDocument(value)) throw new TypeError("invalid CompiledViewRecipeDocument");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -452,6 +475,7 @@ export function decodeDependencyKind(input: string): DependencyKind {
 }
 
 export function encodeDependencyKind(value: DependencyKind): string {
+  validateProgrammaticWireValue(value);
   if (!isDependencyKind(value)) throw new TypeError("invalid DependencyKind");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -487,6 +511,7 @@ export function decodeDependencyRecord(input: string): DependencyRecord {
 }
 
 export function encodeDependencyRecord(value: DependencyRecord): string {
+  validateProgrammaticWireValue(value);
   if (!isDependencyRecord(value)) throw new TypeError("invalid DependencyRecord");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -521,6 +546,7 @@ export function decodeDiagnostic(input: string): Diagnostic {
 }
 
 export function encodeDiagnostic(value: Diagnostic): string {
+  validateProgrammaticWireValue(value);
   if (!isDiagnostic(value)) throw new TypeError("invalid Diagnostic");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -543,6 +569,7 @@ export function decodeDiagnosticArgumentKind(input: string): DiagnosticArgumentK
 }
 
 export function encodeDiagnosticArgumentKind(value: DiagnosticArgumentKind): string {
+  validateProgrammaticWireValue(value);
   if (!isDiagnosticArgumentKind(value)) throw new TypeError("invalid DiagnosticArgumentKind");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -575,6 +602,7 @@ export function decodeDiagnosticArgumentValue(input: string): DiagnosticArgument
 }
 
 export function encodeDiagnosticArgumentValue(value: DiagnosticArgumentValue): string {
+  validateProgrammaticWireValue(value);
   if (!isDiagnosticArgumentValue(value)) throw new TypeError("invalid DiagnosticArgumentValue");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -603,6 +631,7 @@ export function decodeDiagnosticRelated(input: string): DiagnosticRelated {
 }
 
 export function encodeDiagnosticRelated(value: DiagnosticRelated): string {
+  validateProgrammaticWireValue(value);
   if (!isDiagnosticRelated(value)) throw new TypeError("invalid DiagnosticRelated");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -625,6 +654,7 @@ export function decodeDiagnosticRelation(input: string): DiagnosticRelation {
 }
 
 export function encodeDiagnosticRelation(value: DiagnosticRelation): string {
+  validateProgrammaticWireValue(value);
   if (!isDiagnosticRelation(value)) throw new TypeError("invalid DiagnosticRelation");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -648,6 +678,7 @@ export function decodeDiagnosticSeverity(input: string): DiagnosticSeverity {
 }
 
 export function encodeDiagnosticSeverity(value: DiagnosticSeverity): string {
+  validateProgrammaticWireValue(value);
   if (!isDiagnosticSeverity(value)) throw new TypeError("invalid DiagnosticSeverity");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -676,6 +707,7 @@ export function decodeExportBindingRecord(input: string): ExportBindingRecord {
 }
 
 export function encodeExportBindingRecord(value: ExportBindingRecord): string {
+  validateProgrammaticWireValue(value);
   if (!isExportBindingRecord(value)) throw new TypeError("invalid ExportBindingRecord");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -701,6 +733,7 @@ export function decodeExportDimension(input: string): ExportDimension {
 }
 
 export function encodeExportDimension(value: ExportDimension): string {
+  validateProgrammaticWireValue(value);
   if (!isExportDimension(value)) throw new TypeError("invalid ExportDimension");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -723,6 +756,7 @@ export function decodeExportFidelity(input: string): ExportFidelity {
 }
 
 export function encodeExportFidelity(value: ExportFidelity): string {
+  validateProgrammaticWireValue(value);
   if (!isExportFidelity(value)) throw new TypeError("invalid ExportFidelity");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -745,6 +779,7 @@ export function decodeExportFormat(input: string): ExportFormat {
 }
 
 export function encodeExportFormat(value: ExportFormat): string {
+  validateProgrammaticWireValue(value);
   if (!isExportFormat(value)) throw new TypeError("invalid ExportFormat");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -790,6 +825,7 @@ export function decodeExportOptions(input: string): ExportOptions {
 }
 
 export function encodeExportOptions(value: ExportOptions): string {
+  validateProgrammaticWireValue(value);
   if (!isExportOptions(value)) throw new TypeError("invalid ExportOptions");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -827,6 +863,7 @@ export function decodeExportRecipe(input: string): ExportRecipe {
 }
 
 export function encodeExportRecipe(value: ExportRecipe): string {
+  validateProgrammaticWireValue(value);
   if (!isExportRecipe(value)) throw new TypeError("invalid ExportRecipe");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -855,6 +892,7 @@ export function decodeExporterProfileRef(input: string): ExporterProfileRef {
 }
 
 export function encodeExporterProfileRef(value: ExporterProfileRef): string {
+  validateProgrammaticWireValue(value);
   if (!isExporterProfileRef(value)) throw new TypeError("invalid ExporterProfileRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -880,6 +918,7 @@ export function decodeKindAddresses(input: string): KindAddresses {
 }
 
 export function encodeKindAddresses(value: KindAddresses): string {
+  validateProgrammaticWireValue(value);
   if (!isKindAddresses(value)) throw new TypeError("invalid KindAddresses");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -905,6 +944,7 @@ export function decodeModuleRef(input: string): ModuleRef {
 }
 
 export function encodeModuleRef(value: ModuleRef): string {
+  validateProgrammaticWireValue(value);
   if (!isModuleRef(value)) throw new TypeError("invalid ModuleRef");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -927,6 +967,7 @@ export function decodeOriginKind(input: string): OriginKind {
 }
 
 export function encodeOriginKind(value: OriginKind): string {
+  validateProgrammaticWireValue(value);
   if (!isOriginKind(value)) throw new TypeError("invalid OriginKind");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -952,6 +993,7 @@ export function decodeOwnerMembers(input: string): OwnerMembers {
 }
 
 export function encodeOwnerMembers(value: OwnerMembers): string {
+  validateProgrammaticWireValue(value);
   if (!isOwnerMembers(value)) throw new TypeError("invalid OwnerMembers");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -990,6 +1032,7 @@ export function decodeQueryRecipe(input: string): QueryRecipe {
 }
 
 export function encodeQueryRecipe(value: QueryRecipe): string {
+  validateProgrammaticWireValue(value);
   if (!isQueryRecipe(value)) throw new TypeError("invalid QueryRecipe");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1021,6 +1064,7 @@ export function decodeQueryRecipeDependencies(input: string): QueryRecipeDepende
 }
 
 export function encodeQueryRecipeDependencies(value: QueryRecipeDependencies): string {
+  validateProgrammaticWireValue(value);
   if (!isQueryRecipeDependencies(value)) throw new TypeError("invalid QueryRecipeDependencies");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1056,6 +1100,7 @@ export function decodeQueryRecipeParameter(input: string): QueryRecipeParameter 
 }
 
 export function encodeQueryRecipeParameter(value: QueryRecipeParameter): string {
+  validateProgrammaticWireValue(value);
   if (!isQueryRecipeParameter(value)) throw new TypeError("invalid QueryRecipeParameter");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1083,6 +1128,7 @@ export function decodeQueryRecipeSelect(input: string): QueryRecipeSelect {
 }
 
 export function encodeQueryRecipeSelect(value: QueryRecipeSelect): string {
+  validateProgrammaticWireValue(value);
   if (!isQueryRecipeSelect(value)) throw new TypeError("invalid QueryRecipeSelect");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1111,6 +1157,7 @@ export function decodeQueryRecipeTraversal(input: string): QueryRecipeTraversal 
 }
 
 export function encodeQueryRecipeTraversal(value: QueryRecipeTraversal): string {
+  validateProgrammaticWireValue(value);
   if (!isQueryRecipeTraversal(value)) throw new TypeError("invalid QueryRecipeTraversal");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1137,6 +1184,7 @@ export function decodeRecipeOperandType(input: string): RecipeOperandType {
 }
 
 export function encodeRecipeOperandType(value: RecipeOperandType): string {
+  validateProgrammaticWireValue(value);
   if (!isRecipeOperandType(value)) throw new TypeError("invalid RecipeOperandType");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1170,6 +1218,7 @@ export function decodeRecipePredicate(input: string): RecipePredicate {
 }
 
 export function encodeRecipePredicate(value: RecipePredicate): string {
+  validateProgrammaticWireValue(value);
   if (!isRecipePredicate(value)) throw new TypeError("invalid RecipePredicate");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1199,6 +1248,7 @@ export function decodeRecipePredicateValue(input: string): RecipePredicateValue 
 }
 
 export function encodeRecipePredicateValue(value: RecipePredicateValue): string {
+  validateProgrammaticWireValue(value);
   if (!isRecipePredicateValue(value)) throw new TypeError("invalid RecipePredicateValue");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1229,6 +1279,7 @@ export function decodeRecipeRowPredicate(input: string): RecipeRowPredicate {
 }
 
 export function encodeRecipeRowPredicate(value: RecipeRowPredicate): string {
+  validateProgrammaticWireValue(value);
   if (!isRecipeRowPredicate(value)) throw new TypeError("invalid RecipeRowPredicate");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1258,6 +1309,7 @@ export function decodeRecipeScalar(input: string): RecipeScalar {
 }
 
 export function encodeRecipeScalar(value: RecipeScalar): string {
+  validateProgrammaticWireValue(value);
   if (!isRecipeScalar(value)) throw new TypeError("invalid RecipeScalar");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1283,6 +1335,7 @@ export function decodeReferenceIdRecord(input: string): ReferenceIdRecord {
 }
 
 export function encodeReferenceIdRecord(value: ReferenceIdRecord): string {
+  validateProgrammaticWireValue(value);
   if (!isReferenceIdRecord(value)) throw new TypeError("invalid ReferenceIdRecord");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1308,6 +1361,7 @@ export function decodeScopeAddresses(input: string): ScopeAddresses {
 }
 
 export function encodeScopeAddresses(value: ScopeAddresses): string {
+  validateProgrammaticWireValue(value);
   if (!isScopeAddresses(value)) throw new TypeError("invalid ScopeAddresses");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1344,6 +1398,7 @@ export function decodeScopedReadIndexes(input: string): ScopedReadIndexes {
 }
 
 export function encodeScopedReadIndexes(value: ScopedReadIndexes): string {
+  validateProgrammaticWireValue(value);
   if (!isScopedReadIndexes(value)) throw new TypeError("invalid ScopedReadIndexes");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1377,6 +1432,7 @@ export function decodeSearchDocument(input: string): SearchDocument {
 }
 
 export function encodeSearchDocument(value: SearchDocument): string {
+  validateProgrammaticWireValue(value);
   if (!isSearchDocument(value)) throw new TypeError("invalid SearchDocument");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1405,6 +1461,7 @@ export function decodeSearchField(input: string): SearchField {
 }
 
 export function encodeSearchField(value: SearchField): string {
+  validateProgrammaticWireValue(value);
   if (!isSearchField(value)) throw new TypeError("invalid SearchField");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1441,6 +1498,7 @@ export function decodeSemanticIndex(input: string): SemanticIndex {
 }
 
 export function encodeSemanticIndex(value: SemanticIndex): string {
+  validateProgrammaticWireValue(value);
   if (!isSemanticIndex(value)) throw new TypeError("invalid SemanticIndex");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1469,6 +1527,7 @@ export function decodeSemanticReference(input: string): SemanticReference {
 }
 
 export function encodeSemanticReference(value: SemanticReference): string {
+  validateProgrammaticWireValue(value);
   if (!isSemanticReference(value)) throw new TypeError("invalid SemanticReference");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1498,6 +1557,7 @@ export function decodeSemanticSubject(input: string): SemanticSubject {
 }
 
 export function encodeSemanticSubject(value: SemanticSubject): string {
+  validateProgrammaticWireValue(value);
   if (!isSemanticSubject(value)) throw new TypeError("invalid SemanticSubject");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1530,6 +1590,7 @@ export function decodeSourceAssetRecord(input: string): SourceAssetRecord {
 }
 
 export function encodeSourceAssetRecord(value: SourceAssetRecord): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceAssetRecord(value)) throw new TypeError("invalid SourceAssetRecord");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1560,6 +1621,7 @@ export function decodeSourceBindingRecord(input: string): SourceBindingRecord {
 }
 
 export function encodeSourceBindingRecord(value: SourceBindingRecord): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceBindingRecord(value)) throw new TypeError("invalid SourceBindingRecord");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1587,6 +1649,7 @@ export function decodeSourceFileRecord(input: string): SourceFileRecord {
 }
 
 export function encodeSourceFileRecord(value: SourceFileRecord): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceFileRecord(value)) throw new TypeError("invalid SourceFileRecord");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1616,6 +1679,7 @@ export function decodeSourceMap(input: string): SourceMap {
 }
 
 export function encodeSourceMap(value: SourceMap): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceMap(value)) throw new TypeError("invalid SourceMap");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1641,6 +1705,7 @@ export function decodeSourceOrigin(input: string): SourceOrigin {
 }
 
 export function encodeSourceOrigin(value: SourceOrigin): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceOrigin(value)) throw new TypeError("invalid SourceOrigin");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1668,6 +1733,7 @@ export function decodeSourceRange(input: string): SourceRange {
 }
 
 export function encodeSourceRange(value: SourceRange): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceRange(value)) throw new TypeError("invalid SourceRange");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1693,6 +1759,7 @@ export function decodeSourceSpan(input: string): SourceSpan {
 }
 
 export function encodeSourceSpan(value: SourceSpan): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceSpan(value)) throw new TypeError("invalid SourceSpan");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1723,6 +1790,7 @@ export function decodeSourceSubjectRecord(input: string): SourceSubjectRecord {
 }
 
 export function encodeSourceSubjectRecord(value: SourceSubjectRecord): string {
+  validateProgrammaticWireValue(value);
   if (!isSourceSubjectRecord(value)) throw new TypeError("invalid SourceSubjectRecord");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1746,6 +1814,7 @@ export function decodeStableAddress(input: string): StableAddress {
 }
 
 export function encodeStableAddress(value: StableAddress): string {
+  validateProgrammaticWireValue(value);
   if (!isStableAddress(value)) throw new TypeError("invalid StableAddress");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1772,6 +1841,7 @@ export function decodeStateReadDependency(input: string): StateReadDependency {
 }
 
 export function encodeStateReadDependency(value: StateReadDependency): string {
+  validateProgrammaticWireValue(value);
   if (!isStateReadDependency(value)) throw new TypeError("invalid StateReadDependency");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1794,6 +1864,7 @@ export function decodeStateSubjectKind(input: string): StateSubjectKind {
 }
 
 export function encodeStateSubjectKind(value: StateSubjectKind): string {
+  validateProgrammaticWireValue(value);
   if (!isStateSubjectKind(value)) throw new TypeError("invalid StateSubjectKind");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1820,6 +1891,7 @@ export function decodeSubjectHash(input: string): SubjectHash {
 }
 
 export function encodeSubjectHash(value: SubjectHash): string {
+  validateProgrammaticWireValue(value);
   if (!isSubjectHash(value)) throw new TypeError("invalid SubjectHash");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1842,6 +1914,7 @@ export function decodeSubjectKind(input: string): SubjectKind {
 }
 
 export function encodeSubjectKind(value: SubjectKind): string {
+  validateProgrammaticWireValue(value);
   if (!isSubjectKind(value)) throw new TypeError("invalid SubjectKind");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1867,6 +1940,7 @@ export function decodeSubtreeHash(input: string): SubtreeHash {
 }
 
 export function encodeSubtreeHash(value: SubtreeHash): string {
+  validateProgrammaticWireValue(value);
   if (!isSubtreeHash(value)) throw new TypeError("invalid SubtreeHash");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1889,6 +1963,7 @@ export function decodeValueType(input: string): ValueType {
 }
 
 export function encodeValueType(value: ValueType): string {
+  validateProgrammaticWireValue(value);
   if (!isValueType(value)) throw new TypeError("invalid ValueType");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1921,6 +1996,7 @@ export function decodeViewComposedProjection(input: string): ViewComposedProject
 }
 
 export function encodeViewComposedProjection(value: ViewComposedProjection): string {
+  validateProgrammaticWireValue(value);
   if (!isViewComposedProjection(value)) throw new TypeError("invalid ViewComposedProjection");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1947,6 +2023,7 @@ export function decodeViewContextProjection(input: string): ViewContextProjectio
 }
 
 export function encodeViewContextProjection(value: ViewContextProjection): string {
+  validateProgrammaticWireValue(value);
   if (!isViewContextProjection(value)) throw new TypeError("invalid ViewContextProjection");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -1975,6 +2052,7 @@ export function decodeViewContextShape(input: string): ViewContextShape {
 }
 
 export function encodeViewContextShape(value: ViewContextShape): string {
+  validateProgrammaticWireValue(value);
   if (!isViewContextShape(value)) throw new TypeError("invalid ViewContextShape");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2003,6 +2081,7 @@ export function decodeViewDiagramProjection(input: string): ViewDiagramProjectio
 }
 
 export function encodeViewDiagramProjection(value: ViewDiagramProjection): string {
+  validateProgrammaticWireValue(value);
   if (!isViewDiagramProjection(value)) throw new TypeError("invalid ViewDiagramProjection");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2031,6 +2110,7 @@ export function decodeViewDiagramShape(input: string): ViewDiagramShape {
 }
 
 export function encodeViewDiagramShape(value: ViewDiagramShape): string {
+  validateProgrammaticWireValue(value);
   if (!isViewDiagramShape(value)) throw new TypeError("invalid ViewDiagramShape");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2056,6 +2136,7 @@ export function decodeViewDiffShape(input: string): ViewDiffShape {
 }
 
 export function encodeViewDiffShape(value: ViewDiffShape): string {
+  validateProgrammaticWireValue(value);
   if (!isViewDiffShape(value)) throw new TypeError("invalid ViewDiffShape");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2083,6 +2164,7 @@ export function decodeViewFlowProjection(input: string): ViewFlowProjection {
 }
 
 export function encodeViewFlowProjection(value: ViewFlowProjection): string {
+  validateProgrammaticWireValue(value);
   if (!isViewFlowProjection(value)) throw new TypeError("invalid ViewFlowProjection");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2111,6 +2193,7 @@ export function decodeViewFlowShape(input: string): ViewFlowShape {
 }
 
 export function encodeViewFlowShape(value: ViewFlowShape): string {
+  validateProgrammaticWireValue(value);
   if (!isViewFlowShape(value)) throw new TypeError("invalid ViewFlowShape");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2136,6 +2219,7 @@ export function decodeViewMatrixAxis(input: string): ViewMatrixAxis {
 }
 
 export function encodeViewMatrixAxis(value: ViewMatrixAxis): string {
+  validateProgrammaticWireValue(value);
   if (!isViewMatrixAxis(value)) throw new TypeError("invalid ViewMatrixAxis");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2164,6 +2248,7 @@ export function decodeViewMatrixCell(input: string): ViewMatrixCell {
 }
 
 export function encodeViewMatrixCell(value: ViewMatrixCell): string {
+  validateProgrammaticWireValue(value);
   if (!isViewMatrixCell(value)) throw new TypeError("invalid ViewMatrixCell");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2190,6 +2275,7 @@ export function decodeViewMatrixProjection(input: string): ViewMatrixProjection 
 }
 
 export function encodeViewMatrixProjection(value: ViewMatrixProjection): string {
+  validateProgrammaticWireValue(value);
   if (!isViewMatrixProjection(value)) throw new TypeError("invalid ViewMatrixProjection");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2216,6 +2302,7 @@ export function decodeViewMatrixShape(input: string): ViewMatrixShape {
 }
 
 export function encodeViewMatrixShape(value: ViewMatrixShape): string {
+  validateProgrammaticWireValue(value);
   if (!isViewMatrixShape(value)) throw new TypeError("invalid ViewMatrixShape");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2244,6 +2331,7 @@ export function decodeViewPlacement(input: string): ViewPlacement {
 }
 
 export function encodeViewPlacement(value: ViewPlacement): string {
+  validateProgrammaticWireValue(value);
   if (!isViewPlacement(value)) throw new TypeError("invalid ViewPlacement");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2276,6 +2364,7 @@ export function decodeViewProjectionOverride(input: string): ViewProjectionOverr
 }
 
 export function encodeViewProjectionOverride(value: ViewProjectionOverride): string {
+  validateProgrammaticWireValue(value);
   if (!isViewProjectionOverride(value)) throw new TypeError("invalid ViewProjectionOverride");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2316,6 +2405,7 @@ export function decodeViewRecipe(input: string): ViewRecipe {
 }
 
 export function encodeViewRecipe(value: ViewRecipe): string {
+  validateProgrammaticWireValue(value);
   if (!isViewRecipe(value)) throw new TypeError("invalid ViewRecipe");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2349,6 +2439,7 @@ export function decodeViewRecipeDependencies(input: string): ViewRecipeDependenc
 }
 
 export function encodeViewRecipeDependencies(value: ViewRecipeDependencies): string {
+  validateProgrammaticWireValue(value);
   if (!isViewRecipeDependencies(value)) throw new TypeError("invalid ViewRecipeDependencies");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2380,6 +2471,7 @@ export function decodeViewRecipeShape(input: string): ViewRecipeShape {
 }
 
 export function encodeViewRecipeShape(value: ViewRecipeShape): string {
+  validateProgrammaticWireValue(value);
   if (!isViewRecipeShape(value)) throw new TypeError("invalid ViewRecipeShape");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2408,6 +2500,7 @@ export function decodeViewRecipeSource(input: string): ViewRecipeSource {
 }
 
 export function encodeViewRecipeSource(value: ViewRecipeSource): string {
+  validateProgrammaticWireValue(value);
   if (!isViewRecipeSource(value)) throw new TypeError("invalid ViewRecipeSource");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2444,6 +2537,7 @@ export function decodeViewRenderSet(input: string): ViewRenderSet {
 }
 
 export function encodeViewRenderSet(value: ViewRenderSet): string {
+  validateProgrammaticWireValue(value);
   if (!isViewRenderSet(value)) throw new TypeError("invalid ViewRenderSet");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2472,6 +2566,7 @@ export function decodeViewTableColumn(input: string): ViewTableColumn {
 }
 
 export function encodeViewTableColumn(value: ViewTableColumn): string {
+  validateProgrammaticWireValue(value);
   if (!isViewTableColumn(value)) throw new TypeError("invalid ViewTableColumn");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2502,6 +2597,7 @@ export function decodeViewTableColumnSource(input: string): ViewTableColumnSourc
 }
 
 export function encodeViewTableColumnSource(value: ViewTableColumnSource): string {
+  validateProgrammaticWireValue(value);
   if (!isViewTableColumnSource(value)) throw new TypeError("invalid ViewTableColumnSource");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2529,6 +2625,7 @@ export function decodeViewTableProjection(input: string): ViewTableProjection {
 }
 
 export function encodeViewTableProjection(value: ViewTableProjection): string {
+  validateProgrammaticWireValue(value);
   if (!isViewTableProjection(value)) throw new TypeError("invalid ViewTableProjection");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2559,6 +2656,7 @@ export function decodeViewTableShape(input: string): ViewTableShape {
 }
 
 export function encodeViewTableShape(value: ViewTableShape): string {
+  validateProgrammaticWireValue(value);
   if (!isViewTableShape(value)) throw new TypeError("invalid ViewTableShape");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2585,6 +2683,7 @@ export function decodeViewTableSort(input: string): ViewTableSort {
 }
 
 export function encodeViewTableSort(value: ViewTableSort): string {
+  validateProgrammaticWireValue(value);
   if (!isViewTableSort(value)) throw new TypeError("invalid ViewTableSort");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2610,6 +2709,7 @@ export function decodeViewTreeProjection(input: string): ViewTreeProjection {
 }
 
 export function encodeViewTreeProjection(value: ViewTreeProjection): string {
+  validateProgrammaticWireValue(value);
   if (!isViewTreeProjection(value)) throw new TypeError("invalid ViewTreeProjection");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
@@ -2636,6 +2736,7 @@ export function decodeViewTreeShape(input: string): ViewTreeShape {
 }
 
 export function encodeViewTreeShape(value: ViewTreeShape): string {
+  validateProgrammaticWireValue(value);
   if (!isViewTreeShape(value)) throw new TypeError("invalid ViewTreeShape");
   const encoded = canonicalJSONStringify(value);
   validateWireJSONText(encoded);
