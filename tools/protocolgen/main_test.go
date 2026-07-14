@@ -111,6 +111,8 @@ func TestRejectDuplicateJSONObjectKeys(t *testing.T) {
 		{`{"a":1,"a":2}`, "duplicate JSON object key"},
 		{`{"a":1,"\u0061":2}`, "duplicate JSON object key"},
 		{`{"a":`, "EOF"},
+		{`[1`, "EOF"},
+		{`[{"a":`, "EOF"},
 	} {
 		if err := rejectDuplicateJSONObjectKeys([]byte(test.input)); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("ambiguous or malformed JSON %s returned %v, want %q", test.input, err, test.want)
