@@ -3,9 +3,13 @@
     {
       "code": "protocol.required_capability_missing",
       "data": {
-        "missing_capabilities": [
+        "affected_artifacts": [
           "engine.future"
-        ]
+        ],
+        "current_version": "1.0",
+        "migration_available": false,
+        "readonly_possible": false,
+        "required_version_or_range": "1.0"
       },
       "message": "One or more required capabilities are unavailable.",
       "related": [],

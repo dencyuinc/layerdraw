@@ -186,9 +186,11 @@ func assertEmptyManifestSurfaces(t *testing.T, manifest protocolcommon.Capabilit
 func TestNegotiateRejections(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		edit func(*engineprotocol.HandshakeRequestEnvelope)
-		code string
+		name            string
+		edit            func(*engineprotocol.HandshakeRequestEnvelope)
+		code            string
+		upgradeRequired protocolcommon.ProtocolVersionOrRange
+		affected        []string
 	}{
 		{
 			name: "major mismatch",
@@ -196,7 +198,9 @@ func TestNegotiateRejections(t *testing.T) {
 				request.Payload.Protocols[0].SupportedRange = "2.0..2.1"
 				request.Payload.Protocols[0].Versions = []protocolcommon.ProtocolVersionBinding{{Version: "2.1", SchemaDigest: testWrongDigest}}
 			},
-			code: DiagnosticMajorVersionMismatch,
+			code:            DiagnosticMajorVersionMismatch,
+			upgradeRequired: "2.0..2.1",
+			affected:        []string{ProtocolName},
 		},
 		{
 			name: "same major range mismatch",
@@ -204,7 +208,9 @@ func TestNegotiateRejections(t *testing.T) {
 				request.Payload.Protocols[0].SupportedRange = "1.1..1.2"
 				request.Payload.Protocols[0].Versions = []protocolcommon.ProtocolVersionBinding{{Version: "1.2", SchemaDigest: testWrongDigest}}
 			},
-			code: DiagnosticVersionRangeMismatch,
+			code:            DiagnosticVersionRangeMismatch,
+			upgradeRequired: "1.1..1.2",
+			affected:        []string{ProtocolName},
 		},
 		{
 			name: "missing exact version binding",
@@ -212,21 +218,27 @@ func TestNegotiateRejections(t *testing.T) {
 				request.Payload.Protocols[0].SupportedRange = "1.0..1.1"
 				request.Payload.Protocols[0].Versions = []protocolcommon.ProtocolVersionBinding{{Version: "1.1", SchemaDigest: testWrongDigest}}
 			},
-			code: DiagnosticVersionRangeMismatch,
+			code:            DiagnosticVersionRangeMismatch,
+			upgradeRequired: "1.0..1.1",
+			affected:        []string{ProtocolName},
 		},
 		{
 			name: "schema digest mismatch",
 			edit: func(request *engineprotocol.HandshakeRequestEnvelope) {
 				request.Payload.Protocols[0].Versions[0].SchemaDigest = testWrongDigest
 			},
-			code: DiagnosticSchemaDigestMismatch,
+			code:            DiagnosticSchemaDigestMismatch,
+			upgradeRequired: ProtocolVersion,
+			affected:        []string{ProtocolName},
 		},
 		{
 			name: "missing required capability",
 			edit: func(request *engineprotocol.HandshakeRequestEnvelope) {
 				request.Payload.RequiredCapabilities = []protocolcommon.CapabilityID{"engine.alpha", "engine.zeta"}
 			},
-			code: DiagnosticRequiredCapabilityMissing,
+			code:            DiagnosticRequiredCapabilityMissing,
+			upgradeRequired: ProtocolVersion,
+			affected:        []string{"engine.alpha", "engine.zeta"},
 		},
 		{
 			name: "missing Engine offer",
@@ -323,6 +335,9 @@ func TestNegotiateRejections(t *testing.T) {
 			test.edit(&request)
 			response, negotiated := negotiate(t, descriptor, request)
 			assertRejection(t, response, request.RequestID, descriptor.EngineRelease(), test.code)
+			if test.upgradeRequired != "" {
+				assertUpgradeDiagnosticData(t, response.Diagnostics[0], test.upgradeRequired, test.affected)
+			}
 			if negotiated != nil {
 				t.Fatal("rejection returned a negotiated context")
 			}
@@ -356,9 +371,9 @@ func TestRejectionSafeDetailsAreStableAndMinimal(t *testing.T) {
 	if data == nil {
 		t.Fatal("missing safe diagnostic data")
 	}
-	missing := (*data)[DiagnosticDataMissingCapabilities]
-	if missing.Kind != protocolcommon.JsonValueKindArray || len(missing.Array) != 2 || missing.Array[0].String != "engine.alpha" || missing.Array[1].String != "engine.zeta" {
-		t.Fatalf("missing capability details are not sorted/request-scoped: %+v", missing)
+	upgrade := decodeUpgradeDiagnosticData(t, data)
+	if !slices.Equal(upgrade.AffectedArtifacts, []string{"engine.alpha", "engine.zeta"}) {
+		t.Fatalf("missing capability details are not sorted/request-scoped: %+v", upgrade.AffectedArtifacts)
 	}
 	encoded, err := engineprotocol.EncodeHandshakeResponseEnvelope(response)
 	if err != nil {
@@ -369,6 +384,30 @@ func TestRejectionSafeDetailsAreStableAndMinimal(t *testing.T) {
 			t.Fatalf("safe rejection leaked %q: %s", forbidden, encoded)
 		}
 	}
+}
+
+func assertUpgradeDiagnosticData(t *testing.T, diagnostic protocolcommon.ProtocolDiagnostic, required protocolcommon.ProtocolVersionOrRange, affected []string) {
+	t.Helper()
+	data := decodeUpgradeDiagnosticData(t, diagnostic.Data)
+	if data.CurrentVersion != ProtocolVersion || data.RequiredVersionOrRange != required || !slices.Equal(data.AffectedArtifacts, affected) || data.MigrationAvailable || data.ReadonlyPossible || data.MigrationPlanRef != nil || data.ReplacementProfile != nil {
+		t.Fatalf("invalid generated upgrade diagnostic data: %+v", data)
+	}
+}
+
+func decodeUpgradeDiagnosticData(t *testing.T, data *protocolcommon.JsonObject) protocolcommon.UpgradeDiagnosticData {
+	t.Helper()
+	if data == nil {
+		t.Fatal("missing upgrade diagnostic data")
+	}
+	encoded, err := protocolcommon.EncodeJsonObject(*data)
+	if err != nil {
+		t.Fatalf("encode diagnostic data as JsonObject: %v", err)
+	}
+	result, err := protocolcommon.DecodeUpgradeDiagnosticData(encoded)
+	if err != nil {
+		t.Fatalf("diagnostic data violates generated UpgradeDiagnosticData: %v", err)
+	}
+	return result
 }
 
 func TestClientLimitsProduceEffectiveManifestAndContext(t *testing.T) {
@@ -1368,7 +1407,7 @@ func TestInternalHelpersFailClosedAndCloneDeeply(t *testing.T) {
 	if _, err := selectionDiagnostic(selectionFailure(99), validRequest().Payload.Protocols[0], descriptor.protocols); err == nil {
 		t.Fatal("unknown selection failure did not fail closed")
 	}
-	if _, err := upgradeData("not a range"); err == nil {
+	if _, err := upgradeData("not a range", []string{ProtocolName}); err == nil {
 		t.Fatal("invalid upgrade diagnostic data was accepted")
 	}
 	if _, err := manifestETag(protocolcommon.CapabilityManifest{}); err == nil {

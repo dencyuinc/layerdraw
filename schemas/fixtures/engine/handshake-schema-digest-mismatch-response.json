@@ -3,12 +3,13 @@
     {
       "code": "protocol.schema_digest_mismatch",
       "data": {
-        "offered_schema_digests": [
-          "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "affected_artifacts": [
+          "engine"
         ],
-        "protocol_name": "engine",
-        "required_schema_digest": "sha256:991bd8222fb199fca1925fd8fd49e3433a5c140c7fc4fee5b423634c6a8d6901",
-        "version": "1.0"
+        "current_version": "1.0",
+        "migration_available": false,
+        "readonly_possible": false,
+        "required_version_or_range": "1.0"
       },
       "message": "The offered Engine schema digest does not match the generated Engine schema.",
       "related": [],

@@ -32,12 +32,6 @@ const (
 const (
 	// DiagnosticDataReason is the safe detail key used by invalid-handshake diagnostics.
 	DiagnosticDataReason = "reason"
-	// DiagnosticDataMissingCapabilities contains only sorted capability IDs requested by the caller.
-	DiagnosticDataMissingCapabilities = "missing_capabilities"
-	// DiagnosticDataOfferedSchemaDigests contains only exact-version digests offered by the caller.
-	DiagnosticDataOfferedSchemaDigests = "offered_schema_digests"
-	// DiagnosticDataRequiredSchemaDigest is the public generated Engine closure digest.
-	DiagnosticDataRequiredSchemaDigest = "required_schema_digest"
 
 	// DiagnosticReasonInvalidEnvelope identifies generated-shape or bootstrap identity failure.
 	DiagnosticReasonInvalidEnvelope = "invalid_envelope"
@@ -192,14 +186,6 @@ func cloneJSONValue(input protocolcommon.JsonValue) protocolcommon.JsonValue {
 
 func stringJSON(value string) protocolcommon.JsonValue {
 	return protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindString, String: value}
-}
-
-func stringsJSON(values []string) protocolcommon.JsonValue {
-	items := make([]protocolcommon.JsonValue, len(values))
-	for index, value := range values {
-		items[index] = stringJSON(value)
-	}
-	return protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindArray, Array: items}
 }
 
 func protocolDiagnostic(code, message, remediation string, data protocolcommon.JsonObject) protocolcommon.ProtocolDiagnostic {

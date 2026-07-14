@@ -64,7 +64,11 @@ func (d *Descriptor) Negotiate(ctx context.Context, request engineprotocol.Hands
 	}
 	missing := missingRequiredCapabilities(d.operations, required)
 	if len(missing) != 0 {
-		return d.reject(request.RequestID, missingCapabilitiesDiagnostic(missing))
+		diagnostic, err := missingCapabilitiesDiagnostic(missing, selected.wireVersion)
+		if err != nil {
+			return d.invariantFailure(request.RequestID, err)
+		}
+		return d.reject(request.RequestID, diagnostic)
 	}
 	statuses := requestedCapabilityStatuses(d.operations, required, optional, selected.wireVersion)
 	if ctx.Err() != nil {
@@ -222,7 +226,7 @@ func invalidHandshakeDiagnostic(detail string) protocolcommon.ProtocolDiagnostic
 func selectionDiagnostic(selection selectionFailure, offer protocolcommon.ProtocolOffer, catalog []protocolBinding) (protocolcommon.ProtocolDiagnostic, error) {
 	switch selection {
 	case selectionMajorMismatch:
-		data, err := upgradeData(protocolcommon.ProtocolVersionOrRange(offer.SupportedRange))
+		data, err := upgradeData(protocolcommon.ProtocolVersionOrRange(offer.SupportedRange), []string{ProtocolName})
 		if err != nil {
 			return protocolcommon.ProtocolDiagnostic{}, err
 		}
@@ -233,7 +237,7 @@ func selectionDiagnostic(selection selectionFailure, offer protocolcommon.Protoc
 			data,
 		), nil
 	case selectionRangeMismatch:
-		data, err := upgradeData(protocolcommon.ProtocolVersionOrRange(offer.SupportedRange))
+		data, err := upgradeData(protocolcommon.ProtocolVersionOrRange(offer.SupportedRange), []string{ProtocolName})
 		if err != nil {
 			return protocolcommon.ProtocolDiagnostic{}, err
 		}
@@ -244,35 +248,27 @@ func selectionDiagnostic(selection selectionFailure, offer protocolcommon.Protoc
 			data,
 		), nil
 	case selectionSchemaDigestMismatch:
-		offered := make([]string, 0)
-		for _, binding := range offer.Versions {
-			for _, host := range catalog {
-				if binding.Version == host.wireVersion {
-					offered = append(offered, string(binding.SchemaDigest))
-				}
-			}
+		data, err := upgradeData(protocolcommon.ProtocolVersionOrRange(catalog[0].wireVersion), []string{ProtocolName})
+		if err != nil {
+			return protocolcommon.ProtocolDiagnostic{}, err
 		}
-		slices.Sort(offered)
-		offered = slices.Compact(offered)
 		return protocolDiagnostic(
 			DiagnosticSchemaDigestMismatch,
 			"The offered Engine schema digest does not match the generated Engine schema.",
 			"Install client and Engine artifacts from a compatible release set.",
-			protocolcommon.JsonObject{
-				DiagnosticDataOfferedSchemaDigests: stringsJSON(offered),
-				"protocol_name":                    stringJSON(ProtocolName),
-				DiagnosticDataRequiredSchemaDigest: stringJSON(string(catalog[0].schemaDigest)),
-				"version":                          stringJSON(string(catalog[0].wireVersion)),
-			},
+			data,
 		), nil
 	default:
 		return protocolcommon.ProtocolDiagnostic{}, fmt.Errorf("unknown protocol selection failure %d", selection)
 	}
 }
 
-func upgradeData(required protocolcommon.ProtocolVersionOrRange) (protocolcommon.JsonObject, error) {
+func upgradeData(required protocolcommon.ProtocolVersionOrRange, affectedArtifacts []string) (protocolcommon.JsonObject, error) {
+	affected := slices.Clone(affectedArtifacts)
+	slices.Sort(affected)
+	affected = slices.Compact(affected)
 	data := protocolcommon.UpgradeDiagnosticData{
-		AffectedArtifacts:      []string{ProtocolName},
+		AffectedArtifacts:      affected,
 		CurrentVersion:         protocolcommon.ProtocolVersion(ProtocolVersion),
 		MigrationAvailable:     false,
 		ReadonlyPossible:       false,
@@ -289,11 +285,15 @@ func upgradeData(required protocolcommon.ProtocolVersionOrRange) (protocolcommon
 	return result, nil
 }
 
-func missingCapabilitiesDiagnostic(missing []string) protocolcommon.ProtocolDiagnostic {
+func missingCapabilitiesDiagnostic(missing []string, version protocolcommon.ProtocolVersion) (protocolcommon.ProtocolDiagnostic, error) {
+	data, err := upgradeData(protocolcommon.ProtocolVersionOrRange(version), missing)
+	if err != nil {
+		return protocolcommon.ProtocolDiagnostic{}, err
+	}
 	return protocolDiagnostic(
 		DiagnosticRequiredCapabilityMissing,
 		"One or more required capabilities are unavailable.",
 		"Use an endpoint that provides the requested capabilities or make them optional.",
-		protocolcommon.JsonObject{DiagnosticDataMissingCapabilities: stringsJSON(slices.Clone(missing))},
-	)
+		data,
+	), nil
 }

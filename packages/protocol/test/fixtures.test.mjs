@@ -274,6 +274,31 @@ test("review-repair handshake fixtures validate and byte-identically round-trip"
   });
 });
 
+test("compatibility rejection fixtures use generated UpgradeDiagnosticData", async (context) => {
+  for (const [name, requiredVersionOrRange, affectedArtifacts] of [
+    ["handshake-rejected.json", "2.0..2.1", ["engine"]],
+    ["handshake-range-mismatch-response.json", "1.1..1.2", ["engine"]],
+    ["handshake-schema-digest-mismatch-response.json", "1.0", ["engine"]],
+    ["handshake-required-capability-missing-response.json", "1.0", ["engine.future"]],
+  ]) await context.test(name, async () => {
+    const source = await readFile(new URL(name, canonicalEngineRoot), "utf8");
+    const response = decodeHandshakeResponseEnvelope(source);
+    assert.equal(response.outcome, "rejected");
+    assert.equal(response.diagnostics.length, 1);
+    const data = response.diagnostics[0].data;
+    assert.notEqual(data, undefined);
+    const decoded = decodeUpgradeDiagnosticData(JSON.stringify(data));
+    assert.deepEqual(decoded, {
+      affected_artifacts: affectedArtifacts,
+      current_version: "1.0",
+      migration_available: false,
+      readonly_possible: false,
+      required_version_or_range: requiredVersionOrRange,
+    });
+    assert.deepEqual(JSON.parse(encodeUpgradeDiagnosticData(decoded)), data);
+  });
+});
+
 test("invalid compile input is rejected", async () => {
   const fixture = await readFixture("compile-invalid-request.json");
   assert.equal(isCompileRequestEnvelope(fixture), false);

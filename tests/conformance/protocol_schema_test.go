@@ -1534,12 +1534,6 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeColor(value)
-	case "HandshakeRequest":
-		value, err := protocolcommon.DecodeHandshakeRequest(input)
-		if err != nil {
-			return nil, err
-		}
-		return protocolcommon.EncodeHandshakeRequest(value)
 	case "OperationCapability":
 		value, err := protocolcommon.DecodeOperationCapability(input)
 		if err != nil {
