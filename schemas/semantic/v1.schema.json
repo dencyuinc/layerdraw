@@ -43,6 +43,11 @@
       "required": ["owner_address", "child_kind", "child_addresses", "hash"],
       "additionalProperties": false
     },
+    "ColumnAddress": {
+      "type": "string",
+      "pattern": "^(?:(?:ldl:project:[a-z][a-z0-9_]*|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*):(?:entity-type|relation-type):[a-z][a-z0-9_]*:column:[a-z][a-z0-9_]*)$",
+      "description": "The exact canonical address of an EntityType or RelationType Column from a Project or Pack origin."
+    },
     "DependencyKind": {
       "type": "string",
       "enum": ["query", "view"]
@@ -388,7 +393,7 @@
         "child": {"$ref": "#/$defs/RecipePredicate"},
         "children": {"type": "array", "items": {"$ref": "#/$defs/RecipePredicate"}},
         "field": {"type": "string"},
-        "field_path": {"type": "string"},
+        "field_path": {"$ref": "#/$defs/StateFieldPath"},
         "kind": {"type": "string", "enum": ["all", "any", "field", "not", "rows", "state"]},
         "operator": {"type": "string", "enum": ["contains", "ends_with", "eq", "exists", "gt", "gte", "in", "lt", "lte", "missing", "ne", "not_in", "starts_with"]},
         "predicate": {"$ref": "#/$defs/RecipeRowPredicate"},
@@ -417,7 +422,7 @@
         "child": {"$ref": "#/$defs/RecipeRowPredicate"},
         "children": {"type": "array", "items": {"$ref": "#/$defs/RecipeRowPredicate"}},
         "column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
-        "field_path": {"type": "string"},
+        "field_path": {"$ref": "#/$defs/StateFieldPath"},
         "kind": {"type": "string", "enum": ["all", "any", "cell", "not", "state"]},
         "operator": {"type": "string", "enum": ["contains", "ends_with", "eq", "exists", "gt", "gte", "in", "lt", "lte", "missing", "ne", "not_in", "starts_with"]},
         "value": {"$ref": "#/$defs/RecipePredicateValue"}
@@ -456,6 +461,16 @@
       },
       "required": ["id", "address", "view_address", "format", "extension", "filename", "fidelity", "source_refs", "exporter_profile", "options", "native_maximum_fidelity", "effective_maximum_fidelity", "fidelity_basis", "requires_source_manifest"],
       "additionalProperties": false
+    },
+    "EntityAddress": {
+      "type": "string",
+      "pattern": "^ldl:project:[a-z][a-z0-9_]*:entity:[a-z][a-z0-9_]*$",
+      "description": "The exact canonical address of a Project-origin Entity."
+    },
+    "EntityTypeAddress": {
+      "type": "string",
+      "pattern": "^(?:(?:ldl:project:[a-z][a-z0-9_]*|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*):entity-type:[a-z][a-z0-9_]*)$",
+      "description": "The exact canonical address of an EntityType from a Project or Pack origin."
     },
     "ExportFidelity": {
       "type": "string",
@@ -570,10 +585,10 @@
       "type": "object",
       "properties": {
         "after": {"type": "string", "minLength": 1},
-        "arguments": {"type": "object", "additionalProperties": {"$ref": "#/$defs/RecipeScalar"}},
+        "arguments": {"type": "object", "propertyNames": {"$ref": "#/$defs/ParameterAddress"}, "additionalProperties": {"$ref": "#/$defs/RecipeScalar"}},
         "before": {"type": "string", "minLength": 1},
         "kind": {"type": "string", "enum": ["diff", "query"]},
-        "query_address": {"$ref": "#/$defs/StableAddress"}
+        "query_address": {"$ref": "#/$defs/QueryAddress"}
       },
       "required": ["kind", "arguments"],
       "additionalProperties": false,
@@ -667,7 +682,7 @@
     },
     "ViewFlowProjection": {
       "type": "object",
-      "properties": {"branch_value_column_address": {"$ref": "#/$defs/StableAddress"}, "connector_kind": {"type": "string"}, "source_endpoint": {"type": "string", "enum": ["from", "to"]}, "target_endpoint": {"type": "string", "enum": ["from", "to"]}},
+      "properties": {"branch_value_column_address": {"$ref": "#/$defs/ColumnAddress"}, "connector_kind": {"type": "string"}, "source_endpoint": {"type": "string", "enum": ["from", "to"]}, "target_endpoint": {"type": "string", "enum": ["from", "to"]}},
       "required": ["source_endpoint", "target_endpoint", "connector_kind"],
       "additionalProperties": false
     },
@@ -723,14 +738,15 @@
         "composed": {"type": "boolean"},
         "direction": {"type": "string", "enum": ["bottom_to_top", "left_to_right", "right_to_left", "top_to_bottom"]},
         "layout": {"type": "string", "enum": ["force", "grid", "layered", "manual", "radial"]},
-        "placements": {"type": "array", "items": {"$ref": "#/$defs/ViewPlacement"}}
+        "placements": {"type": "array", "items": {"$ref": "#/$defs/ViewPlacement"}, "x-layerdraw-stable-address-order": "entity_address"}
       },
       "required": ["layout", "direction", "abstraction", "composed", "placements"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "placements", "property": "entity_address"}]
     },
     "ViewPlacement": {
       "type": "object",
-      "properties": {"entity_address": {"$ref": "#/$defs/StableAddress"}, "height": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"}, "width": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"}, "x": {"$ref": "#/$defs/CanonicalFiniteDecimal"}, "y": {"$ref": "#/$defs/CanonicalFiniteDecimal"}},
+      "properties": {"entity_address": {"$ref": "#/$defs/EntityAddress"}, "height": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"}, "width": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"}, "x": {"$ref": "#/$defs/CanonicalFiniteDecimal"}, "y": {"$ref": "#/$defs/CanonicalFiniteDecimal"}},
       "required": ["entity_address", "x", "y", "width", "height"],
       "additionalProperties": false
     },
@@ -738,7 +754,7 @@
       "type": "object",
       "properties": {
         "columns": {"type": "array", "items": {"$ref": "#/$defs/ViewTableColumn"}},
-        "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}},
+        "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "include_entity_id": {"type": "boolean"}, "include_layer": {"type": "boolean"}, "include_type": {"type": "boolean"},
         "row_source": {"type": "string", "enum": ["automatic_relations", "entity", "entity_rows", "relation", "relation_rows"]},
         "sorts": {"type": "array", "items": {"$ref": "#/$defs/ViewTableSort"}}
@@ -748,13 +764,13 @@
     },
     "ViewTableColumn": {
       "type": "object",
-      "properties": {"address": {"$ref": "#/$defs/StableAddress"}, "aggregate": {"type": "string", "enum": ["count", "count_distinct", "join_unique", "max", "min", "none"]}, "id": {"type": "string"}, "label": {"type": "string"}, "source": {"$ref": "#/$defs/ViewTableColumnSource"}},
+      "properties": {"address": {"$ref": "#/$defs/TableColumnAddress"}, "aggregate": {"type": "string", "enum": ["count", "count_distinct", "join_unique", "max", "min", "none"]}, "id": {"type": "string"}, "label": {"type": "string"}, "source": {"$ref": "#/$defs/ViewTableColumnSource"}},
       "required": ["id", "address", "source", "aggregate"],
       "additionalProperties": false
     },
     "ViewTableColumnSource": {
       "type": "object",
-      "properties": {"column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}, "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]}, "endpoint": {"type": "string", "enum": ["from", "to"]}, "field": {"type": "string", "enum": ["address", "description", "display_name", "id", "layer", "tags", "type"]}, "field_path": {"type": "string"}, "kind": {"type": "string", "enum": ["attribute", "derived_count", "field", "relation_endpoint", "state"]}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}},
+      "properties": {"column_addresses": {"type": "array", "items": {"$ref": "#/$defs/ColumnAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]}, "endpoint": {"type": "string", "enum": ["from", "to"]}, "field": {"type": "string", "enum": ["address", "description", "display_name", "id", "layer", "tags", "type"]}, "field_path": {"$ref": "#/$defs/StateFieldPath"}, "kind": {"type": "string", "enum": ["attribute", "derived_count", "field", "relation_endpoint", "state"]}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
       "required": ["kind"],
       "additionalProperties": false,
       "x-layerdraw-tagged-union": {
@@ -782,25 +798,25 @@
     },
     "ViewMatrixAxis": {
       "type": "object",
-      "properties": {"entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}, "label_field": {"type": "string", "enum": ["display_name", "id", "layer", "type"]}},
+      "properties": {"entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "label_field": {"type": "string", "enum": ["display_name", "id", "layer", "type"]}},
       "required": ["label_field"],
       "additionalProperties": false
     },
     "ViewMatrixCell": {
       "type": "object",
-      "properties": {"attribute_column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}, "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]}, "display": {"type": "string", "enum": ["attribute_summary", "count", "exists", "relation_types"]}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}, "semantic": {"type": "string", "enum": ["path_refs", "relation_refs"]}},
+      "properties": {"attribute_column_addresses": {"type": "array", "items": {"$ref": "#/$defs/ColumnAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]}, "display": {"type": "string", "enum": ["attribute_summary", "count", "exists", "relation_types"]}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "semantic": {"type": "string", "enum": ["path_refs", "relation_refs"]}},
       "required": ["direction", "semantic", "display"],
       "additionalProperties": false
     },
     "ViewTreeShape": {
       "type": "object",
-      "properties": {"cycle_policy": {"type": "string", "enum": ["duplicate_occurrence", "error", "truncate"]}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}, "shared_child_policy": {"type": "string", "enum": ["duplicate_occurrence", "error", "link"]}},
+      "properties": {"cycle_policy": {"type": "string", "enum": ["duplicate_occurrence", "error", "truncate"]}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationTypeAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "shared_child_policy": {"type": "string", "enum": ["duplicate_occurrence", "error", "link"]}},
       "required": ["relation_type_addresses", "cycle_policy", "shared_child_policy"],
       "additionalProperties": false
     },
     "ViewFlowShape": {
       "type": "object",
-      "properties": {"cycle_policy": {"type": "string", "enum": ["error", "include_cycle_ref", "truncate"]}, "lane_by": {"type": "string", "enum": ["attribute", "entity_type", "layer", "none"]}, "lane_column_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}, "preserve_parallel": {"type": "boolean"}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}}},
+      "properties": {"cycle_policy": {"type": "string", "enum": ["error", "include_cycle_ref", "truncate"]}, "lane_by": {"type": "string", "enum": ["attribute", "entity_type", "layer", "none"]}, "lane_column_addresses": {"type": "array", "items": {"$ref": "#/$defs/ColumnAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "preserve_parallel": {"type": "boolean"}, "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationTypeAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
       "required": ["relation_type_addresses", "lane_by", "cycle_policy", "preserve_parallel"],
       "additionalProperties": false
     },
@@ -1029,25 +1045,72 @@
       "pattern": "^ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
       "description": "The exact canonical root address of an LDL Pack."
     },
+    "ParameterAddress": {
+      "type": "string",
+      "pattern": "^(?:(?:ldl:project:[a-z][a-z0-9_]*|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*):query:[a-z][a-z0-9_]*:parameter:[a-z][a-z0-9_]*)$",
+      "description": "The exact canonical address of a Query Parameter from a Project or Pack origin."
+    },
     "ProjectRootAddress": {
       "type": "string",
       "pattern": "^ldl:project:[a-z][a-z0-9_]*$",
       "description": "The exact canonical root address of an LDL Project."
+    },
+    "QueryAddress": {
+      "type": "string",
+      "pattern": "^(?:(?:ldl:project:[a-z][a-z0-9_]*|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*):query:[a-z][a-z0-9_]*)$",
+      "description": "The exact canonical address of a Query from a Project or Pack origin."
+    },
+    "RelationTypeAddress": {
+      "type": "string",
+      "pattern": "^(?:(?:ldl:project:[a-z][a-z0-9_]*|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*):relation-type:[a-z][a-z0-9_]*)$",
+      "description": "The exact canonical address of a RelationType from a Project or Pack origin."
     },
     "StableAddress": {
       "type": "string",
       "pattern": "^(?:ldl:project:[a-z][a-z0-9_]*(?::(?:(?:(?:entity-type|relation-type):[a-z][a-z0-9_]*(?::(?:column|constraint):[a-z][a-z0-9_]*)?)|(?:(?:entity|relation):[a-z][a-z0-9_]*(?::row:[a-z][a-z0-9_]*)?)|(?:query:[a-z][a-z0-9_]*(?::parameter:[a-z][a-z0-9_]*)?)|(?:view:[a-z][a-z0-9_]*(?::(?:table-column|export):[a-z][a-z0-9_]*)?)|(?:layer|reference):[a-z][a-z0-9_]*))?|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?::(?:(?:(?:entity-type|relation-type):[a-z][a-z0-9_]*(?::(?:column|constraint):[a-z][a-z0-9_]*)?)|(?:query:[a-z][a-z0-9_]*(?::parameter:[a-z][a-z0-9_]*)?)|(?:view:[a-z][a-z0-9_]*(?::(?:table-column|export):[a-z][a-z0-9_]*)?)|reference:[a-z][a-z0-9_]*))?)$",
       "description": "A canonical LDL StableAddress computed only by the Go Engine."
     },
+    "TableColumnAddress": {
+      "type": "string",
+      "pattern": "^(?:(?:ldl:project:[a-z][a-z0-9_]*|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*):view:[a-z][a-z0-9_]*:table-column:[a-z][a-z0-9_]*)$",
+      "description": "The exact canonical address of a View Table Column from a Project or Pack origin."
+    },
     "StateReadDependency": {
       "type": "object",
       "properties": {
-        "field_path": {"type": "string"},
+        "field_path": {"$ref": "#/$defs/StateFieldPath"},
         "subject_kind": {"$ref": "#/$defs/StateSubjectKind"},
         "value_type": {"$ref": "#/$defs/ValueType"}
       },
       "required": ["subject_kind", "field_path", "value_type"],
       "additionalProperties": false
+    },
+    "StateFieldPath": {
+      "type": "string",
+      "enum": [
+        "system.created_at",
+        "system.updated_at",
+        "system.created_by.kind",
+        "system.updated_by.kind",
+        "system.created_by.id",
+        "system.created_by.display_name",
+        "system.updated_by.id",
+        "system.updated_by.display_name",
+        "system.created_revision",
+        "system.updated_revision",
+        "provenance.source.kind",
+        "provenance.source.label",
+        "provenance.source.uri",
+        "provenance.source.external_id",
+        "provenance.observed_at",
+        "provenance.verified_at",
+        "provenance.stale_after",
+        "provenance.verified_by.kind",
+        "provenance.verified_by.id",
+        "provenance.verified_by.display_name",
+        "provenance.confidence"
+      ],
+      "description": "The closed Language 1 state-field registry path."
     },
     "StateSubjectKind": {
       "type": "string",

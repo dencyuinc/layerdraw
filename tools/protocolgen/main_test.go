@@ -205,9 +205,18 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 			value.AdditionalProperties = 42
 			return value
 		}},
+		{"non-string property names", "propertyNames must validate strings", func() *schemaType {
+			return &schemaType{Type: "object", PropertyNames: &schemaType{Type: "boolean"}, AdditionalProperties: &schemaType{Type: "string"}}
+		}},
 		{"array without items", "array requires items", func() *schemaType { return &schemaType{Type: "array"} }},
 		{"unique non-string array", "uniqueItems currently requires string", func() *schemaType {
 			return &schemaType{Type: "array", Items: &schemaType{Type: "boolean"}, UniqueItems: true}
+		}},
+		{"stable address order on non-strings", "selector must resolve to strings", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "boolean"}, StableAddressOrder: "$item"}
+		}},
+		{"stable address order missing property", "does not name an item property", func() *schemaType {
+			return &schemaType{Type: "array", Items: validObject(), StableAddressOrder: "address"}
 		}},
 		{"invalid tagged union", "invalid tagged union", func() *schemaType {
 			value := validObject()

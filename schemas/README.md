@@ -53,6 +53,13 @@ Its assertion keywords have these exact meanings:
   have distinct values for its configured key.
 - `x-layerdraw-disjoint-arrays` requires the two configured string-array
   properties to have no value in common.
+- `x-layerdraw-stable-address-order` applies to an array and requires strictly
+  ascending Language 1 StableSymbol order. Its value is `$item` for an array
+  of StableAddress strings or the name of the StableAddress-valued property
+  used to order an array of objects. Kind validation and set uniqueness remain
+  ordinary `items`, `propertyNames`, `uniqueItems`, or
+  `x-layerdraw-unique-array-keys` assertions; this keyword exists only because
+  JSON Schema draft 2020-12 cannot express cross-item canonical ordering.
 
 The root annotations `x-layerdraw-max-json-bytes` and
 `x-layerdraw-max-json-depth` define the shared recursive document limits;

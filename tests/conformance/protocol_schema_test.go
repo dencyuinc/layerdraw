@@ -323,6 +323,7 @@ func TestGeneratedGoJsonValueRejectsContradictionsCyclesAndExcessDepth(t *testin
 func TestGeneratedGoSemanticRecursiveCodecsRejectCyclesAndExcessDepth(t *testing.T) {
 	t.Parallel()
 	stringPointer := func(value string) *string { return &value }
+	stateFieldPathPointer := func(value semantic.StateFieldPath) *semantic.StateFieldPath { return &value }
 	expectCycle := func(name string, encode func() error) {
 		t.Helper()
 		if err := encode(); err == nil || !strings.Contains(err.Error(), "cycle") {
@@ -421,7 +422,7 @@ func TestGeneratedGoSemanticRecursiveCodecsRejectCyclesAndExcessDepth(t *testing
 		_, err := semantic.EncodeRecipeRowPredicate(*leftRow)
 		return err
 	})
-	sharedRow := &semantic.RecipeRowPredicate{Kind: "state", FieldPath: stringPointer("name"), Operator: stringPointer("exists")}
+	sharedRow := &semantic.RecipeRowPredicate{Kind: "state", FieldPath: stateFieldPathPointer("system.updated_at"), Operator: stringPointer("exists")}
 	rowAliases := []semantic.RecipeRowPredicate{{Kind: "not", Child: sharedRow}, {Kind: "not", Child: sharedRow}}
 	if _, err := semantic.EncodeRecipeRowPredicate(semantic.RecipeRowPredicate{Kind: "all", Children: &rowAliases}); err != nil {
 		t.Fatalf("RecipeRowPredicate rejected an acyclic shared alias: %v", err)
@@ -531,7 +532,7 @@ func FuzzGeneratedGoRecursiveCodecBoundaries(f *testing.F) {
 			}
 			_, err = semantic.EncodeRecipePredicate(*value)
 		case 2:
-			fieldPath, operator := "name", "exists"
+			fieldPath, operator := semantic.StateFieldPath("system.updated_at"), "exists"
 			value := &semantic.RecipeRowPredicate{Kind: "state", FieldPath: &fieldPath, Operator: &operator}
 			if cycle {
 				value = &semantic.RecipeRowPredicate{Kind: "not"}
@@ -791,7 +792,7 @@ func TestSharedViewSourceVariantCorpus(t *testing.T) {
 	if err := json.Unmarshal(data, &corpus); err != nil {
 		t.Fatal(err)
 	}
-	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 8 || len(corpus.Rejections) != 19 {
+	if corpus.SchemaVersion != 1 || len(corpus.Canonical) != 30 || len(corpus.Rejections) != 59 {
 		t.Fatalf("incomplete View source corpus: %+v", corpus)
 	}
 	for _, vector := range corpus.Canonical {
@@ -854,14 +855,14 @@ func TestGeneratedTypedRootAndViewSourceInputsAreClosed(t *testing.T) {
 		})
 	}
 
-	column := []semantic.StableAddress{"ldl:project:p:entity-type:t:column:c"}
-	relationType := []semantic.StableAddress{"ldl:project:p:relation-type:r"}
+	column := []semantic.ColumnAddress{"ldl:project:p:entity-type:t:column:c"}
+	relationType := []semantic.RelationTypeAddress{"ldl:project:p:relation-type:r"}
 	validColumns := []semantic.ViewTableColumnSource{
 		{Kind: "field", Field: protocolTestString("tags")},
 		{Kind: "attribute", ColumnAddresses: &column},
 		{Kind: "relation_endpoint", Endpoint: protocolTestString("from"), Field: protocolTestString("display_name")},
 		{Kind: "derived_count", Direction: protocolTestString("both"), RelationTypeAddresses: &relationType},
-		{Kind: "state", FieldPath: protocolTestString("review.status")},
+		{Kind: "state", FieldPath: protocolTestStateFieldPath("system.updated_at")},
 	}
 	for index, value := range validColumns {
 		if _, err := semantic.EncodeViewTableColumnSource(value); err != nil {
@@ -871,9 +872,15 @@ func TestGeneratedTypedRootAndViewSourceInputsAreClosed(t *testing.T) {
 	invalidColumns := []semantic.ViewTableColumnSource{
 		{Kind: "field"},
 		{Kind: "attribute", ColumnAddresses: &column, Field: protocolTestString("id")},
+		{Kind: "attribute", ColumnAddresses: protocolTestColumnAddresses("ldl:project:p")},
+		{Kind: "attribute", ColumnAddresses: protocolTestColumnAddresses("ldl:project:p:entity-type:t:column:c", "ldl:project:p:entity-type:t:column:c")},
+		{Kind: "attribute", ColumnAddresses: protocolTestColumnAddresses("ldl:pack:publisher:shared-pack:entity-type:t:column:c", "ldl:project:p:entity-type:t:column:c")},
 		{Kind: "relation_endpoint", Endpoint: protocolTestString("from"), Field: protocolTestString("description")},
 		{Kind: "derived_count"},
+		{Kind: "derived_count", Direction: protocolTestString("both"), RelationTypeAddresses: protocolTestRelationTypeAddresses("ldl:project:p:entity:e")},
+		{Kind: "derived_count", Direction: protocolTestString("both"), RelationTypeAddresses: protocolTestRelationTypeAddresses("ldl:project:p:relation-type:r", "ldl:project:p:relation-type:r")},
 		{Kind: "state"},
+		{Kind: "state", FieldPath: protocolTestStateFieldPath("review.status")},
 	}
 	for index, value := range invalidColumns {
 		if _, err := semantic.EncodeViewTableColumnSource(value); err == nil {
@@ -881,11 +888,12 @@ func TestGeneratedTypedRootAndViewSourceInputsAreClosed(t *testing.T) {
 		}
 	}
 
-	queryAddress := semantic.StableAddress("ldl:project:p:query:q")
+	queryAddress := semantic.QueryAddress("ldl:project:p:query:q")
 	arguments := map[string]semantic.RecipeScalar{
 		"ldl:project:p:query:q:parameter:x": {Kind: "string", StringValue: protocolTestString("x")},
 	}
 	validDiffs := []semantic.ViewRecipeSource{
+		{Kind: "query", QueryAddress: &queryAddress, Arguments: map[string]semantic.RecipeScalar{}},
 		{Kind: "diff", Before: protocolTestString("base"), After: protocolTestString("head"), Arguments: map[string]semantic.RecipeScalar{}},
 		{Kind: "diff", Before: protocolTestString("base"), After: protocolTestString("head"), QueryAddress: &queryAddress, Arguments: map[string]semantic.RecipeScalar{}},
 		{Kind: "diff", Before: protocolTestString("base"), After: protocolTestString("head"), QueryAddress: &queryAddress, Arguments: arguments},
@@ -896,6 +904,8 @@ func TestGeneratedTypedRootAndViewSourceInputsAreClosed(t *testing.T) {
 		}
 	}
 	invalidDiffs := []semantic.ViewRecipeSource{
+		{Kind: "query", QueryAddress: protocolTestQueryAddress("ldl:project:p"), Arguments: map[string]semantic.RecipeScalar{}},
+		{Kind: "query", QueryAddress: &queryAddress, Arguments: map[string]semantic.RecipeScalar{"not-an-address": {Kind: "string", StringValue: protocolTestString("x")}}},
 		{Kind: "diff", After: protocolTestString("head"), Arguments: map[string]semantic.RecipeScalar{}},
 		{Kind: "diff", Before: protocolTestString("base"), Arguments: map[string]semantic.RecipeScalar{}},
 		{Kind: "diff", Before: protocolTestString(""), After: protocolTestString("head"), Arguments: map[string]semantic.RecipeScalar{}},
@@ -911,6 +921,20 @@ func TestGeneratedTypedRootAndViewSourceInputsAreClosed(t *testing.T) {
 }
 
 func protocolTestString(value string) *string { return &value }
+
+func protocolTestColumnAddresses(values ...semantic.ColumnAddress) *[]semantic.ColumnAddress {
+	return &values
+}
+
+func protocolTestRelationTypeAddresses(values ...semantic.RelationTypeAddress) *[]semantic.RelationTypeAddress {
+	return &values
+}
+
+func protocolTestQueryAddress(value semantic.QueryAddress) *semantic.QueryAddress { return &value }
+
+func protocolTestStateFieldPath(value semantic.StateFieldPath) *semantic.StateFieldPath {
+	return &value
+}
 
 func TestSharedRecursiveValueLimits(t *testing.T) {
 	t.Parallel()
@@ -1289,12 +1313,48 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeViewRecipeSource(value)
+	case "ViewDiagramShape":
+		value, err := semantic.DecodeViewDiagramShape(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewDiagramShape(value)
+	case "ViewFlowShape":
+		value, err := semantic.DecodeViewFlowShape(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewFlowShape(value)
+	case "ViewMatrixAxis":
+		value, err := semantic.DecodeViewMatrixAxis(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewMatrixAxis(value)
+	case "ViewMatrixCell":
+		value, err := semantic.DecodeViewMatrixCell(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewMatrixCell(value)
 	case "ViewTableColumnSource":
 		value, err := semantic.DecodeViewTableColumnSource(input)
 		if err != nil {
 			return nil, err
 		}
 		return semantic.EncodeViewTableColumnSource(value)
+	case "ViewTableShape":
+		value, err := semantic.DecodeViewTableShape(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewTableShape(value)
+	case "ViewTreeShape":
+		value, err := semantic.DecodeViewTreeShape(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeViewTreeShape(value)
 	case "Diagnostic":
 		value, err := semantic.DecodeDiagnostic(input)
 		if err != nil {

@@ -47,6 +47,44 @@ function canonicalSourcePath(value) {
     value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
+function stableAddressTuple(value) {
+  const parts = value.split(":");
+  if (parts.length < 3 || parts[0] !== "ldl") return undefined;
+  let origin;
+  let components;
+  let pathStart;
+  if (parts[1] === "project") {
+    origin = 0; components = [parts[2]]; pathStart = 3;
+  } else if (parts[1] === "pack" && parts.length >= 4) {
+    origin = 1; components = [parts[2], parts[3]]; pathStart = 4;
+  } else return undefined;
+  if ((parts.length - pathStart) % 2 !== 0) return undefined;
+  const path = [];
+  for (let index = pathStart; index < parts.length; index += 2) path.push([parts[index], parts[index + 1]]);
+  return {origin, components, path};
+}
+
+function compareStableAddresses(left, right) {
+  const leftTuple = stableAddressTuple(left);
+  const rightTuple = stableAddressTuple(right);
+  if (leftTuple === undefined || rightTuple === undefined) return undefined;
+  if (leftTuple.origin !== rightTuple.origin) return leftTuple.origin - rightTuple.origin;
+  for (let index = 0; index < Math.min(leftTuple.components.length, rightTuple.components.length); index++) {
+    if (leftTuple.components[index] !== rightTuple.components[index]) return leftTuple.components[index] < rightTuple.components[index] ? -1 : 1;
+  }
+  if (leftTuple.components.length !== rightTuple.components.length) return leftTuple.components.length - rightTuple.components.length;
+  if (leftTuple.path.length !== rightTuple.path.length) return leftTuple.path.length - rightTuple.path.length;
+  const ranks = new Map([["entity-type", 0], ["relation-type", 1], ["layer", 2], ["entity", 3], ["relation", 4], ["query", 5], ["view", 6], ["reference", 7], ["column", 8], ["constraint", 9], ["row", 10], ["parameter", 11], ["table-column", 12], ["export", 13]]);
+  for (let index = 0; index < leftTuple.path.length; index++) {
+    const leftSegment = leftTuple.path[index];
+    const rightSegment = rightTuple.path[index];
+    const kind = ranks.get(leftSegment[0]) - ranks.get(rightSegment[0]);
+    if (kind !== 0) return kind;
+    if (leftSegment[1] !== rightSegment[1]) return leftSegment[1] < rightSegment[1] ? -1 : 1;
+  }
+  return 0;
+}
+
 function realUTCDateTime(value) {
   const match = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?Z$/.exec(value);
   if (match === null) return false;
@@ -80,6 +118,15 @@ function addLayerDrawVocabulary(ajv) {
   ajv.addKeyword({keyword: "x-layerdraw-max-json-bytes", schemaType: "number", errors: false, validate: () => true});
   ajv.addKeyword({keyword: "x-layerdraw-max-json-depth", schemaType: "number", errors: false, validate: () => true});
   ajv.addKeyword({keyword: "x-layerdraw-ts-module", schemaType: "string", errors: false, validate: () => true});
+  ajv.addKeyword({keyword: "x-layerdraw-stable-address-order", schemaType: "string", type: "array", errors: false, validate(selector, data) {
+    const address = (item) => selector === "$item" ? item : item?.[selector];
+    for (let index = 1; index < data.length; index++) {
+      const left = address(data[index - 1]);
+      const right = address(data[index]);
+      if (typeof left !== "string" || typeof right !== "string" || compareStableAddresses(left, right) >= 0) return false;
+    }
+    return true;
+  }});
   ajv.addKeyword({keyword: "x-layerdraw-disjoint-arrays", schemaType: "array", errors: false, validate(rules, data) {
     if (data === null || typeof data !== "object" || Array.isArray(data)) return true;
     return rules.every((rule) => {
@@ -245,7 +292,7 @@ test("published LayerDraw schema vocabulary asserts unions, outcomes, ranges, an
     {kind: "attribute", column_addresses: ["ldl:project:p:entity-type:t:column:c"]},
     {kind: "relation_endpoint", endpoint: "from", field: "display_name"},
     {kind: "derived_count", direction: "both", relation_type_addresses: ["ldl:project:p:relation-type:r"]},
-    {kind: "state", field_path: "review.status"},
+    {kind: "state", field_path: "system.updated_at"},
   ]) assert.equal(columnSource(value), true);
   for (const value of [
     {kind: "field"},
@@ -255,9 +302,10 @@ test("published LayerDraw schema vocabulary asserts unions, outcomes, ranges, an
     {kind: "relation_endpoint", endpoint: "from"},
     {kind: "relation_endpoint", endpoint: "from", field: "description"},
     {kind: "derived_count"},
-    {kind: "derived_count", direction: "both", field_path: "review.status"},
+    {kind: "derived_count", direction: "both", field_path: "system.updated_at"},
     {kind: "state"},
-    {kind: "state", field_path: "review.status", relation_type_addresses: []},
+    {kind: "state", field_path: "system.updated_at", relation_type_addresses: []},
+    {kind: "state", field_path: "review.status"},
   ]) assert.equal(columnSource(value), false);
 
   const viewSource = compile(semantic, "ViewRecipeSource");
@@ -295,8 +343,8 @@ test("independent schema authority matches every shared View source vector", asy
   const semantic = "https://schemas.layerdraw.dev/semantic/v1";
   const corpus = await readJSON("fixtures/conformance/view-sources-v1.json");
   assert.equal(corpus.schema_version, 1);
-  assert.equal(corpus.canonical_cases.length, 8);
-  assert.equal(corpus.rejection_cases.length, 19);
+  assert.equal(corpus.canonical_cases.length, 30);
+  assert.equal(corpus.rejection_cases.length, 59);
   for (const vector of corpus.canonical_cases) await context.test(`${vector.name} accepted`, () => {
     assert.equal(compile(semantic, vector.type)(JSON.parse(vector.input)), true);
   });

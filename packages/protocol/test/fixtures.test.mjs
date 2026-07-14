@@ -112,7 +112,13 @@ import {
   decodePackRootAddress,
   decodeProjectRootAddress,
   decodeViewRecipeSource,
+  decodeViewDiagramShape,
+  decodeViewFlowShape,
+  decodeViewMatrixAxis,
+  decodeViewMatrixCell,
   decodeViewTableColumnSource,
+  decodeViewTableShape,
+  decodeViewTreeShape,
   decodeViewPlacement,
   decodeViewRenderSet,
   encodeCompiledExportRecipeDocument,
@@ -131,7 +137,13 @@ import {
   encodePackRootAddress,
   encodeProjectRootAddress,
   encodeViewRecipeSource,
+  encodeViewDiagramShape,
+  encodeViewFlowShape,
+  encodeViewMatrixAxis,
+  encodeViewMatrixCell,
   encodeViewTableColumnSource,
+  encodeViewTableShape,
+  encodeViewTreeShape,
   encodeViewPlacement,
   encodeViewRenderSet,
   isDiagnosticArgumentValue,
@@ -338,7 +350,13 @@ const sharedCodecs = {
   ViewRecipeBlobRef: [decodeViewRecipeBlobRef, encodeViewRecipeBlobRef],
   ViewRenderSet: [decodeViewRenderSet, encodeViewRenderSet],
   ViewRecipeSource: [decodeViewRecipeSource, encodeViewRecipeSource],
+  ViewDiagramShape: [decodeViewDiagramShape, encodeViewDiagramShape],
+  ViewFlowShape: [decodeViewFlowShape, encodeViewFlowShape],
+  ViewMatrixAxis: [decodeViewMatrixAxis, encodeViewMatrixAxis],
+  ViewMatrixCell: [decodeViewMatrixCell, encodeViewMatrixCell],
   ViewTableColumnSource: [decodeViewTableColumnSource, encodeViewTableColumnSource],
+  ViewTableShape: [decodeViewTableShape, encodeViewTableShape],
+  ViewTreeShape: [decodeViewTreeShape, encodeViewTreeShape],
 };
 
 async function readCorpus() {
@@ -397,11 +415,11 @@ test("every predicate branch has shared canonical and rejection bytes", async (c
   });
 });
 
-test("every View column-source branch and Diff invariant has shared bytes", async (context) => {
+test("every View source and address-bearing shape contract has shared bytes", async (context) => {
   const corpus = JSON.parse(await readFile(viewSourceCorpusURL, "utf8"));
   assert.equal(corpus.schema_version, 1);
-  assert.equal(corpus.canonical_cases.length, 8);
-  assert.equal(corpus.rejection_cases.length, 19);
+  assert.equal(corpus.canonical_cases.length, 30);
+  assert.equal(corpus.rejection_cases.length, 59);
   for (const vector of corpus.canonical_cases) await context.test(`${vector.name} canonical`, () => {
     const codec = sharedCodecs[vector.type];
     assert.equal(codec[1](codec[0](vector.input)), vector.expected);
@@ -426,26 +444,35 @@ test("typed-programmatic normalized roots and View sources enforce semantic clos
     {kind: "attribute", column_addresses: ["ldl:project:p:entity-type:t:column:c"]},
     {kind: "relation_endpoint", endpoint: "from", field: "display_name"},
     {kind: "derived_count", direction: "both", relation_type_addresses: ["ldl:project:p:relation-type:r"]},
-    {kind: "state", field_path: "review.status"},
+    {kind: "state", field_path: "system.updated_at"},
   ];
   for (const value of validColumns) assert.doesNotThrow(() => encodeViewTableColumnSource(value));
   const invalidColumns = [
     {kind: "field"},
     {kind: "attribute", column_addresses: [], field: "id"},
+    {kind: "attribute", column_addresses: ["ldl:project:p"]},
+    {kind: "attribute", column_addresses: ["ldl:project:p:entity-type:t:column:c", "ldl:project:p:entity-type:t:column:c"]},
+    {kind: "attribute", column_addresses: ["ldl:pack:publisher:shared-pack:entity-type:t:column:c", "ldl:project:p:entity-type:t:column:c"]},
     {kind: "relation_endpoint", endpoint: "from", field: "description"},
     {kind: "derived_count"},
+    {kind: "derived_count", direction: "both", relation_type_addresses: ["ldl:project:p:entity:e"]},
+    {kind: "derived_count", direction: "both", relation_type_addresses: ["ldl:project:p:relation-type:r", "ldl:project:p:relation-type:r"]},
     {kind: "state"},
+    {kind: "state", field_path: "review.status"},
   ];
   for (const value of invalidColumns) assert.throws(() => encodeViewTableColumnSource(value), TypeError);
 
   const query_address = "ldl:project:p:query:q";
   const argumentsWithValue = {"ldl:project:p:query:q:parameter:x": {kind: "string", string_value: "x"}};
   for (const value of [
+    {kind: "query", query_address, arguments: {}},
     {kind: "diff", before: "base", after: "head", arguments: {}},
     {kind: "diff", before: "base", after: "head", query_address, arguments: {}},
     {kind: "diff", before: "base", after: "head", query_address, arguments: argumentsWithValue},
   ]) assert.doesNotThrow(() => encodeViewRecipeSource(value));
   for (const value of [
+    {kind: "query", query_address: "ldl:project:p", arguments: {}},
+    {kind: "query", query_address, arguments: {"not-an-address": {kind: "string", string_value: "x"}}},
     {kind: "diff", after: "head", arguments: {}},
     {kind: "diff", before: "base", arguments: {}},
     {kind: "diff", before: "", after: "head", arguments: {}},
@@ -517,7 +544,7 @@ test("semantic recursive codecs reject self and mutual cycles while preserving a
       encodeRecipeRowPredicate,
       () => { const value = {kind: "not"}; value.child = value; return value; },
       () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
-      () => { const shared = {kind: "state", field_path: "name", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+      () => { const shared = {kind: "state", field_path: "system.updated_at", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
     ],
   ];
   for (const [name, encode, self, mutual, alias] of cases) {
@@ -623,7 +650,7 @@ test("semantic recursive codecs enforce exact programmatic wire depth", () => {
 
   for (const [name, encode, leaf] of [
     ["RecipePredicate", encodeRecipePredicate, {kind: "field", field: "name", operator: "exists"}],
-    ["RecipeRowPredicate", encodeRecipeRowPredicate, {kind: "state", field_path: "name", operator: "exists"}],
+    ["RecipeRowPredicate", encodeRecipeRowPredicate, {kind: "state", field_path: "system.updated_at", operator: "exists"}],
   ]) {
     let value = leaf;
     for (let depth = 1; depth < maxWireJSONDepth; depth++) value = {kind: "not", child: value};

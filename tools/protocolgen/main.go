@@ -93,6 +93,7 @@ type schemaType struct {
 	Properties           map[string]*schemaType `json:"properties,omitempty"`
 	Required             []string               `json:"required,omitempty"`
 	Items                *schemaType            `json:"items,omitempty"`
+	PropertyNames        *schemaType            `json:"propertyNames,omitempty"`
 	AdditionalProperties any                    `json:"additionalProperties,omitempty"`
 	Pattern              string                 `json:"pattern,omitempty"`
 	Format               string                 `json:"format,omitempty"`
@@ -111,6 +112,7 @@ type schemaType struct {
 	UniqueArrayKeys      []uniqueArrayKey       `json:"x-layerdraw-unique-array-keys,omitempty"`
 	DisjointArrays       []disjointArrayPair    `json:"x-layerdraw-disjoint-arrays,omitempty"`
 	DiffSource           bool                   `json:"x-layerdraw-diff-source,omitempty"`
+	StableAddressOrder   string                 `json:"x-layerdraw-stable-address-order,omitempty"`
 }
 
 type schemaSet struct {
@@ -404,6 +406,7 @@ func schemaClosure(set schemaSet, root *schemaDocument) []*schemaDocument {
 			visitType(current, property)
 		}
 		visitType(current, value.Items)
+		visitType(current, value.PropertyNames)
 		if nested, ok := value.AdditionalProperties.(*schemaType); ok {
 			visitType(current, nested)
 		}
@@ -525,6 +528,22 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		}
 	}
 	if typeValue == "object" {
+		if value.PropertyNames != nil {
+			if err := validateType(set, document, context+".propertyNames", value.PropertyNames, seen); err != nil {
+				return err
+			}
+			propertyNameType := value.PropertyNames
+			if propertyNameType.Ref != "" {
+				target, name, err := resolveRef(set, document, propertyNameType.Ref)
+				if err != nil {
+					return err
+				}
+				propertyNameType = target.Definitions[name]
+			}
+			if nameType, err := scalarType(propertyNameType.Type); err != nil || nameType != "string" {
+				return fmt.Errorf("%s propertyNames must validate strings", context)
+			}
+		}
 		required := map[string]bool{}
 		for _, name := range value.Required {
 			if required[name] {
@@ -781,6 +800,35 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		if value.Items == nil {
 			return fmt.Errorf("%s array requires items", context)
 		}
+		if value.StableAddressOrder != "" {
+			item := value.Items
+			if item.Ref != "" {
+				target, name, err := resolveRef(set, document, item.Ref)
+				if err != nil {
+					return err
+				}
+				item = target.Definitions[name]
+			}
+			ordered := item
+			if value.StableAddressOrder != "$item" {
+				itemType, err := scalarType(item.Type)
+				if err != nil || itemType != "object" || item.Properties[value.StableAddressOrder] == nil {
+					return fmt.Errorf("%s stable-address order selector does not name an item property", context)
+				}
+				ordered = item.Properties[value.StableAddressOrder]
+				if ordered.Ref != "" {
+					target, name, err := resolveRef(set, document, ordered.Ref)
+					if err != nil {
+						return err
+					}
+					ordered = target.Definitions[name]
+				}
+			}
+			orderedType, err := scalarType(ordered.Type)
+			if err != nil || orderedType != "string" {
+				return fmt.Errorf("%s stable-address order selector must resolve to strings", context)
+			}
+		}
 		if value.UniqueItems {
 			item := value.Items
 			if item.Ref != "" {
@@ -1029,6 +1077,7 @@ func goImportAliases(set schemaSet, document *schemaDocument) map[string]string 
 			visit(property)
 		}
 		visit(value.Items)
+		visit(value.PropertyNames)
 		if nested, ok := value.AdditionalProperties.(*schemaType); ok {
 			visit(nested)
 		}
@@ -1603,6 +1652,14 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 				seenItems[text] = true
 			}
 		}
+		if selector, _ := schema["x-layerdraw-stable-address-order"].(string); selector != "" {
+			for index := 1; index < len(items); index++ {
+				left, leftOK := stableAddressOrderValue(items[index-1], selector)
+				right, rightOK := stableAddressOrderValue(items[index], selector)
+				comparison, compared := compareStableAddresses(left, right)
+				if !leftOK || !rightOK || !compared || comparison >= 0 { return fmt.Errorf("%s is not in strict StableSymbol order", path) }
+			}
+		}
 	case "object":
 		object, ok := value.(map[string]any)
 		if !ok { return fmt.Errorf("%s must be an object", path) }
@@ -1613,6 +1670,9 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 			if _, exists := object[name]; !exists { return fmt.Errorf("%s.%s is required", path, name) }
 		}
 		for name, item := range object {
+			if propertyNames, ok := schema["propertyNames"].(map[string]any); ok {
+				if err := validateSchema(documentID, propertyNames, name, path+" property name", depth+1); err != nil { return err }
+			}
 			if rawProperty, exists := properties[name]; exists {
 				property, _ := rawProperty.(map[string]any)
 				if err := validateSchema(documentID, property, item, path+"."+name, depth+1); err != nil { return err }
@@ -1714,6 +1774,62 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		return fmt.Errorf("%s uses unsupported generated schema type %q", path, typeName)
 	}
 	return nil
+}
+
+func stableAddressOrderValue(value any, selector string) (string, bool) {
+	if selector == "$item" {
+		text, ok := value.(string)
+		return text, ok
+	}
+	object, ok := value.(map[string]any)
+	if !ok { return "", false }
+	text, ok := object[selector].(string)
+	return text, ok
+}
+
+func compareStableAddresses(left, right string) (int, bool) {
+	leftOrigin, leftComponents, leftPath, leftOK := stableAddressTuple(left)
+	rightOrigin, rightComponents, rightPath, rightOK := stableAddressTuple(right)
+	if !leftOK || !rightOK { return 0, false }
+	if leftOrigin != rightOrigin { if leftOrigin < rightOrigin { return -1, true }; return 1, true }
+	for index := 0; index < len(leftComponents) && index < len(rightComponents); index++ {
+		if leftComponents[index] != rightComponents[index] { if leftComponents[index] < rightComponents[index] { return -1, true }; return 1, true }
+	}
+	if len(leftComponents) != len(rightComponents) { if len(leftComponents) < len(rightComponents) { return -1, true }; return 1, true }
+	if len(leftPath) != len(rightPath) { if len(leftPath) < len(rightPath) { return -1, true }; return 1, true }
+	for index := range leftPath {
+		leftRank, leftRankOK := stableAddressKindRank(leftPath[index][0])
+		rightRank, rightRankOK := stableAddressKindRank(rightPath[index][0])
+		if !leftRankOK || !rightRankOK { return 0, false }
+		if leftRank != rightRank { if leftRank < rightRank { return -1, true }; return 1, true }
+		if leftPath[index][1] != rightPath[index][1] { if leftPath[index][1] < rightPath[index][1] { return -1, true }; return 1, true }
+	}
+	return 0, true
+}
+
+func stableAddressTuple(value string) (int, []string, [][2]string, bool) {
+	parts := strings.Split(value, ":")
+	if len(parts) < 3 || parts[0] != "ldl" { return 0, nil, nil, false }
+	origin, pathStart := 0, 3
+	components := []string{parts[2]}
+	switch parts[1] {
+	case "project":
+	case "pack":
+		if len(parts) < 4 { return 0, nil, nil, false }
+		origin, pathStart, components = 1, 4, []string{parts[2], parts[3]}
+	default:
+		return 0, nil, nil, false
+	}
+	if (len(parts)-pathStart)%2 != 0 { return 0, nil, nil, false }
+	path := make([][2]string, 0, (len(parts)-pathStart)/2)
+	for index := pathStart; index < len(parts); index += 2 { path = append(path, [2]string{parts[index], parts[index+1]}) }
+	return origin, components, path, true
+}
+
+func stableAddressKindRank(kind string) (int, bool) {
+	ranks := map[string]int{"entity-type": 0, "relation-type": 1, "layer": 2, "entity": 3, "relation": 4, "query": 5, "view": 6, "reference": 7, "column": 8, "constraint": 9, "row": 10, "parameter": 11, "table-column": 12, "export": 13}
+	rank, ok := ranks[kind]
+	return rank, ok
 }
 
 func validatePresenceRule(path string, object map[string]any, rule map[string]any) error {
@@ -1938,6 +2054,12 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasValidLimitCapability(value: Record<string, unknown>): boolean { try { const fallback = BigInt(String(value[\"default_value\"])); const effective = BigInt(String(value[\"effective_maximum\"])); const hard = BigInt(String(value[\"hard_maximum\"])); return fallback <= hard && effective <= hard; } catch { return false; } }\n\n")
 	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
 	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { return new Set(value).size === value.length; }\n\n")
+	body.WriteString("function stableAddressOrderValue(value: unknown, selector: string): string | undefined { if (selector === \"$item\") return typeof value === \"string\" ? value : undefined; return isObject(value) && typeof value[selector] === \"string\" ? value[selector] : undefined; }\n\n")
+	body.WriteString("function hasStableAddressOrder(value: ReadonlyArray<unknown>, selector: string): boolean { for (let index = 1; index < value.length; index++) { const left = stableAddressOrderValue(value[index - 1], selector); const right = stableAddressOrderValue(value[index], selector); if (left === undefined || right === undefined || compareStableAddresses(left, right) >= 0) return false; } return true; }\n\n")
+	body.WriteString("function compareStableAddresses(left: string, right: string): number { const leftTuple = stableAddressTuple(left); const rightTuple = stableAddressTuple(right); if (leftTuple === undefined || rightTuple === undefined) return 0; if (leftTuple.origin !== rightTuple.origin) return leftTuple.origin - rightTuple.origin; for (let index = 0; index < Math.min(leftTuple.components.length, rightTuple.components.length); index++) { const compared = compareASCII(leftTuple.components[index]!, rightTuple.components[index]!); if (compared !== 0) return compared; } if (leftTuple.components.length !== rightTuple.components.length) return leftTuple.components.length - rightTuple.components.length; if (leftTuple.path.length !== rightTuple.path.length) return leftTuple.path.length - rightTuple.path.length; for (let index = 0; index < leftTuple.path.length; index++) { const leftSegment = leftTuple.path[index]!; const rightSegment = rightTuple.path[index]!; const kind = stableAddressKindRank(leftSegment[0]) - stableAddressKindRank(rightSegment[0]); if (kind !== 0) return kind; const id = compareASCII(leftSegment[1], rightSegment[1]); if (id !== 0) return id; } return 0; }\n\n")
+	body.WriteString("function stableAddressTuple(value: string): { origin: number; components: ReadonlyArray<string>; path: ReadonlyArray<readonly [string, string]> } | undefined { const parts = value.split(\":\"); if (parts.length < 3 || parts[0] !== \"ldl\") return undefined; let origin: number; let components: ReadonlyArray<string>; let pathStart: number; if (parts[1] === \"project\") { origin = 0; components = [parts[2]!]; pathStart = 3; } else if (parts[1] === \"pack\" && parts.length >= 4) { origin = 1; components = [parts[2]!, parts[3]!]; pathStart = 4; } else return undefined; if ((parts.length - pathStart) % 2 !== 0) return undefined; const path: Array<readonly [string, string]> = []; for (let index = pathStart; index < parts.length; index += 2) path.push([parts[index]!, parts[index + 1]!]); return {origin, components, path}; }\n\n")
+	body.WriteString("function stableAddressKindRank(kind: string): number { return new Map<string, number>([[\"entity-type\",0],[\"relation-type\",1],[\"layer\",2],[\"entity\",3],[\"relation\",4],[\"query\",5],[\"view\",6],[\"reference\",7],[\"column\",8],[\"constraint\",9],[\"row\",10],[\"parameter\",11],[\"table-column\",12],[\"export\",13]]).get(kind) ?? Number.MAX_SAFE_INTEGER; }\n\n")
+	body.WriteString("function compareASCII(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }\n\n")
 	body.WriteString("function hasDisjointArrays(value: Record<string, unknown>, leftProperty: string, rightProperty: string): boolean { const left = value[leftProperty]; const right = value[rightProperty]; if (!isJSONArray(left) || !isJSONArray(right)) return false; const seen = new Set(left); return right.every((item) => !seen.has(item)); }\n\n")
 	body.WriteString("function hasValidDiffSource(value: Record<string, unknown>): boolean { if (value[\"kind\"] !== \"diff\") return true; const before = value[\"before\"]; const after = value[\"after\"]; if (typeof before !== \"string\" || typeof after !== \"string\" || before.length === 0 || after.length === 0 || before === after) return false; return hasOwn(value, \"query_address\") || (isObject(value[\"arguments\"]) && Object.keys(value[\"arguments\"]).length === 0); }\n\n")
 	body.WriteString("function isRFC3339(value: string): boolean {\n")
@@ -2205,6 +2327,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.UniqueItems {
 			parts = append(parts, "hasUniqueItems("+expression+")")
 		}
+		if value.StableAddressOrder != "" {
+			parts = append(parts, fmt.Sprintf("hasStableAddressOrder(%s, %q)", expression, value.StableAddressOrder))
+		}
 		return strings.Join(parts, " && "), nil
 	case "object":
 		if len(value.Properties) == 0 {
@@ -2213,7 +2338,15 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 				if err != nil {
 					return "", err
 				}
-				return "isObject(" + expression + ") && Object.values(" + expression + ").every((item) => " + item + ")", nil
+				parts := []string{"isObject(" + expression + ")", "Object.values(" + expression + ").every((item) => " + item + ")"}
+				if value.PropertyNames != nil {
+					name, err := tsPredicate(set, document, value.PropertyNames, "key")
+					if err != nil {
+						return "", err
+					}
+					parts = append(parts, "Object.keys("+expression+").every((key) => "+name+")")
+				}
+				return strings.Join(parts, " && "), nil
 			}
 			return "isObject(" + expression + ")", nil
 		}
@@ -2425,6 +2558,7 @@ func tsImports(set schemaSet, document *schemaDocument) map[string][]string {
 			visit(property)
 		}
 		visit(value.Items)
+		visit(value.PropertyNames)
 		if nested, ok := value.AdditionalProperties.(*schemaType); ok {
 			visit(nested)
 		}

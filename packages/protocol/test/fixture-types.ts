@@ -20,7 +20,7 @@ export const typedViewTableColumnSources: ReadonlyArray<ViewTableColumnSource> =
   {kind: "attribute", column_addresses: ["ldl:project:p:entity-type:t:column:c"]},
   {kind: "relation_endpoint", endpoint: "from", field: "display_name"},
   {kind: "derived_count", direction: "both", relation_type_addresses: ["ldl:project:p:relation-type:r"]},
-  {kind: "state", field_path: "review.status"},
+  {kind: "state", field_path: "system.updated_at"},
 ];
 
 // These are intentionally representable host structs; generated encoders must

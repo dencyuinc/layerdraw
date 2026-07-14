@@ -34,6 +34,10 @@
     "x-layerdraw-ordered-range": {"type": "boolean"},
     "x-layerdraw-outcome-envelope": {"type": "boolean"},
     "x-layerdraw-protocol-offer": {"type": "boolean"},
+    "x-layerdraw-stable-address-order": {
+      "type": "string",
+      "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."
+    },
     "x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
     "x-layerdraw-ts-module": {"type": "string", "minLength": 1},
     "x-layerdraw-unique-array-keys": {
