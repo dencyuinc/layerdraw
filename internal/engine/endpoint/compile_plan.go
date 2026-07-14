@@ -72,7 +72,7 @@ const (
 // CompilePlan is an immutable prepared request with a single-use lifecycle.
 // Its exported metadata methods return defensive values. Execute and Abort are
 // safe to call concurrently; Abort is idempotent and cancellation wins until
-// Execute atomically claims final publication.
+// BlobSink makes its atomic successful commit.
 type CompilePlan struct {
 	mu             sync.Mutex
 	compiler       engine.Engine
@@ -320,20 +320,24 @@ func (p *CompilePlan) executePrepared(ctx context.Context, prepared *preparedCom
 		return compileCancelledResponse(p.requestID, p.release)
 	}
 	publishErr := sink.Publish(ctx, cloneOutputBlobs(blobs))
-	aborted := p.finishPublication(ctx)
+	if publishErr == nil {
+		// A nil return is the sink's atomic commit point. A compliant sink must
+		// return an error if ctx was cancelled before that point; Abort racing
+		// after it is therefore later than publication and cannot rewrite success.
+		p.finishPublication(ctx, true)
+		return response, nil
+	}
+	aborted := p.finishPublication(ctx, false)
 	if aborted || errors.Is(publishErr, context.Canceled) || errors.Is(publishErr, context.DeadlineExceeded) {
 		return compileCancelledResponse(p.requestID, p.release)
 	}
-	if publishErr != nil {
-		return compileFailedResponse(p.requestID, p.release, protocolFailure(
-			protocolcommon.ProtocolFailureCategoryIo,
-			FailureCompileBlobSink,
-			"The compiled output blobs could not be published.",
-			true,
-			nil,
-		))
-	}
-	return response, nil
+	return compileFailedResponse(p.requestID, p.release, protocolFailure(
+		protocolcommon.ProtocolFailureCategoryIo,
+		FailureCompileBlobSink,
+		"The compiled output blobs could not be published.",
+		true,
+		nil,
+	))
 }
 
 // Abort is idempotent. It releases retained preparation state immediately for
@@ -369,9 +373,9 @@ func (p *CompilePlan) claimPublication(ctx context.Context) bool {
 	return true
 }
 
-func (p *CompilePlan) finishPublication(ctx context.Context) bool {
+func (p *CompilePlan) finishPublication(ctx context.Context, committed bool) bool {
 	p.mu.Lock()
-	aborted := p.abortRequested || ctx.Err() != nil
+	aborted := !committed && (p.abortRequested || ctx.Err() != nil)
 	if aborted {
 		p.state = compilePlanAborted
 	} else {

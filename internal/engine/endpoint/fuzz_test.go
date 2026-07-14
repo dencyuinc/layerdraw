@@ -353,7 +353,9 @@ func FuzzCompileBlobBoundary(f *testing.F) {
 			ref.Digest = protocolcommon.Digest("sha256:" + strings.Repeat("f", 64))
 		}
 		source := &memoryBlobSource{definitions: []BlobDefinition{{BlobID: ref.BlobID, Reader: io.NopCloser(bytes.NewReader(ownedSource))}}}
-		switch variant % 5 {
+		releases := 0
+		ownedVariant := false
+		switch variant % 8 {
 		case 1:
 			source.definitions = nil
 		case 2:
@@ -362,6 +364,15 @@ func FuzzCompileBlobBoundary(f *testing.F) {
 			ref.Lifetime = protocolcommon.BlobLifetime("invalid")
 		case 4:
 			request.Operation = engineprotocol.CompileRequestEnvelopeOperation("engine.future")
+		case 5:
+			ownedVariant = true
+			source.definitions = []BlobDefinition{{BlobID: ref.BlobID, Owned: &OwnedBlob{Bytes: ownedSource, Release: func() { releases++ }}}}
+		case 6:
+			ownedVariant = true
+			source.definitions = []BlobDefinition{{BlobID: ref.BlobID, Reader: io.NopCloser(bytes.NewReader(ownedSource)), Owned: &OwnedBlob{Bytes: ownedSource, Release: func() { releases++ }}}}
+		case 7:
+			ownedVariant = true
+			source.definitions = []BlobDefinition{{BlobID: ref.BlobID, Owned: &OwnedBlob{Bytes: ownedSource, Release: func() { releases++ }}}, {BlobID: "unreferenced", Owned: &OwnedBlob{Bytes: []byte{}, Release: func() { releases++ }}}}
 		}
 		sink := &memoryBlobSink{}
 		response, err := NewCompileDispatcher(engine.New(engine.BuildInfo{})).DispatchCompile(context.Background(), compileContext(t), request, source, sink)
@@ -377,6 +388,9 @@ func FuzzCompileBlobBoundary(f *testing.F) {
 			}
 		} else if sink.calls != 0 || response.Payload != nil {
 			t.Fatalf("failed/rejected output was published: response=%+v sink=%d", response, sink.calls)
+		}
+		if ownedVariant && releases == 0 {
+			t.Fatal("adopted buffers were not released")
 		}
 	})
 }

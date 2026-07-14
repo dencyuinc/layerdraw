@@ -28,6 +28,7 @@ const (
 	FailureCompileBlobSizeMismatch   = "engine.compile.blob_size_mismatch"
 	FailureCompileBlobDigestMismatch = "engine.compile.blob_digest_mismatch"
 	FailureCompileBlobOversized      = "engine.compile.blob_oversized"
+	FailureCompileBlobLifetime       = "engine.compile.unsupported_blob_lifetime"
 	FailureCompileBlobSink           = "engine.compile.blob_sink_failure"
 )
 

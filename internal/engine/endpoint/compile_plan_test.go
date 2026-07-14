@@ -76,6 +76,9 @@ func TestPrepareCompileReturnsGeneratedTerminalResponsesWithoutBlobIO(t *testing
 			alias.Blob.MediaType = "application/octet-stream"
 			request.Payload.ProjectSourceTree = append(request.Payload.ProjectSourceTree, alias)
 		}, outcome: protocolcommon.OutcomeFailed, code: FailureCompileConflictingBlobRef},
+		{name: "non-request blob lifetime", context: context.Background(), contextValue: negotiated, mutate: func(request *engineprotocol.CompileRequestEnvelope) {
+			request.Payload.ProjectSourceTree[0].Blob.Lifetime = protocolcommon.BlobLifetimeSession
+		}, outcome: protocolcommon.OutcomeFailed, code: FailureCompileBlobLifetime},
 		{name: "unnegotiated", context: context.Background(), mutate: func(*engineprotocol.CompileRequestEnvelope) {}, outcome: protocolcommon.OutcomeFailed, code: FailureCompileUnnegotiated},
 		{name: "cancelled", context: cancelledContext(), contextValue: negotiated, mutate: func(*engineprotocol.CompileRequestEnvelope) {}, outcome: protocolcommon.OutcomeCancelled, code: FailureCompileCancelled},
 	}
@@ -102,6 +105,17 @@ func TestPrepareCompileReturnsGeneratedTerminalResponsesWithoutBlobIO(t *testing
 		t.Fatal(err)
 	}
 	assertTerminalCompileResponse(t, plan, response, protocolcommon.OutcomeRejected)
+
+	declaredOver := cloneCompileRequest(t, base)
+	declaredOver.Payload.ProjectSourceTree[0].Blob.Size = protocolcommon.CanonicalUint64("999999999999")
+	plan, response, err = dispatcher.PrepareCompile(context.Background(), negotiated, declaredOver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTerminalCompileResponse(t, plan, response, protocolcommon.OutcomeFailed)
+	if response.Failure == nil || response.Failure.Code != engine.ErrorCodeProjectSourceBytesExceeded {
+		t.Fatalf("declared aggregate failure=%+v", response.Failure)
+	}
 }
 
 func cancelledContext() context.Context {
@@ -141,7 +155,16 @@ func TestPrepareCompileRequirementsOrderBudgetAndMutationIsolation(t *testing.T)
 	if again[0].Ref.BlobID != "a-types" || again[1].Ref.BlobID != "z-entry" || again[1].References != 2 || plan.AdmissionBudget() != budget {
 		t.Fatalf("plan metadata was mutable: requirements=%+v budget=%+v", again, plan.AdmissionBudget())
 	}
-	plan.Abort()
+	response, err := plan.Execute(context.Background(), &memoryBlobSource{definitions: []BlobDefinition{
+		{BlobID: "z-entry", Reader: io.NopCloser(bytes.NewReader(entry))},
+		{BlobID: "a-types", Reader: io.NopCloser(bytes.NewReader(types))},
+	}}, &memoryBlobSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Outcome == protocolcommon.OutcomeFailed || response.Outcome == protocolcommon.OutcomeCancelled {
+		t.Fatalf("caller mutation crossed into execution: %+v", response)
+	}
 }
 
 func TestPrepareCompileZeroByteRequirementAndBloblessSchemaTerminal(t *testing.T) {
@@ -429,9 +452,53 @@ func TestPrepareCompileCallerMisuse(t *testing.T) {
 	if _, err := (*CompilePlan)(nil).Execute(context.Background(), nil, nil); err == nil {
 		t.Fatal("nil plan accepted")
 	}
+	if (*CompilePlan)(nil).BlobRequirements() != nil || (*CompilePlan)(nil).AdmissionBudget() != (CompileAdmissionBudget{}) {
+		t.Fatal("nil plan metadata was nonzero")
+	}
 	plan := mustPrepareCompile(t, dispatcher, compileContext(t), compileRequest([]byte("project p \"P\" {}")))
 	if _, err := plan.Execute(nil, nil, nil); err == nil {
 		t.Fatal("nil Execute context accepted")
 	}
 	plan.Abort()
+}
+
+func TestCompilePlanningEdgeAccountingAndReleasePaths(t *testing.T) {
+	(*CompilePlan)(nil).Abort()
+	if requirements, bytes, failure := buildBlobRequirements(nil); failure != nil || len(requirements) != 0 || bytes != 0 {
+		t.Fatalf("blobless accounting=%+v bytes=%d failure=%+v", requirements, bytes, failure)
+	}
+	first := protocolcommon.BlobRef{BlobID: "a", Digest: protocolcommon.Digest("sha256:" + strings.Repeat("a", 64)), Lifetime: protocolcommon.BlobLifetimeRequest, MediaType: "application/octet-stream", Size: protocolcommon.CanonicalUint64("9223372036854775807")}
+	second := first
+	second.BlobID = "b"
+	if _, _, failure := buildBlobRequirements([]blobUse{{ref: first}, {ref: second}}); failure == nil || failure.Code != FailureCompileBlobOversized {
+		t.Fatalf("aggregate overflow=%+v", failure)
+	}
+	conflict := first
+	conflict.MediaType = "text/plain"
+	if _, _, failure := buildBlobRequirements([]blobUse{{ref: first}, {ref: conflict}}); failure == nil || failure.Code != FailureCompileConflictingBlobRef {
+		t.Fatalf("conflicting requirement=%+v", failure)
+	}
+
+	value := []byte("x")
+	ref := testBlobRef("x", "application/octet-stream", value)
+	if owned, failure := resolveBlobUses(context.Background(), []blobUse{{ref: ref}}, &memoryBlobSource{definitions: []BlobDefinition{{BlobID: "x", Reader: io.NopCloser(bytes.NewReader(value))}}}); failure != nil || !bytes.Equal(owned["x"], value) {
+		t.Fatalf("resolved=%q failure=%+v", owned["x"], failure)
+	}
+	reader := &trackingReadCloser{reader: bytes.NewReader(value)}
+	ownedReleases := 0
+	_, _, failure := acquireBlobUses(context.Background(), []blobUse{{ref: ref}}, &memoryBlobSource{definitions: []BlobDefinition{{BlobID: "x", Reader: reader, Owned: &OwnedBlob{Bytes: value, Release: func() { ownedReleases++ }}}}})
+	if failure == nil || reader.closes != 1 || ownedReleases != 1 {
+		t.Fatalf("invalid mixed definition failure=%+v closes=%d releases=%d", failure, reader.closes, ownedReleases)
+	}
+
+	request := compileRequest([]byte("project p \"P\" {}"))
+	plan := mustPrepareCompile(t, NewCompileDispatcher(engine.New(engine.BuildInfo{})), compileContext(t), request)
+	if plan.claimPublication(context.Background()) {
+		t.Fatal("unstarted plan claimed publication")
+	}
+	plan.Abort()
+	_, _, releaseFailure := mapCompileInput(context.Background(), compileContext(t), request.Payload, &memoryBlobSource{definitions: []BlobDefinition{{BlobID: "source", Owned: &OwnedBlob{Bytes: []byte("project p \"P\" {}"), Release: func() { panic("release") }}}}})
+	if releaseFailure == nil || releaseFailure.Code != FailureCompileBlobSource {
+		t.Fatalf("mapping release failure=%+v", releaseFailure)
+	}
 }

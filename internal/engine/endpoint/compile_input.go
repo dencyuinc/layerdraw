@@ -77,6 +77,9 @@ func prepareCompileInput(negotiated *NegotiatedContext, input engineprotocol.Com
 }
 
 func mapPreparedCompileInput(prepared preparedCompileInput, owned map[string][]byte) engine.CompileInput {
+	// Attachment slices are already request-owned, so this boundary adopts them
+	// without another whole-blob copy. Engine.Compile performs the canonical
+	// facade's defensive clone before semantic work begins.
 	input := prepared.input
 	mapped := engine.CompileInput{
 		Mode:              engine.CompileMode(input.Mode),
@@ -312,6 +315,10 @@ func buildBlobRequirements(input []blobUse) ([]BlobRequirement, int64, *protocol
 			}
 			next++
 		}
+		if uses[index].ref.Lifetime != protocolcommon.BlobLifetimeRequest {
+			failure := protocolFailure(protocolcommon.ProtocolFailureCategoryTransport, FailureCompileBlobLifetime, "Compile attachments must have request lifetime.", false, nil)
+			return nil, 0, &failure
+		}
 		size, failure := blobSize(uses[index].ref)
 		if failure != nil {
 			return nil, 0, failure
@@ -465,26 +472,29 @@ func (lease *blobLease) Release(ctx context.Context) *protocolcommon.ProtocolFai
 	lease.once.Do(func() {
 		for index := range lease.definitions {
 			definition := lease.definitions[index]
-			var releaseErr error
-			func() {
-				defer func() {
-					if recover() != nil {
-						releaseErr = fmt.Errorf("blob release panic")
-					}
-				}()
-				if definition.Reader != nil {
-					releaseErr = definition.Reader.Close()
-				} else if definition.Owned != nil && definition.Owned.Release != nil {
-					definition.Owned.Release()
+			if definition.Reader != nil {
+				if releaseErr := safeBlobRelease(definition.Reader.Close); releaseErr != nil && lease.failure == nil {
+					lease.failure = blobSourceFailure(ctx, releaseErr)
 				}
-			}()
-			if releaseErr != nil && lease.failure == nil {
-				lease.failure = blobSourceFailure(ctx, releaseErr)
+			}
+			if definition.Owned != nil && definition.Owned.Release != nil {
+				if releaseErr := safeBlobRelease(func() error { definition.Owned.Release(); return nil }); releaseErr != nil && lease.failure == nil {
+					lease.failure = blobSourceFailure(ctx, releaseErr)
+				}
 			}
 		}
 		lease.definitions = nil
 	})
 	return lease.failure
+}
+
+func safeBlobRelease(release func() error) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("blob release panic")
+		}
+	}()
+	return release()
 }
 
 func acquireBlobUses(ctx context.Context, uses []blobUse, source BlobSource) (owned map[string][]byte, lease *blobLease, failure *protocolcommon.ProtocolFailure) {
