@@ -7,11 +7,19 @@ import test from "node:test";
 import {
   decodeCompileRequestEnvelope,
   decodeCompileResponseEnvelope,
+  decodeCanonicalSourcePath,
   decodeEffectiveResourceLimits,
+  decodeExportRecipeBlobRef,
+  decodeQueryRecipeBlobRef,
+  decodeViewRecipeBlobRef,
   decodeHandshakeResponseEnvelope,
   encodeCompileRequestEnvelope,
   encodeCompileResponseEnvelope,
+  encodeCanonicalSourcePath,
   encodeEffectiveResourceLimits,
+  encodeExportRecipeBlobRef,
+  encodeQueryRecipeBlobRef,
+  encodeViewRecipeBlobRef,
   encodeHandshakeResponseEnvelope,
   isCompileRequestEnvelope,
   isCompileResponseEnvelope,
@@ -21,7 +29,9 @@ import {
   decodeBlobRef,
   decodeCanonicalInt64,
   decodeCanonicalNonNegativeInt64,
+  decodeCanonicalNonNegativeSafeInteger,
   decodeCanonicalPositiveInt64,
+  decodeCanonicalPositiveSafeInteger,
   decodeCanonicalSafeInteger,
   decodeCanonicalUint64,
   decodeByteResourceLimitCapability,
@@ -29,9 +39,12 @@ import {
   decodeDigest,
   decodeEndpointInstanceID,
   decodeJsonValue,
+  decodeHandshakeRequest,
   decodeOperationCapability,
   decodeManifestETag,
   decodeProtocolOffer,
+  decodeProtocolVersion,
+  decodeProtocolVersionOrRange,
   decodeProtocolVersionRange,
   decodeRequestedCapabilityStatus,
   decodeReleaseVersion,
@@ -41,16 +54,22 @@ import {
   encodeBlobRef,
   encodeCanonicalInt64,
   encodeCanonicalNonNegativeInt64,
+  encodeCanonicalNonNegativeSafeInteger,
   encodeCanonicalPositiveInt64,
+  encodeCanonicalPositiveSafeInteger,
   encodeCanonicalSafeInteger,
+  encodeCanonicalUint64,
   encodeByteResourceLimitCapability,
   encodeCapabilityID,
   encodeDigest,
   encodeEndpointInstanceID,
   encodeJsonValue,
+  encodeHandshakeRequest,
   encodeOperationCapability,
   encodeManifestETag,
   encodeProtocolOffer,
+  encodeProtocolVersion,
+  encodeProtocolVersionOrRange,
   encodeProtocolVersionRange,
   encodeRequestedCapabilityStatus,
   encodeReleaseVersion,
@@ -72,6 +91,7 @@ import {
   decodeRecipePredicate,
   decodeRecipeRowPredicate,
   decodeSearchField,
+  decodeStableAddress,
   decodeViewPlacement,
   decodeViewRenderSet,
   encodeCompiledExportRecipeDocument,
@@ -85,6 +105,7 @@ import {
   encodeRecipePredicate,
   encodeRecipeRowPredicate,
   encodeSearchField,
+  encodeStableAddress,
   encodeViewPlacement,
   encodeViewRenderSet,
 } from "../dist/semantic.gen.js";
@@ -92,6 +113,7 @@ import {
 const fixtureRoot = new URL("../../../schemas/fixtures/engine/", import.meta.url);
 const commonFixtureRoot = new URL("../../../schemas/fixtures/common/", import.meta.url);
 const conformanceCorpusURL = new URL("../../../schemas/fixtures/conformance/v1.json", import.meta.url);
+const formatCorpusURL = new URL("../../../schemas/fixtures/conformance/formats-v1.json", import.meta.url);
 const exportOptionsCorpusURL = new URL("../../../schemas/fixtures/conformance/export-options-v1.json", import.meta.url);
 const predicateCorpusURL = new URL("../../../schemas/fixtures/conformance/predicates-v1.json", import.meta.url);
 const canonicalEngineRoot = new URL("../../../schemas/fixtures/conformance/engine/", import.meta.url);
@@ -192,9 +214,13 @@ const sharedCodecs = {
   CanonicalFiniteDecimal: [decodeCanonicalFiniteDecimal, encodeCanonicalFiniteDecimal],
   CanonicalInt64: [decodeCanonicalInt64, encodeCanonicalInt64],
   CanonicalNonNegativeInt64: [decodeCanonicalNonNegativeInt64, encodeCanonicalNonNegativeInt64],
+  CanonicalNonNegativeSafeInteger: [decodeCanonicalNonNegativeSafeInteger, encodeCanonicalNonNegativeSafeInteger],
   CanonicalPositiveFiniteDecimal: [decodeCanonicalPositiveFiniteDecimal, encodeCanonicalPositiveFiniteDecimal],
   CanonicalPositiveInt64: [decodeCanonicalPositiveInt64, encodeCanonicalPositiveInt64],
+  CanonicalPositiveSafeInteger: [decodeCanonicalPositiveSafeInteger, encodeCanonicalPositiveSafeInteger],
   CanonicalSafeInteger: [decodeCanonicalSafeInteger, encodeCanonicalSafeInteger],
+  CanonicalSourcePath: [decodeCanonicalSourcePath, encodeCanonicalSourcePath],
+  CanonicalUint64: [decodeCanonicalUint64, encodeCanonicalUint64],
   CompiledExportRecipeDocument: [decodeCompiledExportRecipeDocument, encodeCompiledExportRecipeDocument],
   CompiledQueryRecipeDocument: [decodeCompiledQueryRecipeDocument, encodeCompiledQueryRecipeDocument],
   CompiledViewRecipeDocument: [decodeCompiledViewRecipeDocument, encodeCompiledViewRecipeDocument],
@@ -202,22 +228,29 @@ const sharedCodecs = {
   Digest: [decodeDigest, encodeDigest],
   EndpointInstanceID: [decodeEndpointInstanceID, encodeEndpointInstanceID],
   EffectiveResourceLimits: [decodeEffectiveResourceLimits, encodeEffectiveResourceLimits],
+  ExportRecipeBlobRef: [decodeExportRecipeBlobRef, encodeExportRecipeBlobRef],
   ExportDimension: [decodeExportDimension, encodeExportDimension],
   ExportOptions: [decodeExportOptions, encodeExportOptions],
   JsonValue: [decodeJsonValue, encodeJsonValue],
+  HandshakeRequest: [decodeHandshakeRequest, encodeHandshakeRequest],
   ManifestETag: [decodeManifestETag, encodeManifestETag],
   OperationCapability: [decodeOperationCapability, encodeOperationCapability],
   ProtocolOffer: [decodeProtocolOffer, encodeProtocolOffer],
+  ProtocolVersion: [decodeProtocolVersion, encodeProtocolVersion],
+  ProtocolVersionOrRange: [decodeProtocolVersionOrRange, encodeProtocolVersionOrRange],
   ProtocolVersionRange: [decodeProtocolVersionRange, encodeProtocolVersionRange],
   RecipePredicate: [decodeRecipePredicate, encodeRecipePredicate],
   RecipeRowPredicate: [decodeRecipeRowPredicate, encodeRecipeRowPredicate],
   RequestedCapabilityStatus: [decodeRequestedCapabilityStatus, encodeRequestedCapabilityStatus],
+  QueryRecipeBlobRef: [decodeQueryRecipeBlobRef, encodeQueryRecipeBlobRef],
   ReleaseVersion: [decodeReleaseVersion, encodeReleaseVersion],
   Rfc3339Time: [decodeRfc3339Time, encodeRfc3339Time],
   SearchField: [decodeSearchField, encodeSearchField],
+  StableAddress: [decodeStableAddress, encodeStableAddress],
   TotalItems: [decodeTotalItems, encodeTotalItems],
   UpgradeDiagnosticData: [decodeUpgradeDiagnosticData, encodeUpgradeDiagnosticData],
   ViewPlacement: [decodeViewPlacement, encodeViewPlacement],
+  ViewRecipeBlobRef: [decodeViewRecipeBlobRef, encodeViewRecipeBlobRef],
   ViewRenderSet: [decodeViewRenderSet, encodeViewRenderSet],
 };
 
@@ -241,6 +274,17 @@ test("shared canonical and rejection corpus matches exact bytes", async (context
     const codec = sharedCodecs[vector.type];
     assert.ok(codec, `unknown shared codec ${vector.type}`);
     assert.throws(() => codec[0](vector.input));
+  });
+});
+
+test("shared custom format authority vectors match TypeScript codecs", async (context) => {
+  const corpus = JSON.parse(await readFile(formatCorpusURL, "utf8"));
+  for (const vector of corpus.vectors) await context.test(vector.name, () => {
+    const codec = sharedCodecs[vector.type];
+    assert.ok(codec, `unknown format codec ${vector.type}`);
+    const input = JSON.stringify(vector.value);
+    if (vector.valid) assert.equal(codec[1](codec[0](input)), input);
+    else assert.throws(() => codec[0](input));
   });
 });
 
@@ -274,6 +318,42 @@ test("shared recursive JsonValue limits are exact", async () => {
   const maximum = '"' + "a".repeat(corpus.max_json_bytes - 2) + '"';
   assert.equal(encodeJsonValue(decodeJsonValue(maximum)), maximum);
   assert.throws(() => decodeJsonValue('"' + "a".repeat(corpus.max_json_bytes - 1) + '"'));
+});
+
+test("programmatic JsonValue cycles and depth fail with TypeError", () => {
+  const self = {};
+  self.self = self;
+  assert.throws(() => encodeJsonValue(self), TypeError);
+  const left = {};
+  const right = {};
+  left.right = right;
+  right.left = left;
+  assert.throws(() => encodeJsonValue(left), TypeError);
+
+  let value = "leaf";
+  for (let depth = 0; depth < maxWireJSONDepth; depth++) value = [value];
+  const encoded = encodeJsonValue(value);
+  assert.deepEqual(decodeJsonValue(encoded), value);
+  assert.throws(() => encodeJsonValue([value]), TypeError);
+});
+
+test("canonical byte limit uses emitted bytes for escaped characters and multibyte keys", async (context) => {
+  const byteLength = (value) => new TextEncoder().encode(value).length;
+  for (const fill of ["<", ">", "&", "\u2028", "\u2029"]) await context.test(`text U+${fill.codePointAt(0).toString(16)}`, () => {
+    const base = {field_path: "p", include_in_embedding: false, lexical_weight: 1, text: ""};
+    const emptyBytes = byteLength(encodeSearchField(base));
+    const unitBytes = byteLength(encodeSearchField({...base, text: fill})) - emptyBytes;
+    const available = maxWireJSONBytes - emptyBytes;
+    const text = fill.repeat(Math.floor(available / unitBytes)) + "a".repeat(available % unitBytes);
+    assert.equal(byteLength(encodeSearchField({...base, text})), maxWireJSONBytes);
+    assert.throws(() => encodeSearchField({...base, text: text + "a"}), TypeError);
+  });
+  for (const key of ["界", "😀"]) await context.test(`key U+${key.codePointAt(0).toString(16)}`, () => {
+    const emptyBytes = byteLength(encodeJsonValue({[key]: ""}));
+    const text = "a".repeat(maxWireJSONBytes - emptyBytes);
+    assert.equal(byteLength(encodeJsonValue({[key]: text})), maxWireJSONBytes);
+    assert.throws(() => encodeJsonValue({[key]: text + "a"}), TypeError);
+  });
 });
 
 test("shared outcome and tagged-union mutations are isolated", async (context) => {

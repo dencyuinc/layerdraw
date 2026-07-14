@@ -10,6 +10,7 @@
     "https://json-schema.org/draft/2020-12/vocab/validation": true,
     "https://json-schema.org/draft/2020-12/vocab/meta-data": true,
     "https://json-schema.org/draft/2020-12/vocab/format-annotation": true,
+    "https://json-schema.org/draft/2020-12/vocab/format-assertion": true,
     "https://json-schema.org/draft/2020-12/vocab/content": true,
     "https://schemas.layerdraw.dev/vocab/protocol/v1": true
   },
@@ -19,6 +20,12 @@
   ],
   "properties": {
     "x-layerdraw-go-package": {"type": "string", "minLength": 1},
+    "x-layerdraw-disjoint-arrays": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/disjointArrayPair"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
     "x-layerdraw-limit-capability": {"type": "boolean"},
     "x-layerdraw-max-json-bytes": {"type": "integer", "minimum": 1024},
     "x-layerdraw-max-json-depth": {"type": "integer", "minimum": 1},
@@ -34,6 +41,15 @@
     }
   },
   "$defs": {
+    "disjointArrayPair": {
+      "type": "object",
+      "properties": {
+        "left": {"type": "string", "minLength": 1},
+        "right": {"type": "string", "minLength": 1}
+      },
+      "required": ["left", "right"],
+      "additionalProperties": false
+    },
     "fieldNames": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},

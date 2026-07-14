@@ -268,6 +268,109 @@ func TestGeneratedGoJsonValueIsTyped(t *testing.T) {
 	}
 }
 
+func TestGeneratedGoJsonValueRejectsContradictionsCyclesAndExcessDepth(t *testing.T) {
+	t.Parallel()
+	invalid := []protocolcommon.JsonValue{
+		{Kind: protocolcommon.JsonValueKindNull, Boolean: true},
+		{Kind: protocolcommon.JsonValueKindNull, String: "inactive"},
+		{Kind: protocolcommon.JsonValueKindNull, Array: []protocolcommon.JsonValue{}},
+		{Kind: protocolcommon.JsonValueKindNull, Object: map[string]protocolcommon.JsonValue{}},
+		{Kind: protocolcommon.JsonValueKindBoolean, String: "inactive"},
+		{Kind: protocolcommon.JsonValueKindString, Boolean: true},
+		{Kind: protocolcommon.JsonValueKindArray, Object: map[string]protocolcommon.JsonValue{}},
+		{Kind: protocolcommon.JsonValueKindObject, Array: []protocolcommon.JsonValue{}},
+	}
+	for index, value := range invalid {
+		if _, err := protocolcommon.EncodeJsonValue(value); err == nil {
+			t.Errorf("contradictory JsonValue %d was accepted", index)
+		}
+	}
+
+	self := map[string]protocolcommon.JsonValue{}
+	selfValue := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindObject, Object: self}
+	self["self"] = selfValue
+	if _, err := protocolcommon.EncodeJsonValue(selfValue); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("self cycle did not return a stable validation error: %v", err)
+	}
+	a := map[string]protocolcommon.JsonValue{}
+	b := map[string]protocolcommon.JsonValue{}
+	aValue := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindObject, Object: a}
+	bValue := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindObject, Object: b}
+	a["b"] = bValue
+	b["a"] = aValue
+	if _, err := protocolcommon.EncodeJsonValue(aValue); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("mutual cycle did not return a stable validation error: %v", err)
+	}
+
+	value := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindString, String: "leaf"}
+	for range protocolcommon.MaxWireJSONDepth {
+		value = protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindArray, Array: []protocolcommon.JsonValue{value}}
+	}
+	encoded, err := protocolcommon.EncodeJsonValue(value)
+	if err != nil {
+		t.Fatalf("programmatic depth 128 was rejected: %v", err)
+	}
+	decoded, err := protocolcommon.DecodeJsonValue(encoded)
+	if err != nil || decoded.Kind != protocolcommon.JsonValueKindArray {
+		t.Fatalf("valid recursive value was not preserved: %v", err)
+	}
+	tooDeep := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindArray, Array: []protocolcommon.JsonValue{value}}
+	if _, err := protocolcommon.EncodeJsonValue(tooDeep); err == nil || !strings.Contains(err.Error(), "depth 128") {
+		t.Fatalf("programmatic depth 129 did not return a stable validation error: %v", err)
+	}
+}
+
+func TestGeneratedGoCanonicalByteLimitUsesEmittedBytes(t *testing.T) {
+	for _, fill := range []string{"<", ">", "&", "\u2028", "\u2029"} {
+		fill := fill
+		t.Run(fmt.Sprintf("text_%U", []rune(fill)[0]), func(t *testing.T) {
+			base := semantic.SearchField{FieldPath: "p", IncludeInEmbedding: false, LexicalWeight: 1, Text: ""}
+			empty, err := semantic.EncodeSearchField(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base.Text = fill
+			one, err := semantic.EncodeSearchField(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unitBytes := len(one) - len(empty)
+			available := semantic.MaxWireJSONBytes - len(empty)
+			base.Text = strings.Repeat(fill, available/unitBytes) + strings.Repeat("a", available%unitBytes)
+			maximum, err := semantic.EncodeSearchField(base)
+			if err != nil || len(maximum) != semantic.MaxWireJSONBytes {
+				t.Fatalf("exact emitted-byte maximum failed: bytes=%d err=%v", len(maximum), err)
+			}
+			base.Text += "a"
+			if _, err := semantic.EncodeSearchField(base); err == nil {
+				t.Fatal("value one emitted byte beyond the maximum was accepted")
+			}
+		})
+	}
+	for _, key := range []string{"界", "😀"} {
+		key := key
+		t.Run(fmt.Sprintf("key_%U", []rune(key)[0]), func(t *testing.T) {
+			value := protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindObject, Object: map[string]protocolcommon.JsonValue{
+				key: {Kind: protocolcommon.JsonValueKindString},
+			}}
+			empty, err := protocolcommon.EncodeJsonValue(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := strings.Repeat("a", protocolcommon.MaxWireJSONBytes-len(empty))
+			value.Object[key] = protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindString, String: text}
+			maximum, err := protocolcommon.EncodeJsonValue(value)
+			if err != nil || len(maximum) != protocolcommon.MaxWireJSONBytes {
+				t.Fatalf("multibyte-key maximum failed: bytes=%d err=%v", len(maximum), err)
+			}
+			value.Object[key] = protocolcommon.JsonValue{Kind: protocolcommon.JsonValueKindString, String: text + "a"}
+			if _, err := protocolcommon.EncodeJsonValue(value); err == nil {
+				t.Fatal("multibyte-key value one byte beyond the maximum was accepted")
+			}
+		})
+	}
+}
+
 type sharedConformanceCorpus struct {
 	SchemaVersion        int                                            `json:"schema_version"`
 	MaxJSONBytes         int                                            `json:"max_json_bytes"`
@@ -313,6 +416,46 @@ func TestSharedCanonicalAndRejectionCorpus(t *testing.T) {
 	}
 	if _, err := protocolcommon.DecodeJsonValue([]byte{'"', 0xff, '"'}); err == nil {
 		t.Fatal("malformed UTF-8 was accepted")
+	}
+}
+
+func TestSharedCustomFormatAuthorityVectorsMatchGoCodecs(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "formats-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int `json:"schema_version"`
+		Vectors       []struct {
+			Name  string `json:"name"`
+			Type  string `json:"type"`
+			Value string `json:"value"`
+			Valid bool   `json:"valid"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 {
+		t.Fatalf("unsupported format corpus version %d", corpus.SchemaVersion)
+	}
+	for _, vector := range corpus.Vectors {
+		vector := vector
+		t.Run(vector.Name, func(t *testing.T) {
+			input, err := json.Marshal(vector.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := roundTripSharedWire(vector.Type, input)
+			if vector.Valid {
+				if err != nil || !bytes.Equal(encoded, input) {
+					t.Fatalf("valid format vector rejected or changed: %s, %v", encoded, err)
+				}
+			} else if err == nil {
+				t.Fatalf("invalid format vector accepted: %s", input)
+			}
+		})
 	}
 }
 
@@ -557,6 +700,12 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return protocolcommon.EncodeCanonicalNonNegativeInt64(value)
+	case "CanonicalNonNegativeSafeInteger":
+		value, err := protocolcommon.DecodeCanonicalNonNegativeSafeInteger(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeCanonicalNonNegativeSafeInteger(value)
 	case "CanonicalPositiveFiniteDecimal":
 		value, err := semantic.DecodeCanonicalPositiveFiniteDecimal(input)
 		if err != nil {
@@ -569,12 +718,36 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return protocolcommon.EncodeCanonicalPositiveInt64(value)
+	case "CanonicalPositiveSafeInteger":
+		value, err := protocolcommon.DecodeCanonicalPositiveSafeInteger(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeCanonicalPositiveSafeInteger(value)
 	case "CanonicalSafeInteger":
 		value, err := protocolcommon.DecodeCanonicalSafeInteger(input)
 		if err != nil {
 			return nil, err
 		}
 		return protocolcommon.EncodeCanonicalSafeInteger(value)
+	case "CanonicalSourcePath":
+		value, err := engineprotocol.DecodeCanonicalSourcePath(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeCanonicalSourcePath(value)
+	case "CanonicalUint64":
+		value, err := protocolcommon.DecodeCanonicalUint64(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeCanonicalUint64(value)
+	case "HandshakeRequest":
+		value, err := protocolcommon.DecodeHandshakeRequest(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeHandshakeRequest(value)
 	case "OperationCapability":
 		value, err := protocolcommon.DecodeOperationCapability(input)
 		if err != nil {
@@ -587,6 +760,18 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return protocolcommon.EncodeProtocolOffer(value)
+	case "ProtocolVersion":
+		value, err := protocolcommon.DecodeProtocolVersion(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeProtocolVersion(value)
+	case "ProtocolVersionOrRange":
+		value, err := protocolcommon.DecodeProtocolVersionOrRange(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeProtocolVersionOrRange(value)
 	case "ProtocolVersionRange":
 		value, err := protocolcommon.DecodeProtocolVersionRange(input)
 		if err != nil {
@@ -617,12 +802,36 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeSearchField(value)
+	case "StableAddress":
+		value, err := semantic.DecodeStableAddress(input)
+		if err != nil {
+			return nil, err
+		}
+		return semantic.EncodeStableAddress(value)
 	case "EffectiveResourceLimits":
 		value, err := engineprotocol.DecodeEffectiveResourceLimits(input)
 		if err != nil {
 			return nil, err
 		}
 		return engineprotocol.EncodeEffectiveResourceLimits(value)
+	case "ExportRecipeBlobRef":
+		value, err := engineprotocol.DecodeExportRecipeBlobRef(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeExportRecipeBlobRef(value)
+	case "QueryRecipeBlobRef":
+		value, err := engineprotocol.DecodeQueryRecipeBlobRef(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeQueryRecipeBlobRef(value)
+	case "ViewRecipeBlobRef":
+		value, err := engineprotocol.DecodeViewRecipeBlobRef(input)
+		if err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeViewRecipeBlobRef(value)
 	case "ExportDimension":
 		value, err := semantic.DecodeExportDimension(input)
 		if err != nil {

@@ -204,14 +204,44 @@
     {
       "name": "closed_row_cell_predicate",
       "type": "RecipeRowPredicate",
-      "input": "{\"operator\":\"exists\",\"kind\":\"cell\",\"column_addresses\":[\"ldl:project:p:entity_type:t:column:c\"]}",
-      "expected": "{\"column_addresses\":[\"ldl:project:p:entity_type:t:column:c\"],\"kind\":\"cell\",\"operator\":\"exists\"}"
+      "input": "{\"operator\":\"exists\",\"kind\":\"cell\",\"column_addresses\":[\"ldl:project:p:entity-type:t:column:c\"]}",
+      "expected": "{\"column_addresses\":[\"ldl:project:p:entity-type:t:column:c\"],\"kind\":\"cell\",\"operator\":\"exists\"}"
     },
     {
       "name": "closed_png_export_options",
       "type": "ExportOptions",
       "input": "{\"width\":{\"value\":\"640\",\"kind\":\"value\"},\"scale\":\"1\",\"kind\":\"png\",\"height\":{\"kind\":\"auto\"},\"background\":\"transparent\"}",
       "expected": "{\"background\":\"transparent\",\"height\":{\"kind\":\"auto\"},\"kind\":\"png\",\"scale\":\"1\",\"width\":{\"kind\":\"value\",\"value\":\"640\"}}"
+    },
+    {
+      "name": "canonical_stable_address",
+      "type": "StableAddress",
+      "input": "\"ldl:pack:publisher-name:pack-name:view:overview:export:svg\"",
+      "expected": "\"ldl:pack:publisher-name:pack-name:view:overview:export:svg\""
+    },
+    {
+      "name": "closed_handshake_capability_sets",
+      "type": "HandshakeRequest",
+      "input": "{\"required_capabilities\":[\"engine.compile\"],\"protocols\":[{\"versions\":[{\"version\":\"1.0\",\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],\"supported_range\":\"1.0..1.0\",\"name\":\"engine\"}],\"optional_capabilities\":[\"renderer.svg\"],\"client_release\":\"1.0.0\"}",
+      "expected": "{\"client_release\":\"1.0.0\",\"optional_capabilities\":[\"renderer.svg\"],\"protocols\":[{\"name\":\"engine\",\"supported_range\":\"1.0..1.0\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"}]}],\"required_capabilities\":[\"engine.compile\"]}"
+    },
+    {
+      "name": "request_query_recipe_blob_ref",
+      "type": "QueryRecipeBlobRef",
+      "input": "{\"size\":\"1\",\"media_type\":\"application/vnd.layerdraw.query-recipe.v1+json\",\"lifetime\":\"request\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"blob_id\":\"query\"}",
+      "expected": "{\"blob_id\":\"query\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"request\",\"media_type\":\"application/vnd.layerdraw.query-recipe.v1+json\",\"size\":\"1\"}"
+    },
+    {
+      "name": "request_view_recipe_blob_ref",
+      "type": "ViewRecipeBlobRef",
+      "input": "{\"size\":\"1\",\"media_type\":\"application/vnd.layerdraw.view-recipe.v1+json\",\"lifetime\":\"request\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"blob_id\":\"view\"}",
+      "expected": "{\"blob_id\":\"view\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"request\",\"media_type\":\"application/vnd.layerdraw.view-recipe.v1+json\",\"size\":\"1\"}"
+    },
+    {
+      "name": "request_export_recipe_blob_ref",
+      "type": "ExportRecipeBlobRef",
+      "input": "{\"size\":\"1\",\"media_type\":\"application/vnd.layerdraw.export-recipe.v1+json\",\"lifetime\":\"request\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"blob_id\":\"export\"}",
+      "expected": "{\"blob_id\":\"export\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"request\",\"media_type\":\"application/vnd.layerdraw.export-recipe.v1+json\",\"size\":\"1\"}"
     }
   ],
   "rejection_cases": [
@@ -289,6 +319,24 @@
     ,{"name": "png_export_negative_scale", "type": "ExportOptions", "input": "{\"background\":\"transparent\",\"height\":{\"kind\":\"auto\"},\"kind\":\"png\",\"scale\":\"-0.5\",\"width\":{\"kind\":\"auto\"}}"}
     ,{"name": "effective_limits_zero", "type": "EffectiveResourceLimits", "input": "{\"max_asset_bytes\":\"1\",\"max_assets\":\"1\",\"max_declarations\":\"1\",\"max_pack_bytes\":\"1\",\"max_pack_files\":\"1\",\"max_project_source_bytes\":\"1\",\"max_project_source_files\":\"1\",\"max_raster_dimension\":\"0\",\"max_raster_pixels\":\"1\"}"}
     ,{"name": "upgrade_diagnostic_legacy_shape", "type": "UpgradeDiagnosticData", "input": "{\"available_schema_digests\":[],\"protocol_name\":\"engine\",\"required_capabilities\":[],\"supported_range\":\"1.0\"}"}
+    ,{"name": "stable_address_unknown_origin", "type": "StableAddress", "input": "\"ldl:garbage\""}
+    ,{"name": "stable_address_uppercase_source_id", "type": "StableAddress", "input": "\"ldl:project:UPPER\""}
+    ,{"name": "stable_address_unknown_top_kind", "type": "StableAddress", "input": "\"ldl:project:p:bogus:x\""}
+    ,{"name": "stable_address_excess_path_length", "type": "StableAddress", "input": "\"ldl:project:p:entity:x:row:y:extra:z\""}
+    ,{"name": "stable_address_short_pack_origin", "type": "StableAddress", "input": "\"ldl:pack:publisher\""}
+    ,{"name": "stable_address_invalid_registry_segment", "type": "StableAddress", "input": "\"ldl:pack:publisher--name:pack\""}
+    ,{"name": "stable_address_wrong_owner_child", "type": "StableAddress", "input": "\"ldl:project:p:entity-type:t:row:r\""}
+    ,{"name": "stable_address_pack_project_only_top_kind", "type": "StableAddress", "input": "\"ldl:pack:publisher:pack:entity:e\""}
+    ,{"name": "stable_address_child_on_reference", "type": "StableAddress", "input": "\"ldl:project:p:reference:r:export:e\""}
+    ,{"name": "handshake_duplicate_required_capability", "type": "HandshakeRequest", "input": "{\"client_release\":\"1.0.0\",\"protocols\":[{\"name\":\"engine\",\"supported_range\":\"1.0..1.0\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"}]}],\"required_capabilities\":[\"engine.compile\",\"engine.compile\"],\"optional_capabilities\":[]}"}
+    ,{"name": "handshake_duplicate_optional_capability", "type": "HandshakeRequest", "input": "{\"client_release\":\"1.0.0\",\"protocols\":[{\"name\":\"engine\",\"supported_range\":\"1.0..1.0\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"}]}],\"required_capabilities\":[],\"optional_capabilities\":[\"engine.compile\",\"engine.compile\"]}"}
+    ,{"name": "handshake_required_optional_overlap", "type": "HandshakeRequest", "input": "{\"client_release\":\"1.0.0\",\"protocols\":[{\"name\":\"engine\",\"supported_range\":\"1.0..1.0\",\"versions\":[{\"schema_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"version\":\"1.0\"}]}],\"required_capabilities\":[\"engine.compile\"],\"optional_capabilities\":[\"engine.compile\"]}"}
+    ,{"name": "query_recipe_session_lifetime", "type": "QueryRecipeBlobRef", "input": "{\"blob_id\":\"query\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"session\",\"media_type\":\"application/vnd.layerdraw.query-recipe.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "query_recipe_persistent_lifetime", "type": "QueryRecipeBlobRef", "input": "{\"blob_id\":\"query\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.query-recipe.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "view_recipe_session_lifetime", "type": "ViewRecipeBlobRef", "input": "{\"blob_id\":\"view\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"session\",\"media_type\":\"application/vnd.layerdraw.view-recipe.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "view_recipe_persistent_lifetime", "type": "ViewRecipeBlobRef", "input": "{\"blob_id\":\"view\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.view-recipe.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "export_recipe_session_lifetime", "type": "ExportRecipeBlobRef", "input": "{\"blob_id\":\"export\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"session\",\"media_type\":\"application/vnd.layerdraw.export-recipe.v1+json\",\"size\":\"1\"}"}
+    ,{"name": "export_recipe_persistent_lifetime", "type": "ExportRecipeBlobRef", "input": "{\"blob_id\":\"export\",\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lifetime\":\"persistent\",\"media_type\":\"application/vnd.layerdraw.export-recipe.v1+json\",\"size\":\"1\"}"}
   ],
   "mutation_cases": [
     {"name": "success_with_valid_failure", "fixture": "compile-success.json", "mutation": "add_valid_failure"},

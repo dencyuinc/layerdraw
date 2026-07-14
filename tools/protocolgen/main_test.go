@@ -98,6 +98,26 @@ func TestNormalizeSchemaBytes(t *testing.T) {
 	}
 }
 
+func TestRejectDuplicateJSONObjectKeys(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{`null`, `true`, `"text"`, `123`, `[{"a":1},[false]]`} {
+		if err := rejectDuplicateJSONObjectKeys([]byte(input)); err != nil {
+			t.Errorf("unambiguous JSON %s was rejected: %v", input, err)
+		}
+	}
+	for _, test := range []struct {
+		input, want string
+	}{
+		{`{"a":1,"a":2}`, "duplicate JSON object key"},
+		{`{"a":1,"\u0061":2}`, "duplicate JSON object key"},
+		{`{"a":`, "EOF"},
+	} {
+		if err := rejectDuplicateJSONObjectKeys([]byte(test.input)); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("ambiguous or malformed JSON %s returned %v, want %q", test.input, err, test.want)
+		}
+	}
+}
+
 func TestSchemaDocumentValidationFailures(t *testing.T) {
 	t.Parallel()
 	valid := func() *schemaDocument {
@@ -184,6 +204,9 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 			return value
 		}},
 		{"array without items", "array requires items", func() *schemaType { return &schemaType{Type: "array"} }},
+		{"unique non-string array", "uniqueItems currently requires string", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "boolean"}, UniqueItems: true}
+		}},
 		{"invalid tagged union", "invalid tagged union", func() *schemaType {
 			value := validObject()
 			value.TaggedUnion = &taggedUnion{Property: "missing", Variants: map[string]taggedVariant{"a": {}, "b": {}}}
@@ -254,6 +277,23 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 		{"incomplete ordered range", "ordered range requires", func() *schemaType {
 			value := validObject()
 			value.OrderedRange = true
+			return value
+		}},
+		{"invalid disjoint array", "invalid disjoint array", func() *schemaType {
+			value := validObject()
+			value.DisjointArrays = []disjointArrayPair{{Left: "kind", Right: "kind"}}
+			return value
+		}},
+		{"disjoint rule missing array", "names non-array property", func() *schemaType {
+			value := validObject()
+			value.DisjointArrays = []disjointArrayPair{{Left: "missing", Right: "payload"}}
+			return value
+		}},
+		{"disjoint rule non-string array", "requires string-array property", func() *schemaType {
+			value := validObject()
+			value.Properties["left"] = &schemaType{Type: "array", Items: &schemaType{Type: "boolean"}}
+			value.Properties["right"] = &schemaType{Type: "array", Items: &schemaType{Type: "string"}}
+			value.DisjointArrays = []disjointArrayPair{{Left: "left", Right: "right"}}
 			return value
 		}},
 	}
@@ -351,6 +391,27 @@ func TestSchemaLoaderNormalizesCRLFAndRejectsAmbiguousInputs(t *testing.T) {
 			t.Fatalf("trailing schema JSON was accepted: %v", err)
 		}
 	})
+	for _, test := range []struct {
+		name, group      string
+		old, replacement []byte
+	}{
+		{"duplicate top metadata", "protocol-common", []byte(`"$id":`), []byte(`"$id":"shadowed","\u0024id":`)},
+		{"duplicate definitions", "semantic", []byte(`"$defs": {`), []byte(`"$defs": {}, "\u0024defs": {`)},
+		{"duplicate nested properties", "engine-protocol", []byte(`"properties": {`), []byte(`"properties": {}, "propert\u0069es": {`)},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			temporary := copyProtocolSchemas(t, root, func(group string, data []byte) []byte {
+				if group == test.group {
+					return bytes.Replace(data, test.old, test.replacement, 1)
+				}
+				return data
+			})
+			if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "duplicate JSON object key") {
+				t.Fatalf("duplicate or escaped-equivalent schema key was accepted: %v", err)
+			}
+		})
+	}
 	t.Run("bare carriage return", func(t *testing.T) {
 		temporary := copyProtocolSchemas(t, root, func(group string, data []byte) []byte {
 			if group == "semantic" {
@@ -447,6 +508,38 @@ func TestSchemaLoaderNormalizesCRLFAndRejectsAmbiguousInputs(t *testing.T) {
 			t.Fatalf("optional dialect vocabulary was accepted: %v", err)
 		}
 	})
+	t.Run("dialect format assertion vocabulary", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, nil)
+		path := filepath.Join(temporary, filepath.FromSlash(schemaDialectPath))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = bytes.Replace(data, []byte(`"https://json-schema.org/draft/2020-12/vocab/format-assertion": true`), []byte(`"https://json-schema.org/draft/2020-12/vocab/format-assertion": false`), 1)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), formatAssertionVocabulary) {
+			t.Fatalf("optional format assertion vocabulary was accepted: %v", err)
+		}
+	})
+	t.Run("duplicate dialect vocabulary entry", func(t *testing.T) {
+		temporary := copyProtocolSchemas(t, root, nil)
+		path := filepath.Join(temporary, filepath.FromSlash(schemaDialectPath))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := []byte(`"https://schemas.layerdraw.dev/vocab/protocol/v1": true`)
+		duplicate := []byte(`"https://schemas.layerdraw.dev/vocab/protocol/v1": true, "https://schemas.layerdraw.dev/\u0076ocab/protocol/v1": true`)
+		data = bytes.Replace(data, key, duplicate, 1)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSchemas(temporary); err == nil || !strings.Contains(err.Error(), "duplicate JSON object key") {
+			t.Fatalf("duplicate escaped-equivalent vocabulary entry was accepted: %v", err)
+		}
+	})
 }
 
 func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
@@ -468,6 +561,7 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 		`type CompileRequestEnvelopeOperation string`,
 		`const CompileRequestEnvelopeOperationValue CompileRequestEnvelopeOperation = "engine.compile"`,
 		`type QueryRecipeBlobRefMediaType string`,
+		`const QueryRecipeBlobRefLifetimeValue QueryRecipeBlobRefLifetime = "request"`,
 	} {
 		if !strings.Contains(goTypes, expected) {
 			t.Errorf("generated Go const surface missing %q", expected)
@@ -479,6 +573,8 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 		`media_type: "application/vnd.layerdraw.query-recipe.v1+json";`,
 		`function scanUniqueJSONValue`,
 		`function matchesCanonicalBinary64`,
+		`lifetime: "request";`,
+		`function hasDisjointArrays`,
 	} {
 		if !strings.Contains(tsTypes, expected) {
 			t.Errorf("generated TypeScript surface missing %q", expected)

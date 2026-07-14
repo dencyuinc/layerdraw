@@ -23,6 +23,10 @@ for invariants that stock JSON Schema cannot express, and is split into:
 Every protocol schema declares the required
 `https://schemas.layerdraw.dev/vocab/protocol/v1` vocabulary. A validator that
 does not implement a required vocabulary must refuse to process the schema.
+The dialect also requires the draft 2020-12 Format-Assertion vocabulary. All
+recognized LayerDraw formats are assertions, including canonical integer,
+binary64, protocol-version, source-path, and real-calendar UTC timestamp forms;
+a validator that cannot implement any recognized format must refuse the schema.
 Its assertion keywords have these exact meanings:
 
 - `x-layerdraw-tagged-union` selects one variant from the value of `property`;
@@ -43,6 +47,8 @@ Its assertion keywords have these exact meanings:
   `effective_maximum` to be no greater than `hard_maximum`.
 - `x-layerdraw-unique-array-keys` requires each configured array's objects to
   have distinct values for its configured key.
+- `x-layerdraw-disjoint-arrays` requires the two configured string-array
+  properties to have no value in common.
 
 The root annotations `x-layerdraw-max-json-bytes` and
 `x-layerdraw-max-json-depth` define the shared recursive document limits;
@@ -69,6 +75,11 @@ values permit null, booleans, strings, arrays, and objects but deliberately no
 JSON numbers. Capability identifiers are strings and an unknown identifier is
 never treated as enabled behavior.
 
+Handshake `required_capabilities` and `optional_capabilities` are sets: each is
+internally unique and the two are disjoint. A duplicate or overlap makes the
+entire `HandshakeRequest` invalid before version/capability negotiation; it is
+never deduplicated, reclassified, or mapped to multiple result statuses.
+
 Duplicate object members are invalid at every depth. Member identity is tested
 after JSON escape decoding, so `"name"` and `"\u006eame"` are duplicates.
 The TypeScript JSON value model is limited to own enumerable data properties:
@@ -82,6 +93,11 @@ UTF-8 and every JSON string must contain only Unicode scalar values: malformed
 UTF-8 and unpaired UTF-16 surrogate escapes are rejected. `Rfc3339Time` is an
 exact real-calendar UTC timestamp with uppercase `Z` and, when present, one to
 nine fractional-second digits; offsets and impossible dates are invalid.
+Encoder byte/depth limits apply to the emitted canonical bytes. In particular,
+`<`, `>`, and `&` remain literal while U+2028/U+2029 remain escaped, so an
+implementation-specific pre-encoding escape policy cannot change acceptance.
+Programmatic recursive `JsonValue` inputs reject cycles and container depth 129
+with validation errors; container depth 128 remains valid.
 
 Protocol versions use `major.minor`. Removing or requiring a field, changing a
 closed enum, or changing canonicalization requires a new major version.
@@ -117,6 +133,10 @@ records raw file, group-closure, and aggregate digests; generated Go and
 TypeScript metadata embeds the matching group digest. Engine imports common
 and semantic, semantic imports common, and common imports neither, so the graph
 is acyclic.
+Schema and dialect source also reject duplicate object members recursively
+before decoding, including members whose spellings become equal after JSON
+escape decoding. No decoder's last-member-wins behavior can select digest
+authority for an ambiguous schema.
 
 ## Portable compile boundary
 
@@ -164,6 +184,9 @@ blobs are the canonical JSON representation of the corresponding Language 1
 normalized Query, View, or Export recipe defined by the normative detailed
 LDL specification; ordinary serialization of compiler-internal Go recipe
 aliases is not a wire format.
+All three recipe blob references have the literal lifetime `request`; `session`
+and `persistent` are invalid even though those values remain available to other
+blob roles.
 
 `semantic.Diagnostic` is the Language 1 diagnostic protocol, not the generic
 host diagnostic sketch: it fixes `protocol_version` 1, `LDLdddd` codes,

@@ -209,12 +209,15 @@
         "client_limits": {"$ref": "#/$defs/CompileResourceLimitConstraints"},
         "client_release": {"$ref": "#/$defs/ReleaseVersion"},
         "extensions": {"$ref": "#/$defs/Extensions"},
-        "optional_capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityID"}},
+        "optional_capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityID"}, "uniqueItems": true},
         "protocols": {"type": "array", "items": {"$ref": "#/$defs/ProtocolOffer"}, "minItems": 1},
-        "required_capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityID"}}
+        "required_capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityID"}, "uniqueItems": true}
       },
       "required": ["client_release", "protocols", "required_capabilities", "optional_capabilities"],
       "additionalProperties": false,
+      "x-layerdraw-disjoint-arrays": [
+        {"left": "required_capabilities", "right": "optional_capabilities"}
+      ],
       "x-layerdraw-unique-array-keys": [
         {"array": "protocols", "property": "name"}
       ]

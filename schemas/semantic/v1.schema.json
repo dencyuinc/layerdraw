@@ -1015,7 +1015,7 @@
     },
     "StableAddress": {
       "type": "string",
-      "pattern": "^ldl:[^\\s]+$",
+      "pattern": "^(?:ldl:project:[a-z][a-z0-9_]*(?::(?:(?:(?:entity-type|relation-type):[a-z][a-z0-9_]*(?::(?:column|constraint):[a-z][a-z0-9_]*)?)|(?:(?:entity|relation):[a-z][a-z0-9_]*(?::row:[a-z][a-z0-9_]*)?)|(?:query:[a-z][a-z0-9_]*(?::parameter:[a-z][a-z0-9_]*)?)|(?:view:[a-z][a-z0-9_]*(?::(?:table-column|export):[a-z][a-z0-9_]*)?)|(?:layer|reference):[a-z][a-z0-9_]*))?|ldl:pack:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?::(?:(?:(?:entity-type|relation-type):[a-z][a-z0-9_]*(?::(?:column|constraint):[a-z][a-z0-9_]*)?)|(?:query:[a-z][a-z0-9_]*(?::parameter:[a-z][a-z0-9_]*)?)|(?:view:[a-z][a-z0-9_]*(?::(?:table-column|export):[a-z][a-z0-9_]*)?)|reference:[a-z][a-z0-9_]*))?)$",
       "description": "A canonical LDL StableAddress computed only by the Go Engine."
     },
     "StateReadDependency": {

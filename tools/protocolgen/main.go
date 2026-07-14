@@ -26,9 +26,10 @@ import (
 const generatorVersion = "layerdraw-protocolgen/1"
 
 const (
-	schemaDialectID   = "https://schemas.layerdraw.dev/meta/protocol/v1"
-	schemaVocabulary  = "https://schemas.layerdraw.dev/vocab/protocol/v1"
-	schemaDialectPath = "schemas/meta/layerdraw-protocol-schema-v1.json"
+	schemaDialectID           = "https://schemas.layerdraw.dev/meta/protocol/v1"
+	schemaVocabulary          = "https://schemas.layerdraw.dev/vocab/protocol/v1"
+	formatAssertionVocabulary = "https://json-schema.org/draft/2020-12/vocab/format-assertion"
+	schemaDialectPath         = "schemas/meta/layerdraw-protocol-schema-v1.json"
 )
 
 var (
@@ -76,6 +77,11 @@ type uniqueArrayKey struct {
 	Property string `json:"property"`
 }
 
+type disjointArrayPair struct {
+	Left  string `json:"left"`
+	Right string `json:"right"`
+}
+
 type schemaType struct {
 	Ref                  string                 `json:"$ref,omitempty"`
 	Comment              string                 `json:"$comment,omitempty"`
@@ -93,6 +99,7 @@ type schemaType struct {
 	Maximum              *float64               `json:"maximum,omitempty"`
 	MinLength            *int                   `json:"minLength,omitempty"`
 	MinItems             *int                   `json:"minItems,omitempty"`
+	UniqueItems          bool                   `json:"uniqueItems,omitempty"`
 	OneOf                []*schemaType          `json:"oneOf,omitempty"`
 	TaggedUnion          *taggedUnion           `json:"x-layerdraw-tagged-union,omitempty"`
 	OutcomeEnvelope      bool                   `json:"x-layerdraw-outcome-envelope,omitempty"`
@@ -101,6 +108,7 @@ type schemaType struct {
 	ProtocolOffer        bool                   `json:"x-layerdraw-protocol-offer,omitempty"`
 	LimitCapability      bool                   `json:"x-layerdraw-limit-capability,omitempty"`
 	UniqueArrayKeys      []uniqueArrayKey       `json:"x-layerdraw-unique-array-keys,omitempty"`
+	DisjointArrays       []disjointArrayPair    `json:"x-layerdraw-disjoint-arrays,omitempty"`
 }
 
 type schemaSet struct {
@@ -196,6 +204,9 @@ func loadSchemas(root string) (schemaSet, error) {
 		if err != nil {
 			return schemaSet{}, fmt.Errorf("normalize %s: %w", path, err)
 		}
+		if err := rejectDuplicateJSONObjectKeys(data); err != nil {
+			return schemaSet{}, fmt.Errorf("decode %s: %w", path, err)
+		}
 		var document schemaDocument
 		decoder := json.NewDecoder(bytes.NewReader(data))
 		decoder.DisallowUnknownFields()
@@ -270,6 +281,9 @@ func loadSchemaDialect(root string) (digestSource, error) {
 	if err != nil {
 		return digestSource{}, fmt.Errorf("normalize %s: %w", wanted, err)
 	}
+	if err := rejectDuplicateJSONObjectKeys(data); err != nil {
+		return digestSource{}, fmt.Errorf("decode %s: %w", wanted, err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var document map[string]any
 	if err := decoder.Decode(&document); err != nil {
@@ -283,8 +297,8 @@ func loadSchemaDialect(root string) (digestSource, error) {
 		return digestSource{}, errors.New("LayerDraw schema dialect has an unexpected identity")
 	}
 	vocabulary, ok := document["$vocabulary"].(map[string]any)
-	if !ok || vocabulary[schemaVocabulary] != true {
-		return digestSource{}, fmt.Errorf("LayerDraw schema dialect must require vocabulary %s", schemaVocabulary)
+	if !ok || vocabulary[schemaVocabulary] != true || vocabulary[formatAssertionVocabulary] != true {
+		return digestSource{}, fmt.Errorf("LayerDraw schema dialect must require vocabulary %s and vocabulary %s", schemaVocabulary, formatAssertionVocabulary)
 	}
 	digest := sha256.Sum256(data)
 	return digestSource{path: schemaDialectPath, raw: data, fileDigest: "sha256:" + hex.EncodeToString(digest[:])}, nil
@@ -307,6 +321,67 @@ func normalizeSchemaBytes(data []byte) ([]byte, error) {
 		index++
 	}
 	return normalized, nil
+}
+
+func rejectDuplicateJSONObjectKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	return scanUniqueSchemaJSONValue(decoder)
+}
+
+func scanUniqueSchemaJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]bool{}
+		for decoder.More() {
+			rawKey, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := rawKey.(string)
+			if !ok {
+				return errors.New("JSON object key must be a string")
+			}
+			if seen[key] {
+				return fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			seen[key] = true
+			if err := scanUniqueSchemaJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return errors.New("JSON object is not closed")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanUniqueSchemaJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return errors.New("JSON array is not closed")
+		}
+	default:
+		return errors.New("JSON has an unexpected delimiter")
+	}
+	return nil
 }
 
 func schemaClosure(set schemaSet, root *schemaDocument) []*schemaDocument {
@@ -606,6 +681,29 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				return fmt.Errorf("%s unique array key rule does not name an object property", context)
 			}
 		}
+		for _, rule := range value.DisjointArrays {
+			if rule.Left == "" || rule.Right == "" || rule.Left == rule.Right {
+				return fmt.Errorf("%s has invalid disjoint array rule", context)
+			}
+			for _, property := range []string{rule.Left, rule.Right} {
+				array := value.Properties[property]
+				if array == nil || array.Items == nil {
+					return fmt.Errorf("%s disjoint array rule names non-array property %q", context, property)
+				}
+				item := array.Items
+				if item.Ref != "" {
+					target, name, err := resolveRef(set, document, item.Ref)
+					if err != nil {
+						return err
+					}
+					item = target.Definitions[name]
+				}
+				itemType, err := scalarType(item.Type)
+				if err != nil || itemType != "string" {
+					return fmt.Errorf("%s disjoint array rule requires string-array property %q", context, property)
+				}
+			}
+		}
 		if value.OutcomeEnvelope {
 			for _, property := range []string{"outcome", "payload", "failure", "diagnostics"} {
 				if value.Properties[property] == nil {
@@ -623,6 +721,20 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 	if typeValue == "array" {
 		if value.Items == nil {
 			return fmt.Errorf("%s array requires items", context)
+		}
+		if value.UniqueItems {
+			item := value.Items
+			if item.Ref != "" {
+				target, name, err := resolveRef(set, document, item.Ref)
+				if err != nil {
+					return err
+				}
+				item = target.Definitions[name]
+			}
+			itemType, err := scalarType(item.Type)
+			if err != nil || itemType != "string" {
+				return fmt.Errorf("%s uniqueItems currently requires string items", context)
+			}
 		}
 		return validateType(set, document, context+"[]", value.Items, seen)
 	}
@@ -912,7 +1024,7 @@ func generateGoCodec(set schemaSet, document *schemaDocument) ([]byte, error) {
 		fmt.Fprintf(&body, "// Decode%s decodes and validates one %s JSON value.\n", name, name)
 		fmt.Fprintf(&body, "func Decode%s(data []byte) (%s, error) {\n\tvar result %s\n\traw, err := decodeWireJSON(data)\n\tif err != nil { return result, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return result, err }\n\tdecoder := json.NewDecoder(bytes.NewReader(data))\n\tdecoder.DisallowUnknownFields()\n\tif err := decoder.Decode(&result); err != nil { return result, err }\n\treturn result, nil\n}\n\n", name, name, name, name)
 		fmt.Fprintf(&body, "// Encode%s validates and emits canonical UTF-8 JSON.\n", name)
-		fmt.Fprintf(&body, "func Encode%s(value %s) ([]byte, error) {\n\tif err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil { return nil, err }\n\tencoded, err := json.Marshal(value)\n\tif err != nil { return nil, err }\n\traw, err := decodeWireJSON(encoded)\n\tif err != nil { return nil, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return nil, err }\n\treturn appendCanonicalJSON(nil, raw)\n}\n\n", name, name, name)
+		fmt.Fprintf(&body, "func Encode%s(value %s) ([]byte, error) {\n\tif err := validateGoUnicode(reflect.ValueOf(value), map[visit]bool{}); err != nil { return nil, err }\n\tencoded, err := marshalWireJSON(value)\n\tif err != nil { return nil, err }\n\traw, err := decodeWireJSON(encoded)\n\tif err != nil { return nil, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return nil, err }\n\tcanonical, err := appendCanonicalJSON(nil, raw)\n\tif err != nil { return nil, err }\n\tif err := validateWireJSONBytes(canonical); err != nil { return nil, err }\n\treturn canonical, nil\n}\n\n", name, name, name)
 	}
 	body.WriteString(goCodecRuntime)
 	formatted, err := format.Source([]byte(body.String()))
@@ -938,7 +1050,10 @@ func (value JsonValue) MarshalJSON() ([]byte, error) {
 	raw, err := jsonValueToRaw(value)
 	if err != nil { return nil, err }
 	if err := validateNamed(schemaDocumentID, "JsonValue", raw); err != nil { return nil, err }
-	return appendCanonicalJSON(nil, raw)
+	encoded, err := appendCanonicalJSON(nil, raw)
+	if err != nil { return nil, err }
+	if err := validateWireJSONBytes(encoded); err != nil { return nil, err }
+	return encoded, nil
 }
 
 func jsonValueFromRaw(raw any) (JsonValue, error) {
@@ -971,27 +1086,46 @@ func jsonValueFromRaw(raw any) (JsonValue, error) {
 }
 
 func jsonValueToRaw(value JsonValue) (any, error) {
-	if !utf8.ValidString(value.String) { return nil, errors.New("JsonValue contains malformed Unicode") }
+	return jsonValueToRawState(value, map[visit]bool{}, 0)
+}
+
+func jsonValueToRawState(value JsonValue, active map[visit]bool, depth int) (any, error) {
+	if err := validateJSONValueInactiveFields(value); err != nil { return nil, err }
 	switch value.Kind {
 	case JsonValueKindNull:
 		return nil, nil
 	case JsonValueKindBoolean:
 		return value.Boolean, nil
 	case JsonValueKindString:
+		if !utf8.ValidString(value.String) { return nil, errors.New("JsonValue contains malformed Unicode") }
 		return value.String, nil
 	case JsonValueKindArray:
+		if depth >= MaxWireJSONDepth { return nil, fmt.Errorf("JsonValue exceeds depth %d", MaxWireJSONDepth) }
+		if value.Array != nil {
+			key := visit{pointer: reflect.ValueOf(value.Array).Pointer(), kind: reflect.Slice}
+			if active[key] { return nil, errors.New("JsonValue contains an array cycle") }
+			active[key] = true
+			defer delete(active, key)
+		}
 		items := make([]any, len(value.Array))
 		for index, item := range value.Array {
-			encoded, err := jsonValueToRaw(item)
+			encoded, err := jsonValueToRawState(item, active, depth+1)
 			if err != nil { return nil, err }
 			items[index] = encoded
 		}
 		return items, nil
 	case JsonValueKindObject:
+		if depth >= MaxWireJSONDepth { return nil, fmt.Errorf("JsonValue exceeds depth %d", MaxWireJSONDepth) }
+		if value.Object != nil {
+			key := visit{pointer: reflect.ValueOf(value.Object).Pointer(), kind: reflect.Map}
+			if active[key] { return nil, errors.New("JsonValue contains an object cycle") }
+			active[key] = true
+			defer delete(active, key)
+		}
 		items := make(map[string]any, len(value.Object))
 		for key, item := range value.Object {
 			if !utf8.ValidString(key) { return nil, errors.New("JsonValue object key contains malformed Unicode") }
-			encoded, err := jsonValueToRaw(item)
+			encoded, err := jsonValueToRawState(item, active, depth+1)
 			if err != nil { return nil, err }
 			items[key] = encoded
 		}
@@ -1001,9 +1135,39 @@ func jsonValueToRaw(value JsonValue) (any, error) {
 	}
 }
 
+func validateJSONValueInactiveFields(value JsonValue) error {
+	invalidBoolean := value.Boolean
+	invalidString := value.String != ""
+	invalidArray := value.Array != nil
+	invalidObject := value.Object != nil
+	switch value.Kind {
+	case JsonValueKindNull:
+		if invalidBoolean || invalidString || invalidArray || invalidObject { return errors.New("JsonValue null kind has an active variant field") }
+	case JsonValueKindBoolean:
+		if invalidString || invalidArray || invalidObject { return errors.New("JsonValue boolean kind has an inactive variant field") }
+	case JsonValueKindString:
+		if invalidBoolean || invalidArray || invalidObject { return errors.New("JsonValue string kind has an inactive variant field") }
+	case JsonValueKindArray:
+		if invalidBoolean || invalidString || invalidObject { return errors.New("JsonValue array kind has an inactive variant field") }
+	case JsonValueKindObject:
+		if invalidBoolean || invalidString || invalidArray { return errors.New("JsonValue object kind has an inactive variant field") }
+	default:
+		return fmt.Errorf("unknown JsonValue kind %q", value.Kind)
+	}
+	return nil
+}
+
 `
 
 const goCodecRuntime = `type visit struct { pointer uintptr; kind reflect.Kind }
+
+func marshalWireJSON(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil { return nil, err }
+	return bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'}), nil
+}
 
 func validateGoUnicode(value reflect.Value, seen map[visit]bool) error {
 	if !value.IsValid() { return nil }
@@ -1339,8 +1503,15 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		if !ok { return fmt.Errorf("%s must be an array", path) }
 		if minimum, ok := schema["minItems"].(float64); ok && len(items) < int(minimum) { return fmt.Errorf("%s has too few items", path) }
 		itemSchema, _ := schema["items"].(map[string]any)
+		seenItems := map[string]bool{}
 		for index, item := range items {
 			if err := validateSchema(documentID, itemSchema, item, fmt.Sprintf("%s[%d]", path, index), depth+1); err != nil { return err }
+			if unique, _ := schema["uniqueItems"].(bool); unique {
+				text, ok := item.(string)
+				if !ok { return fmt.Errorf("%s uniqueItems requires generated string items", path) }
+				if seenItems[text] { return fmt.Errorf("%s repeats item %q", path, text) }
+				seenItems[text] = true
+			}
 		}
 	case "object":
 		object, ok := value.(map[string]any)
@@ -1405,6 +1576,21 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 					key, _ := item[propertyName].(string)
 					if seen[key] { return fmt.Errorf("%s.%s repeats %s %q", path, arrayName, propertyName, key) }
 					seen[key] = true
+				}
+			}
+		}
+		if rules, ok := schema["x-layerdraw-disjoint-arrays"].([]any); ok {
+			for _, rawRule := range rules {
+				rule, _ := rawRule.(map[string]any)
+				leftName, _ := rule["left"].(string)
+				rightName, _ := rule["right"].(string)
+				left, _ := object[leftName].([]any)
+				right, _ := object[rightName].([]any)
+				seen := map[string]bool{}
+				for _, rawItem := range left { item, _ := rawItem.(string); seen[item] = true }
+				for _, rawItem := range right {
+					item, _ := rawItem.(string)
+					if seen[item] { return fmt.Errorf("%s.%s and %s.%s overlap at %q", path, leftName, path, rightName, item) }
 				}
 			}
 		}
@@ -1584,10 +1770,12 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {\n")
 	body.WriteString("  return Object.keys(value).every((key) => allowed.has(key));\n")
 	body.WriteString("}\n\n")
-	body.WriteString("function isJSONCompatible(value: unknown): boolean {\n")
-	body.WriteString("  if (value === null || typeof value === \"string\" || typeof value === \"boolean\") return true;\n")
-	body.WriteString("  if (isJSONArray(value)) return value.every(isJSONCompatible);\n")
-	body.WriteString("  return isObject(value) && Object.values(value).every(isJSONCompatible);\n")
+	body.WriteString("function isJSONCompatible(value: unknown, active: Set<object> = new Set<object>(), depth = 0): boolean {\n")
+	body.WriteString("  if (value === null || typeof value === \"boolean\") return true;\n")
+	body.WriteString("  if (typeof value === \"string\") return hasScalarUnicode(value);\n")
+	body.WriteString("  const array = isJSONArray(value); if (!array && !isObject(value)) return false;\n")
+	body.WriteString("  if (depth >= maxWireJSONDepth || active.has(value)) return false; active.add(value);\n")
+	body.WriteString("  try { return array ? value.every((item) => isJSONCompatible(item, active, depth + 1)) : Object.values(value).every((item) => isJSONCompatible(item, active, depth + 1)); } finally { active.delete(value); }\n")
 	body.WriteString("}\n\n")
 	body.WriteString("function hasScalarUnicode(value: unknown): value is string {\n")
 	body.WriteString("  if (typeof value !== \"string\") return false;\n")
@@ -1633,6 +1821,8 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasValidProtocolOffer(value: Record<string, unknown>): boolean { const range = value[\"supported_range\"]; const bindings = value[\"versions\"]; if (typeof range !== \"string\" || !isJSONArray(bindings)) return false; const parsedRange = parseProtocolVersionRange(range); if (parsedRange === undefined) return false; const seen = new Set<string>(); for (const raw of bindings) { if (!isObject(raw) || typeof raw[\"version\"] !== \"string\") return false; const text = raw[\"version\"]; const version = parseProtocolVersion(text); if (version === undefined || compareProtocolVersions(version, parsedRange[0]) < 0 || compareProtocolVersions(version, parsedRange[1]) > 0 || seen.has(text)) return false; seen.add(text); } return true; }\n\n")
 	body.WriteString("function hasValidLimitCapability(value: Record<string, unknown>): boolean { try { const fallback = BigInt(String(value[\"default_value\"])); const effective = BigInt(String(value[\"effective_maximum\"])); const hard = BigInt(String(value[\"hard_maximum\"])); return fallback <= hard && effective <= hard; } catch { return false; } }\n\n")
 	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
+	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { return new Set(value).size === value.length; }\n\n")
+	body.WriteString("function hasDisjointArrays(value: Record<string, unknown>, leftProperty: string, rightProperty: string): boolean { const left = value[leftProperty]; const right = value[rightProperty]; if (!isJSONArray(left) || !isJSONArray(right)) return false; const seen = new Set(left); return right.every((item) => !seen.has(item)); }\n\n")
 	body.WriteString("function isRFC3339(value: string): boolean {\n")
 	body.WriteString("  const match = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$/.exec(value);\n")
 	body.WriteString("  if (match === null) return false; const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]); const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0); const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; return day >= 1 && day <= days[month - 1]!;\n")
@@ -1657,6 +1847,9 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 		predicate, err := tsPredicate(set, document, definition, "value")
 		if err != nil {
 			return nil, fmt.Errorf("generate TypeScript validator %s.%s: %w", document.Module, name, err)
+		}
+		if name == "JsonValue" {
+			predicate = "isJSONCompatible(value)"
 		}
 		fmt.Fprintf(&body, "\nexport function is%s(value: unknown): value is %s {\n  return %s;\n}\n", name, name, predicate)
 		fmt.Fprintf(&body, "\nexport function decode%s(input: string): %s {\n  validateWireJSONText(input);\n  const value: unknown = JSON.parse(input);\n  if (!is%s(value)) throw new TypeError(%q);\n  return value;\n}\n", name, name, name, "invalid "+name)
@@ -1874,6 +2067,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.MinItems != nil {
 			parts = append(parts, fmt.Sprintf("%s.length >= %d", expression, *value.MinItems))
 		}
+		if value.UniqueItems {
+			parts = append(parts, "hasUniqueItems("+expression+")")
+		}
 		return strings.Join(parts, " && "), nil
 	case "object":
 		if len(value.Properties) == 0 {
@@ -1962,6 +2158,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		}
 		for _, rule := range value.UniqueArrayKeys {
 			parts = append(parts, fmt.Sprintf("hasUniqueArrayKey(%s, %q, %q)", expression, rule.Array, rule.Property))
+		}
+		for _, rule := range value.DisjointArrays {
+			parts = append(parts, fmt.Sprintf("hasDisjointArrays(%s, %q, %q)", expression, rule.Left, rule.Right))
 		}
 		return strings.Join(parts, " && "), nil
 	default:

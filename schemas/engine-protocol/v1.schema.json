@@ -83,7 +83,7 @@
       "properties": {
         "blob_id": {"type": "string", "minLength": 1},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "lifetime": {"type": "string", "const": "request"},
         "media_type": {"type": "string", "const": "application/vnd.layerdraw.export-recipe.v1+json"},
         "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },
@@ -148,7 +148,7 @@
       "properties": {
         "blob_id": {"type": "string", "minLength": 1},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "lifetime": {"type": "string", "const": "request"},
         "media_type": {"type": "string", "const": "application/vnd.layerdraw.query-recipe.v1+json"},
         "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },
@@ -161,7 +161,7 @@
       "properties": {
         "blob_id": {"type": "string", "minLength": 1},
         "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "lifetime": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobLifetime"},
+        "lifetime": {"type": "string", "const": "request"},
         "media_type": {"type": "string", "const": "application/vnd.layerdraw.view-recipe.v1+json"},
         "size": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },

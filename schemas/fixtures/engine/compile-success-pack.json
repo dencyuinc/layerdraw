@@ -35,7 +35,7 @@
           "media_type": "application/vnd.layerdraw.normalized-pack.v1+json",
           "size": "96"
         },
-        "pack_address": "ldl:pack:fixture"
+        "pack_address": "ldl:pack:fixture:pack"
       },
       "search_documents": []
     },
@@ -55,7 +55,7 @@
       "assets": [], "bindings": [], "exports": [], "files": [],
       "schema_version": 1, "subjects": []
     },
-    "stable_addresses": ["ldl:pack:fixture"],
+    "stable_addresses": ["ldl:pack:fixture:pack"],
     "subject_semantic_hashes": [],
     "subtree_hashes": []
   },

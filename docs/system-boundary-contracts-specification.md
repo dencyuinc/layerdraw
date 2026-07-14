@@ -256,6 +256,10 @@ OperationCapability
 
 `enabled=true`は`unavailable_reason`を禁止し、`enabled=false`は理由を必須とする。
 `capability_statuses`はrequestのrequired / optional capability IDごとに一意な結果を返す。
+requestの`required_capabilities`と`optional_capabilities`はそれぞれ重複を禁止し、
+両集合のoverlapも禁止する。重複またはoverlapを持つHandshakeRequestはnegotiation前に
+wire validation errorとしてrequest全体をrejectし、deduplicate、required/optional間の
+再分類、複数statusへの展開を行わない。
 未知のoptional IDはrequest全体を失敗させず、`enabled=false`かつ
 `unavailable_reason=unsupported`として明示する。選択アルゴリズムとoverlap policyはIssue #28が所有する。
 

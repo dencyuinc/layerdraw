@@ -31,11 +31,63 @@ function protocolRange(value) {
   return lower !== undefined && upper !== undefined && lower[0] === upper[0] && compareVersion(lower, upper) <= 0 ? [lower, upper] : undefined;
 }
 
+function canonicalInteger(value, minimum, maximum, pattern) {
+  if (!pattern.test(value)) return false;
+  try { const parsed = BigInt(value); return parsed >= minimum && parsed <= maximum; } catch { return false; }
+}
+
+function canonicalBinary64(value, positive) {
+  if (!/^-?(0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-][1-9][0-9]*)?$/.test(value)) return false;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && !Object.is(parsed, -0) && (!positive || parsed > 0) && String(parsed) === value;
+}
+
+function canonicalSourcePath(value) {
+  return value !== "" && !value.startsWith("/") && !value.includes("\\") && !value.includes("\0") &&
+    value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function realUTCDateTime(value) {
+  const match = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?Z$/.exec(value);
+  if (match === null) return false;
+  const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return day <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+function addLayerDrawFormats(ajv) {
+  const signed = /^(0|-[1-9][0-9]*|[1-9][0-9]*)$/;
+  const unsigned = /^(0|[1-9][0-9]*)$/;
+  const positive = /^[1-9][0-9]*$/;
+  ajv.addFormat("int64-decimal", {type: "string", validate: (value) => canonicalInteger(value, -(2n ** 63n), (2n ** 63n) - 1n, signed)});
+  ajv.addFormat("positive-int64-decimal", {type: "string", validate: (value) => canonicalInteger(value, 1n, (2n ** 63n) - 1n, positive)});
+  ajv.addFormat("nonnegative-int64-decimal", {type: "string", validate: (value) => canonicalInteger(value, 0n, (2n ** 63n) - 1n, unsigned)});
+  ajv.addFormat("uint64-decimal", {type: "string", validate: (value) => canonicalInteger(value, 0n, (2n ** 64n) - 1n, unsigned)});
+  ajv.addFormat("safe-integer-decimal", {type: "string", validate: (value) => canonicalInteger(value, -(2n ** 53n) + 1n, (2n ** 53n) - 1n, signed)});
+  ajv.addFormat("positive-safe-integer-decimal", {type: "string", validate: (value) => canonicalInteger(value, 1n, (2n ** 53n) - 1n, positive)});
+  ajv.addFormat("nonnegative-safe-integer-decimal", {type: "string", validate: (value) => canonicalInteger(value, 0n, (2n ** 53n) - 1n, unsigned)});
+  ajv.addFormat("finite-binary64-decimal", {type: "string", validate: (value) => canonicalBinary64(value, false)});
+  ajv.addFormat("positive-finite-binary64-decimal", {type: "string", validate: (value) => canonicalBinary64(value, true)});
+  ajv.addFormat("protocol-version", {type: "string", validate: (value) => protocolVersion(value) !== undefined});
+  ajv.addFormat("protocol-version-range", {type: "string", validate: (value) => protocolRange(value) !== undefined});
+  ajv.addFormat("protocol-version-or-range", {type: "string", validate: (value) => protocolVersion(value) !== undefined || protocolRange(value) !== undefined});
+  ajv.addFormat("canonical-source-path", {type: "string", validate: canonicalSourcePath});
+  ajv.addFormat("date-time", {type: "string", validate: realUTCDateTime});
+}
+
 function addLayerDrawVocabulary(ajv) {
   ajv.addKeyword({keyword: "x-layerdraw-go-package", schemaType: "string", errors: false, validate: () => true});
   ajv.addKeyword({keyword: "x-layerdraw-max-json-bytes", schemaType: "number", errors: false, validate: () => true});
   ajv.addKeyword({keyword: "x-layerdraw-max-json-depth", schemaType: "number", errors: false, validate: () => true});
   ajv.addKeyword({keyword: "x-layerdraw-ts-module", schemaType: "string", errors: false, validate: () => true});
+  ajv.addKeyword({keyword: "x-layerdraw-disjoint-arrays", schemaType: "array", errors: false, validate(rules, data) {
+    if (data === null || typeof data !== "object" || Array.isArray(data)) return true;
+    return rules.every((rule) => {
+      if (!Array.isArray(data[rule.left]) || !Array.isArray(data[rule.right])) return false;
+      const left = new Set(data[rule.left]);
+      return data[rule.right].every((item) => !left.has(item));
+    });
+  }});
   ajv.addKeyword({keyword: "x-layerdraw-tagged-union", schemaType: "object", errors: false, validate(rule, data) {
     if (data === null || typeof data !== "object" || Array.isArray(data)) return true;
     const variant = rule.variants[String(data[rule.property])];
@@ -94,12 +146,23 @@ async function authority() {
     readJSON("semantic/v1.schema.json"),
     readJSON("engine-protocol/v1.schema.json"),
   ]);
-  const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: false});
+  const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: true});
   addLayerDrawVocabulary(ajv);
+  addLayerDrawFormats(ajv);
   ajv.addMetaSchema(meta);
   for (const document of documents) ajv.addSchema(document);
   return (id, name) => ajv.compile({$ref: `${id}#/$defs/${name}`});
 }
+
+test("published dialect requires format assertion and every codec-critical format agrees with authority vectors", async (context) => {
+  const meta = await readJSON("meta/layerdraw-protocol-schema-v1.json");
+  assert.equal(meta.$vocabulary["https://json-schema.org/draft/2020-12/vocab/format-assertion"], true);
+  const compile = await authority();
+  const corpus = await readJSON("fixtures/conformance/formats-v1.json");
+  for (const vector of corpus.vectors) await context.test(vector.name, () => {
+    assert.equal(compile(vector.schema_id, vector.type)(vector.value), vector.valid);
+  });
+});
 
 test("published LayerDraw schema vocabulary asserts unions, outcomes, ranges, and offers", async () => {
   const compile = await authority();
@@ -120,6 +183,17 @@ test("published LayerDraw schema vocabulary asserts unions, outcomes, ranges, an
   assert.equal(offer({name: "engine", supported_range: "1.9..2.0", versions: [{version: "1.9", schema_digest: digest}]}), false);
   assert.equal(offer({name: "engine", supported_range: "1.0..1.2", versions: [{version: "1.3", schema_digest: digest}]}), false);
 
+  const handshake = compile(common, "HandshakeRequest");
+  const handshakeBase = {client_release: "1.0.0", protocols: [{name: "engine", supported_range: "1.0..1.0", versions: [{version: "1.0", schema_digest: digest}]}], required_capabilities: ["engine.compile"], optional_capabilities: ["renderer.svg"]};
+  assert.equal(handshake(handshakeBase), true);
+  assert.equal(handshake({...handshakeBase, required_capabilities: ["engine.compile", "engine.compile"]}), false);
+  assert.equal(handshake({...handshakeBase, optional_capabilities: ["engine.compile"]}), false);
+
+  const stableAddress = compile(semantic, "StableAddress");
+  assert.equal(stableAddress("ldl:project:p:entity-type:t:column:c"), true);
+  assert.equal(stableAddress("ldl:pack:publisher:pack:entity:e"), false);
+  assert.equal(stableAddress("ldl:project:p:entity-type:t:row:r"), false);
+
   const predicate = compile(semantic, "RecipePredicate");
   assert.equal(predicate({kind: "field", field: "id", operator: "eq", value: {kind: "scalar", scalar_value: {kind: "string", string_value: "x"}}}), true);
   assert.equal(predicate({kind: "field"}), false);
@@ -129,4 +203,12 @@ test("published LayerDraw schema vocabulary asserts unions, outcomes, ranges, an
   const base = {entry_path: "main.ldl", installed_pack_tree: [], mode: "project", project_source_tree: [{path: "main.ldl", blob: {blob_id: "b", digest, lifetime: "request", media_type: "text/plain", size: "1"}}], referenced_assets: [], resolved_dependencies: {format: "layerdraw-resolved", format_version: 1, installs: [], language: 1}, resource_limits: {}};
   assert.equal(compileInput(base), true);
   assert.equal(compileInput({...base, mode: "pack", root_pack_id: "publisher/pack"}), false);
+
+  for (const [name, mediaType] of [["QueryRecipeBlobRef", "query"], ["ViewRecipeBlobRef", "view"], ["ExportRecipeBlobRef", "export"]]) {
+    const recipeRef = compile(engine, name);
+    const value = {blob_id: mediaType, digest, lifetime: "request", media_type: `application/vnd.layerdraw.${mediaType}-recipe.v1+json`, size: "1"};
+    assert.equal(recipeRef(value), true);
+    assert.equal(recipeRef({...value, lifetime: "session"}), false);
+    assert.equal(recipeRef({...value, lifetime: "persistent"}), false);
+  }
 });
