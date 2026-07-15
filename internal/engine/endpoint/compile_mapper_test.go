@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -479,6 +480,42 @@ func TestDirectCompleteRecipeMappingWithOptionalValues(t *testing.T) {
 	badExport.Address = "other"
 	if _, err := mapExportRecipe(exportInput, badExport); err == nil {
 		t.Fatal("mixed Export generation accepted")
+	}
+}
+
+func TestCompiledViewShapeAuthority(t *testing.T) {
+	if err := applyCompiledViewShape(&semantic.ViewRecipeShape{Kind: "context"}, view.Shape{Kind: view.ShapeTable}); err == nil {
+		t.Fatal("mismatched shape kind accepted")
+	}
+	if err := applyCompiledViewShape(&semantic.ViewRecipeShape{Kind: "context"}, view.Shape{Kind: view.ShapeContext}); err != nil {
+		t.Fatalf("non-table shape rejected: %v", err)
+	}
+	compiled := view.Shape{Kind: view.ShapeTable, Table: &view.TableShape{Columns: []view.TableColumn{{ID: "column", Address: "ldl:project:p:view:v:table-column:column", ValueType: view.TableValueType{Kind: view.TableValueStableAddress}}}}}
+	if err := applyCompiledViewShape(&semantic.ViewRecipeShape{Kind: "table"}, compiled); err == nil {
+		t.Fatal("missing normalized table accepted")
+	}
+	result := semantic.ViewRecipeShape{Kind: "table", Table: &semantic.ViewTableShape{Columns: []semantic.ViewTableColumn{{ID: "other", Address: "ldl:project:p:view:v:table-column:column"}}}}
+	if err := applyCompiledViewShape(&result, compiled); err == nil {
+		t.Fatal("mismatched table column identity accepted")
+	}
+	result.Table.Columns[0].ID = "column"
+	if err := applyCompiledViewShape(&result, compiled); err != nil || result.Table.Columns[0].ValueType.Kind != "stable_address" {
+		t.Fatalf("valid compiled table shape rejected: %v value=%+v", err, result.Table.Columns[0].ValueType)
+	}
+
+	format := definition.StringFormatEmail
+	scalar, err := mapTableValueType(view.TableValueType{Kind: view.TableValueScalar, ScalarType: definition.ScalarEnum, EnumValues: []string{"z", "a"}, Format: &format})
+	if err != nil || scalar.ScalarType == nil || scalar.EnumValues == nil || !reflect.DeepEqual(*scalar.EnumValues, []string{"a", "z"}) || scalar.Format == nil {
+		t.Fatalf("scalar table value mapping failed: %+v err=%v", scalar, err)
+	}
+	if _, err := mapTableValueType(view.TableValueType{Kind: view.TableValueScalar}); err == nil {
+		t.Fatal("scalar table value without scalar type accepted")
+	}
+	if _, err := mapTableValueType(view.TableValueType{Kind: view.TableValueStringSet, ScalarType: definition.ScalarString}); err == nil {
+		t.Fatal("non-scalar table value with scalar metadata accepted")
+	}
+	if _, err := mapTableValueType(view.TableValueType{Kind: "unknown"}); err == nil {
+		t.Fatal("unknown table value kind accepted")
 	}
 }
 
