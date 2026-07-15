@@ -45,6 +45,7 @@ test("host sends exact transfers, observes immediate detachment, and returns own
   assert.deepEqual([...new Uint8Array(response.control)], [1, 2, 3]);
   assert.deepEqual([...new Uint8Array(response.blobs[0].bytes)], [4, 5]);
   await transport.dispose();
+  await transport.closed;
   assert.equal(harness.worker.terminated, true);
 });
 
@@ -60,6 +61,7 @@ test("host enforces single flight and does not claim same-worker hard cancellati
   await first.accepted;
   transport.terminate();
   await assert.rejects(first.response, isCode("engine.worker.terminated_by_caller"));
+  await transport.closed;
   assert.throws(() => transport.request({exchangeID: "exchange-3", control: bytes(3), blobs: []}), isCode("engine.worker.terminated_by_caller"));
   await nextTask();
 });
@@ -71,6 +73,7 @@ test("crash invalidates the endpoint while explicit replacement gets a fresh gen
   const exchange = crashed.request({exchangeID: "exchange-1", control: bytes(255), blobs: []});
   await exchange.accepted;
   await assert.rejects(exchange.response, isCode("engine.worker.crashed"));
+  await crashed.closed;
 
   const replacementHarness = linkedWorkerHarness();
   const replacement = createEngineWorkerTransport(options(replacementHarness, {endpointGeneration: "test-generation-2"}));

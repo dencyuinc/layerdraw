@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import {createEngineWorkerTransport, EngineWorkerTransportError} from "../../dist/index.js";
+import {createWasmEngineClient} from "@layerdraw/engine-client/wasm";
 import {createEngineWorkerTransportWithFactory} from "../../dist/host.js";
-import {encode, handshakeAndCompileProjectAndPack, releaseManifestDigest, sha256} from "../shared/real-engine.mjs";
+import {
+  assertPortableCompileParityOutcome,
+  encode,
+  handshakeAndCompileProjectAndPack,
+  portableParityInput,
+  releaseManifestDigest,
+  sha256,
+} from "../shared/real-engine.mjs";
 
 const manifestResponse = await fetch("../../dist/engine-wasm.manifest.json", {cache: "no-store"});
 if (!manifestResponse.ok) throw new Error("packaged artifact manifest was not served");
@@ -76,6 +84,48 @@ globalThis.runLayerDrawRealArtifactCorpus = async () => {
   if (replacementID === endpointID) throw new Error("replacement reused the Go/WASM endpoint identity");
   await replacement.dispose();
   return {limitKeys: Object.keys(limits).sort(), parityCases: parityCorpus.cases.map((testCase) => testCase.name), endpointID, replacementID};
+};
+
+globalThis.runLayerDrawEngineClientCorpus = async () => {
+  const client = await createWasmEngineClient({
+    client: {
+      expectedReleaseManifestDigest: releaseManifestDigest,
+      handshakeTimeoutMs: 10_000,
+      defaultCompileTimeoutMs: 30_000,
+      disposeTimeoutMs: 2_000,
+    },
+    expectedArtifactManifestDigest: artifactManifestDigest,
+    workerDisposeTimeoutMs: 2_000,
+  });
+  const first = client.getEndpoint();
+  if (client.state !== "ready" || !client.hasCapability("engine.compile")) {
+    throw new Error("portable WASM client did not negotiate compile");
+  }
+  for (const testCase of parityCorpus.cases) {
+    const outcome = await client.compile(portableParityInput(testCase), {
+      requestId: testCase.expected.response.request_id,
+    });
+    await assertPortableCompileParityOutcome(
+      outcome,
+      testCase,
+      artifactManifest.build.release_version,
+    );
+  }
+  await client.restart();
+  const replacement = client.getEndpoint();
+  if (
+    replacement.generation !== first.generation + 1 ||
+    replacement.handshake.endpoint_instance_id === first.handshake.endpoint_instance_id
+  ) {
+    throw new Error("portable WASM client did not publish a fresh endpoint");
+  }
+  await client.dispose();
+  return {
+    cases: parityCorpus.cases.map((testCase) => testCase.name),
+    firstGeneration: first.generation,
+    replacementGeneration: replacement.generation,
+    state: client.state,
+  };
 };
 
 globalThis.runLayerDrawDirectLifecycle = async () => {

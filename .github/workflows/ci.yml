@@ -80,6 +80,11 @@ jobs:
       - name: Build Engine WASM Worker package
         run: corepack pnpm --filter @layerdraw/engine-wasm build
 
+      - name: Build public Engine client
+        run: |
+          corepack pnpm --filter @layerdraw/protocol build
+          corepack pnpm --filter @layerdraw/engine-client build
+
       - name: Install pinned Playwright browsers
         run: corepack pnpm --filter @layerdraw/engine-wasm exec playwright install --with-deps chromium firefox webkit
 

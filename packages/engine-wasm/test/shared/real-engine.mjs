@@ -53,6 +53,20 @@ function parityInput(testCase) {
   };
 }
 
+export function portableParityInput(testCase) {
+  const input = parityInput(testCase);
+  const envelope = decode(input.control);
+  const refs = collectBlobRefs(envelope.payload);
+  return {
+    input: envelope.payload,
+    blobs: input.blobs.map((blob) => {
+      const ref = refs.find((candidate) => candidate.blob_id === blob.blob_id);
+      if (ref === undefined) throw new Error(`${testCase.name} input BlobRef is missing`);
+      return {ref, bytes: new Uint8Array(blob.bytes)};
+    }),
+  };
+}
+
 export async function assertCompileParityResponse(response, testCase, engineRelease) {
   const actual = decode(response.control);
   const expected = structuredClone(testCase.expected.response);
@@ -85,6 +99,19 @@ export async function assertCompileParityResponse(response, testCase, engineRele
         actualBytes.some((byte, offset) => byte !== expectedBytes[offset])) throw new Error(`${testCase.name} ${expectedBlob.blob_id} bytes differ from Go`);
     if (await sha256(actualBlob.bytes) !== expectedBlob.digest) throw new Error(`${testCase.name} ${expectedBlob.blob_id} digest differs from Go`);
   }
+}
+
+export async function assertPortableCompileParityOutcome(outcome, testCase, engineRelease) {
+  if (outcome.origin !== "engine" || outcome.outcome !== "success") {
+    throw new Error(`${testCase.name} portable client outcome differs from Go`);
+  }
+  await assertCompileParityResponse({
+    control: encode(outcome.response),
+    blobs: outcome.blobs.map((blob) => ({
+      blob_id: blob.ref.blob_id,
+      bytes: blob.bytes.slice().buffer,
+    })),
+  }, testCase, engineRelease);
 }
 
 function blobRef(blobID, bytes, mediaType) {

@@ -17,6 +17,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./stdio": {
+      "types": "./dist/stdio.d.ts",
+      "import": "./dist/stdio.js"
+    },
+    "./wasm": {
+      "types": "./dist/wasm.d.ts",
+      "import": "./dist/wasm.js"
     }
   },
   "scripts": {
@@ -30,7 +38,17 @@
     "@layerdraw/protocol": "workspace:*"
   },
   "devDependencies": {
+    "@layerdraw/engine-wasm": "workspace:*",
+    "@types/node": "24.13.3",
     "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@layerdraw/engine-wasm": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@layerdraw/engine-wasm": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=24.18.0 <25"
