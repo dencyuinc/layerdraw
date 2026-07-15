@@ -1,0 +1,1 @@
+{"fields":{"category":"topology","display_name":"Map","shape":{"kind":"diff"},"source":{"arguments":{},"kind":"query","query_address":"ldl:project:p:query:all"}},"id":"map","operation":"create_subject","parent_address":"ldl:project:p","subject_kind":"view"}

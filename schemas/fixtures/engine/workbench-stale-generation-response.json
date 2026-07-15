@@ -1,14 +1,7 @@
 {
-  "diagnostics": [],
+  "diagnostics": [{"arguments": {}, "code": "LDL1801", "message_key": "workbench_generation_stale", "protocol_version": 1, "related": [], "severity": "error"}],
   "engine_release": "0.0.0-dev",
-  "failure": {
-    "category": "transport",
-    "code": "workbench.generation.stale",
-    "message": "The supplied document generation is stale.",
-    "retryable": false,
-    "workbench_category": "generation_stale"
-  },
-  "outcome": "failed",
+  "outcome": "rejected",
   "protocol": {"name": "engine", "version": "1.0"},
   "request_id": "fixture-stale-generation"
 }

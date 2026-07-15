@@ -13,7 +13,7 @@
       "kind": "delete"
     },
     {
-      "after_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "after_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "after_module": {"module_path": "d.ldl", "origin": {"kind": "project"}},
       "before_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "before_module": {"module_path": "c.ldl", "origin": {"kind": "project"}},

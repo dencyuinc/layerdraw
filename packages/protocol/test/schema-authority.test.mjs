@@ -927,6 +927,40 @@ function fitsCanonicalJSONBytes(value, maximum) {
   }
 }
 
+function protocolCanonicalJSON(value) {
+  if (Array.isArray(value)) return `[${value.map(protocolCanonicalJSON).join(",")}]`;
+  if (isObject(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${protocolCanonicalJSON(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function protocolGenerationKey(raw) {
+  if (!isObject(raw) || !isObject(raw.document_handle) || typeof raw.document_handle.endpoint_instance_id !== "string" || typeof raw.document_handle.value !== "string" || typeof raw.value !== "string") return undefined;
+  try { return [raw.document_handle.endpoint_instance_id, raw.document_handle.value, BigInt(raw.value)]; } catch { return undefined; }
+}
+function sameProtocolGeneration(left, right) { const a = protocolGenerationKey(left), b = protocolGenerationKey(right); return a !== undefined && b !== undefined && a[0] === b[0] && a[1] === b[1] && a[2] === b[2]; }
+function nextProtocolGeneration(left, right) { const a = protocolGenerationKey(left), b = protocolGenerationKey(right); return a !== undefined && b !== undefined && a[0] === b[0] && a[1] === b[1] && b[2] === a[2] + 1n; }
+function protocolErrorDiagnostic(raw) { return Array.isArray(raw) && raw.some((item) => isObject(item) && item.severity === "error"); }
+function protocolBlobBytes(raw) { if (Array.isArray(raw)) return raw.reduce((sum, item) => sum + protocolBlobBytes(item), 0n); if (!isObject(raw)) return 0n; let total = typeof raw.blob_id === "string" && typeof raw.digest === "string" && typeof raw.size === "string" ? BigInt(raw.size) : 0n; for (const item of Object.values(raw)) total += protocolBlobBytes(item); return total; }
+function validProtocolSemanticOperation(value) {
+  if (value.operation === "create_subject") { if (typeof value.subject_kind !== "string" || !isObject(value.fields)) return false; const common = ["description", "tags", "annotations"]; const allowed = {entity_type:["display_name","representation","icon","image","color",...common],relation_type:["display_name","semantic_kind","from","to","forward_label","allow_self","duplicate_policy","cardinality","reverse_label","traversal","projections","render","export",...common],layer:["display_name","order",...common],entity:["display_name","type_address","layer_address",...common],query:["display_name","select","state_input","where","relation_where","traverse","result",...common],view:["display_name","category","source","shape","intent","state_input","relation_projection_overrides",...common],reference:["text"],entity_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],relation_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],view_table_column:["source","label","aggregate"],view_export:["format","filename","fidelity","source_refs","exporter_profile","options"]}; const required = {entity_type:["display_name","representation"],relation_type:["display_name","semantic_kind","from","to","forward_label"],layer:["display_name","order"],entity:["display_name","type_address","layer_address"],query:["display_name","select"],view:["display_name","category","source","shape"],reference:["text"],entity_type_column:["display_name","value_type"],relation_type_column:["display_name","value_type"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type"],view_table_column:["source"],view_export:["format","filename","fidelity"]}; const names=allowed[value.subject_kind]; if (names === undefined || Object.keys(value.fields).some((name)=>!names.includes(name)) || required[value.subject_kind].some((name)=>!hasOwn(value.fields,name))) return false; if (value.subject_kind === "view") { const source=value.fields.source,shape=value.fields.shape,diff=value.fields.category === "diff"; if (!isObject(source)||!isObject(shape)||(source.kind === "diff")!==diff||(shape.kind === "diff")!==diff) return false; if (shape.kind === "matrix" && (!isObject(shape.cell)||(shape.cell.display === "attribute_summary")!==hasOwn(shape.cell,"attribute_column_addresses"))||shape.kind === "flow"&&(shape.lane_by === "attribute")!==hasOwn(shape,"lane_column_addresses")) return false; } if (value.subject_kind === "view_table_column" && (!isObject(value.fields.source)||value.fields.source.kind === "query"||value.fields.source.kind === "diff")) return false; if (value.subject_kind.includes("_column")||value.subject_kind === "query_parameter") { const t=value.fields.value_type,d=value.fields.default,e=value.fields.enum_values; if (hasOwn(value.fields,"enum_values")!==(t === "enum")||hasOwn(value.fields,"reserved_enum_values")&&t!=="enum"||hasOwn(value.fields,"format")&&t!=="string"||(hasOwn(value.fields,"min")||hasOwn(value.fields,"max"))&&t!=="integer"&&t!=="number"||(hasOwn(value.fields,"min_length")||hasOwn(value.fields,"max_length"))&&t!=="string"||t === "integer"&&[value.fields.min,value.fields.max].some((item)=>item!==undefined&&(typeof item!=="string"||!/^[-]?(0|[1-9][0-9]*)$/.test(item)))||hasOwn(value.fields,"default")&&(!isObject(d)||d.kind!==t||t === "enum"&&(!Array.isArray(e)||!e.includes(d.string_value)))) return false; } const owners={entity_type_column:"entity_type",entity_type_constraint:"entity_type",relation_type_column:"relation_type",relation_type_constraint:"relation_type",query_parameter:"query",view_table_column:"view",view_export:"view"}; return typeof value.parent_address === "string" && stableAddressSubject(value.parent_address)?.kind === (owners[value.subject_kind] ?? "project"); }
+  return value.operation !== "create_relation" || !hasOwn(value,"fields") || isObject(value.fields) && Object.keys(value.fields).every((name)=>["display_name","description","tags","annotations"].includes(name));
+}
+function validProtocolInvariant(profile, value) {
+  if (!isObject(value)) return true;
+  if (profile === "authoring_impact_entry") { if (value.capability !== "graph:write") return true; return typeof value.subject_address === "string" && isObject(value.graph_facts) && stableAddressSubject(value.subject_address)?.kind === value.subject_kind && Array.isArray(value.graph_facts.action_flags) && value.graph_facts.action_flags.length === 1 && value.graph_facts.action_flags[0] === value.action; }
+  if (profile === "authoring_impact") { if (!Array.isArray(value.entries) || !Array.isArray(value.required_capabilities)) return false; const derived = new Set(value.entries.map((entry)=>entry?.capability)); return derived.size === value.required_capabilities.length && value.required_capabilities.every((item)=>derived.has(item)); }
+  if (profile === "open_document_result") return isObject(value.document_generation) && sameProtocolGeneration(value.document_generation,{document_handle:value.document_handle,value:value.document_generation.value});
+  if (profile === "document_bound_input") { if (hasOwn(value,"document_handle") && (!isObject(value.document_generation) || !sameProtocolGeneration(value.document_generation,{document_handle:value.document_handle,value:value.document_generation.value}))) return false; return !hasOwn(value,"cursor") || isObject(value.cursor) && sameProtocolGeneration(value.document_generation,value.cursor.document_generation); }
+  if (profile === "paged_result") { if (!Array.isArray(value.items)||!isObject(value.page)||value.page.returned_items!==String(value.items.length)) return false; if (hasOwn(value.page,"next_cursor")&&(!isObject(value.page.next_cursor)||!sameProtocolGeneration(value.document_generation,value.page.next_cursor.document_generation))) return false; const copy=structuredClone(value); copy.page.returned_bytes="0"; try { return BigInt(utf8ByteLength(protocolCanonicalJSON(copy)))+protocolBlobBytes(value)===BigInt(value.page.returned_bytes); } catch { return false; } }
+  if (profile === "bounded_text_chunk") { if (!isObject(value.blob)) return false; try { const offset=BigInt(value.offset),total=BigInt(value.total_bytes),size=BigInt(value.blob.size); return offset<=total&&size<=total-offset&&value.blob.media_type==="text/plain; charset=utf-8"&&value.blob.lifetime==="request"&&(offset!==0n||size!==total||value.blob.digest===value.full_digest); } catch { return false; } }
+  if (profile === "source_edit") { if (isObject(value.replacement_blob)&&(value.replacement_blob.digest!==value.after_digest||value.replacement_blob.media_type!=="text/plain; charset=utf-8"||value.replacement_blob.lifetime!=="request")) return false; return value.kind!=="move"||value.before_digest===value.after_digest&&protocolCanonicalJSON(value.before_module)!==protocolCanonicalJSON(value.after_module); }
+  if (profile === "preview_result") { if (value.status!=="valid") return Array.isArray(value.conflicts)&&value.conflicts.length>0||protocolErrorDiagnostic(value.diagnostics); const impact=value.authoring_impact,semantic=value.semantic_diff,source=value.source_diff,hashes=value.resulting_hashes,base=protocolGenerationKey(value.base_generation); return isObject(impact)&&isObject(semantic)&&isObject(source)&&isObject(hashes)&&isObject(value.preview_id)&&base!==undefined&&!protocolErrorDiagnostic(value.diagnostics)&&value.authoring_impact_digest===impact.impact_digest&&protocolCanonicalJSON(value.required_authoring_capabilities)===protocolCanonicalJSON(impact.required_capabilities)&&impact.semantic_diff_hash===semantic.digest&&impact.source_diff_hash===source.digest&&impact.resulting_definition_hash===hashes.definition_hash&&value.preview_id.endpoint_instance_id===base[0]&&nextProtocolGeneration(value.base_generation,value.proposed_generation); }
+  if (profile === "apply_input") { const base=protocolGenerationKey(value.base_generation); return isObject(value.preview_id)&&base!==undefined&&value.preview_id.endpoint_instance_id===base[0]; }
+  if (profile === "apply_result") return isObject(value.authoring_impact)&&isObject(value.source_diff)&&isObject(value.resulting_hashes)&&value.authoring_impact.source_diff_hash===value.source_diff.digest&&value.authoring_impact.resulting_definition_hash===value.resulting_hashes.definition_hash;
+  if (profile === "semantic_operation") return validProtocolSemanticOperation(value);
+  return false;
+}
+
 function skipJSONWhitespace(input, start) {
   let index = start;
   while (index < input.length && /[ \t\r\n]/.test(input[index])) index++;
@@ -1364,7 +1398,11 @@ function addLayerDrawVocabulary(ajv, meta) {
     const own = (key) => Object.prototype.hasOwnProperty.call(data, key);
     if (data.outcome === "success") return own("payload") && !own("failure");
     if (data.outcome === "rejected") return !own("payload") && !own("failure") && Array.isArray(data.diagnostics) && data.diagnostics.length > 0;
-    if (data.outcome === "failed" || data.outcome === "cancelled") return !own("payload") && own("failure");
+    if (data.outcome === "failed" || data.outcome === "cancelled") {
+      if (own("payload") || !isObject(data.failure)) return false;
+      const category = data.failure.workbench_category;
+      return typeof category !== "string" || (data.outcome === "cancelled" ? category === "cancelled" : category !== "cancelled");
+    }
     return true;
   }});
   register({keyword: "x-layerdraw-ordered-range", schemaType: "boolean", errors: false, validate(enabled, data) {
@@ -1392,6 +1430,7 @@ function addLayerDrawVocabulary(ajv, meta) {
       return true;
     });
   }});
+  register({keyword: "x-layerdraw-protocol-invariant", schemaType: "string", type: "object", errors: false, validate: validProtocolInvariant});
   register({keyword: "x-layerdraw-query-parameter", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
     return !enabled || !isObject(data) || validQueryParameter(data);
   }});
@@ -1547,6 +1586,29 @@ test("Ajv enforces closed Workbench handles, recursive values, ordering, and out
   assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-invalid-find-symbols-empty-filter-input.json")), false);
   assert.equal(compile(engine, "PreviewOperationsResponseEnvelope")(await readJSON("fixtures/engine/workbench-stale-generation-response.json")), true);
   assert.equal(compile(engine, "PreviewOperationsResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-stale-generation-response.json")), false);
+  const validateAllCreatableKinds = compile(engine, "SemanticOperationBatch");
+  assert.equal(validateAllCreatableKinds(await readJSON("fixtures/engine/workbench-create-subject-all-kinds.json")), true, JSON.stringify(validateAllCreatableKinds.errors));
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-create-relation-fields.json")), true);
+  for (const name of ["workbench-invalid-create-subject-foreign-field.json", "workbench-invalid-create-subject-missing-field.json", "workbench-invalid-create-subject-parent-kind.json", "workbench-invalid-create-subject-nested.json", "workbench-invalid-create-subject-cardinality.json", "workbench-invalid-create-subject-enum-options.json", "workbench-invalid-create-subject-view-shape.json", "workbench-invalid-create-subject-flow-lanes.json"]) assert.equal(compile(engine, "SemanticOperation")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  const validateAuthoringImpact = compile("https://schemas.layerdraw.dev/semantic/v1", "AuthoringImpact");
+  assert.equal(validateAuthoringImpact(await readJSON("fixtures/engine/workbench-authoring-impact-graph.json")), true, JSON.stringify(validateAuthoringImpact.errors));
+  for (const name of ["workbench-invalid-authoring-impact-missing-facts.json", "workbench-invalid-authoring-impact-address-kind.json", "workbench-invalid-authoring-impact-action.json", "workbench-invalid-authoring-impact-capabilities.json"]) assert.equal(compile("https://schemas.layerdraw.dev/semantic/v1", "AuthoringImpact")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  for (const name of ["workbench-invalid-source-create-digest.json", "workbench-invalid-source-blob-media.json", "workbench-invalid-source-blob-lifetime.json", "workbench-invalid-source-move-module.json", "workbench-invalid-source-move-digest.json"]) assert.equal(compile(engine, "SourceDiff")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  const validateCompletePreview = compile(engine, "WorkbenchPreviewResult");
+  assert.equal(validateCompletePreview(await readJSON("fixtures/engine/workbench-preview-valid-warning.json")), true, JSON.stringify(validateCompletePreview.errors));
+  for (const name of ["workbench-invalid-preview-impact-digest.json", "workbench-invalid-preview-capabilities.json", "workbench-invalid-preview-semantic-hash.json", "workbench-invalid-preview-source-hash.json", "workbench-invalid-preview-resulting-hash.json", "workbench-invalid-preview-endpoint.json", "workbench-invalid-preview-generation.json", "workbench-invalid-preview-warning-only.json"]) assert.equal(compile(engine, "WorkbenchPreviewResult")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "ApplyToHandleResult")(await readJSON("fixtures/engine/workbench-apply-result.json")), true);
+  for (const name of ["workbench-invalid-apply-source-hash.json", "workbench-invalid-apply-resulting-hash.json"]) assert.equal(compile(engine, "ApplyToHandleResult")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-invalid-input-cursor-generation.json")), false);
+  assert.equal(compile(engine, "CloseDocumentInput")(await readJSON("fixtures/engine/workbench-invalid-close-generation.json")), false);
+  assert.equal(compile(engine, "ApplyToHandleInput")(await readJSON("fixtures/engine/workbench-invalid-apply-endpoint.json")), false);
+  assert.equal(compile(engine, "OpenDocumentResult")(await readJSON("fixtures/engine/workbench-invalid-open-handle-generation.json")), false);
+  assert.equal(compile(engine, "ListModulesResult")(await readJSON("fixtures/engine/workbench-page-empty.json")), true);
+  for (const name of ["workbench-invalid-page-count.json", "workbench-invalid-page-bytes.json", "workbench-invalid-page-cursor-generation.json"]) assert.equal(compile(engine, "ListModulesResult")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "ReadDeclarationsResult")(await readJSON("fixtures/engine/workbench-invalid-page-byte-overflow.json")), false);
+  for (const name of ["workbench-invalid-chunk-overflow.json", "workbench-invalid-chunk-media.json"]) assert.equal(compile(engine, "BoundedTextChunk")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "ClassifyAuthoringImpactInput")(await readJSON("fixtures/engine/workbench-classify-authoring-impact-input.json")), true);
+  for (const name of ["workbench-rejected-handle-response.json", "workbench-rejected-cursor-response.json", "workbench-rejected-generation-response.json", "workbench-rejected-input-response.json", "workbench-rejected-not_found-response.json", "workbench-rejected-preview-response.json", "workbench-rejected-unsupported-response.json", "workbench-rejected-precondition-response.json", "workbench-failed-execution-response.json", "workbench-cancelled-response.json"]) assert.equal(compile(engine, "CloseDocumentResponseEnvelope")(await readJSON(`fixtures/engine/${name}`)), true, name);
   const engineSchema = await readJSON("engine-protocol/v1.schema.json");
   assert.match(engineSchema.$defs.WorkbenchLimits.description, /outer Engine response envelope/);
   assert.match(engineSchema.$defs.LogicalResponseByteCount.description, /BlobRef attachment/);
@@ -1568,6 +1630,22 @@ test("every Workbench envelope preserves common metadata and uses the closed Wor
     assert.deepEqual(response.properties.extensions, {$ref: "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"}, responseName);
     assert.deepEqual(response.properties.failure, {$ref: "#/$defs/WorkbenchFailure"}, responseName);
   }
+});
+
+test("Workbench invariant profiles and Language 1 domain type ownership stay explicit", async () => {
+  const engine = await readJSON("engine-protocol/v1.schema.json");
+  const pagedFamilies = ["ListModules", "FindSymbols", "InspectSubgraph", "ReadDeclarations", "ReadRows", "GetNeighbors", "FindUsages", "ReadScope", "ListReferences", "ReadReferences"];
+  for (const family of pagedFamilies) {
+    assert.equal(engine.$defs[`${family}Input`]["x-layerdraw-protocol-invariant"], "document_bound_input", family);
+    assert.equal(engine.$defs[`${family}Result`]["x-layerdraw-protocol-invariant"], "paged_result", family);
+  }
+  assert.equal(engine.$defs.CloseDocumentInput["x-layerdraw-protocol-invariant"], "document_bound_input");
+  assert.equal(engine.$defs.OpenDocumentResult["x-layerdraw-protocol-invariant"], "open_document_result");
+  for (const name of ["AssetRef", "EntityRepresentation", "RelationEndpointRule", "RelationCardinality", "RelationTraversalPolicy", "RelationProjectionSet", "RelationRenderSet", "RelationExport", "AuthoredViewShape"]) {
+    assert.equal(engine.$defs[name], undefined, `${name} must not be duplicated in the Engine schema`);
+  }
+  assert.deepEqual(engine.$defs.CreateSubjectFields.properties.cardinality, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationCardinality"});
+  assert.deepEqual(engine.$defs.CreateSubjectFields.properties.source, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredOperationSource"});
 });
 
 test("normalized schema and document authority require request lifetime and the exact byte profile", async () => {

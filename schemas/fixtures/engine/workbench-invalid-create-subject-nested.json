@@ -1,0 +1,1 @@
+{"fields":{"display_name":"Contains","duplicate_policy":"forbid","forward_label":"contains","from":{"role":"parent"},"semantic_kind":"containment","to":{"role":"child"}},"id":"contains","operation":"create_subject","parent_address":"ldl:project:p","subject_kind":"relation_type"}

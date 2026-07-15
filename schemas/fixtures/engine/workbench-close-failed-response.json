@@ -1,14 +1,7 @@
 {
-  "diagnostics": [],
+  "diagnostics": [{"arguments": {}, "code": "LDL1801", "message_key": "workbench_handle_invalid", "protocol_version": 1, "related": [], "severity": "error"}],
   "engine_release": "0.0.0-dev",
-  "failure": {
-    "category": "transport",
-    "code": "workbench.handle.invalid",
-    "message": "The document handle is not valid for this endpoint.",
-    "retryable": false,
-    "workbench_category": "handle_invalid"
-  },
-  "outcome": "failed",
+  "outcome": "rejected",
   "protocol": {"name": "engine", "version": "1.0"},
   "request_id": "fixture-close-failed"
 }

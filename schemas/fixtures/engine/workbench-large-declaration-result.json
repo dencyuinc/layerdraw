@@ -28,7 +28,7 @@
       },
       "value": "read_declarations_cursor_abcdefghijklmnop"
     },
-    "returned_bytes": "256",
+    "returned_bytes": "1058",
     "returned_items": "1",
     "truncation": "output_byte_limit"
   }

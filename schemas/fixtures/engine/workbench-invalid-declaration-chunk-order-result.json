@@ -27,5 +27,5 @@
       "source_range": {"end_byte": "1000000", "module_path": "p.ldl", "origin": {"kind": "project"}, "start_byte": "0"}
     }
   ],
-  "page": {"returned_bytes": "512", "returned_items": "2", "truncation": "complete"}
+  "page": {"returned_bytes": "1478", "returned_items": "2", "truncation": "complete"}
 }

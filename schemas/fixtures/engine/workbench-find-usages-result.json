@@ -10,5 +10,5 @@
     "target_kind": "entity",
     "via": "field"
   }],
-  "page": {"returned_bytes": "192", "returned_items": "1", "truncation": "complete"}
+  "page": {"returned_bytes": "427", "returned_items": "1", "truncation": "complete"}
 }

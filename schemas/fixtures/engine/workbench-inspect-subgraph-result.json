@@ -18,7 +18,7 @@
       "owner_address": "ldl:project:p"
     }
   }],
-  "page": {"returned_bytes": "256", "returned_items": "1", "truncation": "complete"},
+  "page": {"returned_bytes": "790", "returned_items": "1", "truncation": "complete"},
   "relations": [{
     "from_address": "ldl:project:p:entity:a",
     "relation_address": "ldl:project:p:relation:r",

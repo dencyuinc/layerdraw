@@ -1,0 +1,9 @@
+{
+  "fields": {"annotations": [{"key": "source", "value": "fixture"}], "description": "A relation", "display_name": "Contains", "tags": ["fixture"]},
+  "from_address": "ldl:project:p:entity:one",
+  "id": "r",
+  "operation": "create_relation",
+  "parent_address": "ldl:project:p",
+  "to_address": "ldl:project:p:entity:two",
+  "type_address": "ldl:project:p:relation-type:contains"
+}

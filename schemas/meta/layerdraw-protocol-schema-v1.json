@@ -58,6 +58,7 @@
     "x-layerdraw-ordered-range": {"type": "boolean"},
     "x-layerdraw-outcome-envelope": {"type": "boolean"},
     "x-layerdraw-protocol-offer": {"type": "boolean"},
+    "x-layerdraw-protocol-invariant": {"type": "string", "enum": ["apply_input", "apply_result", "authoring_impact", "authoring_impact_entry", "bounded_text_chunk", "document_bound_input", "open_document_result", "paged_result", "preview_result", "semantic_operation", "source_edit"]},
     "x-layerdraw-query-parameter": {"type": "boolean", "const": true},
     "x-layerdraw-query-recipe": {"type": "boolean", "const": true},
     "x-layerdraw-recipe-predicate": {"type": "string", "enum": ["predicate", "row"]},

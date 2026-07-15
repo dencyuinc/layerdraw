@@ -1,0 +1,1 @@
+{"diagnostics":[],"engine_release":"0.0.0-dev","failure":{"category":"cancelled","code":"workbench.execution.cancelled","message":"Execution was cancelled.","retryable":false,"workbench_category":"cancelled"},"outcome":"cancelled","protocol":{"name":"engine","version":"1.0"},"request_id":"fixture-cancelled"}

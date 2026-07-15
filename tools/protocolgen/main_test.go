@@ -467,6 +467,10 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 	if _, err := scalarType(42); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported type declaration was accepted: %v", err)
 	}
+	invalidCardinalityMaximum := &schemaType{OneOf: []*schemaType{{Type: "string"}, {Type: "boolean"}}}
+	if err := validateType(set, document, "RelationCardinalityMaximum", invalidCardinalityMaximum, map[*schemaType]bool{}); err == nil || !strings.Contains(err.Error(), "must be exactly") {
+		t.Fatalf("invalid scoped cardinality union was accepted: %v", err)
+	}
 	booleanUnion := &schemaType{
 		Type: "object", Properties: map[string]*schemaType{"enabled": {Type: "boolean"}, "reason": {Type: "string"}},
 		Required: []string{"enabled"}, AdditionalProperties: false,

@@ -348,6 +348,9 @@ func TestGeneratedWorkbenchPreviewFixtures(t *testing.T) {
 	if _, err := engineprotocol.DecodeReadDeclarationsResult(readProtocolFixture(t, "workbench-invalid-declaration-chunk-order-result.json")); err == nil {
 		t.Error("out-of-order declaration chunks were accepted")
 	}
+	if _, err := engineprotocol.DecodeReadDeclarationsResult(readProtocolFixture(t, "workbench-invalid-page-byte-overflow.json")); err == nil {
+		t.Error("overflowing logical response byte count was accepted")
+	}
 	if _, err := engineprotocol.DecodeFindUsagesResult(readProtocolFixture(t, "workbench-invalid-find-usages-order-result.json")); err == nil {
 		t.Error("out-of-order usage page was accepted")
 	}
@@ -413,6 +416,84 @@ func TestGeneratedWorkbenchPreviewFixtures(t *testing.T) {
 	}
 	if _, err := engineprotocol.DecodePreviewSourcePatchRequestEnvelope(readProtocolFixture(t, "workbench-invalid-overlapping-source-patch-request.json")); err == nil {
 		t.Error("overlapping source patch batch was accepted")
+	}
+	semanticBatch, err := engineprotocol.DecodeSemanticOperationBatch(readProtocolFixture(t, "workbench-create-subject-all-kinds.json"))
+	if err != nil {
+		t.Errorf("complete creatable-subject fixture was rejected: %v", err)
+	} else if encoded, encodeErr := engineprotocol.EncodeSemanticOperationBatch(semanticBatch); encodeErr != nil {
+		t.Errorf("complete creatable-subject fixture could not be encoded: %v", encodeErr)
+	} else if !bytes.Contains(encoded, []byte(`"max":1`)) || !bytes.Contains(encoded, []byte(`"max":"many"`)) {
+		t.Errorf("cardinality scalar union changed wire representation: %s", encoded)
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-create-relation-fields.json")); err != nil {
+		t.Errorf("create_relation common fields were rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-create-subject-foreign-field.json", "workbench-invalid-create-subject-missing-field.json", "workbench-invalid-create-subject-parent-kind.json", "workbench-invalid-create-subject-nested.json", "workbench-invalid-create-subject-cardinality.json", "workbench-invalid-create-subject-enum-options.json", "workbench-invalid-create-subject-view-shape.json", "workbench-invalid-create-subject-flow-lanes.json"} {
+		if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid semantic operation %s was accepted", name)
+		}
+	}
+	if _, err := semantic.DecodeAuthoringImpact(readProtocolFixture(t, "workbench-authoring-impact-graph.json")); err != nil {
+		t.Errorf("valid graph AuthoringImpact was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-authoring-impact-missing-facts.json", "workbench-invalid-authoring-impact-address-kind.json", "workbench-invalid-authoring-impact-action.json", "workbench-invalid-authoring-impact-capabilities.json"} {
+		if _, err := semantic.DecodeAuthoringImpact(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid AuthoringImpact %s was accepted", name)
+		}
+	}
+	for _, name := range []string{"workbench-invalid-source-create-digest.json", "workbench-invalid-source-blob-media.json", "workbench-invalid-source-blob-lifetime.json", "workbench-invalid-source-move-module.json", "workbench-invalid-source-move-digest.json"} {
+		if _, err := engineprotocol.DecodeSourceDiff(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("non-reconstructable SourceDiff %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodeWorkbenchPreviewResult(readProtocolFixture(t, "workbench-preview-valid-warning.json")); err != nil {
+		t.Errorf("valid warning preview was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-preview-impact-digest.json", "workbench-invalid-preview-capabilities.json", "workbench-invalid-preview-semantic-hash.json", "workbench-invalid-preview-source-hash.json", "workbench-invalid-preview-resulting-hash.json", "workbench-invalid-preview-endpoint.json", "workbench-invalid-preview-generation.json", "workbench-invalid-preview-warning-only.json"} {
+		if _, err := engineprotocol.DecodeWorkbenchPreviewResult(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid preview integrity fixture %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodeApplyToHandleResult(readProtocolFixture(t, "workbench-apply-result.json")); err != nil {
+		t.Errorf("valid apply result was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-apply-source-hash.json", "workbench-invalid-apply-resulting-hash.json"} {
+		if _, err := engineprotocol.DecodeApplyToHandleResult(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid apply integrity fixture %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-invalid-input-cursor-generation.json")); err == nil {
+		t.Error("input cursor generation mismatch was accepted")
+	}
+	if _, err := engineprotocol.DecodeCloseDocumentInput(readProtocolFixture(t, "workbench-invalid-close-generation.json")); err == nil {
+		t.Error("close handle/generation mismatch was accepted")
+	}
+	if _, err := engineprotocol.DecodeApplyToHandleInput(readProtocolFixture(t, "workbench-invalid-apply-endpoint.json")); err == nil {
+		t.Error("apply preview endpoint mismatch was accepted")
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResult(readProtocolFixture(t, "workbench-invalid-open-handle-generation.json")); err == nil {
+		t.Error("open result handle/generation mismatch was accepted")
+	}
+	if _, err := engineprotocol.DecodeListModulesResult(readProtocolFixture(t, "workbench-page-empty.json")); err != nil {
+		t.Errorf("self-accounted empty page was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-page-count.json", "workbench-invalid-page-bytes.json", "workbench-invalid-page-cursor-generation.json"} {
+		if _, err := engineprotocol.DecodeListModulesResult(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid self-accounting page %s was accepted", name)
+		}
+	}
+	for _, name := range []string{"workbench-invalid-chunk-overflow.json", "workbench-invalid-chunk-media.json"} {
+		if _, err := engineprotocol.DecodeBoundedTextChunk(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid bounded chunk %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodeClassifyAuthoringImpactInput(readProtocolFixture(t, "workbench-classify-authoring-impact-input.json")); err != nil {
+		t.Errorf("bounded classify_authoring_impact input was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-rejected-handle-response.json", "workbench-rejected-cursor-response.json", "workbench-rejected-generation-response.json", "workbench-rejected-input-response.json", "workbench-rejected-not_found-response.json", "workbench-rejected-preview-response.json", "workbench-rejected-unsupported-response.json", "workbench-rejected-precondition-response.json", "workbench-failed-execution-response.json", "workbench-cancelled-response.json"} {
+		if _, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(readProtocolFixture(t, name)); err != nil {
+			t.Errorf("closed outcome taxonomy fixture %s was rejected: %v", name, err)
+		}
 	}
 }
 
