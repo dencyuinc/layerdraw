@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -113,6 +114,40 @@ func TestDevelopmentReleaseManifestMatchesLinkedAuthority(t *testing.T) {
 	wantDigest := "sha256:" + hex.EncodeToString(digest[:])
 	if releaseManifestDigest != wantDigest || manifest.EngineProtocolSchemaDigest != engineprotocol.SchemaDigest || manifest.Release != engine.DevelopmentVersion {
 		t.Fatalf("linked=%q file=%q release=%q", releaseManifestDigest, manifest.EngineProtocolSchemaDigest, manifest.Release)
+	}
+}
+
+func TestReleaseManifestDigestFromSidecarBytes(t *testing.T) {
+	data := []byte("{\"manifest_version\":1}\n")
+	directory := t.TempDir()
+	path := filepath.Join(directory, "layerdraw-release-manifest.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(data)
+	want := "sha256:" + hex.EncodeToString(digest[:])
+	if got, err := releaseManifestDigestFromFile(path); err != nil || got != want {
+		t.Fatalf("digest=%q want=%q err=%v", got, want, err)
+	}
+	if _, err := releaseManifestDigestFromFile(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("missing release manifest was accepted")
+	}
+	if got, err := releaseManifestDigestFromExecutable(want, func() (string, error) {
+		t.Fatal("linked digest must not inspect the executable")
+		return "", nil
+	}); err != nil || got != want {
+		t.Fatalf("linked digest=%q want=%q err=%v", got, want, err)
+	}
+	if got, err := releaseManifestDigestFromExecutable("", func() (string, error) {
+		return filepath.Join(directory, "layerdraw-engine"), nil
+	}); err != nil || got != want {
+		t.Fatalf("sidecar digest=%q want=%q err=%v", got, want, err)
+	}
+	wantError := errors.New("executable unavailable")
+	if _, err := releaseManifestDigestFromExecutable("", func() (string, error) {
+		return "", wantError
+	}); !errors.Is(err, wantError) {
+		t.Fatalf("executable error=%v", err)
 	}
 }
 

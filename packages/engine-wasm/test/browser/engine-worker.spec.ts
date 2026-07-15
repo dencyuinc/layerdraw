@@ -2,6 +2,19 @@
 
 import {expect, test} from "@playwright/test";
 
+const parityCases = [
+  "single_module_project",
+  "multi_module_project",
+  "installed_pack_project",
+  "root_pack",
+  "asset_project",
+  "all_declarations_project",
+  "deterministic_rejection",
+  "resource_limit_rejection",
+  "representative_large_graph",
+  "cancellation",
+];
+
 declare global {
   interface Window {
     layerDrawHarnessReady: boolean;
@@ -12,7 +25,8 @@ declare global {
   }
 }
 
-test("packaged module Worker handshakes and compiles Project and Pack through real Go/WASM", async ({page}) => {
+test("packaged module Worker executes the parity corpus through real Go/WASM", async ({page}) => {
+  test.setTimeout(300_000);
   const failures: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
   page.on("pageerror", (error) => failures.push(error.message));
@@ -24,12 +38,13 @@ test("packaged module Worker handshakes and compiles Project and Pack through re
     "max_input_blob_bytes", "max_input_total_bytes", "max_output_blob_bytes",
     "max_output_total_bytes", "max_response_publish_bytes",
   ]);
-  expect(result.parityCases).toEqual(["canonical_project", "canonical_root_pack"]);
+  expect(result.parityCases).toEqual(parityCases);
   expect(result.endpointID).not.toBe(result.replacementID);
   expect(failures).toEqual([]);
 });
 
 test("public Engine client compiles the parity corpus through a real Go/WASM Worker", async ({page}) => {
+  test.setTimeout(300_000);
   const failures: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
   page.on("pageerror", (error) => failures.push(error.message));
@@ -37,7 +52,7 @@ test("public Engine client compiles the parity corpus through a real Go/WASM Wor
   await page.waitForFunction(() => window.layerDrawHarnessReady === true);
   const result = await page.evaluate(() => window.runLayerDrawEngineClientCorpus());
   expect(result).toEqual({
-    cases: ["canonical_project", "canonical_root_pack"],
+    cases: parityCases,
     firstGeneration: 1,
     replacementGeneration: 2,
     state: "disposed",

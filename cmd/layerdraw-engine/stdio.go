@@ -5,10 +5,13 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/dencyuinc/layerdraw/internal/engine"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
@@ -21,9 +24,13 @@ func serveStdio(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return &transport.SessionError{Code: transport.SessionErrorConfiguration}
 	}
+	manifestDigest, err := resolvedReleaseManifestDigest()
+	if err != nil {
+		return &transport.SessionError{Code: transport.SessionErrorConfiguration}
+	}
 	descriptor, err := endpoint.NewCompilerDescriptor(
 		compiler,
-		releaseManifestDigest,
+		manifestDigest,
 		instanceID,
 		[]string{transport.TransportID},
 		endpoint.DefaultLimitPolicy(),
@@ -36,6 +43,30 @@ func serveStdio(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 		Dispatcher: endpoint.NewCompileDispatcher(compiler),
 		Limits:     transport.DefaultSessionLimits(),
 	})
+}
+
+func resolvedReleaseManifestDigest() (string, error) {
+	return releaseManifestDigestFromExecutable(releaseManifestDigest, os.Executable)
+}
+
+func releaseManifestDigestFromExecutable(linkedDigest string, executable func() (string, error)) (string, error) {
+	if linkedDigest != "" {
+		return linkedDigest, nil
+	}
+	path, err := executable()
+	if err != nil {
+		return "", err
+	}
+	return releaseManifestDigestFromFile(filepath.Join(filepath.Dir(path), "layerdraw-release-manifest.json"))
+}
+
+func releaseManifestDigestFromFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
 func newEndpointInstanceID() (string, error) {

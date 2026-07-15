@@ -49,6 +49,10 @@ test("packed package is closed, legal-complete, offline-installable, and SSR-saf
   await execute("tar", ["-xzf", archive, "-C", extracted]);
   assert.deepEqual(await readFile(join(extracted, "package", "LICENSE")), await readFile(new URL("LICENSE", repositoryRoot)));
   assert.deepEqual(await readFile(join(extracted, "package", "NOTICE")), await readFile(new URL("NOTICE", repositoryRoot)));
+  assert.deepEqual(
+    await readFile(join(extracted, "package", "THIRD_PARTY_NOTICES.txt")),
+    await readFile(join(extracted, "package", "dist", "THIRD_PARTY_NOTICES.txt")),
+  );
   const manifest = JSON.parse(await readFile(join(extracted, "package", "package.json"), "utf8"));
   assert.equal(manifest.license, "SEE LICENSE IN LICENSE");
   assert.equal(manifest.dependencies, undefined);
