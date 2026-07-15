@@ -465,6 +465,426 @@ test("valid transport close records are snapshotted and details are redacted", a
   await client.dispose();
 });
 
+test("safe details enforce a closed grammar and domain for every public key", () => {
+  const safeRequestId = `ec1-${"a".repeat(24)}-${"b".repeat(16)}`;
+  const safe = new EngineClientTransportError("PROCESS_EXITED", false, {
+    outcome: "failed",
+    diagnosticCount: 0,
+    failureCode: "engine.compile_failed",
+    requestId: safeRequestId,
+    generation: 1,
+    blobCount: 0,
+    limit: Number.MAX_SAFE_INTEGER,
+    exitCode: 0xffff_ffff,
+    signal: "SIGTERM",
+    replacementSucceeded: false,
+  });
+  assert.deepEqual({ ...safe.details }, {
+    outcome: "failed",
+    diagnosticCount: 0,
+    failureCode: "engine.compile_failed",
+    requestId: safeRequestId,
+    generation: 1,
+    blobCount: 0,
+    limit: Number.MAX_SAFE_INTEGER,
+    exitCode: 0xffff_ffff,
+    signal: "SIGTERM",
+    replacementSucceeded: false,
+  });
+
+  const unsafeStrings = [
+    "SECRET /Users/private/engine",
+    "https://secret.invalid/worker.js",
+    "stderr: fatal\nSECRET",
+    "arbitrary secret text",
+  ];
+  for (const key of ["outcome", "failureCode", "requestId", "signal"]) {
+    for (const value of unsafeStrings) {
+      const error = new EngineClientTransportError("BROKEN_PIPE", true, {
+        [key]: value,
+        generation: 2,
+      });
+      assert.deepEqual({ ...error.details }, { generation: 2 });
+      const exposed = JSON.stringify(error);
+      for (const fragment of ["SECRET", "private", "https", "stderr", "arbitrary"]) {
+        assert.equal(exposed.includes(fragment), false);
+      }
+    }
+  }
+
+  const invalidDomains = new EngineClientTransportError("BROKEN_PIPE", true, {
+    outcome: "unknown",
+    diagnosticCount: -1,
+    failureCode: "not-a-protocol-code",
+    requestId: "caller-request",
+    generation: 0,
+    blobCount: 1.5,
+    limit: Number.MAX_SAFE_INTEGER + 1,
+    exitCode: -1,
+    signal: "TERM",
+    replacementSucceeded: "true",
+  });
+  assert.equal(invalidDomains.details, undefined);
+});
+
+test("active and idle unsafe close strings are totally redacted", async (context) => {
+  const unsafeDetails = {
+    outcome: "SECRET /Users/private/outcome",
+    failureCode: "https://secret.invalid/failure",
+    requestId: "stderr: request\nSECRET",
+    signal: "arbitrary secret text",
+    exitCode: 9,
+  };
+
+  await context.test("active", async () => {
+    const { client, factory } = await create({
+      compile() {
+        return StrictFakeTransport.PENDING;
+      },
+    });
+    const compile = client.compile(makePortableRequest().request);
+    await waitFor(() => factory.endpoints[0].requests.length === 2);
+    factory.endpoints[0].closedBox.resolve({
+      code: "PROCESS_EXITED",
+      retryable: false,
+      details: unsafeDetails,
+    });
+    await assert.rejects(bounded(compile, "unsafe active close"), (error) => {
+      assert.ok(error instanceof EngineClientTransportError);
+      assert.deepEqual({ ...error.details }, {
+        exitCode: 9,
+        replacementSucceeded: true,
+      });
+      const exposed = JSON.stringify(error);
+      for (const fragment of ["SECRET", "private", "https", "stderr", "arbitrary"]) {
+        assert.equal(exposed.includes(fragment), false);
+      }
+      return true;
+    });
+    assert.equal(factory.endpoints[0].stopped, true);
+    assert.equal(client.getEndpoint().generation, 2);
+    await client.dispose();
+  });
+
+  await context.test("idle", async () => {
+    const { client, factory } = await create();
+    const old = factory.endpoints[0];
+    old.crash(unsafeDetails);
+    await waitFor(() => factory.endpoints.length === 2 && client.state === "ready");
+    assert.equal(old.stopped, true);
+    assert.equal(old.closedBox.settled, true);
+    assert.equal(client.getEndpoint().generation, 2);
+    await client.dispose();
+  });
+});
+
+test("closed is captured once across active and idle getter and Proxy traps", async (context) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    for (const mode of ["getter", "proxy"]) {
+      for (const activity of ["active", "idle"]) {
+        await context.test(`${activity} ${mode}`, async () => {
+          let closedReads = 0;
+          const factory = await makeFactory({
+            create(generation, owner) {
+              const endpoint = new StrictFakeTransport(
+                owner,
+                generation,
+                owner.endpoints.length,
+              );
+              owner.endpoints.push(endpoint);
+              if (owner.endpoints.length !== 1) return endpoint;
+              const readClosed = () => {
+                closedReads++;
+                if (closedReads > 1) {
+                  throw new Error("SECRET /private/closed-reread");
+                }
+                return endpoint.closedBox.promise;
+              };
+              if (mode === "getter") {
+                Object.defineProperty(endpoint, "closed", {
+                  configurable: true,
+                  get: readClosed,
+                });
+                return endpoint;
+              }
+              return new Proxy(endpoint, {
+                get(target, property, receiver) {
+                  if (property === "closed") return readClosed();
+                  return Reflect.get(target, property, receiver);
+                },
+              });
+            },
+            compile() {
+              return StrictFakeTransport.PENDING;
+            },
+          });
+          const client = await createInternalEngineClient({
+            transportFactory: factory,
+            protocolCollectors: collectors,
+            options: creationOptions,
+          });
+          const old = factory.endpoints[0];
+          let compile;
+          if (activity === "active") {
+            compile = client.compile(makePortableRequest().request);
+            await waitFor(() => old.requests.length === 2);
+          }
+          old.closedBox.resolve({ code: "WORKER_CRASHED", retryable: true });
+          if (compile !== undefined) {
+            await assert.rejects(bounded(compile, `${activity} ${mode}`));
+          }
+          await waitFor(
+            () => factory.endpoints.length === 2 && client.state === "ready",
+          );
+          assert.equal(closedReads, 1);
+          assert.equal(old.stopped, true);
+          assert.equal(old.closedBox.settled, true);
+          assert.equal(client.getEndpoint().generation, 2);
+          await client.dispose();
+        });
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("throwing closed acquisition and hostile thenables replace or settle bounded", async (context) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    for (const mode of ["getter", "proxy"]) {
+      await context.test(`throwing ${mode}`, async () => {
+        let closedReads = 0;
+        const factory = await makeFactory({
+          create(generation, owner) {
+            const endpoint = new StrictFakeTransport(
+              owner,
+              generation,
+              owner.endpoints.length,
+            );
+            owner.endpoints.push(endpoint);
+            if (owner.endpoints.length !== 1) return endpoint;
+            const throwClosed = () => {
+              closedReads++;
+              throw new Error("SECRET /private/closed-acquisition");
+            };
+            if (mode === "getter") {
+              Object.defineProperty(endpoint, "closed", { get: throwClosed });
+              return endpoint;
+            }
+            return new Proxy(endpoint, {
+              get(target, property, receiver) {
+                if (property === "closed") return throwClosed();
+                return Reflect.get(target, property, receiver);
+              },
+            });
+          },
+        });
+        const client = await createInternalEngineClient({
+          transportFactory: factory,
+          protocolCollectors: collectors,
+          options: { ...creationOptions, disposeTimeoutMs: 10 },
+        });
+        await waitFor(
+          () => factory.endpoints.length === 2 && client.state === "ready",
+        );
+        assert.equal(closedReads, 1);
+        assert.equal(factory.endpoints[0].stopped, true);
+        assert.equal(factory.endpoints[0].closedBox.settled, true);
+        assert.equal(client.getEndpoint().generation, 2);
+        await client.dispose();
+      });
+    }
+
+    const hostileThenables = [
+      () => Promise.reject(new Error("SECRET /private/closed-rejection")),
+      () => Object.defineProperty({}, "then", {
+        get() {
+          throw new Error("SECRET /private/then-getter");
+        },
+      }),
+      () => new Proxy({}, {
+        get(_target, property) {
+          if (property === "then") {
+            throw new Error("SECRET /private/then-proxy");
+          }
+        },
+      }),
+      () => ({
+        then(_resolve, reject) {
+          reject(new Error("SECRET /private/then-rejection"));
+          throw new Error("SECRET /private/then-throw");
+        },
+      }),
+    ];
+    for (const [index, makeThenable] of hostileThenables.entries()) {
+      await context.test(`hostile thenable ${index + 1}`, async () => {
+        let closedReads = 0;
+        const factory = await makeFactory({
+          create(generation, owner) {
+            const endpoint = new StrictFakeTransport(
+              owner,
+              generation,
+              owner.endpoints.length,
+            );
+            owner.endpoints.push(endpoint);
+            if (owner.endpoints.length === 1) {
+              Object.defineProperty(endpoint, "closed", {
+                get() {
+                  closedReads++;
+                  return makeThenable();
+                },
+              });
+            }
+            return endpoint;
+          },
+        });
+        const client = await createInternalEngineClient({
+          transportFactory: factory,
+          protocolCollectors: collectors,
+          options: { ...creationOptions, disposeTimeoutMs: 10 },
+        });
+        await waitFor(
+          () => factory.endpoints.length === 2 && client.state === "ready",
+        );
+        assert.equal(closedReads, 1);
+        assert.equal(factory.endpoints[0].stopped, true);
+        assert.equal(client.getEndpoint().generation, 2);
+        await client.dispose();
+      });
+    }
+
+    await context.test("permanently pending thenable", async () => {
+      let closedReads = 0;
+      const factory = await makeFactory({
+        create(generation, owner) {
+          const endpoint = new StrictFakeTransport(
+            owner,
+            generation,
+            owner.endpoints.length,
+          );
+          owner.endpoints.push(endpoint);
+          if (owner.endpoints.length === 1) {
+            Object.defineProperty(endpoint, "closed", {
+              get() {
+                closedReads++;
+                return { then() {} };
+              },
+            });
+          }
+          return endpoint;
+        },
+      });
+      const client = await createInternalEngineClient({
+        transportFactory: factory,
+        protocolCollectors: collectors,
+        options: { ...creationOptions, disposeTimeoutMs: 10 },
+      });
+      await bounded(client.restart(), "pending closed replacement");
+      assert.equal(closedReads, 1);
+      assert.equal(factory.endpoints[0].stopped, true);
+      assert.equal(factory.endpoints[0].closedBox.settled, true);
+      assert.equal(client.state, "ready");
+      assert.equal(client.getEndpoint().generation, 2);
+      await client.dispose();
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("a replacement candidate close race becomes stable failed and remains recoverable", async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    let candidateClosedReads = 0;
+    const factory = await makeFactory({
+      create(generation, owner) {
+        const endpoint = new StrictFakeTransport(
+          owner,
+          generation,
+          owner.endpoints.length,
+        );
+        owner.endpoints.push(endpoint);
+        if (owner.endpoints.length === 2) {
+          Object.defineProperty(endpoint, "closed", {
+            get() {
+              candidateClosedReads++;
+              throw new Error("SECRET /private/replacement-closed");
+            },
+          });
+        }
+        return endpoint;
+      },
+    });
+    const client = await createInternalEngineClient({
+      transportFactory: factory,
+      protocolCollectors: collectors,
+      options: { ...creationOptions, disposeTimeoutMs: 10 },
+    });
+    factory.endpoints[0].closedBox.resolve({
+      code: "WORKER_CRASHED",
+      retryable: true,
+    });
+    await waitFor(() => client.state === "failed");
+    assert.notEqual(client.state, "replacing");
+    assert.equal(factory.endpoints.length, 2);
+    assert.equal(candidateClosedReads, 1);
+    assert.equal(factory.endpoints[0].stopped, true);
+    await waitFor(() => factory.endpoints[1].stopped === true);
+
+    await bounded(client.restart(), "recovery after replacement close race");
+    assert.equal(client.state, "ready");
+    assert.equal(client.getEndpoint().generation, 3);
+    assert.equal(factory.endpoints.length, 3);
+    await client.dispose();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("dispose racing a rejected captured close is bounded, terminal, and redacted", async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const { client, factory } = await create(undefined, { disposeTimeoutMs: 10 });
+    const old = factory.endpoints[0];
+    old.closedBox.reject(new Error("SECRET stderr /Users/private/dispose-race"));
+    const result = await bounded(
+      client.dispose().then(
+        () => "clean",
+        (error) => error,
+      ),
+      "dispose close race",
+    );
+    assert.ok(result instanceof Error);
+    assert.equal(result.code, "DISPOSE_FAILED");
+    assert.equal(JSON.stringify(result).includes("SECRET"), false);
+    assert.equal(JSON.stringify(result).includes("private"), false);
+    assert.equal(client.state, "disposed");
+    assert.equal(old.stopped, true);
+    assert.equal(old.closedBox.settled, true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
 test("active adversarial close notifications use one fallback and never reject the observer", async (context) => {
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);

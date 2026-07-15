@@ -8,18 +8,48 @@ export type InternalSafeDetailsSnapshot =
   | Readonly<{ valid: false }>
   | Readonly<{ valid: true; details?: InternalSafeDetails }>;
 
-const ALLOWED_DETAIL_KEYS = new Set([
-  "outcome",
-  "diagnosticCount",
-  "failureCode",
-  "requestId",
-  "generation",
-  "blobCount",
-  "limit",
-  "exitCode",
-  "signal",
-  "replacementSucceeded",
-]);
+type SafeDetail = string | number | boolean;
+
+const MAX_PROTOCOL_CODE_LENGTH = 128;
+const MAX_SIGNAL_LENGTH = 32;
+const MAX_EXIT_CODE = 0xffff_ffff;
+
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+const DETAIL_VALIDATORS: Readonly<
+  Record<string, (value: unknown) => value is SafeDetail>
+> = Object.freeze({
+  outcome: (value): value is string =>
+    value === "cancelled" ||
+    value === "failed" ||
+    value === "rejected" ||
+    value === "success",
+  diagnosticCount: nonNegativeSafeInteger,
+  failureCode: (value): value is string =>
+    typeof value === "string" &&
+    value.length <= MAX_PROTOCOL_CODE_LENGTH &&
+    /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/.test(value),
+  requestId: (value): value is string =>
+    typeof value === "string" &&
+    /^ec1-[0-9a-f]{24}-[0-9a-f]{16}$/.test(value),
+  generation: positiveSafeInteger,
+  blobCount: nonNegativeSafeInteger,
+  limit: nonNegativeSafeInteger,
+  exitCode: (value): value is number =>
+    nonNegativeSafeInteger(value) && value <= MAX_EXIT_CODE,
+  signal: (value): value is string =>
+    typeof value === "string" &&
+    value.length <= MAX_SIGNAL_LENGTH &&
+    /^SIG[A-Z0-9]+$/.test(value),
+  replacementSucceeded: (value): value is boolean =>
+    typeof value === "boolean",
+});
 
 const INVALID_DETAILS = Object.freeze({ valid: false as const });
 const ABSENT_DETAILS = Object.freeze({ valid: true as const });
@@ -49,17 +79,18 @@ export function snapshotSafeDetails(
       ) {
         return INVALID_DETAILS;
       }
+      const validator = Object.prototype.hasOwnProperty.call(
+        DETAIL_VALIDATORS,
+        key,
+      )
+        ? DETAIL_VALIDATORS[key]
+        : undefined;
       const detail = descriptor.value;
-      if (
-        ALLOWED_DETAIL_KEYS.has(key) &&
-        /^[A-Za-z][A-Za-z0-9]*$/.test(key) &&
-        (typeof detail === "string" ||
-          typeof detail === "boolean" ||
-          (typeof detail === "number" && Number.isFinite(detail)))
-      ) {
-        copy[key] = detail;
+      if (validator !== undefined && validator(detail)) {
+        copy[key] = detail as SafeDetail;
       }
     }
+    if (Object.keys(copy).length === 0) return ABSENT_DETAILS;
     return Object.freeze({
       valid: true as const,
       details: Object.freeze(copy),

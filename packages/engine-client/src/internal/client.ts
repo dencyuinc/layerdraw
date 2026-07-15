@@ -105,10 +105,46 @@ interface NormalizedCreationOptions {
 interface EndpointContext {
   readonly generation: number;
   readonly transport: InternalByteTransport;
+  readonly closed: Promise<unknown>;
   readonly limits: InternalTransportLimits;
   readonly snapshot: EngineEndpointSnapshot;
   readonly capabilityStatuses: ReadonlyMap<string, boolean>;
   readonly engineRelease: string;
+}
+
+interface AdmittedTransport {
+  readonly transport: InternalByteTransport;
+  readonly closed: Promise<unknown>;
+}
+
+const UNAVAILABLE_TRANSPORT_CLOSE = Object.freeze({
+  kind: "unavailable" as const,
+});
+
+function admitTransport(transport: InternalByteTransport): AdmittedTransport {
+  if (
+    (typeof transport !== "object" && typeof transport !== "function") ||
+    transport === null
+  ) {
+    throw new TypeError("Invalid transport");
+  }
+  let raw: unknown;
+  try {
+    raw = transport.closed;
+  } catch {
+    return Object.freeze({
+      transport,
+      closed: Promise.resolve(UNAVAILABLE_TRANSPORT_CLOSE),
+    });
+  }
+  let closed: Promise<unknown>;
+  try {
+    closed = Promise.resolve(raw);
+  } catch {
+    closed = Promise.resolve(UNAVAILABLE_TRANSPORT_CLOSE);
+  }
+  void closed.catch(() => undefined);
+  return Object.freeze({ transport, closed });
 }
 
 interface OwnedRequestBlob {
@@ -343,11 +379,15 @@ class EngineClientImplementation implements EngineClient {
   private lastGeneration = 0;
   private lastEndpointInstanceId: string | undefined;
   private endpoint: EndpointContext | undefined;
-  private pendingTransport: InternalByteTransport | undefined;
+  private pendingTransport: AdmittedTransport | undefined;
   private pendingOpenAbort: Deferred<void> | undefined;
   private active: ActiveCompile | undefined;
   private replacementPromise: Promise<void> | undefined;
   private disposalPromise: Promise<void> | undefined;
+  private readonly transportShutdowns = new WeakMap<
+    InternalByteTransport,
+    Promise<boolean>
+  >();
   private _state: EngineClientState = "failed";
 
   constructor(
@@ -496,7 +536,7 @@ class EngineClientImplementation implements EngineClient {
     }
     this.pendingOpenAbort?.resolve();
     try {
-      this.pendingTransport?.terminate();
+      this.pendingTransport?.transport.terminate();
     } catch {
       // Raw platform failures are intentionally discarded.
     }
@@ -515,11 +555,11 @@ class EngineClientImplementation implements EngineClient {
         const endpoint = this.endpoint;
         this.endpoint = undefined;
         if (endpoint !== undefined) {
-          failed = !(await this.shutdownTransport(endpoint.transport)) || failed;
+          failed = !(await this.shutdownTransport(endpoint)) || failed;
         }
         if (
           this.pendingTransport !== undefined &&
-          this.pendingTransport !== endpoint?.transport
+          this.pendingTransport.transport !== endpoint?.transport
         ) {
           failed = !(await this.shutdownTransport(this.pendingTransport)) || failed;
         }
@@ -1085,33 +1125,46 @@ class EngineClientImplementation implements EngineClient {
     if (this.replacementPromise !== undefined) return this.replacementPromise;
     this._state = "replacing";
     const promise = (async (): Promise<void> => {
-      const active = this.active;
-      if (active !== undefined && active !== skipActive) {
-        active.interrupt.resolve({
-          kind: "cancel",
-          reason: "restart",
-          ...(barrier === undefined ? {} : { barrier: barrier.promise }),
-        });
-        await active.joined.promise;
-      }
-      const old = this.endpoint;
-      this.endpoint = undefined;
-      if (old !== undefined) await this.shutdownTransport(old.transport);
-      if (this.isTerminating()) return;
+      let next: EndpointContext | undefined;
       try {
+        const active = this.active;
+        if (active !== undefined && active !== skipActive) {
+          active.interrupt.resolve({
+            kind: "cancel",
+            reason: "restart",
+            ...(barrier === undefined ? {} : { barrier: barrier.promise }),
+          });
+          await active.joined.promise;
+        }
+        const old = this.endpoint;
+        this.endpoint = undefined;
+        if (old !== undefined) await this.shutdownTransport(old);
+        if (this.isTerminating()) return;
         const candidateGeneration = this.lastGeneration + 1;
         this.lastGeneration = candidateGeneration;
-        const next = await this.openEndpoint(
+        next = await this.openEndpoint(
           candidateGeneration,
           this.lastEndpointInstanceId,
         );
         if (this.isTerminating()) {
-          await this.shutdownTransport(next.transport);
+          await this.shutdownTransport(next);
           return;
         }
         this.publishEndpoint(next);
+        await Promise.resolve();
+        if (this.endpoint !== next || this._state !== "ready") {
+          throw new EngineClientTransportError("REPLACEMENT_FAILED");
+        }
       } catch {
         if (!this.isTerminating()) {
+          if (next !== undefined) {
+            if (this.endpoint === next) this.endpoint = undefined;
+            try {
+              await this.shutdownTransport(next);
+            } catch {
+              // Replacement always reports one stable failure classification.
+            }
+          }
           this._state = "failed";
           throw new EngineClientTransportError("REPLACEMENT_FAILED");
         }
@@ -1120,6 +1173,7 @@ class EngineClientImplementation implements EngineClient {
     const tracked = promise.finally(() => {
       barrier?.resolve();
       if (this.replacementPromise === tracked) this.replacementPromise = undefined;
+      if (this._state === "replacing") this._state = "failed";
     });
     this.replacementPromise = tracked;
     return tracked;
@@ -1132,13 +1186,16 @@ class EngineClientImplementation implements EngineClient {
     const deadline = this.runtime.now() + this.options.handshakeTimeoutMs;
     const abort = deferred<void>();
     this.pendingOpenAbort = abort;
-    let transport: InternalByteTransport;
+    let admitted: AdmittedTransport;
     try {
-      transport = this.factory.create(`eg1-${this.nonce}-${generation.toString(16)}`);
+      admitted = admitTransport(
+        this.factory.create(`eg1-${this.nonce}-${generation.toString(16)}`),
+      );
     } catch {
       throw new EngineClientTransportError(this.factory.connectFailureCode);
     }
-    this.pendingTransport = transport;
+    const transport = admitted.transport;
+    this.pendingTransport = admitted;
     let exchange: InternalTransportExchange | undefined;
     try {
       const limits = validateTransportLimits(
@@ -1204,6 +1261,7 @@ class EngineClientImplementation implements EngineClient {
       return {
         generation,
         transport,
+        closed: admitted.closed,
         limits,
         snapshot: deepFreeze({ generation, handshake: validated.result }),
         capabilityStatuses: validated.statuses,
@@ -1217,7 +1275,7 @@ class EngineClientImplementation implements EngineClient {
         } catch {
           // Raw platform failures are discarded.
         }
-        await this.shutdownTransport(transport);
+        await this.shutdownTransport(admitted);
         throw new EngineClientTransportError("TIMEOUT_DURING_CREATION");
       }
       try {
@@ -1225,11 +1283,11 @@ class EngineClientImplementation implements EngineClient {
       } catch {
         // Raw platform failures are discarded.
       }
-      await this.shutdownTransport(transport);
+      await this.shutdownTransport(admitted);
       if (error instanceof OpenAborted) throw error;
       throw publicFault(error, this.factory.connectFailureCode);
     } finally {
-      if (this.pendingTransport === transport) this.pendingTransport = undefined;
+      if (this.pendingTransport === admitted) this.pendingTransport = undefined;
       if (this.pendingOpenAbort === abort) this.pendingOpenAbort = undefined;
     }
   }
@@ -1268,7 +1326,9 @@ class EngineClientImplementation implements EngineClient {
     this._state = "ready";
     const observe = (raw: unknown): void => {
       try {
-        const close = validateTransportClose(raw);
+        const close = raw === UNAVAILABLE_TRANSPORT_CLOSE
+          ? undefined
+          : validateTransportClose(raw);
         const error = close === undefined
           ? this.unexpectedCloseFallback()
           : new EngineClientTransportError(
@@ -1285,16 +1345,9 @@ class EngineClientImplementation implements EngineClient {
         }
       }
     };
-    let closed: Promise<InternalTransportClose>;
-    try {
-      closed = endpoint.transport.closed;
-    } catch {
-      observe(undefined);
-      return;
-    }
-    void Promise.resolve(closed).then(
-      (raw) => observe(raw),
-      () => observe(undefined),
+    void endpoint.closed.then(
+      observe,
+      () => observe(UNAVAILABLE_TRANSPORT_CLOSE),
     ).catch(() => undefined);
   }
 
@@ -1310,6 +1363,13 @@ class EngineClientImplementation implements EngineClient {
     error: EngineClientTransportError,
   ): void {
     if (this.endpoint !== endpoint || this._state !== "ready") return;
+    if (this.replacementPromise !== undefined) {
+      this.active?.interrupt.resolve({ kind: "fault", fault: error });
+      this.endpoint = undefined;
+      this._state = "failed";
+      void this.shutdownTransport(endpoint).catch(() => undefined);
+      return;
+    }
     if (this.active !== undefined) {
       this.active.interrupt.resolve({ kind: "fault", fault: error });
       void this.startReplacement().catch(() => undefined);
@@ -1322,28 +1382,59 @@ class EngineClientImplementation implements EngineClient {
     return this._state === "disposing" || this._state === "disposed";
   }
 
-  private async shutdownTransport(
-    transport: InternalByteTransport,
+  private shutdownTransport(
+    admitted: AdmittedTransport,
   ): Promise<boolean> {
-    let clean = true;
-    const graceful = Promise.resolve().then(() => transport.dispose());
-    const gracefulResult = await this.settleWithin(
-      graceful,
-      this.options.disposeTimeoutMs,
-    );
-    if (!gracefulResult) {
-      clean = false;
-      try {
-        transport.terminate();
-      } catch {
-        clean = false;
+    const existing = this.transportShutdowns.get(admitted.transport);
+    if (existing !== undefined) return existing;
+    const shutdown = this.performTransportShutdown(admitted);
+    this.transportShutdowns.set(admitted.transport, shutdown);
+    return shutdown;
+  }
+
+  private async performTransportShutdown(
+    admitted: AdmittedTransport,
+  ): Promise<boolean> {
+    try {
+      const graceful = Promise.resolve().then(() =>
+        admitted.transport.dispose()
+      );
+      const gracefulResult = await this.settleWithin(
+        graceful,
+        this.options.disposeTimeoutMs,
+      );
+      if (!gracefulResult) {
+        try {
+          admitted.transport.terminate();
+        } catch {
+          // The stable unclean result below is the complete public outcome.
+        }
       }
+      const terminal = await this.withBound(
+        admitted.closed.then(
+          (value) => value === UNAVAILABLE_TRANSPORT_CLOSE ? false : true,
+          () => false,
+        ),
+        this.options.disposeTimeoutMs,
+        undefined,
+      );
+      const joined = terminal === true;
+      if (!joined && gracefulResult) {
+        try {
+          admitted.transport.terminate();
+        } catch {
+          // A hostile hard-stop method cannot escape this boundary.
+        }
+      }
+      return gracefulResult && joined;
+    } catch {
+      try {
+        admitted.transport.terminate();
+      } catch {
+        // A hostile hard-stop method cannot escape this boundary.
+      }
+      return false;
     }
-    const closed = await this.settleWithin(
-      transport.closed.then(() => undefined),
-      this.options.disposeTimeoutMs,
-    );
-    return clean && closed;
   }
 
   private async settleWithin(
