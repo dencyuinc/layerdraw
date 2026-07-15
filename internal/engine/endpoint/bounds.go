@@ -3,8 +3,6 @@
 package endpoint
 
 import (
-	"unicode/utf8"
-
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 )
@@ -15,7 +13,7 @@ import (
 // and every response materialized from the bounded fields remains below that
 // ceiling.
 const (
-	maxRequestIDLength            = 128
+	maxRequestIDLength            = MaxRequestIDCodePoints
 	maxReleaseVersionLength       = 128
 	maxCapabilityIDLength         = 128
 	maxProtocolNameLength         = 64
@@ -32,13 +30,6 @@ const (
 	maxEndpointTransportIDLength  = 64
 	maximumHandshakeResponseBytes = 128 * 1024
 )
-
-func trustworthyRequestID(requestID string) bool {
-	if requestID == "" || !utf8.ValidString(requestID) {
-		return false
-	}
-	return utf8.RuneCountInString(requestID) <= maxRequestIDLength
-}
 
 // exceedsHandshakePolicy performs only bounded, allocation-free checks. In
 // particular, it rejects oversized typed slices before generated validation

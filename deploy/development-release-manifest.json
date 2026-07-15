@@ -1,5 +1,5 @@
 {
-  "engine_protocol_schema_digest": "sha256:e9cd89ba2aacbdc7b5ea88017b0749e48a020674e38da90c476b839972813403",
+  "engine_protocol_schema_digest": "sha256:991bd8222fb199fca1925fd8fd49e3433a5c140c7fc4fee5b423634c6a8d6901",
   "manifest_version": 1,
   "release": "0.0.0-dev",
   "spdx": "LicenseRef-LayerDraw-1.0"

@@ -15,7 +15,7 @@ import (
 var (
 	releaseVersion        = engine.DevelopmentVersion
 	sourceRevision        = engine.UnknownSourceRevision
-	releaseManifestDigest = "sha256:641998a5c7ba953ad349390513af6e368cfb73d50cbbafbb7c97a4e74581b88c"
+	releaseManifestDigest = "sha256:b777be6143738b44b48819b962ae2f5676f22dc85cbfcb70a5803a440c13a369"
 )
 
 func main() {
