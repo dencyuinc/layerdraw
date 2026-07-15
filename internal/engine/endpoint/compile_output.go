@@ -485,7 +485,7 @@ func mapSemanticIndexWithBudget(input engine.SemanticIndex, budget *compileMappi
 		if err := ensureStableAddressArraysWithinWire(budget.maximum, record.Addresses); err != nil {
 			return semantic.SemanticIndex{}, err
 		}
-		mapped := semantic.ReferenceIdRecord{ID: record.ID, Addresses: stableAddresses(record.Addresses)}
+		mapped := semantic.ReferenceIdRecord{ID: record.ID, Addresses: referenceAddresses(record.Addresses)}
 		if err := budget.claim(mapped); err != nil {
 			return semantic.SemanticIndex{}, err
 		}
@@ -495,7 +495,7 @@ func mapSemanticIndexWithBudget(input engine.SemanticIndex, budget *compileMappi
 		if err := ensureStableAddressArraysWithinWire(budget.maximum, record.Outgoing, record.Incoming); err != nil {
 			return semantic.SemanticIndex{}, err
 		}
-		mapped := semantic.AdjacencyRecord{EntityAddress: semantic.StableAddress(record.EntityAddress), Outgoing: stableAddresses(record.Outgoing), Incoming: stableAddresses(record.Incoming)}
+		mapped := semantic.AdjacencyRecord{EntityAddress: semantic.EntityAddress(record.EntityAddress), Outgoing: typedAddresses[semantic.RelationAddress](record.Outgoing), Incoming: typedAddresses[semantic.RelationAddress](record.Incoming)}
 		if err := budget.claim(mapped); err != nil {
 			return semantic.SemanticIndex{}, err
 		}
@@ -521,9 +521,9 @@ func mapSemanticIndexWithBudget(input engine.SemanticIndex, budget *compileMappi
 
 func mapDependencyRecord(input index.DependencyRecord) semantic.DependencyRecord {
 	return semantic.DependencyRecord{
-		Kind: semantic.DependencyKind(input.Kind), SubjectAddress: semantic.StableAddress(input.SubjectAddress), QueryAddresses: stableAddresses(input.QueryAddresses), ParameterAddresses: stableAddresses(input.ParameterAddresses),
-		LayerAddresses: stableAddresses(input.LayerAddresses), EntityTypeAddresses: stableAddresses(input.EntityTypeAddresses), RelationTypeAddresses: stableAddresses(input.RelationTypeAddresses),
-		EntityAddresses: stableAddresses(input.EntityAddresses), RelationAddresses: stableAddresses(input.RelationAddresses), ColumnAddresses: stableAddresses(input.ColumnAddresses), ExportAddresses: stableAddresses(input.ExportAddresses), StateReads: mapStateReads(input.StateReads),
+		Kind: semantic.DependencyKind(input.Kind), SubjectAddress: semantic.StableAddress(input.SubjectAddress), QueryAddresses: typedAddresses[semantic.QueryAddress](input.QueryAddresses), ParameterAddresses: typedAddresses[semantic.ParameterAddress](input.ParameterAddresses),
+		LayerAddresses: typedAddresses[semantic.LayerAddress](input.LayerAddresses), EntityTypeAddresses: typedAddresses[semantic.EntityTypeAddress](input.EntityTypeAddresses), RelationTypeAddresses: typedAddresses[semantic.RelationTypeAddress](input.RelationTypeAddresses),
+		EntityAddresses: typedAddresses[semantic.EntityAddress](input.EntityAddresses), RelationAddresses: typedAddresses[semantic.RelationAddress](input.RelationAddresses), ColumnAddresses: typedAddresses[semantic.ColumnAddress](input.ColumnAddresses), ExportAddresses: typedAddresses[semantic.ViewExportAddress](input.ExportAddresses), StateReads: mapStateReads(input.StateReads),
 	}
 }
 
@@ -579,7 +579,7 @@ func mapScopedReadsWithBudget(input index.ScopedReadIndexes, budget *compileMapp
 		if err := ensureStableAddressArraysWithinWire(budget.maximum, item.Addresses); err != nil {
 			return semantic.ScopedReadIndexes{}, err
 		}
-		mapped := semantic.ReferenceIdRecord{ID: item.ID, Addresses: stableAddresses(item.Addresses)}
+		mapped := semantic.ReferenceIdRecord{ID: item.ID, Addresses: referenceAddresses(item.Addresses)}
 		if err := budget.claim(mapped); err != nil {
 			return semantic.ScopedReadIndexes{}, err
 		}
@@ -618,7 +618,7 @@ func mapSearchDocumentsWithBudget(input []engine.SearchDocument, budget *compile
 		if err := ensureStableAddressArraysWithinWire(budget.maximum, document.GraphEntryAddresses, document.TypeAddresses, document.LayerAddresses); err != nil {
 			return nil, err
 		}
-		mapped := semantic.SearchDocument{SchemaVersion: int64(document.SchemaVersion), SubjectAddress: semantic.StableAddress(document.SubjectAddress), SubjectKind: semantic.SubjectKind(document.SubjectKind), OwnerAddress: stringStableAddressPointer(document.OwnerAddress), GraphEntryAddresses: stableAddresses(document.GraphEntryAddresses), TypeAddresses: stableAddresses(document.TypeAddresses), LayerAddresses: stableAddresses(document.LayerAddresses), Fields: make([]semantic.SearchField, 0, min(len(document.Fields), 256)), ContentHash: protocolcommon.Digest(document.ContentHash)}
+		mapped := semantic.SearchDocument{SchemaVersion: int64(document.SchemaVersion), SubjectAddress: semantic.StableAddress(document.SubjectAddress), SubjectKind: semantic.SubjectKind(document.SubjectKind), OwnerAddress: stringStableAddressPointer(document.OwnerAddress), GraphEntryAddresses: stableAddresses(document.GraphEntryAddresses), TypeAddresses: typedAddresses[semantic.EntityOrRelationTypeAddress](document.TypeAddresses), LayerAddresses: typedAddresses[semantic.LayerAddress](document.LayerAddresses), Fields: make([]semantic.SearchField, 0, min(len(document.Fields), 256)), ContentHash: protocolcommon.Digest(document.ContentHash)}
 		localBudget := newCompileMappingBudget(budget.maximum)
 		if err := localBudget.claim(mapped); err != nil {
 			return nil, err
@@ -664,7 +664,7 @@ func mapSourceOrigin(input resolve.SourceOrigin) (semantic.SourceOrigin, error) 
 		if input.PackAddress == "" {
 			return semantic.SourceOrigin{}, fmt.Errorf("Pack origin lacks Pack address")
 		}
-		result.PackAddress = stableAddressPointer(input.PackAddress)
+		result.PackAddress = packRootAddressPointer(input.PackAddress)
 	default:
 		return semantic.SourceOrigin{}, fmt.Errorf("unknown source origin")
 	}
@@ -743,9 +743,21 @@ func canonicalUint64FromInt64(value int64) (protocolcommon.CanonicalUint64, erro
 }
 
 func stableAddresses(input []string) []semantic.StableAddress {
-	result := make([]semantic.StableAddress, len(input))
+	return typedAddresses[semantic.StableAddress](input)
+}
+
+func typedAddresses[T ~string](input []string) []T {
+	result := make([]T, len(input))
 	for i, value := range input {
-		result[i] = semantic.StableAddress(value)
+		result[i] = T(value)
+	}
+	return result
+}
+
+func referenceAddresses(input []string) []semantic.ReferenceAddress {
+	result := make([]semantic.ReferenceAddress, len(input))
+	for i, value := range input {
+		result[i] = semantic.ReferenceAddress(value)
 	}
 	return result
 }
@@ -755,6 +767,14 @@ func stableAddressPointer(input string) *semantic.StableAddress {
 		return nil
 	}
 	value := semantic.StableAddress(input)
+	return &value
+}
+
+func packRootAddressPointer(input string) *semantic.PackRootAddress {
+	if input == "" {
+		return nil
+	}
+	value := semantic.PackRootAddress(input)
 	return &value
 }
 

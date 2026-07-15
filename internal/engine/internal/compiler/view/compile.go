@@ -572,6 +572,16 @@ func (c *compiler) dependencies(recipe Recipe) Dependencies {
 		mergeDependencySet(sets, resolve.KindColumn, queryRecipe.Dependencies.ColumnAddresses)
 		mergeDependencySet(sets, resolve.KindParameter, queryRecipe.Dependencies.ParameterAddresses)
 	}
+	if recipe.Source.Query != nil {
+		for _, argument := range recipe.Source.Query.Arguments {
+			mergeDependencySet(sets, resolve.KindParameter, []string{argument.ParameterAddress})
+		}
+	}
+	if recipe.Source.Diff != nil {
+		for _, argument := range recipe.Source.Diff.Arguments {
+			mergeDependencySet(sets, resolve.KindParameter, []string{argument.ParameterAddress})
+		}
+	}
 	dependencies := Dependencies{
 		QueryAddresses: setKeys(sets[resolve.KindQuery]), ParameterAddresses: setKeys(sets[resolve.KindParameter]),
 		LayerAddresses: setKeys(sets[resolve.KindLayer]), EntityTypeAddresses: setKeys(sets[resolve.KindEntityType]),

@@ -17,6 +17,7 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/exportrecipe"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/materialize"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/query"
+	viewcompiler "github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/view"
 )
 
 const maxSafeInteger = int64(9_007_199_254_740_991)
@@ -38,19 +39,19 @@ func mapCompiledRecipesWithBudget(snapshot engine.Snapshot, budget *compileMappi
 		return engineprotocol.CompiledRecipes{}, nil, fmt.Errorf("compiled recipe sets do not match normalized counterparts")
 	}
 	for _, compiled := range snapshot.CompiledQueryRecipes {
-		minimum := engineprotocol.CompiledQueryRecipeArtifact{Address: semantic.StableAddress(compiled.Address)}
+		minimum := engineprotocol.CompiledQueryRecipeArtifact{Address: semantic.QueryAddress(compiled.Address)}
 		if err := budget.claim(minimum); err != nil {
 			return engineprotocol.CompiledRecipes{}, nil, err
 		}
 	}
 	for _, compiled := range snapshot.CompiledViewRecipes {
-		minimum := engineprotocol.CompiledViewRecipeArtifact{Address: semantic.StableAddress(compiled.Address)}
+		minimum := engineprotocol.CompiledViewRecipeArtifact{Address: semantic.ViewAddress(compiled.Address)}
 		if err := budget.claim(minimum); err != nil {
 			return engineprotocol.CompiledRecipes{}, nil, err
 		}
 	}
 	for _, compiled := range snapshot.CompiledExportRecipes {
-		minimum := engineprotocol.CompiledExportRecipeArtifact{Address: semantic.StableAddress(compiled.Address)}
+		minimum := engineprotocol.CompiledExportRecipeArtifact{Address: semantic.ViewExportAddress(compiled.Address)}
 		if err := budget.claim(minimum); err != nil {
 			return engineprotocol.CompiledRecipes{}, nil, err
 		}
@@ -98,7 +99,7 @@ func mapCompiledRecipesWithBudget(snapshot engine.Snapshot, budget *compileMappi
 		}
 		blob := newOutputBlob(recipeBlobID("query", compiled.Address), encoded)
 		blob.Ref.MediaType = string(engineprotocol.QueryRecipeBlobRefMediaTypeValue)
-		mapped := engineprotocol.CompiledQueryRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: queryRecipeRef(blob.Ref)}
+		mapped := engineprotocol.CompiledQueryRecipeArtifact{Address: semantic.QueryAddress(compiled.Address), CanonicalJSON: queryRecipeRef(blob.Ref)}
 		result.Queries = append(result.Queries, mapped)
 		blobs = append(blobs, blob)
 	}
@@ -118,7 +119,7 @@ func mapCompiledRecipesWithBudget(snapshot engine.Snapshot, budget *compileMappi
 		}
 		blob := newOutputBlob(recipeBlobID("view", compiled.Address), encoded)
 		blob.Ref.MediaType = string(engineprotocol.ViewRecipeBlobRefMediaTypeValue)
-		mapped := engineprotocol.CompiledViewRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: viewRecipeRef(blob.Ref)}
+		mapped := engineprotocol.CompiledViewRecipeArtifact{Address: semantic.ViewAddress(compiled.Address), CanonicalJSON: viewRecipeRef(blob.Ref)}
 		result.Views = append(result.Views, mapped)
 		blobs = append(blobs, blob)
 	}
@@ -138,7 +139,7 @@ func mapCompiledRecipesWithBudget(snapshot engine.Snapshot, budget *compileMappi
 		}
 		blob := newOutputBlob(recipeBlobID("export", compiled.Address), encoded)
 		blob.Ref.MediaType = string(engineprotocol.ExportRecipeBlobRefMediaTypeValue)
-		mapped := engineprotocol.CompiledExportRecipeArtifact{Address: semantic.StableAddress(compiled.Address), CanonicalJSON: exportRecipeRef(blob.Ref)}
+		mapped := engineprotocol.CompiledExportRecipeArtifact{Address: semantic.ViewExportAddress(compiled.Address), CanonicalJSON: exportRecipeRef(blob.Ref)}
 		result.Exports = append(result.Exports, mapped)
 		blobs = append(blobs, blob)
 	}
@@ -249,9 +250,9 @@ func mapQueryRecipe(input materialize.Query, compiled engine.CompiledQueryRecipe
 }
 
 func mapQueryParameter(input materialize.QueryParameter) (semantic.QueryRecipeParameter, error) {
-	result := semantic.QueryRecipeParameter{ID: semantic.LocalIdentifier(input.ID), Address: semantic.ParameterAddress(input.Address), ValueType: semantic.ValueType(input.ValueType), Required: input.Required, ReservedEnumValues: cloneStrings(input.ReservedEnumValues)}
+	result := semantic.QueryRecipeParameter{ID: semantic.LocalIdentifier(input.ID), Address: semantic.ParameterAddress(input.Address), ValueType: semantic.ValueType(input.ValueType), Required: input.Required, ReservedEnumValues: sortedStrings(input.ReservedEnumValues)}
 	if input.EnumValues != nil {
-		values := cloneStrings(input.EnumValues)
+		values := sortedStrings(input.EnumValues)
 		result.EnumValues = &values
 	}
 	if input.Default != nil {
@@ -499,6 +500,9 @@ func mapViewRecipe(input materialize.View, compiled engine.CompiledViewRecipe, e
 	if err != nil {
 		return semantic.ViewRecipe{}, err
 	}
+	if err := applyCompiledViewShape(&shape, compiled.Shape); err != nil {
+		return semantic.ViewRecipe{}, err
+	}
 	result.Shape = shape
 	for i, item := range input.Exports {
 		compiledExport, found := exports[item.Address]
@@ -597,7 +601,7 @@ func mapViewShape(input materialize.ViewShape) (semantic.ViewRecipeShape, error)
 		for i, item := range value.Sorts {
 			sorts[i] = semantic.ViewTableSort{ColumnID: item.ColumnID, Direction: string(item.Direction), Absent: string(item.Absent)}
 		}
-		result.Table = &semantic.ViewTableShape{RowSource: string(value.RowSource), EntityTypeAddresses: typedStringSlicePointer[semantic.EntityTypeAddress](value.EntityTypeAddresses), IncludeEntityID: value.IncludeEntityID, IncludeType: value.IncludeType, IncludeLayer: value.IncludeLayer, Columns: columns, Sorts: sorts}
+		result.Table = &semantic.ViewTableShape{RowSource: string(value.RowSource), AutomaticRelationColumns: sortedStrings(value.AutomaticRelationColumns), EntityTypeAddresses: typedStringSlicePointer[semantic.EntityTypeAddress](value.EntityTypeAddresses), IncludeEntityID: value.IncludeEntityID, IncludeType: value.IncludeType, IncludeLayer: value.IncludeLayer, Columns: columns, Sorts: sorts}
 	}
 	if value := input.Matrix; value != nil {
 		result.Matrix = &semantic.ViewMatrixShape{RowAxis: mapMatrixAxis(value.RowAxis), ColumnAxis: mapMatrixAxis(value.ColumnAxis), Cell: semantic.ViewMatrixCell{RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](value.Cell.RelationTypeAddresses), Direction: string(value.Cell.Direction), Semantic: string(value.Cell.Semantic), Display: string(value.Cell.Display), AttributeColumnAddresses: typedStringSlicePointer[semantic.RelationTypeColumnAddress](value.Cell.AttributeColumnAddresses)}}
@@ -617,6 +621,56 @@ func mapViewShape(input materialize.ViewShape) (semantic.ViewRecipeShape, error)
 			kinds[i] = semantic.SubjectKind(item)
 		}
 		result.Diff = &semantic.ViewDiffShape{Include: kinds, DetectMoves: value.DetectMoves}
+	}
+	return result, nil
+}
+
+func applyCompiledViewShape(result *semantic.ViewRecipeShape, compiled viewcompiler.Shape) error {
+	if result.Kind != string(compiled.Kind) {
+		return fmt.Errorf("compiled View shape kind does not match normalized shape")
+	}
+	if compiled.Table == nil {
+		return nil
+	}
+	if result.Table == nil || len(result.Table.Columns) != len(compiled.Table.Columns) {
+		return fmt.Errorf("compiled View table columns do not match normalized shape")
+	}
+	for i, column := range compiled.Table.Columns {
+		if string(result.Table.Columns[i].Address) != column.Address || string(result.Table.Columns[i].ID) != column.ID {
+			return fmt.Errorf("compiled View table column identity does not match normalized shape")
+		}
+		mapped, err := mapTableValueType(column.ValueType)
+		if err != nil {
+			return err
+		}
+		result.Table.Columns[i].ValueType = mapped
+	}
+	return nil
+}
+
+func mapTableValueType(input viewcompiler.TableValueType) (semantic.ViewTableValueType, error) {
+	result := semantic.ViewTableValueType{Kind: string(input.Kind)}
+	switch input.Kind {
+	case viewcompiler.TableValueScalar:
+		if input.ScalarType == "" {
+			return semantic.ViewTableValueType{}, fmt.Errorf("compiled scalar table value lacks scalar type")
+		}
+		scalarType := semantic.ValueType(input.ScalarType)
+		result.ScalarType = &scalarType
+		if input.EnumValues != nil {
+			values := sortedStrings(input.EnumValues)
+			result.EnumValues = &values
+		}
+		if input.Format != nil {
+			format := string(*input.Format)
+			result.Format = &format
+		}
+	case viewcompiler.TableValueStableAddress, viewcompiler.TableValueStringSet:
+		if input.ScalarType != "" || input.EnumValues != nil || input.Format != nil {
+			return semantic.ViewTableValueType{}, fmt.Errorf("compiled non-scalar table value has scalar metadata")
+		}
+	default:
+		return semantic.ViewTableValueType{}, fmt.Errorf("compiled table value has unknown kind")
 	}
 	return result, nil
 }
@@ -751,6 +805,12 @@ func optionalTypedStringPointer[T ~string](input *string) *T {
 }
 
 func cloneStrings(input []string) []string { return append([]string{}, input...) }
+
+func sortedStrings(input []string) []string {
+	result := cloneStrings(input)
+	slices.Sort(result)
+	return result
+}
 func cloneStringMap(input map[string]string) map[string]string {
 	result := make(map[string]string, len(input))
 	for key, value := range input {

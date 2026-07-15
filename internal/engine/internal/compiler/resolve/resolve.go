@@ -1030,6 +1030,8 @@ func (st *moduleState) addBinding(kind SubjectKind, text string, span syntax.Spa
 	owner := ""
 	if target.Owner != nil {
 		owner = addressOf(*target.Owner)
+	} else if len(target.Symbol.Path) != 0 {
+		owner = addressOf(StableSymbol{Origin: target.Symbol.Origin})
 	}
 	st.bindings = append(st.bindings, SourceBinding{Module: st.key, ExpectedKind: kind, SourceText: text, Range: span, Target: target.Symbol, TargetAddress: target.Address, TargetOwnerAddress: owner, Via: via, SourceAddress: sourceAddress})
 }

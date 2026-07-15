@@ -36,6 +36,15 @@ func TestCompileEveryShapeAndExportFamily(t *testing.T) {
 	if len(diagram.Source.Query.Arguments) != 2 || !diagram.Source.Query.Arguments[1].Defaulted {
 		t.Fatalf("complete arguments=%+v", diagram.Source.Query.Arguments)
 	}
+	for _, argument := range diagram.Source.Query.Arguments {
+		found := false
+		for _, address := range diagram.Dependencies.ParameterAddresses {
+			found = found || address == argument.ParameterAddress
+		}
+		if !found {
+			t.Fatalf("argument parameter %q is absent from dependencies: %+v", argument.ParameterAddress, diagram.Dependencies)
+		}
+	}
 	if !reflect.DeepEqual(diagram.ReservedTableColumnIDs, []string{"legacy_column"}) || !reflect.DeepEqual(diagram.ReservedExportIDs, []string{"legacy_export"}) {
 		t.Fatalf("reservations=%v/%v", diagram.ReservedTableColumnIDs, diagram.ReservedExportIDs)
 	}

@@ -198,7 +198,7 @@ func TestDispatchCompilePublishesGeneratedRecipeDocuments(t *testing.T) {
 		t.Fatal(err)
 	}
 	if response.Outcome != protocolcommon.OutcomeSuccess || response.Payload == nil {
-		t.Fatalf("unexpected response: %+v", response)
+		t.Fatalf("unexpected response: %+v failure=%+v", response, response.Failure)
 	}
 	recipes := response.Payload.CompiledRecipes
 	if len(recipes.Queries) != 1 || len(recipes.Views) != 1 || len(recipes.Exports) != 1 || len(sink.blobs) != 5 {

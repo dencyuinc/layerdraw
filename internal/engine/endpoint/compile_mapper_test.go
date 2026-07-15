@@ -459,7 +459,7 @@ func TestDirectCompleteRecipeMappingWithOptionalValues(t *testing.T) {
 	compiledExport := exportrecipe.Recipe{ID: "e", Address: exportInput.Address, ViewAddress: "ldl:project:p:view:v", Format: exportrecipe.FormatJSON, Extension: ".json", Fidelity: exportrecipe.FidelityLossless, NativeMaximumFidelity: exportrecipe.FidelityLossless, EffectiveMaximumFidelity: exportrecipe.FidelityLossless, FidelityBasis: exportrecipe.FidelityBasisNative, RequiresSourceManifest: false}
 	viewSourceAddress := "ldl:project:p:query:q"
 	normalizedView := materialize.View{Common: materialize.Common{Description: &description, Tags: []string{}, Annotations: map[string]string{}}, ID: "v", Address: "ldl:project:p:view:v", DisplayName: "V", StateInput: query.StateOptional, Category: view.CategoryContext, Intent: &description, Source: materialize.ViewSource{Kind: view.SourceQuery, QueryAddress: &viewSourceAddress, Arguments: map[string]materialize.Scalar{}}, RelationProjections: map[string]materialize.ProjectionOverride{"ldl:project:p:relation_type:r": {}}, Shape: materialize.ViewShape{Kind: view.ShapeContext, Context: &materialize.ContextShape{GroupBy: view.ContextGroupNone}}, Exports: []materialize.ExportRecipe{exportInput}, ReservedTableColumnIDs: []string{}, ReservedExportIDs: []string{}}
-	compiledView := engine.CompiledViewRecipe{ID: "v", Address: normalizedView.Address, StateRequirement: query.StateOptional, Dependencies: view.Dependencies{QueryAddresses: []string{}, ParameterAddresses: []string{}, LayerAddresses: []string{}, EntityTypeAddresses: []string{}, RelationTypeAddresses: []string{}, EntityAddresses: []string{}, RelationAddresses: []string{}, ColumnAddresses: []string{}, ExportAddresses: []string{}, StateReads: []query.StateReadDependency{}}}
+	compiledView := engine.CompiledViewRecipe{ID: "v", Address: normalizedView.Address, StateRequirement: query.StateOptional, Shape: view.Shape{Kind: view.ShapeContext, Context: &view.ContextShape{GroupBy: view.ContextGroupNone}}, Dependencies: view.Dependencies{QueryAddresses: []string{}, ParameterAddresses: []string{}, LayerAddresses: []string{}, EntityTypeAddresses: []string{}, RelationTypeAddresses: []string{}, EntityAddresses: []string{}, RelationAddresses: []string{}, ColumnAddresses: []string{}, ExportAddresses: []string{}, StateReads: []query.StateReadDependency{}}}
 	mappedView, err := mapViewRecipe(normalizedView, compiledView, map[string]exportrecipe.Recipe{compiledExport.Address: compiledExport})
 	if err != nil {
 		t.Fatal(err)
@@ -819,6 +819,17 @@ func TestGeneratedRecipeMappingInvariantFailures(t *testing.T) {
 	result, err := engine.New(engine.BuildInfo{}).Compile(context.Background(), engine.CompileInput{Mode: engine.CompileProject, EntryPath: "document.ldl", ProjectSourceTree: map[string][]byte{"document.ldl": []byte(allRecipeDeclarationsFixture)}, ResolvedDependencies: engine.ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	snapshot := result.Snapshot()
+	if _, _, err := mapCompiledRecipes(snapshot); err != nil {
+		t.Fatalf("valid generated recipes were rejected: %v", err)
+	}
+	payload, _, err := mapCompileSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("valid compile snapshot was rejected: %v", err)
+	}
+	if _, err := compileSuccessResponse("compile-request", protocolcommon.ReleaseVersion(engine.DevelopmentVersion), payload, []semantic.Diagnostic{}); err != nil {
+		t.Fatalf("valid compile response was rejected: %v", err)
 	}
 	cases := []struct {
 		name   string
