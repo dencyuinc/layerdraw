@@ -173,7 +173,7 @@
       "type": "object",
       "description": "A compiled Export recipe bound to a CompiledExportRecipeDocument encoded as canonical JSON bytes supplied out of band.",
       "properties": {
-        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewExportAddress"},
         "canonical_json": {"$ref": "#/$defs/ExportRecipeBlobRef"}
       },
       "required": ["address", "canonical_json"],
@@ -183,7 +183,7 @@
       "type": "object",
       "description": "A compiled Query recipe bound to a CompiledQueryRecipeDocument encoded as canonical JSON bytes supplied out of band.",
       "properties": {
-        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryAddress"},
         "canonical_json": {"$ref": "#/$defs/QueryRecipeBlobRef"}
       },
       "required": ["address", "canonical_json"],
@@ -193,7 +193,7 @@
       "type": "object",
       "description": "A compiled View recipe bound to a CompiledViewRecipeDocument encoded as canonical JSON bytes supplied out of band.",
       "properties": {
-        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewAddress"},
         "canonical_json": {"$ref": "#/$defs/ViewRecipeBlobRef"}
       },
       "required": ["address", "canonical_json"],
@@ -203,9 +203,9 @@
       "type": "object",
       "description": "The complete ordered compiled Query, View, and Export recipe sets.",
       "properties": {
-        "exports": {"type": "array", "items": {"$ref": "#/$defs/CompiledExportRecipeArtifact"}},
-        "queries": {"type": "array", "items": {"$ref": "#/$defs/CompiledQueryRecipeArtifact"}},
-        "views": {"type": "array", "items": {"$ref": "#/$defs/CompiledViewRecipeArtifact"}}
+        "exports": {"type": "array", "items": {"$ref": "#/$defs/CompiledExportRecipeArtifact"}, "x-layerdraw-stable-address-order": "address"},
+        "queries": {"type": "array", "items": {"$ref": "#/$defs/CompiledQueryRecipeArtifact"}, "x-layerdraw-stable-address-order": "address"},
+        "views": {"type": "array", "items": {"$ref": "#/$defs/CompiledViewRecipeArtifact"}, "x-layerdraw-stable-address-order": "address"}
       },
       "required": ["queries", "views", "exports"],
       "additionalProperties": false
@@ -218,7 +218,7 @@
         "graph_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "pack": {"$ref": "#/$defs/NormalizedPackArtifact"},
         "project": {"$ref": "#/$defs/NormalizedProjectArtifact"},
-        "search_documents": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SearchDocument"}}
+        "search_documents": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SearchDocument"}, "x-layerdraw-stable-address-order": "subject_address"}
       },
       "required": ["kind", "search_documents"],
       "additionalProperties": false,
@@ -256,7 +256,7 @@
       "type": "object",
       "description": "The complete transport projection of one successful deterministic compiler generation.",
       "properties": {
-        "authoring_subject_classification": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringSubjectClassification"}},
+        "authoring_subject_classification": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringSubjectClassification"}, "x-layerdraw-stable-address-order": "address"},
         "child_set_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ChildSetHash"}},
         "compiled_recipes": {"$ref": "#/$defs/CompiledRecipes"},
         "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
@@ -265,9 +265,9 @@
         "normalized_artifact": {"$ref": "#/$defs/NormalizedArtifact"},
         "semantic_index": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SemanticIndex"},
         "source_map": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceMap"},
-        "stable_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}},
-        "subject_semantic_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectHash"}},
-        "subtree_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubtreeHash"}}
+        "stable_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "subject_semantic_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectHash"}, "x-layerdraw-stable-address-order": "address"},
+        "subtree_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubtreeHash"}, "x-layerdraw-stable-address-order": "owner_address"}
       },
       "required": ["effective_limits", "normalized_artifact", "source_map", "semantic_index", "stable_addresses", "definition_hash", "subject_semantic_hashes", "subtree_hashes", "child_set_hashes", "authoring_subject_classification", "compiled_recipes"],
       "additionalProperties": false

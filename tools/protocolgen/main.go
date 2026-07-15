@@ -73,12 +73,20 @@ var (
 		"x-layerdraw-ordered-range": {"type": "boolean"},
 		"x-layerdraw-outcome-envelope": {"type": "boolean"},
 		"x-layerdraw-protocol-offer": {"type": "boolean"},
+		"x-layerdraw-query-parameter": {"type": "boolean", "const": true},
+		"x-layerdraw-query-recipe": {"type": "boolean", "const": true},
+		"x-layerdraw-recipe-predicate": {"type": "string", "enum": ["predicate", "row"]},
+		"x-layerdraw-recipe-scalar": {"type": "boolean", "const": true},
 		"x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
+		"x-layerdraw-stable-address-roles": {"type": "array", "items": {"$ref": "#/$defs/stableAddressRoleRule"}, "minItems": 1, "uniqueItems": true},
 		"x-layerdraw-stable-address-order": {"type": "string", "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."},
+		"x-layerdraw-state-read-order": {"type": "boolean", "const": true},
 		"x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
+		"x-layerdraw-state-read": {"type": "boolean", "const": true},
 		"x-layerdraw-ts-module": {"type": "string", "minLength": 1},
 		"x-layerdraw-unicode-scalar-order": {"type": "boolean", "const": true},
 		"x-layerdraw-unique-array-keys": {"type": "array", "items": {"$ref": "#/$defs/uniqueArrayKey"}},
+		"x-layerdraw-view-projection": {"type": "string", "enum": ["composed", "diagram", "flow", "matrix", "tree"]},
 		"x-layerdraw-view-recipe": {"type": "boolean", "const": true}
 	}`)
 	requiredDialectDefinitions = mustDecodeDialectObject(`{
@@ -133,6 +141,22 @@ var (
 				"upper": {"type": "string", "minLength": 1}
 			},
 			"required": ["lower", "upper", "comparison"],
+			"additionalProperties": false
+		},
+		"stableAddressRoleRule": {
+			"type": "object",
+			"properties": {
+				"address": {"type": "string", "minLength": 1},
+				"addresses": {"type": "string", "minLength": 1},
+				"kind": {"type": "string", "minLength": 1},
+				"owner": {"type": "string", "minLength": 1},
+				"owner_policy": {"type": "string", "enum": ["children", "exact", "if_present", "row_only"]}
+			},
+			"required": ["kind"],
+			"oneOf": [
+				{"required": ["address"]},
+				{"required": ["addresses"]}
+			],
 			"additionalProperties": false
 		},
 		"taggedUnion": {
@@ -234,45 +258,61 @@ type addressOwnerRule struct {
 	Selector string `json:"selector"`
 }
 
+type stableAddressRoleRule struct {
+	Kind        string `json:"kind"`
+	Address     string `json:"address"`
+	Addresses   string `json:"addresses"`
+	Owner       string `json:"owner"`
+	OwnerPolicy string `json:"owner_policy"`
+}
+
 type schemaType struct {
-	Ref                  string                 `json:"$ref,omitempty"`
-	Comment              string                 `json:"$comment,omitempty"`
-	Type                 any                    `json:"type,omitempty"`
-	Description          string                 `json:"description,omitempty"`
-	Enum                 []string               `json:"enum,omitempty"`
-	Const                any                    `json:"const,omitempty"`
-	Properties           map[string]*schemaType `json:"properties,omitempty"`
-	Required             []string               `json:"required,omitempty"`
-	Items                *schemaType            `json:"items,omitempty"`
-	PropertyNames        *schemaType            `json:"propertyNames,omitempty"`
-	AdditionalProperties any                    `json:"additionalProperties,omitempty"`
-	Pattern              string                 `json:"pattern,omitempty"`
-	Format               string                 `json:"format,omitempty"`
-	Minimum              *float64               `json:"minimum,omitempty"`
-	Maximum              *float64               `json:"maximum,omitempty"`
-	MinLength            *int                   `json:"minLength,omitempty"`
-	MinItems             *int                   `json:"minItems,omitempty"`
-	UniqueItems          bool                   `json:"uniqueItems,omitempty"`
-	OneOf                []*schemaType          `json:"oneOf,omitempty"`
-	TaggedUnion          *taggedUnion           `json:"x-layerdraw-tagged-union,omitempty"`
-	OutcomeEnvelope      bool                   `json:"x-layerdraw-outcome-envelope,omitempty"`
-	OrderedRange         bool                   `json:"x-layerdraw-ordered-range,omitempty"`
-	OperatorValue        *operatorValueRule     `json:"x-layerdraw-operator-value,omitempty"`
-	ProtocolOffer        bool                   `json:"x-layerdraw-protocol-offer,omitempty"`
-	LimitCapability      bool                   `json:"x-layerdraw-limit-capability,omitempty"`
-	UniqueArrayKeys      []uniqueArrayKey       `json:"x-layerdraw-unique-array-keys,omitempty"`
-	DisjointArrays       []disjointArrayPair    `json:"x-layerdraw-disjoint-arrays,omitempty"`
-	DisjointArrayKeys    []disjointArrayKey     `json:"x-layerdraw-disjoint-array-keys,omitempty"`
-	DiffSource           bool                   `json:"x-layerdraw-diff-source,omitempty"`
-	StableAddressOrder   string                 `json:"x-layerdraw-stable-address-order,omitempty"`
-	CanonicalEnumOrder   bool                   `json:"x-layerdraw-canonical-enum-order,omitempty"`
-	CanonicalIDOrder     bool                   `json:"x-layerdraw-canonical-identifier-order,omitempty"`
-	UnicodeScalarOrder   bool                   `json:"x-layerdraw-unicode-scalar-order,omitempty"`
-	OrderedPairs         []orderedPairRule      `json:"x-layerdraw-ordered-pairs,omitempty"`
-	AddressOwners        []addressOwnerRule     `json:"x-layerdraw-address-owners,omitempty"`
-	AddressTerminalID    *addressTerminalIDRule `json:"x-layerdraw-address-terminal-id,omitempty"`
-	ExportRecipe         bool                   `json:"x-layerdraw-export-recipe,omitempty"`
-	ViewRecipe           bool                   `json:"x-layerdraw-view-recipe,omitempty"`
+	Ref                  string                  `json:"$ref,omitempty"`
+	Comment              string                  `json:"$comment,omitempty"`
+	Type                 any                     `json:"type,omitempty"`
+	Description          string                  `json:"description,omitempty"`
+	Enum                 []string                `json:"enum,omitempty"`
+	Const                any                     `json:"const,omitempty"`
+	Properties           map[string]*schemaType  `json:"properties,omitempty"`
+	Required             []string                `json:"required,omitempty"`
+	Items                *schemaType             `json:"items,omitempty"`
+	PropertyNames        *schemaType             `json:"propertyNames,omitempty"`
+	AdditionalProperties any                     `json:"additionalProperties,omitempty"`
+	Pattern              string                  `json:"pattern,omitempty"`
+	Format               string                  `json:"format,omitempty"`
+	Minimum              *float64                `json:"minimum,omitempty"`
+	Maximum              *float64                `json:"maximum,omitempty"`
+	MinLength            *int                    `json:"minLength,omitempty"`
+	MinItems             *int                    `json:"minItems,omitempty"`
+	UniqueItems          bool                    `json:"uniqueItems,omitempty"`
+	OneOf                []*schemaType           `json:"oneOf,omitempty"`
+	TaggedUnion          *taggedUnion            `json:"x-layerdraw-tagged-union,omitempty"`
+	OutcomeEnvelope      bool                    `json:"x-layerdraw-outcome-envelope,omitempty"`
+	OrderedRange         bool                    `json:"x-layerdraw-ordered-range,omitempty"`
+	OperatorValue        *operatorValueRule      `json:"x-layerdraw-operator-value,omitempty"`
+	ProtocolOffer        bool                    `json:"x-layerdraw-protocol-offer,omitempty"`
+	LimitCapability      bool                    `json:"x-layerdraw-limit-capability,omitempty"`
+	UniqueArrayKeys      []uniqueArrayKey        `json:"x-layerdraw-unique-array-keys,omitempty"`
+	DisjointArrays       []disjointArrayPair     `json:"x-layerdraw-disjoint-arrays,omitempty"`
+	DisjointArrayKeys    []disjointArrayKey      `json:"x-layerdraw-disjoint-array-keys,omitempty"`
+	DiffSource           bool                    `json:"x-layerdraw-diff-source,omitempty"`
+	StableAddressOrder   string                  `json:"x-layerdraw-stable-address-order,omitempty"`
+	CanonicalEnumOrder   bool                    `json:"x-layerdraw-canonical-enum-order,omitempty"`
+	CanonicalIDOrder     bool                    `json:"x-layerdraw-canonical-identifier-order,omitempty"`
+	UnicodeScalarOrder   bool                    `json:"x-layerdraw-unicode-scalar-order,omitempty"`
+	OrderedPairs         []orderedPairRule       `json:"x-layerdraw-ordered-pairs,omitempty"`
+	AddressOwners        []addressOwnerRule      `json:"x-layerdraw-address-owners,omitempty"`
+	AddressTerminalID    *addressTerminalIDRule  `json:"x-layerdraw-address-terminal-id,omitempty"`
+	ExportRecipe         bool                    `json:"x-layerdraw-export-recipe,omitempty"`
+	QueryParameter       bool                    `json:"x-layerdraw-query-parameter,omitempty"`
+	QueryRecipe          bool                    `json:"x-layerdraw-query-recipe,omitempty"`
+	RecipePredicate      string                  `json:"x-layerdraw-recipe-predicate,omitempty"`
+	RecipeScalar         bool                    `json:"x-layerdraw-recipe-scalar,omitempty"`
+	StableAddressRoles   []stableAddressRoleRule `json:"x-layerdraw-stable-address-roles,omitempty"`
+	StateRead            bool                    `json:"x-layerdraw-state-read,omitempty"`
+	StateReadOrder       bool                    `json:"x-layerdraw-state-read-order,omitempty"`
+	ViewProjection       string                  `json:"x-layerdraw-view-projection,omitempty"`
+	ViewRecipe           bool                    `json:"x-layerdraw-view-recipe,omitempty"`
 }
 
 type schemaSet struct {
@@ -1078,6 +1118,96 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				return fmt.Errorf("%s address terminal-ID rule requires string properties", context)
 			}
 		}
+		for _, assertion := range []struct {
+			enabled    bool
+			name       string
+			properties []string
+		}{
+			{value.QueryParameter, "query parameter", []string{"value_type", "default", "enum_values", "reserved_enum_values", "format", "min", "max", "min_length", "max_length"}},
+			{value.QueryRecipe, "query recipe", []string{"address", "state_input", "parameters", "select", "where", "relation_where", "traverse", "dependencies"}},
+			{value.RecipeScalar, "recipe scalar", []string{"kind", "string_value"}},
+			{value.StateRead, "state read", []string{"field_path", "value_type"}},
+		} {
+			if assertion.enabled {
+				for _, property := range assertion.properties {
+					if value.Properties[property] == nil {
+						return fmt.Errorf("%s %s assertion requires %s", context, assertion.name, property)
+					}
+				}
+			}
+		}
+		if value.RecipePredicate != "" {
+			for _, property := range []string{"kind", "children", "child", "field_path", "operand_type", "operator", "value"} {
+				if value.Properties[property] == nil {
+					return fmt.Errorf("%s recipe predicate assertion requires %s", context, property)
+				}
+			}
+			if value.RecipePredicate == "predicate" && (value.Properties["field"] == nil || value.Properties["predicate"] == nil || value.Properties["type_addresses"] == nil) {
+				return fmt.Errorf("%s full predicate assertion lacks field/rows metadata", context)
+			}
+			if value.RecipePredicate == "row" && value.Properties["column_addresses"] == nil {
+				return fmt.Errorf("%s row predicate assertion lacks column_addresses", context)
+			}
+		}
+		if value.ViewProjection != "" {
+			pairs := map[string][]string{
+				"composed": {"mode", "parent_endpoint", "child_endpoint", "overlay_endpoint", "badge_endpoint", "target_endpoint"},
+				"diagram":  {"source_endpoint", "target_endpoint"},
+				"flow":     {"source_endpoint", "target_endpoint"},
+				"matrix":   {"row_endpoint", "column_endpoint"},
+				"tree":     {"parent_endpoint", "child_endpoint"},
+			}
+			properties, ok := pairs[value.ViewProjection]
+			if !ok {
+				return fmt.Errorf("%s has unknown View projection assertion %q", context, value.ViewProjection)
+			}
+			for _, property := range properties {
+				if value.Properties[property] == nil {
+					return fmt.Errorf("%s View projection assertion requires %s", context, property)
+				}
+			}
+		}
+		for _, rule := range value.StableAddressRoles {
+			kind := resolvedType(set, document, value.Properties[rule.Kind])
+			if kind == nil || (rule.Address == "") == (rule.Addresses == "") {
+				return fmt.Errorf("%s has an invalid stable-address role assertion", context)
+			}
+			kindType, kindErr := scalarType(kind.Type)
+			if kindErr != nil || kindType != "string" {
+				return fmt.Errorf("%s stable-address role kind must be a string", context)
+			}
+			selector := rule.Address
+			if selector == "" {
+				selector = rule.Addresses
+			}
+			selected := resolvedType(set, document, value.Properties[selector])
+			if selected == nil {
+				return fmt.Errorf("%s stable-address role selector %q is absent", context, selector)
+			}
+			selectedType, selectedErr := scalarType(selected.Type)
+			if rule.Addresses != "" {
+				item := resolvedType(set, document, selected.Items)
+				itemType, itemErr := "", error(nil)
+				if item != nil {
+					itemType, itemErr = scalarType(item.Type)
+				}
+				if selectedErr != nil || selectedType != "array" || itemErr != nil || itemType != "string" {
+					return fmt.Errorf("%s stable-address plural role must select string items", context)
+				}
+			} else if selectedErr != nil || selectedType != "string" {
+				return fmt.Errorf("%s stable-address role must select a string", context)
+			}
+			if rule.OwnerPolicy != "" {
+				owner := resolvedType(set, document, value.Properties[rule.Owner])
+				ownerType, ownerErr := "", error(nil)
+				if owner != nil {
+					ownerType, ownerErr = scalarType(owner.Type)
+				}
+				if rule.Owner == "" || ownerErr != nil || ownerType != "string" {
+					return fmt.Errorf("%s stable-address owner policy requires a string owner property", context)
+				}
+			}
+		}
 		if value.ExportRecipe {
 			if err := validateExportRecipeAssertionShape(set, document, context, value); err != nil {
 				return err
@@ -1148,12 +1278,14 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		}
 		if value.StableAddressOrder != "" {
 			item := value.Items
+			itemDocument := document
 			if item.Ref != "" {
 				target, name, err := resolveRef(set, document, item.Ref)
 				if err != nil {
 					return err
 				}
 				item = target.Definitions[name]
+				itemDocument = target
 			}
 			ordered := item
 			if value.StableAddressOrder != "$item" {
@@ -1163,7 +1295,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				}
 				ordered = item.Properties[value.StableAddressOrder]
 				if ordered.Ref != "" {
-					target, name, err := resolveRef(set, document, ordered.Ref)
+					target, name, err := resolveRef(set, itemDocument, ordered.Ref)
 					if err != nil {
 						return err
 					}
@@ -1226,7 +1358,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 
 func validateExportRecipeAssertionShape(set schemaSet, document *schemaDocument, context string, value *schemaType) error {
 	required := stringSet(value.Required)
-	for _, property := range []string{"exporter_profile", "extension", "filename", "format", "options"} {
+	for _, property := range []string{"exporter_profile", "extension", "filename", "format", "options", "fidelity", "source_refs", "native_maximum_fidelity", "effective_maximum_fidelity", "fidelity_basis", "requires_source_manifest"} {
 		if value.Properties[property] == nil || !required[property] {
 			return fmt.Errorf("%s export recipe assertion requires %s", context, property)
 		}
@@ -1270,7 +1402,7 @@ func validateExportRecipeAssertionShape(set schemaSet, document *schemaDocument,
 
 func validateViewRecipeAssertionShape(set schemaSet, document *schemaDocument, context string, value *schemaType) error {
 	required := stringSet(value.Required)
-	for _, property := range []string{"address", "reserved_table_column_ids", "shape"} {
+	for _, property := range []string{"address", "category", "dependencies", "exports", "relation_projection_overrides", "reserved_table_column_ids", "shape", "source", "state_input", "state_requirement"} {
 		if value.Properties[property] == nil || !required[property] {
 			return fmt.Errorf("%s view recipe assertion requires %s", context, property)
 		}
@@ -1733,8 +1865,9 @@ func generateGoCodec(set schemaSet, document *schemaDocument) ([]byte, error) {
 	"errors"
 	"fmt"
 	"io"
-	"math"
-	"reflect"
+		"math"
+		"net/netip"
+		"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -2313,6 +2446,9 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 				if !leftOK || !rightOK || compareUnicodeScalars(left, right) >= 0 { return fmt.Errorf("%s is not in strict Unicode scalar order", path) }
 			}
 		}
+		if ordered, _ := schema["x-layerdraw-state-read-order"].(bool); ordered {
+			if err := validateStateReadOrder(path, items); err != nil { return err }
+		}
 	case "object":
 		object, ok := value.(map[string]any)
 		if !ok { return fmt.Errorf("%s must be an object", path) }
@@ -2440,8 +2576,29 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 			parts := strings.Split(address, ":")
 			if !addressOK || !idOK || len(parts) == 0 || parts[len(parts)-1] != id { return fmt.Errorf("%s.%s must equal the terminal ID of %s.%s", path, idProperty, path, addressProperty) }
 		}
+		if rawRules, ok := schema["x-layerdraw-stable-address-roles"].([]any); ok {
+			if err := validateStableAddressRoles(path, object, rawRules); err != nil { return err }
+		}
+		if predicateKind, _ := schema["x-layerdraw-recipe-predicate"].(string); predicateKind != "" {
+			if err := validateRecipePredicateConsistency(path, object, predicateKind); err != nil { return err }
+		}
+		if projectionKind, _ := schema["x-layerdraw-view-projection"].(string); projectionKind != "" {
+			if err := validateViewProjectionConsistency(path, object, projectionKind); err != nil { return err }
+		}
 		if enabled, _ := schema["x-layerdraw-export-recipe"].(bool); enabled {
 			if err := validateExportRecipeConsistency(path, object); err != nil { return err }
+		}
+		if enabled, _ := schema["x-layerdraw-query-parameter"].(bool); enabled {
+			if err := validateQueryParameterConsistency(path, object); err != nil { return err }
+		}
+		if enabled, _ := schema["x-layerdraw-query-recipe"].(bool); enabled {
+			if err := validateQueryRecipeConsistency(path, object); err != nil { return err }
+		}
+		if enabled, _ := schema["x-layerdraw-recipe-scalar"].(bool); enabled {
+			if err := validateRecipeScalarConsistency(path, object); err != nil { return err }
+		}
+		if enabled, _ := schema["x-layerdraw-state-read"].(bool); enabled {
+			if err := validateStateReadConsistency(path, object); err != nil { return err }
 		}
 		if enabled, _ := schema["x-layerdraw-view-recipe"].(bool); enabled {
 			if err := validateViewRecipeConsistency(path, object); err != nil { return err }
@@ -2533,6 +2690,376 @@ func validateDisjointArrayKeys(path string, object map[string]any, rules []any) 
 	return nil
 }
 
+func validateRecipeScalarConsistency(path string, object map[string]any) error {
+	kind, _ := object["kind"].(string)
+	text, _ := object["string_value"].(string)
+	switch kind {
+	case "date":
+		if !regexp.MustCompile(` + "`" + `^[0-9]{4}-[0-9]{2}-[0-9]{2}$` + "`" + `).MatchString(text) || strings.HasPrefix(text, "0000-") { return fmt.Errorf("%s contains an invalid date", path) }
+		if _, err := time.Parse("2006-01-02", text); err != nil { return fmt.Errorf("%s contains an invalid date", path) }
+	case "datetime":
+		if strings.HasPrefix(text, "0000-") || !regexp.MustCompile(` + "`" + `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?Z$` + "`" + `).MatchString(text) { return fmt.Errorf("%s contains an invalid datetime", path) }
+		parsed, err := time.Parse(time.RFC3339Nano, text)
+		if err != nil || parsed.UTC().Format(time.RFC3339Nano) != text { return fmt.Errorf("%s contains a non-canonical datetime", path) }
+	case "enum":
+		if text == "" { return fmt.Errorf("%s contains an empty enum value", path) }
+	}
+	return nil
+}
+
+func validCanonicalHostname(value string) bool {
+	if value == "" || len(value) > 253 || value != strings.ToLower(value) || strings.HasSuffix(value, ".") { return false }
+	for _, label := range strings.Split(value, ".") { if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' || !regexp.MustCompile(` + "`" + `^[a-z0-9-]+$` + "`" + `).MatchString(label) { return false } }
+	return true
+}
+
+func validCanonicalStringFormat(format, value string) bool {
+	switch format {
+	case "hostname": return validCanonicalHostname(value)
+	case "email": match := regexp.MustCompile("^[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+(?:\\\\.[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+)*@([A-Za-z0-9.-]+)$").FindStringSubmatch(value); return match != nil && validCanonicalHostname(match[1])
+	case "ipv4": address, err := netip.ParseAddr(value); return err == nil && address.Is4() && address.String() == value
+	case "ipv6": address, err := netip.ParseAddr(value); return err == nil && address.Is6() && address.Zone() == "" && address.String() == value
+	case "cidr": prefix, err := netip.ParsePrefix(value); return err == nil && prefix == prefix.Masked() && prefix.String() == value
+	case "uri":
+		if value == "" || strings.ContainsAny(value, "\\\x00\r\n\t") { return false }
+		colon := strings.IndexByte(value, ':'); if colon <= 0 || !regexp.MustCompile(` + "`" + `^[A-Za-z][A-Za-z0-9+.-]*$` + "`" + `).MatchString(value[:colon]) { return false }
+		for index := 0; index < len(value); index++ { if value[index] >= utf8.RuneSelf || value[index] < 0x20 || value[index] == '%' && (index+2 >= len(value) || !regexp.MustCompile(` + "`" + `^[0-9A-Fa-f]{2}$` + "`" + `).MatchString(value[index+1:index+3])) { return false }; if value[index] == '%' { index += 2 } }
+		return true
+	}
+	return false
+}
+
+func validateQueryParameterConsistency(path string, object map[string]any) error {
+	valueType, _ := object["value_type"].(string)
+	_, hasEnum := object["enum_values"]
+	reserved, _ := object["reserved_enum_values"].([]any)
+	_, hasFormat := object["format"]
+	_, hasMin := object["min"]
+	_, hasMax := object["max"]
+	_, hasMinLength := object["min_length"]
+	_, hasMaxLength := object["max_length"]
+	if valueType == "enum" {
+		values, ok := object["enum_values"].([]any)
+		if !ok || len(values) == 0 { return fmt.Errorf("%s enum requires non-empty enum_values", path) }
+		for _, raw := range append(append([]any{}, values...), reserved...) { if text, ok := raw.(string); !ok || text == "" { return fmt.Errorf("%s enum values must be non-empty strings", path) } }
+	} else if hasEnum || len(reserved) != 0 {
+		return fmt.Errorf("%s enum values are forbidden for %s", path, valueType)
+	}
+	if hasFormat && valueType != "string" { return fmt.Errorf("%s format is only valid for string parameters", path) }
+	if (hasMin || hasMax) && valueType != "integer" && valueType != "number" { return fmt.Errorf("%s numeric bounds are incompatible with %s", path, valueType) }
+	if (hasMinLength || hasMaxLength) && valueType != "string" { return fmt.Errorf("%s length bounds are only valid for string parameters", path) }
+	if valueType == "integer" {
+		for _, property := range []string{"min", "max"} { if raw, ok := object[property].(string); ok { value, err := strconv.ParseInt(raw, 10, 64); if err != nil || value < -9007199254740991 || value > 9007199254740991 { return fmt.Errorf("%s.%s must be a safe integer bound", path, property) } } }
+	}
+	defaultValue, hasDefault := object["default"].(map[string]any)
+	if !hasDefault { return nil }
+	if defaultValue["kind"] != valueType { return fmt.Errorf("%s default type does not match value_type", path) }
+	if valueType == "enum" {
+		text, _ := defaultValue["string_value"].(string)
+		active := false
+		for _, raw := range object["enum_values"].([]any) { if raw == text { active = true } }
+		if !active { return fmt.Errorf("%s enum default is not an active enum value", path) }
+	}
+	if valueType == "string" {
+		text, _ := defaultValue["string_value"].(string)
+		length := int64(utf8.RuneCountInString(text))
+		if raw, ok := object["min_length"].(string); ok { minimum, _ := strconv.ParseInt(raw, 10, 64); if length < minimum { return fmt.Errorf("%s default is shorter than min_length", path) } }
+		if raw, ok := object["max_length"].(string); ok { maximum, _ := strconv.ParseInt(raw, 10, 64); if length > maximum { return fmt.Errorf("%s default is longer than max_length", path) } }
+		if format, ok := object["format"].(string); ok && !validCanonicalStringFormat(format, text) { return fmt.Errorf("%s default does not satisfy its canonical string format", path) }
+	}
+	if valueType == "integer" || valueType == "number" {
+		property := "number_value"; if valueType == "integer" { property = "integer_value" }
+		text, _ := defaultValue[property].(string); number, err := strconv.ParseFloat(text, 64)
+		if err != nil { return fmt.Errorf("%s has an invalid numeric default", path) }
+		if raw, ok := object["min"].(string); ok { minimum, _ := strconv.ParseFloat(raw, 64); if number < minimum { return fmt.Errorf("%s default is below min", path) } }
+		if raw, ok := object["max"].(string); ok { maximum, _ := strconv.ParseFloat(raw, 64); if number > maximum { return fmt.Errorf("%s default is above max", path) } }
+	}
+	return nil
+}
+
+func predicateHasState(raw any) bool {
+	object, ok := raw.(map[string]any); if !ok { return false }
+	if object["kind"] == "state" { return true }
+	if child, ok := object["child"]; ok && predicateHasState(child) { return true }
+	if predicate, ok := object["predicate"]; ok && predicateHasState(predicate) { return true }
+	if children, ok := object["children"].([]any); ok { for _, child := range children { if predicateHasState(child) { return true } } }
+	return false
+}
+
+func contextFieldOperand(field, context string) (recipeOperand, bool) {
+	if value, ok := fieldRecipeOperand(field); ok { return value, true }
+	switch field {
+	case "address": if context == "entity" { return recipeOperand{kind:"address", addressKind:"entity"}, true }; if context == "relation" { return recipeOperand{kind:"address", addressKind:"relation"}, true }
+	case "type": if context == "entity" { return recipeOperand{kind:"address", addressKind:"entity_type"}, true }; if context == "relation" { return recipeOperand{kind:"address", addressKind:"relation_type"}, true }
+	}
+	return recipeOperand{}, false
+}
+
+type queryDependencySets struct {
+	layer, entityType, relationType, entity, relation, column, parameter map[string]bool
+	state map[string]map[string]any
+}
+
+func newQueryDependencySets() queryDependencySets { return queryDependencySets{map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{},map[string]map[string]any{}} }
+
+func (sets *queryDependencySets) addAddress(kind, address string) bool {
+	target := map[string]map[string]bool{"layer":sets.layer,"entity_type":sets.entityType,"relation_type":sets.relationType,"entity":sets.entity,"relation":sets.relation,"entity_type_column":sets.column,"relation_type_column":sets.column,"query_parameter":sets.parameter}[kind]
+	if target == nil { return false }; target[address] = true; return true
+}
+
+func validateQueryPredicateTree(raw any, context, queryAddress string, parameters map[string]string, sets *queryDependencySets) bool {
+	object, ok := raw.(map[string]any); if !ok { return false }
+	kind, _ := object["kind"].(string)
+	switch kind {
+	case "all", "any": children, ok := object["children"].([]any); if !ok { return false }; for _, child := range children { if !validateQueryPredicateTree(child, context, queryAddress, parameters, sets) { return false } }; return true
+	case "not": return validateQueryPredicateTree(object["child"], context, queryAddress, parameters, sets)
+	case "rows":
+		types, ok := object["type_addresses"].([]any); if !ok { return false }
+		expectedKind, rowContext := "entity_type", "entity_row"; if context == "relation" { expectedKind, rowContext = "relation_type", "relation_row" }
+		for _, rawAddress := range types { address, ok := rawAddress.(string); actual, _, valid := stableAddressSubject(address); if !ok || !valid || actual != expectedKind { return false }; sets.addAddress(actual, address) }
+		return validateQueryPredicateTree(object["predicate"], rowContext, queryAddress, parameters, sets)
+	case "field":
+		field, _ := object["field"].(string); expected, valid := contextFieldOperand(field, context); operand, operandOK := parseRecipeOperand(object["operand_type"]); if !valid || !operandOK || operand != expected { return false }
+	case "cell":
+		if context != "entity_row" && context != "relation_row" { return false }
+		addresses, ok := object["column_addresses"].([]any); if !ok || len(addresses) == 0 { return false }
+		expectedKind := "entity_type_column"; if context == "relation_row" { expectedKind = "relation_type_column" }
+		for _, rawAddress := range addresses { address, ok := rawAddress.(string); actual, _, valid := stableAddressSubject(address); if !ok || !valid || actual != expectedKind { return false }; sets.column[address] = true }
+	case "state":
+		field, _ := object["field_path"].(string); valueType := stateFieldValueType(field); operand, operandOK := parseRecipeOperand(object["operand_type"]); if !operandOK || operand != (recipeOperand{kind:"scalar", scalarType:valueType}) { return false }
+		key := context+"\x00"+field; sets.state[key] = map[string]any{"subject_kind":context,"field_path":field,"value_type":valueType}
+	default: return false
+	}
+	operand, _ := parseRecipeOperand(object["operand_type"])
+	value, hasValue := object["value"].(map[string]any)
+	if hasValue {
+		if value["kind"] == "parameter" {
+			address, ok := value["parameter_address"].(string); actualKind, owner, valid := stableAddressSubject(address); expectedType := operand.scalarType; if operand.kind == "string_set" { expectedType = "string" }
+			if !ok || !valid || actualKind != "query_parameter" || owner != queryAddress || parameters[address] != expectedType { return false }; sets.parameter[address] = true
+		}
+		for _, property := range []string{"address_value"} { if address, ok := value[property].(string); ok { actual, _, valid := stableAddressSubject(address); if !valid || !sets.addAddress(actual, address) { return false } } }
+		if values, ok := value["address_values"].([]any); ok { for _, rawAddress := range values { address, ok := rawAddress.(string); actual, _, valid := stableAddressSubject(address); if !ok || !valid || !sets.addAddress(actual, address) { return false } } }
+	}
+	return true
+}
+
+func dependencyArrayEquals(raw any, expected map[string]bool) bool {
+	values, ok := raw.([]any); if !ok || len(values) != len(expected) { return false }
+	for _, rawValue := range values { value, ok := rawValue.(string); if !ok || !expected[value] { return false } }
+	return true
+}
+
+func validateQueryRecipeConsistency(path string, object map[string]any) error {
+	queryAddress, _ := object["address"].(string)
+	parameters := map[string]string{}
+	if values, ok := object["parameters"].([]any); ok { for _, raw := range values { value, ok := raw.(map[string]any); address, addressOK := value["address"].(string); valueType, typeOK := value["value_type"].(string); if !ok || !addressOK || !typeOK { return fmt.Errorf("%s has an invalid parameter", path) }; parameters[address] = valueType } }
+	sets := newQueryDependencySets()
+	selectValue, _ := object["select"].(map[string]any)
+	for property, kind := range map[string]string{"layer_addresses":"layer","entity_type_addresses":"entity_type","relation_type_addresses":"relation_type","root_addresses":"entity"} { if values, ok := selectValue[property].([]any); ok { for _, raw := range values { address, ok := raw.(string); if !ok || !sets.addAddress(kind, address) { return fmt.Errorf("%s has an invalid select dependency", path) } } } }
+	if traversal, ok := object["traverse"].(map[string]any); ok { if values, ok := traversal["relation_type_addresses"].([]any); ok { for _, raw := range values { address, ok := raw.(string); if !ok { return fmt.Errorf("%s has an invalid traversal dependency", path) }; sets.relationType[address] = true } } }
+	where, whereOK := object["where"].(map[string]any); relationWhere, relationOK := object["relation_where"].(map[string]any)
+	if !whereOK || !relationOK || !validateQueryPredicateTree(where, "entity", queryAddress, parameters, &sets) || !validateQueryPredicateTree(relationWhere, "relation", queryAddress, parameters, &sets) { return fmt.Errorf("%s contains an invalid typed predicate tree", path) }
+	hasState := len(sets.state) != 0
+	stateInput, _ := object["state_input"].(string)
+	if hasState != (stateInput == "optional" || stateInput == "required") { return fmt.Errorf("%s state_input and state predicates are inconsistent", path) }
+	dependencies, ok := object["dependencies"].(map[string]any); if !ok { return fmt.Errorf("%s lacks dependency authority", path) }
+	for property, expected := range map[string]map[string]bool{"layer_addresses":sets.layer,"entity_type_addresses":sets.entityType,"relation_type_addresses":sets.relationType,"entity_addresses":sets.entity,"relation_addresses":sets.relation,"column_addresses":sets.column,"parameter_addresses":sets.parameter} { if !dependencyArrayEquals(dependencies[property], expected) { return fmt.Errorf("%s.dependencies.%s is not the exact predicate/select closure", path, property) } }
+	stateReads, ok := dependencies["state_reads"].([]any); if !ok || len(stateReads) != len(sets.state) { return fmt.Errorf("%s.dependencies.state_reads is not the exact state-read closure", path) }
+	for _, raw := range stateReads { value, ok := raw.(map[string]any); if !ok || sets.state[fmt.Sprint(value["subject_kind"])+"\x00"+fmt.Sprint(value["field_path"])] == nil { return fmt.Errorf("%s.dependencies.state_reads is not the exact state-read closure", path) } }
+	return nil
+}
+
+func stateFieldValueType(path string) string {
+	switch path {
+	case "system.created_at", "system.updated_at", "provenance.observed_at", "provenance.verified_at", "provenance.stale_after": return "datetime"
+	case "system.created_by.kind", "system.updated_by.kind", "provenance.source.kind", "provenance.verified_by.kind": return "enum"
+	case "provenance.confidence": return "number"
+	default: return "string"
+	}
+}
+
+func validateStateReadConsistency(path string, object map[string]any) error {
+	field, _ := object["field_path"].(string); valueType, _ := object["value_type"].(string)
+	if valueType != stateFieldValueType(field) { return fmt.Errorf("%s value_type does not match the state-field registry", path) }
+	return nil
+}
+
+func validateStateReadOrder(path string, values []any) error {
+	subjectRanks := map[string]int{"entity":0, "relation":1, "entity_row":2, "relation_row":3}
+	fieldRanks := map[string]int{
+		"system.created_at":0, "system.updated_at":1, "system.created_by.kind":2, "system.created_by.id":3,
+		"system.created_by.display_name":4, "system.updated_by.kind":5, "system.updated_by.id":6,
+		"system.updated_by.display_name":7, "system.created_revision":8, "system.updated_revision":9,
+		"provenance.source.kind":10, "provenance.source.label":11, "provenance.source.uri":12,
+		"provenance.source.external_id":13, "provenance.observed_at":14, "provenance.verified_at":15,
+		"provenance.stale_after":16, "provenance.verified_by.kind":17, "provenance.verified_by.id":18,
+		"provenance.verified_by.display_name":19, "provenance.confidence":20,
+	}
+	previous := -1
+	for _, raw := range values {
+		value, ok := raw.(map[string]any); if !ok { return fmt.Errorf("%s contains a non-object state read", path) }
+		subject, subjectOK := value["subject_kind"].(string); field, fieldOK := value["field_path"].(string)
+		subjectRank, rankedSubject := subjectRanks[subject]; fieldRank, rankedField := fieldRanks[field]
+		if !subjectOK || !fieldOK || !rankedSubject || !rankedField || value["value_type"] != stateFieldValueType(field) { return fmt.Errorf("%s contains an invalid state read", path) }
+		rank := subjectRank*len(fieldRanks)+fieldRank
+		if rank <= previous { return fmt.Errorf("%s is not in strict canonical state-read order", path) }
+		previous = rank
+	}
+	return nil
+}
+
+func stableAddressSubject(value string) (string, string, bool) {
+	parts := strings.Split(value, ":")
+	if len(parts) < 3 || parts[0] != "ldl" { return "", "", false }
+	start, rootKind := 3, "project"
+	if parts[1] == "pack" { if len(parts) < 4 { return "", "", false }; start, rootKind = 4, "pack" } else if parts[1] != "project" { return "", "", false }
+	if len(parts) == start { return rootKind, "", true }
+	if (len(parts)-start)%2 != 0 { return "", "", false }
+	last := parts[len(parts)-2]
+	parent := ""
+	if len(parts) >= start+2 { parent = strings.Join(parts[:len(parts)-2], ":") }
+	kind := map[string]string{"entity-type":"entity_type", "relation-type":"relation_type", "layer":"layer", "entity":"entity", "relation":"relation", "query":"query", "view":"view", "reference":"reference", "parameter":"query_parameter", "table-column":"view_table_column", "export":"view_export"}[last]
+	if last == "row" {
+		if len(parts) < start+4 { return "", "", false }
+		switch parts[len(parts)-4] { case "entity": kind = "entity_row"; case "relation": kind = "relation_row" }
+	}
+	if last == "column" || last == "constraint" {
+		if len(parts) < start+4 { return "", "", false }
+		prefix := map[string]string{"entity-type":"entity_type", "relation-type":"relation_type"}[parts[len(parts)-4]]
+		if prefix != "" { kind = prefix+"_"+last }
+	}
+	if kind == "" { return "", "", false }
+	return kind, parent, true
+}
+
+func validateStableAddressRoles(path string, object map[string]any, rules []any) error {
+	for _, rawRule := range rules {
+		rule, ok := rawRule.(map[string]any); if !ok { return fmt.Errorf("%s has an invalid stable-address role rule", path) }
+		kindProperty, _ := rule["kind"].(string); expectedKind, ok := object[kindProperty].(string); if !ok { return fmt.Errorf("%s.%s must name a subject kind", path, kindProperty) }
+		var values []string
+		if property, _ := rule["address"].(string); property != "" { value, ok := object[property].(string); if !ok { return fmt.Errorf("%s.%s must be a StableAddress", path, property) }; values = []string{value} } else {
+			property, _ := rule["addresses"].(string); rawValues, ok := object[property].([]any); if !ok { return fmt.Errorf("%s.%s must be StableAddresses", path, property) }
+			for _, raw := range rawValues { value, ok := raw.(string); if !ok { return fmt.Errorf("%s.%s contains a non-address", path, property) }; values = append(values, value) }
+		}
+		ownerProperty, _ := rule["owner"].(string); policy, _ := rule["owner_policy"].(string); owner, ownerPresent := object[ownerProperty].(string)
+		for _, value := range values {
+			actualKind, actualOwner, valid := stableAddressSubject(value)
+			if !valid || actualKind != expectedKind { return fmt.Errorf("%s address %q does not match kind %q", path, value, expectedKind) }
+			switch policy {
+			case "children": if !ownerPresent || actualOwner != owner { return fmt.Errorf("%s address %q is not a direct child of %q", path, value, owner) }
+			case "exact": if (actualOwner != "") != ownerPresent || ownerPresent && actualOwner != owner { return fmt.Errorf("%s has an inexact owner for %q", path, value) }
+			case "if_present": if ownerPresent && actualOwner != owner { return fmt.Errorf("%s has a wrong owner for %q", path, value) }
+			case "row_only": required := actualKind == "entity_row" || actualKind == "relation_row"; if required != ownerPresent || ownerPresent && actualOwner != owner { return fmt.Errorf("%s has an invalid row owner for %q", path, value) }
+			case "":
+			default: return fmt.Errorf("%s has an unknown stable-address owner policy", path)
+			}
+		}
+	}
+	return nil
+}
+
+type recipeOperand struct { kind, scalarType, addressKind string }
+
+func parseRecipeOperand(raw any) (recipeOperand, bool) {
+	value, ok := raw.(map[string]any); if !ok { return recipeOperand{}, false }
+	operand := recipeOperand{}
+	operand.kind, _ = value["kind"].(string); operand.scalarType, _ = value["scalar_type"].(string); operand.addressKind, _ = value["address_kind"].(string)
+	switch operand.kind { case "scalar": return operand, operand.scalarType != ""; case "address": return operand, operand.addressKind != ""; case "string_set": return operand, true }
+	return recipeOperand{}, false
+}
+
+func equalRecipeOperand(left, right recipeOperand) bool { return left == right }
+
+func fieldRecipeOperand(field string) (recipeOperand, bool) {
+	switch field {
+	case "id", "display_name", "description": return recipeOperand{kind:"scalar", scalarType:"string"}, true
+	case "tags": return recipeOperand{kind:"string_set"}, true
+	case "layer": return recipeOperand{kind:"address", addressKind:"layer"}, true
+	case "from", "to": return recipeOperand{kind:"address", addressKind:"entity"}, true
+	}
+	return recipeOperand{}, false
+}
+
+func recipeScalarKind(raw any) (string, bool) { value, ok := raw.(map[string]any); if !ok { return "", false }; kind, ok := value["kind"].(string); return kind, ok }
+
+func compareRecipeScalars(left, right map[string]any) int {
+	kind, _ := left["kind"].(string)
+	switch kind {
+	case "boolean": a, _ := left["boolean_value"].(bool); b, _ := right["boolean_value"].(bool); if a == b { return 0 }; if !a { return -1 }; return 1
+	case "integer": a, _ := strconv.ParseInt(fmt.Sprint(left["integer_value"]), 10, 64); b, _ := strconv.ParseInt(fmt.Sprint(right["integer_value"]), 10, 64); if a < b { return -1 }; if a > b { return 1 }; return 0
+	case "number": a, _ := strconv.ParseFloat(fmt.Sprint(left["number_value"]), 64); b, _ := strconv.ParseFloat(fmt.Sprint(right["number_value"]), 64); if a < b { return -1 }; if a > b { return 1 }; return 0
+	default: return strings.Compare(fmt.Sprint(left["string_value"]), fmt.Sprint(right["string_value"]))
+	}
+}
+
+func validateRecipeScalarSet(raw any, scalarType string) bool {
+	values, ok := raw.([]any); if !ok { return false }
+	var previous map[string]any
+	for _, rawValue := range values {
+		value, ok := rawValue.(map[string]any); if !ok || value["kind"] != scalarType { return false }
+		if previous != nil && compareRecipeScalars(previous, value) >= 0 { return false }
+		previous = value
+	}
+	return true
+}
+
+func validateRecipePredicateValue(value map[string]any, operator string, operand recipeOperand) bool {
+	kind, _ := value["kind"].(string)
+	if kind == "parameter" { return operator != "in" && operator != "not_in" && (operand.kind == "scalar" || operand.kind == "string_set" && operator == "contains") }
+	if operator == "in" || operator == "not_in" {
+		if operand.kind == "scalar" { return kind == "scalar_set" && validateRecipeScalarSet(value["scalar_values"], operand.scalarType) }
+		if operand.kind == "address" && kind == "address_set" { values, ok := value["address_values"].([]any); if !ok { return false }; for _, raw := range values { address, ok := raw.(string); actual, _, valid := stableAddressSubject(address); if !ok || !valid || actual != operand.addressKind { return false } }; return true }
+		return false
+	}
+	if operand.kind == "string_set" {
+		if operator == "eq" || operator == "ne" { return kind == "scalar_set" && validateRecipeScalarSet(value["scalar_values"], "string") }
+		return operator == "contains" && kind == "scalar" && value["scalar_value"] != nil && func() bool { scalar, ok := recipeScalarKind(value["scalar_value"]); return ok && scalar == "string" }()
+	}
+	if operand.kind == "scalar" { scalar, ok := recipeScalarKind(value["scalar_value"]); return kind == "scalar" && ok && scalar == operand.scalarType }
+	if operand.kind == "address" && kind == "address" { address, ok := value["address_value"].(string); actual, _, valid := stableAddressSubject(address); return ok && valid && actual == operand.addressKind }
+	return false
+}
+
+func validateRecipePredicateConsistency(path string, object map[string]any, predicateKind string) error {
+	kind, _ := object["kind"].(string)
+	if kind == "all" || kind == "any" { children, _ := object["children"].([]any); for index, raw := range children { child, ok := raw.(map[string]any); if !ok { return fmt.Errorf("%s.children[%d] is invalid", path, index) }; if err := validateRecipePredicateConsistency(fmt.Sprintf("%s.children[%d]", path, index), child, predicateKind); err != nil { return err } }; return nil }
+	if kind == "not" { child, _ := object["child"].(map[string]any); return validateRecipePredicateConsistency(path+".child", child, predicateKind) }
+	if kind == "rows" { child, _ := object["predicate"].(map[string]any); return validateRecipePredicateConsistency(path+".predicate", child, "row") }
+	if kind != "field" && kind != "cell" && kind != "state" { return nil }
+	operand, ok := parseRecipeOperand(object["operand_type"]); if !ok { return fmt.Errorf("%s has an invalid operand_type", path) }
+	if kind == "field" { if expected, known := fieldRecipeOperand(fmt.Sprint(object["field"])); known && !equalRecipeOperand(operand, expected) { return fmt.Errorf("%s operand_type does not match its field", path) } }
+	if kind == "state" { expected := recipeOperand{kind:"scalar", scalarType:stateFieldValueType(fmt.Sprint(object["field_path"]))}; if !equalRecipeOperand(operand, expected) { return fmt.Errorf("%s operand_type does not match its state field", path) } }
+	operator, _ := object["operator"].(string)
+	compatible := operator == "eq" || operator == "ne" || operator == "exists" || operator == "missing"
+	if operator == "lt" || operator == "lte" || operator == "gt" || operator == "gte" { compatible = operand.kind == "scalar" && map[string]bool{"integer":true,"number":true,"date":true,"datetime":true}[operand.scalarType] }
+	if operator == "in" || operator == "not_in" { compatible = operand.kind == "scalar" || operand.kind == "address" }
+	if operator == "contains" { compatible = operand.kind == "string_set" || operand.kind == "scalar" && operand.scalarType == "string" }
+	if operator == "starts_with" || operator == "ends_with" { compatible = operand.kind == "scalar" && operand.scalarType == "string" }
+	if !compatible { return fmt.Errorf("%s operator is incompatible with operand_type", path) }
+	if operator != "exists" && operator != "missing" { value, ok := object["value"].(map[string]any); if !ok || !validateRecipePredicateValue(value, operator, operand) { return fmt.Errorf("%s value is incompatible with operand_type and operator", path) } }
+	return nil
+}
+
+func validateViewProjectionConsistency(path string, object map[string]any, kind string) error {
+	distinct := func(left, right string) bool { a, aOK := object[left].(string); b, bOK := object[right].(string); return aOK && bOK && a != b }
+	if kind != "composed" {
+		pairs := map[string][2]string{"diagram":{"source_endpoint","target_endpoint"}, "flow":{"source_endpoint","target_endpoint"}, "matrix":{"row_endpoint","column_endpoint"}, "tree":{"parent_endpoint","child_endpoint"}}
+		pair := pairs[kind]; if !distinct(pair[0], pair[1]) { return fmt.Errorf("%s effective %s endpoints must be present and distinct", path, kind) }; return nil
+	}
+	mode, _ := object["mode"].(string)
+	present := func(name string) bool { _, ok := object[name]; return ok }
+	switch mode {
+	case "nest": if !distinct("parent_endpoint", "child_endpoint") || present("overlay_endpoint") || present("target_endpoint") || present("badge_endpoint") { return fmt.Errorf("%s has invalid nest endpoints", path) }
+	case "overlay": if !distinct("overlay_endpoint", "target_endpoint") || present("parent_endpoint") || present("child_endpoint") || present("badge_endpoint") { return fmt.Errorf("%s has invalid overlay endpoints", path) }
+	case "badge": if !distinct("badge_endpoint", "target_endpoint") || present("parent_endpoint") || present("child_endpoint") || present("overlay_endpoint") { return fmt.Errorf("%s has invalid badge endpoints", path) }
+	case "edge", "hide": if present("parent_endpoint") || present("child_endpoint") || present("overlay_endpoint") || present("target_endpoint") || present("badge_endpoint") { return fmt.Errorf("%s endpoint fields are forbidden for %s", path, mode) }
+	}
+	return nil
+}
+
+func fidelityRank(value string) int { return map[string]int{"lossy":0,"visual_only":1,"traceable_summary":2,"lossless":3}[value] }
+func statePolicyRank(value string) int { return map[string]int{"none":0,"optional":1,"required":2}[value] }
+
 func validateExportRecipeConsistency(path string, object map[string]any) error {
 	format, formatOK := object["format"].(string)
 	options, optionsOK := object["options"].(map[string]any)
@@ -2544,7 +3071,44 @@ func validateExportRecipeConsistency(path string, object map[string]any) error {
 	if !exists || extension != expected { return fmt.Errorf("%s extension does not match Export format", path) }
 	stem := strings.TrimSuffix(filename, extension)
 	if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, "/\\\x00") || !strings.HasSuffix(filename, extension) || stem == "" { return fmt.Errorf("%s filename is not a canonical Export basename", path) }
+	native, _ := object["native_maximum_fidelity"].(string); effective, _ := object["effective_maximum_fidelity"].(string); fidelity, _ := object["fidelity"].(string); basis, _ := object["fidelity_basis"].(string); sourceRefs, _ := object["source_refs"].(bool)
+	fixedMaximum := map[string]string{"json":"lossless","yaml":"lossless","xlsx":"traceable_summary","html":"traceable_summary","svg":"visual_only","png":"visual_only","pdf":"visual_only","pptx":"visual_only","docx":"visual_only","drawio":"visual_only","bpmn":"lossy"}[format]
+	if fixedMaximum != "" && native != fixedMaximum { return fmt.Errorf("%s does not state the exact format-intrinsic native fidelity", path) }
+	if format == "csv" || format == "tsv" { expected := "lossy"; if options["bundle"] == true && options["header"] == true && options["source_manifest"] == true { expected = "traceable_summary" }; if native != expected { return fmt.Errorf("%s does not state the exact delimited native fidelity", path) } }
+	if format == "markdown" && native != "lossy" && native != "traceable_summary" || format == "mermaid" && native != "lossy" && native != "traceable_summary" { return fmt.Errorf("%s has an impossible context-dependent native fidelity", path) }
+	embedded := format == "xlsx" && options["view_data_json"] == true && options["hidden_ids"] == true
+	if embedded { if basis != "embedded_viewdata" || effective != "lossless" { return fmt.Errorf("%s has inconsistent embedded ViewData fidelity", path) } } else if basis != "native" || effective != native { return fmt.Errorf("%s has inconsistent native fidelity basis", path) }
+	if fidelityRank(fidelity) > fidelityRank(effective) { return fmt.Errorf("%s requested fidelity exceeds effective capability", path) }
+	if (fidelity == "lossless" || fidelity == "traceable_summary" || format == "json" || format == "yaml") && !sourceRefs { return fmt.Errorf("%s fidelity requires source_refs", path) }
 	return nil
+}
+
+func viewTableValueMatches(column map[string]any, kind, scalar string, enumValues []string) bool {
+	value, ok := column["value_type"].(map[string]any); if !ok || value["kind"] != kind { return false }
+	if kind == "scalar" && value["scalar_type"] != scalar { return false }
+	if enumValues != nil {
+		values, ok := value["enum_values"].([]any); if !ok || len(values) != len(enumValues) { return false }
+		for index := range values { if values[index] != enumValues[index] { return false } }
+	}
+	if kind == "scalar" {
+		_, hasEnum := value["enum_values"]; _, hasFormat := value["format"]
+		if scalar == "enum" { values, ok := value["enum_values"].([]any); if enumValues == nil && (!hasEnum || !ok || len(values) == 0) { return false } } else if hasEnum { return false }
+		if hasFormat && scalar != "string" { return false }
+	}
+	return true
+}
+
+func stateEnumValues(field string) []string {
+	switch field {
+	case "system.created_by.kind", "system.updated_by.kind", "provenance.verified_by.kind": return []string{"user","agent","service_account","anonymous"}
+	case "provenance.source.kind": return []string{"manual","import","api","agent","external_system"}
+	default: return nil
+	}
+}
+
+func containsStateRead(values []any, expected map[string]any) bool {
+	for _, raw := range values { value, ok := raw.(map[string]any); if ok && value["subject_kind"] == expected["subject_kind"] && value["field_path"] == expected["field_path"] && value["value_type"] == expected["value_type"] { return true } }
+	return false
 }
 
 func validateViewRecipeConsistency(path string, object map[string]any) error {
@@ -2552,20 +3116,93 @@ func validateViewRecipeConsistency(path string, object map[string]any) error {
 	shape, shapeOK := object["shape"].(map[string]any)
 	reservedValues, reservedOK := object["reserved_table_column_ids"].([]any)
 	if !addressOK || !shapeOK || !reservedOK { return fmt.Errorf("%s has invalid View recipe authority fields", path) }
-	if shape["kind"] != "table" { return nil }
-	table, tableOK := shape["table"].(map[string]any)
-	columns, columnsOK := table["columns"].([]any)
-	if !tableOK || !columnsOK { return fmt.Errorf("%s has invalid table shape authority", path) }
-	reserved := map[string]bool{}
-	for _, raw := range reservedValues { value, ok := raw.(string); if !ok { return fmt.Errorf("%s has a non-string table reservation", path) }; reserved[value] = true }
-	for _, raw := range columns {
-		column, ok := raw.(map[string]any); if !ok { return fmt.Errorf("%s has a non-object table column", path) }
-		columnAddress, addressPresent := column["address"].(string)
-		id, idPresent := column["id"].(string)
-		if !addressPresent || !idPresent || !hasDirectStableAddressOwner(address, columnAddress) { return fmt.Errorf("%s has a table column outside its View owner", path) }
-		if reserved[id] { return fmt.Errorf("%s table column ID %q overlaps reserved_table_column_ids", path, id) }
-	}
+	category, _ := object["category"].(string); source, _ := object["source"].(map[string]any); sourceKind, _ := source["kind"].(string); shapeKind, _ := shape["kind"].(string)
+	diffCount := 0; if category == "diff" { diffCount++ }; if sourceKind == "diff" { diffCount++ }; if shapeKind == "diff" { diffCount++ }
+	if diffCount != 0 && diffCount != 3 { return fmt.Errorf("%s diff category, source, and shape must occur together", path) }
+	stateInput, _ := object["state_input"].(string); stateRequirement, _ := object["state_requirement"].(string)
+	if statePolicyRank(stateRequirement) < statePolicyRank(stateInput) { return fmt.Errorf("%s state_requirement cannot be weaker than state_input", path) }
+	if diffCount == 3 && stateRequirement != "none" { return fmt.Errorf("%s Diff recipes forbid state requirements", path) }
+	if shapeKind == "table" {
+		table, tableOK := shape["table"].(map[string]any); columns, columnsOK := table["columns"].([]any)
+		if !tableOK || !columnsOK { return fmt.Errorf("%s has invalid table shape authority", path) }
+		rowSource, _ := table["row_source"].(string); entityRows := rowSource == "entity" || rowSource == "entity_rows"
+		if !entityRows && (table["include_entity_id"] == true || table["include_type"] == true || table["include_layer"] == true) { return fmt.Errorf("%s fixed Entity columns are forbidden for Relation rows", path) }
+		if !entityRows { if _, present := table["entity_type_addresses"]; present { return fmt.Errorf("%s entity type selectors are forbidden for Relation rows", path) } }
+		var directReads []map[string]any; available := map[string]bool{}
+		if table["include_entity_id"] == true { available["entity_id"] = true }; if table["include_type"] == true { available["entity_type"] = true }; if table["include_layer"] == true { available["entity_layer"] = true }
+		reserved := map[string]bool{}; for _, raw := range reservedValues { value, ok := raw.(string); if !ok { return fmt.Errorf("%s has a non-string table reservation", path) }; reserved[value] = true }
+		for _, raw := range columns {
+			column, ok := raw.(map[string]any); if !ok { return fmt.Errorf("%s has a non-object table column", path) }
+			columnAddress, addressPresent := column["address"].(string); id, idPresent := column["id"].(string)
+			if !addressPresent || !idPresent || !hasDirectStableAddressOwner(address, columnAddress) { return fmt.Errorf("%s has a table column outside its View owner", path) }
+			if reserved[id] || available[id] { return fmt.Errorf("%s table column ID %q conflicts with reserved or fixed columns", path, id) }; available[id] = true
+			columnSource, ok := column["source"].(map[string]any); if !ok { return fmt.Errorf("%s table column lacks a source", path) }
+			sourceKind, _ := columnSource["kind"].(string); aggregate, _ := column["aggregate"].(string)
+			switch sourceKind {
+			case "attribute":
+				if rowSource != "entity_rows" && rowSource != "relation_rows" { return fmt.Errorf("%s attribute source has an incompatible row source", path) }
+				addresses, ok := columnSource["column_addresses"].([]any); if !ok || len(addresses) == 0 { return fmt.Errorf("%s attribute source must name Columns", path) }
+				expectedKind := "entity_type_column"; if rowSource == "relation_rows" { expectedKind = "relation_type_column" }
+				for _, rawAddress := range addresses { address, ok := rawAddress.(string); actual, _, valid := stableAddressSubject(address); if !ok || !valid || actual != expectedKind { return fmt.Errorf("%s attribute source names a wrong-owner Column", path) } }
+			case "relation_endpoint":
+				if rowSource != "relation" && rowSource != "relation_rows" { return fmt.Errorf("%s relation endpoint requires Relation rows", path) }
+				field, _ := columnSource["field"].(string); if field == "id" || field == "display_name" { if !viewTableValueMatches(column,"scalar","string",nil) { return fmt.Errorf("%s relation endpoint value_type is wrong", path) } } else if !viewTableValueMatches(column,"stable_address","",nil) { return fmt.Errorf("%s relation endpoint value_type is wrong", path) }
+			case "derived_count": if !entityRows || !viewTableValueMatches(column,"scalar","integer",nil) { return fmt.Errorf("%s derived count contract is invalid", path) }
+			case "field":
+				field, _ := columnSource["field"].(string)
+				if field == "id" || field == "display_name" || field == "description" { if !viewTableValueMatches(column,"scalar","string",nil) { return fmt.Errorf("%s field value_type is wrong", path) } } else if field == "tags" { if !viewTableValueMatches(column,"string_set","",nil) { return fmt.Errorf("%s tag field value_type is wrong", path) } } else if !viewTableValueMatches(column,"stable_address","",nil) { return fmt.Errorf("%s address field value_type is wrong", path) }
+			case "state":
+				field, _ := columnSource["field_path"].(string); valueType := stateFieldValueType(field); enumValues := stateEnumValues(field)
+				if !viewTableValueMatches(column,"scalar",valueType,enumValues) { return fmt.Errorf("%s state column value_type is wrong", path) }
+				subjects := []string{}
+				switch rowSource { case "entity": subjects=[]string{"entity"}; case "entity_rows": subjects=[]string{"entity_row"}; case "relation": subjects=[]string{"relation"}; case "relation_rows": subjects=[]string{"relation_row"}; case "automatic_relations": subjects=[]string{"relation","relation_row"} }
+				for _, subject := range subjects { directReads = append(directReads,map[string]any{"subject_kind":subject,"field_path":field,"value_type":valueType}) }
+			default: return fmt.Errorf("%s table column has an unknown source", path)
+			}
+			if (aggregate == "count" || aggregate == "count_distinct") && !viewTableValueMatches(column,"scalar","integer",nil) { return fmt.Errorf("%s count aggregate has a wrong output type", path) }
+			if aggregate == "join_unique" && !viewTableValueMatches(column,"scalar","string",nil) { return fmt.Errorf("%s join_unique has a wrong output type", path) }
+			if aggregate == "min" || aggregate == "max" { valueType, ok := column["value_type"].(map[string]any); if !ok || valueType["kind"] != "scalar" || !map[string]bool{"integer":true,"number":true,"date":true,"datetime":true,"enum":true}[fmt.Sprint(valueType["scalar_type"])] { return fmt.Errorf("%s min/max has an incompatible output type", path) } }
+		}
+		if (len(directReads) != 0) != (stateInput == "optional" || stateInput == "required") { return fmt.Errorf("%s state_input and direct Table state reads are inconsistent", path) }
+		if sorts, ok := table["sorts"].([]any); ok { for _, raw := range sorts { sortValue, _ := raw.(map[string]any); id, _ := sortValue["column_id"].(string); if !available[id] { return fmt.Errorf("%s sort names unavailable column %q", path, id) } } }
+		dependencies, _ := object["dependencies"].(map[string]any); stateReads, _ := dependencies["state_reads"].([]any); for _, read := range directReads { if !containsStateRead(stateReads,read) { return fmt.Errorf("%s dependencies omit a direct Table state read", path) } }
+	} else if stateInput != "none" { return fmt.Errorf("%s state_input is forbidden without direct Table state reads", path) }
+	exports, _ := object["exports"].([]any)
+	for _, raw := range exports { export, ok := raw.(map[string]any); if !ok || export["view_address"] != address || !validateExportInView(export, category, shapeKind, stateRequirement, diffCount == 3) { return fmt.Errorf("%s contains an Export incompatible with its View context", path) } }
 	return nil
+}
+
+func validateExportInView(object map[string]any, category, shape, stateRequirement string, diff bool) bool {
+	format, _ := object["format"].(string); options, _ := object["options"].(map[string]any)
+	if format == "json" || format == "yaml" { return object["native_maximum_fidelity"] == "lossless" && object["effective_maximum_fidelity"] == "lossless" && object["fidelity_basis"] == "native" && validateManifestClaim(object, stateRequirement, true) && !(diff && options["state_summary"] == true) }
+	matrix := map[string]map[string]string{
+		"diagram":{"xlsx":"traceable_summary","html":"traceable_summary","csv":"traceable_summary","tsv":"traceable_summary","svg":"visual_only","png":"visual_only","pdf":"visual_only","pptx":"visual_only","docx":"visual_only","drawio":"visual_only","mermaid":"lossy"},
+		"table":{"xlsx":"traceable_summary","csv":"traceable_summary","tsv":"traceable_summary","html":"traceable_summary","pdf":"visual_only","pptx":"visual_only","docx":"visual_only","markdown":"lossy"},
+		"matrix":{"xlsx":"traceable_summary","csv":"traceable_summary","tsv":"traceable_summary","html":"traceable_summary","svg":"visual_only","png":"visual_only","pdf":"visual_only","pptx":"visual_only","docx":"visual_only"},
+		"tree":{"xlsx":"traceable_summary","csv":"traceable_summary","tsv":"traceable_summary","html":"traceable_summary","mermaid":"traceable_summary","svg":"visual_only","png":"visual_only","pdf":"visual_only","pptx":"visual_only","docx":"visual_only","drawio":"visual_only"},
+		"flow":{"xlsx":"traceable_summary","csv":"traceable_summary","tsv":"traceable_summary","html":"traceable_summary","mermaid":"traceable_summary","bpmn":"lossy","svg":"visual_only","png":"visual_only","pdf":"visual_only","pptx":"visual_only","docx":"visual_only","drawio":"visual_only","markdown":"lossy"},
+		"context":{"csv":"traceable_summary","tsv":"traceable_summary","xlsx":"traceable_summary","html":"traceable_summary","markdown":"traceable_summary","pdf":"visual_only","pptx":"visual_only","docx":"visual_only"},
+		"diff":{"csv":"traceable_summary","tsv":"traceable_summary","xlsx":"traceable_summary","html":"traceable_summary","markdown":"traceable_summary","pdf":"visual_only","pptx":"visual_only","docx":"visual_only"},
+	}
+	native, allowed := matrix[shape][format]; if !allowed { return false }
+	if format == "csv" || format == "tsv" { if options["bundle"] != true || options["header"] != true || options["source_manifest"] != true { native = "lossy" } }
+	if (shape == "tree" || shape == "flow") && format == "mermaid" && options["source_manifest"] != true { native = "lossy" }
+	if object["native_maximum_fidelity"] != native { return false }
+	embedded := format == "xlsx" && options["view_data_json"] == true && options["hidden_ids"] == true
+	if embedded { if object["effective_maximum_fidelity"] != "lossless" || object["fidelity_basis"] != "embedded_viewdata" { return false } } else if object["effective_maximum_fidelity"] != native || object["fidelity_basis"] != "native" { return false }
+	if format == "xlsx" {
+		profile, _ := options["profile"].(string); compatible := false
+		switch profile { case "type_workbook": compatible = shape == "table"; case "diagram_workbook", "composed_diagram_workbook", "diagram_inventory_workbook": compatible = shape == "diagram"; case "matrix_workbook": compatible = shape == "matrix"; case "tree_workbook": compatible = shape == "tree"; case "flow_workbook": compatible = shape == "flow"; case "diff_workbook": compatible = shape == "diff"; case "context_workbook": compatible = shape == "context"; case "impact_workbook": compatible = category == "impact" && (shape == "diagram" || shape == "table" || shape == "matrix") }
+		if !compatible { return false }
+	}
+	return validateManifestClaim(object, stateRequirement, format == "xlsx" && options["view_data_json"] == true)
+}
+
+func validateManifestClaim(object map[string]any, stateRequirement string, embedded bool) bool {
+	options, _ := object["options"].(map[string]any); sourceRefs, _ := object["source_refs"].(bool)
+	explicit := (options["kind"] == "csv" || options["kind"] == "tsv") && options["source_manifest"] == true || (options["kind"] == "markdown" || options["kind"] == "mermaid" || options["kind"] == "bpmn" || options["kind"] == "drawio") && options["source_manifest"] == true
+	required := explicit || stateRequirement != "none" || sourceRefs && !embedded
+	return object["requires_source_manifest"] == required
 }
 
 func validateAddressOwners(path string, object map[string]any, rules []any) error {
@@ -2898,8 +3535,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function compareCanonicalUnsignedDecimals(left: string, right: string): number | undefined { if (!/^(0|[1-9][0-9]*)$/.test(left) || !/^(0|[1-9][0-9]*)$/.test(right)) return undefined; return left.length === right.length ? (left < right ? -1 : left > right ? 1 : 0) : left.length - right.length; }\n\n")
 	body.WriteString("function hasOrderedPair(value: Record<string, unknown>, lowerProperty: string, upperProperty: string, comparison: string): boolean { if (!hasOwn(value, lowerProperty) || !hasOwn(value, upperProperty)) return true; const lower = value[lowerProperty]; const upper = value[upperProperty]; if (typeof lower !== \"string\" || typeof upper !== \"string\") return false; if (comparison === \"unsigned_decimal\") { const ordered = compareCanonicalUnsignedDecimals(lower, upper); return ordered !== undefined && ordered <= 0; } if (comparison === \"finite_binary64\") { const lowerValue = Number(lower); const upperValue = Number(upper); return Number.isFinite(lowerValue) && Number.isFinite(upperValue) && lowerValue <= upperValue; } return false; }\n\n")
 	body.WriteString("function hasAddressTerminalID(value: Record<string, unknown>, addressProperty: string, idProperty: string): boolean { const address = value[addressProperty]; const id = value[idProperty]; return typeof address === \"string\" && typeof id === \"string\" && address.split(\":\").at(-1) === id; }\n\n")
-	body.WriteString("function hasValidExportRecipe(value: Record<string, unknown>): boolean { const format = value[\"format\"]; const options = value[\"options\"]; const profile = value[\"exporter_profile\"]; const extension = value[\"extension\"]; const filename = value[\"filename\"]; if (typeof format !== \"string\" || !isObject(options) || !isObject(profile) || options[\"kind\"] !== format || profile[\"format\"] !== format || typeof extension !== \"string\" || typeof filename !== \"string\") return false; const expected = new Map<string, string>([[\"json\",\".json\"],[\"yaml\",\".yaml\"],[\"svg\",\".svg\"],[\"png\",\".png\"],[\"pdf\",\".pdf\"],[\"html\",\".html\"],[\"csv\",\".csv\"],[\"tsv\",\".tsv\"],[\"xlsx\",\".xlsx\"],[\"markdown\",\".md\"],[\"pptx\",\".pptx\"],[\"docx\",\".docx\"],[\"mermaid\",\".mmd\"],[\"bpmn\",\".bpmn\"],[\"drawio\",\".drawio\"]]).get(format); return expected !== undefined && extension === expected && filename !== \"\" && filename !== \".\" && filename !== \"..\" && !/[\\\\/\\u0000]/.test(filename) && filename.endsWith(extension) && filename.slice(0, -extension.length).length > 0; }\n\n")
-	body.WriteString("function hasValidViewRecipe(value: Record<string, unknown>): boolean { const address = value[\"address\"]; const shape = value[\"shape\"]; const reservedValues = value[\"reserved_table_column_ids\"]; if (typeof address !== \"string\" || !isObject(shape) || !isJSONArray(reservedValues) || !reservedValues.every((item) => typeof item === \"string\")) return false; if (shape[\"kind\"] !== \"table\") return true; const table = shape[\"table\"]; if (!isObject(table) || !isJSONArray(table[\"columns\"])) return false; const reserved = new Set(reservedValues); return table[\"columns\"].every((item) => isObject(item) && typeof item[\"address\"] === \"string\" && typeof item[\"id\"] === \"string\" && hasDirectStableAddressOwner(address, item[\"address\"]) && !reserved.has(item[\"id\"])); }\n\n")
+	body.WriteString(tsAuthorityRuntime)
 	body.WriteString("function hasValidDiffSource(value: Record<string, unknown>): boolean { if (value[\"kind\"] !== \"diff\") return true; const before = value[\"before\"]; const after = value[\"after\"]; if (typeof before !== \"string\" || typeof after !== \"string\" || before.length === 0 || after.length === 0 || before === after) return false; return hasOwn(value, \"query_address\") || (isObject(value[\"arguments\"]) && Object.keys(value[\"arguments\"]).length === 0); }\n\n")
 	body.WriteString("function isRFC3339(value: string): boolean {\n")
 	body.WriteString("  const match = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?Z$/.exec(value);\n")
@@ -3006,6 +3642,81 @@ func writeTSBlobCollectorStatements(body *strings.Builder, set schemaSet, docume
 	}
 	return nil
 }
+
+const tsAuthorityRuntime = `function authorityStateType(field: string): string {
+  if (["system.created_at","system.updated_at","provenance.observed_at","provenance.verified_at","provenance.stale_after"].includes(field)) return "datetime";
+  if (["system.created_by.kind","system.updated_by.kind","provenance.source.kind","provenance.verified_by.kind"].includes(field)) return "enum";
+  return field === "provenance.confidence" ? "number" : "string";
+}
+
+const authorityStateFields = ["system.created_at","system.updated_at","system.created_by.kind","system.created_by.id","system.created_by.display_name","system.updated_by.kind","system.updated_by.id","system.updated_by.display_name","system.created_revision","system.updated_revision","provenance.source.kind","provenance.source.label","provenance.source.uri","provenance.source.external_id","provenance.observed_at","provenance.verified_at","provenance.stale_after","provenance.verified_by.kind","provenance.verified_by.id","provenance.verified_by.display_name","provenance.confidence"] as const;
+const authorityStateSubjects = ["entity","relation","entity_row","relation_row"] as const;
+
+function hasValidStateRead(value: Record<string, unknown>): boolean { return typeof value["field_path"] === "string" && value["value_type"] === authorityStateType(value["field_path"]); }
+function hasStateReadOrder(values: ReadonlyArray<unknown>): boolean { let previous = -1; for (const raw of values) { if (!isObject(raw) || !hasValidStateRead(raw)) return false; const subject = authorityStateSubjects.indexOf(raw["subject_kind"] as never); const field = authorityStateFields.indexOf(raw["field_path"] as never); const rank = subject * authorityStateFields.length + field; if (subject < 0 || field < 0 || rank <= previous) return false; previous = rank; } return true; }
+
+function authorityRealDate(value: string): boolean { const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value); if (match === null || match[1] === "0000") return false; const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]); const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0); const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1]!; }
+function hasValidRecipeScalar(value: Record<string, unknown>): boolean { const kind = value["kind"]; const text = value["string_value"]; if (kind === "date") return typeof text === "string" && authorityRealDate(text); if (kind === "datetime") { if (typeof text !== "string") return false; const match = /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?Z$/.exec(text); return match !== null && authorityRealDate(match[1]!); } return kind !== "enum" || typeof text === "string" && text.length > 0; }
+
+function authorityHostname(value: string): boolean { return value.length > 0 && value.length <= 253 && value === value.toLowerCase() && !value.endsWith(".") && value.split(".").every((label) => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)); }
+function authorityStringFormat(format: string, value: string): boolean {
+  if (format === "hostname") return authorityHostname(value);
+  if (format === "email") { const match = new RegExp("^[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+)*@([A-Za-z0-9.-]+)$").exec(value); return match !== null && authorityHostname(match[1]!); }
+  if (format === "ipv4") { const parts = value.split("."); return parts.length === 4 && parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255); }
+  if (format === "ipv6") return /^[0-9a-f:]+$/.test(value) && value.includes(":") && !value.includes(":::") && value === value.toLowerCase();
+  if (format === "cidr") { const parts = value.split("/"); if (parts.length !== 2 || !/^(0|[1-9]\d*)$/.test(parts[1]!)) return false; if (authorityStringFormat("ipv4", parts[0]!)) { const bits = Number(parts[1]); if (bits > 32) return false; const octets = parts[0]!.split(".").map(Number); const address = (((octets[0]! << 24) >>> 0) + (octets[1]! << 16) + (octets[2]! << 8) + octets[3]!) >>> 0; const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0; return (address & mask) === address; } return authorityStringFormat("ipv6", parts[0]!) && Number(parts[1]) <= 128; }
+  if (format === "uri") return /^[A-Za-z][A-Za-z0-9+.-]*:[\x21-\x7e]*$/.test(value) && !value.includes("\\") && !/%(?![0-9A-Fa-f]{2})/.test(value);
+  return false;
+}
+
+function hasValidQueryParameter(value: Record<string, unknown>): boolean {
+  const type = value["value_type"]; const reserved = value["reserved_enum_values"];
+  if (typeof type !== "string" || !isJSONArray(reserved)) return false;
+  const hasEnum = hasOwn(value, "enum_values"), hasFormat = hasOwn(value, "format"), hasMin = hasOwn(value, "min"), hasMax = hasOwn(value, "max"), hasMinLength = hasOwn(value, "min_length"), hasMaxLength = hasOwn(value, "max_length");
+  if (type === "enum") { const active = value["enum_values"]; if (!isJSONArray(active) || active.length === 0 || !active.every((item) => typeof item === "string" && item.length > 0) || !reserved.every((item) => typeof item === "string" && item.length > 0)) return false; }
+  else if (hasEnum || reserved.length !== 0) return false;
+  if (hasFormat && type !== "string" || (hasMin || hasMax) && type !== "integer" && type !== "number" || (hasMinLength || hasMaxLength) && type !== "string") return false;
+  if (type === "integer" && [value["min"], value["max"]].some((item) => item !== undefined && (typeof item !== "string" || !matchesCanonicalSafeInteger(item)))) return false;
+  const rawDefault = value["default"]; if (rawDefault === undefined) return true; if (!isObject(rawDefault) || rawDefault["kind"] !== type) return false;
+  if (type === "enum") return (value["enum_values"] as ReadonlyArray<unknown>).includes(rawDefault["string_value"]);
+  if (type === "string") { const text = rawDefault["string_value"]; if (typeof text !== "string") return false; const length = Array.from(text).length; if (typeof value["min_length"] === "string" && BigInt(length) < BigInt(value["min_length"]) || typeof value["max_length"] === "string" && BigInt(length) > BigInt(value["max_length"])) return false; return typeof value["format"] !== "string" || authorityStringFormat(value["format"], text); }
+  if (type === "integer" || type === "number") { const property = type === "integer" ? "integer_value" : "number_value"; const text = rawDefault[property]; if (typeof text !== "string") return false; const number = Number(text); return Number.isFinite(number) && (typeof value["min"] !== "string" || number >= Number(value["min"])) && (typeof value["max"] !== "string" || number <= Number(value["max"])); }
+  return true;
+}
+
+type AuthoritySubject = {kind: string; owner: string};
+function authoritySubject(address: string): AuthoritySubject | undefined { const parts = address.split(":"); if (parts.length < 3 || parts[0] !== "ldl") return undefined; let start = 3, root = "project"; if (parts[1] === "pack") { if (parts.length < 4) return undefined; start = 4; root = "pack"; } else if (parts[1] !== "project") return undefined; if (parts.length === start) return {kind: root, owner: ""}; if ((parts.length - start) % 2 !== 0) return undefined; const last = parts.at(-2)!; let kind = new Map<string,string>([["entity-type","entity_type"],["relation-type","relation_type"],["layer","layer"],["entity","entity"],["relation","relation"],["query","query"],["view","view"],["reference","reference"],["parameter","query_parameter"],["table-column","view_table_column"],["export","view_export"]]).get(last); if (last === "row") kind = parts.at(-4) === "entity" ? "entity_row" : parts.at(-4) === "relation" ? "relation_row" : undefined; if (last === "column" || last === "constraint") { const prefix = parts.at(-4) === "entity-type" ? "entity_type" : parts.at(-4) === "relation-type" ? "relation_type" : undefined; kind = prefix === undefined ? undefined : prefix + "_" + last; } return kind === undefined ? undefined : {kind, owner: parts.slice(0, -2).join(":")}; }
+type AuthorityRole = {kind: string; address?: string; addresses?: string; owner?: string; owner_policy?: string};
+function hasStableAddressRoles(value: Record<string, unknown>, rules: ReadonlyArray<AuthorityRole>): boolean { for (const rule of rules) { const expected = value[rule.kind]; if (typeof expected !== "string") return false; let addresses: ReadonlyArray<unknown>; if (rule.address !== undefined) addresses = [value[rule.address]]; else { const raw = value[rule.addresses!]; if (!isJSONArray(raw)) return false; addresses = raw; } const owner = rule.owner === undefined ? undefined : value[rule.owner]; for (const raw of addresses) { if (typeof raw !== "string") return false; const subject = authoritySubject(raw); if (subject === undefined || subject.kind !== expected) return false; const present = typeof owner === "string"; if (rule.owner_policy === "children" && (!present || subject.owner !== owner) || rule.owner_policy === "exact" && ((subject.owner !== "") !== present || present && subject.owner !== owner) || rule.owner_policy === "if_present" && present && subject.owner !== owner || rule.owner_policy === "row_only" && ((subject.kind === "entity_row" || subject.kind === "relation_row") !== present || present && subject.owner !== owner)) return false; } } return true; }
+
+type AuthorityOperand = {kind: string; scalar: string; address: string};
+function authorityOperand(raw: unknown): AuthorityOperand | undefined { if (!isObject(raw) || typeof raw["kind"] !== "string") return undefined; const value = {kind: raw["kind"], scalar: typeof raw["scalar_type"] === "string" ? raw["scalar_type"] : "", address: typeof raw["address_kind"] === "string" ? raw["address_kind"] : ""}; return value.kind === "scalar" && value.scalar !== "" || value.kind === "address" && value.address !== "" || value.kind === "string_set" ? value : undefined; }
+function authorityOperandEqual(a: AuthorityOperand, b: AuthorityOperand): boolean { return a.kind === b.kind && a.scalar === b.scalar && a.address === b.address; }
+function authorityFieldOperand(field: string): AuthorityOperand | undefined { if (["id","display_name","description"].includes(field)) return {kind:"scalar",scalar:"string",address:""}; if (field === "tags") return {kind:"string_set",scalar:"",address:""}; if (field === "layer") return {kind:"address",scalar:"",address:"layer"}; if (field === "from" || field === "to") return {kind:"address",scalar:"",address:"entity"}; return undefined; }
+function authorityScalarCompare(a: Record<string, unknown>, b: Record<string, unknown>): number { if (a["kind"] === "boolean") return Number(a["boolean_value"]) - Number(b["boolean_value"]); if (a["kind"] === "integer") return BigInt(String(a["integer_value"])) < BigInt(String(b["integer_value"])) ? -1 : BigInt(String(a["integer_value"])) > BigInt(String(b["integer_value"])) ? 1 : 0; if (a["kind"] === "number") return Number(a["number_value"]) - Number(b["number_value"]); return compareUnicodeScalars(String(a["string_value"]), String(b["string_value"])); }
+function authorityScalarSet(raw: unknown, type: string): boolean { if (!isJSONArray(raw)) return false; let previous: Record<string, unknown> | undefined; for (const item of raw) { if (!isObject(item) || item["kind"] !== type || previous !== undefined && authorityScalarCompare(previous, item) >= 0) return false; previous = item; } return true; }
+function authorityPredicateValue(value: Record<string, unknown>, operator: string, operand: AuthorityOperand): boolean { const kind = value["kind"]; if (kind === "parameter") return operator !== "in" && operator !== "not_in" && (operand.kind === "scalar" || operand.kind === "string_set" && operator === "contains"); if (operator === "in" || operator === "not_in") { if (operand.kind === "scalar") return kind === "scalar_set" && authorityScalarSet(value["scalar_values"], operand.scalar); if (operand.kind === "address" && kind === "address_set" && isJSONArray(value["address_values"])) return value["address_values"].every((item) => typeof item === "string" && authoritySubject(item)?.kind === operand.address); return false; } if (operand.kind === "string_set") return operator === "eq" || operator === "ne" ? kind === "scalar_set" && authorityScalarSet(value["scalar_values"], "string") : operator === "contains" && kind === "scalar" && isObject(value["scalar_value"]) && value["scalar_value"]["kind"] === "string"; if (operand.kind === "scalar") return kind === "scalar" && isObject(value["scalar_value"]) && value["scalar_value"]["kind"] === operand.scalar; return operand.kind === "address" && kind === "address" && typeof value["address_value"] === "string" && authoritySubject(value["address_value"])?.kind === operand.address; }
+function hasValidRecipePredicate(value: Record<string, unknown>, predicateKind: string): boolean { const kind = value["kind"]; if (kind === "all" || kind === "any") return isJSONArray(value["children"]) && value["children"].every((item) => isObject(item) && hasValidRecipePredicate(item, predicateKind)); if (kind === "not") return isObject(value["child"]) && hasValidRecipePredicate(value["child"], predicateKind); if (kind === "rows") return isObject(value["predicate"]) && hasValidRecipePredicate(value["predicate"], "row"); if (kind !== "field" && kind !== "cell" && kind !== "state") return true; const operand = authorityOperand(value["operand_type"]); if (operand === undefined) return false; if (kind === "field") { const expected = authorityFieldOperand(String(value["field"])); if (expected !== undefined && !authorityOperandEqual(operand, expected)) return false; } if (kind === "state" && !authorityOperandEqual(operand, {kind:"scalar",scalar:authorityStateType(String(value["field_path"])),address:""})) return false; const operator = value["operator"]; if (typeof operator !== "string") return false; let compatible = ["eq","ne","exists","missing"].includes(operator); if (["lt","lte","gt","gte"].includes(operator)) compatible = operand.kind === "scalar" && ["integer","number","date","datetime"].includes(operand.scalar); if (["in","not_in"].includes(operator)) compatible = operand.kind === "scalar" || operand.kind === "address"; if (operator === "contains") compatible = operand.kind === "string_set" || operand.kind === "scalar" && operand.scalar === "string"; if (["starts_with","ends_with"].includes(operator)) compatible = operand.kind === "scalar" && operand.scalar === "string"; return compatible && (["exists","missing"].includes(operator) || isObject(value["value"]) && authorityPredicateValue(value["value"], operator, operand)); }
+function hasValidViewProjection(value: Record<string, unknown>, kind: string): boolean { const distinct = (a: string, b: string): boolean => typeof value[a] === "string" && typeof value[b] === "string" && value[a] !== value[b]; if (kind !== "composed") { const pairs = new Map<string,readonly [string,string]>([["diagram",["source_endpoint","target_endpoint"]],["flow",["source_endpoint","target_endpoint"]],["matrix",["row_endpoint","column_endpoint"]],["tree",["parent_endpoint","child_endpoint"]]]); const pair = pairs.get(kind); return pair !== undefined && distinct(pair[0], pair[1]); } const mode = value["mode"]; const present = (name: string): boolean => hasOwn(value, name); if (mode === "nest") return distinct("parent_endpoint","child_endpoint") && !present("overlay_endpoint") && !present("target_endpoint") && !present("badge_endpoint"); if (mode === "overlay") return distinct("overlay_endpoint","target_endpoint") && !present("parent_endpoint") && !present("child_endpoint") && !present("badge_endpoint"); if (mode === "badge") return distinct("badge_endpoint","target_endpoint") && !present("parent_endpoint") && !present("child_endpoint") && !present("overlay_endpoint"); return (mode === "edge" || mode === "hide") && ["parent_endpoint","child_endpoint","overlay_endpoint","target_endpoint","badge_endpoint"].every((name) => !present(name)); }
+
+function authorityContextOperand(field: string, context: string): AuthorityOperand | undefined { const common = authorityFieldOperand(field); if (common !== undefined) return common; if (field === "address") return context === "entity" ? {kind:"address",scalar:"",address:"entity"} : context === "relation" ? {kind:"address",scalar:"",address:"relation"} : undefined; if (field === "type") return context === "entity" ? {kind:"address",scalar:"",address:"entity_type"} : context === "relation" ? {kind:"address",scalar:"",address:"relation_type"} : undefined; return undefined; }
+type AuthorityDependencies = {layer:Set<string>; entity_type:Set<string>; relation_type:Set<string>; entity:Set<string>; relation:Set<string>; column:Set<string>; parameter:Set<string>; state:Map<string,Record<string,unknown>>};
+function authorityDependencies(): AuthorityDependencies { return {layer:new Set(),entity_type:new Set(),relation_type:new Set(),entity:new Set(),relation:new Set(),column:new Set(),parameter:new Set(),state:new Map()}; }
+function authorityAddDependency(sets: AuthorityDependencies, kind: string, address: string): boolean { const target = kind === "entity_type_column" || kind === "relation_type_column" ? sets.column : sets[kind as keyof AuthorityDependencies]; if (!(target instanceof Set)) return false; target.add(address); return true; }
+function authorityQueryPredicate(raw: unknown, context: string, query: string, parameters: ReadonlyMap<string,string>, sets: AuthorityDependencies): boolean { if (!isObject(raw)) return false; const kind = raw["kind"]; if (kind === "all" || kind === "any") return isJSONArray(raw["children"]) && raw["children"].every((item) => authorityQueryPredicate(item, context, query, parameters, sets)); if (kind === "not") return authorityQueryPredicate(raw["child"], context, query, parameters, sets); if (kind === "rows") { if (!isJSONArray(raw["type_addresses"])) return false; const expected = context === "entity" ? "entity_type" : "relation_type", row = context === "entity" ? "entity_row" : "relation_row"; for (const item of raw["type_addresses"]) { if (typeof item !== "string" || authoritySubject(item)?.kind !== expected) return false; authorityAddDependency(sets, expected, item); } return authorityQueryPredicate(raw["predicate"], row, query, parameters, sets); } if (kind === "field") { const expected = authorityContextOperand(String(raw["field"]), context), operand = authorityOperand(raw["operand_type"]); if (expected === undefined || operand === undefined || !authorityOperandEqual(expected, operand)) return false; } else if (kind === "cell") { if (context !== "entity_row" && context !== "relation_row" || !isJSONArray(raw["column_addresses"]) || raw["column_addresses"].length === 0) return false; const expected = context === "entity_row" ? "entity_type_column" : "relation_type_column"; for (const item of raw["column_addresses"]) { if (typeof item !== "string" || authoritySubject(item)?.kind !== expected) return false; sets.column.add(item); } } else if (kind === "state") { const field = String(raw["field_path"]), operand = authorityOperand(raw["operand_type"]); if (operand === undefined || !authorityOperandEqual(operand,{kind:"scalar",scalar:authorityStateType(field),address:""})) return false; sets.state.set(context+"\0"+field,{subject_kind:context,field_path:field,value_type:authorityStateType(field)}); } else return false; const operand = authorityOperand(raw["operand_type"])!; if (isObject(raw["value"])) { const value = raw["value"]; if (value["kind"] === "parameter") { const address = value["parameter_address"], expected = operand.kind === "string_set" ? "string" : operand.scalar; if (typeof address !== "string" || authoritySubject(address)?.kind !== "query_parameter" || authoritySubject(address)?.owner !== query || parameters.get(address) !== expected) return false; sets.parameter.add(address); } for (const address of [...(typeof value["address_value"] === "string" ? [value["address_value"]] : []), ...(isJSONArray(value["address_values"]) ? value["address_values"] : [])]) { if (typeof address !== "string") return false; const subject = authoritySubject(address); if (subject === undefined || !authorityAddDependency(sets, subject.kind, address)) return false; } } return true; }
+function authoritySetEquals(raw: unknown, expected: ReadonlySet<string>): boolean { return isJSONArray(raw) && raw.length === expected.size && raw.every((item) => typeof item === "string" && expected.has(item)); }
+function hasValidQueryRecipe(value: Record<string, unknown>): boolean { const query = value["address"]; if (typeof query !== "string" || !isJSONArray(value["parameters"])) return false; const parameters = new Map<string,string>(); for (const raw of value["parameters"]) { if (!isObject(raw) || typeof raw["address"] !== "string" || typeof raw["value_type"] !== "string") return false; parameters.set(raw["address"],raw["value_type"]); } const sets = authorityDependencies(); const select = value["select"]; if (!isObject(select)) return false; for (const [property,kind] of [["layer_addresses","layer"],["entity_type_addresses","entity_type"],["relation_type_addresses","relation_type"],["root_addresses","entity"]] as const) if (isJSONArray(select[property])) for (const address of select[property]) { if (typeof address !== "string") return false; authorityAddDependency(sets,kind,address); } if (isObject(value["traverse"]) && isJSONArray(value["traverse"]["relation_type_addresses"])) for (const address of value["traverse"]["relation_type_addresses"]) { if (typeof address !== "string") return false; sets.relation_type.add(address); } if (!authorityQueryPredicate(value["where"],"entity",query,parameters,sets) || !authorityQueryPredicate(value["relation_where"],"relation",query,parameters,sets)) return false; const hasState = sets.state.size !== 0; if (hasState !== (value["state_input"] === "optional" || value["state_input"] === "required")) return false; const dependencies = value["dependencies"]; if (!isObject(dependencies)) return false; for (const property of ["layer","entity_type","relation_type","entity","relation","column","parameter"] as const) if (!authoritySetEquals(dependencies[property+"_addresses"],sets[property])) return false; if (!isJSONArray(dependencies["state_reads"]) || dependencies["state_reads"].length !== sets.state.size) return false; return dependencies["state_reads"].every((raw) => isObject(raw) && sets.state.has(String(raw["subject_kind"])+"\0"+String(raw["field_path"]))); }
+
+function authorityFidelityRank(value: unknown): number { return new Map<unknown,number>([["lossy",0],["visual_only",1],["traceable_summary",2],["lossless",3]]).get(value) ?? -1; }
+function hasValidExportRecipe(value: Record<string, unknown>): boolean { const format = value["format"], options = value["options"], profile = value["exporter_profile"], extension = value["extension"], filename = value["filename"]; if (typeof format !== "string" || !isObject(options) || !isObject(profile) || options["kind"] !== format || profile["format"] !== format || typeof extension !== "string" || typeof filename !== "string") return false; const expected = new Map<string,string>([["json",".json"],["yaml",".yaml"],["svg",".svg"],["png",".png"],["pdf",".pdf"],["html",".html"],["csv",".csv"],["tsv",".tsv"],["xlsx",".xlsx"],["markdown",".md"],["pptx",".pptx"],["docx",".docx"],["mermaid",".mmd"],["bpmn",".bpmn"],["drawio",".drawio"]]).get(format); if (expected === undefined || extension !== expected || filename === "" || filename === "." || filename === ".." || /[\\/\u0000]/.test(filename) || !filename.endsWith(extension) || filename.slice(0,-extension.length).length === 0) return false; const fixed = new Map<string,string>([["json","lossless"],["yaml","lossless"],["svg","visual_only"],["png","visual_only"],["pdf","visual_only"],["html","traceable_summary"],["xlsx","traceable_summary"],["pptx","visual_only"],["docx","visual_only"],["drawio","visual_only"],["bpmn","lossy"]]).get(format); if (fixed !== undefined && value["native_maximum_fidelity"] !== fixed) return false; if ((format === "csv" || format === "tsv") && value["native_maximum_fidelity"] !== (options["bundle"] === true && options["header"] === true && options["source_manifest"] === true ? "traceable_summary" : "lossy")) return false; const embedded = format === "xlsx" && options["view_data_json"] === true && options["hidden_ids"] === true; if (embedded ? value["fidelity_basis"] !== "embedded_viewdata" || value["effective_maximum_fidelity"] !== "lossless" : value["fidelity_basis"] !== "native" || value["effective_maximum_fidelity"] !== value["native_maximum_fidelity"]) return false; if (authorityFidelityRank(value["fidelity"]) > authorityFidelityRank(value["effective_maximum_fidelity"])) return false; return !(["lossless","traceable_summary"].includes(String(value["fidelity"])) || format === "json" || format === "yaml") || value["source_refs"] === true; }
+
+function authorityTableValue(value: Record<string, unknown>, kind: string, scalar = "", enumValues?: ReadonlyArray<string>): boolean { if (!isObject(value["value_type"])) return false; const type = value["value_type"]; if (type["kind"] !== kind || kind === "scalar" && type["scalar_type"] !== scalar) return false; if (enumValues !== undefined && (!isJSONArray(type["enum_values"]) || type["enum_values"].length !== enumValues.length || !type["enum_values"].every((item,index) => item === enumValues[index]))) return false; return true; }
+function authorityStateEnum(field: string): ReadonlyArray<string> | undefined { if (["system.created_by.kind","system.updated_by.kind","provenance.verified_by.kind"].includes(field)) return ["user","agent","service_account","anonymous"]; return field === "provenance.source.kind" ? ["manual","import","api","agent","external_system"] : undefined; }
+function authorityManifest(value: Record<string, unknown>, state: string, embedded: boolean): boolean { const options = value["options"]; if (!isObject(options)) return false; const explicit = (["csv","tsv"].includes(String(options["kind"])) || ["markdown","mermaid","bpmn","drawio"].includes(String(options["kind"]))) && options["source_manifest"] === true; return value["requires_source_manifest"] === (explicit || state !== "none" || value["source_refs"] === true && !embedded); }
+function authorityExportInView(value: Record<string, unknown>, category: string, shape: string, state: string, diff: boolean): boolean { const format = String(value["format"]), options = value["options"]; if (!isObject(options)) return false; if (format === "json" || format === "yaml") return value["native_maximum_fidelity"] === "lossless" && value["effective_maximum_fidelity"] === "lossless" && value["fidelity_basis"] === "native" && authorityManifest(value,state,true) && !(diff && options["state_summary"] === true); const matrix: Record<string,Record<string,string>> = {diagram:{xlsx:"traceable_summary",html:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",svg:"visual_only",png:"visual_only",pdf:"visual_only",pptx:"visual_only",docx:"visual_only",drawio:"visual_only",mermaid:"lossy"},table:{xlsx:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",html:"traceable_summary",pdf:"visual_only",pptx:"visual_only",docx:"visual_only",markdown:"lossy"},matrix:{xlsx:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",html:"traceable_summary",svg:"visual_only",png:"visual_only",pdf:"visual_only",pptx:"visual_only",docx:"visual_only"},tree:{xlsx:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",html:"traceable_summary",mermaid:"traceable_summary",svg:"visual_only",png:"visual_only",pdf:"visual_only",pptx:"visual_only",docx:"visual_only",drawio:"visual_only"},flow:{xlsx:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",html:"traceable_summary",mermaid:"traceable_summary",bpmn:"lossy",svg:"visual_only",png:"visual_only",pdf:"visual_only",pptx:"visual_only",docx:"visual_only",drawio:"visual_only",markdown:"lossy"},context:{csv:"traceable_summary",tsv:"traceable_summary",xlsx:"traceable_summary",html:"traceable_summary",markdown:"traceable_summary",pdf:"visual_only",pptx:"visual_only",docx:"visual_only"},diff:{csv:"traceable_summary",tsv:"traceable_summary",xlsx:"traceable_summary",html:"traceable_summary",markdown:"traceable_summary",pdf:"visual_only",pptx:"visual_only",docx:"visual_only"}}; let native = matrix[shape]?.[format]; if (native === undefined) return false; if ((format === "csv" || format === "tsv") && !(options["bundle"] === true && options["header"] === true && options["source_manifest"] === true) || (shape === "tree" || shape === "flow") && format === "mermaid" && options["source_manifest"] !== true) native = "lossy"; if (value["native_maximum_fidelity"] !== native) return false; const fidelityEmbedded = format === "xlsx" && options["view_data_json"] === true && options["hidden_ids"] === true; if (fidelityEmbedded ? value["effective_maximum_fidelity"] !== "lossless" || value["fidelity_basis"] !== "embedded_viewdata" : value["effective_maximum_fidelity"] !== native || value["fidelity_basis"] !== "native") return false; if (format === "xlsx") { const profile = options["profile"]; const compatible = profile === "type_workbook" && shape === "table" || ["diagram_workbook","composed_diagram_workbook","diagram_inventory_workbook"].includes(String(profile)) && shape === "diagram" || profile === "matrix_workbook" && shape === "matrix" || profile === "tree_workbook" && shape === "tree" || profile === "flow_workbook" && shape === "flow" || profile === "diff_workbook" && shape === "diff" || profile === "context_workbook" && shape === "context" || profile === "impact_workbook" && category === "impact" && ["diagram","table","matrix"].includes(shape); if (!compatible) return false; } return authorityManifest(value,state,format === "xlsx" && options["view_data_json"] === true); }
+function hasValidViewRecipe(value: Record<string, unknown>): boolean { const address = value["address"], shapeValue = value["shape"], source = value["source"], reservedRaw = value["reserved_table_column_ids"]; if (typeof address !== "string" || !isObject(shapeValue) || !isObject(source) || !isJSONArray(reservedRaw)) return false; const category = String(value["category"]), sourceKind = String(source["kind"]), shape = String(shapeValue["kind"]); const diffCount = Number(category === "diff") + Number(sourceKind === "diff") + Number(shape === "diff"); if (diffCount !== 0 && diffCount !== 3) return false; const stateInput = String(value["state_input"]), stateRequirement = String(value["state_requirement"]), rank = (item: string): number => ["none","optional","required"].indexOf(item); if (rank(stateRequirement) < rank(stateInput) || diffCount === 3 && stateRequirement !== "none") return false; const direct: Array<Record<string,unknown>> = []; if (shape === "table") { const table = shapeValue["table"]; if (!isObject(table) || !isJSONArray(table["columns"]) || !isJSONArray(table["sorts"])) return false; const row = String(table["row_source"]), entity = row === "entity" || row === "entity_rows"; if (!entity && (table["include_entity_id"] === true || table["include_type"] === true || table["include_layer"] === true || hasOwn(table,"entity_type_addresses"))) return false; const available = new Set<string>(), reserved = new Set(reservedRaw); if (table["include_entity_id"] === true) available.add("entity_id"); if (table["include_type"] === true) available.add("entity_type"); if (table["include_layer"] === true) available.add("entity_layer"); for (const raw of table["columns"]) { if (!isObject(raw) || typeof raw["id"] !== "string" || typeof raw["address"] !== "string" || !hasDirectStableAddressOwner(address,raw["address"]) || reserved.has(raw["id"]) || available.has(raw["id"]) || !isObject(raw["source"])) return false; available.add(raw["id"]); const column = raw["source"], kind = column["kind"], aggregate = raw["aggregate"]; if (kind === "attribute") { if (row !== "entity_rows" && row !== "relation_rows" || !isJSONArray(column["column_addresses"]) || column["column_addresses"].length === 0) return false; const expected = row === "entity_rows" ? "entity_type_column" : "relation_type_column"; if (!column["column_addresses"].every((item) => typeof item === "string" && authoritySubject(item)?.kind === expected)) return false; } else if (kind === "relation_endpoint") { if (row !== "relation" && row !== "relation_rows") return false; const field = String(column["field"]); if (!authorityTableValue(raw,field === "id" || field === "display_name" ? "scalar" : "stable_address",field === "id" || field === "display_name" ? "string" : "")) return false; } else if (kind === "derived_count") { if (!entity || !authorityTableValue(raw,"scalar","integer")) return false; } else if (kind === "field") { const field = String(column["field"]); if (["id","display_name","description"].includes(field) ? !authorityTableValue(raw,"scalar","string") : field === "tags" ? !authorityTableValue(raw,"string_set") : !authorityTableValue(raw,"stable_address")) return false; } else if (kind === "state") { const field = String(column["field_path"]), type = authorityStateType(field), enums = authorityStateEnum(field); if (!authorityTableValue(raw,"scalar",type,enums)) return false; const subjects = row === "automatic_relations" ? ["relation","relation_row"] : [row === "entity" ? "entity" : row === "entity_rows" ? "entity_row" : row === "relation" ? "relation" : "relation_row"]; for (const subject_kind of subjects) direct.push({subject_kind,field_path:field,value_type:type}); } else return false; if ((aggregate === "count" || aggregate === "count_distinct") && !authorityTableValue(raw,"scalar","integer") || aggregate === "join_unique" && !authorityTableValue(raw,"scalar","string") || (aggregate === "min" || aggregate === "max") && (!isObject(raw["value_type"]) || raw["value_type"]["kind"] !== "scalar" || !["integer","number","date","datetime","enum"].includes(String(raw["value_type"]["scalar_type"])))) return false; } if (!table["sorts"].every((item) => isObject(item) && typeof item["column_id"] === "string" && available.has(item["column_id"]))) return false; } else if (stateInput !== "none") return false; if ((direct.length !== 0) !== (stateInput === "optional" || stateInput === "required")) return false; const dependencies = value["dependencies"]; if (!isObject(dependencies)) return false; const stateReads = dependencies["state_reads"]; if (!isJSONArray(stateReads) || direct.some((read) => !stateReads.some((item: unknown) => isObject(item) && item["subject_kind"] === read["subject_kind"] && item["field_path"] === read["field_path"] && item["value_type"] === read["value_type"]))) return false; if (!isJSONArray(value["exports"])) return false; return value["exports"].every((raw) => isObject(raw) && raw["view_address"] === address && authorityExportInView(raw,category,shape,stateRequirement,diffCount === 3)); }
+
+`
 
 const tsWirePreflight = `function utf8ByteLength(value: string): number {
   let bytes = 0;
@@ -3253,6 +3964,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.UnicodeScalarOrder {
 			parts = append(parts, "hasUnicodeScalarOrder("+expression+")")
 		}
+		if value.StateReadOrder {
+			parts = append(parts, "hasStateReadOrder("+expression+")")
+		}
 		return strings.Join(parts, " && "), nil
 	case "object":
 		if len(value.Properties) == 0 {
@@ -3376,8 +4090,33 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.AddressTerminalID != nil {
 			parts = append(parts, fmt.Sprintf("hasAddressTerminalID(%s, %q, %q)", expression, value.AddressTerminalID.Address, value.AddressTerminalID.ID))
 		}
+		if len(value.StableAddressRoles) != 0 {
+			rules, err := json.Marshal(value.StableAddressRoles)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, "hasStableAddressRoles("+expression+", "+string(rules)+")")
+		}
+		if value.RecipePredicate != "" {
+			parts = append(parts, fmt.Sprintf("hasValidRecipePredicate(%s, %q)", expression, value.RecipePredicate))
+		}
+		if value.ViewProjection != "" {
+			parts = append(parts, fmt.Sprintf("hasValidViewProjection(%s, %q)", expression, value.ViewProjection))
+		}
 		if value.ExportRecipe {
 			parts = append(parts, "hasValidExportRecipe("+expression+")")
+		}
+		if value.QueryParameter {
+			parts = append(parts, "hasValidQueryParameter("+expression+")")
+		}
+		if value.QueryRecipe {
+			parts = append(parts, "hasValidQueryRecipe("+expression+")")
+		}
+		if value.RecipeScalar {
+			parts = append(parts, "hasValidRecipeScalar("+expression+")")
+		}
+		if value.StateRead {
+			parts = append(parts, "hasValidStateRead("+expression+")")
 		}
 		if value.ViewRecipe {
 			parts = append(parts, "hasValidViewRecipe("+expression+")")

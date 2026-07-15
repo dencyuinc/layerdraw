@@ -56,18 +56,31 @@
     "x-layerdraw-ordered-range": {"type": "boolean"},
     "x-layerdraw-outcome-envelope": {"type": "boolean"},
     "x-layerdraw-protocol-offer": {"type": "boolean"},
+    "x-layerdraw-query-parameter": {"type": "boolean", "const": true},
+    "x-layerdraw-query-recipe": {"type": "boolean", "const": true},
+    "x-layerdraw-recipe-predicate": {"type": "string", "enum": ["predicate", "row"]},
+    "x-layerdraw-recipe-scalar": {"type": "boolean", "const": true},
     "x-layerdraw-stable-address-order": {
       "type": "string",
       "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."
     },
     "x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
+    "x-layerdraw-stable-address-roles": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/stableAddressRoleRule"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "x-layerdraw-state-read-order": {"type": "boolean", "const": true},
     "x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
+    "x-layerdraw-state-read": {"type": "boolean", "const": true},
     "x-layerdraw-ts-module": {"type": "string", "minLength": 1},
     "x-layerdraw-unicode-scalar-order": {"type": "boolean", "const": true},
     "x-layerdraw-unique-array-keys": {
       "type": "array",
       "items": {"$ref": "#/$defs/uniqueArrayKey"}
     },
+    "x-layerdraw-view-projection": {"type": "string", "enum": ["composed", "diagram", "flow", "matrix", "tree"]},
     "x-layerdraw-view-recipe": {"type": "boolean", "const": true}
   },
   "$defs": {
@@ -137,6 +150,22 @@
         "upper": {"type": "string", "minLength": 1}
       },
       "required": ["lower", "upper", "comparison"],
+      "additionalProperties": false
+    },
+    "stableAddressRoleRule": {
+      "type": "object",
+      "properties": {
+        "address": {"type": "string", "minLength": 1},
+        "addresses": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1},
+        "owner_policy": {"type": "string", "enum": ["children", "exact", "if_present", "row_only"]}
+      },
+      "required": ["kind"],
+      "oneOf": [
+        {"required": ["address"]},
+        {"required": ["addresses"]}
+      ],
       "additionalProperties": false
     },
     "taggedUnion": {
