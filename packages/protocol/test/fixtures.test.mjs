@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   collectCompileInputBlobRefs,
   collectCompileResultBlobRefs,
+  decodeCompileResult,
   decodeCompileRequestEnvelope,
   decodeCompileResponseEnvelope,
   decodeCanonicalSourcePath,
@@ -98,6 +99,7 @@ import {
   maxWireJSONDepth,
 } from "../dist/common.gen.js";
 import {
+  decodeChildSetHash,
   decodeCanonicalFiniteDecimal,
   decodeCanonicalPositiveFiniteDecimal,
   decodeColor,
@@ -125,6 +127,9 @@ import {
   decodeRecipeRowPredicate,
   decodeRelationTypeColumnAddress,
   decodeSearchField,
+  decodeSemanticIndex,
+  decodeSourceBindingRecord,
+  decodeSourceMap,
   decodeSourceSpan,
   decodeStableAddress,
   decodeViewAddress,
@@ -734,14 +739,14 @@ test("semantic recursive codecs reject self and mutual cycles while preserving a
       encodeRecipePredicate,
       () => { const value = {kind: "not"}; value.child = value; return value; },
       () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
-      () => { const shared = {kind: "field", field: "name", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+      () => { const shared = {kind: "field", field: "display_name", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
     ],
     [
       "RecipeRowPredicate",
       encodeRecipeRowPredicate,
       () => { const value = {kind: "not"}; value.child = value; return value; },
       () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
-      () => { const shared = {kind: "state", field_path: "system.updated_at", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+      () => { const shared = {kind: "state", field_path: "system.updated_at", operand_type: {kind: "scalar", scalar_type: "datetime"}, operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
     ],
   ];
   for (const [name, encode, self, mutual, alias] of cases) {
@@ -764,7 +769,7 @@ test("every recursive public predicate is total and enforces exact wire graph bo
   };
   const predicateAtLimit = (leaf) => {
     let value = leaf;
-    for (let depth = 1; depth < maxWireJSONDepth; depth++) value = {kind: "not", child: value};
+    for (let depth = 2; depth < maxWireJSONDepth; depth++) value = {kind: "not", child: value};
     return value;
   };
   const cases = [
@@ -794,9 +799,9 @@ test("every recursive public predicate is total and enforces exact wire graph bo
       encode: encodeRecipePredicate,
       self: () => { const value = {kind: "not"}; value.child = value; return value; },
       mutual: () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
-      alias: () => { const shared = {kind: "field", field: "name", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
-      atLimit: () => predicateAtLimit({kind: "field", field: "name", operator: "exists"}),
-      tooDeep: () => ({kind: "not", child: predicateAtLimit({kind: "field", field: "name", operator: "exists"})}),
+      alias: () => { const shared = {kind: "field", field: "display_name", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+      atLimit: () => predicateAtLimit({kind: "field", field: "display_name", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "exists"}),
+      tooDeep: () => ({kind: "not", child: predicateAtLimit({kind: "field", field: "display_name", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "exists"})}),
     },
     {
       name: "RecipeRowPredicate",
@@ -804,9 +809,9 @@ test("every recursive public predicate is total and enforces exact wire graph bo
       encode: encodeRecipeRowPredicate,
       self: () => { const value = {kind: "not"}; value.child = value; return value; },
       mutual: () => { const left = {kind: "not"}; const right = {kind: "not", child: left}; left.child = right; return left; },
-      alias: () => { const shared = {kind: "state", field_path: "system.updated_at", operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
-      atLimit: () => predicateAtLimit({kind: "state", field_path: "system.updated_at", operator: "exists"}),
-      tooDeep: () => ({kind: "not", child: predicateAtLimit({kind: "state", field_path: "system.updated_at", operator: "exists"})}),
+      alias: () => { const shared = {kind: "state", field_path: "system.updated_at", operand_type: {kind: "scalar", scalar_type: "datetime"}, operator: "exists"}; return {kind: "all", children: [shared, shared]}; },
+      atLimit: () => predicateAtLimit({kind: "state", field_path: "system.updated_at", operand_type: {kind: "scalar", scalar_type: "datetime"}, operator: "exists"}),
+      tooDeep: () => ({kind: "not", child: predicateAtLimit({kind: "state", field_path: "system.updated_at", operand_type: {kind: "scalar", scalar_type: "datetime"}, operator: "exists"})}),
     },
   ];
 
@@ -846,11 +851,11 @@ test("semantic recursive codecs enforce exact programmatic wire depth", () => {
   expectDepthError(() => encodeDiagnosticArgumentValue(diagnosticTooDeep));
 
   for (const [name, encode, leaf] of [
-    ["RecipePredicate", encodeRecipePredicate, {kind: "field", field: "name", operator: "exists"}],
-    ["RecipeRowPredicate", encodeRecipeRowPredicate, {kind: "state", field_path: "system.updated_at", operator: "exists"}],
+    ["RecipePredicate", encodeRecipePredicate, {kind: "field", field: "display_name", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "exists"}],
+    ["RecipeRowPredicate", encodeRecipeRowPredicate, {kind: "state", field_path: "system.updated_at", operand_type: {kind: "scalar", scalar_type: "datetime"}, operator: "exists"}],
   ]) {
     let value = leaf;
-    for (let depth = 1; depth < maxWireJSONDepth; depth++) value = {kind: "not", child: value};
+    for (let depth = 2; depth < maxWireJSONDepth; depth++) value = {kind: "not", child: value};
     assert.equal(containerDepth(value), maxWireJSONDepth, name);
     assert.doesNotThrow(() => encode(value), name);
     const tooDeep = {kind: "not", child: value};
@@ -1022,4 +1027,97 @@ test("shared compile request mode/root mutations are rejected", async (context) 
     }
     assert.throws(() => decodeCompileRequestEnvelope(JSON.stringify(value)));
   });
+});
+
+test("generated TypeScript codecs preserve compiler semantic authority", async () => {
+  const corpusValue = async (url, name) => {
+    const corpus = JSON.parse(await readFile(url, "utf8"));
+    return structuredClone(corpus.canonical_cases.find((item) => item.name === name).value);
+  };
+  const parameter = (format, value) => ({
+    id: "x",
+    address: "ldl:project:p:query:q:parameter:x",
+    value_type: "string",
+    reserved_enum_values: [],
+    required: false,
+    format,
+    default: {kind: "string", string_value: value},
+  });
+  for (const [format, value] of [["email", "first.last@example.com"], ["ipv6", "::ffff:192.0.2.1"], ["cidr", "192.0.2.0/24"]]) {
+    assert.doesNotThrow(() => decodeQueryRecipeParameter(JSON.stringify(parameter(format, value))));
+  }
+  for (const [format, value] of [["uri", "http://exa mple.com"], ["ipv6", "1:2:3:4:5:6:7:8:9"], ["ipv6", "1::2::3"], ["cidr", "192.0.2.1/24"]]) {
+    assert.throws(() => decodeQueryRecipeParameter(JSON.stringify(parameter(format, value))));
+  }
+
+  const reversedMembership = {kind: "field", field: "id", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "in", value: {kind: "scalar_set", scalar_values: [{kind: "string", string_value: "z"}, {kind: "string", string_value: "a"}]}};
+  assert.doesNotThrow(() => decodeRecipePredicate(JSON.stringify(reversedMembership)));
+
+  let query = await corpusValue(queryAuthorityCorpusURL, "query_recipe_minimal");
+  query.where = {kind: "field", field: "from", operator: "exists", operand_type: {kind: "address", address_kind: "entity"}};
+  assert.throws(() => decodeQueryRecipe(JSON.stringify(query)));
+  query = await corpusValue(queryAuthorityCorpusURL, "query_recipe_minimal");
+  query.relation_where = {kind: "field", field: "layer", operator: "exists", operand_type: {kind: "address", address_kind: "layer"}};
+  assert.throws(() => decodeQueryRecipe(JSON.stringify(query)));
+
+  let view = await corpusValue(viewExportSemanticsCorpusURL, "complete_owned_view_graph");
+  view.dependencies.query_addresses = [];
+  assert.throws(() => decodeViewRecipe(JSON.stringify(view)));
+  view = await corpusValue(viewExportSemanticsCorpusURL, "complete_owned_view_graph");
+  view.dependencies.export_addresses = [];
+  assert.throws(() => decodeViewRecipe(JSON.stringify(view)));
+  view = await corpusValue(viewExportSemanticsCorpusURL, "complete_owned_view_graph");
+  const renameExport = (source, id) => ({...structuredClone(source), id, address: `ldl:project:p:view:v:export:${id}`, filename: `${id}.json`});
+  const zebra = renameExport(view.exports[0], "zebra");
+  const alpha = renameExport(view.exports[0], "alpha");
+  view.exports = [zebra, alpha];
+  view.dependencies.export_addresses = [zebra.address, alpha.address];
+  assert.doesNotThrow(() => decodeViewRecipe(JSON.stringify(view)));
+
+  view = await corpusValue(semanticRootAuthorityCorpusURL, "owned_table_columns_disjoint_from_reservations");
+  view.relation_projection_overrides = {"ldl:project:p:relation-type:r": {table: {row_mode: "automatic", include_from: true, include_to: true, include_relation_type: true}}};
+  view.dependencies.relation_type_addresses = ["ldl:project:p:relation-type:r"];
+  Object.assign(view.shape.table, {columns: [], include_entity_id: false, include_type: false, include_layer: false, row_source: "automatic_relations", sorts: [{column_id: "from", direction: "ascending", absent: "last"}]});
+  assert.doesNotThrow(() => decodeViewRecipe(JSON.stringify(view)));
+
+  const exported = await corpusValue(viewExportSemanticsCorpusURL, "contract_export_svg");
+  exported.source_refs = true;
+  exported.requires_source_manifest = false;
+  assert.throws(() => decodeExportRecipe(JSON.stringify(exported)));
+
+  const hash = (character) => `sha256:${character.repeat(64)}`;
+  const module = (path) => ({origin: {kind: "project"}, module_path: path});
+  const range = (path, start = "0", end = "1") => ({...module(path), start_byte: start, end_byte: end});
+  assert.throws(() => decodeChildSetHash(JSON.stringify({owner_address: "ldl:project:p:entity:e", child_kind: "query_parameter", child_addresses: [], hash: hash("a")})));
+  assert.throws(() => decodeSourceBindingRecord(JSON.stringify({source_address: "ldl:project:p:view:v", target_address: "ldl:project:p:query:q:parameter:x", target_kind: "query_parameter", via: "argument", module: module("document.ldl"), range: range("document.ldl")})));
+
+  const result = structuredClone((await readFixture("compile-success.json")).payload);
+  const childSets = [
+    {owner_address: "ldl:project:p", child_kind: "entity_type", child_addresses: [], hash: hash("a")},
+    {owner_address: "ldl:project:p", child_kind: "relation_type", child_addresses: [], hash: hash("b")},
+  ];
+  result.child_set_hashes = childSets;
+  assert.doesNotThrow(() => decodeCompileResult(JSON.stringify(result)));
+  result.child_set_hashes = [childSets[1], childSets[0]];
+  assert.throws(() => decodeCompileResult(JSON.stringify(result)));
+
+  const semanticIndex = structuredClone((await readFixture("compile-success.json")).payload.semantic_index);
+  const references = [
+    {source_address: "ldl:project:p:entity:a", target_address: "ldl:project:p:entity:b", target_kind: "entity", via: "test", range: range("document.ldl")},
+    {source_address: "ldl:project:p:entity:b", target_address: "ldl:project:p:entity:a", target_kind: "entity", via: "test", range: range("document.ldl")},
+  ];
+  semanticIndex.references = references;
+  assert.doesNotThrow(() => decodeSemanticIndex(JSON.stringify(semanticIndex)));
+  semanticIndex.references = [references[1], references[0]];
+  assert.throws(() => decodeSemanticIndex(JSON.stringify(semanticIndex)));
+
+  const sourceMap = structuredClone((await readFixture("compile-success.json")).payload.source_map);
+  const files = [
+    {origin: {kind: "project"}, module_path: "a.ldl", digest: hash("a"), byte_length: "0"},
+    {origin: {kind: "project"}, module_path: "z.ldl", digest: hash("b"), byte_length: "0"},
+  ];
+  sourceMap.files = files;
+  assert.doesNotThrow(() => decodeSourceMap(JSON.stringify(sourceMap)));
+  sourceMap.files = [files[1], files[0]];
+  assert.throws(() => decodeSourceMap(JSON.stringify(sourceMap)));
 });

@@ -257,7 +257,7 @@
       "description": "The complete transport projection of one successful deterministic compiler generation.",
       "properties": {
         "authoring_subject_classification": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringSubjectClassification"}, "x-layerdraw-stable-address-order": "address"},
-        "child_set_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ChildSetHash"}},
+        "child_set_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ChildSetHash"}, "x-layerdraw-canonical-collection-order": "child_set"},
         "compiled_recipes": {"$ref": "#/$defs/CompiledRecipes"},
         "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "effective_limits": {"$ref": "#/$defs/EffectiveResourceLimits"},

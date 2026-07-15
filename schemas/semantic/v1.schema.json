@@ -44,7 +44,8 @@
       },
       "required": ["owner_address", "child_kind", "child_addresses", "hash"],
       "additionalProperties": false,
-      "x-layerdraw-stable-address-roles": [{"kind": "child_kind", "addresses": "child_addresses", "owner": "owner_address", "owner_policy": "children"}]
+      "x-layerdraw-stable-address-roles": [{"kind": "child_kind", "addresses": "child_addresses", "owner": "owner_address", "owner_policy": "children"}],
+      "x-layerdraw-child-set": true
     },
     "ColumnAddress": {
       "type": "string",
@@ -399,7 +400,7 @@
         "kind": {"type": "string", "enum": ["address", "address_set", "parameter", "scalar", "scalar_set"]},
         "parameter_address": {"$ref": "#/$defs/ParameterAddress"},
         "scalar_value": {"$ref": "#/$defs/RecipeScalar"},
-        "scalar_values": {"type": "array", "items": {"$ref": "#/$defs/RecipeScalar"}}
+        "scalar_values": {"type": "array", "items": {"$ref": "#/$defs/RecipeScalar"}, "uniqueItems": true}
       },
       "required": ["kind"],
       "additionalProperties": false,
@@ -610,7 +611,7 @@
         "dependencies": {"$ref": "#/$defs/ViewRecipeDependencies"},
         "description": {"type": "string"},
         "display_name": {"type": "string"},
-        "exports": {"type": "array", "items": {"$ref": "#/$defs/ExportRecipe"}, "x-layerdraw-stable-address-order": "address"},
+        "exports": {"type": "array", "items": {"$ref": "#/$defs/ExportRecipe"}},
         "id": {"$ref": "#/$defs/LocalIdentifier"},
         "intent": {"type": "string"},
         "relation_projection_overrides": {"type": "object", "propertyNames": {"$ref": "#/$defs/RelationTypeAddress"}, "additionalProperties": {"$ref": "#/$defs/ViewProjectionOverride"}},
@@ -661,7 +662,7 @@
         "column_addresses": {"type": "array", "items": {"$ref": "#/$defs/ColumnAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "entity_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "export_addresses": {"type": "array", "items": {"$ref": "#/$defs/ViewExportAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "export_addresses": {"type": "array", "items": {"$ref": "#/$defs/ViewExportAddress"}, "uniqueItems": true},
         "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/LayerAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "parameter_addresses": {"type": "array", "items": {"$ref": "#/$defs/ParameterAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "query_addresses": {"type": "array", "items": {"$ref": "#/$defs/QueryAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
@@ -945,19 +946,19 @@
     "ScopedReadIndexes": {
       "type": "object",
       "properties": {
-        "by_kind": {"type": "array", "items": {"$ref": "#/$defs/KindAddresses"}},
-        "by_module": {"type": "array", "items": {"$ref": "#/$defs/ScopeAddresses"}},
-        "children_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "columns_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "incoming_by_entity": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "members_by_layer": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "members_by_type": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "outgoing_by_entity": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "queries_by_dependency": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "references_by_id": {"type": "array", "items": {"$ref": "#/$defs/ReferenceIdRecord"}},
-        "rows_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "usages_by_target": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}},
-        "views_by_dependency": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}}
+        "by_kind": {"type": "array", "items": {"$ref": "#/$defs/KindAddresses"}, "x-layerdraw-canonical-collection-order": "subject_kind"},
+        "by_module": {"type": "array", "items": {"$ref": "#/$defs/ScopeAddresses"}, "x-layerdraw-canonical-collection-order": "module_scope"},
+        "children_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "columns_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "incoming_by_entity": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "members_by_layer": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "members_by_type": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "outgoing_by_entity": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "queries_by_dependency": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "references_by_id": {"type": "array", "items": {"$ref": "#/$defs/ReferenceIdRecord"}, "x-layerdraw-canonical-collection-order": "reference_id"},
+        "rows_by_owner": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "usages_by_target": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
+        "views_by_dependency": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"}
       },
       "required": ["by_module", "by_kind", "children_by_owner", "rows_by_owner", "columns_by_owner", "members_by_type", "members_by_layer", "references_by_id", "outgoing_by_entity", "incoming_by_entity", "usages_by_target", "queries_by_dependency", "views_by_dependency"],
       "additionalProperties": false
@@ -1001,8 +1002,8 @@
         "columns": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
         "dependencies": {"type": "array", "items": {"$ref": "#/$defs/DependencyRecord"}, "x-layerdraw-stable-address-order": "subject_address"},
         "layer_membership": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
-        "reference_ids": {"type": "array", "items": {"$ref": "#/$defs/ReferenceIdRecord"}},
-        "references": {"type": "array", "items": {"$ref": "#/$defs/SemanticReference"}},
+        "reference_ids": {"type": "array", "items": {"$ref": "#/$defs/ReferenceIdRecord"}, "x-layerdraw-canonical-collection-order": "reference_id"},
+        "references": {"type": "array", "items": {"$ref": "#/$defs/SemanticReference"}, "x-layerdraw-canonical-collection-order": "semantic_reference"},
         "rows": {"type": "array", "items": {"$ref": "#/$defs/OwnerMembers"}, "x-layerdraw-stable-address-order": "owner_address"},
         "schema_version": {"type": "integer", "minimum": 1, "maximum": 2147483647},
         "scoped_reads": {"$ref": "#/$defs/ScopedReadIndexes"},
@@ -1068,7 +1069,7 @@
       },
       "required": ["source_address", "target_address", "target_kind", "via", "module", "range"],
       "additionalProperties": false,
-      "x-layerdraw-stable-address-roles": [{"kind": "target_kind", "address": "target_address", "owner": "target_owner_address", "owner_policy": "if_present"}]
+      "x-layerdraw-stable-address-roles": [{"kind": "target_kind", "address": "target_address", "owner": "target_owner_address", "owner_policy": "exact"}]
     },
     "SourceFileRecord": {
       "type": "object",
@@ -1084,10 +1085,10 @@
     "SourceMap": {
       "type": "object",
       "properties": {
-        "assets": {"type": "array", "items": {"$ref": "#/$defs/SourceAssetRecord"}},
-        "bindings": {"type": "array", "items": {"$ref": "#/$defs/SourceBindingRecord"}},
-        "exports": {"type": "array", "items": {"$ref": "#/$defs/ExportBindingRecord"}},
-        "files": {"type": "array", "items": {"$ref": "#/$defs/SourceFileRecord"}},
+        "assets": {"type": "array", "items": {"$ref": "#/$defs/SourceAssetRecord"}, "x-layerdraw-canonical-collection-order": "source_asset"},
+        "bindings": {"type": "array", "items": {"$ref": "#/$defs/SourceBindingRecord"}, "x-layerdraw-canonical-collection-order": "source_binding"},
+        "exports": {"type": "array", "items": {"$ref": "#/$defs/ExportBindingRecord"}, "x-layerdraw-canonical-collection-order": "export_binding"},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/SourceFileRecord"}, "x-layerdraw-canonical-collection-order": "source_file"},
         "schema_version": {"type": "integer", "minimum": 1, "maximum": 2147483647},
         "subjects": {"type": "array", "items": {"$ref": "#/$defs/SourceSubjectRecord"}, "x-layerdraw-stable-address-order": "address"}
       },

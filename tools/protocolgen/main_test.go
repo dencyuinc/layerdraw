@@ -100,6 +100,22 @@ func TestNormalizeSchemaBytes(t *testing.T) {
 	}
 }
 
+func TestStableAddressRoleJSONOmitsInactiveSelectors(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(stableAddressRoleRule{
+		Kind:        "child_kind",
+		Addresses:   "child_addresses",
+		Owner:       "owner_address",
+		OwnerPolicy: "children",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"address":""`) {
+		t.Fatalf("inactive singular selector leaked into generated authority: %s", data)
+	}
+}
+
 func TestRejectDuplicateJSONObjectKeys(t *testing.T) {
 	t.Parallel()
 	for _, input := range []string{`null`, `true`, `"text"`, `123`, `[{"a":1},[false]]`} {
@@ -213,9 +229,6 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 			return &schemaType{Type: "object", PropertyNames: &schemaType{Type: "boolean"}, AdditionalProperties: &schemaType{Type: "string"}}
 		}},
 		{"array without items", "array requires items", func() *schemaType { return &schemaType{Type: "array"} }},
-		{"unique non-string array", "uniqueItems currently requires string", func() *schemaType {
-			return &schemaType{Type: "array", Items: &schemaType{Type: "boolean"}, UniqueItems: true}
-		}},
 		{"stable address order on non-strings", "selector must resolve to strings", func() *schemaType {
 			return &schemaType{Type: "array", Items: &schemaType{Type: "boolean"}, StableAddressOrder: "$item"}
 		}},

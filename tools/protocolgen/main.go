@@ -58,8 +58,10 @@ var (
 	requiredDialectKeywordSchemas = mustDecodeDialectObject(`{
 		"x-layerdraw-address-terminal-id": {"$ref": "#/$defs/addressTerminalIDRule"},
 		"x-layerdraw-address-owners": {"type": "array", "items": {"$ref": "#/$defs/addressOwnerRule"}, "minItems": 1, "uniqueItems": true},
+		"x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["child_set", "export_binding", "module_scope", "reference_id", "semantic_reference", "source_asset", "source_binding", "source_file", "subject_kind"]},
 		"x-layerdraw-canonical-enum-order": {"type": "boolean", "const": true},
 		"x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
+		"x-layerdraw-child-set": {"type": "boolean", "const": true},
 		"x-layerdraw-diff-source": {"type": "boolean"},
 		"x-layerdraw-disjoint-array-keys": {"type": "array", "items": {"$ref": "#/$defs/disjointArrayKey"}, "minItems": 1, "uniqueItems": true},
 		"x-layerdraw-disjoint-arrays": {"type": "array", "items": {"$ref": "#/$defs/disjointArrayPair"}, "minItems": 1, "uniqueItems": true},
@@ -154,8 +156,8 @@ var (
 			},
 			"required": ["kind"],
 			"oneOf": [
-				{"required": ["address"]},
-				{"required": ["addresses"]}
+				{"properties": {"address": true}, "required": ["address"]},
+				{"properties": {"addresses": true}, "required": ["addresses"]}
 			],
 			"additionalProperties": false
 		},
@@ -260,10 +262,10 @@ type addressOwnerRule struct {
 
 type stableAddressRoleRule struct {
 	Kind        string `json:"kind"`
-	Address     string `json:"address"`
-	Addresses   string `json:"addresses"`
-	Owner       string `json:"owner"`
-	OwnerPolicy string `json:"owner_policy"`
+	Address     string `json:"address,omitempty"`
+	Addresses   string `json:"addresses,omitempty"`
+	Owner       string `json:"owner,omitempty"`
+	OwnerPolicy string `json:"owner_policy,omitempty"`
 }
 
 type schemaType struct {
@@ -299,6 +301,8 @@ type schemaType struct {
 	StableAddressOrder   string                  `json:"x-layerdraw-stable-address-order,omitempty"`
 	CanonicalEnumOrder   bool                    `json:"x-layerdraw-canonical-enum-order,omitempty"`
 	CanonicalIDOrder     bool                    `json:"x-layerdraw-canonical-identifier-order,omitempty"`
+	CanonicalCollection  string                  `json:"x-layerdraw-canonical-collection-order,omitempty"`
+	ChildSet             bool                    `json:"x-layerdraw-child-set,omitempty"`
 	UnicodeScalarOrder   bool                    `json:"x-layerdraw-unicode-scalar-order,omitempty"`
 	OrderedPairs         []orderedPairRule       `json:"x-layerdraw-ordered-pairs,omitempty"`
 	AddressOwners        []addressOwnerRule      `json:"x-layerdraw-address-owners,omitempty"`
@@ -1127,6 +1131,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 			{value.QueryRecipe, "query recipe", []string{"address", "state_input", "parameters", "select", "where", "relation_where", "traverse", "dependencies"}},
 			{value.RecipeScalar, "recipe scalar", []string{"kind", "string_value"}},
 			{value.StateRead, "state read", []string{"field_path", "value_type"}},
+			{value.ChildSet, "child set", []string{"owner_address", "child_kind", "child_addresses"}},
 		} {
 			if assertion.enabled {
 				for _, property := range assertion.properties {
@@ -1307,18 +1312,14 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				return fmt.Errorf("%s stable-address order selector must resolve to strings", context)
 			}
 		}
-		if value.UniqueItems {
-			item := value.Items
-			if item.Ref != "" {
-				target, name, err := resolveRef(set, document, item.Ref)
-				if err != nil {
-					return err
-				}
-				item = target.Definitions[name]
+		if value.CanonicalCollection != "" {
+			item := resolvedType(set, document, value.Items)
+			itemType, err := "", error(nil)
+			if item != nil {
+				itemType, err = scalarType(item.Type)
 			}
-			itemType, err := scalarType(item.Type)
-			if err != nil || itemType != "string" {
-				return fmt.Errorf("%s uniqueItems currently requires string items", context)
+			if err != nil || itemType != "object" {
+				return fmt.Errorf("%s canonical collection order requires object items", context)
 			}
 		}
 		if value.CanonicalEnumOrder {
@@ -2405,10 +2406,8 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		for index, item := range items {
 			if err := validateSchema(documentID, itemSchema, item, fmt.Sprintf("%s[%d]", path, index), depth+1); err != nil { return err }
 			if unique, _ := schema["uniqueItems"].(bool); unique {
-				text, ok := item.(string)
-				if !ok { return fmt.Errorf("%s uniqueItems requires generated string items", path) }
-				if seenItems[text] { return fmt.Errorf("%s repeats item %q", path, text) }
-				seenItems[text] = true
+				encoded, err := json.Marshal(item); if err != nil { return fmt.Errorf("%s contains an unencodable unique item",path) }
+				key := string(encoded); if seenItems[key] { return fmt.Errorf("%s repeats an item", path) }; seenItems[key] = true
 			}
 		}
 		if selector, _ := schema["x-layerdraw-stable-address-order"].(string); selector != "" {
@@ -2448,6 +2447,9 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		}
 		if ordered, _ := schema["x-layerdraw-state-read-order"].(bool); ordered {
 			if err := validateStateReadOrder(path, items); err != nil { return err }
+		}
+		if profile, _ := schema["x-layerdraw-canonical-collection-order"].(string); profile != "" {
+			if err := validateCanonicalCollectionOrder(path,items,profile); err != nil { return err }
 		}
 	case "object":
 		object, ok := value.(map[string]any)
@@ -2603,6 +2605,9 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		if enabled, _ := schema["x-layerdraw-view-recipe"].(bool); enabled {
 			if err := validateViewRecipeConsistency(path, object); err != nil { return err }
 		}
+		if enabled, _ := schema["x-layerdraw-child-set"].(bool); enabled {
+			if err := validateChildSetConsistency(path,object); err != nil { return err }
+		}
 	default:
 		return fmt.Errorf("%s uses unsupported generated schema type %q", path, typeName)
 	}
@@ -2641,6 +2646,94 @@ func compareCanonicalUnsignedDecimals(left, right string) (int, bool) {
 	if left < right { return -1, true }
 	if left > right { return 1, true }
 	return 0, true
+}
+
+func semanticSubjectKindRank(kind string) (int, bool) {
+	kinds := []string{"project","pack","entity_type","relation_type","layer","entity","relation","query","view","reference","entity_type_column","entity_type_constraint","relation_type_column","relation_type_constraint","entity_row","relation_row","query_parameter","view_table_column","view_export"}
+	for index, candidate := range kinds { if kind == candidate { return index, true } }
+	return 0, false
+}
+
+func compareText(left, right string) int {
+	return compareUnicodeScalars(left, right)
+}
+
+func compareStableAddressValues(left, right string) (int, bool) {
+	return compareStableAddresses(left, right)
+}
+
+func sourceOriginOrder(raw any) (int, string, bool) {
+	object, ok := raw.(map[string]any); if !ok { return 0, "", false }
+	kind, ok := object["kind"].(string); if !ok { return 0, "", false }
+	switch kind {
+	case "project": return 0, "", true
+	case "pack": address, ok := object["pack_address"].(string); return 1, address, ok
+	default: return 0, "", false
+	}
+}
+
+func compareModuleOrder(left, right map[string]any) (int, bool) {
+	leftRank, leftPack, leftOK := sourceOriginOrder(left["origin"])
+	rightRank, rightPack, rightOK := sourceOriginOrder(right["origin"])
+	leftPath, leftPathOK := left["module_path"].(string); rightPath, rightPathOK := right["module_path"].(string)
+	if !leftOK || !rightOK || !leftPathOK || !rightPathOK { return 0, false }
+	if leftRank != rightRank { if leftRank < rightRank { return -1, true }; return 1, true }
+	if compared := compareText(leftPack,rightPack); compared != 0 { return compared, true }
+	return compareText(leftPath,rightPath), true
+}
+
+func compareRangePosition(left, right map[string]any) (int, bool) {
+	leftStart, leftStartOK := left["start_byte"].(string); rightStart, rightStartOK := right["start_byte"].(string)
+	leftEnd, leftEndOK := left["end_byte"].(string); rightEnd, rightEndOK := right["end_byte"].(string)
+	if !leftStartOK || !rightStartOK || !leftEndOK || !rightEndOK { return 0, false }
+	if compared, ok := compareCanonicalUnsignedDecimals(leftStart,rightStart); !ok { return 0, false } else if compared != 0 { return compared, true }
+	return compareCanonicalUnsignedDecimals(leftEnd,rightEnd)
+}
+
+func compareCanonicalCollection(profile string, left, right any) (int, bool) {
+	a, aOK := left.(map[string]any); b, bOK := right.(map[string]any); if !aOK || !bOK { return 0, false }
+	stable := func(property string) (int, bool) { l, lOK := a[property].(string); r, rOK := b[property].(string); if !lOK || !rOK { return 0, false }; return compareStableAddressValues(l,r) }
+	text := func(property string) (int, bool) { l, lOK := a[property].(string); r, rOK := b[property].(string); if !lOK || !rOK { return 0, false }; return compareText(l,r), true }
+	kind := func(property string) (int, bool) { l, lOK := a[property].(string); r, rOK := b[property].(string); if !lOK || !rOK { return 0, false }; lr, lok := semanticSubjectKindRank(l); rr, rok := semanticSubjectKindRank(r); if !lok || !rok { return 0, false }; if lr < rr { return -1,true }; if lr > rr { return 1,true }; return 0,true }
+	rangeValue := func() (int, bool) { l, lOK := a["range"].(map[string]any); r, rOK := b["range"].(map[string]any); if !lOK || !rOK { return 0,false }; return compareRangePosition(l,r) }
+	chain := func(comparisons ...func() (int,bool)) (int,bool) { for _, comparison := range comparisons { value, ok := comparison(); if !ok || value != 0 { return value,ok } }; return 0,true }
+	switch profile {
+	case "child_set": return chain(func()(int,bool){return stable("owner_address")},func()(int,bool){return kind("child_kind")})
+	case "reference_id": return text("id")
+	case "subject_kind": return kind("kind")
+	case "module_scope":
+		leftModule, leftOK := a["module"].(map[string]any); rightModule, rightOK := b["module"].(map[string]any); if !leftOK || !rightOK { return 0,false }; return compareModuleOrder(leftModule,rightModule)
+	case "source_file": return compareModuleOrder(a,b)
+	case "source_asset": return chain(func()(int,bool){return stable("subject_address")},func()(int,bool){return text("locator")})
+	case "semantic_reference": return chain(func()(int,bool){return stable("source_address")},rangeValue,func()(int,bool){return stable("target_address")},func()(int,bool){return kind("target_kind")},func()(int,bool){return text("via")})
+	case "source_binding":
+		owner := func()(int,bool){ l, _ := a["target_owner_address"].(string); r, _ := b["target_owner_address"].(string); if l == "" || r == "" { return compareText(l,r),true }; return compareStableAddressValues(l,r) }
+		return chain(func()(int,bool){return stable("source_address")},rangeValue,func()(int,bool){return stable("target_address")},func()(int,bool){return kind("target_kind")},owner,func()(int,bool){return text("via")})
+	case "export_binding":
+		module := func()(int,bool){ l,lOK := a["module"].(map[string]any); r,rOK := b["module"].(map[string]any); if !lOK || !rOK { return 0,false }; return compareModuleOrder(l,r) }
+		boolean := func()(int,bool){ l,lOK := a["re_export"].(bool); r,rOK := b["re_export"].(bool); if !lOK || !rOK { return 0,false }; if l == r { return 0,true }; if !l { return -1,true }; return 1,true }
+		return chain(module,rangeValue,func()(int,bool){return text("public_name")},func()(int,bool){return stable("target_address")},boolean)
+	default: return 0,false
+	}
+}
+
+func validateCanonicalCollectionOrder(path string, items []any, profile string) error {
+	for index := 1; index < len(items); index++ { comparison, ok := compareCanonicalCollection(profile,items[index-1],items[index]); if !ok || comparison >= 0 { return fmt.Errorf("%s is not in strict %s order",path,profile) } }
+	return nil
+}
+
+func validateChildSetConsistency(path string, object map[string]any) error {
+	owner, ownerOK := object["owner_address"].(string); childKind, childOK := object["child_kind"].(string)
+	ownerKind, _, valid := stableAddressSubject(owner); if !ownerOK || !childOK || !valid { return fmt.Errorf("%s has invalid ChildSet authority",path) }
+	allowed := map[string]map[string]bool{
+		"project":{"entity_type":true,"relation_type":true,"layer":true,"entity":true,"relation":true,"query":true,"view":true,"reference":true},
+		"pack":{"entity_type":true,"relation_type":true,"query":true,"view":true,"reference":true},
+		"entity_type":{"entity_type_column":true,"entity_type_constraint":true},
+		"relation_type":{"relation_type_column":true,"relation_type_constraint":true},
+		"entity":{"entity_row":true},"relation":{"relation_row":true},"query":{"query_parameter":true},"view":{"view_table_column":true,"view_export":true},
+	}
+	if !allowed[ownerKind][childKind] { return fmt.Errorf("%s has an impossible owner/child kind pair",path) }
+	return nil
 }
 
 func validateOrderedPairs(path string, object map[string]any, rules []any) error {
@@ -2713,18 +2806,30 @@ func validCanonicalHostname(value string) bool {
 	return true
 }
 
+func canonicalURIAlpha(ch byte) bool { return ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' }
+func canonicalURIDigit(ch byte) bool { return ch >= '0' && ch <= '9' }
+func canonicalURIHex(ch byte) bool { return canonicalURIDigit(ch) || ch >= 'A' && ch <= 'F' || ch >= 'a' && ch <= 'f' }
+func canonicalURIUnreserved(ch byte) bool { return canonicalURIAlpha(ch) || canonicalURIDigit(ch) || strings.ContainsRune("-._~",rune(ch)) }
+func canonicalURICharacter(ch byte) bool { return canonicalURIUnreserved(ch) || strings.ContainsRune(":/?#[]@!$&'()*+,;=%",rune(ch)) }
+func canonicalURIScheme(value string) bool { if value == "" || !canonicalURIAlpha(value[0]) { return false }; for index := 1; index < len(value); index++ { if !canonicalURIAlpha(value[index]) && !canonicalURIDigit(value[index]) && !strings.ContainsRune("+.-",rune(value[index])) { return false } }; return true }
+func canonicalURIAllDigits(value string) bool { for index := range len(value) { if !canonicalURIDigit(value[index]) { return false } }; return true }
+func canonicalURIComponent(value string, allowEmpty bool, extra string) bool { if value == "" { return allowEmpty }; for index := 0; index < len(value); index++ { if value[index] == '%' { if index+2 >= len(value) || !canonicalURIHex(value[index+1]) || !canonicalURIHex(value[index+2]) { return false }; index += 2; continue }; if !canonicalURIUnreserved(value[index]) && !strings.ContainsRune("!$&'()*+,;="+extra,rune(value[index])) { return false } }; return true }
+func canonicalIPLiteral(value string) bool { if address, err := netip.ParseAddr(value); err == nil { return address.Is6() && address.Zone() == "" }; if len(value) < 4 || value[0] != 'v' && value[0] != 'V' { return false }; dot := strings.IndexByte(value,'.'); if dot < 2 { return false }; for index := 1; index < dot; index++ { if !canonicalURIHex(value[index]) { return false } }; return value[dot+1:] != "" && canonicalURIComponent(value[dot+1:],false,":") }
+func canonicalURIAuthority(value string) bool { if strings.Count(value,"@") > 1 { return false }; hostPort := value; if userInfo, rest, ok := strings.Cut(value,"@"); ok { if !canonicalURIComponent(userInfo,true,":") { return false }; hostPort = rest }; if strings.HasPrefix(hostPort,"[") { close := strings.IndexByte(hostPort,']'); if close <= 1 { return false }; literal, rest := hostPort[1:close],hostPort[close+1:]; return canonicalIPLiteral(literal) && (rest == "" || strings.HasPrefix(rest,":") && canonicalURIAllDigits(rest[1:])) }; if strings.ContainsAny(hostPort,"[]") { return false }; host := hostPort; if colon := strings.LastIndexByte(hostPort,':'); colon >= 0 { host = hostPort[:colon]; if strings.Contains(host,":") || !canonicalURIAllDigits(hostPort[colon+1:]) { return false } }; return canonicalURIComponent(host,true,"") }
+func validCanonicalAbsoluteURI(value string) bool {
+	colon := strings.IndexByte(value,':'); if colon <= 0 || !canonicalURIScheme(value[:colon]) || !utf8.ValidString(value) || strings.Contains(value,"\\") { return false }
+	for index := 0; index < len(value); index++ { if value[index] >= utf8.RuneSelf || value[index] < 0x20 || value[index] == 0x7f || !canonicalURICharacter(value[index]) { return false }; if value[index] == '%' { if index+2 >= len(value) || !canonicalURIHex(value[index+1]) || !canonicalURIHex(value[index+2]) { return false }; index += 2 } }
+	remainder := value[colon+1:]; if strings.Count(remainder,"#") > 1 { return false }; hierarchicalAndQuery, fragment, hasFragment := strings.Cut(remainder,"#"); if hasFragment && !canonicalURIComponent(fragment,true,"/?:@") { return false }; hierarchical, query, hasQuery := strings.Cut(hierarchicalAndQuery,"?"); if hasQuery && !canonicalURIComponent(query,true,"/?:@") { return false }; if strings.HasPrefix(hierarchical,"//") { authorityAndPath := hierarchical[2:]; pathStart := strings.IndexByte(authorityAndPath,'/'); authority, path := authorityAndPath,""; if pathStart >= 0 { authority,path = authorityAndPath[:pathStart],authorityAndPath[pathStart:] }; return canonicalURIAuthority(authority) && canonicalURIComponent(path,true,"/:@") }; return canonicalURIComponent(hierarchical,true,"/:@")
+}
+
 func validCanonicalStringFormat(format, value string) bool {
 	switch format {
 	case "hostname": return validCanonicalHostname(value)
-	case "email": match := regexp.MustCompile("^[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+(?:\\\\.[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+)*@([A-Za-z0-9.-]+)$").FindStringSubmatch(value); return match != nil && validCanonicalHostname(match[1])
+	case "email": match := regexp.MustCompile("^[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+)*@([A-Za-z0-9.-]+)$").FindStringSubmatch(value); return match != nil && validCanonicalHostname(match[1])
 	case "ipv4": address, err := netip.ParseAddr(value); return err == nil && address.Is4() && address.String() == value
 	case "ipv6": address, err := netip.ParseAddr(value); return err == nil && address.Is6() && address.Zone() == "" && address.String() == value
 	case "cidr": prefix, err := netip.ParsePrefix(value); return err == nil && prefix == prefix.Masked() && prefix.String() == value
-	case "uri":
-		if value == "" || strings.ContainsAny(value, "\\\x00\r\n\t") { return false }
-		colon := strings.IndexByte(value, ':'); if colon <= 0 || !regexp.MustCompile(` + "`" + `^[A-Za-z][A-Za-z0-9+.-]*$` + "`" + `).MatchString(value[:colon]) { return false }
-		for index := 0; index < len(value); index++ { if value[index] >= utf8.RuneSelf || value[index] < 0x20 || value[index] == '%' && (index+2 >= len(value) || !regexp.MustCompile(` + "`" + `^[0-9A-Fa-f]{2}$` + "`" + `).MatchString(value[index+1:index+3])) { return false }; if value[index] == '%' { index += 2 } }
-		return true
+	case "uri": return validCanonicalAbsoluteURI(value)
 	}
 	return false
 }
@@ -2787,7 +2892,12 @@ func predicateHasState(raw any) bool {
 }
 
 func contextFieldOperand(field, context string) (recipeOperand, bool) {
-	if value, ok := fieldRecipeOperand(field); ok { return value, true }
+	switch field {
+	case "id", "display_name", "description": return recipeOperand{kind:"scalar", scalarType:"string"}, true
+	case "tags": return recipeOperand{kind:"string_set"}, true
+	case "layer": if context == "entity" { return recipeOperand{kind:"address", addressKind:"layer"}, true }
+	case "from", "to": if context == "relation" { return recipeOperand{kind:"address", addressKind:"entity"}, true }
+	}
 	switch field {
 	case "address": if context == "entity" { return recipeOperand{kind:"address", addressKind:"entity"}, true }; if context == "relation" { return recipeOperand{kind:"address", addressKind:"relation"}, true }
 	case "type": if context == "entity" { return recipeOperand{kind:"address", addressKind:"entity_type"}, true }; if context == "relation" { return recipeOperand{kind:"address", addressKind:"relation_type"}, true }
@@ -2994,11 +3104,8 @@ func compareRecipeScalars(left, right map[string]any) int {
 
 func validateRecipeScalarSet(raw any, scalarType string) bool {
 	values, ok := raw.([]any); if !ok { return false }
-	var previous map[string]any
 	for _, rawValue := range values {
 		value, ok := rawValue.(map[string]any); if !ok || value["kind"] != scalarType { return false }
-		if previous != nil && compareRecipeScalars(previous, value) >= 0 { return false }
-		previous = value
 	}
 	return true
 }
@@ -3080,6 +3187,11 @@ func validateExportRecipeConsistency(path string, object map[string]any) error {
 	if embedded { if basis != "embedded_viewdata" || effective != "lossless" { return fmt.Errorf("%s has inconsistent embedded ViewData fidelity", path) } } else if basis != "native" || effective != native { return fmt.Errorf("%s has inconsistent native fidelity basis", path) }
 	if fidelityRank(fidelity) > fidelityRank(effective) { return fmt.Errorf("%s requested fidelity exceeds effective capability", path) }
 	if (fidelity == "lossless" || fidelity == "traceable_summary" || format == "json" || format == "yaml") && !sourceRefs { return fmt.Errorf("%s fidelity requires source_refs", path) }
+	embeddedManifest := format == "json" || format == "yaml" || format == "xlsx" && options["view_data_json"] == true
+	explicitManifest := (format == "csv" || format == "tsv" || format == "markdown" || format == "mermaid" || format == "bpmn" || format == "drawio") && options["source_manifest"] == true
+	minimumManifest := explicitManifest || sourceRefs && !embeddedManifest
+	requiresManifest, _ := object["requires_source_manifest"].(bool)
+	if minimumManifest && !requiresManifest { return fmt.Errorf("%s omits a required source manifest", path) }
 	return nil
 }
 
@@ -3111,6 +3223,43 @@ func containsStateRead(values []any, expected map[string]any) bool {
 	return false
 }
 
+type viewDependencySets struct { query, parameter, layer, entityType, relationType, entity, relation, column map[string]bool }
+
+func newViewDependencySets() viewDependencySets { return viewDependencySets{map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{},map[string]bool{}} }
+
+func (sets *viewDependencySets) add(address string) {
+	kind, _, valid := stableAddressSubject(address); if !valid { return }
+	target := map[string]map[string]bool{"query":sets.query,"query_parameter":sets.parameter,"layer":sets.layer,"entity_type":sets.entityType,"relation_type":sets.relationType,"entity":sets.entity,"relation":sets.relation,"entity_type_column":sets.column,"relation_type_column":sets.column}[kind]
+	if target != nil { target[address] = true }
+}
+
+func collectViewDependencyAddresses(raw any, sets *viewDependencySets) {
+	switch value := raw.(type) {
+	case string: sets.add(value)
+	case []any: for _, item := range value { collectViewDependencyAddresses(item,sets) }
+	case map[string]any: for key, item := range value { sets.add(key); collectViewDependencyAddresses(item,sets) }
+	}
+}
+
+func dependencyContainsAll(raw any, expected map[string]bool) bool {
+	values, ok := raw.([]any); if !ok { return false }; actual := map[string]bool{}
+	for _, item := range values { value, ok := item.(string); if !ok { return false }; actual[value] = true }
+	for value := range expected { if !actual[value] { return false } }
+	return true
+}
+
+func validateLocallyDerivableViewDependencies(object map[string]any) bool {
+	dependencies, dependenciesOK := object["dependencies"].(map[string]any); source, sourceOK := object["source"].(map[string]any); shape, shapeOK := object["shape"].(map[string]any); overrides, overridesOK := object["relation_projection_overrides"].(map[string]any)
+	if !dependenciesOK || !sourceOK || !shapeOK || !overridesOK { return false }
+	sets := newViewDependencySets(); collectViewDependencyAddresses(source,&sets); collectViewDependencyAddresses(shape,&sets); collectViewDependencyAddresses(overrides,&sets)
+	if !dependencyArrayEquals(dependencies["query_addresses"],sets.query) { return false }
+	checks := []struct { property string; values map[string]bool }{{"parameter_addresses",sets.parameter},{"layer_addresses",sets.layer},{"entity_type_addresses",sets.entityType},{"relation_type_addresses",sets.relationType},{"entity_addresses",sets.entity},{"relation_addresses",sets.relation},{"column_addresses",sets.column}}
+	for _, check := range checks { if !dependencyContainsAll(dependencies[check.property],check.values) { return false } }
+	exports, exportsOK := object["exports"].([]any); exportAddresses, addressesOK := dependencies["export_addresses"].([]any); if !exportsOK || !addressesOK || len(exports) != len(exportAddresses) { return false }
+	for index, raw := range exports { export, ok := raw.(map[string]any); address, addressOK := export["address"].(string); dependency, dependencyOK := exportAddresses[index].(string); if !ok || !addressOK || !dependencyOK || address != dependency { return false } }
+	return true
+}
+
 func validateViewRecipeConsistency(path string, object map[string]any) error {
 	address, addressOK := object["address"].(string)
 	shape, shapeOK := object["shape"].(map[string]any)
@@ -3130,6 +3279,7 @@ func validateViewRecipeConsistency(path string, object map[string]any) error {
 		if !entityRows { if _, present := table["entity_type_addresses"]; present { return fmt.Errorf("%s entity type selectors are forbidden for Relation rows", path) } }
 		var directReads []map[string]any; available := map[string]bool{}
 		if table["include_entity_id"] == true { available["entity_id"] = true }; if table["include_type"] == true { available["entity_type"] = true }; if table["include_layer"] == true { available["entity_layer"] = true }
+		if rowSource == "automatic_relations" { available["from"] = true; available["to"] = true; available["relation_type"] = true }
 		reserved := map[string]bool{}; for _, raw := range reservedValues { value, ok := raw.(string); if !ok { return fmt.Errorf("%s has a non-string table reservation", path) }; reserved[value] = true }
 		for _, raw := range columns {
 			column, ok := raw.(map[string]any); if !ok { return fmt.Errorf("%s has a non-object table column", path) }
@@ -3169,6 +3319,7 @@ func validateViewRecipeConsistency(path string, object map[string]any) error {
 	} else if stateInput != "none" { return fmt.Errorf("%s state_input is forbidden without direct Table state reads", path) }
 	exports, _ := object["exports"].([]any)
 	for _, raw := range exports { export, ok := raw.(map[string]any); if !ok || export["view_address"] != address || !validateExportInView(export, category, shapeKind, stateRequirement, diffCount == 3) { return fmt.Errorf("%s contains an Export incompatible with its View context", path) } }
+	if !validateLocallyDerivableViewDependencies(object) { return fmt.Errorf("%s dependencies omit or misorder locally derivable View dependencies", path) }
 	return nil
 }
 
@@ -3516,7 +3667,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasValidProtocolOffer(value: Record<string, unknown>): boolean { const range = value[\"supported_range\"]; const bindings = value[\"versions\"]; if (typeof range !== \"string\" || !isJSONArray(bindings)) return false; const parsedRange = parseProtocolVersionRange(range); if (parsedRange === undefined) return false; const seen = new Set<string>(); for (const raw of bindings) { if (!isObject(raw) || typeof raw[\"version\"] !== \"string\") return false; const text = raw[\"version\"]; const version = parseProtocolVersion(text); if (version === undefined || compareProtocolVersions(version, parsedRange[0]) < 0 || compareProtocolVersions(version, parsedRange[1]) > 0 || seen.has(text)) return false; seen.add(text); } return true; }\n\n")
 	body.WriteString("function hasValidLimitCapability(value: Record<string, unknown>): boolean { try { const fallback = BigInt(String(value[\"default_value\"])); const effective = BigInt(String(value[\"effective_maximum\"])); const hard = BigInt(String(value[\"hard_maximum\"])); return fallback <= hard && effective <= hard; } catch { return false; } }\n\n")
 	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
-	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { return new Set(value).size === value.length; }\n\n")
+	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { try { return new Set(value.map(canonicalJSONStringify)).size === value.length; } catch { return false; } }\n\n")
 	body.WriteString("function stableAddressOrderValue(value: unknown, selector: string): string | undefined { if (selector === \"$item\") return typeof value === \"string\" ? value : undefined; return isObject(value) && typeof value[selector] === \"string\" ? value[selector] : undefined; }\n\n")
 	body.WriteString("function hasStableAddressOrder(value: ReadonlyArray<unknown>, selector: string): boolean { for (let index = 1; index < value.length; index++) { const left = stableAddressOrderValue(value[index - 1], selector); const right = stableAddressOrderValue(value[index], selector); if (left === undefined || right === undefined || compareStableAddresses(left, right) >= 0) return false; } return true; }\n\n")
 	body.WriteString("function hasCanonicalEnumOrder(value: ReadonlyArray<unknown>, values: ReadonlyArray<string>): boolean { const ranks = new Map(values.map((item, index) => [item, index])); for (let index = 1; index < value.length; index++) { const left = value[index - 1]; const right = value[index]; if (typeof left !== \"string\" || typeof right !== \"string\" || ranks.get(left) === undefined || ranks.get(right) === undefined || ranks.get(left)! >= ranks.get(right)!) return false; } return true; }\n\n")
@@ -3533,6 +3684,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasDisjointArrays(value: Record<string, unknown>, leftProperty: string, rightProperty: string): boolean { const left = hasOwn(value, leftProperty) ? value[leftProperty] : []; const right = hasOwn(value, rightProperty) ? value[rightProperty] : []; if (!isJSONArray(left) || !isJSONArray(right)) return false; const seen = new Set(left); return right.every((item) => !seen.has(item)); }\n\n")
 	body.WriteString("function hasDisjointArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string, stringsProperty: string): boolean { const items = value[arrayProperty]; const strings = value[stringsProperty]; if (!isJSONArray(items) || !isJSONArray(strings) || !strings.every((item) => typeof item === \"string\")) return false; const reserved = new Set(strings); return items.every((item) => isObject(item) && typeof item[keyProperty] === \"string\" && !reserved.has(item[keyProperty])); }\n\n")
 	body.WriteString("function compareCanonicalUnsignedDecimals(left: string, right: string): number | undefined { if (!/^(0|[1-9][0-9]*)$/.test(left) || !/^(0|[1-9][0-9]*)$/.test(right)) return undefined; return left.length === right.length ? (left < right ? -1 : left > right ? 1 : 0) : left.length - right.length; }\n\n")
+	body.WriteString(tsCanonicalCollectionRuntime)
 	body.WriteString("function hasOrderedPair(value: Record<string, unknown>, lowerProperty: string, upperProperty: string, comparison: string): boolean { if (!hasOwn(value, lowerProperty) || !hasOwn(value, upperProperty)) return true; const lower = value[lowerProperty]; const upper = value[upperProperty]; if (typeof lower !== \"string\" || typeof upper !== \"string\") return false; if (comparison === \"unsigned_decimal\") { const ordered = compareCanonicalUnsignedDecimals(lower, upper); return ordered !== undefined && ordered <= 0; } if (comparison === \"finite_binary64\") { const lowerValue = Number(lower); const upperValue = Number(upper); return Number.isFinite(lowerValue) && Number.isFinite(upperValue) && lowerValue <= upperValue; } return false; }\n\n")
 	body.WriteString("function hasAddressTerminalID(value: Record<string, unknown>, addressProperty: string, idProperty: string): boolean { const address = value[addressProperty]; const id = value[idProperty]; return typeof address === \"string\" && typeof id === \"string\" && address.split(\":\").at(-1) === id; }\n\n")
 	body.WriteString(tsAuthorityRuntime)
@@ -3643,6 +3795,72 @@ func writeTSBlobCollectorStatements(body *strings.Builder, set schemaSet, docume
 	return nil
 }
 
+const tsCanonicalCollectionRuntime = `function semanticSubjectKindRank(kind: string): number {
+  return ["project","pack","entity_type","relation_type","layer","entity","relation","query","view","reference","entity_type_column","entity_type_constraint","relation_type_column","relation_type_constraint","entity_row","relation_row","query_parameter","view_table_column","view_export"].indexOf(kind);
+}
+function compareModuleOrder(left: Record<string,unknown>, right: Record<string,unknown>): number | undefined {
+  const origin = (raw: unknown): readonly [number,string] | undefined => {
+    if (!isObject(raw) || typeof raw["kind"] !== "string") return undefined;
+    if (raw["kind"] === "project") return [0,""];
+    return raw["kind"] === "pack" && typeof raw["pack_address"] === "string" ? [1,raw["pack_address"]] : undefined;
+  };
+  const a = origin(left["origin"]), b = origin(right["origin"]), aPath = left["module_path"], bPath = right["module_path"];
+  if (a === undefined || b === undefined || typeof aPath !== "string" || typeof bPath !== "string") return undefined;
+  if (a[0] !== b[0]) return a[0]-b[0];
+  const pack = compareUnicodeScalars(a[1],b[1]); return pack !== 0 ? pack : compareUnicodeScalars(aPath,bPath);
+}
+function compareRangePosition(left: Record<string,unknown>, right: Record<string,unknown>): number | undefined {
+  const aStart = left["start_byte"], bStart = right["start_byte"], aEnd = left["end_byte"], bEnd = right["end_byte"];
+  if (typeof aStart !== "string" || typeof bStart !== "string" || typeof aEnd !== "string" || typeof bEnd !== "string") return undefined;
+  const start = compareCanonicalUnsignedDecimals(aStart,bStart); if (start === undefined || start !== 0) return start;
+  return compareCanonicalUnsignedDecimals(aEnd,bEnd);
+}
+function compareCanonicalCollection(profile: string, left: unknown, right: unknown): number | undefined {
+  if (!isObject(left) || !isObject(right)) return undefined;
+  const stable = (property: string): number | undefined => typeof left[property] === "string" && typeof right[property] === "string" ? compareStableAddresses(left[property],right[property]) : undefined;
+  const text = (property: string): number | undefined => typeof left[property] === "string" && typeof right[property] === "string" ? compareUnicodeScalars(left[property],right[property]) : undefined;
+  const kind = (property: string): number | undefined => {
+    if (typeof left[property] !== "string" || typeof right[property] !== "string") return undefined;
+    const a = semanticSubjectKindRank(left[property]), b = semanticSubjectKindRank(right[property]); return a < 0 || b < 0 ? undefined : a-b;
+  };
+  const range = (): number | undefined => isObject(left["range"]) && isObject(right["range"]) ? compareRangePosition(left["range"],right["range"]) : undefined;
+  const chain = (...comparisons: ReadonlyArray<() => number | undefined>): number | undefined => { for (const compare of comparisons) { const value = compare(); if (value === undefined || value !== 0) return value; } return 0; };
+  if (profile === "child_set") return chain(() => stable("owner_address"),() => kind("child_kind"));
+  if (profile === "reference_id") return text("id");
+  if (profile === "subject_kind") return kind("kind");
+  if (profile === "module_scope") return isObject(left["module"]) && isObject(right["module"]) ? compareModuleOrder(left["module"],right["module"]) : undefined;
+  if (profile === "source_file") return compareModuleOrder(left,right);
+  if (profile === "source_asset") return chain(() => stable("subject_address"),() => text("locator"));
+  if (profile === "semantic_reference") return chain(() => stable("source_address"),range,() => stable("target_address"),() => kind("target_kind"),() => text("via"));
+  if (profile === "source_binding") {
+    const owner = (): number | undefined => { const a = left["target_owner_address"] ?? "", b = right["target_owner_address"] ?? ""; if (typeof a !== "string" || typeof b !== "string") return undefined; return a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b); };
+    return chain(() => stable("source_address"),range,() => stable("target_address"),() => kind("target_kind"),owner,() => text("via"));
+  }
+  if (profile === "export_binding") {
+    const module = (): number | undefined => isObject(left["module"]) && isObject(right["module"]) ? compareModuleOrder(left["module"],right["module"]) : undefined;
+    const reexport = (): number | undefined => typeof left["re_export"] === "boolean" && typeof right["re_export"] === "boolean" ? Number(left["re_export"])-Number(right["re_export"]) : undefined;
+    return chain(module,range,() => text("public_name"),() => stable("target_address"),reexport);
+  }
+  return undefined;
+}
+function hasCanonicalCollectionOrder(values: ReadonlyArray<unknown>, profile: string): boolean {
+  return values.every((_,index) => index === 0 || (compareCanonicalCollection(profile,values[index-1],values[index]) ?? 0) < 0);
+}
+function hasValidChildSet(value: Record<string,unknown>): boolean {
+  const owner = value["owner_address"], child = value["child_kind"];
+  if (typeof owner !== "string" || typeof child !== "string") return false;
+  const ownerKind = authoritySubject(owner)?.kind;
+  const allowed: Readonly<Record<string,ReadonlyArray<string>>> = {
+    project:["entity_type","relation_type","layer","entity","relation","query","view","reference"],
+    pack:["entity_type","relation_type","query","view","reference"],
+    entity_type:["entity_type_column","entity_type_constraint"], relation_type:["relation_type_column","relation_type_constraint"],
+    entity:["entity_row"], relation:["relation_row"], query:["query_parameter"], view:["view_table_column","view_export"],
+  };
+  return ownerKind !== undefined && (allowed[ownerKind]?.includes(child) ?? false);
+}
+
+`
+
 const tsAuthorityRuntime = `function authorityStateType(field: string): string {
   if (["system.created_at","system.updated_at","provenance.observed_at","provenance.verified_at","provenance.stale_after"].includes(field)) return "datetime";
   if (["system.created_by.kind","system.updated_by.kind","provenance.source.kind","provenance.verified_by.kind"].includes(field)) return "enum";
@@ -3659,13 +3877,47 @@ function authorityRealDate(value: string): boolean { const match = /^(\d{4})-(\d
 function hasValidRecipeScalar(value: Record<string, unknown>): boolean { const kind = value["kind"]; const text = value["string_value"]; if (kind === "date") return typeof text === "string" && authorityRealDate(text); if (kind === "datetime") { if (typeof text !== "string") return false; const match = /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?Z$/.exec(text); return match !== null && authorityRealDate(match[1]!); } return kind !== "enum" || typeof text === "string" && text.length > 0; }
 
 function authorityHostname(value: string): boolean { return value.length > 0 && value.length <= 253 && value === value.toLowerCase() && !value.endsWith(".") && value.split(".").every((label) => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)); }
+function authorityParseIPv4(value: string): ReadonlyArray<number> | undefined { const parts = value.split("."); if (parts.length !== 4 || !parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255)) return undefined; return parts.map(Number); }
+function authorityParseIPv6(value: string): ReadonlyArray<number> | undefined {
+  if (value.includes("%")) return undefined;
+  let expanded = value;
+  if (value.includes(".")) { const colon = value.lastIndexOf(":"); const ipv4 = colon < 0 ? undefined : authorityParseIPv4(value.slice(colon + 1)); if (ipv4 === undefined) return undefined; expanded = value.slice(0,colon + 1) + ((ipv4[0]! << 8) | ipv4[1]!).toString(16) + ":" + ((ipv4[2]! << 8) | ipv4[3]!).toString(16); }
+  if (!/^[0-9A-Fa-f:]+$/.test(expanded) || expanded.split("::").length > 2) return undefined;
+  const hasElision = expanded.includes("::"), halves = expanded.split("::");
+  const left = halves[0] === "" ? [] : halves[0]!.split(":"), right = !hasElision || halves[1] === "" ? [] : halves[1]!.split(":");
+  if (![...left,...right].every((part) => /^[0-9A-Fa-f]{1,4}$/.test(part))) return undefined;
+  const omitted = 8 - left.length - right.length;
+  if (hasElision ? omitted < 1 : omitted !== 0) return undefined;
+  const words = [...left.map((part) => Number.parseInt(part,16)), ...Array(omitted).fill(0), ...right.map((part) => Number.parseInt(part,16))];
+  return words.flatMap((word) => [word >>> 8, word & 255]);
+}
+function authorityFormatIPv6(bytes: ReadonlyArray<number>): string {
+  const mapped = bytes.slice(0,10).every((value) => value === 0) && bytes[10] === 255 && bytes[11] === 255;
+  if (mapped) return "::ffff:" + bytes.slice(12).join(".");
+  const words = Array.from({length:8},(_,index) => (bytes[index*2]! << 8) | bytes[index*2+1]!);
+  let bestStart = -1, bestLength = 0;
+  for (let index = 0; index < words.length;) { if (words[index] !== 0) { index++; continue; } let end = index; while (end < words.length && words[end] === 0) end++; if (end-index > bestLength && end-index >= 2) { bestStart=index; bestLength=end-index; } index=end; }
+  let result = "";
+  for (let index = 0; index < words.length;) { if (index === bestStart) { result += "::"; index += bestLength; continue; } if (result !== "" && !result.endsWith(":")) result += ":"; result += words[index]!.toString(16); index++; }
+  return result;
+}
+function authorityCanonicalIP(value: string): {bytes:ReadonlyArray<number>;bits:number} | undefined { const ipv4=authorityParseIPv4(value); if (ipv4 !== undefined) return {bytes:ipv4,bits:32}; const ipv6=authorityParseIPv6(value); return ipv6 !== undefined && authorityFormatIPv6(ipv6) === value ? {bytes:ipv6,bits:128} : undefined; }
+function authorityCanonicalCIDR(value: string): boolean { const parts=value.split("/"); if (parts.length !== 2 || !/^(0|[1-9]\d*)$/.test(parts[1]!)) return false; const address=authorityCanonicalIP(parts[0]!); if (address === undefined) return false; const prefix=Number(parts[1]); if (!Number.isSafeInteger(prefix) || prefix > address.bits) return false; for (let index=0; index<address.bytes.length; index++) { const remaining=prefix-index*8; const mask=remaining >= 8 ? 255 : remaining <= 0 ? 0 : (255 << (8-remaining)) & 255; if ((address.bytes[index]! & mask) !== address.bytes[index]) return false; } return true; }
+function authorityURIAlpha(value: string): boolean { return /^[A-Za-z]$/.test(value); }
+function authorityURIDigit(value: string): boolean { return /^[0-9]$/.test(value); }
+function authorityURIHex(value: string): boolean { return /^[0-9A-Fa-f]$/.test(value); }
+function authorityURIUnreserved(value: string): boolean { return authorityURIAlpha(value) || authorityURIDigit(value) || "-._~".includes(value); }
+function authorityURIComponent(value: string, allowEmpty: boolean, extra: string): boolean { if (value === "") return allowEmpty; for (let index=0; index<value.length; index++) { const ch=value[index]!; if (ch === "%") { if (index+2 >= value.length || !authorityURIHex(value[index+1]!) || !authorityURIHex(value[index+2]!)) return false; index += 2; continue; } if (!authorityURIUnreserved(ch) && !("!$&'()*+,;="+extra).includes(ch)) return false; } return true; }
+function authorityIPLiteral(value: string): boolean { if (authorityParseIPv6(value) !== undefined) return true; if (value.length < 4 || value[0] !== "v" && value[0] !== "V") return false; const dot=value.indexOf("."); if (dot < 2 || !Array.from(value.slice(1,dot)).every(authorityURIHex)) return false; return value.slice(dot+1) !== "" && authorityURIComponent(value.slice(dot+1),false,":"); }
+function authorityURIAuthority(value: string): boolean { if (value.split("@").length > 2) return false; let hostPort=value; const at=value.indexOf("@"); if (at >= 0) { if (!authorityURIComponent(value.slice(0,at),true,":")) return false; hostPort=value.slice(at+1); } if (hostPort.startsWith("[")) { const close=hostPort.indexOf("]"); if (close <= 1) return false; const rest=hostPort.slice(close+1); return authorityIPLiteral(hostPort.slice(1,close)) && (rest === "" || rest.startsWith(":") && Array.from(rest.slice(1)).every(authorityURIDigit)); } if (hostPort.includes("[") || hostPort.includes("]")) return false; let host=hostPort; const colon=hostPort.lastIndexOf(":"); if (colon >= 0) { host=hostPort.slice(0,colon); if (host.includes(":") || !Array.from(hostPort.slice(colon+1)).every(authorityURIDigit)) return false; } return authorityURIComponent(host,true,""); }
+function authorityAbsoluteURI(value: string): boolean { const colon=value.indexOf(":"); if (colon <= 0 || !/^[A-Za-z][A-Za-z0-9+.-]*$/.test(value.slice(0,colon)) || Array.from(value).some((ch) => ch.codePointAt(0)! >= 128 || ch.codePointAt(0)! < 32 || ch.codePointAt(0) === 127) || value.includes("\\")) return false; for (let index=0; index<value.length; index++) { const ch=value[index]!; if (ch === "%") { if (index+2 >= value.length || !authorityURIHex(value[index+1]!) || !authorityURIHex(value[index+2]!)) return false; index += 2; continue; } if (!authorityURIUnreserved(ch) && !":/?#[]@!$&'()*+,;=%".includes(ch)) return false; } const remainder=value.slice(colon+1); if (remainder.split("#").length > 2) return false; const hash=remainder.indexOf("#"), beforeFragment=hash < 0 ? remainder : remainder.slice(0,hash), fragment=hash < 0 ? undefined : remainder.slice(hash+1); if (fragment !== undefined && !authorityURIComponent(fragment,true,"/?:@")) return false; const question=beforeFragment.indexOf("?"), hierarchical=question < 0 ? beforeFragment : beforeFragment.slice(0,question), query=question < 0 ? undefined : beforeFragment.slice(question+1); if (query !== undefined && !authorityURIComponent(query,true,"/?:@")) return false; if (hierarchical.startsWith("//")) { const authorityAndPath=hierarchical.slice(2), slash=authorityAndPath.indexOf("/"), authority=slash < 0 ? authorityAndPath : authorityAndPath.slice(0,slash), path=slash < 0 ? "" : authorityAndPath.slice(slash); return authorityURIAuthority(authority) && authorityURIComponent(path,true,"/:@"); } return authorityURIComponent(hierarchical,true,"/:@"); }
 function authorityStringFormat(format: string, value: string): boolean {
   if (format === "hostname") return authorityHostname(value);
   if (format === "email") { const match = new RegExp("^[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+)*@([A-Za-z0-9.-]+)$").exec(value); return match !== null && authorityHostname(match[1]!); }
-  if (format === "ipv4") { const parts = value.split("."); return parts.length === 4 && parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255); }
-  if (format === "ipv6") return /^[0-9a-f:]+$/.test(value) && value.includes(":") && !value.includes(":::") && value === value.toLowerCase();
-  if (format === "cidr") { const parts = value.split("/"); if (parts.length !== 2 || !/^(0|[1-9]\d*)$/.test(parts[1]!)) return false; if (authorityStringFormat("ipv4", parts[0]!)) { const bits = Number(parts[1]); if (bits > 32) return false; const octets = parts[0]!.split(".").map(Number); const address = (((octets[0]! << 24) >>> 0) + (octets[1]! << 16) + (octets[2]! << 8) + octets[3]!) >>> 0; const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0; return (address & mask) === address; } return authorityStringFormat("ipv6", parts[0]!) && Number(parts[1]) <= 128; }
-  if (format === "uri") return /^[A-Za-z][A-Za-z0-9+.-]*:[\x21-\x7e]*$/.test(value) && !value.includes("\\") && !/%(?![0-9A-Fa-f]{2})/.test(value);
+  if (format === "ipv4") return authorityParseIPv4(value) !== undefined;
+  if (format === "ipv6") { const parsed=authorityParseIPv6(value); return parsed !== undefined && authorityFormatIPv6(parsed) === value; }
+  if (format === "cidr") return authorityCanonicalCIDR(value);
+  if (format === "uri") return authorityAbsoluteURI(value);
   return false;
 }
 
@@ -3694,12 +3946,12 @@ function authorityOperand(raw: unknown): AuthorityOperand | undefined { if (!isO
 function authorityOperandEqual(a: AuthorityOperand, b: AuthorityOperand): boolean { return a.kind === b.kind && a.scalar === b.scalar && a.address === b.address; }
 function authorityFieldOperand(field: string): AuthorityOperand | undefined { if (["id","display_name","description"].includes(field)) return {kind:"scalar",scalar:"string",address:""}; if (field === "tags") return {kind:"string_set",scalar:"",address:""}; if (field === "layer") return {kind:"address",scalar:"",address:"layer"}; if (field === "from" || field === "to") return {kind:"address",scalar:"",address:"entity"}; return undefined; }
 function authorityScalarCompare(a: Record<string, unknown>, b: Record<string, unknown>): number { if (a["kind"] === "boolean") return Number(a["boolean_value"]) - Number(b["boolean_value"]); if (a["kind"] === "integer") return BigInt(String(a["integer_value"])) < BigInt(String(b["integer_value"])) ? -1 : BigInt(String(a["integer_value"])) > BigInt(String(b["integer_value"])) ? 1 : 0; if (a["kind"] === "number") return Number(a["number_value"]) - Number(b["number_value"]); return compareUnicodeScalars(String(a["string_value"]), String(b["string_value"])); }
-function authorityScalarSet(raw: unknown, type: string): boolean { if (!isJSONArray(raw)) return false; let previous: Record<string, unknown> | undefined; for (const item of raw) { if (!isObject(item) || item["kind"] !== type || previous !== undefined && authorityScalarCompare(previous, item) >= 0) return false; previous = item; } return true; }
+function authorityScalarSet(raw: unknown, type: string): boolean { return isJSONArray(raw) && raw.every((item) => isObject(item) && item["kind"] === type); }
 function authorityPredicateValue(value: Record<string, unknown>, operator: string, operand: AuthorityOperand): boolean { const kind = value["kind"]; if (kind === "parameter") return operator !== "in" && operator !== "not_in" && (operand.kind === "scalar" || operand.kind === "string_set" && operator === "contains"); if (operator === "in" || operator === "not_in") { if (operand.kind === "scalar") return kind === "scalar_set" && authorityScalarSet(value["scalar_values"], operand.scalar); if (operand.kind === "address" && kind === "address_set" && isJSONArray(value["address_values"])) return value["address_values"].every((item) => typeof item === "string" && authoritySubject(item)?.kind === operand.address); return false; } if (operand.kind === "string_set") return operator === "eq" || operator === "ne" ? kind === "scalar_set" && authorityScalarSet(value["scalar_values"], "string") : operator === "contains" && kind === "scalar" && isObject(value["scalar_value"]) && value["scalar_value"]["kind"] === "string"; if (operand.kind === "scalar") return kind === "scalar" && isObject(value["scalar_value"]) && value["scalar_value"]["kind"] === operand.scalar; return operand.kind === "address" && kind === "address" && typeof value["address_value"] === "string" && authoritySubject(value["address_value"])?.kind === operand.address; }
 function hasValidRecipePredicate(value: Record<string, unknown>, predicateKind: string): boolean { const kind = value["kind"]; if (kind === "all" || kind === "any") return isJSONArray(value["children"]) && value["children"].every((item) => isObject(item) && hasValidRecipePredicate(item, predicateKind)); if (kind === "not") return isObject(value["child"]) && hasValidRecipePredicate(value["child"], predicateKind); if (kind === "rows") return isObject(value["predicate"]) && hasValidRecipePredicate(value["predicate"], "row"); if (kind !== "field" && kind !== "cell" && kind !== "state") return true; const operand = authorityOperand(value["operand_type"]); if (operand === undefined) return false; if (kind === "field") { const expected = authorityFieldOperand(String(value["field"])); if (expected !== undefined && !authorityOperandEqual(operand, expected)) return false; } if (kind === "state" && !authorityOperandEqual(operand, {kind:"scalar",scalar:authorityStateType(String(value["field_path"])),address:""})) return false; const operator = value["operator"]; if (typeof operator !== "string") return false; let compatible = ["eq","ne","exists","missing"].includes(operator); if (["lt","lte","gt","gte"].includes(operator)) compatible = operand.kind === "scalar" && ["integer","number","date","datetime"].includes(operand.scalar); if (["in","not_in"].includes(operator)) compatible = operand.kind === "scalar" || operand.kind === "address"; if (operator === "contains") compatible = operand.kind === "string_set" || operand.kind === "scalar" && operand.scalar === "string"; if (["starts_with","ends_with"].includes(operator)) compatible = operand.kind === "scalar" && operand.scalar === "string"; return compatible && (["exists","missing"].includes(operator) || isObject(value["value"]) && authorityPredicateValue(value["value"], operator, operand)); }
 function hasValidViewProjection(value: Record<string, unknown>, kind: string): boolean { const distinct = (a: string, b: string): boolean => typeof value[a] === "string" && typeof value[b] === "string" && value[a] !== value[b]; if (kind !== "composed") { const pairs = new Map<string,readonly [string,string]>([["diagram",["source_endpoint","target_endpoint"]],["flow",["source_endpoint","target_endpoint"]],["matrix",["row_endpoint","column_endpoint"]],["tree",["parent_endpoint","child_endpoint"]]]); const pair = pairs.get(kind); return pair !== undefined && distinct(pair[0], pair[1]); } const mode = value["mode"]; const present = (name: string): boolean => hasOwn(value, name); if (mode === "nest") return distinct("parent_endpoint","child_endpoint") && !present("overlay_endpoint") && !present("target_endpoint") && !present("badge_endpoint"); if (mode === "overlay") return distinct("overlay_endpoint","target_endpoint") && !present("parent_endpoint") && !present("child_endpoint") && !present("badge_endpoint"); if (mode === "badge") return distinct("badge_endpoint","target_endpoint") && !present("parent_endpoint") && !present("child_endpoint") && !present("overlay_endpoint"); return (mode === "edge" || mode === "hide") && ["parent_endpoint","child_endpoint","overlay_endpoint","target_endpoint","badge_endpoint"].every((name) => !present(name)); }
 
-function authorityContextOperand(field: string, context: string): AuthorityOperand | undefined { const common = authorityFieldOperand(field); if (common !== undefined) return common; if (field === "address") return context === "entity" ? {kind:"address",scalar:"",address:"entity"} : context === "relation" ? {kind:"address",scalar:"",address:"relation"} : undefined; if (field === "type") return context === "entity" ? {kind:"address",scalar:"",address:"entity_type"} : context === "relation" ? {kind:"address",scalar:"",address:"relation_type"} : undefined; return undefined; }
+function authorityContextOperand(field: string, context: string): AuthorityOperand | undefined { if (["id","display_name","description"].includes(field)) return {kind:"scalar",scalar:"string",address:""}; if (field === "tags") return {kind:"string_set",scalar:"",address:""}; if (field === "layer") return context === "entity" ? {kind:"address",scalar:"",address:"layer"} : undefined; if (field === "from" || field === "to") return context === "relation" ? {kind:"address",scalar:"",address:"entity"} : undefined; if (field === "address") return context === "entity" ? {kind:"address",scalar:"",address:"entity"} : context === "relation" ? {kind:"address",scalar:"",address:"relation"} : undefined; if (field === "type") return context === "entity" ? {kind:"address",scalar:"",address:"entity_type"} : context === "relation" ? {kind:"address",scalar:"",address:"relation_type"} : undefined; return undefined; }
 type AuthorityDependencies = {layer:Set<string>; entity_type:Set<string>; relation_type:Set<string>; entity:Set<string>; relation:Set<string>; column:Set<string>; parameter:Set<string>; state:Map<string,Record<string,unknown>>};
 function authorityDependencies(): AuthorityDependencies { return {layer:new Set(),entity_type:new Set(),relation_type:new Set(),entity:new Set(),relation:new Set(),column:new Set(),parameter:new Set(),state:new Map()}; }
 function authorityAddDependency(sets: AuthorityDependencies, kind: string, address: string): boolean { const target = kind === "entity_type_column" || kind === "relation_type_column" ? sets.column : sets[kind as keyof AuthorityDependencies]; if (!(target instanceof Set)) return false; target.add(address); return true; }
@@ -3708,13 +3960,18 @@ function authoritySetEquals(raw: unknown, expected: ReadonlySet<string>): boolea
 function hasValidQueryRecipe(value: Record<string, unknown>): boolean { const query = value["address"]; if (typeof query !== "string" || !isJSONArray(value["parameters"])) return false; const parameters = new Map<string,string>(); for (const raw of value["parameters"]) { if (!isObject(raw) || typeof raw["address"] !== "string" || typeof raw["value_type"] !== "string") return false; parameters.set(raw["address"],raw["value_type"]); } const sets = authorityDependencies(); const select = value["select"]; if (!isObject(select)) return false; for (const [property,kind] of [["layer_addresses","layer"],["entity_type_addresses","entity_type"],["relation_type_addresses","relation_type"],["root_addresses","entity"]] as const) if (isJSONArray(select[property])) for (const address of select[property]) { if (typeof address !== "string") return false; authorityAddDependency(sets,kind,address); } if (isObject(value["traverse"]) && isJSONArray(value["traverse"]["relation_type_addresses"])) for (const address of value["traverse"]["relation_type_addresses"]) { if (typeof address !== "string") return false; sets.relation_type.add(address); } if (!authorityQueryPredicate(value["where"],"entity",query,parameters,sets) || !authorityQueryPredicate(value["relation_where"],"relation",query,parameters,sets)) return false; const hasState = sets.state.size !== 0; if (hasState !== (value["state_input"] === "optional" || value["state_input"] === "required")) return false; const dependencies = value["dependencies"]; if (!isObject(dependencies)) return false; for (const property of ["layer","entity_type","relation_type","entity","relation","column","parameter"] as const) if (!authoritySetEquals(dependencies[property+"_addresses"],sets[property])) return false; if (!isJSONArray(dependencies["state_reads"]) || dependencies["state_reads"].length !== sets.state.size) return false; return dependencies["state_reads"].every((raw) => isObject(raw) && sets.state.has(String(raw["subject_kind"])+"\0"+String(raw["field_path"]))); }
 
 function authorityFidelityRank(value: unknown): number { return new Map<unknown,number>([["lossy",0],["visual_only",1],["traceable_summary",2],["lossless",3]]).get(value) ?? -1; }
-function hasValidExportRecipe(value: Record<string, unknown>): boolean { const format = value["format"], options = value["options"], profile = value["exporter_profile"], extension = value["extension"], filename = value["filename"]; if (typeof format !== "string" || !isObject(options) || !isObject(profile) || options["kind"] !== format || profile["format"] !== format || typeof extension !== "string" || typeof filename !== "string") return false; const expected = new Map<string,string>([["json",".json"],["yaml",".yaml"],["svg",".svg"],["png",".png"],["pdf",".pdf"],["html",".html"],["csv",".csv"],["tsv",".tsv"],["xlsx",".xlsx"],["markdown",".md"],["pptx",".pptx"],["docx",".docx"],["mermaid",".mmd"],["bpmn",".bpmn"],["drawio",".drawio"]]).get(format); if (expected === undefined || extension !== expected || filename === "" || filename === "." || filename === ".." || /[\\/\u0000]/.test(filename) || !filename.endsWith(extension) || filename.slice(0,-extension.length).length === 0) return false; const fixed = new Map<string,string>([["json","lossless"],["yaml","lossless"],["svg","visual_only"],["png","visual_only"],["pdf","visual_only"],["html","traceable_summary"],["xlsx","traceable_summary"],["pptx","visual_only"],["docx","visual_only"],["drawio","visual_only"],["bpmn","lossy"]]).get(format); if (fixed !== undefined && value["native_maximum_fidelity"] !== fixed) return false; if ((format === "csv" || format === "tsv") && value["native_maximum_fidelity"] !== (options["bundle"] === true && options["header"] === true && options["source_manifest"] === true ? "traceable_summary" : "lossy")) return false; const embedded = format === "xlsx" && options["view_data_json"] === true && options["hidden_ids"] === true; if (embedded ? value["fidelity_basis"] !== "embedded_viewdata" || value["effective_maximum_fidelity"] !== "lossless" : value["fidelity_basis"] !== "native" || value["effective_maximum_fidelity"] !== value["native_maximum_fidelity"]) return false; if (authorityFidelityRank(value["fidelity"]) > authorityFidelityRank(value["effective_maximum_fidelity"])) return false; return !(["lossless","traceable_summary"].includes(String(value["fidelity"])) || format === "json" || format === "yaml") || value["source_refs"] === true; }
+function hasValidExportRecipe(value: Record<string, unknown>): boolean { const format = value["format"], options = value["options"], profile = value["exporter_profile"], extension = value["extension"], filename = value["filename"]; if (typeof format !== "string" || !isObject(options) || !isObject(profile) || options["kind"] !== format || profile["format"] !== format || typeof extension !== "string" || typeof filename !== "string") return false; const expected = new Map<string,string>([["json",".json"],["yaml",".yaml"],["svg",".svg"],["png",".png"],["pdf",".pdf"],["html",".html"],["csv",".csv"],["tsv",".tsv"],["xlsx",".xlsx"],["markdown",".md"],["pptx",".pptx"],["docx",".docx"],["mermaid",".mmd"],["bpmn",".bpmn"],["drawio",".drawio"]]).get(format); if (expected === undefined || extension !== expected || filename === "" || filename === "." || filename === ".." || /[\\/\u0000]/.test(filename) || !filename.endsWith(extension) || filename.slice(0,-extension.length).length === 0) return false; const fixed = new Map<string,string>([["json","lossless"],["yaml","lossless"],["svg","visual_only"],["png","visual_only"],["pdf","visual_only"],["html","traceable_summary"],["xlsx","traceable_summary"],["pptx","visual_only"],["docx","visual_only"],["drawio","visual_only"],["bpmn","lossy"]]).get(format); if (fixed !== undefined && value["native_maximum_fidelity"] !== fixed) return false; if ((format === "csv" || format === "tsv") && value["native_maximum_fidelity"] !== (options["bundle"] === true && options["header"] === true && options["source_manifest"] === true ? "traceable_summary" : "lossy")) return false; const embedded = format === "xlsx" && options["view_data_json"] === true && options["hidden_ids"] === true; if (embedded ? value["fidelity_basis"] !== "embedded_viewdata" || value["effective_maximum_fidelity"] !== "lossless" : value["fidelity_basis"] !== "native" || value["effective_maximum_fidelity"] !== value["native_maximum_fidelity"]) return false; if (authorityFidelityRank(value["fidelity"]) > authorityFidelityRank(value["effective_maximum_fidelity"])) return false; if ((["lossless","traceable_summary"].includes(String(value["fidelity"])) || format === "json" || format === "yaml") && value["source_refs"] !== true) return false; const embeddedManifest = format === "json" || format === "yaml" || format === "xlsx" && options["view_data_json"] === true; const explicitManifest = ["csv","tsv","markdown","mermaid","bpmn","drawio"].includes(format) && options["source_manifest"] === true; return !(explicitManifest || value["source_refs"] === true && !embeddedManifest) || value["requires_source_manifest"] === true; }
 
 function authorityTableValue(value: Record<string, unknown>, kind: string, scalar = "", enumValues?: ReadonlyArray<string>): boolean { if (!isObject(value["value_type"])) return false; const type = value["value_type"]; if (type["kind"] !== kind || kind === "scalar" && type["scalar_type"] !== scalar) return false; if (enumValues !== undefined && (!isJSONArray(type["enum_values"]) || type["enum_values"].length !== enumValues.length || !type["enum_values"].every((item,index) => item === enumValues[index]))) return false; return true; }
 function authorityStateEnum(field: string): ReadonlyArray<string> | undefined { if (["system.created_by.kind","system.updated_by.kind","provenance.verified_by.kind"].includes(field)) return ["user","agent","service_account","anonymous"]; return field === "provenance.source.kind" ? ["manual","import","api","agent","external_system"] : undefined; }
 function authorityManifest(value: Record<string, unknown>, state: string, embedded: boolean): boolean { const options = value["options"]; if (!isObject(options)) return false; const explicit = (["csv","tsv"].includes(String(options["kind"])) || ["markdown","mermaid","bpmn","drawio"].includes(String(options["kind"]))) && options["source_manifest"] === true; return value["requires_source_manifest"] === (explicit || state !== "none" || value["source_refs"] === true && !embedded); }
 function authorityExportInView(value: Record<string, unknown>, category: string, shape: string, state: string, diff: boolean): boolean { const format = String(value["format"]), options = value["options"]; if (!isObject(options)) return false; if (format === "json" || format === "yaml") return value["native_maximum_fidelity"] === "lossless" && value["effective_maximum_fidelity"] === "lossless" && value["fidelity_basis"] === "native" && authorityManifest(value,state,true) && !(diff && options["state_summary"] === true); const matrix: Record<string,Record<string,string>> = {diagram:{xlsx:"traceable_summary",html:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",svg:"visual_only",png:"visual_only",pdf:"visual_only",pptx:"visual_only",docx:"visual_only",drawio:"visual_only",mermaid:"lossy"},table:{xlsx:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",html:"traceable_summary",pdf:"visual_only",pptx:"visual_only",docx:"visual_only",markdown:"lossy"},matrix:{xlsx:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",html:"traceable_summary",svg:"visual_only",png:"visual_only",pdf:"visual_only",pptx:"visual_only",docx:"visual_only"},tree:{xlsx:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",html:"traceable_summary",mermaid:"traceable_summary",svg:"visual_only",png:"visual_only",pdf:"visual_only",pptx:"visual_only",docx:"visual_only",drawio:"visual_only"},flow:{xlsx:"traceable_summary",csv:"traceable_summary",tsv:"traceable_summary",html:"traceable_summary",mermaid:"traceable_summary",bpmn:"lossy",svg:"visual_only",png:"visual_only",pdf:"visual_only",pptx:"visual_only",docx:"visual_only",drawio:"visual_only",markdown:"lossy"},context:{csv:"traceable_summary",tsv:"traceable_summary",xlsx:"traceable_summary",html:"traceable_summary",markdown:"traceable_summary",pdf:"visual_only",pptx:"visual_only",docx:"visual_only"},diff:{csv:"traceable_summary",tsv:"traceable_summary",xlsx:"traceable_summary",html:"traceable_summary",markdown:"traceable_summary",pdf:"visual_only",pptx:"visual_only",docx:"visual_only"}}; let native = matrix[shape]?.[format]; if (native === undefined) return false; if ((format === "csv" || format === "tsv") && !(options["bundle"] === true && options["header"] === true && options["source_manifest"] === true) || (shape === "tree" || shape === "flow") && format === "mermaid" && options["source_manifest"] !== true) native = "lossy"; if (value["native_maximum_fidelity"] !== native) return false; const fidelityEmbedded = format === "xlsx" && options["view_data_json"] === true && options["hidden_ids"] === true; if (fidelityEmbedded ? value["effective_maximum_fidelity"] !== "lossless" || value["fidelity_basis"] !== "embedded_viewdata" : value["effective_maximum_fidelity"] !== native || value["fidelity_basis"] !== "native") return false; if (format === "xlsx") { const profile = options["profile"]; const compatible = profile === "type_workbook" && shape === "table" || ["diagram_workbook","composed_diagram_workbook","diagram_inventory_workbook"].includes(String(profile)) && shape === "diagram" || profile === "matrix_workbook" && shape === "matrix" || profile === "tree_workbook" && shape === "tree" || profile === "flow_workbook" && shape === "flow" || profile === "diff_workbook" && shape === "diff" || profile === "context_workbook" && shape === "context" || profile === "impact_workbook" && category === "impact" && ["diagram","table","matrix"].includes(shape); if (!compatible) return false; } return authorityManifest(value,state,format === "xlsx" && options["view_data_json"] === true); }
-function hasValidViewRecipe(value: Record<string, unknown>): boolean { const address = value["address"], shapeValue = value["shape"], source = value["source"], reservedRaw = value["reserved_table_column_ids"]; if (typeof address !== "string" || !isObject(shapeValue) || !isObject(source) || !isJSONArray(reservedRaw)) return false; const category = String(value["category"]), sourceKind = String(source["kind"]), shape = String(shapeValue["kind"]); const diffCount = Number(category === "diff") + Number(sourceKind === "diff") + Number(shape === "diff"); if (diffCount !== 0 && diffCount !== 3) return false; const stateInput = String(value["state_input"]), stateRequirement = String(value["state_requirement"]), rank = (item: string): number => ["none","optional","required"].indexOf(item); if (rank(stateRequirement) < rank(stateInput) || diffCount === 3 && stateRequirement !== "none") return false; const direct: Array<Record<string,unknown>> = []; if (shape === "table") { const table = shapeValue["table"]; if (!isObject(table) || !isJSONArray(table["columns"]) || !isJSONArray(table["sorts"])) return false; const row = String(table["row_source"]), entity = row === "entity" || row === "entity_rows"; if (!entity && (table["include_entity_id"] === true || table["include_type"] === true || table["include_layer"] === true || hasOwn(table,"entity_type_addresses"))) return false; const available = new Set<string>(), reserved = new Set(reservedRaw); if (table["include_entity_id"] === true) available.add("entity_id"); if (table["include_type"] === true) available.add("entity_type"); if (table["include_layer"] === true) available.add("entity_layer"); for (const raw of table["columns"]) { if (!isObject(raw) || typeof raw["id"] !== "string" || typeof raw["address"] !== "string" || !hasDirectStableAddressOwner(address,raw["address"]) || reserved.has(raw["id"]) || available.has(raw["id"]) || !isObject(raw["source"])) return false; available.add(raw["id"]); const column = raw["source"], kind = column["kind"], aggregate = raw["aggregate"]; if (kind === "attribute") { if (row !== "entity_rows" && row !== "relation_rows" || !isJSONArray(column["column_addresses"]) || column["column_addresses"].length === 0) return false; const expected = row === "entity_rows" ? "entity_type_column" : "relation_type_column"; if (!column["column_addresses"].every((item) => typeof item === "string" && authoritySubject(item)?.kind === expected)) return false; } else if (kind === "relation_endpoint") { if (row !== "relation" && row !== "relation_rows") return false; const field = String(column["field"]); if (!authorityTableValue(raw,field === "id" || field === "display_name" ? "scalar" : "stable_address",field === "id" || field === "display_name" ? "string" : "")) return false; } else if (kind === "derived_count") { if (!entity || !authorityTableValue(raw,"scalar","integer")) return false; } else if (kind === "field") { const field = String(column["field"]); if (["id","display_name","description"].includes(field) ? !authorityTableValue(raw,"scalar","string") : field === "tags" ? !authorityTableValue(raw,"string_set") : !authorityTableValue(raw,"stable_address")) return false; } else if (kind === "state") { const field = String(column["field_path"]), type = authorityStateType(field), enums = authorityStateEnum(field); if (!authorityTableValue(raw,"scalar",type,enums)) return false; const subjects = row === "automatic_relations" ? ["relation","relation_row"] : [row === "entity" ? "entity" : row === "entity_rows" ? "entity_row" : row === "relation" ? "relation" : "relation_row"]; for (const subject_kind of subjects) direct.push({subject_kind,field_path:field,value_type:type}); } else return false; if ((aggregate === "count" || aggregate === "count_distinct") && !authorityTableValue(raw,"scalar","integer") || aggregate === "join_unique" && !authorityTableValue(raw,"scalar","string") || (aggregate === "min" || aggregate === "max") && (!isObject(raw["value_type"]) || raw["value_type"]["kind"] !== "scalar" || !["integer","number","date","datetime","enum"].includes(String(raw["value_type"]["scalar_type"])))) return false; } if (!table["sorts"].every((item) => isObject(item) && typeof item["column_id"] === "string" && available.has(item["column_id"]))) return false; } else if (stateInput !== "none") return false; if ((direct.length !== 0) !== (stateInput === "optional" || stateInput === "required")) return false; const dependencies = value["dependencies"]; if (!isObject(dependencies)) return false; const stateReads = dependencies["state_reads"]; if (!isJSONArray(stateReads) || direct.some((read) => !stateReads.some((item: unknown) => isObject(item) && item["subject_kind"] === read["subject_kind"] && item["field_path"] === read["field_path"] && item["value_type"] === read["value_type"]))) return false; if (!isJSONArray(value["exports"])) return false; return value["exports"].every((raw) => isObject(raw) && raw["view_address"] === address && authorityExportInView(raw,category,shape,stateRequirement,diffCount === 3)); }
+type AuthorityViewDependencies = {query:Set<string>;parameter:Set<string>;layer:Set<string>;entity_type:Set<string>;relation_type:Set<string>;entity:Set<string>;relation:Set<string>;column:Set<string>};
+function authorityViewDependencies(): AuthorityViewDependencies { return {query:new Set(),parameter:new Set(),layer:new Set(),entity_type:new Set(),relation_type:new Set(),entity:new Set(),relation:new Set(),column:new Set()}; }
+function authorityCollectViewDependencies(raw: unknown, sets: AuthorityViewDependencies): void { if (typeof raw === "string") { const subject=authoritySubject(raw); if (subject === undefined) return; const property=subject.kind === "query_parameter" ? "parameter" : subject.kind === "entity_type_column" || subject.kind === "relation_type_column" ? "column" : subject.kind; const target=sets[property as keyof AuthorityViewDependencies]; if (target instanceof Set) target.add(raw); return; } if (isJSONArray(raw)) { for (const item of raw) authorityCollectViewDependencies(item,sets); return; } if (isObject(raw)) for (const [key,item] of Object.entries(raw)) { authorityCollectViewDependencies(key,sets); authorityCollectViewDependencies(item,sets); } }
+function authorityContainsViewDependencies(raw: unknown, expected: ReadonlySet<string>): boolean { return isJSONArray(raw) && [...expected].every((value) => raw.includes(value)); }
+function authorityValidViewDependencies(value: Record<string,unknown>): boolean { const dependencies=value["dependencies"], source=value["source"], shape=value["shape"], overrides=value["relation_projection_overrides"], exports=value["exports"]; if (!isObject(dependencies) || !isObject(source) || !isObject(shape) || !isObject(overrides) || !isJSONArray(exports)) return false; const sets=authorityViewDependencies(); authorityCollectViewDependencies(source,sets); authorityCollectViewDependencies(shape,sets); authorityCollectViewDependencies(overrides,sets); if (!authoritySetEquals(dependencies["query_addresses"],sets.query)) return false; for (const property of ["parameter","layer","entity_type","relation_type","entity","relation","column"] as const) if (!authorityContainsViewDependencies(dependencies[property+"_addresses"],sets[property])) return false; const addresses=dependencies["export_addresses"]; return isJSONArray(addresses) && addresses.length === exports.length && exports.every((raw,index) => isObject(raw) && raw["address"] === addresses[index]); }
+function hasValidViewRecipe(value: Record<string, unknown>): boolean { const address = value["address"], shapeValue = value["shape"], source = value["source"], reservedRaw = value["reserved_table_column_ids"]; if (typeof address !== "string" || !isObject(shapeValue) || !isObject(source) || !isJSONArray(reservedRaw)) return false; const category = String(value["category"]), sourceKind = String(source["kind"]), shape = String(shapeValue["kind"]); const diffCount = Number(category === "diff") + Number(sourceKind === "diff") + Number(shape === "diff"); if (diffCount !== 0 && diffCount !== 3) return false; const stateInput = String(value["state_input"]), stateRequirement = String(value["state_requirement"]), rank = (item: string): number => ["none","optional","required"].indexOf(item); if (rank(stateRequirement) < rank(stateInput) || diffCount === 3 && stateRequirement !== "none") return false; const direct: Array<Record<string,unknown>> = []; if (shape === "table") { const table = shapeValue["table"]; if (!isObject(table) || !isJSONArray(table["columns"]) || !isJSONArray(table["sorts"])) return false; const row = String(table["row_source"]), entity = row === "entity" || row === "entity_rows"; if (!entity && (table["include_entity_id"] === true || table["include_type"] === true || table["include_layer"] === true || hasOwn(table,"entity_type_addresses"))) return false; const available = new Set<string>(), reserved = new Set(reservedRaw); if (table["include_entity_id"] === true) available.add("entity_id"); if (table["include_type"] === true) available.add("entity_type"); if (table["include_layer"] === true) available.add("entity_layer"); if (row === "automatic_relations") { available.add("from"); available.add("to"); available.add("relation_type"); } for (const raw of table["columns"]) { if (!isObject(raw) || typeof raw["id"] !== "string" || typeof raw["address"] !== "string" || !hasDirectStableAddressOwner(address,raw["address"]) || reserved.has(raw["id"]) || available.has(raw["id"]) || !isObject(raw["source"])) return false; available.add(raw["id"]); const column = raw["source"], kind = column["kind"], aggregate = raw["aggregate"]; if (kind === "attribute") { if (row !== "entity_rows" && row !== "relation_rows" || !isJSONArray(column["column_addresses"]) || column["column_addresses"].length === 0) return false; const expected = row === "entity_rows" ? "entity_type_column" : "relation_type_column"; if (!column["column_addresses"].every((item) => typeof item === "string" && authoritySubject(item)?.kind === expected)) return false; } else if (kind === "relation_endpoint") { if (row !== "relation" && row !== "relation_rows") return false; const field = String(column["field"]); if (!authorityTableValue(raw,field === "id" || field === "display_name" ? "scalar" : "stable_address",field === "id" || field === "display_name" ? "string" : "")) return false; } else if (kind === "derived_count") { if (!entity || !authorityTableValue(raw,"scalar","integer")) return false; } else if (kind === "field") { const field = String(column["field"]); if (["id","display_name","description"].includes(field) ? !authorityTableValue(raw,"scalar","string") : field === "tags" ? !authorityTableValue(raw,"string_set") : !authorityTableValue(raw,"stable_address")) return false; } else if (kind === "state") { const field = String(column["field_path"]), type = authorityStateType(field), enums = authorityStateEnum(field); if (!authorityTableValue(raw,"scalar",type,enums)) return false; const subjects = row === "automatic_relations" ? ["relation","relation_row"] : [row === "entity" ? "entity" : row === "entity_rows" ? "entity_row" : row === "relation" ? "relation" : "relation_row"]; for (const subject_kind of subjects) direct.push({subject_kind,field_path:field,value_type:type}); } else return false; if ((aggregate === "count" || aggregate === "count_distinct") && !authorityTableValue(raw,"scalar","integer") || aggregate === "join_unique" && !authorityTableValue(raw,"scalar","string") || (aggregate === "min" || aggregate === "max") && (!isObject(raw["value_type"]) || raw["value_type"]["kind"] !== "scalar" || !["integer","number","date","datetime","enum"].includes(String(raw["value_type"]["scalar_type"])))) return false; } if (!table["sorts"].every((item) => isObject(item) && typeof item["column_id"] === "string" && available.has(item["column_id"]))) return false; } else if (stateInput !== "none") return false; if ((direct.length !== 0) !== (stateInput === "optional" || stateInput === "required")) return false; const dependencies = value["dependencies"]; if (!isObject(dependencies)) return false; const stateReads = dependencies["state_reads"]; if (!isJSONArray(stateReads) || direct.some((read) => !stateReads.some((item: unknown) => isObject(item) && item["subject_kind"] === read["subject_kind"] && item["field_path"] === read["field_path"] && item["value_type"] === read["value_type"]))) return false; if (!isJSONArray(value["exports"]) || !authorityValidViewDependencies(value)) return false; return value["exports"].every((raw) => isObject(raw) && raw["view_address"] === address && authorityExportInView(raw,category,shape,stateRequirement,diffCount === 3)); }
 
 `
 
@@ -3967,6 +4224,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.StateReadOrder {
 			parts = append(parts, "hasStateReadOrder("+expression+")")
 		}
+		if value.CanonicalCollection != "" {
+			parts = append(parts, fmt.Sprintf("hasCanonicalCollectionOrder(%s, %q)", expression, value.CanonicalCollection))
+		}
 		return strings.Join(parts, " && "), nil
 	case "object":
 		if len(value.Properties) == 0 {
@@ -4120,6 +4380,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		}
 		if value.ViewRecipe {
 			parts = append(parts, "hasValidViewRecipe("+expression+")")
+		}
+		if value.ChildSet {
+			parts = append(parts, "hasValidChildSet("+expression+")")
 		}
 		return strings.Join(parts, " && "), nil
 	default:

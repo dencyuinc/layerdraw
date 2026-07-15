@@ -156,31 +156,146 @@ function canonicalHostname(value) {
     value.split(".").every((label) => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label));
 }
 
+function parseCanonicalIPv4(value) {
+  const parts = value.split(".");
+  return parts.length === 4 && parts.every((part) => /^(0|[1-9][0-9]{0,2})$/.test(part) && Number(part) <= 255) ? parts.map(Number) : undefined;
+}
+
+function parseIPv6(value) {
+  if (value.includes("%")) return undefined;
+  let expanded = value;
+  if (value.includes(".")) {
+    const colon = value.lastIndexOf(":");
+    const ipv4 = colon < 0 ? undefined : parseCanonicalIPv4(value.slice(colon + 1));
+    if (ipv4 === undefined) return undefined;
+    expanded = value.slice(0, colon + 1) + ((ipv4[0] << 8) | ipv4[1]).toString(16) + ":" + ((ipv4[2] << 8) | ipv4[3]).toString(16);
+  }
+  if (!/^[0-9A-Fa-f:]+$/.test(expanded) || expanded.split("::").length > 2) return undefined;
+  const hasElision = expanded.includes("::");
+  const halves = expanded.split("::");
+  const left = halves[0] === "" ? [] : halves[0].split(":");
+  const right = !hasElision || halves[1] === "" ? [] : halves[1].split(":");
+  if (![...left, ...right].every((part) => /^[0-9A-Fa-f]{1,4}$/.test(part))) return undefined;
+  const omitted = 8 - left.length - right.length;
+  if (hasElision ? omitted < 1 : omitted !== 0) return undefined;
+  const words = [...left.map((part) => Number.parseInt(part, 16)), ...Array(omitted).fill(0), ...right.map((part) => Number.parseInt(part, 16))];
+  return words.flatMap((word) => [word >>> 8, word & 255]);
+}
+
+function formatIPv6(bytes) {
+  if (bytes.slice(0, 10).every((value) => value === 0) && bytes[10] === 255 && bytes[11] === 255) return `::ffff:${bytes.slice(12).join(".")}`;
+  const words = Array.from({length: 8}, (_, index) => (bytes[index * 2] << 8) | bytes[index * 2 + 1]);
+  let bestStart = -1;
+  let bestLength = 0;
+  for (let index = 0; index < words.length;) {
+    if (words[index] !== 0) { index++; continue; }
+    let end = index;
+    while (end < words.length && words[end] === 0) end++;
+    if (end - index > bestLength && end - index >= 2) { bestStart = index; bestLength = end - index; }
+    index = end;
+  }
+  let result = "";
+  for (let index = 0; index < words.length;) {
+    if (index === bestStart) { result += "::"; index += bestLength; continue; }
+    if (result !== "" && !result.endsWith(":")) result += ":";
+    result += words[index].toString(16);
+    index++;
+  }
+  return result;
+}
+
+function canonicalIP(value) {
+  const ipv4 = parseCanonicalIPv4(value);
+  if (ipv4 !== undefined) return {bytes: ipv4, bits: 32};
+  const ipv6 = parseIPv6(value);
+  return ipv6 !== undefined && formatIPv6(ipv6) === value ? {bytes: ipv6, bits: 128} : undefined;
+}
+
+function canonicalCIDR(value) {
+  const parts = value.split("/");
+  if (parts.length !== 2 || !/^(0|[1-9][0-9]*)$/.test(parts[1])) return false;
+  const address = canonicalIP(parts[0]);
+  const prefix = Number(parts[1]);
+  if (address === undefined || !Number.isSafeInteger(prefix) || prefix > address.bits) return false;
+  return address.bytes.every((byte, index) => {
+    const remaining = prefix - index * 8;
+    const mask = remaining >= 8 ? 255 : remaining <= 0 ? 0 : (255 << (8 - remaining)) & 255;
+    return (byte & mask) === byte;
+  });
+}
+
+const uriAlpha = (value) => /^[A-Za-z]$/.test(value);
+const uriDigit = (value) => /^[0-9]$/.test(value);
+const uriHex = (value) => /^[0-9A-Fa-f]$/.test(value);
+const uriUnreserved = (value) => uriAlpha(value) || uriDigit(value) || "-._~".includes(value);
+function validURIComponent(value, allowEmpty, extra) {
+  if (value === "") return allowEmpty;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (character === "%") {
+      if (index + 2 >= value.length || !uriHex(value[index + 1]) || !uriHex(value[index + 2])) return false;
+      index += 2;
+    } else if (!uriUnreserved(character) && !("!$&'()*+,;=" + extra).includes(character)) return false;
+  }
+  return true;
+}
+function validIPLiteral(value) {
+  if (parseIPv6(value) !== undefined) return true;
+  if (value.length < 4 || value[0] !== "v" && value[0] !== "V") return false;
+  const dot = value.indexOf(".");
+  return dot >= 2 && Array.from(value.slice(1, dot)).every(uriHex) && value.slice(dot + 1) !== "" && validURIComponent(value.slice(dot + 1), false, ":");
+}
+function validURIAuthority(value) {
+  if (value.split("@").length > 2) return false;
+  let hostPort = value;
+  const at = value.indexOf("@");
+  if (at >= 0) { if (!validURIComponent(value.slice(0, at), true, ":")) return false; hostPort = value.slice(at + 1); }
+  if (hostPort.startsWith("[")) {
+    const close = hostPort.indexOf("]");
+    if (close <= 1) return false;
+    const rest = hostPort.slice(close + 1);
+    return validIPLiteral(hostPort.slice(1, close)) && (rest === "" || rest.startsWith(":") && Array.from(rest.slice(1)).every(uriDigit));
+  }
+  if (hostPort.includes("[") || hostPort.includes("]")) return false;
+  let host = hostPort;
+  const colon = hostPort.lastIndexOf(":");
+  if (colon >= 0) { host = hostPort.slice(0, colon); if (host.includes(":") || !Array.from(hostPort.slice(colon + 1)).every(uriDigit)) return false; }
+  return validURIComponent(host, true, "");
+}
+function validAbsoluteURI(value) {
+  const colon = value.indexOf(":");
+  if (colon <= 0 || !/^[A-Za-z][A-Za-z0-9+.-]*$/.test(value.slice(0, colon)) || Array.from(value).some((character) => character.codePointAt(0) >= 128 || character.codePointAt(0) < 32 || character.codePointAt(0) === 127) || value.includes("\\")) return false;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (character === "%") { if (index + 2 >= value.length || !uriHex(value[index + 1]) || !uriHex(value[index + 2])) return false; index += 2; }
+    else if (!uriUnreserved(character) && !":/?#[]@!$&'()*+,;=%".includes(character)) return false;
+  }
+  const remainder = value.slice(colon + 1);
+  if (remainder.split("#").length > 2) return false;
+  const hash = remainder.indexOf("#");
+  const beforeFragment = hash < 0 ? remainder : remainder.slice(0, hash);
+  if (hash >= 0 && !validURIComponent(remainder.slice(hash + 1), true, "/?:@")) return false;
+  const question = beforeFragment.indexOf("?");
+  const hierarchical = question < 0 ? beforeFragment : beforeFragment.slice(0, question);
+  if (question >= 0 && !validURIComponent(beforeFragment.slice(question + 1), true, "/?:@")) return false;
+  if (hierarchical.startsWith("//")) {
+    const authorityAndPath = hierarchical.slice(2);
+    const slash = authorityAndPath.indexOf("/");
+    return validURIAuthority(slash < 0 ? authorityAndPath : authorityAndPath.slice(0, slash)) && validURIComponent(slash < 0 ? "" : authorityAndPath.slice(slash), true, "/:@");
+  }
+  return validURIComponent(hierarchical, true, "/:@");
+}
+
 function validCanonicalStringFormat(format, value) {
   if (format === "hostname") return canonicalHostname(value);
   if (format === "email") {
     const match = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([A-Za-z0-9.-]+)$/.exec(value);
     return match !== null && canonicalHostname(match[1]);
   }
-  if (format === "ipv4") {
-    const parts = value.split(".");
-    return parts.length === 4 && parts.every((part) => /^(0|[1-9][0-9]{0,2})$/.test(part) && Number(part) <= 255);
-  }
-  if (format === "ipv6") return /^[0-9a-f:]+$/.test(value) && value.includes(":") && !value.includes(":::") && value === value.toLowerCase();
-  if (format === "cidr") {
-    const parts = value.split("/");
-    if (parts.length !== 2 || !/^(0|[1-9][0-9]*)$/.test(parts[1])) return false;
-    if (validCanonicalStringFormat("ipv4", parts[0])) {
-      const bits = Number(parts[1]);
-      if (bits > 32) return false;
-      const octets = parts[0].split(".").map(Number);
-      const address = (((octets[0] << 24) >>> 0) + (octets[1] << 16) + (octets[2] << 8) + octets[3]) >>> 0;
-      const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-      return (address & mask) === address;
-    }
-    return validCanonicalStringFormat("ipv6", parts[0]) && Number(parts[1]) <= 128;
-  }
-  if (format === "uri") return /^[A-Za-z][A-Za-z0-9+.-]*:[\x21-\x7e]*$/.test(value) && !value.includes("\\") && !/%(?![0-9A-Fa-f]{2})/.test(value);
+  if (format === "ipv4") return parseCanonicalIPv4(value) !== undefined;
+  if (format === "ipv6") { const parsed = parseIPv6(value); return parsed !== undefined && formatIPv6(parsed) === value; }
+  if (format === "cidr") return canonicalCIDR(value);
+  if (format === "uri") return validAbsoluteURI(value);
   return false;
 }
 
@@ -333,13 +448,7 @@ function compareRecipeScalars(left, right) {
 }
 
 function validRecipeScalarSet(raw, scalarType) {
-  if (!Array.isArray(raw)) return false;
-  let previous;
-  for (const value of raw) {
-    if (!isObject(value) || value.kind !== scalarType || previous !== undefined && compareRecipeScalars(previous, value) >= 0) return false;
-    previous = value;
-  }
-  return true;
+  return Array.isArray(raw) && raw.every((value) => isObject(value) && value.kind === scalarType);
 }
 
 function validRecipePredicateValue(value, operator, operand) {
@@ -382,8 +491,10 @@ function validRecipePredicate(value, predicateKind) {
 }
 
 function contextFieldOperand(field, context) {
-  const common = fieldRecipeOperand(field);
-  if (common !== undefined) return common;
+  if (["id", "display_name", "description"].includes(field)) return {kind: "scalar", scalarType: "string", addressKind: ""};
+  if (field === "tags") return {kind: "string_set", scalarType: "", addressKind: ""};
+  if (field === "layer") return context === "entity" ? {kind: "address", scalarType: "", addressKind: "layer"} : undefined;
+  if (field === "from" || field === "to") return context === "relation" ? {kind: "address", scalarType: "", addressKind: "entity"} : undefined;
   if (field === "address") return context === "entity" ? {kind: "address", scalarType: "", addressKind: "entity"} : context === "relation" ? {kind: "address", scalarType: "", addressKind: "relation"} : undefined;
   if (field === "type") return context === "entity" ? {kind: "address", scalarType: "", addressKind: "entity_type"} : context === "relation" ? {kind: "address", scalarType: "", addressKind: "relation_type"} : undefined;
   return undefined;
@@ -520,7 +631,10 @@ function validExportRecipe(value) {
     value.fidelity_basis !== "native" || value.effective_maximum_fidelity !== value.native_maximum_fidelity) return false;
   const ranks = new Map([["lossy", 0], ["visual_only", 1], ["traceable_summary", 2], ["lossless", 3]]);
   if (ranks.get(value.fidelity) > ranks.get(value.effective_maximum_fidelity)) return false;
-  return !(["lossless", "traceable_summary"].includes(value.fidelity) || value.format === "json" || value.format === "yaml") || value.source_refs === true;
+  if ((["lossless", "traceable_summary"].includes(value.fidelity) || value.format === "json" || value.format === "yaml") && value.source_refs !== true) return false;
+  const embeddedManifest = value.format === "json" || value.format === "yaml" || value.format === "xlsx" && value.options.view_data_json === true;
+  const explicitManifest = ["csv", "tsv", "markdown", "mermaid", "bpmn", "drawio"].includes(value.format) && value.options.source_manifest === true;
+  return !(explicitManifest || value.source_refs === true && !embeddedManifest) || value.requires_source_manifest === true;
 }
 
 function hasDirectStableAddressOwner(owner, child) {
@@ -564,6 +678,38 @@ function stateEnumValues(field) {
 
 function hasStateRead(values, expected) {
   return values.some((value) => isObject(value) && value.subject_kind === expected.subject_kind && value.field_path === expected.field_path && value.value_type === expected.value_type);
+}
+
+function viewDependencySets() {
+  return {query: new Set(), parameter: new Set(), layer: new Set(), entity_type: new Set(), relation_type: new Set(), entity: new Set(), relation: new Set(), column: new Set()};
+}
+
+function collectViewDependencies(raw, sets) {
+  if (typeof raw === "string") {
+    const subject = stableAddressSubject(raw);
+    if (subject === undefined) return;
+    const property = subject.kind === "query_parameter" ? "parameter" : subject.kind === "entity_type_column" || subject.kind === "relation_type_column" ? "column" : subject.kind;
+    if (sets[property] instanceof Set) sets[property].add(raw);
+  } else if (Array.isArray(raw)) {
+    for (const item of raw) collectViewDependencies(item, sets);
+  } else if (isObject(raw)) {
+    for (const [key, item] of Object.entries(raw)) { collectViewDependencies(key, sets); collectViewDependencies(item, sets); }
+  }
+}
+
+function validLocallyDerivableViewDependencies(value) {
+  const dependencies = value.dependencies;
+  if (!isObject(dependencies) || !isObject(value.source) || !isObject(value.shape) || !isObject(value.relation_projection_overrides) || !Array.isArray(value.exports)) return false;
+  const sets = viewDependencySets();
+  collectViewDependencies(value.source, sets);
+  collectViewDependencies(value.shape, sets);
+  collectViewDependencies(value.relation_projection_overrides, sets);
+  if (!dependencySetEquals(dependencies.query_addresses, sets.query)) return false;
+  for (const property of ["parameter", "layer", "entity_type", "relation_type", "entity", "relation", "column"]) {
+    if (!Array.isArray(dependencies[`${property}_addresses`]) || [...sets[property]].some((address) => !dependencies[`${property}_addresses`].includes(address))) return false;
+  }
+  return Array.isArray(dependencies.export_addresses) && dependencies.export_addresses.length === value.exports.length &&
+    value.exports.every((item, index) => isObject(item) && item.address === dependencies.export_addresses[index]);
 }
 
 function validManifestClaim(value, stateRequirement, embedded) {
@@ -625,6 +771,7 @@ function validViewRecipe(value) {
     if (table.include_entity_id === true) available.add("entity_id");
     if (table.include_type === true) available.add("entity_type");
     if (table.include_layer === true) available.add("entity_layer");
+    if (table.row_source === "automatic_relations") { available.add("from"); available.add("to"); available.add("relation_type"); }
     const reserved = new Set(reservedValues);
     for (const column of table.columns) {
       if (!isObject(column) || typeof column.address !== "string" || typeof column.id !== "string" ||
@@ -661,7 +808,7 @@ function validViewRecipe(value) {
     if (!Array.isArray(table.sorts) || !table.sorts.every((sort) => isObject(sort) && typeof sort.column_id === "string" && available.has(sort.column_id))) return false;
     if (!isObject(value.dependencies) || !Array.isArray(value.dependencies.state_reads) || directReads.some((read) => !hasStateRead(value.dependencies.state_reads, read))) return false;
   } else if (value.state_input !== "none") return false;
-  return Array.isArray(value.exports) && value.exports.every((item) => isObject(item) && item.view_address === address && validExportInView(item, value.category, shape.kind, value.state_requirement, diffCount === 3));
+  return Array.isArray(value.exports) && validLocallyDerivableViewDependencies(value) && value.exports.every((item) => isObject(item) && item.view_address === address && validExportInView(item, value.category, shape.kind, value.state_requirement, diffCount === 3));
 }
 
 function realUTCDateTime(value) {
@@ -899,6 +1046,84 @@ function addLayerDrawFormats(ajv) {
   ajv.addFormat("date-time", {type: "string", validate: realUTCDateTime});
 }
 
+function semanticSubjectKindRank(kind) {
+  return ["project", "pack", "entity_type", "relation_type", "layer", "entity", "relation", "query", "view", "reference", "entity_type_column", "entity_type_constraint", "relation_type_column", "relation_type_constraint", "entity_row", "relation_row", "query_parameter", "view_table_column", "view_export"].indexOf(kind);
+}
+
+function compareModuleOrder(left, right) {
+  const origin = (raw) => {
+    if (!isObject(raw) || typeof raw.kind !== "string") return undefined;
+    if (raw.kind === "project") return [0, ""];
+    return raw.kind === "pack" && typeof raw.pack_address === "string" ? [1, raw.pack_address] : undefined;
+  };
+  const leftOrigin = origin(left.origin);
+  const rightOrigin = origin(right.origin);
+  if (leftOrigin === undefined || rightOrigin === undefined || typeof left.module_path !== "string" || typeof right.module_path !== "string") return undefined;
+  if (leftOrigin[0] !== rightOrigin[0]) return leftOrigin[0] - rightOrigin[0];
+  const pack = compareUnicodeScalars(leftOrigin[1], rightOrigin[1]);
+  return pack !== 0 ? pack : compareUnicodeScalars(left.module_path, right.module_path);
+}
+
+function compareRangePosition(left, right) {
+  if (typeof left.start_byte !== "string" || typeof right.start_byte !== "string" || typeof left.end_byte !== "string" || typeof right.end_byte !== "string") return undefined;
+  const start = compareCanonicalUnsignedDecimals(left.start_byte, right.start_byte);
+  return start === undefined || start !== 0 ? start : compareCanonicalUnsignedDecimals(left.end_byte, right.end_byte);
+}
+
+function compareCanonicalCollection(profile, left, right) {
+  if (!isObject(left) || !isObject(right)) return undefined;
+  const stable = (property) => typeof left[property] === "string" && typeof right[property] === "string" ? compareStableAddresses(left[property], right[property]) : undefined;
+  const text = (property) => typeof left[property] === "string" && typeof right[property] === "string" ? compareUnicodeScalars(left[property], right[property]) : undefined;
+  const kind = (property) => {
+    if (typeof left[property] !== "string" || typeof right[property] !== "string") return undefined;
+    const leftRank = semanticSubjectKindRank(left[property]);
+    const rightRank = semanticSubjectKindRank(right[property]);
+    return leftRank < 0 || rightRank < 0 ? undefined : leftRank - rightRank;
+  };
+  const range = () => isObject(left.range) && isObject(right.range) ? compareRangePosition(left.range, right.range) : undefined;
+  const chain = (...comparisons) => {
+    for (const comparison of comparisons) {
+      const value = comparison();
+      if (value === undefined || value !== 0) return value;
+    }
+    return 0;
+  };
+  if (profile === "child_set") return chain(() => stable("owner_address"), () => kind("child_kind"));
+  if (profile === "reference_id") return text("id");
+  if (profile === "subject_kind") return kind("kind");
+  if (profile === "module_scope") return isObject(left.module) && isObject(right.module) ? compareModuleOrder(left.module, right.module) : undefined;
+  if (profile === "source_file") return compareModuleOrder(left, right);
+  if (profile === "source_asset") return chain(() => stable("subject_address"), () => text("locator"));
+  if (profile === "semantic_reference") return chain(() => stable("source_address"), range, () => stable("target_address"), () => kind("target_kind"), () => text("via"));
+  if (profile === "source_binding") {
+    const owner = () => {
+      const leftOwner = left.target_owner_address ?? "";
+      const rightOwner = right.target_owner_address ?? "";
+      if (typeof leftOwner !== "string" || typeof rightOwner !== "string") return undefined;
+      return leftOwner === "" || rightOwner === "" ? compareUnicodeScalars(leftOwner, rightOwner) : compareStableAddresses(leftOwner, rightOwner);
+    };
+    return chain(() => stable("source_address"), range, () => stable("target_address"), () => kind("target_kind"), owner, () => text("via"));
+  }
+  if (profile === "export_binding") {
+    const module = () => isObject(left.module) && isObject(right.module) ? compareModuleOrder(left.module, right.module) : undefined;
+    const reexport = () => typeof left.re_export === "boolean" && typeof right.re_export === "boolean" ? Number(left.re_export) - Number(right.re_export) : undefined;
+    return chain(module, range, () => text("public_name"), () => stable("target_address"), reexport);
+  }
+  return undefined;
+}
+
+function validChildSet(value) {
+  if (typeof value.owner_address !== "string" || typeof value.child_kind !== "string") return false;
+  const ownerKind = stableAddressSubject(value.owner_address)?.kind;
+  const allowed = {
+    project: ["entity_type", "relation_type", "layer", "entity", "relation", "query", "view", "reference"],
+    pack: ["entity_type", "relation_type", "query", "view", "reference"],
+    entity_type: ["entity_type_column", "entity_type_constraint"], relation_type: ["relation_type_column", "relation_type_constraint"],
+    entity: ["entity_row"], relation: ["relation_row"], query: ["query_parameter"], view: ["view_table_column", "view_export"],
+  };
+  return ownerKind !== undefined && (allowed[ownerKind]?.includes(value.child_kind) ?? false);
+}
+
 function addLayerDrawVocabulary(ajv, meta) {
   const registrations = new Map();
   const register = (definition) => {
@@ -935,6 +1160,12 @@ function addLayerDrawVocabulary(ajv, meta) {
       if (typeof left !== "string" || typeof right !== "string" || compareStableAddresses(left, right) >= 0) return false;
     }
     return true;
+  }});
+  register({keyword: "x-layerdraw-canonical-collection-order", schemaType: "string", type: "array", errors: false, validate(profile, data) {
+    return data.every((_, index) => index === 0 || (compareCanonicalCollection(profile, data[index - 1], data[index]) ?? 0) < 0);
+  }});
+  register({keyword: "x-layerdraw-child-set", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
+    return !enabled || !isObject(data) || validChildSet(data);
   }});
   register({keyword: "x-layerdraw-address-owners", schemaType: "array", type: "object", errors: false, validate(rules, data) {
     if (data === null || Array.isArray(data)) return true;
@@ -1089,7 +1320,7 @@ async function authority() {
     readJSON("semantic/v1.schema.json"),
     readJSON("engine-protocol/v1.schema.json"),
   ]);
-  const ajv = new Ajv2020({allErrors: true, strict: true, strictRequired: false, validateFormats: true});
+  const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: true});
   const rootRequirements = addLayerDrawVocabulary(ajv, meta);
   addLayerDrawFormats(ajv);
   ajv.addMetaSchema(meta);
@@ -1377,4 +1608,98 @@ test("independent schema authority enforces the published recursive scalar-Unico
   for (const vector of corpus.rejection_cases) await context.test(`${vector.name} rejected`, () => {
     assert.equal(compile.wire(vector.schema_id, vector.type)(vector.input), false);
   });
+});
+
+test("independent schema authority preserves compiler semantic authority", async () => {
+  const compile = await authority();
+  const semantic = "https://schemas.layerdraw.dev/semantic/v1";
+  const engine = "https://schemas.layerdraw.dev/engine-protocol/v1";
+  const corpusValue = async (path, name) => {
+    const corpus = await readJSON(path);
+    return structuredClone(corpus.canonical_cases.find((item) => item.name === name).value);
+  };
+  const parameter = (format, value) => ({
+    id: "x", address: "ldl:project:p:query:q:parameter:x", value_type: "string",
+    reserved_enum_values: [], required: false, format,
+    default: {kind: "string", string_value: value},
+  });
+  const validateParameter = compile(semantic, "QueryRecipeParameter");
+  for (const [format, value] of [["email", "first.last@example.com"], ["ipv6", "::ffff:192.0.2.1"], ["cidr", "192.0.2.0/24"]]) assert.equal(validateParameter(parameter(format, value)), true);
+  for (const [format, value] of [["uri", "http://exa mple.com"], ["ipv6", "1:2:3:4:5:6:7:8:9"], ["ipv6", "1::2::3"], ["cidr", "192.0.2.1/24"]]) assert.equal(validateParameter(parameter(format, value)), false);
+
+  const validatePredicate = compile(semantic, "RecipePredicate");
+  assert.equal(validatePredicate({kind: "field", field: "id", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "in", value: {kind: "scalar_set", scalar_values: [{kind: "string", string_value: "z"}, {kind: "string", string_value: "a"}]}}), true);
+
+  const validateQuery = compile(semantic, "QueryRecipe");
+  let query = await corpusValue("fixtures/conformance/query-authority-v1.json", "query_recipe_minimal");
+  query.where = {kind: "field", field: "from", operator: "exists", operand_type: {kind: "address", address_kind: "entity"}};
+  assert.equal(validateQuery(query), false);
+  query = await corpusValue("fixtures/conformance/query-authority-v1.json", "query_recipe_minimal");
+  query.relation_where = {kind: "field", field: "layer", operator: "exists", operand_type: {kind: "address", address_kind: "layer"}};
+  assert.equal(validateQuery(query), false);
+
+  const validateView = compile(semantic, "ViewRecipe");
+  let view = await corpusValue("fixtures/conformance/view-export-semantics-v1.json", "complete_owned_view_graph");
+  view.dependencies.query_addresses = [];
+  assert.equal(validateView(view), false);
+  view = await corpusValue("fixtures/conformance/view-export-semantics-v1.json", "complete_owned_view_graph");
+  view.dependencies.export_addresses = [];
+  assert.equal(validateView(view), false);
+  view = await corpusValue("fixtures/conformance/view-export-semantics-v1.json", "complete_owned_view_graph");
+  const renameExport = (source, id) => ({...structuredClone(source), id, address: `ldl:project:p:view:v:export:${id}`, filename: `${id}.json`});
+  const zebra = renameExport(view.exports[0], "zebra");
+  const alpha = renameExport(view.exports[0], "alpha");
+  view.exports = [zebra, alpha];
+  view.dependencies.export_addresses = [zebra.address, alpha.address];
+  assert.equal(validateView(view), true);
+  view = await corpusValue("fixtures/conformance/semantic-root-authority-v1.json", "owned_table_columns_disjoint_from_reservations");
+  view.relation_projection_overrides = {"ldl:project:p:relation-type:r": {table: {row_mode: "automatic", include_from: true, include_to: true, include_relation_type: true}}};
+  view.dependencies.relation_type_addresses = ["ldl:project:p:relation-type:r"];
+  Object.assign(view.shape.table, {columns: [], include_entity_id: false, include_type: false, include_layer: false, row_source: "automatic_relations", sorts: [{column_id: "from", direction: "ascending", absent: "last"}]});
+  assert.equal(validateView(view), true);
+
+  const validateExport = compile(semantic, "ExportRecipe");
+  const exported = await corpusValue("fixtures/conformance/view-export-semantics-v1.json", "contract_export_svg");
+  exported.source_refs = true;
+  exported.requires_source_manifest = false;
+  assert.equal(validateExport(exported), false);
+
+  const hash = (character) => `sha256:${character.repeat(64)}`;
+  const module = (path) => ({origin: {kind: "project"}, module_path: path});
+  const range = (path) => ({...module(path), start_byte: "0", end_byte: "1"});
+  assert.equal(compile(semantic, "ChildSetHash")({owner_address: "ldl:project:p:entity:e", child_kind: "query_parameter", child_addresses: [], hash: hash("a")}), false);
+  assert.equal(compile(semantic, "SourceBindingRecord")({source_address: "ldl:project:p:view:v", target_address: "ldl:project:p:query:q:parameter:x", target_kind: "query_parameter", via: "argument", module: module("document.ldl"), range: range("document.ldl")}), false);
+
+  const result = structuredClone((await readJSON("fixtures/engine/compile-success.json")).payload);
+  const childSets = [
+    {owner_address: "ldl:project:p", child_kind: "entity_type", child_addresses: [], hash: hash("a")},
+    {owner_address: "ldl:project:p", child_kind: "relation_type", child_addresses: [], hash: hash("b")},
+  ];
+  const validateResult = compile(engine, "CompileResult");
+  result.child_set_hashes = childSets;
+  assert.equal(validateResult(result), true);
+  result.child_set_hashes = [childSets[1], childSets[0]];
+  assert.equal(validateResult(result), false);
+
+  const semanticIndex = structuredClone((await readJSON("fixtures/engine/compile-success.json")).payload.semantic_index);
+  const references = [
+    {source_address: "ldl:project:p:entity:a", target_address: "ldl:project:p:entity:b", target_kind: "entity", via: "test", range: range("document.ldl")},
+    {source_address: "ldl:project:p:entity:b", target_address: "ldl:project:p:entity:a", target_kind: "entity", via: "test", range: range("document.ldl")},
+  ];
+  const validateIndex = compile(semantic, "SemanticIndex");
+  semanticIndex.references = references;
+  assert.equal(validateIndex(semanticIndex), true);
+  semanticIndex.references = [references[1], references[0]];
+  assert.equal(validateIndex(semanticIndex), false);
+
+  const sourceMap = structuredClone((await readJSON("fixtures/engine/compile-success.json")).payload.source_map);
+  const files = [
+    {origin: {kind: "project"}, module_path: "a.ldl", digest: hash("a"), byte_length: "0"},
+    {origin: {kind: "project"}, module_path: "z.ldl", digest: hash("b"), byte_length: "0"},
+  ];
+  const validateSourceMap = compile(semantic, "SourceMap");
+  sourceMap.files = files;
+  assert.equal(validateSourceMap(sourceMap), true);
+  sourceMap.files = [files[1], files[0]];
+  assert.equal(validateSourceMap(sourceMap), false);
 });

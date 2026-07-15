@@ -26,8 +26,10 @@
       "minItems": 1,
       "uniqueItems": true
     },
+    "x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["child_set", "export_binding", "module_scope", "reference_id", "semantic_reference", "source_asset", "source_binding", "source_file", "subject_kind"]},
     "x-layerdraw-canonical-enum-order": {"type": "boolean", "const": true},
     "x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
+    "x-layerdraw-child-set": {"type": "boolean", "const": true},
     "x-layerdraw-go-package": {"type": "string", "minLength": 1},
     "x-layerdraw-disjoint-arrays": {
       "type": "array",
@@ -163,8 +165,8 @@
       },
       "required": ["kind"],
       "oneOf": [
-        {"required": ["address"]},
-        {"required": ["addresses"]}
+        {"properties": {"address": true}, "required": ["address"]},
+        {"properties": {"addresses": true}, "required": ["addresses"]}
       ],
       "additionalProperties": false
     },
