@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -113,6 +114,22 @@ func TestDevelopmentReleaseManifestMatchesLinkedAuthority(t *testing.T) {
 	wantDigest := "sha256:" + hex.EncodeToString(digest[:])
 	if releaseManifestDigest != wantDigest || manifest.EngineProtocolSchemaDigest != engineprotocol.SchemaDigest || manifest.Release != engine.DevelopmentVersion {
 		t.Fatalf("linked=%q file=%q release=%q", releaseManifestDigest, manifest.EngineProtocolSchemaDigest, manifest.Release)
+	}
+}
+
+func TestReleaseManifestDigestFromSidecarBytes(t *testing.T) {
+	data := []byte("{\"manifest_version\":1}\n")
+	path := filepath.Join(t.TempDir(), "layerdraw-release-manifest.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(data)
+	want := "sha256:" + hex.EncodeToString(digest[:])
+	if got, err := releaseManifestDigestFromFile(path); err != nil || got != want {
+		t.Fatalf("digest=%q want=%q err=%v", got, want, err)
+	}
+	if _, err := releaseManifestDigestFromFile(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("missing release manifest was accepted")
 	}
 }
 

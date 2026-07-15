@@ -13,13 +13,13 @@ COVERAGE_BASE_REF ?= origin/main
 ENGINE_BINARY := dist/layerdraw-engine
 ENGINE_WASM_DIR := dist/engine-wasm
 LICENSE_REPORT := reports/dependency-licenses.json
-GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen
+GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen ./tools/releaseset
 
 .DEFAULT_GOAL := build
 
 .PHONY: bootstrap generate generate-check format format-check lint typecheck test coverage coverage-check license-check license-report security \
 	conformance integration build engine-wasm engine-wasm-check engine-wasm-reproducible ci-engine-wasm-check ci-engine-wasm-reproducible \
-	protocol-package-check package verify-packaged ci clean
+	protocol-package-check package verify-packaged release-set release-set-check release-set-reproducible ci clean
 
 bootstrap:
 	$(GO) mod download all
@@ -146,7 +146,18 @@ verify-packaged: package
 		LAYERDRAW_BUNDLE_DIR="$(CURDIR)/dist" \
 		$(GO) test ./tests/packaged/...
 
-ci: generate-check format-check lint typecheck coverage-check conformance integration license-check security protocol-package-check package verify-packaged ci-engine-wasm-check ci-engine-wasm-reproducible
+release-set:
+	./tools/build-release-set.sh
+
+release-set-check: release-set
+	$(GO) run ./tools/releaseset verify -root "$(CURDIR)" -output "$(CURDIR)/dist/release-set"
+	LAYERDRAW_RELEASE_SET_DIR="$(CURDIR)/dist/release-set" \
+		$(GO) test -run FixedReleaseSet ./tests/packaged/...
+
+release-set-reproducible:
+	./tools/check-release-set-reproducible.sh
+
+ci: generate-check format-check lint typecheck coverage-check conformance integration license-check security protocol-package-check package verify-packaged ci-engine-wasm-check ci-engine-wasm-reproducible release-set-check release-set-reproducible
 
 clean:
 	rm -rf dist coverage reports .turbo

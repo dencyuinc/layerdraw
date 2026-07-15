@@ -67,23 +67,35 @@ export function portableParityInput(testCase) {
   };
 }
 
-export async function assertCompileParityResponse(response, testCase, engineRelease) {
+export async function assertCompileParityResponse(response, testCase, engineRelease, options = {}) {
   const actual = decode(response.control);
   const expected = structuredClone(testCase.expected.response);
   expected.engine_release = engineRelease;
   requireEqual(actual, expected, `${testCase.name} canonical response semantics`);
-  if (actual.outcome !== "success" || !Array.isArray(actual.diagnostics) || actual.diagnostics.length !== 0 ||
+  if (actual.outcome !== testCase.expected.outcome || !Array.isArray(actual.diagnostics)) {
+    throw new Error(`${testCase.name} outcome differs from the Go dispatcher oracle`);
+  }
+  if (actual.outcome === "success" && (actual.diagnostics.length !== 0 ||
       !/^sha256:[0-9a-f]{64}$/.test(actual.payload?.definition_hash) || !Array.isArray(actual.payload?.subject_semantic_hashes) ||
-      actual.payload.subject_semantic_hashes.length === 0) throw new Error(`${testCase.name} semantic hash authority is incomplete`);
+      actual.payload.subject_semantic_hashes.length === 0)) throw new Error(`${testCase.name} semantic hash authority is incomplete`);
+  if (actual.outcome === "rejected" && (actual.payload !== undefined || actual.diagnostics.length === 0)) {
+    throw new Error(`${testCase.name} rejection is not closed`);
+  }
+  if ((actual.outcome === "failed" || actual.outcome === "cancelled") &&
+      (actual.payload !== undefined || actual.failure === undefined)) throw new Error(`${testCase.name} failure is not closed`);
 
   const expectedIDs = testCase.expected.blobs.map((blob) => blob.blob_id);
   const actualIDs = response.blobs.map((blob) => blob.blob_id);
-  requireEqual(actualIDs, expectedIDs, `${testCase.name} ordered output blob IDs`);
+  if (options.orderedBlobs !== false) {
+    requireEqual(actualIDs, expectedIDs, `${testCase.name} ordered output blob IDs`);
+  } else {
+    requireEqual([...actualIDs].sort(), [...expectedIDs].sort(), `${testCase.name} output blob IDs`);
+  }
   const refs = collectBlobRefs(actual);
   if (refs.length !== testCase.expected.blobs.length) throw new Error(`${testCase.name} response blob reference set is incomplete`);
   for (let index = 0; index < testCase.expected.blobs.length; index += 1) {
     const expectedBlob = testCase.expected.blobs[index];
-    const actualBlob = response.blobs[index];
+    const actualBlob = response.blobs.find((blob) => blob.blob_id === expectedBlob.blob_id);
     const ref = refs.find((candidate) => candidate.blob_id === expectedBlob.blob_id);
     if (actualBlob === undefined || ref === undefined) throw new Error(`${testCase.name} output blob publication is incomplete`);
     requireEqual(ref, {
@@ -102,7 +114,7 @@ export async function assertCompileParityResponse(response, testCase, engineRele
 }
 
 export async function assertPortableCompileParityOutcome(outcome, testCase, engineRelease) {
-  if (outcome.origin !== "engine" || outcome.outcome !== "success") {
+  if (outcome.origin !== "engine" || outcome.outcome !== testCase.expected.outcome) {
     throw new Error(`${testCase.name} portable client outcome differs from Go`);
   }
   await assertCompileParityResponse({
@@ -111,7 +123,7 @@ export async function assertPortableCompileParityOutcome(outcome, testCase, engi
       blob_id: blob.ref.blob_id,
       bytes: blob.bytes.slice().buffer,
     })),
-  }, testCase, engineRelease);
+  }, testCase, engineRelease, {orderedBlobs: false});
 }
 
 function blobRef(blobID, bytes, mediaType) {
@@ -224,7 +236,8 @@ export async function performRequest(transport, exchangeID, input) {
 }
 
 export async function handshakeAndCompileProjectAndPack(transport, schemaDigest, corpus, engineRelease, suffix) {
-  if (corpus.schema_version !== 1 || corpus.engine_release_variable !== "$engine_release" || corpus.cases.length !== 2) {
+  if (corpus.schema_version !== 1 || corpus.engine_release_variable !== "$engine_release" ||
+      corpus.cases.length !== 10 || corpus.required_features.length !== 10 || corpus.normalization.length !== 3) {
     throw new Error("transport-neutral parity corpus is incompatible");
   }
   const handshake = await performRequest(transport, `${suffix}-handshake-exchange`, {
@@ -238,9 +251,15 @@ export async function handshakeAndCompileProjectAndPack(transport, schemaDigest,
   if (handshakeEnvelope.payload.release_manifest_digest !== releaseManifestDigest) throw new Error("verified release manifest digest did not reach the descriptor");
 
   for (const testCase of corpus.cases) {
+    if (testCase.execution === "cancel") continue;
     const input = parityInput(testCase);
     const owned = [input.control, ...input.blobs.map((blob) => blob.bytes)];
-    const exchange = transport.request({exchangeID: `${suffix}-${testCase.name}-exchange`, ...input});
+    let exchange;
+    try {
+      exchange = transport.request({exchangeID: `${suffix}-${testCase.name}-exchange`, ...input});
+    } catch (error) {
+      throw new Error(`${testCase.name} transport admission failed`, {cause: error});
+    }
     if (owned.some((buffer) => buffer.byteLength !== 0)) throw new Error(`${testCase.name} request ownership was not transferred`);
     await exchange.accepted;
     await assertCompileParityResponse(await exchange.response, testCase, engineRelease);

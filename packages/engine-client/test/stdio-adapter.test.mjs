@@ -13,7 +13,10 @@ import {
   EngineClientTransportError,
 } from "../dist/index.js";
 import { createStdioEngineClient } from "../dist/stdio.js";
-import { makePortableRequest } from "./support.mjs";
+import {
+  assertPortableCompileParityOutcome,
+  portableParityInput,
+} from "../../engine-wasm/test/shared/real-engine.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const temporary = await mkdtemp(join(tmpdir(), "layerdraw-engine-client-stdio-"));
@@ -21,6 +24,10 @@ const binaryPath = join(temporary, "layerdraw-engine");
 const manifestBytes = await readFile(
   join(repositoryRoot, "deploy/development-release-manifest.json"),
 );
+const parityCorpus = JSON.parse(await readFile(
+  join(repositoryRoot, "tests/conformance/testdata/engine_compile_parity_v1.json"),
+  "utf8",
+));
 const releaseManifestDigest = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
 const build = spawnSync(
   "go",
@@ -50,25 +57,36 @@ const clientOptions = Object.freeze({
   disposeTimeoutMs: 2_000,
 });
 
-test("stdio client negotiates, compiles through the real Go sidecar, restarts, and disposes", async () => {
+test("stdio client executes the portable corpus through the real Go sidecar", async (context) => {
   const client = await createStdioEngineClient({
     client: clientOptions,
     binaryPath,
     cwd: repositoryRoot,
   });
+  context.after(() => client.dispose());
   assert.equal(client.state, "ready");
   assert.equal(client.hasCapability("engine.compile"), true);
   assert.deepEqual(client.getCapabilities().transports, ["stdio"]);
   const firstEndpoint = client.getEndpoint();
 
-  const outcome = await client.compile(makePortableRequest().request);
-  assert.equal(outcome.origin, "engine");
-  assert.equal(outcome.outcome, "success");
-  assert.ok(outcome.blobs.length >= 2);
-  for (const blob of outcome.blobs) {
-    assert.ok(blob.bytes instanceof Uint8Array);
-    assert.equal(blob.bytes.byteLength, Number(blob.ref.size));
+  for (const testCase of parityCorpus.cases) {
+    if (testCase.execution === "cancel") continue;
+    const outcome = await client.compile(portableParityInput(testCase), {
+      requestId: testCase.expected.response.request_id,
+    });
+    await assertPortableCompileParityOutcome(outcome, testCase, "0.0.0-dev");
   }
+  const cancellation = parityCorpus.cases.find((testCase) => testCase.execution === "cancel");
+  assert.notEqual(cancellation, undefined);
+  const controller = new AbortController();
+  const pendingCancellation = client.compile(portableParityInput(cancellation), {
+    requestId: cancellation.expected.response.request_id,
+    signal: controller.signal,
+  });
+  controller.abort();
+  const cancelled = await pendingCancellation;
+  assert.equal(cancelled.origin, "client");
+  assert.equal(cancelled.outcome, "cancelled");
 
   await client.restart();
   assert.equal(client.getEndpoint().generation, firstEndpoint.generation + 1);

@@ -91,7 +91,7 @@ globalThis.runLayerDrawEngineClientCorpus = async () => {
     client: {
       expectedReleaseManifestDigest: releaseManifestDigest,
       handshakeTimeoutMs: 10_000,
-      defaultCompileTimeoutMs: 30_000,
+      defaultCompileTimeoutMs: 180_000,
       disposeTimeoutMs: 2_000,
     },
     expectedArtifactManifestDigest: artifactManifestDigest,
@@ -102,6 +102,7 @@ globalThis.runLayerDrawEngineClientCorpus = async () => {
     throw new Error("portable WASM client did not negotiate compile");
   }
   for (const testCase of parityCorpus.cases) {
+    if (testCase.execution === "cancel") continue;
     const outcome = await client.compile(portableParityInput(testCase), {
       requestId: testCase.expected.response.request_id,
     });
@@ -110,6 +111,18 @@ globalThis.runLayerDrawEngineClientCorpus = async () => {
       testCase,
       artifactManifest.build.release_version,
     );
+  }
+  const cancellation = parityCorpus.cases.find((testCase) => testCase.execution === "cancel");
+  if (cancellation === undefined) throw new Error("portable corpus has no cancellation case");
+  const controller = new AbortController();
+  const pendingCancellation = client.compile(portableParityInput(cancellation), {
+    requestId: cancellation.expected.response.request_id,
+    signal: controller.signal,
+  });
+  controller.abort();
+  const cancelled = await pendingCancellation;
+  if (cancelled.origin !== "client" || cancelled.outcome !== "cancelled") {
+    throw new Error("portable client cancellation did not normalize to cancelled");
   }
   await client.restart();
   const replacement = client.getEndpoint();

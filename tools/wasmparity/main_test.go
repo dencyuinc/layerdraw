@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -22,13 +23,27 @@ func TestGeneratedParityCorpusIsCurrentAndDeterministic(t *testing.T) {
 	if err != nil || !equal {
 		t.Fatalf("two in-process corpus generations differ: equal=%v err=%v", equal, err)
 	}
-	if first.SchemaVersion != 1 || first.EngineReleaseVariable != engineReleaseVariable || len(first.Cases) != 2 ||
-		first.Cases[0].Name != "canonical_project" || first.Cases[1].Name != "canonical_root_pack" {
-		t.Fatalf("incomplete parity corpus: %+v", first)
+	wantNames := []string{
+		"single_module_project", "multi_module_project", "installed_pack_project", "root_pack", "asset_project",
+		"all_declarations_project", "deterministic_rejection", "resource_limit_rejection", "representative_large_graph", "cancellation",
+	}
+	gotNames := make([]string, len(first.Cases))
+	for index, test := range first.Cases {
+		gotNames[index] = test.Name
+	}
+	if first.SchemaVersion != 1 || first.EngineReleaseVariable != engineReleaseVariable ||
+		!reflect.DeepEqual(gotNames, wantNames) || len(first.RequiredFeatures) != 10 || len(first.Normalization) != 3 {
+		t.Fatalf("incomplete parity corpus: names=%v features=%v normalization=%v", gotNames, first.RequiredFeatures, first.Normalization)
 	}
 	for _, test := range first.Cases {
-		if len(test.Request.ControlBase64) == 0 || len(test.Request.Blobs) == 0 || len(test.Expected.Response) == 0 || len(test.Expected.Blobs) != 2 {
+		if len(test.Features) == 0 || len(test.Request.ControlBase64) == 0 || len(test.Request.Blobs) == 0 || len(test.Expected.Response) == 0 || test.Expected.Outcome == "" {
 			t.Fatalf("incomplete %s vector", test.Name)
+		}
+		if test.Expected.Outcome == "success" && len(test.Expected.Blobs) == 0 {
+			t.Fatalf("successful %s vector has no canonical bytes", test.Name)
+		}
+		if test.Expected.Outcome != "success" && len(test.Expected.Blobs) != 0 {
+			t.Fatalf("terminal %s vector published blobs", test.Name)
 		}
 	}
 	want, err := canonicalCorpus(first)
