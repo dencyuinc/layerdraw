@@ -122,6 +122,377 @@ function orderedPair(data, rule) {
   return false;
 }
 
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function realDate(value) {
+  const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(value);
+  if (match === null || match[1] === "0000") return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1];
+}
+
+function validRecipeScalar(value) {
+  if (value.kind === "date") return typeof value.string_value === "string" && realDate(value.string_value);
+  if (value.kind === "datetime") {
+    if (typeof value.string_value !== "string") return false;
+    const match = /^([0-9]{4}-[0-9]{2}-[0-9]{2})T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.([0-9]{1,3}))?Z$/.exec(value.string_value);
+    return match !== null && realDate(match[1]) && (match[2] === undefined || !match[2].endsWith("0"));
+  }
+  return value.kind !== "enum" || typeof value.string_value === "string" && value.string_value.length > 0;
+}
+
+function canonicalHostname(value) {
+  return value.length > 0 && value.length <= 253 && value === value.toLowerCase() && !value.endsWith(".") &&
+    value.split(".").every((label) => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label));
+}
+
+function validCanonicalStringFormat(format, value) {
+  if (format === "hostname") return canonicalHostname(value);
+  if (format === "email") {
+    const match = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([A-Za-z0-9.-]+)$/.exec(value);
+    return match !== null && canonicalHostname(match[1]);
+  }
+  if (format === "ipv4") {
+    const parts = value.split(".");
+    return parts.length === 4 && parts.every((part) => /^(0|[1-9][0-9]{0,2})$/.test(part) && Number(part) <= 255);
+  }
+  if (format === "ipv6") return /^[0-9a-f:]+$/.test(value) && value.includes(":") && !value.includes(":::") && value === value.toLowerCase();
+  if (format === "cidr") {
+    const parts = value.split("/");
+    if (parts.length !== 2 || !/^(0|[1-9][0-9]*)$/.test(parts[1])) return false;
+    if (validCanonicalStringFormat("ipv4", parts[0])) {
+      const bits = Number(parts[1]);
+      if (bits > 32) return false;
+      const octets = parts[0].split(".").map(Number);
+      const address = (((octets[0] << 24) >>> 0) + (octets[1] << 16) + (octets[2] << 8) + octets[3]) >>> 0;
+      const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+      return (address & mask) === address;
+    }
+    return validCanonicalStringFormat("ipv6", parts[0]) && Number(parts[1]) <= 128;
+  }
+  if (format === "uri") return /^[A-Za-z][A-Za-z0-9+.-]*:[\x21-\x7e]*$/.test(value) && !value.includes("\\") && !/%(?![0-9A-Fa-f]{2})/.test(value);
+  return false;
+}
+
+function validQueryParameter(value) {
+  const {value_type: valueType, reserved_enum_values: reserved} = value;
+  if (typeof valueType !== "string" || !Array.isArray(reserved)) return false;
+  const hasEnum = hasOwn(value, "enum_values");
+  const hasFormat = hasOwn(value, "format");
+  const hasMin = hasOwn(value, "min");
+  const hasMax = hasOwn(value, "max");
+  const hasMinLength = hasOwn(value, "min_length");
+  const hasMaxLength = hasOwn(value, "max_length");
+  if (valueType === "enum") {
+    if (!Array.isArray(value.enum_values) || value.enum_values.length === 0 ||
+        !value.enum_values.every((item) => typeof item === "string" && item.length > 0) ||
+        !reserved.every((item) => typeof item === "string" && item.length > 0)) return false;
+  } else if (hasEnum || reserved.length !== 0) return false;
+  if (hasFormat && valueType !== "string" ||
+      (hasMin || hasMax) && valueType !== "integer" && valueType !== "number" ||
+      (hasMinLength || hasMaxLength) && valueType !== "string") return false;
+  if (valueType === "integer") {
+    for (const property of ["min", "max"]) {
+      if (hasOwn(value, property) && !canonicalInteger(value[property], -(2n ** 53n) + 1n, (2n ** 53n) - 1n, /^(0|-[1-9][0-9]*|[1-9][0-9]*)$/)) return false;
+    }
+  }
+  if (!hasOwn(value, "default")) return true;
+  const defaultValue = value.default;
+  if (!isObject(defaultValue) || defaultValue.kind !== valueType) return false;
+  if (valueType === "enum") return value.enum_values.includes(defaultValue.string_value);
+  if (valueType === "string") {
+    if (typeof defaultValue.string_value !== "string") return false;
+    const length = BigInt(Array.from(defaultValue.string_value).length);
+    if (hasMinLength && length < BigInt(value.min_length) || hasMaxLength && length > BigInt(value.max_length)) return false;
+    return !hasFormat || validCanonicalStringFormat(value.format, defaultValue.string_value);
+  }
+  if (valueType === "integer" || valueType === "number") {
+    const property = valueType === "integer" ? "integer_value" : "number_value";
+    const number = Number(defaultValue[property]);
+    return Number.isFinite(number) && (!hasMin || number >= Number(value.min)) && (!hasMax || number <= Number(value.max));
+  }
+  return true;
+}
+
+function stableAddressSubject(address) {
+  const parts = address.split(":");
+  if (parts.length < 3 || parts[0] !== "ldl") return undefined;
+  let pathStart = 3;
+  let rootKind = "project";
+  if (parts[1] === "pack") {
+    if (parts.length < 4) return undefined;
+    pathStart = 4;
+    rootKind = "pack";
+  } else if (parts[1] !== "project") return undefined;
+  if (parts.length === pathStart) return {kind: rootKind, owner: ""};
+  if ((parts.length - pathStart) % 2 !== 0) return undefined;
+  const terminal = parts.at(-2);
+  let kind = new Map([
+    ["entity-type", "entity_type"], ["relation-type", "relation_type"], ["layer", "layer"], ["entity", "entity"],
+    ["relation", "relation"], ["query", "query"], ["view", "view"], ["reference", "reference"],
+    ["parameter", "query_parameter"], ["table-column", "view_table_column"], ["export", "view_export"],
+  ]).get(terminal);
+  if (terminal === "row") kind = parts.at(-4) === "entity" ? "entity_row" : parts.at(-4) === "relation" ? "relation_row" : undefined;
+  if (terminal === "column" || terminal === "constraint") {
+    const prefix = parts.at(-4) === "entity-type" ? "entity_type" : parts.at(-4) === "relation-type" ? "relation_type" : undefined;
+    kind = prefix === undefined ? undefined : `${prefix}_${terminal}`;
+  }
+  return kind === undefined ? undefined : {kind, owner: parts.slice(0, -2).join(":")};
+}
+
+function validStableAddressRoles(value, rules) {
+  for (const rule of rules) {
+    const expectedKind = value[rule.kind];
+    if (typeof expectedKind !== "string") return false;
+    const addresses = rule.address === undefined ? value[rule.addresses] : [value[rule.address]];
+    if (!Array.isArray(addresses)) return false;
+    const owner = rule.owner === undefined ? undefined : value[rule.owner];
+    for (const address of addresses) {
+      if (typeof address !== "string") return false;
+      const subject = stableAddressSubject(address);
+      if (subject === undefined || subject.kind !== expectedKind) return false;
+      const ownerPresent = typeof owner === "string";
+      if (rule.owner_policy === "children" && (!ownerPresent || subject.owner !== owner) ||
+          rule.owner_policy === "exact" && ((subject.owner !== "") !== ownerPresent || ownerPresent && subject.owner !== owner) ||
+          rule.owner_policy === "if_present" && ownerPresent && subject.owner !== owner ||
+          rule.owner_policy === "row_only" && ((subject.kind === "entity_row" || subject.kind === "relation_row") !== ownerPresent || ownerPresent && subject.owner !== owner)) return false;
+    }
+  }
+  return true;
+}
+
+const stateFields = [
+  "system.created_at", "system.updated_at", "system.created_by.kind", "system.created_by.id", "system.created_by.display_name",
+  "system.updated_by.kind", "system.updated_by.id", "system.updated_by.display_name", "system.created_revision", "system.updated_revision",
+  "provenance.source.kind", "provenance.source.label", "provenance.source.uri", "provenance.source.external_id",
+  "provenance.observed_at", "provenance.verified_at", "provenance.stale_after", "provenance.verified_by.kind",
+  "provenance.verified_by.id", "provenance.verified_by.display_name", "provenance.confidence",
+];
+const stateSubjects = ["entity", "relation", "entity_row", "relation_row"];
+
+function stateFieldValueType(field) {
+  if (["system.created_at", "system.updated_at", "provenance.observed_at", "provenance.verified_at", "provenance.stale_after"].includes(field)) return "datetime";
+  if (["system.created_by.kind", "system.updated_by.kind", "provenance.source.kind", "provenance.verified_by.kind"].includes(field)) return "enum";
+  return field === "provenance.confidence" ? "number" : "string";
+}
+
+function validStateRead(value) {
+  return typeof value.field_path === "string" && value.value_type === stateFieldValueType(value.field_path);
+}
+
+function validStateReadOrder(values) {
+  let previous = -1;
+  for (const value of values) {
+    if (!isObject(value) || !validStateRead(value)) return false;
+    const subjectRank = stateSubjects.indexOf(value.subject_kind);
+    const fieldRank = stateFields.indexOf(value.field_path);
+    const rank = subjectRank * stateFields.length + fieldRank;
+    if (subjectRank < 0 || fieldRank < 0 || rank <= previous) return false;
+    previous = rank;
+  }
+  return true;
+}
+
+function recipeOperand(raw) {
+  if (!isObject(raw) || typeof raw.kind !== "string") return undefined;
+  const operand = {
+    kind: raw.kind,
+    scalarType: typeof raw.scalar_type === "string" ? raw.scalar_type : "",
+    addressKind: typeof raw.address_kind === "string" ? raw.address_kind : "",
+  };
+  return operand.kind === "scalar" && operand.scalarType !== "" || operand.kind === "address" && operand.addressKind !== "" || operand.kind === "string_set" ? operand : undefined;
+}
+
+function equalRecipeOperands(left, right) {
+  return left.kind === right.kind && left.scalarType === right.scalarType && left.addressKind === right.addressKind;
+}
+
+function fieldRecipeOperand(field) {
+  if (["id", "display_name", "description"].includes(field)) return {kind: "scalar", scalarType: "string", addressKind: ""};
+  if (field === "tags") return {kind: "string_set", scalarType: "", addressKind: ""};
+  if (field === "layer") return {kind: "address", scalarType: "", addressKind: "layer"};
+  if (field === "from" || field === "to") return {kind: "address", scalarType: "", addressKind: "entity"};
+  return undefined;
+}
+
+function compareRecipeScalars(left, right) {
+  if (left.kind === "boolean") return Number(left.boolean_value) - Number(right.boolean_value);
+  if (left.kind === "integer") return BigInt(left.integer_value) < BigInt(right.integer_value) ? -1 : BigInt(left.integer_value) > BigInt(right.integer_value) ? 1 : 0;
+  if (left.kind === "number") return Number(left.number_value) - Number(right.number_value);
+  return compareUnicodeScalars(String(left.string_value), String(right.string_value));
+}
+
+function validRecipeScalarSet(raw, scalarType) {
+  if (!Array.isArray(raw)) return false;
+  let previous;
+  for (const value of raw) {
+    if (!isObject(value) || value.kind !== scalarType || previous !== undefined && compareRecipeScalars(previous, value) >= 0) return false;
+    previous = value;
+  }
+  return true;
+}
+
+function validRecipePredicateValue(value, operator, operand) {
+  if (value.kind === "parameter") return operator !== "in" && operator !== "not_in" &&
+    (operand.kind === "scalar" || operand.kind === "string_set" && operator === "contains");
+  if (operator === "in" || operator === "not_in") {
+    if (operand.kind === "scalar") return value.kind === "scalar_set" && validRecipeScalarSet(value.scalar_values, operand.scalarType);
+    if (operand.kind === "address" && value.kind === "address_set" && Array.isArray(value.address_values)) {
+      return value.address_values.every((address) => typeof address === "string" && stableAddressSubject(address)?.kind === operand.addressKind);
+    }
+    return false;
+  }
+  if (operand.kind === "string_set") {
+    if (operator === "eq" || operator === "ne") return value.kind === "scalar_set" && validRecipeScalarSet(value.scalar_values, "string");
+    return operator === "contains" && value.kind === "scalar" && isObject(value.scalar_value) && value.scalar_value.kind === "string";
+  }
+  if (operand.kind === "scalar") return value.kind === "scalar" && isObject(value.scalar_value) && value.scalar_value.kind === operand.scalarType;
+  return operand.kind === "address" && value.kind === "address" && typeof value.address_value === "string" && stableAddressSubject(value.address_value)?.kind === operand.addressKind;
+}
+
+function validRecipePredicate(value, predicateKind) {
+  if (value.kind === "all" || value.kind === "any") return Array.isArray(value.children) && value.children.every((child) => isObject(child) && validRecipePredicate(child, predicateKind));
+  if (value.kind === "not") return isObject(value.child) && validRecipePredicate(value.child, predicateKind);
+  if (value.kind === "rows") return isObject(value.predicate) && validRecipePredicate(value.predicate, "row");
+  if (value.kind !== "field" && value.kind !== "cell" && value.kind !== "state") return true;
+  const operand = recipeOperand(value.operand_type);
+  if (operand === undefined) return false;
+  if (value.kind === "field") {
+    const expected = fieldRecipeOperand(String(value.field));
+    if (expected !== undefined && !equalRecipeOperands(operand, expected)) return false;
+  }
+  if (value.kind === "state" && !equalRecipeOperands(operand, {kind: "scalar", scalarType: stateFieldValueType(String(value.field_path)), addressKind: ""})) return false;
+  const operator = value.operator;
+  let compatible = ["eq", "ne", "exists", "missing"].includes(operator);
+  if (["lt", "lte", "gt", "gte"].includes(operator)) compatible = operand.kind === "scalar" && ["integer", "number", "date", "datetime"].includes(operand.scalarType);
+  if (["in", "not_in"].includes(operator)) compatible = operand.kind === "scalar" || operand.kind === "address";
+  if (operator === "contains") compatible = operand.kind === "string_set" || operand.kind === "scalar" && operand.scalarType === "string";
+  if (["starts_with", "ends_with"].includes(operator)) compatible = operand.kind === "scalar" && operand.scalarType === "string";
+  return compatible && (["exists", "missing"].includes(operator) || isObject(value.value) && validRecipePredicateValue(value.value, operator, operand));
+}
+
+function contextFieldOperand(field, context) {
+  const common = fieldRecipeOperand(field);
+  if (common !== undefined) return common;
+  if (field === "address") return context === "entity" ? {kind: "address", scalarType: "", addressKind: "entity"} : context === "relation" ? {kind: "address", scalarType: "", addressKind: "relation"} : undefined;
+  if (field === "type") return context === "entity" ? {kind: "address", scalarType: "", addressKind: "entity_type"} : context === "relation" ? {kind: "address", scalarType: "", addressKind: "relation_type"} : undefined;
+  return undefined;
+}
+
+function queryDependencySets() {
+  return {
+    layer: new Set(), entity_type: new Set(), relation_type: new Set(), entity: new Set(), relation: new Set(),
+    column: new Set(), parameter: new Set(), state: new Map(),
+  };
+}
+
+function addQueryDependency(sets, kind, address) {
+  const target = kind === "entity_type_column" || kind === "relation_type_column" ? sets.column : sets[kind];
+  if (!(target instanceof Set)) return false;
+  target.add(address);
+  return true;
+}
+
+function validQueryPredicate(raw, context, queryAddress, parameters, sets) {
+  if (!isObject(raw)) return false;
+  if (raw.kind === "all" || raw.kind === "any") return Array.isArray(raw.children) && raw.children.every((child) => validQueryPredicate(child, context, queryAddress, parameters, sets));
+  if (raw.kind === "not") return validQueryPredicate(raw.child, context, queryAddress, parameters, sets);
+  if (raw.kind === "rows") {
+    if (!Array.isArray(raw.type_addresses)) return false;
+    const expectedKind = context === "entity" ? "entity_type" : "relation_type";
+    const rowContext = context === "entity" ? "entity_row" : "relation_row";
+    for (const address of raw.type_addresses) {
+      if (typeof address !== "string" || stableAddressSubject(address)?.kind !== expectedKind) return false;
+      addQueryDependency(sets, expectedKind, address);
+    }
+    return validQueryPredicate(raw.predicate, rowContext, queryAddress, parameters, sets);
+  }
+  let operand;
+  if (raw.kind === "field") {
+    const expected = contextFieldOperand(String(raw.field), context);
+    operand = recipeOperand(raw.operand_type);
+    if (expected === undefined || operand === undefined || !equalRecipeOperands(expected, operand)) return false;
+  } else if (raw.kind === "cell") {
+    if (context !== "entity_row" && context !== "relation_row" || !Array.isArray(raw.column_addresses) || raw.column_addresses.length === 0) return false;
+    const expectedKind = context === "entity_row" ? "entity_type_column" : "relation_type_column";
+    for (const address of raw.column_addresses) {
+      if (typeof address !== "string" || stableAddressSubject(address)?.kind !== expectedKind) return false;
+      sets.column.add(address);
+    }
+    operand = recipeOperand(raw.operand_type);
+  } else if (raw.kind === "state") {
+    const field = String(raw.field_path);
+    operand = recipeOperand(raw.operand_type);
+    if (operand === undefined || !equalRecipeOperands(operand, {kind: "scalar", scalarType: stateFieldValueType(field), addressKind: ""})) return false;
+    sets.state.set(`${context}\0${field}`, {subject_kind: context, field_path: field, value_type: stateFieldValueType(field)});
+  } else return false;
+  if (isObject(raw.value)) {
+    if (raw.value.kind === "parameter") {
+      const address = raw.value.parameter_address;
+      const expectedType = operand.kind === "string_set" ? "string" : operand.scalarType;
+      const subject = typeof address === "string" ? stableAddressSubject(address) : undefined;
+      if (subject?.kind !== "query_parameter" || subject.owner !== queryAddress || parameters.get(address) !== expectedType) return false;
+      sets.parameter.add(address);
+    }
+    const addresses = [
+      ...(typeof raw.value.address_value === "string" ? [raw.value.address_value] : []),
+      ...(Array.isArray(raw.value.address_values) ? raw.value.address_values : []),
+    ];
+    for (const address of addresses) {
+      if (typeof address !== "string") return false;
+      const subject = stableAddressSubject(address);
+      if (subject === undefined || !addQueryDependency(sets, subject.kind, address)) return false;
+    }
+  }
+  return true;
+}
+
+function dependencySetEquals(raw, expected) {
+  return Array.isArray(raw) && raw.length === expected.size && raw.every((item) => typeof item === "string" && expected.has(item));
+}
+
+function validQueryRecipe(value) {
+  if (typeof value.address !== "string" || !Array.isArray(value.parameters)) return false;
+  const parameters = new Map();
+  for (const parameter of value.parameters) {
+    if (!isObject(parameter) || typeof parameter.address !== "string" || typeof parameter.value_type !== "string") return false;
+    parameters.set(parameter.address, parameter.value_type);
+  }
+  const sets = queryDependencySets();
+  if (!isObject(value.select)) return false;
+  for (const [property, kind] of [["layer_addresses", "layer"], ["entity_type_addresses", "entity_type"], ["relation_type_addresses", "relation_type"], ["root_addresses", "entity"]]) {
+    if (!Array.isArray(value.select[property])) continue;
+    for (const address of value.select[property]) {
+      if (typeof address !== "string" || !addQueryDependency(sets, kind, address)) return false;
+    }
+  }
+  if (isObject(value.traverse) && Array.isArray(value.traverse.relation_type_addresses)) {
+    for (const address of value.traverse.relation_type_addresses) {
+      if (typeof address !== "string") return false;
+      sets.relation_type.add(address);
+    }
+  }
+  if (!validQueryPredicate(value.where, "entity", value.address, parameters, sets) ||
+      !validQueryPredicate(value.relation_where, "relation", value.address, parameters, sets)) return false;
+  const hasState = sets.state.size !== 0;
+  if (hasState !== (value.state_input === "optional" || value.state_input === "required") || !isObject(value.dependencies)) return false;
+  for (const property of ["layer", "entity_type", "relation_type", "entity", "relation", "column", "parameter"]) {
+    if (!dependencySetEquals(value.dependencies[`${property}_addresses`], sets[property])) return false;
+  }
+  return Array.isArray(value.dependencies.state_reads) && value.dependencies.state_reads.length === sets.state.size &&
+    value.dependencies.state_reads.every((read) => isObject(read) && sets.state.has(`${String(read.subject_kind)}\0${String(read.field_path)}`));
+}
+
 function validExportRecipe(value) {
   const extensions = new Map([
     ["json", ".json"], ["yaml", ".yaml"], ["svg", ".svg"], ["png", ".png"], ["pdf", ".pdf"],
@@ -129,10 +500,27 @@ function validExportRecipe(value) {
     ["pptx", ".pptx"], ["docx", ".docx"], ["mermaid", ".mmd"], ["bpmn", ".bpmn"], ["drawio", ".drawio"],
   ]);
   const extension = extensions.get(value.format);
-  return extension !== undefined && value.extension === extension && value.options?.kind === value.format &&
-    value.exporter_profile?.format === value.format && typeof value.filename === "string" &&
-    value.filename !== "" && value.filename !== "." && value.filename !== ".." &&
-    !/[\\/\0]/.test(value.filename) && value.filename.endsWith(extension) && value.filename.slice(0, -extension.length).length > 0;
+  if (extension === undefined || value.extension !== extension || !isObject(value.options) || value.options.kind !== value.format ||
+      !isObject(value.exporter_profile) || value.exporter_profile.format !== value.format || typeof value.filename !== "string" ||
+      value.filename === "" || value.filename === "." || value.filename === ".." || /[\\/\0]/.test(value.filename) ||
+      !value.filename.endsWith(extension) || value.filename.slice(0, -extension.length).length === 0) return false;
+  const fixedMaximum = new Map([
+    ["json", "lossless"], ["yaml", "lossless"], ["xlsx", "traceable_summary"], ["html", "traceable_summary"],
+    ["svg", "visual_only"], ["png", "visual_only"], ["pdf", "visual_only"], ["pptx", "visual_only"],
+    ["docx", "visual_only"], ["drawio", "visual_only"], ["bpmn", "lossy"],
+  ]).get(value.format);
+  if (fixedMaximum !== undefined && value.native_maximum_fidelity !== fixedMaximum) return false;
+  if (value.format === "csv" || value.format === "tsv") {
+    const maximum = value.options.bundle === true && value.options.header === true && value.options.source_manifest === true ? "traceable_summary" : "lossy";
+    if (value.native_maximum_fidelity !== maximum) return false;
+  }
+  if ((value.format === "markdown" || value.format === "mermaid") && !["lossy", "traceable_summary"].includes(value.native_maximum_fidelity)) return false;
+  const embedded = value.format === "xlsx" && value.options.view_data_json === true && value.options.hidden_ids === true;
+  if (embedded ? value.fidelity_basis !== "embedded_viewdata" || value.effective_maximum_fidelity !== "lossless" :
+    value.fidelity_basis !== "native" || value.effective_maximum_fidelity !== value.native_maximum_fidelity) return false;
+  const ranks = new Map([["lossy", 0], ["visual_only", 1], ["traceable_summary", 2], ["lossless", 3]]);
+  if (ranks.get(value.fidelity) > ranks.get(value.effective_maximum_fidelity)) return false;
+  return !(["lossless", "traceable_summary"].includes(value.fidelity) || value.format === "json" || value.format === "yaml") || value.source_refs === true;
 }
 
 function hasDirectStableAddressOwner(owner, child) {
@@ -140,17 +528,140 @@ function hasDirectStableAddressOwner(owner, child) {
   return parts.length >= 2 && parts.slice(0, -2).join(":") === owner;
 }
 
+function validViewProjection(value, projectionKind) {
+  const distinct = (left, right) => typeof value[left] === "string" && typeof value[right] === "string" && value[left] !== value[right];
+  if (projectionKind !== "composed") {
+    const pair = new Map([
+      ["diagram", ["source_endpoint", "target_endpoint"]], ["flow", ["source_endpoint", "target_endpoint"]],
+      ["matrix", ["row_endpoint", "column_endpoint"]], ["tree", ["parent_endpoint", "child_endpoint"]],
+    ]).get(projectionKind);
+    return pair !== undefined && distinct(pair[0], pair[1]);
+  }
+  const present = (name) => hasOwn(value, name);
+  if (value.mode === "nest") return distinct("parent_endpoint", "child_endpoint") && !present("overlay_endpoint") && !present("target_endpoint") && !present("badge_endpoint");
+  if (value.mode === "overlay") return distinct("overlay_endpoint", "target_endpoint") && !present("parent_endpoint") && !present("child_endpoint") && !present("badge_endpoint");
+  if (value.mode === "badge") return distinct("badge_endpoint", "target_endpoint") && !present("parent_endpoint") && !present("child_endpoint") && !present("overlay_endpoint");
+  return (value.mode === "edge" || value.mode === "hide") && ["parent_endpoint", "child_endpoint", "overlay_endpoint", "target_endpoint", "badge_endpoint"].every((name) => !present(name));
+}
+
+function viewTableValueMatches(column, kind, scalarType = "", enumValues) {
+  if (!isObject(column.value_type) || column.value_type.kind !== kind || kind === "scalar" && column.value_type.scalar_type !== scalarType) return false;
+  if (enumValues !== undefined && (!Array.isArray(column.value_type.enum_values) || column.value_type.enum_values.length !== enumValues.length ||
+      !column.value_type.enum_values.every((item, index) => item === enumValues[index]))) return false;
+  if (kind === "scalar") {
+    if (scalarType === "enum") {
+      if (enumValues === undefined && (!Array.isArray(column.value_type.enum_values) || column.value_type.enum_values.length === 0)) return false;
+    } else if (hasOwn(column.value_type, "enum_values")) return false;
+    if (hasOwn(column.value_type, "format") && scalarType !== "string") return false;
+  }
+  return true;
+}
+
+function stateEnumValues(field) {
+  if (["system.created_by.kind", "system.updated_by.kind", "provenance.verified_by.kind"].includes(field)) return ["user", "agent", "service_account", "anonymous"];
+  return field === "provenance.source.kind" ? ["manual", "import", "api", "agent", "external_system"] : undefined;
+}
+
+function hasStateRead(values, expected) {
+  return values.some((value) => isObject(value) && value.subject_kind === expected.subject_kind && value.field_path === expected.field_path && value.value_type === expected.value_type);
+}
+
+function validManifestClaim(value, stateRequirement, embedded) {
+  if (!isObject(value.options)) return false;
+  const explicit = (["csv", "tsv"].includes(value.options.kind) || ["markdown", "mermaid", "bpmn", "drawio"].includes(value.options.kind)) && value.options.source_manifest === true;
+  return value.requires_source_manifest === (explicit || stateRequirement !== "none" || value.source_refs === true && !embedded);
+}
+
+function validExportInView(value, category, shape, stateRequirement, diff) {
+  if (!isObject(value.options)) return false;
+  const {format, options} = value;
+  if (format === "json" || format === "yaml") {
+    return value.native_maximum_fidelity === "lossless" && value.effective_maximum_fidelity === "lossless" && value.fidelity_basis === "native" &&
+      validManifestClaim(value, stateRequirement, true) && !(diff && options.state_summary === true);
+  }
+  const matrix = {
+    diagram: {xlsx: "traceable_summary", html: "traceable_summary", csv: "traceable_summary", tsv: "traceable_summary", svg: "visual_only", png: "visual_only", pdf: "visual_only", pptx: "visual_only", docx: "visual_only", drawio: "visual_only", mermaid: "lossy"},
+    table: {xlsx: "traceable_summary", csv: "traceable_summary", tsv: "traceable_summary", html: "traceable_summary", pdf: "visual_only", pptx: "visual_only", docx: "visual_only", markdown: "lossy"},
+    matrix: {xlsx: "traceable_summary", csv: "traceable_summary", tsv: "traceable_summary", html: "traceable_summary", svg: "visual_only", png: "visual_only", pdf: "visual_only", pptx: "visual_only", docx: "visual_only"},
+    tree: {xlsx: "traceable_summary", csv: "traceable_summary", tsv: "traceable_summary", html: "traceable_summary", mermaid: "traceable_summary", svg: "visual_only", png: "visual_only", pdf: "visual_only", pptx: "visual_only", docx: "visual_only", drawio: "visual_only"},
+    flow: {xlsx: "traceable_summary", csv: "traceable_summary", tsv: "traceable_summary", html: "traceable_summary", mermaid: "traceable_summary", bpmn: "lossy", svg: "visual_only", png: "visual_only", pdf: "visual_only", pptx: "visual_only", docx: "visual_only", drawio: "visual_only", markdown: "lossy"},
+    context: {csv: "traceable_summary", tsv: "traceable_summary", xlsx: "traceable_summary", html: "traceable_summary", markdown: "traceable_summary", pdf: "visual_only", pptx: "visual_only", docx: "visual_only"},
+    diff: {csv: "traceable_summary", tsv: "traceable_summary", xlsx: "traceable_summary", html: "traceable_summary", markdown: "traceable_summary", pdf: "visual_only", pptx: "visual_only", docx: "visual_only"},
+  };
+  let native = matrix[shape]?.[format];
+  if (native === undefined) return false;
+  if ((format === "csv" || format === "tsv") && !(options.bundle === true && options.header === true && options.source_manifest === true) ||
+      (shape === "tree" || shape === "flow") && format === "mermaid" && options.source_manifest !== true) native = "lossy";
+  if (value.native_maximum_fidelity !== native) return false;
+  const fidelityEmbedded = format === "xlsx" && options.view_data_json === true && options.hidden_ids === true;
+  if (fidelityEmbedded ? value.effective_maximum_fidelity !== "lossless" || value.fidelity_basis !== "embedded_viewdata" :
+    value.effective_maximum_fidelity !== native || value.fidelity_basis !== "native") return false;
+  if (format === "xlsx") {
+    const profile = options.profile;
+    const compatible = profile === "type_workbook" && shape === "table" ||
+      ["diagram_workbook", "composed_diagram_workbook", "diagram_inventory_workbook"].includes(profile) && shape === "diagram" ||
+      profile === "matrix_workbook" && shape === "matrix" || profile === "tree_workbook" && shape === "tree" ||
+      profile === "flow_workbook" && shape === "flow" || profile === "diff_workbook" && shape === "diff" ||
+      profile === "context_workbook" && shape === "context" || profile === "impact_workbook" && category === "impact" && ["diagram", "table", "matrix"].includes(shape);
+    if (!compatible) return false;
+  }
+  return validManifestClaim(value, stateRequirement, format === "xlsx" && options.view_data_json === true);
+}
+
 function validViewRecipe(value) {
-  const {address, shape, reserved_table_column_ids: reservedValues} = value;
-  if (typeof address !== "string" || shape === null || typeof shape !== "object" || Array.isArray(shape) ||
-      !Array.isArray(reservedValues) || !reservedValues.every((item) => typeof item === "string")) return false;
-  if (shape.kind !== "table") return true;
-  const table = shape.table;
-  if (table === null || typeof table !== "object" || Array.isArray(table) || !Array.isArray(table.columns)) return false;
-  const reserved = new Set(reservedValues);
-  return table.columns.every((column) => column !== null && typeof column === "object" && !Array.isArray(column) &&
-    typeof column.address === "string" && typeof column.id === "string" &&
-    hasDirectStableAddressOwner(address, column.address) && !reserved.has(column.id));
+  const {address, shape, source, reserved_table_column_ids: reservedValues} = value;
+  if (typeof address !== "string" || !isObject(shape) || !isObject(source) || !Array.isArray(reservedValues)) return false;
+  const diffCount = Number(value.category === "diff") + Number(source.kind === "diff") + Number(shape.kind === "diff");
+  if (diffCount !== 0 && diffCount !== 3) return false;
+  const stateRanks = new Map([["none", 0], ["optional", 1], ["required", 2]]);
+  if (stateRanks.get(value.state_requirement) < stateRanks.get(value.state_input) || diffCount === 3 && value.state_requirement !== "none") return false;
+  const directReads = [];
+  if (shape.kind === "table") {
+    const table = shape.table;
+    if (!isObject(table) || !Array.isArray(table.columns)) return false;
+    const entityRows = table.row_source === "entity" || table.row_source === "entity_rows";
+    if (!entityRows && (table.include_entity_id === true || table.include_type === true || table.include_layer === true || hasOwn(table, "entity_type_addresses"))) return false;
+    const available = new Set();
+    if (table.include_entity_id === true) available.add("entity_id");
+    if (table.include_type === true) available.add("entity_type");
+    if (table.include_layer === true) available.add("entity_layer");
+    const reserved = new Set(reservedValues);
+    for (const column of table.columns) {
+      if (!isObject(column) || typeof column.address !== "string" || typeof column.id !== "string" ||
+          !hasDirectStableAddressOwner(address, column.address) || reserved.has(column.id) || available.has(column.id) || !isObject(column.source)) return false;
+      available.add(column.id);
+      const sourceKind = column.source.kind;
+      if (sourceKind === "attribute") {
+        if (table.row_source !== "entity_rows" && table.row_source !== "relation_rows" || !Array.isArray(column.source.column_addresses) || column.source.column_addresses.length === 0) return false;
+        const expectedKind = table.row_source === "entity_rows" ? "entity_type_column" : "relation_type_column";
+        if (!column.source.column_addresses.every((item) => typeof item === "string" && stableAddressSubject(item)?.kind === expectedKind)) return false;
+      } else if (sourceKind === "relation_endpoint") {
+        if (table.row_source !== "relation" && table.row_source !== "relation_rows") return false;
+        const scalar = column.source.field === "id" || column.source.field === "display_name";
+        if (!viewTableValueMatches(column, scalar ? "scalar" : "stable_address", scalar ? "string" : "")) return false;
+      } else if (sourceKind === "derived_count") {
+        if (!entityRows || !viewTableValueMatches(column, "scalar", "integer")) return false;
+      } else if (sourceKind === "field") {
+        const field = column.source.field;
+        if (["id", "display_name", "description"].includes(field) ? !viewTableValueMatches(column, "scalar", "string") :
+          field === "tags" ? !viewTableValueMatches(column, "string_set") : !viewTableValueMatches(column, "stable_address")) return false;
+      } else if (sourceKind === "state") {
+        const field = column.source.field_path;
+        const valueType = stateFieldValueType(field);
+        if (!viewTableValueMatches(column, "scalar", valueType, stateEnumValues(field))) return false;
+        const subjects = table.row_source === "automatic_relations" ? ["relation", "relation_row"] :
+          [table.row_source === "entity" ? "entity" : table.row_source === "entity_rows" ? "entity_row" : table.row_source === "relation" ? "relation" : "relation_row"];
+        for (const subject_kind of subjects) directReads.push({subject_kind, field_path: field, value_type: valueType});
+      } else return false;
+      if ((column.aggregate === "count" || column.aggregate === "count_distinct") && !viewTableValueMatches(column, "scalar", "integer") ||
+          column.aggregate === "join_unique" && !viewTableValueMatches(column, "scalar", "string") ||
+          (column.aggregate === "min" || column.aggregate === "max") && (!isObject(column.value_type) || column.value_type.kind !== "scalar" || !["integer", "number", "date", "datetime", "enum"].includes(column.value_type.scalar_type))) return false;
+    }
+    if ((directReads.length !== 0) !== (value.state_input === "optional" || value.state_input === "required")) return false;
+    if (!Array.isArray(table.sorts) || !table.sorts.every((sort) => isObject(sort) && typeof sort.column_id === "string" && available.has(sort.column_id))) return false;
+    if (!isObject(value.dependencies) || !Array.isArray(value.dependencies.state_reads) || directReads.some((read) => !hasStateRead(value.dependencies.state_reads, read))) return false;
+  } else if (value.state_input !== "none") return false;
+  return Array.isArray(value.exports) && value.exports.every((item) => isObject(item) && item.view_address === address && validExportInView(item, value.category, shape.kind, value.state_requirement, diffCount === 3));
 }
 
 function realUTCDateTime(value) {
@@ -522,6 +1033,30 @@ function addLayerDrawVocabulary(ajv, meta) {
       return true;
     });
   }});
+  register({keyword: "x-layerdraw-query-parameter", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
+    return !enabled || !isObject(data) || validQueryParameter(data);
+  }});
+  register({keyword: "x-layerdraw-query-recipe", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
+    return !enabled || !isObject(data) || validQueryRecipe(data);
+  }});
+  register({keyword: "x-layerdraw-recipe-predicate", schemaType: "string", type: "object", errors: false, validate(predicateKind, data) {
+    return !isObject(data) || validRecipePredicate(data, predicateKind);
+  }});
+  register({keyword: "x-layerdraw-recipe-scalar", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
+    return !enabled || !isObject(data) || validRecipeScalar(data);
+  }});
+  register({keyword: "x-layerdraw-stable-address-roles", schemaType: "array", type: "object", errors: false, validate(rules, data) {
+    return !isObject(data) || validStableAddressRoles(data, rules);
+  }});
+  register({keyword: "x-layerdraw-state-read", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
+    return !enabled || !isObject(data) || validStateRead(data);
+  }});
+  register({keyword: "x-layerdraw-state-read-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data) {
+    return !enabled || validStateReadOrder(data);
+  }});
+  register({keyword: "x-layerdraw-view-projection", schemaType: "string", type: "object", errors: false, validate(projectionKind, data) {
+    return !isObject(data) || validViewProjection(data, projectionKind);
+  }});
   register({keyword: "x-layerdraw-limit-capability", schemaType: "boolean", errors: false, validate(enabled, data) {
     if (!enabled || data === null || typeof data !== "object") return true;
     try { return BigInt(data.default_value) <= BigInt(data.hard_maximum) && BigInt(data.effective_maximum) <= BigInt(data.hard_maximum); } catch { return false; }
@@ -554,7 +1089,7 @@ async function authority() {
     readJSON("semantic/v1.schema.json"),
     readJSON("engine-protocol/v1.schema.json"),
   ]);
-  const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: true});
+  const ajv = new Ajv2020({allErrors: true, strict: true, strictRequired: false, validateFormats: true});
   const rootRequirements = addLayerDrawVocabulary(ajv, meta);
   addLayerDrawFormats(ajv);
   ajv.addMetaSchema(meta);
@@ -709,7 +1244,7 @@ test("published LayerDraw schema vocabulary asserts unions, outcomes, ranges, an
   assert.equal(viewSource({kind: "diff", before: "base", after: "head", arguments: argumentsWithValue}), false);
 
   const predicate = compile(semantic, "RecipePredicate");
-  assert.equal(predicate({kind: "field", field: "id", operator: "eq", value: {kind: "scalar", scalar_value: {kind: "string", string_value: "x"}}}), true);
+  assert.equal(predicate({kind: "field", field: "id", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "eq", value: {kind: "scalar", scalar_value: {kind: "string", string_value: "x"}}}), true);
   assert.equal(predicate({kind: "field"}), false);
   assert.equal(predicate({kind: "field", field: "id", operator: "exists", value: {kind: "scalar", scalar_value: {kind: "string", string_value: "x"}}}), false);
 
