@@ -14,6 +14,7 @@ import {
 import { createInternalEngineClient } from "../dist/internal/client.js";
 import { InternalTransportFault } from "../dist/internal/transport.js";
 import {
+  StrictFakeTransport,
   collectors,
   creationOptions,
   limits,
@@ -166,15 +167,31 @@ test("branded adapter failures preserve only the stable safe classification", as
 });
 
 test("synchronous transfer failure is redacted and automatically replaced", async () => {
-  const factory = await makeFactory();
+  const factory = await makeFactory({
+    create(generation, owner) {
+      const endpoint = new StrictFakeTransport(
+        owner,
+        generation,
+        owner.endpoints.length,
+      );
+      owner.endpoints.push(endpoint);
+      const request = endpoint.request.bind(endpoint);
+      let requestCount = 0;
+      endpoint.request = (input) => {
+        requestCount++;
+        if (requestCount > 1) {
+          throw new Error("stderr /private/path source LDL");
+        }
+        return request(input);
+      };
+      return endpoint;
+    },
+  });
   const client = await createInternalEngineClient({
     transportFactory: factory,
     protocolCollectors: collectors,
     options: creationOptions,
   });
-  factory.endpoints[0].request = () => {
-    throw new Error("stderr /private/path source LDL");
-  };
   await assert.rejects(client.compile(makePortableRequest().request), (error) => {
     assert.ok(error instanceof EngineClientTransportError);
     assert.equal(error.code, "TRANSFER_FAILED");
@@ -186,15 +203,25 @@ test("synchronous transfer failure is redacted and automatically replaced", asyn
 });
 
 test("dispose reports one stable failure after forcing terminal state", async () => {
-  const factory = await makeFactory();
+  const factory = await makeFactory({
+    create(generation, owner) {
+      const endpoint = new StrictFakeTransport(
+        owner,
+        generation,
+        owner.endpoints.length,
+      );
+      owner.endpoints.push(endpoint);
+      endpoint.dispose = async () => {
+        throw new Error("sensitive close failure");
+      };
+      return endpoint;
+    },
+  });
   const client = await createInternalEngineClient({
     transportFactory: factory,
     protocolCollectors: collectors,
     options: creationOptions,
   });
-  factory.endpoints[0].dispose = async () => {
-    throw new Error("sensitive close failure");
-  };
   const disposal = client.dispose();
   await assert.rejects(disposal, (error) => {
     assert.ok(error instanceof EngineClientDisposeError);

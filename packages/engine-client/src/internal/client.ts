@@ -44,6 +44,7 @@ import {
   type EngineAbortSignal,
   type EngineClient,
   type EngineClientCreationOptions,
+  type EngineClientSafeDetails,
   type EngineClientState,
   type EngineEndpointSnapshot,
   type OutputBlob,
@@ -77,7 +78,6 @@ import {
   type InternalProtocolBlobRefCollectors,
   type InternalTransportBlob,
   type InternalTransportClose,
-  type InternalTransportExchange,
   type InternalTransportFactory,
   type InternalTransportLimits,
   type InternalTransportResponse,
@@ -90,6 +90,7 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const DEFAULT_COMPILE_TIMEOUT_MS = 120_000;
 const DEFAULT_CANCEL_GRACE_MS = 500;
 const DEFAULT_DISPOSE_TIMEOUT_MS = 2_000;
+const nativePromiseThen = Promise.prototype.then;
 
 interface NormalizedCreationOptions {
   readonly expectedReleaseManifestDigest: Digest;
@@ -102,49 +103,264 @@ interface NormalizedCreationOptions {
   readonly disposeTimeoutMs: number;
 }
 
-interface EndpointContext {
+interface AdmittedTransportFactory {
+  readonly transportId: string;
+  readonly connectFailureCode: "SPAWN_FAILED" | "CONNECT_FAILED";
+  create(endpointGeneration: string): unknown;
+}
+
+interface EndpointContext extends AdmittedTransport {
   readonly generation: number;
-  readonly transport: InternalByteTransport;
-  readonly closed: Promise<unknown>;
   readonly limits: InternalTransportLimits;
   readonly snapshot: EngineEndpointSnapshot;
   readonly capabilityStatuses: ReadonlyMap<string, boolean>;
   readonly engineRelease: string;
 }
 
-interface AdmittedTransport {
-  readonly transport: InternalByteTransport;
-  readonly closed: Promise<unknown>;
+type TransportPromiseSettlement<T> =
+  | Readonly<{ kind: "fulfilled"; value: T }>
+  | Readonly<{ kind: "rejected"; reason: unknown }>
+  | Readonly<{ kind: "unavailable" }>;
+
+interface CapturedTransportPromise<T> {
+  readonly promise: Promise<TransportPromiseSettlement<T>>;
+  readonly valid: boolean;
+  subscribe(observer: (settlement: TransportPromiseSettlement<T>) => void): void;
 }
 
-const UNAVAILABLE_TRANSPORT_CLOSE = Object.freeze({
-  kind: "unavailable" as const,
-});
+interface AdmittedTransport {
+  readonly transport: InternalByteTransport;
+  readonly ready: Promise<TransportPromiseSettlement<InternalTransportLimits>>;
+  readonly closed: Promise<TransportPromiseSettlement<InternalTransportClose>>;
+  readonly observeClosed: CapturedTransportPromise<InternalTransportClose>["subscribe"];
+  readonly request?: (input: unknown) => unknown;
+  readonly dispose?: () => unknown;
+  readonly terminate?: () => unknown;
+  readonly operationsValid: boolean;
+}
 
-function admitTransport(transport: InternalByteTransport): AdmittedTransport {
+interface AdmittedExchange {
+  readonly response: Promise<
+    TransportPromiseSettlement<InternalTransportResponse>
+  >;
+  readonly cancel?: () => unknown;
+  readonly valid: boolean;
+}
+
+type TransportShutdownMode = "graceful" | "hard";
+
+interface TransportShutdownRecord {
+  readonly admitted: AdmittedTransport;
+  readonly completion: Deferred<boolean>;
+  hardRequested: boolean;
+  hardStopAttempted: boolean;
+  hardStopInvoked: boolean;
+}
+
+function admitTransportFactory(raw: unknown): AdmittedTransportFactory {
+  if (
+    (typeof raw !== "object" && typeof raw !== "function") ||
+    raw === null
+  ) {
+    throw new EngineClientInputError("INVALID_ARGUMENT");
+  }
+  const transportId = captureProperty(raw, "transportId");
+  const connectFailureCode = captureProperty(raw, "connectFailureCode");
+  const createMethod = captureMethod(raw, "create");
+  if (
+    !transportId.valid ||
+    typeof transportId.value !== "string" ||
+    !/^[a-z][a-z0-9_]*$/.test(transportId.value) ||
+    !connectFailureCode.valid ||
+    (connectFailureCode.value !== "SPAWN_FAILED" &&
+      connectFailureCode.value !== "CONNECT_FAILED") ||
+    createMethod === undefined
+  ) {
+    throw new EngineClientInputError("INVALID_ARGUMENT");
+  }
+  return Object.freeze({
+    transportId: transportId.value,
+    connectFailureCode: connectFailureCode.value,
+    create: (endpointGeneration: string): unknown =>
+      Reflect.apply(createMethod, raw, [endpointGeneration]),
+  });
+}
+
+function admitTransport(transport: unknown): AdmittedTransport {
   if (
     (typeof transport !== "object" && typeof transport !== "function") ||
     transport === null
   ) {
     throw new TypeError("Invalid transport");
   }
-  let raw: unknown;
-  try {
-    raw = transport.closed;
-  } catch {
+  const target = transport as InternalByteTransport;
+  const closedProperty = captureProperty(target, "closed");
+  const terminateMethod = captureMethod(target, "terminate");
+  const disposeMethod = captureMethod(target, "dispose");
+  const requestMethod = captureMethod(target, "request");
+  const readyProperty = captureProperty(target, "ready");
+  const ready = readyProperty.valid
+    ? captureTransportPromise<InternalTransportLimits>(readyProperty.value)
+    : unavailableTransportPromise<InternalTransportLimits>();
+  const closed = closedProperty.valid
+    ? captureTransportPromise<InternalTransportClose>(closedProperty.value)
+    : unavailableTransportPromise<InternalTransportClose>();
+  return Object.freeze({
+    transport: target,
+    ready: ready.promise,
+    closed: closed.promise,
+    observeClosed: closed.subscribe,
+    ...(requestMethod === undefined
+      ? {}
+      : {
+        request: (input: unknown): unknown =>
+          Reflect.apply(requestMethod, target, [input]),
+      }),
+    ...(disposeMethod === undefined
+      ? {}
+      : {
+        dispose: (): unknown => Reflect.apply(disposeMethod, target, []),
+      }),
+    ...(terminateMethod === undefined
+      ? {}
+      : {
+        terminate: (): unknown => Reflect.apply(terminateMethod, target, []),
+      }),
+    operationsValid:
+      requestMethod !== undefined &&
+      disposeMethod !== undefined &&
+      terminateMethod !== undefined,
+  });
+}
+
+function admitExchange(raw: unknown): AdmittedExchange {
+  if (
+    (typeof raw !== "object" && typeof raw !== "function") ||
+    raw === null
+  ) {
     return Object.freeze({
-      transport,
-      closed: Promise.resolve(UNAVAILABLE_TRANSPORT_CLOSE),
+      response: unavailableTransportPromise<InternalTransportResponse>().promise,
+      valid: false,
     });
   }
-  let closed: Promise<unknown>;
+  const cancelMethod = captureMethod(raw, "cancel");
+  const responseProperty = captureProperty(raw, "response");
+  const response = responseProperty.valid
+    ? captureTransportPromise<InternalTransportResponse>(responseProperty.value)
+    : unavailableTransportPromise<InternalTransportResponse>();
+  return Object.freeze({
+    response: response.promise,
+    ...(cancelMethod === undefined
+      ? {}
+      : { cancel: (): unknown => Reflect.apply(cancelMethod, raw, []) }),
+    valid: cancelMethod !== undefined && response.valid,
+  });
+}
+
+function captureProperty(
+  target: object,
+  property: PropertyKey,
+): Readonly<{ valid: true; value: unknown }> | Readonly<{ valid: false }> {
   try {
-    closed = Promise.resolve(raw);
+    return Object.freeze({ valid: true, value: Reflect.get(target, property) });
   } catch {
-    closed = Promise.resolve(UNAVAILABLE_TRANSPORT_CLOSE);
+    return Object.freeze({ valid: false });
   }
-  void closed.catch(() => undefined);
-  return Object.freeze({ transport, closed });
+}
+
+function captureMethod(target: object, property: PropertyKey): Function | undefined {
+  const captured = captureProperty(target, property);
+  return captured.valid && typeof captured.value === "function"
+    ? captured.value
+    : undefined;
+}
+
+function unavailableTransportPromise<T>(): CapturedTransportPromise<T> {
+  const settlement = Object.freeze({ kind: "unavailable" as const });
+  return Object.freeze({
+    promise: Promise.resolve(settlement),
+    valid: false,
+    subscribe(
+      observer: (value: TransportPromiseSettlement<T>) => void,
+    ): void {
+      const observed = Promise.resolve().then(() => observer(settlement));
+      void observed.then(undefined, () => undefined);
+    },
+  });
+}
+
+function captureTransportPromise<T>(raw: unknown): CapturedTransportPromise<T> {
+  if (
+    (typeof raw !== "object" && typeof raw !== "function") ||
+    raw === null
+  ) {
+    return unavailableTransportPromise<T>();
+  }
+  let valid = true;
+  let settlement: TransportPromiseSettlement<T> | undefined;
+  const observers = new Set<
+    (value: TransportPromiseSettlement<T>) => void
+  >();
+  const promise = new Promise<TransportPromiseSettlement<T>>((resolve) => {
+    let settled = false;
+    const publish = (value: TransportPromiseSettlement<T>): void => {
+      if (settled) return;
+      settled = true;
+      settlement = value;
+      resolve(value);
+      for (const observer of observers) {
+        try {
+          observer(value);
+        } catch {
+          // Observers are core-owned terminal boundaries.
+        }
+      }
+      observers.clear();
+    };
+    const fulfill = (value: unknown): void => {
+      publish(Object.freeze({ kind: "fulfilled", value: value as T }));
+    };
+    const reject = (reason: unknown): void => {
+      publish(Object.freeze({ kind: "rejected", reason }));
+    };
+    try {
+      Reflect.apply(nativePromiseThen, raw, [fulfill, reject]);
+      return;
+    } catch {
+      // Non-native thenables are admitted through one explicit member snapshot.
+    }
+    const capturedThen = captureProperty(raw, "then");
+    if (!capturedThen.valid || typeof capturedThen.value !== "function") {
+      valid = false;
+      publish(Object.freeze({ kind: "unavailable" }));
+      return;
+    }
+    try {
+      Reflect.apply(capturedThen.value, raw, [fulfill, reject]);
+    } catch (error) {
+      reject(error);
+    }
+  });
+  return Object.freeze({
+    promise,
+    valid,
+    subscribe(observer: (value: TransportPromiseSettlement<T>) => void): void {
+      if (settlement === undefined) {
+        observers.add(observer);
+        return;
+      }
+      const observed = Promise.resolve().then(() => observer(settlement!));
+      void observed.then(undefined, () => undefined);
+    },
+  });
+}
+
+function transportPromiseValue<T>(
+  settlement: TransportPromiseSettlement<T>,
+): T {
+  if (settlement.kind === "fulfilled") return settlement.value;
+  if (settlement.kind === "rejected") throw settlement.reason;
+  throw new TypeError("Unavailable transport promise");
 }
 
 interface OwnedRequestBlob {
@@ -270,10 +486,12 @@ export async function createInternalEngineClient(
   if (object === undefined) {
     throw new EngineClientInputError("INVALID_ARGUMENT");
   }
+  let factory: AdmittedTransportFactory;
   const runtime =
     (object.runtime as InternalClientRuntime | undefined) ?? defaultRuntime();
   let options: NormalizedCreationOptions;
   try {
+    factory = admitTransportFactory(object.transportFactory);
     options = normalizeCreationOptions(
       object.options as EngineClientCreationOptions,
     );
@@ -281,7 +499,7 @@ export async function createInternalEngineClient(
     throw inputFault(error);
   }
   const client = new EngineClientImplementation(
-    object.transportFactory as InternalTransportFactory,
+    factory,
     object.protocolCollectors as InternalProtocolBlobRefCollectors,
     options,
     runtime,
@@ -369,7 +587,7 @@ function timeoutOption(value: unknown, fallback: number): number {
 }
 
 class EngineClientImplementation implements EngineClient {
-  private readonly factory: InternalTransportFactory;
+  private readonly factory: AdmittedTransportFactory;
   private readonly collectors: InternalProtocolBlobRefCollectors;
   private readonly options: NormalizedCreationOptions;
   private readonly runtime: InternalClientRuntime;
@@ -386,12 +604,12 @@ class EngineClientImplementation implements EngineClient {
   private disposalPromise: Promise<void> | undefined;
   private readonly transportShutdowns = new WeakMap<
     InternalByteTransport,
-    Promise<boolean>
+    TransportShutdownRecord
   >();
   private _state: EngineClientState = "failed";
 
   constructor(
-    factory: InternalTransportFactory,
+    factory: AdmittedTransportFactory,
     collectors: InternalProtocolBlobRefCollectors,
     options: NormalizedCreationOptions,
     runtime: InternalClientRuntime,
@@ -401,9 +619,6 @@ class EngineClientImplementation implements EngineClient {
     this.options = options;
     this.runtime = runtime;
     this.nonce = bytesToHex(runtime.randomBytes(12));
-    if (!/^[a-z][a-z0-9_]*$/.test(factory.transportId)) {
-      throw new EngineClientInputError("INVALID_ARGUMENT");
-    }
   }
 
   get state(): EngineClientState {
@@ -527,21 +742,7 @@ class EngineClientImplementation implements EngineClient {
     this._state = "disposing";
     const barrier = deferred<void>();
     const active = this.active;
-    if (active !== undefined) {
-      active.interrupt.resolve({
-        kind: "cancel",
-        reason: "dispose",
-        barrier: barrier.promise,
-      });
-    }
-    this.pendingOpenAbort?.resolve();
-    try {
-      this.pendingTransport?.transport.terminate();
-    } catch {
-      // Raw platform failures are intentionally discarded.
-    }
-
-    const promise = (async (): Promise<void> => {
+    const promise = Promise.resolve().then(async (): Promise<void> => {
       let failed = false;
       try {
         if (active !== undefined) await active.joined.promise;
@@ -569,8 +770,18 @@ class EngineClientImplementation implements EngineClient {
         barrier.resolve();
       }
       if (failed) throw new EngineClientDisposeError();
-    })();
+    });
     this.disposalPromise = promise;
+    if (active !== undefined) {
+      active.interrupt.resolve({
+        kind: "cancel",
+        reason: "dispose",
+        barrier: barrier.promise,
+      });
+    }
+    this.pendingOpenAbort?.resolve();
+    const pending = this.pendingTransport;
+    if (pending !== undefined) void this.shutdownTransport(pending, "hard");
     return promise;
   }
 
@@ -779,7 +990,7 @@ class EngineClientImplementation implements EngineClient {
   ): Promise<CompileOutcome> {
     let timer: InternalTimerHandle | undefined;
     let removeAbort: (() => void) | undefined;
-    let exchange: InternalTransportExchange | undefined;
+    let exchange: AdmittedExchange | undefined;
     const digests = new DigestSequence(this.runtime);
     const deadlineMs = this.runtime.now() + options.timeoutMs;
     try {
@@ -842,11 +1053,13 @@ class EngineClientImplementation implements EngineClient {
         .map((blob) => ({ blobId: blob.ref.blob_id, bytes: blob.bytes }))
         .sort((left, right) => compareUtf8(left.blobId, right.blobId));
       try {
-        exchange = endpoint.transport.request({
+        if (endpoint.request === undefined) throw new TypeError("Invalid request");
+        exchange = admitExchange(endpoint.request({
           exchangeId: this.nextExchangeId(),
           control,
           blobs: transportBlobs,
-        });
+        }));
+        if (!exchange.valid) throw new TypeError("Invalid exchange");
       } catch {
         throw await this.replaceForFault(
           new EngineClientTransportError("TRANSFER_FAILED"),
@@ -941,18 +1154,26 @@ class EngineClientImplementation implements EngineClient {
   }
 
   private observeCompileTerminal(
-    exchange: InternalTransportExchange,
+    exchange: AdmittedExchange,
     endpoint: EndpointContext,
     requestId: string,
     digests: DigestSequence,
   ): Promise<CompileTerminal> {
     return exchange.response.then(
-      async (raw): Promise<CompileTerminal> => {
+      async (settlement): Promise<CompileTerminal> => {
+        if (settlement.kind !== "fulfilled") {
+          return {
+            kind: "rejected",
+            error: settlement.kind === "rejected"
+              ? settlement.reason
+              : new EngineClientTransportError("TRANSFER_FAILED"),
+          };
+        }
         try {
           return {
             kind: "valid",
             outcome: await this.decodeCompileOutcome(
-              raw,
+              settlement.value,
               endpoint,
               requestId,
               digests,
@@ -962,7 +1183,6 @@ class EngineClientImplementation implements EngineClient {
           return { kind: "invalid", error };
         }
       },
-      (error: unknown): CompileTerminal => ({ kind: "rejected", error }),
     );
   }
 
@@ -1066,14 +1286,22 @@ class EngineClientImplementation implements EngineClient {
   }
 
   private async cancelExchange(
-    exchange: InternalTransportExchange,
+    exchange: AdmittedExchange,
   ): Promise<InternalCancelResult> {
     try {
-      const raw = await this.withBound(
-        Promise.resolve().then(() => exchange.cancel()),
+      if (exchange.cancel === undefined) return { reusable: false };
+      const returned = exchange.cancel();
+      const captured = captureTransportPromise<InternalCancelResult>(returned);
+      if (!captured.valid) return { reusable: false };
+      const settlement = await this.withBound(
+        captured.promise,
         this.options.cancelGraceMs,
         undefined,
       );
+      if (settlement === undefined || settlement.kind !== "fulfilled") {
+        return { reusable: false };
+      }
+      const raw = settlement.value;
       const result = dataObject(raw, ["reusable"]);
       if (result === undefined || typeof result.reusable !== "boolean") {
         return { reusable: false };
@@ -1123,8 +1351,12 @@ class EngineClientImplementation implements EngineClient {
     barrier?: Deferred<void>,
   ): Promise<void> {
     if (this.replacementPromise !== undefined) return this.replacementPromise;
+    if (this.isTerminating()) {
+      barrier?.resolve();
+      return Promise.resolve();
+    }
     this._state = "replacing";
-    const promise = (async (): Promise<void> => {
+    const promise = Promise.resolve().then(async (): Promise<void> => {
       let next: EndpointContext | undefined;
       try {
         const active = this.active;
@@ -1169,7 +1401,7 @@ class EngineClientImplementation implements EngineClient {
           throw new EngineClientTransportError("REPLACEMENT_FAILED");
         }
       }
-    })();
+    });
     const tracked = promise.finally(() => {
       barrier?.resolve();
       if (this.replacementPromise === tracked) this.replacementPromise = undefined;
@@ -1194,12 +1426,16 @@ class EngineClientImplementation implements EngineClient {
     } catch {
       throw new EngineClientTransportError(this.factory.connectFailureCode);
     }
-    const transport = admitted.transport;
     this.pendingTransport = admitted;
-    let exchange: InternalTransportExchange | undefined;
+    let exchange: AdmittedExchange | undefined;
     try {
+      if (!admitted.operationsValid) {
+        throw new EngineClientTransportError(this.factory.connectFailureCode);
+      }
       const limits = validateTransportLimits(
-        await this.openStage(transport.ready, deadline, abort),
+        transportPromiseValue(
+          await this.openStage(admitted.ready, deadline, abort),
+        ),
       );
       const requestId = this.nextRequestId();
       const payload = {
@@ -1228,16 +1464,20 @@ class EngineClientImplementation implements EngineClient {
       validateOutgoingControl(controlText, limits);
       const control = encodeControl(controlText);
       try {
-        exchange = transport.request({
+        if (admitted.request === undefined) throw new TypeError("Invalid request");
+        exchange = admitExchange(admitted.request({
           exchangeId: this.nextExchangeId(),
           control,
           blobs: [],
-        });
+        }));
+        if (!exchange.valid) throw new TypeError("Invalid exchange");
       } catch {
         throw new EngineClientTransportError("TRANSFER_FAILED");
       }
       const response = validateTransportResponse(
-        await this.openStage(exchange.response, deadline, abort),
+        transportPromiseValue(
+          await this.openStage(exchange.response, deadline, abort),
+        ),
         limits,
       );
       if (response.blobs.length !== 0) {
@@ -1259,32 +1499,21 @@ class EngineClientImplementation implements EngineClient {
         previousInstanceId,
       );
       return {
+        ...admitted,
         generation,
-        transport,
-        closed: admitted.closed,
         limits,
         snapshot: deepFreeze({ generation, handshake: validated.result }),
         capabilityStatuses: validated.statuses,
         engineRelease: validated.result.host_release,
       };
     } catch (error) {
-      if (error instanceof CreationTimedOut) {
+      if (safeInstanceOf(error, CreationTimedOut)) {
         if (exchange !== undefined) await this.cancelExchange(exchange);
-        try {
-          transport.terminate();
-        } catch {
-          // Raw platform failures are discarded.
-        }
-        await this.shutdownTransport(admitted);
+        await this.shutdownTransport(admitted, "hard");
         throw new EngineClientTransportError("TIMEOUT_DURING_CREATION");
       }
-      try {
-        transport.terminate();
-      } catch {
-        // Raw platform failures are discarded.
-      }
-      await this.shutdownTransport(admitted);
-      if (error instanceof OpenAborted) throw error;
+      await this.shutdownTransport(admitted, "hard");
+      if (safeInstanceOf(error, OpenAborted)) throw error;
       throw publicFault(error, this.factory.connectFailureCode);
     } finally {
       if (this.pendingTransport === admitted) this.pendingTransport = undefined;
@@ -1324,11 +1553,13 @@ class EngineClientImplementation implements EngineClient {
       endpoint.snapshot.handshake.endpoint_instance_id;
     this.endpoint = endpoint;
     this._state = "ready";
-    const observe = (raw: unknown): void => {
+    const observe = (
+      settlement: TransportPromiseSettlement<InternalTransportClose>,
+    ): void => {
       try {
-        const close = raw === UNAVAILABLE_TRANSPORT_CLOSE
-          ? undefined
-          : validateTransportClose(raw);
+        const close = settlement.kind === "fulfilled"
+          ? validateTransportClose(settlement.value)
+          : undefined;
         const error = close === undefined
           ? this.unexpectedCloseFallback()
           : new EngineClientTransportError(
@@ -1345,10 +1576,7 @@ class EngineClientImplementation implements EngineClient {
         }
       }
     };
-    void endpoint.closed.then(
-      observe,
-      () => observe(UNAVAILABLE_TRANSPORT_CLOSE),
-    ).catch(() => undefined);
+    endpoint.observeClosed(observe);
   }
 
   private unexpectedCloseFallback(): EngineClientTransportError {
@@ -1384,73 +1612,96 @@ class EngineClientImplementation implements EngineClient {
 
   private shutdownTransport(
     admitted: AdmittedTransport,
+    mode: TransportShutdownMode = "graceful",
   ): Promise<boolean> {
     const existing = this.transportShutdowns.get(admitted.transport);
-    if (existing !== undefined) return existing;
-    const shutdown = this.performTransportShutdown(admitted);
-    this.transportShutdowns.set(admitted.transport, shutdown);
-    return shutdown;
+    if (existing !== undefined) {
+      if (mode === "hard") this.requestTransportHardStop(existing);
+      return existing.completion.promise;
+    }
+    const record: TransportShutdownRecord = {
+      admitted,
+      completion: deferred<boolean>(),
+      hardRequested: mode === "hard",
+      hardStopAttempted: false,
+      hardStopInvoked: false,
+    };
+    this.transportShutdowns.set(admitted.transport, record);
+    if (mode === "hard") this.requestTransportHardStop(record);
+    void this.performTransportShutdown(record).then(
+      (clean) => record.completion.resolve(clean),
+      () => record.completion.resolve(false),
+    );
+    return record.completion.promise;
   }
 
   private async performTransportShutdown(
+    record: TransportShutdownRecord,
+  ): Promise<boolean> {
+    let gracefulResult = false;
+    if (!record.hardRequested) {
+      gracefulResult = await this.invokeTransportDispose(record.admitted);
+    } else if (!record.hardStopInvoked) {
+      await this.invokeTransportDispose(record.admitted);
+    }
+
+    let joined = await this.joinTransport(record.admitted);
+    if (!joined && !record.hardStopAttempted) {
+      this.requestTransportHardStop(record);
+      joined = await this.joinTransport(record.admitted);
+    }
+    return gracefulResult && joined && !record.hardStopAttempted;
+  }
+
+  private async invokeTransportDispose(
     admitted: AdmittedTransport,
   ): Promise<boolean> {
+    if (admitted.dispose === undefined) return false;
+    let returned: unknown;
     try {
-      const graceful = Promise.resolve().then(() =>
-        admitted.transport.dispose()
-      );
-      const gracefulResult = await this.settleWithin(
-        graceful,
-        this.options.disposeTimeoutMs,
-      );
-      if (!gracefulResult) {
-        try {
-          admitted.transport.terminate();
-        } catch {
-          // The stable unclean result below is the complete public outcome.
-        }
-      }
-      const terminal = await this.withBound(
-        admitted.closed.then(
-          (value) => value === UNAVAILABLE_TRANSPORT_CLOSE ? false : true,
-          () => false,
-        ),
-        this.options.disposeTimeoutMs,
-        undefined,
-      );
-      const joined = terminal === true;
-      if (!joined && gracefulResult) {
-        try {
-          admitted.transport.terminate();
-        } catch {
-          // A hostile hard-stop method cannot escape this boundary.
-        }
-      }
-      return gracefulResult && joined;
+      returned = admitted.dispose();
     } catch {
-      try {
-        admitted.transport.terminate();
-      } catch {
-        // A hostile hard-stop method cannot escape this boundary.
-      }
       return false;
+    }
+    const captured = captureTransportPromise<void>(returned);
+    if (!captured.valid) return false;
+    const settlement = await this.withBound(
+      captured.promise,
+      this.options.disposeTimeoutMs,
+      undefined,
+    );
+    return settlement?.kind === "fulfilled";
+  }
+
+  private requestTransportHardStop(record: TransportShutdownRecord): void {
+    record.hardRequested = true;
+    if (record.hardStopAttempted) return;
+    record.hardStopAttempted = true;
+    const terminate = record.admitted.terminate;
+    if (terminate === undefined) return;
+    let returned: unknown;
+    try {
+      returned = terminate();
+      record.hardStopInvoked = true;
+    } catch {
+      return;
+    }
+    if (
+      (typeof returned === "object" && returned !== null) ||
+      typeof returned === "function"
+    ) {
+      const observed = captureTransportPromise<unknown>(returned).promise;
+      void observed.then(undefined, () => undefined);
     }
   }
 
-  private async settleWithin(
-    promise: Promise<unknown>,
-    timeoutMs: number,
-  ): Promise<boolean> {
-    const marker = Object.freeze({});
-    const result = await this.withBound(
-      promise.then(
-        () => true,
-        () => false,
-      ),
-      timeoutMs,
-      marker,
+  private async joinTransport(admitted: AdmittedTransport): Promise<boolean> {
+    const settlement = await this.withBound(
+      admitted.closed,
+      this.options.disposeTimeoutMs,
+      undefined,
     );
-    return result === true;
+    return settlement?.kind === "fulfilled";
   }
 
   private async withBound<T, F>(
@@ -1807,7 +2058,20 @@ function controlDepth(text: string): number {
 }
 
 function inputFault(error: unknown): EngineClientInputError {
-  if (error instanceof EngineClientInputError) return error;
+  if (safeInstanceOf(error, EngineClientInputError)) {
+    try {
+      const code = ownDataValue(error, "code");
+      const details = ownDataValue(error, "details");
+      if (isInputErrorCode(code)) {
+        return new EngineClientInputError(
+          code,
+          details as EngineClientSafeDetails | undefined,
+        );
+      }
+    } catch {
+      // Hostile branded values are treated as unclassified input failures.
+    }
+  }
   return new EngineClientInputError("INVALID_ARGUMENT");
 }
 
@@ -1815,17 +2079,130 @@ function publicFault(
   value: unknown,
   fallback: "SPAWN_FAILED" | "CONNECT_FAILED" | "BROKEN_PIPE" = "BROKEN_PIPE",
 ): EngineClientTransportError | EngineClientDecodeError {
-  if (value instanceof EngineClientDecodeError) return value;
-  if (value instanceof EngineClientTransportError) return value;
-  if (value instanceof InternalTransportFault) {
-    if (value.kind === "decode") {
-      return new EngineClientDecodeError(value.code as never, value.details);
+  try {
+    if (safeInstanceOf(value, EngineClientDecodeError)) {
+      const code = ownDataValue(value, "code");
+      const details = ownDataValue(value, "details");
+      if (isDecodeErrorCode(code)) {
+        return new EngineClientDecodeError(
+          code,
+          details as EngineClientSafeDetails | undefined,
+        );
+      }
     }
-    return new EngineClientTransportError(
-      value.code as never,
-      value.retryable,
-      value.details,
-    );
+    if (safeInstanceOf(value, EngineClientTransportError)) {
+      const code = ownDataValue(value, "code");
+      const retryable = ownDataValue(value, "retryable");
+      const details = ownDataValue(value, "details");
+      if (isTransportErrorCode(code) && typeof retryable === "boolean") {
+        return new EngineClientTransportError(
+          code,
+          retryable,
+          details as EngineClientSafeDetails | undefined,
+        );
+      }
+    }
+    if (safeInstanceOf(value, InternalTransportFault)) {
+      const kind = ownDataValue(value, "kind");
+      const code = ownDataValue(value, "code");
+      const retryable = ownDataValue(value, "retryable");
+      const details = ownDataValue(value, "details");
+      if (kind === "decode" && isDecodeErrorCode(code)) {
+        return new EngineClientDecodeError(
+          code,
+          details as EngineClientSafeDetails | undefined,
+        );
+      }
+      if (
+        kind === "transport" &&
+        isTransportErrorCode(code) &&
+        typeof retryable === "boolean"
+      ) {
+        return new EngineClientTransportError(
+          code,
+          retryable,
+          details as EngineClientSafeDetails | undefined,
+        );
+      }
+    }
+  } catch {
+    // Raw adapter values never escape stable public classification.
   }
   return new EngineClientTransportError(fallback);
+}
+
+function safeInstanceOf(
+  value: unknown,
+  constructor: abstract new (...args: never[]) => unknown,
+): boolean {
+  try {
+    return value instanceof constructor;
+  } catch {
+    return false;
+  }
+}
+
+function ownDataValue(value: unknown, property: PropertyKey): unknown {
+  if (
+    (typeof value !== "object" && typeof value !== "function") ||
+    value === null
+  ) {
+    return undefined;
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(value, property);
+  return descriptor !== undefined && "value" in descriptor
+    ? descriptor.value
+    : undefined;
+}
+
+const INPUT_ERROR_CODES = new Set<string>([
+  "INVALID_ARGUMENT",
+  "INVALID_REQUEST_ID",
+  "INVALID_BLOB_TABLE",
+  "UNSUPPORTED_BYTE_OWNERSHIP",
+  "BLOB_SIZE_MISMATCH",
+  "BLOB_DIGEST_MISMATCH",
+  "LIMIT_EXCEEDED",
+]);
+
+const TRANSPORT_ERROR_CODES = new Set<string>([
+  "NEGOTIATION_REJECTED",
+  "SPAWN_FAILED",
+  "CONNECT_FAILED",
+  "BROKEN_PIPE",
+  "PROCESS_EXITED",
+  "WORKER_CRASHED",
+  "TRANSFER_FAILED",
+  "DIGEST_FAILED",
+  "TIMEOUT_DURING_CREATION",
+  "REPLACEMENT_FAILED",
+]);
+
+const DECODE_ERROR_CODES = new Set<string>([
+  "MALFORMED_FRAME",
+  "MALFORMED_MESSAGE",
+  "CORRELATION_MISMATCH",
+  "PROTOCOL_MISMATCH",
+  "UNEXPECTED_BLOB",
+  "MISSING_BLOB",
+  "OUTPUT_SIZE_MISMATCH",
+  "OUTPUT_DIGEST_MISMATCH",
+]);
+
+function isInputErrorCode(value: unknown): value is ConstructorParameters<
+  typeof EngineClientInputError
+>[0] {
+  return typeof value === "string" && INPUT_ERROR_CODES.has(value);
+}
+
+function isTransportErrorCode(value: unknown): value is ConstructorParameters<
+  typeof EngineClientTransportError
+>[0] {
+  return typeof value === "string" && TRANSPORT_ERROR_CODES.has(value);
+}
+
+function isDecodeErrorCode(value: unknown): value is ConstructorParameters<
+  typeof EngineClientDecodeError
+>[0] {
+  return typeof value === "string" && DECODE_ERROR_CODES.has(value);
 }

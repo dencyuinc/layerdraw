@@ -5,6 +5,7 @@ import { Buffer } from "node:buffer";
 import { test } from "node:test";
 import {
   EngineClientDecodeError,
+  EngineClientDisposeError,
   EngineClientInputError,
   EngineClientStateError,
   EngineClientTransportError,
@@ -576,6 +577,532 @@ test("active and idle unsafe close strings are totally redacted", async (context
     assert.equal(client.getEndpoint().generation, 2);
     await client.dispose();
   });
+});
+
+test("native closed Promise method overrides stay behind the core boundary", async (context) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    for (const mode of ["catch-getter", "then-getter", "then-nonpromise"]) {
+      for (const partialFailure of [false, true]) {
+        await context.test(
+          `${mode} ${partialFailure ? "partial failure" : "owned endpoint"}`,
+          async () => {
+            let methodReads = 0;
+            let hardStops = 0;
+            let gracefulStops = 0;
+            const factory = await makeFactory({
+              create(generation, owner) {
+                const endpoint = new StrictFakeTransport(
+                  owner,
+                  generation,
+                  owner.endpoints.length,
+                );
+                owner.endpoints.push(endpoint);
+                if (partialFailure) {
+                  endpoint.ready = Promise.resolve({
+                    ...limits,
+                    maxBuffers: 0,
+                  });
+                }
+                const hardStop = endpoint.terminate.bind(endpoint);
+                endpoint.terminate = () => {
+                  hardStops++;
+                  return hardStop();
+                };
+                const gracefulStop = endpoint.dispose.bind(endpoint);
+                endpoint.dispose = () => {
+                  gracefulStops++;
+                  return gracefulStop();
+                };
+                const terminal = endpoint.closedBox.promise;
+                if (mode === "catch-getter") {
+                  Object.defineProperty(terminal, "catch", {
+                    get() {
+                      methodReads++;
+                      throw new Error("SECRET /private/closed-catch");
+                    },
+                  });
+                } else if (mode === "then-getter") {
+                  Object.defineProperty(terminal, "then", {
+                    get() {
+                      methodReads++;
+                      throw new Error("SECRET /private/closed-then");
+                    },
+                  });
+                } else {
+                  Object.defineProperty(terminal, "then", {
+                    get() {
+                      methodReads++;
+                      return () => undefined;
+                    },
+                  });
+                }
+                endpoint.closed = terminal;
+                return endpoint;
+              },
+            });
+
+            if (partialFailure) {
+              await assert.rejects(
+                bounded(
+                  createInternalEngineClient({
+                    transportFactory: factory,
+                    protocolCollectors: collectors,
+                    options: { ...creationOptions, disposeTimeoutMs: 10 },
+                  }),
+                  `${mode} partial open`,
+                ),
+                (error) =>
+                  error instanceof EngineClientTransportError &&
+                  error.code === "CONNECT_FAILED" &&
+                  !JSON.stringify(error).includes("SECRET"),
+              );
+              assert.equal(hardStops, 1);
+              assert.equal(gracefulStops, 0);
+            } else {
+              const client = await bounded(
+                createInternalEngineClient({
+                  transportFactory: factory,
+                  protocolCollectors: collectors,
+                  options: { ...creationOptions, disposeTimeoutMs: 10 },
+                }),
+                `${mode} creation`,
+              );
+              assert.equal(client.getEndpoint().generation, 1);
+              await bounded(client.dispose(), `${mode} disposal`);
+              assert.equal(hardStops, 0);
+              assert.equal(gracefulStops, 1);
+            }
+            assert.equal(methodReads, 0);
+            assert.equal(factory.endpoints.length, 1);
+            assert.equal(factory.endpoints[0].stopped, true);
+            assert.equal(factory.endpoints[0].closedBox.settled, true);
+          },
+        );
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("transport admission traps are captured once before bounded cleanup", async (context) => {
+  const cases = [
+    ["ready Proxy throw", "ready", "proxy", "throw"],
+    ["ready non-Promise", "ready", "proxy", "noncallable"],
+    ["request accessor throw", "request", "accessor", "throw"],
+    ["request non-callable", "request", "proxy", "noncallable"],
+    ["dispose accessor throw", "dispose", "accessor", "throw"],
+    ["dispose non-callable", "dispose", "proxy", "noncallable"],
+    ["terminate accessor throw", "terminate", "accessor", "throw"],
+    ["terminate non-callable", "terminate", "proxy", "noncallable"],
+  ];
+  const lifecycleKeys = ["ready", "closed", "request", "dispose", "terminate"];
+  for (const [name, trapped, mechanism, behavior] of cases) {
+    await context.test(name, async () => {
+      const reads = Object.fromEntries(lifecycleKeys.map((key) => [key, 0]));
+      let terminateCalls = 0;
+      let disposeCalls = 0;
+      const factory = await makeFactory({
+        create(generation, owner) {
+          const endpoint = new StrictFakeTransport(
+            owner,
+            generation,
+            owner.endpoints.length,
+          );
+          owner.endpoints.push(endpoint);
+          const terminate = endpoint.terminate.bind(endpoint);
+          endpoint.terminate = () => {
+            terminateCalls++;
+            return terminate();
+          };
+          const dispose = endpoint.dispose.bind(endpoint);
+          endpoint.dispose = () => {
+            disposeCalls++;
+            return dispose();
+          };
+          const invalid = () => {
+            if (behavior === "throw") {
+              throw new Error(`SECRET /private/${trapped}`);
+            }
+            return trapped === "ready" ? limits : undefined;
+          };
+          if (mechanism === "accessor") {
+            Object.defineProperty(endpoint, trapped, {
+              configurable: true,
+              get() {
+                reads[trapped]++;
+                return invalid();
+              },
+            });
+            return endpoint;
+          }
+          return new Proxy(endpoint, {
+            get(target, property, receiver) {
+              if (lifecycleKeys.includes(property)) reads[property]++;
+              if (property === trapped) return invalid();
+              return Reflect.get(target, property, receiver);
+            },
+          });
+        },
+      });
+      await assert.rejects(
+        bounded(
+          createInternalEngineClient({
+            transportFactory: factory,
+            protocolCollectors: collectors,
+            options: { ...creationOptions, disposeTimeoutMs: 10 },
+          }),
+          name,
+        ),
+        (error) =>
+          error instanceof EngineClientTransportError &&
+          error.code === "CONNECT_FAILED" &&
+          !JSON.stringify(error).includes("SECRET"),
+      );
+      if (mechanism === "proxy") {
+        for (const key of lifecycleKeys) assert.equal(reads[key], 1);
+      } else {
+        assert.equal(reads[trapped], 1);
+      }
+      if (trapped === "terminate") {
+        assert.equal(terminateCalls, 0);
+        assert.equal(disposeCalls, 1);
+      } else {
+        assert.equal(terminateCalls, 1);
+        assert.equal(disposeCalls, 0);
+      }
+      assert.equal(factory.endpoints[0].stopped, true);
+      assert.equal(factory.endpoints[0].closedBox.settled, true);
+    });
+  }
+});
+
+test("open exchange members and response promises are admitted once", async (context) => {
+  const cases = [
+    ["request throws", "request-throw", false],
+    ["request returns non-exchange", "request-nonexchange", false],
+    ["response accessor throws", "response-throw", false],
+    ["response is non-Promise", "response-nonpromise", false],
+    ["cancel accessor throws", "cancel-throw", false],
+    ["plain response then getter throws", "plain-then-throw", false],
+    ["native response catch getter", "native-catch", true],
+    ["native response then getter", "native-then", true],
+    ["native response non-Promise then", "native-then-nonpromise", true],
+  ];
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    for (const [name, mode, succeeds] of cases) {
+      await context.test(name, async () => {
+        let requestReads = 0;
+        let responseReads = 0;
+        let cancelReads = 0;
+        let promiseMethodReads = 0;
+        let hardStops = 0;
+        const factory = await makeFactory({
+          create(generation, owner) {
+            const endpoint = new StrictFakeTransport(
+              owner,
+              generation,
+              owner.endpoints.length,
+            );
+            owner.endpoints.push(endpoint);
+            const hardStop = endpoint.terminate.bind(endpoint);
+            endpoint.terminate = () => {
+              hardStops++;
+              return hardStop();
+            };
+            const request = endpoint.request.bind(endpoint);
+            Object.defineProperty(endpoint, "request", {
+              configurable: true,
+              get() {
+                requestReads++;
+                return (input) => {
+                  if (mode === "request-throw") {
+                    throw new Error("SECRET /private/request-call");
+                  }
+                  if (mode === "request-nonexchange") return undefined;
+                  const exchange = request(input);
+                  const originalResponse = exchange.response;
+                  if (mode === "response-throw") {
+                    void originalResponse.then(undefined, () => undefined);
+                    Object.defineProperty(exchange, "response", {
+                      get() {
+                        responseReads++;
+                        throw new Error("SECRET /private/response-getter");
+                      },
+                    });
+                  } else if (mode === "response-nonpromise") {
+                    void originalResponse.then(undefined, () => undefined);
+                    Object.defineProperty(exchange, "response", {
+                      get() {
+                        responseReads++;
+                        return undefined;
+                      },
+                    });
+                  } else if (mode === "cancel-throw") {
+                    Object.defineProperty(exchange, "cancel", {
+                      get() {
+                        cancelReads++;
+                        throw new Error("SECRET /private/cancel-getter");
+                      },
+                    });
+                  } else if (mode === "plain-then-throw") {
+                    void originalResponse.then(undefined, () => undefined);
+                    exchange.response = Object.defineProperty({}, "then", {
+                      get() {
+                        promiseMethodReads++;
+                        throw new Error("SECRET /private/response-then");
+                      },
+                    });
+                  } else if (mode === "native-catch") {
+                    Object.defineProperty(originalResponse, "catch", {
+                      get() {
+                        promiseMethodReads++;
+                        throw new Error("SECRET /private/response-catch");
+                      },
+                    });
+                  } else if (mode === "native-then") {
+                    Object.defineProperty(originalResponse, "then", {
+                      get() {
+                        promiseMethodReads++;
+                        throw new Error("SECRET /private/response-native-then");
+                      },
+                    });
+                  } else if (mode === "native-then-nonpromise") {
+                    Object.defineProperty(originalResponse, "then", {
+                      get() {
+                        promiseMethodReads++;
+                        return () => undefined;
+                      },
+                    });
+                  }
+                  if (mode !== "response-throw" && mode !== "response-nonpromise") {
+                    const response = exchange.response;
+                    Object.defineProperty(exchange, "response", {
+                      configurable: true,
+                      get() {
+                        responseReads++;
+                        return response;
+                      },
+                    });
+                  }
+                  if (mode !== "cancel-throw") {
+                    const cancel = exchange.cancel;
+                    Object.defineProperty(exchange, "cancel", {
+                      configurable: true,
+                      get() {
+                        cancelReads++;
+                        return cancel;
+                      },
+                    });
+                  }
+                  return exchange;
+                };
+              },
+            });
+            return endpoint;
+          },
+        });
+        const creation = bounded(
+          createInternalEngineClient({
+            transportFactory: factory,
+            protocolCollectors: collectors,
+            options: { ...creationOptions, disposeTimeoutMs: 10 },
+          }),
+          name,
+        );
+        if (succeeds) {
+          const client = await creation;
+          assert.equal(requestReads, 1);
+          assert.equal(responseReads, 1);
+          assert.equal(cancelReads, 1);
+          assert.equal(promiseMethodReads, 0);
+          await client.dispose();
+          assert.equal(hardStops, 0);
+        } else {
+          await assert.rejects(creation, (error) => {
+            assert.ok(error instanceof EngineClientTransportError);
+            assert.ok(["CONNECT_FAILED", "TRANSFER_FAILED"].includes(error.code));
+            assert.equal(JSON.stringify(error).includes("SECRET"), false);
+            return true;
+          });
+          assert.equal(requestReads, 1);
+          if (!mode.startsWith("request-")) {
+            assert.equal(responseReads, 1);
+            assert.equal(cancelReads, 1);
+          }
+          if (mode === "plain-then-throw") assert.equal(promiseMethodReads, 1);
+          assert.equal(hardStops, 1);
+        }
+        assert.equal(factory.endpoints.length, 1);
+        assert.equal(factory.endpoints[0].stopped, true);
+        assert.equal(factory.endpoints[0].closedBox.settled, true);
+      });
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("shutdown method results are bounded, redacted, and singly owned", async (context) => {
+  const cases = [
+    ["throwing dispose", "throw", false, true],
+    ["non-Promise dispose", "nonpromise", false, true],
+    ["stopping non-Promise dispose", "stopping-nonpromise", false, false],
+    ["throwing then getter", "then-getter", false, true],
+    ["non-callable then", "then-noncallable", false, true],
+    ["native catch getter", "native-catch", true, false],
+    ["native then getter", "native-then", true, false],
+    ["native non-Promise then", "native-then-nonpromise", true, false],
+    ["plain catch getter", "plain-catch", true, false],
+    ["reentrant then", "reentrant-then", true, false],
+  ];
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    for (const [name, mode, clean, expectsHardStop] of cases) {
+      await context.test(name, async () => {
+        let disposeReads = 0;
+        let terminateReads = 0;
+        let disposeCalls = 0;
+        let terminateCalls = 0;
+        let promiseMethodReads = 0;
+        let nestedDisposal;
+        let client;
+        const factory = await makeFactory({
+          create(generation, owner) {
+            const endpoint = new StrictFakeTransport(
+              owner,
+              generation,
+              owner.endpoints.length,
+            );
+            owner.endpoints.push(endpoint);
+            const dispose = endpoint.dispose.bind(endpoint);
+            const terminate = endpoint.terminate.bind(endpoint);
+            const stopGracefully = () => {
+              endpoint.stopped = true;
+              endpoint.closedBox.resolve({
+                code: "WORKER_CRASHED",
+                retryable: true,
+              });
+            };
+            const disposeMethod = () => {
+              disposeCalls++;
+              if (mode === "throw") {
+                throw new Error("SECRET /private/dispose-call");
+              }
+              if (mode === "nonpromise") return undefined;
+              if (mode === "stopping-nonpromise") {
+                stopGracefully();
+                return undefined;
+              }
+              if (mode === "then-getter") {
+                return Object.defineProperty({}, "then", {
+                  get() {
+                    promiseMethodReads++;
+                    throw new Error("SECRET /private/dispose-then");
+                  },
+                });
+              }
+              if (mode === "then-noncallable") return { then: undefined };
+              if (mode === "plain-catch") {
+                return {
+                  get catch() {
+                    promiseMethodReads++;
+                    throw new Error("SECRET /private/dispose-catch");
+                  },
+                  then(resolve) {
+                    stopGracefully();
+                    resolve();
+                  },
+                };
+              }
+              if (mode === "reentrant-then") {
+                return {
+                  then(resolve, reject) {
+                    nestedDisposal = client.dispose();
+                    stopGracefully();
+                    resolve();
+                    reject(new Error("SECRET /private/late-reject"));
+                    throw new Error("SECRET /private/late-throw");
+                  },
+                };
+              }
+              const returned = dispose();
+              const property = mode === "native-catch" ? "catch" : "then";
+              Object.defineProperty(returned, property, {
+                get() {
+                  promiseMethodReads++;
+                  if (mode === "native-then-nonpromise") {
+                    return () => undefined;
+                  }
+                  throw new Error(`SECRET /private/dispose-${property}`);
+                },
+              });
+              return returned;
+            };
+            Object.defineProperty(endpoint, "dispose", {
+              configurable: true,
+              get() {
+                disposeReads++;
+                return disposeMethod;
+              },
+            });
+            Object.defineProperty(endpoint, "terminate", {
+              configurable: true,
+              get() {
+                terminateReads++;
+                return () => {
+                  terminateCalls++;
+                  return terminate();
+                };
+              },
+            });
+            return endpoint;
+          },
+        });
+        client = await createInternalEngineClient({
+          transportFactory: factory,
+          protocolCollectors: collectors,
+          options: { ...creationOptions, disposeTimeoutMs: 10 },
+        });
+        const disposal = client.dispose();
+        if (clean) {
+          await bounded(disposal, name);
+        } else {
+          await assert.rejects(bounded(disposal, name), (error) => {
+            assert.ok(error instanceof EngineClientDisposeError);
+            assert.equal(JSON.stringify(error).includes("SECRET"), false);
+            return true;
+          });
+        }
+        assert.equal(terminateCalls, expectsHardStop ? 1 : 0);
+        assert.equal(disposeReads, 1);
+        assert.equal(terminateReads, 1);
+        assert.equal(disposeCalls, 1);
+        if (mode.startsWith("native-")) assert.equal(promiseMethodReads, 0);
+        if (mode === "then-getter") assert.equal(promiseMethodReads, 1);
+        if (mode === "plain-catch") assert.equal(promiseMethodReads, 0);
+        if (mode === "reentrant-then") assert.equal(nestedDisposal, disposal);
+        assert.equal(factory.endpoints[0].stopped, true);
+        assert.equal(factory.endpoints[0].closedBox.settled, true);
+      });
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
 });
 
 test("closed is captured once across active and idle getter and Proxy traps", async (context) => {
@@ -1233,4 +1760,137 @@ test("restart rejects synchronously once disposal begins during replacement", as
   await disposal;
   await replacement;
   assert.equal(client.state, "disposed");
+});
+
+test("transport factory capabilities are snapshotted once across generations", async () => {
+  const factory = await makeFactory();
+  const values = {
+    transportId: factory.transportId,
+    connectFailureCode: factory.connectFailureCode,
+    create: factory.create,
+  };
+  const reads = {
+    transportId: 0,
+    connectFailureCode: 0,
+    create: 0,
+  };
+  for (const property of Object.keys(values)) {
+    Object.defineProperty(factory, property, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads[property]++;
+        return values[property];
+      },
+    });
+  }
+
+  const client = await createInternalEngineClient({
+    transportFactory: factory,
+    protocolCollectors: collectors,
+    options: creationOptions,
+  });
+  await client.restart();
+  await client.dispose();
+  assert.deepEqual(reads, {
+    transportId: 1,
+    connectFailureCode: 1,
+    create: 1,
+  });
+  assert.equal(factory.endpoints.length, 2);
+});
+
+test("hostile response rejection identity is redacted before classification", async () => {
+  const hostile = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("SECRET /private/rejection-prototype");
+    },
+  });
+  const { client, factory } = await create({
+    compile() {
+      throw hostile;
+    },
+  });
+  await assert.rejects(client.compile(makePortableRequest().request), (error) => {
+    assert.ok(error instanceof EngineClientTransportError);
+    assert.equal(error.code, "BROKEN_PIPE");
+    assert.equal(error.details.replacementSucceeded, true);
+    assert.equal(JSON.stringify(error).includes("SECRET"), false);
+    return true;
+  });
+  assert.equal(factory.endpoints.length, 2);
+  await client.dispose();
+});
+
+test("reentrant cancellation disposal cannot start a replacement", async () => {
+  let client;
+  let nestedDisposal;
+  const factory = await makeFactory({
+    compile() {
+      return StrictFakeTransport.PENDING;
+    },
+    cancel() {
+      nestedDisposal = client.dispose();
+      return { reusable: false };
+    },
+  });
+  client = await createInternalEngineClient({
+    transportFactory: factory,
+    protocolCollectors: collectors,
+    options: creationOptions,
+  });
+  const controller = new AbortController();
+  const compile = client.compile(makePortableRequest().request, {
+    signal: controller.signal,
+  });
+  await waitFor(() => factory.endpoints[0].requests.length === 2);
+  controller.abort();
+  const outcome = await compile;
+  assert.equal(outcome.origin, "client");
+  assert.equal(outcome.reason, "signal");
+  assert.equal(nestedDisposal, client.dispose());
+  await nestedDisposal;
+  assert.equal(factory.endpoints.length, 1);
+  assert.equal(client.state, "disposed");
+});
+
+test("reentrant pending hard stop observes the published disposal single flight", async () => {
+  const defaults = await makeFactory();
+  let client;
+  let nestedDisposal;
+  const factory = await makeFactory({
+    create(generation, owner) {
+      const endpoint = new StrictFakeTransport(
+        owner,
+        generation,
+        owner.endpoints.length,
+      );
+      owner.endpoints.push(endpoint);
+      if (endpoint.endpointIndex > 0) {
+        const terminate = endpoint.terminate.bind(endpoint);
+        endpoint.terminate = () => {
+          nestedDisposal = client.dispose();
+          terminate();
+        };
+      }
+      return endpoint;
+    },
+    handshake(request, index) {
+      if (index > 0) return new Promise(() => {});
+      return defaults.handshake(request, index);
+    },
+  });
+  client = await createInternalEngineClient({
+    transportFactory: factory,
+    protocolCollectors: collectors,
+    options: creationOptions,
+  });
+  const replacement = client.restart();
+  await waitFor(() => factory.endpoints.length === 2);
+  const disposal = client.dispose();
+  assert.equal(nestedDisposal, disposal);
+  await disposal;
+  await replacement;
+  assert.equal(client.state, "disposed");
+  assert.equal(factory.endpoints[1].stopped, true);
 });
