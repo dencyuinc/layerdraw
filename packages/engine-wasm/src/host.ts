@@ -60,6 +60,8 @@ export interface EngineWorkerExchange {
 export interface EngineWorkerTransport {
   readonly endpointGeneration: string;
   readonly ready: Promise<EngineWorkerTransportLimits>;
+  /** Settles after the Worker and every in-flight exchange are terminal. */
+  readonly closed: Promise<void>;
   request(input: EngineWorkerRequest): EngineWorkerExchange;
   terminate(): void;
   dispose(): Promise<void>;
@@ -155,6 +157,7 @@ export function createEngineWorkerTransportWithFactory(
 
   const ready = deferred<EngineWorkerTransportLimits>();
   const disposed = deferred<void>();
+  const closed = deferred<void>();
   let worker: WorkerLike;
   try {
     worker = workerFactory(
@@ -196,6 +199,7 @@ export function createEngineWorkerTransportWithFactory(
     removeListeners();
     worker.terminate();
     disposed.resolve(undefined);
+    closed.resolve(undefined);
   };
 
   const failTerminal = (code: EngineWorkerFailureCode, nextState: "terminated" | "crashed" = "crashed"): void => {
@@ -207,6 +211,7 @@ export function createEngineWorkerTransportWithFactory(
     cancelSchedule(disposeTimer);
     removeListeners();
     worker.terminate();
+    closed.resolve(undefined);
     if (nextState !== "terminated") disposed.resolve(undefined);
   };
 
@@ -302,6 +307,7 @@ export function createEngineWorkerTransportWithFactory(
   const transport: EngineWorkerTransport = {
     endpointGeneration: options.endpointGeneration,
     ready: ready.promise,
+    closed: closed.promise,
     request(input: EngineWorkerRequest): EngineWorkerExchange {
       if (state === "disposed" || state === "disposing") throw transportError("engine.worker.disposed");
       if (state === "terminated") throw transportError("engine.worker.terminated_by_caller");

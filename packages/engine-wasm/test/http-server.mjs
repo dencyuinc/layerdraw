@@ -27,6 +27,23 @@ const server = createServer(async (request, response) => {
       createReadStream(path).pipe(response);
       return;
     }
+    const packageFile = /^\/__layerdraw\/packages\/(engine-client|protocol)\/(.+)$/.exec(pathname);
+    if (packageFile !== null) {
+      const [, packageName, relative] = packageFile;
+      if (packageName === undefined || relative === undefined || relative.includes("..")) throw new Error("invalid package path");
+      const packageRoot = resolve(repositoryRoot, "packages", packageName);
+      const path = resolve(packageRoot, relative);
+      if (!path.startsWith(`${packageRoot}${sep}`)) throw new Error("outside package root");
+      const info = await stat(path);
+      response.writeHead(200, {
+        "cache-control": "no-store",
+        "content-length": info.size,
+        "content-type": types.get(extname(path)) ?? "application/octet-stream",
+        "cross-origin-resource-policy": "same-origin",
+      });
+      createReadStream(path).pipe(response);
+      return;
+    }
     const race = /^\/test\/browser\/race-artifact\/([a-z0-9-]+)\/(.+)$/.exec(pathname);
     if (race !== null) {
       const [, token, relative] = race;

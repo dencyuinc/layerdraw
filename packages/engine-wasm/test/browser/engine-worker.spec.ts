@@ -6,6 +6,7 @@ declare global {
   interface Window {
     layerDrawHarnessReady: boolean;
     runLayerDrawRealArtifactCorpus(): Promise<{limitKeys: string[]; parityCases: string[]; endpointID: string; replacementID: string}>;
+    runLayerDrawEngineClientCorpus(): Promise<{cases: string[]; firstGeneration: number; replacementGeneration: number; state: string}>;
     runLayerDrawDirectLifecycle(): Promise<{staleFailure: {code: string; phase: string; retryable: boolean}; staleDetached: number; crashCode: string}>;
     runLayerDrawVerifiedSnapshotRace(): Promise<{wasmExecReads: number; revoked: number}>;
   }
@@ -25,6 +26,22 @@ test("packaged module Worker handshakes and compiles Project and Pack through re
   ]);
   expect(result.parityCases).toEqual(["canonical_project", "canonical_root_pack"]);
   expect(result.endpointID).not.toBe(result.replacementID);
+  expect(failures).toEqual([]);
+});
+
+test("public Engine client compiles the parity corpus through a real Go/WASM Worker", async ({page}) => {
+  const failures: string[] = [];
+  page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
+  page.on("pageerror", (error) => failures.push(error.message));
+  await page.goto("/test/browser/harness.html");
+  await page.waitForFunction(() => window.layerDrawHarnessReady === true);
+  const result = await page.evaluate(() => window.runLayerDrawEngineClientCorpus());
+  expect(result).toEqual({
+    cases: ["canonical_project", "canonical_root_pack"],
+    firstGeneration: 1,
+    replacementGeneration: 2,
+    state: "disposed",
+  });
   expect(failures).toEqual([]);
 });
 

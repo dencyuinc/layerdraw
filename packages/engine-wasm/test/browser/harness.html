@@ -3,6 +3,16 @@
   <head>
     <meta charset="utf-8">
     <title>LayerDraw Engine Worker transport harness</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "@layerdraw/engine-client/wasm": "/__layerdraw/packages/engine-client/dist/wasm.js",
+          "@layerdraw/engine-wasm": "/dist/index.js",
+          "@layerdraw/protocol/common": "/__layerdraw/packages/protocol/dist/common.gen.js",
+          "@layerdraw/protocol/engine": "/__layerdraw/packages/protocol/dist/engine.gen.js"
+        }
+      }
+    </script>
   </head>
   <body>
     <main>LayerDraw Engine Worker transport harness</main>
