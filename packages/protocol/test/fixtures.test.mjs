@@ -13,6 +13,7 @@ import {
   decodeCanonicalSourcePath,
   decodeEffectiveResourceLimits,
   decodeExportRecipeBlobRef,
+  decodeHandshakeRequestEnvelope,
   decodeNormalizedPackArtifactBlobRef,
   decodeNormalizedPackCanonicalBlobRef,
   decodeNormalizedProjectArtifactBlobRef,
@@ -27,6 +28,7 @@ import {
   encodeCanonicalSourcePath,
   encodeEffectiveResourceLimits,
   encodeExportRecipeBlobRef,
+  encodeHandshakeRequestEnvelope,
   encodeNormalizedPackArtifactBlobRef,
   encodeNormalizedPackCanonicalBlobRef,
   encodeNormalizedProjectArtifactBlobRef,
@@ -36,6 +38,7 @@ import {
   encodeHandshakeResponseEnvelope,
   isCompileRequestEnvelope,
   isCompileResponseEnvelope,
+  isHandshakeRequestEnvelope,
   isHandshakeResponseEnvelope,
 } from "../dist/engine.gen.js";
 import {
@@ -51,8 +54,8 @@ import {
   decodeCapabilityID,
   decodeDigest,
   decodeEndpointInstanceID,
-  decodeJsonValue,
   decodeHandshakeRequest,
+  decodeJsonValue,
   decodeOperationCapability,
   decodeManifestETag,
   decodeProtocolOffer,
@@ -76,8 +79,8 @@ import {
   encodeCapabilityID,
   encodeDigest,
   encodeEndpointInstanceID,
-  encodeJsonValue,
   encodeHandshakeRequest,
+  encodeJsonValue,
   encodeOperationCapability,
   encodeManifestETag,
   encodeProtocolOffer,
@@ -225,6 +228,7 @@ for (const [name, validate, decode, encode] of [
   ["compile-success.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
   ["compile-success-pack.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
   ["compile-rejected.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
+  ["handshake-request.json", isHandshakeRequestEnvelope, decodeHandshakeRequestEnvelope, encodeHandshakeRequestEnvelope],
   ["handshake-success.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
   ["handshake-rejected.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
 ]) {
@@ -237,6 +241,63 @@ for (const [name, validate, decode, encode] of [
     assert.equal(encode(decode(canonical)), canonical);
   });
 }
+
+test("review-repair handshake fixtures validate and byte-identically round-trip", async (context) => {
+  for (const name of [
+    "handshake-major-mismatch-request.json",
+    "handshake-range-mismatch-request.json",
+    "handshake-range-mismatch-response.json",
+    "handshake-schema-digest-mismatch-request.json",
+    "handshake-schema-digest-mismatch-response.json",
+    "handshake-required-capability-missing-request.json",
+    "handshake-required-capability-missing-response.json",
+    "handshake-unknown-optional-request.json",
+    "handshake-unknown-optional-response.json",
+    "handshake-client-limits-request.json",
+    "handshake-client-limits-response.json",
+    "handshake-policy-limit-response.json",
+    "handshake-failed-request.json",
+    "handshake-failed-response.json",
+    "handshake-cancelled-request.json",
+    "handshake-cancelled-response.json",
+  ]) await context.test(name, async () => {
+    const request = name.endsWith("-request.json");
+    const validate = request ? isHandshakeRequestEnvelope : isHandshakeResponseEnvelope;
+    const decode = request ? decodeHandshakeRequestEnvelope : decodeHandshakeResponseEnvelope;
+    const encode = request ? encodeHandshakeRequestEnvelope : encodeHandshakeResponseEnvelope;
+    const source = await readFile(new URL(name, fixtureRoot), "utf8");
+    const fixture = JSON.parse(source);
+    const canonical = (await readFile(new URL(name, canonicalEngineRoot), "utf8")).trim();
+    assert.equal(validate(fixture), true);
+    assert.equal(encode(decode(source)), canonical);
+    assert.equal(encode(decode(canonical)), canonical);
+  });
+});
+
+test("compatibility rejection fixtures use generated UpgradeDiagnosticData", async (context) => {
+  for (const [name, requiredVersionOrRange, affectedArtifacts] of [
+    ["handshake-rejected.json", "2.0..2.1", ["engine"]],
+    ["handshake-range-mismatch-response.json", "1.1..1.2", ["engine"]],
+    ["handshake-schema-digest-mismatch-response.json", "1.0", ["engine"]],
+    ["handshake-required-capability-missing-response.json", "1.0", ["engine.future"]],
+  ]) await context.test(name, async () => {
+    const source = await readFile(new URL(name, canonicalEngineRoot), "utf8");
+    const response = decodeHandshakeResponseEnvelope(source);
+    assert.equal(response.outcome, "rejected");
+    assert.equal(response.diagnostics.length, 1);
+    const data = response.diagnostics[0].data;
+    assert.notEqual(data, undefined);
+    const decoded = decodeUpgradeDiagnosticData(JSON.stringify(data));
+    assert.deepEqual(decoded, {
+      affected_artifacts: affectedArtifacts,
+      current_version: "1.0",
+      migration_available: false,
+      readonly_possible: false,
+      required_version_or_range: requiredVersionOrRange,
+    });
+    assert.deepEqual(JSON.parse(encodeUpgradeDiagnosticData(decoded)), data);
+  });
+});
 
 test("invalid compile input is rejected", async () => {
   const fixture = await readFixture("compile-invalid-request.json");
@@ -298,6 +359,15 @@ test("generated CompileResult BlobRef collector preserves wire order, aliases, a
   assert.throws(() => collectCompileResultBlobRefs(hostile), TypeError);
 });
 
+test("generated handshake request-ID boundary is exact", async () => {
+  const fixture = await readFixture("handshake-request.json");
+  fixture.request_id = "r".repeat(128);
+  assert.equal(isHandshakeRequestEnvelope(fixture), true);
+  fixture.request_id += "r";
+  assert.equal(isHandshakeRequestEnvelope(fixture), false);
+  assert.throws(() => encodeHandshakeRequestEnvelope(fixture));
+});
+
 test("unknown response fields are rejected while explicit extensions survive", async () => {
   const fixture = await readFixture("compile-rejected.json");
   assert.equal(isCompileResponseEnvelope({...fixture, unexpected: true}), false);
@@ -318,6 +388,7 @@ test("TypeScript matches shared canonical Go/TypeScript engine-envelope bytes", 
     ["compile-request.json", decodeCompileRequestEnvelope, encodeCompileRequestEnvelope],
     ["compile-rejected.json", decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
     ["compile-success-pack.json", decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
+    ["handshake-request.json", decodeHandshakeRequestEnvelope, encodeHandshakeRequestEnvelope],
     ["handshake-success.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
     ["handshake-rejected.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
   ]) await context.test(name, async () => {
@@ -413,6 +484,7 @@ test("public object predicates reject non-scalar Unicode keys at every object su
 const sharedCodecs = {
   ByteResourceLimitCapability: [decodeByteResourceLimitCapability, encodeByteResourceLimitCapability],
   CapabilityID: [decodeCapabilityID, encodeCapabilityID],
+  HandshakeRequest: [decodeHandshakeRequest, encodeHandshakeRequest],
   CanonicalFiniteDecimal: [decodeCanonicalFiniteDecimal, encodeCanonicalFiniteDecimal],
   CanonicalInt64: [decodeCanonicalInt64, encodeCanonicalInt64],
   CanonicalNonNegativeInt64: [decodeCanonicalNonNegativeInt64, encodeCanonicalNonNegativeInt64],

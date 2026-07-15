@@ -1,0 +1,27 @@
+{
+  "diagnostics": [
+    {
+      "code": "protocol.schema_digest_mismatch",
+      "data": {
+        "affected_artifacts": [
+          "engine"
+        ],
+        "current_version": "1.0",
+        "migration_available": false,
+        "readonly_possible": false,
+        "required_version_or_range": "1.0"
+      },
+      "message": "The offered Engine schema digest does not match the generated Engine schema.",
+      "related": [],
+      "remediation": "Install client and Engine artifacts from a compatible release set.",
+      "severity": "error"
+    }
+  ],
+  "engine_release": "0.0.0-dev",
+  "outcome": "rejected",
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-schema-digest-mismatch"
+}

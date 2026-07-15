@@ -177,6 +177,7 @@ func TestSchemaDocumentValidationFailures(t *testing.T) {
 func TestSchemaTypeValidationFailures(t *testing.T) {
 	t.Parallel()
 	minimum, maximum := float64(0), float64(10)
+	negative, one, two := -1, 1, 2
 	document := &schemaDocument{ID: "test", Definitions: map[string]*schemaType{}}
 	set := schemaSet{documents: []*schemaDocument{document}, byID: map[string]*schemaDocument{"test": document}}
 	validObject := func() *schemaType {
@@ -196,6 +197,18 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 		{"unsupported oneOf", "unsupported oneOf", func() *schemaType { return &schemaType{OneOf: []*schemaType{{Type: "string"}, {Type: "boolean"}}} }},
 		{"non-string enum", "enum must", func() *schemaType { return &schemaType{Type: "boolean", Enum: []string{"x"}} }},
 		{"unknown format", "unsupported format", func() *schemaType { return &schemaType{Type: "string", Format: "uuid"} }},
+		{"string length on array", "length bounds require string", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "string"}, MaxLength: &one}
+		}},
+		{"negative string length", "non-negative and ordered", func() *schemaType { return &schemaType{Type: "string", MaxLength: &negative} }},
+		{"reversed string length", "non-negative and ordered", func() *schemaType { return &schemaType{Type: "string", MinLength: &two, MaxLength: &one} }},
+		{"item bound on string", "item bounds require array", func() *schemaType { return &schemaType{Type: "string", MaxItems: &one} }},
+		{"negative item bound", "non-negative and ordered", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "string"}, MaxItems: &negative}
+		}},
+		{"reversed item bound", "non-negative and ordered", func() *schemaType {
+			return &schemaType{Type: "array", Items: &schemaType{Type: "string"}, MinItems: &two, MaxItems: &one}
+		}},
 		{"integer without bounds", "explicit minimum", func() *schemaType { return &schemaType{Type: "integer"} }},
 		{"fractional integer bound", "portable-safe", func() *schemaType {
 			fraction := 0.5
@@ -471,7 +484,6 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 	if err := validateType(set, document, "AllowedRefUnion", allowedRefUnion, map[*schemaType]bool{}); err != nil {
 		t.Fatalf("valid tagged allowed_values reference rejected: %v", err)
 	}
-	one := 1
 	document.Definitions["DiffKind"] = &schemaType{Type: "string", Enum: []string{"diff", "query"}}
 	diffSource := &schemaType{
 		Type: "object", Properties: map[string]*schemaType{
@@ -896,6 +908,16 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 	} {
 		if !strings.Contains(tsTypes, expected) {
 			t.Errorf("generated TypeScript surface missing %q", expected)
+		}
+	}
+	commonTypes := byPath["packages/protocol/src/common.gen.ts"]
+	for _, expected := range []string{
+		`Array.from(value).length <= 128`,
+		`value["optional_capabilities"].length <= 64`,
+		`value["versions"].length <= 16`,
+	} {
+		if !strings.Contains(commonTypes, expected) {
+			t.Errorf("generated TypeScript bound guard missing %q", expected)
 		}
 	}
 }

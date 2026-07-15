@@ -1,7 +1,7 @@
 {
   "diagnostics": [
     {
-      "code": "protocol.upgrade_required",
+      "code": "protocol.major_version_mismatch",
       "data": {
         "affected_artifacts": ["engine"],
         "current_version": "1.0",
@@ -9,8 +9,9 @@
         "readonly_possible": false,
         "required_version_or_range": "2.0..2.1"
       },
-      "message": "No compatible Engine protocol version is available.",
+      "message": "The client and Engine do not support a common protocol major version.",
       "related": [],
+      "remediation": "Use client and Engine artifacts that support the same Engine Protocol major version.",
       "severity": "error"
     }
   ],

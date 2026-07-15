@@ -1,0 +1,27 @@
+{
+  "operation": "engine.handshake",
+  "payload": {
+    "client_release": "9.8.7",
+    "optional_capabilities": [],
+    "protocols": [
+      {
+        "name": "engine",
+        "supported_range": "1.0..1.0",
+        "versions": [
+          {
+            "schema_digest": "sha256:2d34eed0a79b9e5d1ac477d3e909fa1138800766ee9b77acd0f81ffde0ae0b8e",
+            "version": "1.0"
+          }
+        ]
+      }
+    ],
+    "required_capabilities": [
+      "engine.future"
+    ]
+  },
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-required-capability-missing"
+}

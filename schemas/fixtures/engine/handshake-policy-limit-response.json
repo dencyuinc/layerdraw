@@ -1,0 +1,21 @@
+{
+  "diagnostics": [
+    {
+      "code": "protocol.invalid_handshake",
+      "data": {
+        "reason": "policy_limit_exceeded"
+      },
+      "message": "The handshake request is invalid.",
+      "related": [],
+      "remediation": "Send an unambiguous generated Engine handshake request.",
+      "severity": "error"
+    }
+  ],
+  "engine_release": "0.0.0-dev",
+  "outcome": "rejected",
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-policy-limit"
+}

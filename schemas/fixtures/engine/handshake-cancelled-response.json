@@ -1,0 +1,16 @@
+{
+  "diagnostics": [],
+  "engine_release": "0.0.0-dev",
+  "failure": {
+    "category": "cancelled",
+    "code": "engine.handshake.cancelled",
+    "message": "The handshake was cancelled.",
+    "retryable": true
+  },
+  "outcome": "cancelled",
+  "protocol": {
+    "name": "engine",
+    "version": "1.0"
+  },
+  "request_id": "fixture-handshake-cancelled"
+}

@@ -61,8 +61,10 @@ func TestEngineCompilerPackageBoundary(t *testing.T) {
 			if strings.HasSuffix(importPath, ".ts") || strings.Contains(importPath, "typescript") {
 				t.Errorf("TypeScript dependency in %s: %s", path, importPath)
 			}
-			if strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/") &&
-				!strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/internal/compiler") {
+			allowedLocalImport := strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/internal/compiler") ||
+				strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/gen/go/") ||
+				(strings.HasPrefix(path, "endpoint/") && importPath == "github.com/dencyuinc/layerdraw/internal/engine")
+			if strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/") && !allowedLocalImport {
 				t.Errorf("Engine/compiler dependency escapes its component boundary in %s: %s", path, importPath)
 			}
 			firstSegment := strings.Split(importPath, "/")[0]

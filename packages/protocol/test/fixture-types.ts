@@ -3,11 +3,13 @@
 import {
   isCompileRequestEnvelope,
   isCompileResponseEnvelope,
+  isHandshakeRequestEnvelope,
   isHandshakeResponseEnvelope,
 } from "../src/engine.gen.js";
 import type {
   CompileRequestEnvelope,
   CompileResponseEnvelope,
+  HandshakeRequestEnvelope,
   HandshakeResponseEnvelope,
 } from "../src/engine.gen.js";
 import type {
@@ -50,10 +52,12 @@ export const typedInvalidDiffSources: ReadonlyArray<ViewRecipeSource> = [
 export function narrowFixture(value: unknown):
   | CompileRequestEnvelope
   | CompileResponseEnvelope
+  | HandshakeRequestEnvelope
   | HandshakeResponseEnvelope
   | undefined {
   if (isCompileRequestEnvelope(value)) return value;
   if (isCompileResponseEnvelope(value)) return value;
+  if (isHandshakeRequestEnvelope(value)) return value;
   if (isHandshakeResponseEnvelope(value)) return value;
   return undefined;
 }

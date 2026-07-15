@@ -285,8 +285,10 @@ type schemaType struct {
 	Minimum              *float64                `json:"minimum,omitempty"`
 	Maximum              *float64                `json:"maximum,omitempty"`
 	MinLength            *int                    `json:"minLength,omitempty"`
+	MaxLength            *int                    `json:"maxLength,omitempty"`
 	MinItems             *int                    `json:"minItems,omitempty"`
 	UniqueItems          bool                    `json:"uniqueItems,omitempty"`
+	MaxItems             *int                    `json:"maxItems,omitempty"`
 	OneOf                []*schemaType           `json:"oneOf,omitempty"`
 	TaggedUnion          *taggedUnion            `json:"x-layerdraw-tagged-union,omitempty"`
 	OutcomeEnvelope      bool                    `json:"x-layerdraw-outcome-envelope,omitempty"`
@@ -793,6 +795,24 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		}
 		if !allowed[value.Format] {
 			return fmt.Errorf("%s has unsupported format %q", context, value.Format)
+		}
+	}
+	if value.MinLength != nil || value.MaxLength != nil {
+		if typeValue != "string" {
+			return fmt.Errorf("%s length bounds require string type", context)
+		}
+		if (value.MinLength != nil && *value.MinLength < 0) || (value.MaxLength != nil && *value.MaxLength < 0) ||
+			(value.MinLength != nil && value.MaxLength != nil && *value.MinLength > *value.MaxLength) {
+			return fmt.Errorf("%s string length bounds must be non-negative and ordered", context)
+		}
+	}
+	if value.MinItems != nil || value.MaxItems != nil {
+		if typeValue != "array" {
+			return fmt.Errorf("%s item bounds require array type", context)
+		}
+		if (value.MinItems != nil && *value.MinItems < 0) || (value.MaxItems != nil && *value.MaxItems < 0) ||
+			(value.MinItems != nil && value.MaxItems != nil && *value.MinItems > *value.MaxItems) {
+			return fmt.Errorf("%s array item bounds must be non-negative and ordered", context)
 		}
 	}
 	if typeValue == "integer" {
@@ -2350,6 +2370,7 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		}
 		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(strings.ReplaceAll(pattern, "(?:", "(")).MatchString(text) { return fmt.Errorf("%s has invalid string form", path) }
 		if minimum, ok := schema["minLength"].(float64); ok && utf8.RuneCountInString(text) < int(minimum) { return fmt.Errorf("%s is too short", path) }
+		if maximum, ok := schema["maxLength"].(float64); ok && utf8.RuneCountInString(text) > int(maximum) { return fmt.Errorf("%s is too long", path) }
 		if format, _ := schema["format"].(string); format != "" {
 			switch format {
 			case "canonical-source-path":
@@ -2401,6 +2422,7 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		items, ok := value.([]any)
 		if !ok { return fmt.Errorf("%s must be an array", path) }
 		if minimum, ok := schema["minItems"].(float64); ok && len(items) < int(minimum) { return fmt.Errorf("%s has too few items", path) }
+		if maximum, ok := schema["maxItems"].(float64); ok && len(items) > int(maximum) { return fmt.Errorf("%s has too many items", path) }
 		itemSchema, _ := schema["items"].(map[string]any)
 		seenItems := map[string]bool{}
 		for index, item := range items {
@@ -4157,6 +4179,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.MinLength != nil {
 			parts = append(parts, fmt.Sprintf("Array.from(%s).length >= %d", expression, *value.MinLength))
 		}
+		if value.MaxLength != nil {
+			parts = append(parts, fmt.Sprintf("Array.from(%s).length <= %d", expression, *value.MaxLength))
+		}
 		if value.Format == "int64-decimal" {
 			parts = append(parts, "matchesCanonicalInt64("+expression+")")
 		}
@@ -4230,6 +4255,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		parts := []string{"isJSONArray(" + expression + ")", expression + ".every((item) => " + item + ")"}
 		if value.MinItems != nil {
 			parts = append(parts, fmt.Sprintf("%s.length >= %d", expression, *value.MinItems))
+		}
+		if value.MaxItems != nil {
+			parts = append(parts, fmt.Sprintf("%s.length <= %d", expression, *value.MaxItems))
 		}
 		if value.UniqueItems {
 			parts = append(parts, "hasUniqueItems("+expression+")")

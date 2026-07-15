@@ -71,8 +71,9 @@
     },
     "CapabilityID": {
       "type": "string",
+      "maxLength": 128,
       "pattern": "^[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)+$",
-      "description": "A typed capability identifier with dot- or colon-separated lowercase namespace segments. Unknown canonical IDs remain representable."
+      "description": "A typed capability identifier of at most 128 ASCII characters with dot- or colon-separated lowercase namespace segments. Unknown canonical IDs remain representable."
     },
     "ByteResourceLimitCapability": {
       "type": "object",
@@ -183,18 +184,21 @@
         "required_ladybug_primitives": {"type": "array", "items": {"type": "string"}},
         "search_profiles": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
         "storage_capabilities": {"type": "array", "items": {"$ref": "#/$defs/ProfileCapability"}},
-        "transports": {"type": "array", "items": {"type": "string"}}
+        "transports": {"type": "array", "items": {"type": "string", "maxLength": 64}, "maxItems": 16}
       },
       "required": ["manifest_version", "manifest_etag", "manifest_scope", "operations", "transports", "limits", "query_adapters", "realtime_profiles", "registry_sources", "renderer_profiles", "exporter_profiles", "search_profiles", "embedding_profiles", "required_ladybug_primitives", "storage_capabilities"],
       "additionalProperties": false
     },
     "Digest": {
       "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
       "pattern": "^sha256:[0-9a-f]{64}$",
       "description": "A SHA-256 digest with an exact lowercase 64-hex payload."
     },
     "EndpointInstanceID": {
       "type": "string",
+      "maxLength": 128,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "description": "An injected opaque non-secret identifier stable for one endpoint instance. Its construction and lifecycle belong to Issue #28."
     },
@@ -210,9 +214,9 @@
         "client_limits": {"$ref": "#/$defs/CompileResourceLimitConstraints"},
         "client_release": {"$ref": "#/$defs/ReleaseVersion"},
         "extensions": {"$ref": "#/$defs/Extensions"},
-        "optional_capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityID"}, "uniqueItems": true},
-        "protocols": {"type": "array", "items": {"$ref": "#/$defs/ProtocolOffer"}, "minItems": 1},
-        "required_capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityID"}, "uniqueItems": true}
+        "optional_capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityID"}, "maxItems": 64, "uniqueItems": true},
+        "protocols": {"type": "array", "items": {"$ref": "#/$defs/ProtocolOffer"}, "minItems": 1, "maxItems": 8},
+        "required_capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityID"}, "maxItems": 64, "uniqueItems": true}
       },
       "required": ["client_release", "protocols", "required_capabilities", "optional_capabilities"],
       "additionalProperties": false,
@@ -228,11 +232,11 @@
       "description": "The host identity, negotiated versions, effective manifest, and release manifest digest.",
       "properties": {
         "capability_manifest": {"$ref": "#/$defs/CapabilityManifest"},
-        "capability_statuses": {"type": "array", "items": {"$ref": "#/$defs/RequestedCapabilityStatus"}},
+        "capability_statuses": {"type": "array", "items": {"$ref": "#/$defs/RequestedCapabilityStatus"}, "maxItems": 128},
         "endpoint_instance_id": {"$ref": "#/$defs/EndpointInstanceID"},
         "extensions": {"$ref": "#/$defs/Extensions"},
         "host_release": {"$ref": "#/$defs/ReleaseVersion"},
-        "negotiated_protocols": {"type": "array", "items": {"$ref": "#/$defs/NegotiatedProtocol"}},
+        "negotiated_protocols": {"type": "array", "items": {"$ref": "#/$defs/NegotiatedProtocol"}, "maxItems": 8},
         "release_manifest_digest": {"$ref": "#/$defs/Digest"}
       },
       "required": ["host_release", "endpoint_instance_id", "negotiated_protocols", "capability_statuses", "capability_manifest", "release_manifest_digest"],
@@ -267,30 +271,34 @@
     },
     "ProtocolVersion": {
       "type": "string",
+      "maxLength": 21,
       "format": "protocol-version",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
       "description": "A canonical major.minor protocol version whose components are unsigned 32-bit integers."
     },
     "ProtocolVersionRange": {
       "type": "string",
+      "maxLength": 44,
       "format": "protocol-version-range",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
       "description": "A closed inclusive lower..upper range within one major. Both bounds are canonical major.minor values and the lower bound must not exceed the upper bound."
     },
     "ProtocolVersionOrRange": {
       "type": "string",
+      "maxLength": 44,
       "format": "protocol-version-or-range",
       "description": "Either one canonical major.minor version or one canonical inclusive lower..upper range."
     },
     "ReleaseVersion": {
       "type": "string",
+      "maxLength": 128,
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
-      "description": "A canonical SemVer 2.0.0 release identifier."
+      "description": "A canonical SemVer 2.0.0 release identifier of at most 128 ASCII characters."
     },
     "NegotiatedProtocol": {
       "type": "object",
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+        "name": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9._-]*$"},
         "schema_digest": {"$ref": "#/$defs/Digest"},
         "version": {"$ref": "#/$defs/ProtocolVersion"}
       },
@@ -424,9 +432,9 @@
     "ProtocolOffer": {
       "type": "object",
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+        "name": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9._-]*$"},
         "supported_range": {"$ref": "#/$defs/ProtocolVersionRange"},
-        "versions": {"type": "array", "items": {"$ref": "#/$defs/ProtocolVersionBinding"}, "minItems": 1}
+        "versions": {"type": "array", "items": {"$ref": "#/$defs/ProtocolVersionBinding"}, "minItems": 1, "maxItems": 16}
       },
       "required": ["name", "supported_range", "versions"],
       "additionalProperties": false,
@@ -445,7 +453,7 @@
     "ProtocolRef": {
       "type": "object",
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+        "name": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9._-]*$"},
         "version": {"$ref": "#/$defs/ProtocolVersion"}
       },
       "required": ["name", "version"],
@@ -459,7 +467,7 @@
         "extensions": {"$ref": "#/$defs/Extensions"},
         "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"},
         "protocol": {"$ref": "#/$defs/ProtocolRef"},
-        "request_id": {"type": "string", "minLength": 1},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "trace_context": {"$ref": "#/$defs/JsonObject"}
       },
       "required": ["protocol", "request_id", "operation"],
@@ -474,13 +482,14 @@
         "host_release": {"$ref": "#/$defs/ReleaseVersion"},
         "outcome": {"$ref": "#/$defs/Outcome"},
         "protocol": {"$ref": "#/$defs/ProtocolRef"},
-        "request_id": {"type": "string", "minLength": 1}
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
       },
       "required": ["protocol", "request_id", "outcome"],
       "additionalProperties": false
     },
     "Rfc3339Time": {
       "type": "string",
+      "maxLength": 30,
       "format": "date-time",
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
       "description": "A real-calendar UTC RFC 3339 timestamp with a required Z suffix and at most nine fractional digits."

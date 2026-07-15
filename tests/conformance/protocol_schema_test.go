@@ -82,6 +82,19 @@ func TestProtocolFixturesRoundTripInGeneratedGoTypes(t *testing.T) {
 			},
 		},
 		{
+			name: "handshake request", fixture: "handshake-request.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeHandshakeRequestEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeHandshakeRequestEnvelope(raw.(engineprotocol.HandshakeRequestEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.HandshakeRequestEnvelope)
+				if value.Operation != "engine.handshake" || len(value.Payload.Protocols) != 1 || value.Payload.Protocols[0].Versions[0].SchemaDigest != protocolcommon.Digest(engineprotocol.SchemaDigest) {
+					t.Fatalf("invalid handshake request: %+v", value)
+				}
+			},
+		},
+		{
 			name: "handshake success", fixture: "handshake-success.json",
 			decode: func(data []byte) (any, error) { return engineprotocol.DecodeHandshakeResponseEnvelope(data) },
 			encode: func(raw any) ([]byte, error) {
@@ -307,6 +320,13 @@ func TestGeneratedGoMatchesSharedCanonicalEngineEnvelopes(t *testing.T) {
 			}
 			return engineprotocol.EncodeCompileResponseEnvelope(value)
 		}},
+		{"handshake-request.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeHandshakeRequestEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeHandshakeRequestEnvelope(value)
+		}},
 		{"handshake-success.json", func(data []byte) ([]byte, error) {
 			value, err := engineprotocol.DecodeHandshakeResponseEnvelope(data)
 			if err != nil {
@@ -338,6 +358,57 @@ func TestGeneratedGoMatchesSharedCanonicalEngineEnvelopes(t *testing.T) {
 			}
 			if reencoded, err := test.decode(bytes.TrimSpace(canonical)); err != nil || !bytes.Equal(reencoded, encoded) {
 				t.Fatalf("shared golden did not round-trip: %v", err)
+			}
+		})
+	}
+}
+
+func TestHandshakeReviewFixturesRoundTripCanonicallyInGeneratedGo(t *testing.T) {
+	t.Parallel()
+	files := []string{
+		"handshake-major-mismatch-request.json",
+		"handshake-range-mismatch-request.json",
+		"handshake-range-mismatch-response.json",
+		"handshake-schema-digest-mismatch-request.json",
+		"handshake-schema-digest-mismatch-response.json",
+		"handshake-required-capability-missing-request.json",
+		"handshake-required-capability-missing-response.json",
+		"handshake-unknown-optional-request.json",
+		"handshake-unknown-optional-response.json",
+		"handshake-client-limits-request.json",
+		"handshake-client-limits-response.json",
+		"handshake-policy-limit-response.json",
+		"handshake-failed-request.json",
+		"handshake-failed-response.json",
+		"handshake-cancelled-request.json",
+		"handshake-cancelled-response.json",
+	}
+	for _, name := range files {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			data, readErr := os.ReadFile(filepath.Join(protocolRepositoryRoot(t), "schemas", "fixtures", "conformance", "engine", name))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			canonical := bytes.TrimSpace(data)
+			var encoded []byte
+			var err error
+			if strings.HasSuffix(name, "-request.json") {
+				value, decodeErr := engineprotocol.DecodeHandshakeRequestEnvelope(canonical)
+				if decodeErr != nil {
+					t.Fatal(decodeErr)
+				}
+				encoded, err = engineprotocol.EncodeHandshakeRequestEnvelope(value)
+			} else {
+				value, decodeErr := engineprotocol.DecodeHandshakeResponseEnvelope(canonical)
+				if decodeErr != nil {
+					t.Fatal(decodeErr)
+				}
+				encoded, err = engineprotocol.EncodeHandshakeResponseEnvelope(value)
+			}
+			if err != nil || !bytes.Equal(encoded, canonical) {
+				t.Fatalf("generated Go did not byte-identically round-trip fixture: %v\nwant=%s\ngot=%s", err, canonical, encoded)
 			}
 		})
 	}
@@ -1391,6 +1462,12 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return protocolcommon.EncodeCapabilityID(value)
+	case "HandshakeRequest":
+		value, err := protocolcommon.DecodeHandshakeRequest(input)
+		if err != nil {
+			return nil, err
+		}
+		return protocolcommon.EncodeHandshakeRequest(value)
 	case "CanonicalFiniteDecimal":
 		value, err := semantic.DecodeCanonicalFiniteDecimal(input)
 		if err != nil {
@@ -1457,12 +1534,6 @@ func roundTripSharedWire(typeName string, input []byte) ([]byte, error) {
 			return nil, err
 		}
 		return semantic.EncodeColor(value)
-	case "HandshakeRequest":
-		value, err := protocolcommon.DecodeHandshakeRequest(input)
-		if err != nil {
-			return nil, err
-		}
-		return protocolcommon.EncodeHandshakeRequest(value)
 	case "OperationCapability":
 		value, err := protocolcommon.DecodeOperationCapability(input)
 		if err != nil {
