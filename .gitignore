@@ -1,5 +1,9 @@
 .DS_Store
 /test-results/
+packages/engine-wasm/test-results/
+packages/engine-wasm/playwright-report/
+packages/engine-wasm/.pack-legal-staged
+packages/engine-wasm/.artifact-stage/
 
 node_modules/
 dist/

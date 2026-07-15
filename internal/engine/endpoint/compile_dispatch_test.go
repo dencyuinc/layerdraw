@@ -154,7 +154,7 @@ func TestDispatchCompileProjectSuccessPublishesExactOpaqueArtifacts(t *testing.T
 	if canonicalRef.Lifetime != engineprotocol.NormalizedProjectCanonicalBlobRefLifetimeValue || artifactRef.Lifetime != engineprotocol.NormalizedProjectArtifactBlobRefLifetimeValue {
 		t.Fatalf("wrong artifact lifetimes")
 	}
-	if bytes.HasSuffix(sink.blobs[0].Bytes, []byte("\n")) || !bytes.HasSuffix(sink.blobs[1].Bytes, []byte("\n")) || !bytes.Equal(sink.blobs[1].Bytes[:len(sink.blobs[1].Bytes)-1], sink.blobs[0].Bytes) {
+	if !bytes.HasSuffix(sink.blobs[0].Bytes, []byte("\n")) || bytes.HasSuffix(sink.blobs[1].Bytes, []byte("\n")) || !bytes.Equal(sink.blobs[0].Bytes[:len(sink.blobs[0].Bytes)-1], sink.blobs[1].Bytes) {
 		t.Fatalf("canonical/public byte profiles were not preserved")
 	}
 	if _, err := engineprotocol.EncodeCompileResponseEnvelope(response); err != nil {

@@ -129,7 +129,7 @@ func TestGeneratedProtocolToEngineMappingHasOneHandwrittenPackageBoundary(t *tes
 				seen.generatedProtocol = true
 			}
 			if importPath == "github.com/dencyuinc/layerdraw/internal/engine" ||
-				strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/") {
+				strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/internal/") {
 				seen.internalEngine = true
 			}
 		}

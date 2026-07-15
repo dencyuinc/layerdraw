@@ -136,13 +136,15 @@ expected_generated_paths() {
     gen/schema-digests.json \
     packages/protocol/src/common.gen.ts \
     packages/protocol/src/engine.gen.ts \
-    packages/protocol/src/semantic.gen.ts
+    packages/protocol/src/semantic.gen.ts \
+    tests/conformance/testdata/engine_compile_parity_v1.json
 }
 
 actual_generated_paths() {
   {
     find gen -type f ! -path 'gen/README.md' -print
     find packages/protocol/src -type f -print
+    printf '%s\n' tests/conformance/testdata/engine_compile_parity_v1.json
   } | LC_ALL=C sort
 }
 

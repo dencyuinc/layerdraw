@@ -1,0 +1,46 @@
+{
+  "spdx_license_identifier": "Apache-2.0",
+  "worker_protocol": "layerdraw.engine_worker",
+  "worker_protocol_version": 1,
+  "transport_id": "wasm_worker",
+  "identifier_limits": {
+    "endpoint_generation_utf8_bytes": 128,
+    "exchange_id_utf8_bytes": 128,
+    "blob_id_utf8_bytes": 256
+  },
+  "transport_limits": {
+    "max_control_bytes": 8388608,
+    "max_control_depth": 128,
+    "max_blob_id_bytes": 256,
+    "max_buffers": 2048,
+    "max_input_blob_bytes": 33554432,
+    "max_input_total_bytes": 67108864,
+    "max_output_blob_bytes": 33554432,
+    "max_output_total_bytes": 67108864,
+    "max_response_publish_bytes": 75497472
+  },
+  "failure_definitions": [
+    {"code": "engine.worker.unsupported", "phase": "initialization", "retryable": false},
+    {"code": "engine.worker.initialization_failed", "phase": "initialization", "retryable": false},
+    {"code": "engine.worker.artifact_mismatch", "phase": "initialization", "retryable": false},
+    {"code": "engine.worker.malformed_message", "phase": "request", "retryable": false},
+    {"code": "engine.worker.stale_generation", "phase": "lifecycle", "retryable": true},
+    {"code": "engine.worker.transfer_failed", "phase": "transfer", "retryable": false},
+    {"code": "engine.worker.crashed", "phase": "runtime", "retryable": true},
+    {"code": "engine.worker.terminated_by_caller", "phase": "lifecycle", "retryable": false},
+    {"code": "engine.worker.disposed", "phase": "lifecycle", "retryable": false}
+  ],
+  "outer_messages": {
+    "host_to_worker": {
+      "init": ["worker_protocol", "worker_protocol_version", "kind", "endpoint_generation", "expected_artifact_manifest_digest", "release_manifest_digest"],
+      "request": ["worker_protocol", "worker_protocol_version", "kind", "endpoint_generation", "exchange_id", "control", "blobs"],
+      "dispose": ["worker_protocol", "worker_protocol_version", "kind", "endpoint_generation"]
+    },
+    "worker_to_host": {
+      "ready": ["worker_protocol", "worker_protocol_version", "kind", "endpoint_generation", "artifact_manifest_digest", "transport_limits"],
+      "accepted": ["worker_protocol", "worker_protocol_version", "kind", "endpoint_generation", "exchange_id"],
+      "response": ["worker_protocol", "worker_protocol_version", "kind", "endpoint_generation", "exchange_id", "control", "blobs"],
+      "transport_failure": ["worker_protocol", "worker_protocol_version", "kind", "endpoint_generation?", "exchange_id?", "failure"]
+    }
+  }
+}

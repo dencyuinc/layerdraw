@@ -11,13 +11,15 @@ RELEASE_MANIFEST ?= deploy/development-release-manifest.json
 RELEASE_MANIFEST_DIGEST ?= sha256:$(shell { command -v sha256sum >/dev/null && sha256sum $(RELEASE_MANIFEST) || shasum -a 256 $(RELEASE_MANIFEST); } | awk '{print $$1}')
 COVERAGE_BASE_REF ?= origin/main
 ENGINE_BINARY := dist/layerdraw-engine
+ENGINE_WASM_DIR := dist/engine-wasm
 LICENSE_REPORT := reports/dependency-licenses.json
 GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen
 
 .DEFAULT_GOAL := build
 
 .PHONY: bootstrap generate generate-check format format-check lint typecheck test coverage coverage-check license-check license-report security \
-	conformance integration build protocol-package-check package verify-packaged ci clean
+	conformance integration build engine-wasm engine-wasm-check engine-wasm-reproducible ci-engine-wasm-check ci-engine-wasm-reproducible \
+	protocol-package-check package verify-packaged ci clean
 
 bootstrap:
 	$(GO) mod download all
@@ -25,6 +27,7 @@ bootstrap:
 
 generate:
 	$(GO) run ./tools/protocolgen generate
+	$(GO) run ./tools/wasmparity -output tests/conformance/testdata/engine_compile_parity_v1.json
 	$(GO) generate ./...
 	$(PNPM) exec turbo run generate
 
@@ -99,6 +102,36 @@ build:
 	cp $(RELEASE_MANIFEST) dist/layerdraw-engine.release-manifest.json
 	$(PNPM) exec turbo run build
 
+engine-wasm:
+	@if [[ "$(origin VERSION)" == "file" || -z "$(VERSION)" ]]; then \
+		printf 'VERSION must be explicitly set and nonempty for make engine-wasm\n' >&2; \
+		exit 1; \
+	fi
+	ENGINE_WASM_OUTPUT_DIR="$(CURDIR)/$(ENGINE_WASM_DIR)" \
+		VERSION="$(VERSION)" SOURCE_REVISION="$(SOURCE_REVISION)" \
+		./tools/build-engine-wasm.sh
+
+engine-wasm-check: engine-wasm
+	$(GO) run ./tools/wasmartifact verify -root "$(CURDIR)" -output "$(ENGINE_WASM_DIR)" -version "$(VERSION)"
+	LAYERDRAW_ENGINE_WASM_DIR="$(CURDIR)/$(ENGINE_WASM_DIR)" \
+		$(GO) test -run EngineWASM ./tests/packaged/...
+
+engine-wasm-reproducible:
+	@if [[ "$(origin VERSION)" == "file" || -z "$(VERSION)" ]]; then \
+		printf 'VERSION must be explicitly set and nonempty for make engine-wasm-reproducible\n' >&2; \
+		exit 1; \
+	fi
+	VERSION="$(VERSION)" SOURCE_REVISION="$(SOURCE_REVISION)" \
+		./tools/check-engine-wasm-reproducible.sh
+
+ci-engine-wasm-check:
+	@package_version="$$(node -p "require('./packages/engine-wasm/package.json').version")"; \
+		$(MAKE) engine-wasm-check VERSION="$$package_version"
+
+ci-engine-wasm-reproducible:
+	@package_version="$$(node -p "require('./packages/engine-wasm/package.json').version")"; \
+		$(MAKE) engine-wasm-reproducible VERSION="$$package_version"
+
 protocol-package-check: build
 	./tools/check-protocol-package.sh
 
@@ -113,7 +146,7 @@ verify-packaged: package
 		LAYERDRAW_BUNDLE_DIR="$(CURDIR)/dist" \
 		$(GO) test ./tests/packaged/...
 
-ci: generate-check format-check lint typecheck coverage-check conformance integration license-check security protocol-package-check package verify-packaged
+ci: generate-check format-check lint typecheck coverage-check conformance integration license-check security protocol-package-check package verify-packaged ci-engine-wasm-check ci-engine-wasm-reproducible
 
 clean:
 	rm -rf dist coverage reports .turbo
