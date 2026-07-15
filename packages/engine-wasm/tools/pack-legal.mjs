@@ -7,6 +7,7 @@ const marker = new URL(".pack-legal-staged", packageRoot);
 const files = [
   [new URL("../../../LICENSE", import.meta.url), new URL("LICENSE", packageRoot)],
   [new URL("../../../NOTICE", import.meta.url), new URL("NOTICE", packageRoot)],
+  [new URL("../dist/THIRD_PARTY_NOTICES.txt", import.meta.url), new URL("THIRD_PARTY_NOTICES.txt", packageRoot)],
 ];
 
 async function prepare() {

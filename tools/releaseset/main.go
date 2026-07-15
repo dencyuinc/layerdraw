@@ -134,13 +134,20 @@ type cyclonedxHash struct {
 
 type cyclonedxLicense struct {
 	License struct {
-		ID string `json:"id"`
+		ID   string `json:"id,omitempty"`
+		Name string `json:"name,omitempty"`
 	} `json:"license"`
 }
 
 type cyclonedxDependency struct {
 	Ref       string   `json:"ref"`
 	DependsOn []string `json:"dependsOn"`
+}
+
+type cyclonedxAuthority struct {
+	Root         cyclonedxComponent
+	Components   map[string]cyclonedxComponent
+	Dependencies map[string][]string
 }
 
 type spdxDocument struct {
@@ -233,30 +240,33 @@ func build(root, output, version, revision, builtAt, nativeSBOM, nativeNotices s
 	if err := os.MkdirAll(filepath.Join(output, "legal"), 0o755); err != nil {
 		return err
 	}
-	artifacts := make([]releaseArtifact, 0, len(inputs))
 	packages := map[string]packageAuthority{}
 	for _, input := range inputs {
-		if input.packageName != "" {
-			authority, err := readPackageAuthority(input.path)
-			if err != nil {
-				return fmt.Errorf("%s package authority: %w", input.id, err)
-			}
-			if authority.Name != input.packageName || authority.Version != version {
-				return fmt.Errorf("%s package identity mismatch", input.id)
-			}
-			if authority.Scripts["postinstall"] != "" {
-				return fmt.Errorf("%s contains a postinstall script", input.id)
-			}
-			packages[input.id] = authority
+		if input.packageName == "" {
+			continue
 		}
+		authority, err := readPackageAuthority(input.path)
+		if err != nil {
+			return fmt.Errorf("%s package authority: %w", input.id, err)
+		}
+		if authority.Name != input.packageName || authority.Version != version {
+			return fmt.Errorf("%s package identity mismatch", input.id)
+		}
+		if authority.Scripts["postinstall"] != "" {
+			return fmt.Errorf("%s contains a postinstall script", input.id)
+		}
+		packages[input.id] = authority
+	}
+	if err := validatePackageClosure(packages, version); err != nil {
+		return err
+	}
+	artifacts := make([]releaseArtifact, 0, len(inputs))
+	for _, input := range inputs {
 		artifact, err := buildArtifact(output, input, version, builtAt, packages[input.id])
 		if err != nil {
 			return err
 		}
 		artifacts = append(artifacts, artifact)
-	}
-	if err := validatePackageClosure(packages, version); err != nil {
-		return err
 	}
 	manifest := releaseManifest{
 		ManifestVersion: 1, ReleaseVersion: version, SourceRevision: revision, BuiltAt: builtAt,
@@ -301,15 +311,21 @@ func buildArtifact(output string, input artifactInput, version, builtAt string, 
 	if err != nil {
 		return releaseArtifact{}, fmt.Errorf("%s SBOM: %w", input.id, err)
 	}
-	if err := validateCycloneDX(sbom, input.id, version); err != nil {
+	closure, err := validateCycloneDX(sbom, input.id, version)
+	if err != nil {
 		return releaseArtifact{}, err
+	}
+	if input.packageName != "" {
+		if err := validatePackageSBOM(authority, closure); err != nil {
+			return releaseArtifact{}, fmt.Errorf("%s SBOM: %w", input.id, err)
+		}
 	}
 	legalID := strings.NewReplacer("@", "", "/", "-").Replace(input.id)
 	sbomPath := filepath.Join(output, "legal", legalID+".cdx.json")
 	if err := os.WriteFile(sbomPath, sbom, 0o644); err != nil {
 		return releaseArtifact{}, err
 	}
-	spdx, err := renderSPDX(input.id, version, builtAt, digest, authority)
+	spdx, err := renderSPDX(input.id, version, builtAt, digest, closure)
 	if err != nil {
 		return releaseArtifact{}, err
 	}
@@ -339,6 +355,9 @@ func buildArtifact(output string, input artifactInput, version, builtAt string, 
 	}
 	if err != nil || len(bytes.TrimSpace(notices)) == 0 {
 		return releaseArtifact{}, fmt.Errorf("%s third-party notices are unavailable", input.id)
+	}
+	if err := validateNotices(notices, closure); err != nil {
+		return releaseArtifact{}, fmt.Errorf("%s third-party notices: %w", input.id, err)
 	}
 	noticesPath := filepath.Join(output, "legal", legalID+".THIRD_PARTY_NOTICES.txt")
 	if err := os.WriteFile(noticesPath, notices, 0o644); err != nil {
@@ -416,24 +435,35 @@ func verify(root, output string) error {
 		if err := verifyRelativeFile(output, artifact.Legal.Notices.Path, artifact.Legal.Notices.Size, artifact.Legal.Notices.Digest); err != nil {
 			return fmt.Errorf("%s third-party notices: %w", artifact.ArtifactID, err)
 		}
-		spdx, err := os.ReadFile(filepath.Join(output, filepath.FromSlash(artifact.Legal.SPDX.Path)))
-		if err != nil {
-			return err
-		}
-		if err := validateSPDX(spdx, artifact.ArtifactID, manifest.ReleaseVersion); err != nil {
-			return err
-		}
 		cyclonedx, err := os.ReadFile(filepath.Join(output, filepath.FromSlash(artifact.Legal.CycloneDX.Path)))
 		if err != nil {
 			return err
 		}
-		if err := validateCycloneDX(cyclonedx, artifact.ArtifactID, manifest.ReleaseVersion); err != nil {
+		closure, err := validateCycloneDX(cyclonedx, artifact.ArtifactID, manifest.ReleaseVersion)
+		if err != nil {
 			return err
+		}
+		spdx, err := os.ReadFile(filepath.Join(output, filepath.FromSlash(artifact.Legal.SPDX.Path)))
+		if err != nil {
+			return err
+		}
+		if err := validateSPDX(spdx, artifact.ArtifactID, manifest.ReleaseVersion, artifact.Digest, closure); err != nil {
+			return err
+		}
+		notices, err := os.ReadFile(filepath.Join(output, filepath.FromSlash(artifact.Legal.Notices.Path)))
+		if err != nil {
+			return err
+		}
+		if err := validateNotices(notices, closure); err != nil {
+			return fmt.Errorf("%s third-party notices: %w", artifact.ArtifactID, err)
 		}
 		if want.packageName != "" {
 			authority, err := readPackageAuthority(filepath.Join(output, filepath.FromSlash(artifact.Path)))
 			if err != nil || authority.Name != want.packageName || authority.Version != manifest.ReleaseVersion || authority.Scripts["postinstall"] != "" {
 				return fmt.Errorf("%s packaged authority mismatch", artifact.ArtifactID)
+			}
+			if err := validatePackageSBOM(authority, closure); err != nil {
+				return fmt.Errorf("%s SBOM: %w", artifact.ArtifactID, err)
 			}
 			packages[artifact.ArtifactID] = authority
 		} else {
@@ -534,60 +564,236 @@ func renderPackageCycloneDX(id, version, builtAt, digest string, authority packa
 	return canonicalJSON(document)
 }
 
-func renderSPDX(id, version, builtAt, digest string, authority packageAuthority) ([]byte, error) {
-	license := authority.License
-	if license == "" || license == "SEE LICENSE IN LICENSE" {
-		license = "LicenseRef-LayerDraw-1.0"
+func validatePackageSBOM(authority packageAuthority, closure cyclonedxAuthority) error {
+	if closure.Root.Name != authority.Name || closure.Root.Version != authority.Version {
+		return errors.New("package and CycloneDX root identities differ")
 	}
-	rootID := "SPDXRef-Package-" + sanitizeID(id)
-	packages := []spdxPackage{{Name: id, SPDXID: rootID, VersionInfo: version, DownloadLocation: "NOASSERTION", FilesAnalyzed: false, LicenseConcluded: license, LicenseDeclared: license, CopyrightText: "NOASSERTION", Checksums: []spdxChecksum{{Algorithm: "SHA256", ChecksumValue: strings.TrimPrefix(digest, "sha256:")}}}}
-	relationships := []spdxRelationship{{SPDXElementID: "SPDXRef-DOCUMENT", RelationshipType: "DESCRIBES", RelatedSPDXElement: rootID}}
-	dependencies := make([]string, 0, len(authority.Dependencies))
-	for name := range authority.Dependencies {
-		dependencies = append(dependencies, name)
+	direct := make(map[string]bool, len(closure.Dependencies[closure.Root.BOMRef]))
+	for _, ref := range closure.Dependencies[closure.Root.BOMRef] {
+		direct[ref] = true
 	}
-	sort.Strings(dependencies)
-	for _, name := range dependencies {
-		dependencyID := "SPDXRef-Package-" + sanitizeID(name)
-		packages = append(packages, spdxPackage{Name: name, SPDXID: dependencyID, VersionInfo: authority.Dependencies[name], DownloadLocation: "NOASSERTION", FilesAnalyzed: false, LicenseConcluded: "Apache-2.0", LicenseDeclared: "Apache-2.0", CopyrightText: "NOASSERTION"})
-		relationships = append(relationships, spdxRelationship{SPDXElementID: rootID, RelationshipType: "DEPENDS_ON", RelatedSPDXElement: dependencyID})
-	}
-	document := spdxDocument{SPDXVersion: "SPDX-2.3", DataLicense: "CC0-1.0", SPDXID: "SPDXRef-DOCUMENT", Name: id + "-" + version, DocumentNamespace: "https://spdx.layerdraw.dev/releases/" + version + "/" + sanitizeID(id) + "/" + strings.TrimPrefix(digest, "sha256:"), CreationInfo: spdxCreationInfo{Created: builtAt, Creators: []string{"Tool: LayerDraw releaseset"}}, Packages: packages, Relationships: relationships}
-	return canonicalJSON(document)
-}
-
-func validateCycloneDX(data []byte, id, version string) error {
-	var value struct {
-		BOMFormat   string `json:"bomFormat"`
-		SpecVersion string `json:"specVersion"`
-		Metadata    struct {
-			Component struct{ Name, Version string } `json:"component"`
-		} `json:"metadata"`
-	}
-	if err := json.Unmarshal(data, &value); err != nil {
-		return fmt.Errorf("%s CycloneDX is invalid: %w", id, err)
-	}
-	if value.BOMFormat != "CycloneDX" || value.SpecVersion != "1.6" || value.Metadata.Component.Name != id || value.Metadata.Component.Version != version {
-		return fmt.Errorf("%s CycloneDX authority mismatch", id)
+	for name, version := range authority.Dependencies {
+		matches := 0
+		for ref, component := range closure.Components {
+			if component.Name == name && component.Version == version && direct[ref] {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return fmt.Errorf("runtime dependency %s@%s is not a unique direct SBOM component", name, version)
+		}
 	}
 	return nil
 }
 
-func validateSPDX(data []byte, id, version string) error {
-	var value struct {
-		SPDXVersion string `json:"spdxVersion"`
-		DataLicense string `json:"dataLicense"`
-		SPDXID      string `json:"SPDXID"`
-		Packages    []struct {
-			Name        string `json:"name"`
-			VersionInfo string `json:"versionInfo"`
-		} `json:"packages"`
+func renderSPDX(id, version, builtAt, digest string, closure cyclonedxAuthority) ([]byte, error) {
+	packages, relationships := expectedSPDXContent(id, version, digest, closure)
+	document := spdxDocument{
+		SPDXVersion: "SPDX-2.3", DataLicense: "CC0-1.0", SPDXID: "SPDXRef-DOCUMENT", Name: id + "-" + version,
+		DocumentNamespace: "https://spdx.layerdraw.dev/releases/" + version + "/" + sanitizeID(id) + "/" + strings.TrimPrefix(digest, "sha256:"),
+		CreationInfo:      spdxCreationInfo{Created: builtAt, Creators: []string{"Tool: LayerDraw releaseset"}}, Packages: packages, Relationships: relationships,
 	}
-	if err := json.Unmarshal(data, &value); err != nil {
+	return canonicalJSON(document)
+}
+
+func expectedSPDXContent(id, version, digest string, closure cyclonedxAuthority) ([]spdxPackage, []spdxRelationship) {
+	rootID := "SPDXRef-Package-" + sanitizeID(id)
+	refIDs := map[string]string{closure.Root.BOMRef: rootID}
+	packages := []spdxPackage{spdxPackageForComponent(closure.Root, rootID, digest)}
+	refs := make([]string, 0, len(closure.Components))
+	for ref := range closure.Components {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	for _, ref := range refs {
+		component := closure.Components[ref]
+		componentID := spdxIDForComponent(component)
+		refIDs[ref] = componentID
+		packages = append(packages, spdxPackageForComponent(component, componentID, ""))
+	}
+	relationships := []spdxRelationship{{SPDXElementID: "SPDXRef-DOCUMENT", RelationshipType: "DESCRIBES", RelatedSPDXElement: rootID}}
+	sources := make([]string, 0, len(closure.Dependencies))
+	for ref := range closure.Dependencies {
+		sources = append(sources, ref)
+	}
+	sort.Strings(sources)
+	for _, source := range sources {
+		dependencies := slices.Clone(closure.Dependencies[source])
+		sort.Strings(dependencies)
+		for _, dependency := range dependencies {
+			relationships = append(relationships, spdxRelationship{SPDXElementID: refIDs[source], RelationshipType: "DEPENDS_ON", RelatedSPDXElement: refIDs[dependency]})
+		}
+	}
+	return packages, relationships
+}
+
+func spdxPackageForComponent(component cyclonedxComponent, id, digest string) spdxPackage {
+	license := componentLicense(component)
+	result := spdxPackage{Name: component.Name, SPDXID: id, VersionInfo: component.Version, DownloadLocation: "NOASSERTION", FilesAnalyzed: false, LicenseConcluded: license, LicenseDeclared: license, CopyrightText: "NOASSERTION"}
+	if digest != "" {
+		result.Checksums = []spdxChecksum{{Algorithm: "SHA256", ChecksumValue: strings.TrimPrefix(digest, "sha256:")}}
+	}
+	return result
+}
+
+func spdxIDForComponent(component cyclonedxComponent) string {
+	digest := sha256.Sum256([]byte(component.BOMRef))
+	return "SPDXRef-Package-" + sanitizeID(component.Name) + "-" + hex.EncodeToString(digest[:6])
+}
+
+func componentLicense(component cyclonedxComponent) string {
+	for _, value := range component.Licenses {
+		if value.License.ID != "" {
+			return normalizeSPDXLicense(value.License.ID)
+		}
+	}
+	for _, value := range component.Licenses {
+		if value.License.Name != "" {
+			return normalizeSPDXLicense(value.License.Name)
+		}
+	}
+	return "NOASSERTION"
+}
+
+func normalizeSPDXLicense(value string) string {
+	switch value {
+	case "", "SEE LICENSE IN LICENSE":
+		return "NOASSERTION"
+	case "LayerDraw License 1.0":
+		return "LicenseRef-LayerDraw-1.0"
+	default:
+		return value
+	}
+}
+
+func validateCycloneDX(data []byte, id, version string) (cyclonedxAuthority, error) {
+	var document cyclonedxDocument
+	if err := json.Unmarshal(data, &document); err != nil {
+		return cyclonedxAuthority{}, fmt.Errorf("%s CycloneDX is invalid: %w", id, err)
+	}
+	root := document.Metadata.Component
+	if document.Schema != "http://cyclonedx.org/schema/bom-1.6.schema.json" || document.BOMFormat != "CycloneDX" || document.SpecVersion != "1.6" || document.Version != 1 || root.Name != id || root.Version != version || !validCycloneDXComponent(root) {
+		return cyclonedxAuthority{}, fmt.Errorf("%s CycloneDX authority mismatch", id)
+	}
+	components := make(map[string]cyclonedxComponent, len(document.Components))
+	known := map[string]bool{root.BOMRef: true}
+	for _, component := range document.Components {
+		if !validCycloneDXComponent(component) || known[component.BOMRef] {
+			return cyclonedxAuthority{}, fmt.Errorf("%s CycloneDX component identity is invalid or duplicated", id)
+		}
+		known[component.BOMRef] = true
+		components[component.BOMRef] = component
+	}
+	dependencies := make(map[string][]string, len(document.Dependencies))
+	for _, dependency := range document.Dependencies {
+		if !known[dependency.Ref] {
+			return cyclonedxAuthority{}, fmt.Errorf("%s CycloneDX dependency source is unknown", id)
+		}
+		if _, duplicate := dependencies[dependency.Ref]; duplicate {
+			return cyclonedxAuthority{}, fmt.Errorf("%s CycloneDX dependency source is duplicated", id)
+		}
+		seen := make(map[string]bool, len(dependency.DependsOn))
+		for _, target := range dependency.DependsOn {
+			if !known[target] || target == dependency.Ref || seen[target] {
+				return cyclonedxAuthority{}, fmt.Errorf("%s CycloneDX dependency edge is invalid", id)
+			}
+			seen[target] = true
+		}
+		dependencies[dependency.Ref] = slices.Clone(dependency.DependsOn)
+	}
+	if len(dependencies) != len(known) {
+		return cyclonedxAuthority{}, fmt.Errorf("%s CycloneDX dependency graph is incomplete", id)
+	}
+	reachable := map[string]bool{}
+	stack := []string{root.BOMRef}
+	for len(stack) > 0 {
+		ref := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if reachable[ref] {
+			continue
+		}
+		reachable[ref] = true
+		stack = append(stack, dependencies[ref]...)
+	}
+	if len(reachable) != len(known) {
+		return cyclonedxAuthority{}, fmt.Errorf("%s CycloneDX contains unreachable runtime components", id)
+	}
+	return cyclonedxAuthority{Root: root, Components: components, Dependencies: dependencies}, nil
+}
+
+func validCycloneDXComponent(component cyclonedxComponent) bool {
+	return component.Type != "" && component.BOMRef != "" && component.Name != "" && component.Version != "" && componentLicense(component) != "NOASSERTION"
+}
+
+func validateSPDX(data []byte, id, version, digest string, closure cyclonedxAuthority) error {
+	var document spdxDocument
+	if err := json.Unmarshal(data, &document); err != nil {
 		return fmt.Errorf("%s SPDX is invalid: %w", id, err)
 	}
-	if value.SPDXVersion != "SPDX-2.3" || value.DataLicense != "CC0-1.0" || value.SPDXID != "SPDXRef-DOCUMENT" || len(value.Packages) == 0 || value.Packages[0].Name != id || value.Packages[0].VersionInfo != version {
+	expectedNamespace := "https://spdx.layerdraw.dev/releases/" + version + "/" + sanitizeID(id) + "/" + strings.TrimPrefix(digest, "sha256:")
+	if document.SPDXVersion != "SPDX-2.3" || document.DataLicense != "CC0-1.0" || document.SPDXID != "SPDXRef-DOCUMENT" || document.Name != id+"-"+version || document.DocumentNamespace != expectedNamespace {
 		return fmt.Errorf("%s SPDX authority mismatch", id)
+	}
+	expectedPackages, expectedRelationships := expectedSPDXContent(id, version, digest, closure)
+	expectedByID := make(map[string]spdxPackage, len(expectedPackages))
+	for _, value := range expectedPackages {
+		expectedByID[value.SPDXID] = value
+	}
+	actualByID := make(map[string]spdxPackage, len(document.Packages))
+	for _, value := range document.Packages {
+		if value.SPDXID == "" || actualByID[value.SPDXID].SPDXID != "" {
+			return fmt.Errorf("%s SPDX package identity is invalid or duplicated", id)
+		}
+		actualByID[value.SPDXID] = value
+	}
+	if len(actualByID) != len(expectedByID) {
+		return fmt.Errorf("%s SPDX runtime closure is incomplete", id)
+	}
+	for spdxID, expected := range expectedByID {
+		actual, exists := actualByID[spdxID]
+		if !exists || !equalSPDXPackage(actual, expected) {
+			return fmt.Errorf("%s SPDX package authority mismatch", id)
+		}
+	}
+	expectedEdges := make(map[spdxRelationship]bool, len(expectedRelationships))
+	for _, relationship := range expectedRelationships {
+		expectedEdges[relationship] = true
+	}
+	actualEdges := make(map[spdxRelationship]bool, len(document.Relationships))
+	for _, relationship := range document.Relationships {
+		if actualEdges[relationship] {
+			return fmt.Errorf("%s SPDX relationship is duplicated", id)
+		}
+		actualEdges[relationship] = true
+	}
+	if len(actualEdges) != len(expectedEdges) {
+		return fmt.Errorf("%s SPDX dependency graph is incomplete", id)
+	}
+	for relationship := range expectedEdges {
+		if !actualEdges[relationship] {
+			return fmt.Errorf("%s SPDX dependency graph mismatch", id)
+		}
+	}
+	return nil
+}
+
+func equalSPDXPackage(left, right spdxPackage) bool {
+	return left.Name == right.Name && left.SPDXID == right.SPDXID && left.VersionInfo == right.VersionInfo && left.DownloadLocation == right.DownloadLocation && left.FilesAnalyzed == right.FilesAnalyzed && left.LicenseConcluded == right.LicenseConcluded && left.LicenseDeclared == right.LicenseDeclared && left.CopyrightText == right.CopyrightText && slices.Equal(left.Checksums, right.Checksums)
+}
+
+func validateNotices(data []byte, closure cyclonedxAuthority) error {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return errors.New("notice file is empty")
+	}
+	for _, component := range closure.Components {
+		if strings.HasPrefix(component.Name, "@layerdraw/") || component.Name == "layerdraw-engine" {
+			continue
+		}
+		for _, required := range []string{component.Name, component.Version, componentLicense(component)} {
+			if required != "NOASSERTION" && !bytes.Contains(data, []byte(required)) {
+				return fmt.Errorf("runtime component notice is missing %q", required)
+			}
+		}
 	}
 	return nil
 }
@@ -622,10 +828,19 @@ func legalIdentity(root, path string) (legalFile, error) {
 }
 
 func verifyRelativeFile(root, relative, size, digest string) error {
-	if relative == "" || filepath.IsAbs(relative) || strings.Contains(filepath.ToSlash(relative), "../") {
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
+	if relative == "" || filepath.IsAbs(relative) || clean != relative || clean == "." || strings.HasPrefix(clean, "../") {
 		return errors.New("non-canonical release path")
 	}
-	actualSize, actualDigest, err := fileIdentity(filepath.Join(root, filepath.FromSlash(relative)))
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("release file is not a regular file")
+	}
+	actualSize, actualDigest, err := fileIdentity(path)
 	if err != nil {
 		return err
 	}

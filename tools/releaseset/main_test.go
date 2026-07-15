@@ -6,6 +6,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -160,20 +161,25 @@ func TestCommandSurfaceAndDefensiveReaders(t *testing.T) {
 	if _, err := readPackageAuthority(missingLicense); err == nil || !strings.Contains(err.Error(), "LICENSE is missing") {
 		t.Fatalf("missing package license error=%v", err)
 	}
-	if err := validateCycloneDX([]byte("{"), "x", testVersion); err == nil {
+	if _, err := validateCycloneDX([]byte("{"), "x", testVersion); err == nil {
 		t.Fatal("malformed CycloneDX was accepted")
 	}
-	if err := validateCycloneDX(cycloneDXBytes(t, "wrong", testVersion), "x", testVersion); err == nil {
+	if _, err := validateCycloneDX(cycloneDXBytes(t, "wrong", testVersion), "x", testVersion); err == nil {
 		t.Fatal("mismatched CycloneDX was accepted")
 	}
-	spdx, err := renderSPDX("x", testVersion, testBuiltAt, "sha256:"+strings.Repeat("1", 64), packageAuthority{Name: "x", Version: testVersion, License: "Apache-2.0"})
-	if err != nil || validateSPDX(spdx, "x", testVersion) != nil {
+	closure, err := validateCycloneDX(cycloneDXBytes(t, "x", testVersion), "x", testVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("1", 64)
+	spdx, err := renderSPDX("x", testVersion, testBuiltAt, digest, closure)
+	if err != nil || validateSPDX(spdx, "x", testVersion, digest, closure) != nil {
 		t.Fatalf("valid SPDX rejected: %v", err)
 	}
-	if err := validateSPDX([]byte("{"), "x", testVersion); err == nil {
+	if err := validateSPDX([]byte("{"), "x", testVersion, digest, closure); err == nil {
 		t.Fatal("malformed SPDX was accepted")
 	}
-	if err := validateSPDX(spdx, "wrong", testVersion); err == nil {
+	if err := validateSPDX(spdx, "wrong", testVersion, digest, closure); err == nil {
 		t.Fatal("mismatched SPDX was accepted")
 	}
 	if _, err := canonicalJSON(make(chan int)); err == nil {
@@ -194,6 +200,138 @@ func TestCommandSurfaceAndDefensiveReaders(t *testing.T) {
 	}
 	if err := verifyRelativeFile(output, "../outside", "0", "sha256:"+strings.Repeat("0", 64)); err == nil {
 		t.Fatal("noncanonical release path was accepted")
+	}
+	symlink := filepath.Join(output, "linked-artifact")
+	if err := os.Symlink(outsideLegal, symlink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	size, linkedDigest, err := fileIdentity(outsideLegal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRelativeFile(output, "linked-artifact", fmt.Sprintf("%d", size), linkedDigest); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlinked release file error=%v", err)
+	}
+}
+
+func TestLegalAuthoritiesBindCompleteRuntimeClosure(t *testing.T) {
+	data := cycloneDXBytesWithDependency(t, "x", testVersion, "example.com/runtime", "v1.0.0", "MIT")
+	closure, err := validateCycloneDX(data, "x", testVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("2", 64)
+	spdx, err := renderSPDX("x", testVersion, testBuiltAt, digest, closure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSPDX(spdx, "x", testVersion, digest, closure); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNotices([]byte("example.com/runtime v1.0.0\nLicense: MIT\n"), closure); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNotices([]byte("incomplete\n"), closure); err == nil {
+		t.Fatal("incomplete runtime notices were accepted")
+	}
+	var forged spdxDocument
+	if err := json.Unmarshal(spdx, &forged); err != nil {
+		t.Fatal(err)
+	}
+	forged.Packages = forged.Packages[:1]
+	forgedBytes, err := canonicalJSON(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSPDX(forgedBytes, "x", testVersion, digest, closure); err == nil {
+		t.Fatal("truncated SPDX runtime closure was accepted")
+	}
+	if _, err := validateCycloneDX(cycloneDXBytesWithUnreachableDependency(t, "x", testVersion), "x", testVersion); err == nil {
+		t.Fatal("unreachable CycloneDX component was accepted")
+	}
+}
+
+func TestAuthorityValidatorsRejectStructuralForgery(t *testing.T) {
+	data := cycloneDXBytesWithDependency(t, "x", testVersion, "example.com/runtime", "v1.0.0", "MIT")
+	closure, err := validateCycloneDX(data, "x", testVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePackageSBOM(packageAuthority{Name: "wrong", Version: testVersion}, closure); err == nil {
+		t.Fatal("mismatched package root was accepted")
+	}
+	if err := validatePackageSBOM(packageAuthority{Name: "x", Version: testVersion, Dependencies: map[string]string{"missing": "v1.0.0"}}, closure); err == nil {
+		t.Fatal("missing package dependency was accepted")
+	}
+	if got := componentLicense(cyclonedxComponent{Licenses: namedLicenses("LayerDraw License 1.0")}); got != "LicenseRef-LayerDraw-1.0" {
+		t.Fatalf("named license=%q", got)
+	}
+	if got := componentLicense(cyclonedxComponent{}); got != "NOASSERTION" {
+		t.Fatalf("missing license=%q", got)
+	}
+	if normalizeSPDXLicense("SEE LICENSE IN LICENSE") != "NOASSERTION" || normalizeSPDXLicense("MIT") != "MIT" {
+		t.Fatal("SPDX license normalization mismatch")
+	}
+
+	mutateCycloneDX := func(mutate func(*cyclonedxDocument)) []byte {
+		t.Helper()
+		var document cyclonedxDocument
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatal(err)
+		}
+		mutate(&document)
+		result, err := canonicalJSON(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	for name, forged := range map[string][]byte{
+		"duplicate component": mutateCycloneDX(func(value *cyclonedxDocument) { value.Components = append(value.Components, value.Components[0]) }),
+		"unknown source":      mutateCycloneDX(func(value *cyclonedxDocument) { value.Dependencies[1].Ref = "unknown" }),
+		"duplicate source":    mutateCycloneDX(func(value *cyclonedxDocument) { value.Dependencies = append(value.Dependencies, value.Dependencies[0]) }),
+		"unknown target":      mutateCycloneDX(func(value *cyclonedxDocument) { value.Dependencies[0].DependsOn = []string{"unknown"} }),
+		"duplicate edge": mutateCycloneDX(func(value *cyclonedxDocument) {
+			value.Dependencies[0].DependsOn = append(value.Dependencies[0].DependsOn, value.Dependencies[0].DependsOn[0])
+		}),
+		"incomplete graph": mutateCycloneDX(func(value *cyclonedxDocument) { value.Dependencies = value.Dependencies[:1] }),
+	} {
+		if _, err := validateCycloneDX(forged, "x", testVersion); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+
+	digest := "sha256:" + strings.Repeat("3", 64)
+	spdx, err := renderSPDX("x", testVersion, testBuiltAt, digest, closure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutateSPDX := func(mutate func(*spdxDocument)) []byte {
+		t.Helper()
+		var document spdxDocument
+		if err := json.Unmarshal(spdx, &document); err != nil {
+			t.Fatal(err)
+		}
+		mutate(&document)
+		result, err := canonicalJSON(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	for name, forged := range map[string][]byte{
+		"duplicate package":      mutateSPDX(func(value *spdxDocument) { value.Packages = append(value.Packages, value.Packages[0]) }),
+		"forged checksum":        mutateSPDX(func(value *spdxDocument) { value.Packages[0].Checksums[0].ChecksumValue = strings.Repeat("0", 64) }),
+		"duplicate relationship": mutateSPDX(func(value *spdxDocument) { value.Relationships = append(value.Relationships, value.Relationships[0]) }),
+		"missing relationship":   mutateSPDX(func(value *spdxDocument) { value.Relationships = value.Relationships[:1] }),
+	} {
+		if err := validateSPDX(forged, "x", testVersion, digest, closure); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+	firstParty := cyclonedxAuthority{Components: map[string]cyclonedxComponent{"protocol": {Name: "@layerdraw/protocol", Version: testVersion, Licenses: licenses("Apache-2.0")}}}
+	if err := validateNotices([]byte("No third-party dependencies.\n"), firstParty); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -268,14 +406,16 @@ func releaseFixture(t *testing.T, packageVersion string) (string, string, string
 		t.Fatal(err)
 	}
 	nativeSBOM := filepath.Join(t.TempDir(), "native.cdx.json")
-	writeCycloneDX(t, nativeSBOM, "layerdraw-engine", testVersion)
+	if err := os.WriteFile(nativeSBOM, cycloneDXBytesWithDependency(t, "layerdraw-engine", testVersion, "example.com/native", "v1.0.0", "MIT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	nativeNotices := filepath.Join(t.TempDir(), "THIRD_PARTY_NOTICES.txt")
-	if err := os.WriteFile(nativeNotices, []byte("Native runtime notices.\n"), 0o644); err != nil {
+	if err := os.WriteFile(nativeNotices, []byte("example.com/native v1.0.0\nLicense: MIT\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writePackage(t, filepath.Join(output, "artifacts", "layerdraw-protocol-"+testVersion+".tgz"), packageAuthority{Name: "@layerdraw/protocol", Version: packageVersion, License: "Apache-2.0"}, nil)
-	wasmSBOM := cycloneDXBytes(t, "@layerdraw/engine-wasm", testVersion)
-	writePackage(t, filepath.Join(output, "artifacts", "layerdraw-engine-wasm-"+testVersion+".tgz"), packageAuthority{Name: "@layerdraw/engine-wasm", Version: packageVersion, License: "SEE LICENSE IN LICENSE"}, map[string][]byte{"package/dist/engine-wasm.cdx.json": wasmSBOM, "package/THIRD_PARTY_NOTICES.txt": []byte("WASM runtime notices.\n")})
+	wasmSBOM := cycloneDXBytesWithDependency(t, "@layerdraw/engine-wasm", testVersion, "example.com/wasm", "v2.0.0", "BSD-3-Clause")
+	writePackage(t, filepath.Join(output, "artifacts", "layerdraw-engine-wasm-"+testVersion+".tgz"), packageAuthority{Name: "@layerdraw/engine-wasm", Version: packageVersion, License: "SEE LICENSE IN LICENSE"}, map[string][]byte{"package/dist/engine-wasm.cdx.json": wasmSBOM, "package/THIRD_PARTY_NOTICES.txt": []byte("example.com/wasm v2.0.0\nLicense: BSD-3-Clause\n")})
 	writePackage(t, filepath.Join(output, "artifacts", "layerdraw-engine-client-"+testVersion+".tgz"), packageAuthority{Name: "@layerdraw/engine-client", Version: packageVersion, License: "Apache-2.0", Dependencies: map[string]string{"@layerdraw/protocol": packageVersion}}, nil)
 	return output, nativeSBOM, nativeNotices
 }
@@ -345,4 +485,42 @@ func cycloneDXBytes(t *testing.T, name, version string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func cycloneDXBytesWithDependency(t *testing.T, name, version, dependencyName, dependencyVersion, dependencyLicense string) []byte {
+	t.Helper()
+	rootRef := name
+	dependencyRef := "pkg:generic/" + dependencyName + "@" + dependencyVersion
+	document := cyclonedxDocument{
+		Schema: "http://cyclonedx.org/schema/bom-1.6.schema.json", BOMFormat: "CycloneDX", SpecVersion: "1.6", Version: 1,
+		Metadata:     cyclonedxMetadata{Timestamp: testBuiltAt, Component: cyclonedxComponent{Type: "application", BOMRef: rootRef, Name: name, Version: version, Licenses: licenses("LicenseRef-LayerDraw-1.0")}},
+		Components:   []cyclonedxComponent{{Type: "library", BOMRef: dependencyRef, Name: dependencyName, Version: dependencyVersion, Licenses: licenses(dependencyLicense)}},
+		Dependencies: []cyclonedxDependency{{Ref: rootRef, DependsOn: []string{dependencyRef}}, {Ref: dependencyRef, DependsOn: []string{}}},
+	}
+	data, err := canonicalJSON(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func cycloneDXBytesWithUnreachableDependency(t *testing.T, name, version string) []byte {
+	t.Helper()
+	data := cycloneDXBytesWithDependency(t, name, version, "example.com/runtime", "v1.0.0", "MIT")
+	var document cyclonedxDocument
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	document.Dependencies[0].DependsOn = []string{}
+	result, err := canonicalJSON(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func namedLicenses(name string) []cyclonedxLicense {
+	value := cyclonedxLicense{}
+	value.License.Name = name
+	return []cyclonedxLicense{value}
 }
