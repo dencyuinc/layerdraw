@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-// Package endpoint implements the transport-neutral Engine Protocol handshake.
-// It owns compatibility policy, endpoint capability metadata, and the immutable
-// context handed to later operation dispatch. It does not own a transport or
-// compiler request mapping.
+// Package endpoint implements the transport-neutral Engine Protocol endpoint.
+// It owns handshake compatibility policy, immutable negotiated contexts, and
+// the sole handwritten mapping boundary between generated protocol values and
+// the canonical Engine facade. It does not own a transport.
 package endpoint
 
 import (

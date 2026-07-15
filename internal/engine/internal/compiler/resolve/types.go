@@ -264,9 +264,9 @@ type SourceBinding struct {
 	Range         syntax.Span
 	Target        StableSymbol
 	TargetAddress string
-	// TargetOwnerAddress is populated for owner-scoped bindings such as Query
-	// parameters and typed row columns. Consumers must not recover ownership by
-	// parsing the StableAddress string.
+	// TargetOwnerAddress is populated for every non-root target from the
+	// resolved StableSymbol. Consumers must not recover ownership by parsing the
+	// StableAddress string.
 	TargetOwnerAddress string
 	Via                string
 	SourceAddress      string

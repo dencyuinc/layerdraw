@@ -87,3 +87,61 @@ func TestEngineCompilerPackageBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGeneratedProtocolToEngineMappingHasOneHandwrittenPackageBoundary(t *testing.T) {
+	t.Parallel()
+	type imports struct {
+		generatedProtocol bool
+		internalEngine    bool
+	}
+	byDirectory := map[string]*imports{}
+	root := filepath.Clean("../..")
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "node_modules", "vendor":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if parseErr != nil {
+			return parseErr
+		}
+		directory := filepath.Dir(path)
+		seen := byDirectory[directory]
+		if seen == nil {
+			seen = &imports{}
+			byDirectory[directory] = seen
+		}
+		for _, importSpec := range file.Imports {
+			importPath, unquoteErr := strconv.Unquote(importSpec.Path.Value)
+			if unquoteErr != nil {
+				return unquoteErr
+			}
+			if strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/gen/go/") {
+				seen.generatedProtocol = true
+			}
+			if importPath == "github.com/dencyuinc/layerdraw/internal/engine" ||
+				strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/") {
+				seen.internalEngine = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := filepath.Join(root, "internal", "engine", "endpoint")
+	for directory, seen := range byDirectory {
+		if seen.generatedProtocol && seen.internalEngine && directory != allowed {
+			t.Errorf("generated protocol and internal Engine types meet outside endpoint boundary: %s", directory)
+		}
+	}
+}

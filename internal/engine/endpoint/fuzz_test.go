@@ -5,11 +5,15 @@ package endpoint
 import (
 	"bytes"
 	"context"
+	"io"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/internal/engine"
 )
 
 func FuzzProtocolRangeGrammar(f *testing.F) {
@@ -326,6 +330,67 @@ func FuzzManifestETagOrderIndependence(f *testing.F) {
 		etag, err := manifestETag(reordered)
 		if err != nil || etag != firstManifest.ManifestEtag {
 			t.Fatalf("operation map insertion order changed manifest ETag: %s != %s (%v)", etag, firstManifest.ManifestEtag, err)
+		}
+	})
+}
+
+func FuzzCompileBlobBoundary(f *testing.F) {
+	f.Add([]byte("project p \"Project\" {}\n"), uint8(0), true, true)
+	f.Add([]byte("project p {"), uint8(1), true, true)
+	f.Add([]byte("project p \"Project\" {}"), uint8(2), false, true)
+	f.Add([]byte("project p \"Project\" {}"), uint8(3), true, false)
+	f.Fuzz(func(t *testing.T, sourceBytes []byte, variant uint8, honestSize, honestDigest bool) {
+		if len(sourceBytes) > 4096 {
+			t.Skip()
+		}
+		ownedSource := slices.Clone(sourceBytes)
+		request := compileRequest(ownedSource)
+		ref := &request.Payload.ProjectSourceTree[0].Blob
+		if !honestSize {
+			ref.Size = protocolcommon.CanonicalUint64(strconv.Itoa(len(ownedSource) + 1))
+		}
+		if !honestDigest {
+			ref.Digest = protocolcommon.Digest("sha256:" + strings.Repeat("f", 64))
+		}
+		source := &memoryBlobSource{definitions: []BlobDefinition{{BlobID: ref.BlobID, Reader: io.NopCloser(bytes.NewReader(ownedSource))}}}
+		releases := 0
+		ownedVariant := false
+		switch variant % 8 {
+		case 1:
+			source.definitions = nil
+		case 2:
+			source.definitions = append(source.definitions, BlobDefinition{BlobID: ref.BlobID, Reader: io.NopCloser(bytes.NewReader(ownedSource))})
+		case 3:
+			ref.Lifetime = protocolcommon.BlobLifetime("invalid")
+		case 4:
+			request.Operation = engineprotocol.CompileRequestEnvelopeOperation("engine.future")
+		case 5:
+			ownedVariant = true
+			source.definitions = []BlobDefinition{{BlobID: ref.BlobID, Owned: &OwnedBlob{Bytes: ownedSource, Release: func() { releases++ }}}}
+		case 6:
+			ownedVariant = true
+			source.definitions = []BlobDefinition{{BlobID: ref.BlobID, Reader: io.NopCloser(bytes.NewReader(ownedSource)), Owned: &OwnedBlob{Bytes: ownedSource, Release: func() { releases++ }}}}
+		case 7:
+			ownedVariant = true
+			source.definitions = []BlobDefinition{{BlobID: ref.BlobID, Owned: &OwnedBlob{Bytes: ownedSource, Release: func() { releases++ }}}, {BlobID: "unreferenced", Owned: &OwnedBlob{Bytes: []byte{}, Release: func() { releases++ }}}}
+		}
+		sink := &memoryBlobSink{}
+		response, err := NewCompileDispatcher(engine.New(engine.BuildInfo{})).DispatchCompile(context.Background(), compileContext(t), request, source, sink)
+		if err != nil {
+			t.Fatalf("dispatcher escaped typed failure: %v", err)
+		}
+		if _, err := engineprotocol.EncodeCompileResponseEnvelope(response); err != nil {
+			t.Fatalf("invalid generated response: %v", err)
+		}
+		if response.Outcome == protocolcommon.OutcomeSuccess {
+			if sink.calls != 1 || response.Payload == nil || response.Failure != nil {
+				t.Fatalf("non-atomic success: response=%+v sink=%d", response, sink.calls)
+			}
+		} else if sink.calls != 0 || response.Payload != nil {
+			t.Fatalf("failed/rejected output was published: response=%+v sink=%d", response, sink.calls)
+		}
+		if ownedVariant && releases == 0 {
+			t.Fatal("adopted buffers were not released")
 		}
 	})
 }
