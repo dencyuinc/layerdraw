@@ -151,7 +151,7 @@ func TestDispatchCompileProjectSuccessPublishesExactOpaqueArtifacts(t *testing.T
 	if canonicalRef.MediaType != engineprotocol.NormalizedProjectCanonicalBlobRefMediaTypeValue || artifactRef.MediaType != engineprotocol.NormalizedProjectArtifactBlobRefMediaTypeValue {
 		t.Fatalf("wrong artifact media types")
 	}
-	if canonicalRef.Lifetime != protocolcommon.BlobLifetimeRequest || artifactRef.Lifetime != protocolcommon.BlobLifetimeRequest {
+	if canonicalRef.Lifetime != engineprotocol.NormalizedProjectCanonicalBlobRefLifetimeValue || artifactRef.Lifetime != engineprotocol.NormalizedProjectArtifactBlobRefLifetimeValue {
 		t.Fatalf("wrong artifact lifetimes")
 	}
 	if bytes.HasSuffix(sink.blobs[0].Bytes, []byte("\n")) || !bytes.HasSuffix(sink.blobs[1].Bytes, []byte("\n")) || !bytes.Equal(sink.blobs[1].Bytes[:len(sink.blobs[1].Bytes)-1], sink.blobs[0].Bytes) {

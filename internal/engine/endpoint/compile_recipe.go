@@ -205,13 +205,13 @@ func mapQueryRecipe(input materialize.Query, compiled engine.CompiledQueryRecipe
 		return semantic.QueryRecipe{}, fmt.Errorf("Query recipe generation mismatch")
 	}
 	result := semantic.QueryRecipe{
-		ID: input.ID, Address: semantic.StableAddress(input.Address), DisplayName: input.DisplayName,
+		ID: semantic.LocalIdentifier(input.ID), Address: semantic.QueryAddress(input.Address), DisplayName: input.DisplayName,
 		Tags: cloneStrings(input.Tags), Annotations: cloneStringMap(input.Annotations), StateInput: string(input.StateInput),
 		Parameters: make([]semantic.QueryRecipeParameter, len(input.Parameters)), Select: mapQuerySelect(input.Select),
-		ReservedParameterIDs: cloneStrings(input.ReservedParameterIDs), Result: make([]string, len(input.Result)),
+		ReservedParameterIDs: typedStrings[semantic.LocalIdentifier](input.ReservedParameterIDs), Result: make([]string, len(input.Result)),
 		Dependencies: semantic.QueryRecipeDependencies{
-			LayerAddresses: stableAddresses(compiled.Dependencies.LayerAddresses), EntityTypeAddresses: stableAddresses(compiled.Dependencies.EntityTypeAddresses), RelationTypeAddresses: stableAddresses(compiled.Dependencies.RelationTypeAddresses),
-			EntityAddresses: stableAddresses(compiled.Dependencies.EntityAddresses), RelationAddresses: stableAddresses(compiled.Dependencies.RelationAddresses), ColumnAddresses: stableAddresses(compiled.Dependencies.ColumnAddresses), ParameterAddresses: stableAddresses(compiled.Dependencies.ParameterAddresses), StateReads: mapStateReads(compiled.Dependencies.StateReads),
+			LayerAddresses: typedStrings[semantic.LayerAddress](compiled.Dependencies.LayerAddresses), EntityTypeAddresses: typedStrings[semantic.EntityTypeAddress](compiled.Dependencies.EntityTypeAddresses), RelationTypeAddresses: typedStrings[semantic.RelationTypeAddress](compiled.Dependencies.RelationTypeAddresses),
+			EntityAddresses: typedStrings[semantic.EntityAddress](compiled.Dependencies.EntityAddresses), RelationAddresses: typedStrings[semantic.RelationAddress](compiled.Dependencies.RelationAddresses), ColumnAddresses: typedStrings[semantic.ColumnAddress](compiled.Dependencies.ColumnAddresses), ParameterAddresses: typedStrings[semantic.ParameterAddress](compiled.Dependencies.ParameterAddresses), StateReads: mapStateReads(compiled.Dependencies.StateReads),
 		},
 	}
 	result.Description = cloneStringPointer(input.Description)
@@ -243,13 +243,13 @@ func mapQueryRecipe(input materialize.Query, compiled engine.CompiledQueryRecipe
 		if err != nil {
 			return semantic.QueryRecipe{}, err
 		}
-		result.Traverse = &semantic.QueryRecipeTraversal{Direction: string(input.Traverse.Direction), MinDepth: minDepth, MaxDepth: maxDepth, CyclePolicy: string(input.Traverse.CyclePolicy), RelationTypeAddresses: stableAddressSlicePointer(input.Traverse.RelationTypeAddresses)}
+		result.Traverse = &semantic.QueryRecipeTraversal{Direction: string(input.Traverse.Direction), MinDepth: minDepth, MaxDepth: maxDepth, CyclePolicy: string(input.Traverse.CyclePolicy), RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](input.Traverse.RelationTypeAddresses)}
 	}
 	return result, nil
 }
 
 func mapQueryParameter(input materialize.QueryParameter) (semantic.QueryRecipeParameter, error) {
-	result := semantic.QueryRecipeParameter{ID: input.ID, Address: semantic.StableAddress(input.Address), ValueType: semantic.ValueType(input.ValueType), Required: input.Required, ReservedEnumValues: cloneStrings(input.ReservedEnumValues)}
+	result := semantic.QueryRecipeParameter{ID: semantic.LocalIdentifier(input.ID), Address: semantic.ParameterAddress(input.Address), ValueType: semantic.ValueType(input.ValueType), Required: input.Required, ReservedEnumValues: cloneStrings(input.ReservedEnumValues)}
 	if input.EnumValues != nil {
 		values := cloneStrings(input.EnumValues)
 		result.EnumValues = &values
@@ -297,7 +297,7 @@ func mapQueryParameter(input materialize.QueryParameter) (semantic.QueryRecipePa
 }
 
 func mapQuerySelect(input materialize.QuerySelect) semantic.QueryRecipeSelect {
-	return semantic.QueryRecipeSelect{LayerAddresses: stableAddressSlicePointer(input.LayerAddresses), EntityTypeAddresses: stableAddressSlicePointer(input.EntityTypeAddresses), RelationTypeAddresses: stableAddressSlicePointer(input.RelationTypeAddresses), RootAddresses: stableAddressSlicePointer(input.RootAddresses)}
+	return semantic.QueryRecipeSelect{LayerAddresses: typedStringSlicePointer[semantic.LayerAddress](input.LayerAddresses), EntityTypeAddresses: typedStringSlicePointer[semantic.EntityTypeAddress](input.EntityTypeAddresses), RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](input.RelationTypeAddresses), RootAddresses: typedStringSlicePointer[semantic.EntityAddress](input.RootAddresses)}
 }
 
 func mapRecipePredicate(input materialize.Predicate) (semantic.RecipePredicate, error) {
@@ -331,7 +331,7 @@ func mapRecipePredicate(input materialize.Predicate) (semantic.RecipePredicate, 
 		}
 		result.Value = value
 	case query.PredicateState:
-		result.FieldPath = stringPointer(string(input.FieldPath))
+		result.FieldPath = typedStringPointer[semantic.StateFieldPath](string(input.FieldPath))
 		result.Operator = stringPointer(string(input.Operator))
 		value, err := mapOptionalPredicateValue(input.Value)
 		if err != nil {
@@ -346,7 +346,7 @@ func mapRecipePredicate(input materialize.Predicate) (semantic.RecipePredicate, 
 		if err != nil {
 			return semantic.RecipePredicate{}, err
 		}
-		addresses := stableAddresses(input.TypeAddresses)
+		addresses := typedStrings[semantic.EntityOrRelationTypeAddress](input.TypeAddresses)
 		result.Predicate = &predicate
 		result.Quantifier = stringPointer(string(input.Quantifier))
 		result.TypeAddresses = &addresses
@@ -379,7 +379,7 @@ func mapRowPredicate(input materialize.RowPredicate) (semantic.RecipeRowPredicat
 		}
 		result.Child = &child
 	case query.PredicateCell:
-		addresses := stableAddresses(input.ColumnAddresses)
+		addresses := typedStrings[semantic.ColumnAddress](input.ColumnAddresses)
 		result.ColumnAddresses = &addresses
 		result.Operator = stringPointer(string(input.Operator))
 		value, err := mapOptionalPredicateValue(input.Value)
@@ -388,7 +388,7 @@ func mapRowPredicate(input materialize.RowPredicate) (semantic.RecipeRowPredicat
 		}
 		result.Value = value
 	case query.PredicateState:
-		result.FieldPath = stringPointer(string(input.FieldPath))
+		result.FieldPath = typedStringPointer[semantic.StateFieldPath](string(input.FieldPath))
 		result.Operator = stringPointer(string(input.Operator))
 		value, err := mapOptionalPredicateValue(input.Value)
 		if err != nil {
@@ -408,7 +408,7 @@ func mapOptionalPredicateValue(input *materialize.PredicateValue) (*semantic.Rec
 	result := semantic.RecipePredicateValue{}
 	if input.Kind == query.ValueParameter {
 		result.Kind = "parameter"
-		result.ParameterAddress = stableAddressPointer(input.ParameterAddress)
+		result.ParameterAddress = nonEmptyTypedStringPointer[semantic.ParameterAddress](input.ParameterAddress)
 		return &result, nil
 	}
 	if input.Kind != query.ValueLiteral {
@@ -477,10 +477,10 @@ func mapViewRecipe(input materialize.View, compiled engine.CompiledViewRecipe, e
 		return semantic.ViewRecipe{}, fmt.Errorf("View recipe generation mismatch")
 	}
 	result := semantic.ViewRecipe{
-		ID: input.ID, Address: semantic.StableAddress(input.Address), DisplayName: input.DisplayName, Tags: cloneStrings(input.Tags), Annotations: cloneStringMap(input.Annotations), Category: string(input.Category), Intent: cloneStringPointer(input.Intent),
+		ID: semantic.LocalIdentifier(input.ID), Address: semantic.ViewAddress(input.Address), DisplayName: input.DisplayName, Tags: cloneStrings(input.Tags), Annotations: cloneStringMap(input.Annotations), Category: string(input.Category), Intent: cloneStringPointer(input.Intent),
 		StateInput: string(input.StateInput), StateRequirement: string(compiled.StateRequirement), RelationProjectionOverrides: make(map[string]semantic.ViewProjectionOverride, len(input.RelationProjections)),
-		ReservedTableColumnIDs: cloneStrings(input.ReservedTableColumnIDs), ReservedExportIDs: cloneStrings(input.ReservedExportIDs), Exports: make([]semantic.ExportRecipe, len(input.Exports)),
-		Dependencies: semantic.ViewRecipeDependencies{QueryAddresses: stableAddresses(compiled.Dependencies.QueryAddresses), ParameterAddresses: stableAddresses(compiled.Dependencies.ParameterAddresses), LayerAddresses: stableAddresses(compiled.Dependencies.LayerAddresses), EntityTypeAddresses: stableAddresses(compiled.Dependencies.EntityTypeAddresses), RelationTypeAddresses: stableAddresses(compiled.Dependencies.RelationTypeAddresses), EntityAddresses: stableAddresses(compiled.Dependencies.EntityAddresses), RelationAddresses: stableAddresses(compiled.Dependencies.RelationAddresses), ColumnAddresses: stableAddresses(compiled.Dependencies.ColumnAddresses), ExportAddresses: stableAddresses(compiled.Dependencies.ExportAddresses), StateReads: mapStateReads(compiled.Dependencies.StateReads)},
+		ReservedTableColumnIDs: typedStrings[semantic.LocalIdentifier](input.ReservedTableColumnIDs), ReservedExportIDs: typedStrings[semantic.LocalIdentifier](input.ReservedExportIDs), Exports: make([]semantic.ExportRecipe, len(input.Exports)),
+		Dependencies: semantic.ViewRecipeDependencies{QueryAddresses: typedStrings[semantic.QueryAddress](compiled.Dependencies.QueryAddresses), ParameterAddresses: typedStrings[semantic.ParameterAddress](compiled.Dependencies.ParameterAddresses), LayerAddresses: typedStrings[semantic.LayerAddress](compiled.Dependencies.LayerAddresses), EntityTypeAddresses: typedStrings[semantic.EntityTypeAddress](compiled.Dependencies.EntityTypeAddresses), RelationTypeAddresses: typedStrings[semantic.RelationTypeAddress](compiled.Dependencies.RelationTypeAddresses), EntityAddresses: typedStrings[semantic.EntityAddress](compiled.Dependencies.EntityAddresses), RelationAddresses: typedStrings[semantic.RelationAddress](compiled.Dependencies.RelationAddresses), ColumnAddresses: typedStrings[semantic.ColumnAddress](compiled.Dependencies.ColumnAddresses), ExportAddresses: typedStrings[semantic.ViewExportAddress](compiled.Dependencies.ExportAddresses), StateReads: mapStateReads(compiled.Dependencies.StateReads)},
 	}
 	result.Description = cloneStringPointer(input.Description)
 	var err error
@@ -515,7 +515,7 @@ func mapViewRecipe(input materialize.View, compiled engine.CompiledViewRecipe, e
 }
 
 func mapViewSource(input materialize.ViewSource) (semantic.ViewRecipeSource, error) {
-	result := semantic.ViewRecipeSource{Kind: string(input.Kind), Arguments: make(map[string]semantic.RecipeScalar, len(input.Arguments)), QueryAddress: stringStableAddressPointer(input.QueryAddress), Before: cloneStringPointer(input.Before), After: cloneStringPointer(input.After)}
+	result := semantic.ViewRecipeSource{Kind: string(input.Kind), Arguments: make(map[string]semantic.RecipeScalar, len(input.Arguments)), QueryAddress: optionalTypedStringPointer[semantic.QueryAddress](input.QueryAddress), Before: cloneStringPointer(input.Before), After: cloneStringPointer(input.After)}
 	for key, value := range input.Arguments {
 		mapped, err := mapRecipeScalar(value)
 		if err != nil {
@@ -548,7 +548,7 @@ func mapProjectionOverride(input materialize.ProjectionOverride) (semantic.ViewP
 		result.Tree = &semantic.ViewTreeProjection{ParentEndpoint: string(value.ParentEndpoint), ChildEndpoint: string(value.ChildEndpoint)}
 	}
 	if value := input.Flow; value != nil {
-		result.Flow = &semantic.ViewFlowProjection{SourceEndpoint: string(value.SourceEndpoint), TargetEndpoint: string(value.TargetEndpoint), ConnectorKind: string(value.ConnectorKind), BranchValueColumnAddress: stringStableAddressPointer(value.BranchValueColumnAddress)}
+		result.Flow = &semantic.ViewFlowProjection{SourceEndpoint: string(value.SourceEndpoint), TargetEndpoint: string(value.TargetEndpoint), ConnectorKind: string(value.ConnectorKind), BranchValueColumnAddress: optionalTypedStringPointer[semantic.ColumnAddress](value.BranchValueColumnAddress)}
 	}
 	if value := input.Context; value != nil {
 		result.Context = &semantic.ViewContextProjection{FactTemplate: value.FactTemplate, ReverseFactTemplate: cloneStringPointer(value.ReverseFactTemplate), IncludeAttributeRows: value.IncludeAttributeRows}
@@ -558,7 +558,7 @@ func mapProjectionOverride(input materialize.ProjectionOverride) (semantic.ViewP
 		if err != nil {
 			return result, err
 		}
-		result.Render = &semantic.ViewRenderSet{EdgeArrow: string(value.Edge.Arrow), EdgeLine: string(value.Edge.Line), EdgeColor: cloneStringPointer(value.Edge.Color), EdgeLabel: string(value.Edge.Label), NestedFrameLabel: string(value.Nested.FrameLabel), NestedFrameStyle: string(value.Nested.FrameStyle), OverlayKind: value.Overlay.Kind, OverlayPosition: string(value.Overlay.Position), OverlayMaxItems: maxItems, BadgeIcon: cloneStringPointer(value.Badge.Icon), BadgeLabel: string(value.Badge.Label), BadgePosition: string(value.Badge.Position)}
+		result.Render = &semantic.ViewRenderSet{EdgeArrow: string(value.Edge.Arrow), EdgeLine: string(value.Edge.Line), EdgeColor: optionalTypedStringPointer[semantic.Color](value.Edge.Color), EdgeLabel: string(value.Edge.Label), NestedFrameLabel: string(value.Nested.FrameLabel), NestedFrameStyle: string(value.Nested.FrameStyle), OverlayKind: value.Overlay.Kind, OverlayPosition: string(value.Overlay.Position), OverlayMaxItems: maxItems, BadgeIcon: cloneStringPointer(value.Badge.Icon), BadgeLabel: string(value.Badge.Label), BadgePosition: string(value.Badge.Position)}
 	}
 	return result, nil
 }
@@ -584,29 +584,29 @@ func mapViewShape(input materialize.ViewShape) (semantic.ViewRecipeShape, error)
 			if err != nil {
 				return result, err
 			}
-			placements[i] = semantic.ViewPlacement{EntityAddress: semantic.StableAddress(item.EntityAddress), X: x, Y: y, Width: semantic.CanonicalPositiveFiniteDecimal(width), Height: semantic.CanonicalPositiveFiniteDecimal(height)}
+			placements[i] = semantic.ViewPlacement{EntityAddress: semantic.EntityAddress(item.EntityAddress), X: x, Y: y, Width: semantic.CanonicalPositiveFiniteDecimal(width), Height: semantic.CanonicalPositiveFiniteDecimal(height)}
 		}
 		result.Diagram = &semantic.ViewDiagramShape{Layout: string(value.Layout), Direction: string(value.Direction), Abstraction: string(value.Abstraction), Composed: value.Composed, Placements: placements}
 	}
 	if value := input.Table; value != nil {
 		columns := make([]semantic.ViewTableColumn, len(value.Columns))
 		for i, item := range value.Columns {
-			columns[i] = semantic.ViewTableColumn{ID: item.ID, Address: semantic.StableAddress(item.Address), Label: cloneStringPointer(item.Label), Source: mapTableColumnSource(item.Source), Aggregate: string(item.Aggregate)}
+			columns[i] = semantic.ViewTableColumn{ID: semantic.LocalIdentifier(item.ID), Address: semantic.TableColumnAddress(item.Address), Label: cloneStringPointer(item.Label), Source: mapTableColumnSource(item.Source), Aggregate: string(item.Aggregate)}
 		}
 		sorts := make([]semantic.ViewTableSort, len(value.Sorts))
 		for i, item := range value.Sorts {
 			sorts[i] = semantic.ViewTableSort{ColumnID: item.ColumnID, Direction: string(item.Direction), Absent: string(item.Absent)}
 		}
-		result.Table = &semantic.ViewTableShape{RowSource: string(value.RowSource), EntityTypeAddresses: stableAddressSlicePointer(value.EntityTypeAddresses), IncludeEntityID: value.IncludeEntityID, IncludeType: value.IncludeType, IncludeLayer: value.IncludeLayer, Columns: columns, Sorts: sorts}
+		result.Table = &semantic.ViewTableShape{RowSource: string(value.RowSource), EntityTypeAddresses: typedStringSlicePointer[semantic.EntityTypeAddress](value.EntityTypeAddresses), IncludeEntityID: value.IncludeEntityID, IncludeType: value.IncludeType, IncludeLayer: value.IncludeLayer, Columns: columns, Sorts: sorts}
 	}
 	if value := input.Matrix; value != nil {
-		result.Matrix = &semantic.ViewMatrixShape{RowAxis: mapMatrixAxis(value.RowAxis), ColumnAxis: mapMatrixAxis(value.ColumnAxis), Cell: semantic.ViewMatrixCell{RelationTypeAddresses: stableAddressSlicePointer(value.Cell.RelationTypeAddresses), Direction: string(value.Cell.Direction), Semantic: string(value.Cell.Semantic), Display: string(value.Cell.Display), AttributeColumnAddresses: stableAddressSlicePointer(value.Cell.AttributeColumnAddresses)}}
+		result.Matrix = &semantic.ViewMatrixShape{RowAxis: mapMatrixAxis(value.RowAxis), ColumnAxis: mapMatrixAxis(value.ColumnAxis), Cell: semantic.ViewMatrixCell{RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](value.Cell.RelationTypeAddresses), Direction: string(value.Cell.Direction), Semantic: string(value.Cell.Semantic), Display: string(value.Cell.Display), AttributeColumnAddresses: typedStringSlicePointer[semantic.RelationTypeColumnAddress](value.Cell.AttributeColumnAddresses)}}
 	}
 	if value := input.Tree; value != nil {
-		result.Tree = &semantic.ViewTreeShape{RelationTypeAddresses: stableAddresses(value.RelationTypeAddresses), CyclePolicy: string(value.CyclePolicy), SharedChildPolicy: string(value.SharedChildPolicy)}
+		result.Tree = &semantic.ViewTreeShape{RelationTypeAddresses: typedStrings[semantic.RelationTypeAddress](value.RelationTypeAddresses), CyclePolicy: string(value.CyclePolicy), SharedChildPolicy: string(value.SharedChildPolicy)}
 	}
 	if value := input.Flow; value != nil {
-		result.Flow = &semantic.ViewFlowShape{RelationTypeAddresses: stableAddresses(value.RelationTypeAddresses), LaneBy: string(value.LaneBy), LaneColumnAddresses: stableAddressSlicePointer(value.LaneColumnAddresses), CyclePolicy: string(value.CyclePolicy), PreserveParallel: value.PreserveParallel}
+		result.Flow = &semantic.ViewFlowShape{RelationTypeAddresses: typedStrings[semantic.RelationTypeAddress](value.RelationTypeAddresses), LaneBy: string(value.LaneBy), LaneColumnAddresses: typedStringSlicePointer[semantic.EntityTypeColumnAddress](value.LaneColumnAddresses), CyclePolicy: string(value.CyclePolicy), PreserveParallel: value.PreserveParallel}
 	}
 	if value := input.Context; value != nil {
 		result.Context = &semantic.ViewContextShape{GroupBy: string(value.GroupBy), IncludeEntityRows: value.IncludeEntityRows, IncludeRelationRows: value.IncludeRelationRows, Incoming: value.Incoming, Outgoing: value.Outgoing}
@@ -622,12 +622,12 @@ func mapViewShape(input materialize.ViewShape) (semantic.ViewRecipeShape, error)
 }
 
 func mapTableColumnSource(input materialize.TableColumnSource) semantic.ViewTableColumnSource {
-	result := semantic.ViewTableColumnSource{Kind: string(input.Kind), RelationTypeAddresses: stableAddressSlicePointer(input.RelationTypeAddresses)}
+	result := semantic.ViewTableColumnSource{Kind: string(input.Kind), RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](input.RelationTypeAddresses)}
 	if input.Field != "" {
 		result.Field = stringPointer(input.Field)
 	}
 	if input.ColumnAddresses != nil {
-		values := stableAddresses(input.ColumnAddresses)
+		values := typedStrings[semantic.ColumnAddress](input.ColumnAddresses)
 		result.ColumnAddresses = &values
 	}
 	if input.Endpoint != "" {
@@ -637,13 +637,13 @@ func mapTableColumnSource(input materialize.TableColumnSource) semantic.ViewTabl
 		result.Direction = stringPointer(string(input.Direction))
 	}
 	if input.StateFieldPath != "" {
-		result.FieldPath = stringPointer(string(input.StateFieldPath))
+		result.FieldPath = typedStringPointer[semantic.StateFieldPath](string(input.StateFieldPath))
 	}
 	return result
 }
 
 func mapMatrixAxis(input materialize.MatrixAxis) semantic.ViewMatrixAxis {
-	return semantic.ViewMatrixAxis{EntityTypeAddresses: stableAddressSlicePointer(input.EntityTypeAddresses), LabelField: string(input.LabelField)}
+	return semantic.ViewMatrixAxis{EntityTypeAddresses: typedStringSlicePointer[semantic.EntityTypeAddress](input.EntityTypeAddresses), LabelField: string(input.LabelField)}
 }
 
 func mapExportRecipe(input materialize.ExportRecipe, compiled exportrecipe.Recipe) (semantic.ExportRecipe, error) {
@@ -654,11 +654,11 @@ func mapExportRecipe(input materialize.ExportRecipe, compiled exportrecipe.Recip
 	if err != nil {
 		return semantic.ExportRecipe{}, err
 	}
-	return semantic.ExportRecipe{ID: input.ID, Address: semantic.StableAddress(input.Address), ViewAddress: semantic.StableAddress(compiled.ViewAddress), Format: semantic.ExportFormat(input.Format), Extension: compiled.Extension, Filename: input.Filename, Fidelity: semantic.ExportFidelity(input.Fidelity), SourceRefs: input.SourceRefs, ExporterProfile: semantic.ExporterProfileRef{ID: input.ExporterProfile.ID, Format: semantic.ExportFormat(input.ExporterProfile.Format), RegistrySchemaVersion: int64(input.ExporterProfile.RegistrySchemaVersion), RegistryDigest: protocolcommon.Digest(input.ExporterProfile.RegistryDigest), SpecificationDigest: protocolcommon.Digest(input.ExporterProfile.SpecificationDigest)}, Options: options, NativeMaximumFidelity: semantic.ExportFidelity(compiled.NativeMaximumFidelity), EffectiveMaximumFidelity: semantic.ExportFidelity(compiled.EffectiveMaximumFidelity), FidelityBasis: string(compiled.FidelityBasis), RequiresSourceManifest: compiled.RequiresSourceManifest}, nil
+	return semantic.ExportRecipe{ID: semantic.LocalIdentifier(input.ID), Address: semantic.ViewExportAddress(input.Address), ViewAddress: semantic.ViewAddress(compiled.ViewAddress), Format: semantic.ExportFormat(input.Format), Extension: compiled.Extension, Filename: input.Filename, Fidelity: semantic.ExportFidelity(input.Fidelity), SourceRefs: input.SourceRefs, ExporterProfile: semantic.ExporterProfileRef{ID: input.ExporterProfile.ID, Format: semantic.ExportFormat(input.ExporterProfile.Format), RegistrySchemaVersion: int64(input.ExporterProfile.RegistrySchemaVersion), RegistryDigest: protocolcommon.Digest(input.ExporterProfile.RegistryDigest), SpecificationDigest: protocolcommon.Digest(input.ExporterProfile.SpecificationDigest)}, Options: options, NativeMaximumFidelity: semantic.ExportFidelity(compiled.NativeMaximumFidelity), EffectiveMaximumFidelity: semantic.ExportFidelity(compiled.EffectiveMaximumFidelity), FidelityBasis: string(compiled.FidelityBasis), RequiresSourceManifest: compiled.RequiresSourceManifest}, nil
 }
 
 func mapExportOptions(input materialize.ExportOptions) (semantic.ExportOptions, error) {
-	result := semantic.ExportOptions{Kind: semantic.ExportFormat(input.Kind), Background: cloneStringPointer(input.Background), Bundle: cloneBoolPointer(input.Bundle), Diagnostics: cloneBoolPointer(input.Diagnostics), EmbedAssets: cloneBoolPointer(input.EmbedAssets), Fit: stringifyPointer(input.Fit), Formulas: cloneBoolPointer(input.Formulas), Header: cloneBoolPointer(input.Header), HiddenIDs: cloneBoolPointer(input.HiddenIDs), Interactive: cloneBoolPointer(input.Interactive), Legend: cloneBoolPointer(input.Legend), LookupSheets: cloneBoolPointer(input.LookupSheets), Orientation: stringifyPointer(input.Orientation), PageSize: stringifyPointer(input.PageSize), Profile: stringifyPointer(input.Profile), SourceManifest: cloneBoolPointer(input.SourceManifest), StateSummary: cloneBoolPointer(input.StateSummary), ViewDataJSON: cloneBoolPointer(input.ViewDataJSON)}
+	result := semantic.ExportOptions{Kind: semantic.ExportFormat(input.Kind), Background: optionalTypedStringPointer[semantic.RasterBackground](input.Background), Bundle: cloneBoolPointer(input.Bundle), Diagnostics: cloneBoolPointer(input.Diagnostics), EmbedAssets: cloneBoolPointer(input.EmbedAssets), Fit: stringifyPointer(input.Fit), Formulas: cloneBoolPointer(input.Formulas), Header: cloneBoolPointer(input.Header), HiddenIDs: cloneBoolPointer(input.HiddenIDs), Interactive: cloneBoolPointer(input.Interactive), Legend: cloneBoolPointer(input.Legend), LookupSheets: cloneBoolPointer(input.LookupSheets), Orientation: stringifyPointer(input.Orientation), PageSize: stringifyPointer(input.PageSize), Profile: stringifyPointer(input.Profile), SourceManifest: cloneBoolPointer(input.SourceManifest), StateSummary: cloneBoolPointer(input.StateSummary), ViewDataJSON: cloneBoolPointer(input.ViewDataJSON)}
 	if input.Width != nil {
 		value, err := mapDimension(*input.Width)
 		if err != nil {
@@ -706,22 +706,50 @@ func sha256Bytes(value []byte) string {
 }
 
 func queryRecipeRef(ref protocolcommon.BlobRef) engineprotocol.QueryRecipeBlobRef {
-	return engineprotocol.QueryRecipeBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: ref.Lifetime, MediaType: engineprotocol.QueryRecipeBlobRefMediaType(ref.MediaType), Size: ref.Size}
+	return engineprotocol.QueryRecipeBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: engineprotocol.QueryRecipeBlobRefLifetime(ref.Lifetime), MediaType: engineprotocol.QueryRecipeBlobRefMediaType(ref.MediaType), Size: ref.Size}
 }
 func viewRecipeRef(ref protocolcommon.BlobRef) engineprotocol.ViewRecipeBlobRef {
-	return engineprotocol.ViewRecipeBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: ref.Lifetime, MediaType: engineprotocol.ViewRecipeBlobRefMediaType(ref.MediaType), Size: ref.Size}
+	return engineprotocol.ViewRecipeBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: engineprotocol.ViewRecipeBlobRefLifetime(ref.Lifetime), MediaType: engineprotocol.ViewRecipeBlobRefMediaType(ref.MediaType), Size: ref.Size}
 }
 func exportRecipeRef(ref protocolcommon.BlobRef) engineprotocol.ExportRecipeBlobRef {
-	return engineprotocol.ExportRecipeBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: ref.Lifetime, MediaType: engineprotocol.ExportRecipeBlobRefMediaType(ref.MediaType), Size: ref.Size}
+	return engineprotocol.ExportRecipeBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: engineprotocol.ExportRecipeBlobRefLifetime(ref.Lifetime), MediaType: engineprotocol.ExportRecipeBlobRefMediaType(ref.MediaType), Size: ref.Size}
 }
 
-func stableAddressSlicePointer(input *[]string) *[]semantic.StableAddress {
+func typedStringSlicePointer[T ~string](input *[]string) *[]T {
 	if input == nil {
 		return nil
 	}
-	value := stableAddresses(*input)
+	value := typedStrings[T](*input)
 	return &value
 }
+
+func typedStrings[T ~string](input []string) []T {
+	result := make([]T, len(input))
+	for index, value := range input {
+		result[index] = T(value)
+	}
+	return result
+}
+
+func typedStringPointer[T ~string](input string) *T {
+	value := T(input)
+	return &value
+}
+
+func nonEmptyTypedStringPointer[T ~string](input string) *T {
+	if input == "" {
+		return nil
+	}
+	return typedStringPointer[T](input)
+}
+
+func optionalTypedStringPointer[T ~string](input *string) *T {
+	if input == nil {
+		return nil
+	}
+	return typedStringPointer[T](*input)
+}
+
 func cloneStrings(input []string) []string { return append([]string{}, input...) }
 func cloneStringMap(input map[string]string) map[string]string {
 	result := make(map[string]string, len(input))

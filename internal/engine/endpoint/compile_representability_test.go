@@ -399,15 +399,15 @@ func TestCompileResponseFallbackClassifiesSuccessControlAndInvariantFailures(t *
 	if !bytes.Equal(firstBytes, secondBytes) {
 		t.Fatal("control-output fallback is nondeterministic")
 	}
-	encodedRequest, err := engineprotocol.EncodeCompileRequestEnvelope(request)
-	if err != nil {
-		t.Fatal(err)
-	}
 	maxRequest := request
-	maxRequest.RequestID += strings.Repeat("r", engineprotocol.MaxWireJSONBytes-len(encodedRequest))
-	encodedRequest, err = engineprotocol.EncodeCompileRequestEnvelope(maxRequest)
-	if err != nil || len(encodedRequest) != engineprotocol.MaxWireJSONBytes {
-		t.Fatalf("could not construct maximum-size valid request: bytes=%d err=%v", len(encodedRequest), err)
+	maxRequest.RequestID = strings.Repeat("r", 128)
+	if _, err := engineprotocol.EncodeCompileRequestEnvelope(maxRequest); err != nil {
+		t.Fatalf("could not construct maximum-length valid request ID: err=%v", err)
+	}
+	overlongRequest := maxRequest
+	overlongRequest.RequestID += "r"
+	if _, err := engineprotocol.EncodeCompileRequestEnvelope(overlongRequest); err == nil {
+		t.Fatal("generated request schema accepted an overlong request ID")
 	}
 	maxCandidate := baseline
 	maxCandidate.RequestID = maxRequest.RequestID

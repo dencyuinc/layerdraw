@@ -846,7 +846,13 @@ func TestGeneratedRecipeMappingInvariantFailures(t *testing.T) {
 }
 
 func TestRemainingRecipeMapperErrorBranches(t *testing.T) {
+	if nonEmptyTypedStringPointer[semantic.ParameterAddress]("") != nil {
+		t.Fatal("empty typed address pointer was retained")
+	}
 	badScalar := materialize.Scalar{Type: "bad"}
+	if _, err := mapOptionalPredicateValue(&materialize.PredicateValue{Kind: query.ValueLiteral, Scalars: []materialize.Scalar{badScalar}}); err == nil {
+		t.Fatal("invalid scalar set accepted")
+	}
 	nan := math.NaN()
 	negative := int64(-1)
 	parameters := []materialize.QueryParameter{{Default: &badScalar}, {Min: &nan}, {Max: &nan}, {MinLength: &negative}, {MaxLength: &negative}}

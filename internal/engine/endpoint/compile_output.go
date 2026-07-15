@@ -158,7 +158,7 @@ func mapNormalizedArtifact(snapshot engine.Snapshot, searchDocuments []semantic.
 		artifact.Ref.MediaType = string(engineprotocol.NormalizedProjectArtifactBlobRefMediaTypeValue)
 		result.GraphHash = digestPointer(*snapshot.GraphHash)
 		result.Project = &engineprotocol.NormalizedProjectArtifact{
-			ProjectAddress: semantic.StableAddress(snapshot.NormalizedDocument.Project.Address),
+			ProjectAddress: semantic.ProjectRootAddress(snapshot.NormalizedDocument.Project.Address),
 			CanonicalJSON:  projectCanonicalRef(canonical.Ref),
 			ArtifactJSON:   projectArtifactRef(artifact.Ref),
 		}
@@ -169,7 +169,7 @@ func mapNormalizedArtifact(snapshot engine.Snapshot, searchDocuments []semantic.
 		canonical.Ref.MediaType = string(engineprotocol.NormalizedPackCanonicalBlobRefMediaTypeValue)
 		artifact.Ref.MediaType = string(engineprotocol.NormalizedPackArtifactBlobRefMediaTypeValue)
 		result.Pack = &engineprotocol.NormalizedPackArtifact{
-			PackAddress:   semantic.StableAddress(snapshot.NormalizedPackArtifact.Pack.Address),
+			PackAddress:   semantic.PackRootAddress(snapshot.NormalizedPackArtifact.Pack.Address),
 			CanonicalJSON: packCanonicalRef(canonical.Ref),
 			ArtifactJSON:  packArtifactRef(artifact.Ref),
 		}
@@ -191,19 +191,19 @@ func newOutputBlob(id string, value []byte) OutputBlob {
 }
 
 func projectCanonicalRef(ref protocolcommon.BlobRef) engineprotocol.NormalizedProjectCanonicalBlobRef {
-	return engineprotocol.NormalizedProjectCanonicalBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: ref.Lifetime, MediaType: engineprotocol.NormalizedProjectCanonicalBlobRefMediaType(ref.MediaType), Size: ref.Size}
+	return engineprotocol.NormalizedProjectCanonicalBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: engineprotocol.NormalizedProjectCanonicalBlobRefLifetime(ref.Lifetime), MediaType: engineprotocol.NormalizedProjectCanonicalBlobRefMediaType(ref.MediaType), Size: ref.Size}
 }
 
 func projectArtifactRef(ref protocolcommon.BlobRef) engineprotocol.NormalizedProjectArtifactBlobRef {
-	return engineprotocol.NormalizedProjectArtifactBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: ref.Lifetime, MediaType: engineprotocol.NormalizedProjectArtifactBlobRefMediaType(ref.MediaType), Size: ref.Size}
+	return engineprotocol.NormalizedProjectArtifactBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: engineprotocol.NormalizedProjectArtifactBlobRefLifetime(ref.Lifetime), MediaType: engineprotocol.NormalizedProjectArtifactBlobRefMediaType(ref.MediaType), Size: ref.Size}
 }
 
 func packCanonicalRef(ref protocolcommon.BlobRef) engineprotocol.NormalizedPackCanonicalBlobRef {
-	return engineprotocol.NormalizedPackCanonicalBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: ref.Lifetime, MediaType: engineprotocol.NormalizedPackCanonicalBlobRefMediaType(ref.MediaType), Size: ref.Size}
+	return engineprotocol.NormalizedPackCanonicalBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: engineprotocol.NormalizedPackCanonicalBlobRefLifetime(ref.Lifetime), MediaType: engineprotocol.NormalizedPackCanonicalBlobRefMediaType(ref.MediaType), Size: ref.Size}
 }
 
 func packArtifactRef(ref protocolcommon.BlobRef) engineprotocol.NormalizedPackArtifactBlobRef {
-	return engineprotocol.NormalizedPackArtifactBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: ref.Lifetime, MediaType: engineprotocol.NormalizedPackArtifactBlobRefMediaType(ref.MediaType), Size: ref.Size}
+	return engineprotocol.NormalizedPackArtifactBlobRef{BlobID: ref.BlobID, Digest: ref.Digest, Lifetime: engineprotocol.NormalizedPackArtifactBlobRefLifetime(ref.Lifetime), MediaType: engineprotocol.NormalizedPackArtifactBlobRefMediaType(ref.MediaType), Size: ref.Size}
 }
 
 func validateUniqueOutputBlobs(blobs []OutputBlob) error {
@@ -695,7 +695,7 @@ func mapStateReads(input []query.StateReadDependency) []semantic.StateReadDepend
 	for index, item := range input {
 		result[index] = semantic.StateReadDependency{
 			SubjectKind: semantic.StateSubjectKind(item.SubjectKind),
-			FieldPath:   string(item.FieldPath),
+			FieldPath:   semantic.StateFieldPath(item.FieldPath),
 			ValueType:   semantic.ValueType(item.ValueType),
 		}
 	}
@@ -712,7 +712,7 @@ func ensureDependencyWithinWire(input index.DependencyRecord, maximum int64) err
 		return err
 	}
 	for _, item := range input.StateReads {
-		mapped := semantic.StateReadDependency{SubjectKind: semantic.StateSubjectKind(item.SubjectKind), FieldPath: string(item.FieldPath), ValueType: semantic.ValueType(item.ValueType)}
+		mapped := semantic.StateReadDependency{SubjectKind: semantic.StateSubjectKind(item.SubjectKind), FieldPath: semantic.StateFieldPath(item.FieldPath), ValueType: semantic.ValueType(item.ValueType)}
 		if err := budget.claim(mapped); err != nil {
 			return err
 		}
