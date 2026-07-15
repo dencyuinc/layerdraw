@@ -2944,6 +2944,32 @@ func validateNamed(documentID, name string, value any) error {
 	return validateSchema(documentID, schema, value, "$", 0)
 }
 
+func schemaEnumValues(documentID string, schema map[string]any) []any {
+	for range 16 {
+		if values, ok := schema["enum"].([]any); ok {
+			return values
+		}
+		ref, ok := schema["$ref"].(string)
+		if !ok {
+			return nil
+		}
+		parts := strings.SplitN(ref, "#/$defs/", 2)
+		if len(parts) != 2 {
+			return nil
+		}
+		if parts[0] != "" {
+			documentID = parts[0]
+		}
+		document := schemaDocuments[documentID]
+		definitions, _ := document["$defs"].(map[string]any)
+		schema, _ = definitions[parts[1]].(map[string]any)
+		if schema == nil {
+			return nil
+		}
+	}
+	return nil
+}
+
 func validateSchema(documentID string, schema map[string]any, value any, path string, depth int) error {
 	if ref, ok := schema["$ref"].(string); ok {
 		parts := strings.SplitN(ref, "#/$defs/", 2)
@@ -3160,7 +3186,7 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 			}
 		}
 		if ordered, _ := schema["x-layerdraw-canonical-enum-order"].(bool); ordered {
-			values, _ := itemSchema["enum"].([]any)
+			values := schemaEnumValues(documentID, itemSchema)
 			ranks := map[string]int{}
 			for index, raw := range values {
 				if text, ok := raw.(string); ok {
@@ -6078,52 +6104,31 @@ func validateSemanticOperationInvariant(path string, object map[string]any) erro
 				return fmt.Errorf("%s.fields.source is not a table column source", path)
 			}
 		}
-		if strings.Contains(kind, "_column") || kind == "query_parameter" {
-			valueType := protocolString(fields, "value_type")
-			enumValues, hasEnumValues := fields["enum_values"].([]any)
-			if hasEnumValues != (valueType == "enum") {
-				return fmt.Errorf("%s.fields.enum_values must appear exactly for enum value_type", path)
+		if kind == "entity_type_column" || kind == "relation_type_column" || kind == "query_parameter" {
+			if format, present := fields["format"].(string); present && !map[string]bool{"cidr": true, "email": true, "hostname": true, "ipv4": true, "ipv6": true, "uri": true}[format] {
+				return fmt.Errorf("%s.fields.format is not a canonical string format", path)
 			}
-			if _, present := fields["reserved_enum_values"]; present && valueType != "enum" {
-				return fmt.Errorf("%s.fields.reserved_enum_values requires enum value_type", path)
+			if err := validateQueryParameterConsistency(path+".fields", fields); err != nil {
+				return err
 			}
-			if _, present := fields["format"]; present && valueType != "string" {
-				return fmt.Errorf("%s.fields.format requires string value_type", path)
+		}
+		if kind == "view_export" {
+			format, _ := fields["format"].(string)
+			filename, _ := fields["filename"].(string)
+			extension, exists := map[string]string{"json": ".json", "yaml": ".yaml", "svg": ".svg", "png": ".png", "pdf": ".pdf", "html": ".html", "csv": ".csv", "tsv": ".tsv", "xlsx": ".xlsx", "markdown": ".md", "pptx": ".pptx", "docx": ".docx", "mermaid": ".mmd", "bpmn": ".bpmn", "drawio": ".drawio"}[format]
+			if !exists || filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, "/\\\x00") || !strings.HasSuffix(filename, extension) || len(strings.TrimSuffix(filename, extension)) == 0 {
+				return fmt.Errorf("%s.fields.filename is not the exact non-empty basename for %s", path, format)
 			}
-			for _, name := range []string{"min", "max"} {
-				if raw, present := fields[name]; present {
-					if valueType != "integer" && valueType != "number" {
-						return fmt.Errorf("%s.fields.%s requires numeric value_type", path, name)
-					}
-					if valueType == "integer" {
-						text, _ := raw.(string)
-						if _, err := strconv.ParseInt(text, 10, 64); err != nil {
-							return fmt.Errorf("%s.fields.%s must be an integer bound", path, name)
-						}
-					}
+			if raw, present := fields["options"]; present {
+				options, ok := protocolObject(raw)
+				if !ok || options["kind"] != format {
+					return fmt.Errorf("%s.fields.options.kind contradicts format", path)
 				}
 			}
-			for _, name := range []string{"min_length", "max_length"} {
-				if _, present := fields[name]; present && valueType != "string" {
-					return fmt.Errorf("%s.fields.%s requires string value_type", path, name)
-				}
-			}
-			if defaultValue, present := fields["default"]; present {
-				typed, ok := protocolObject(defaultValue)
-				if !ok || typed["kind"] != valueType {
-					return fmt.Errorf("%s.fields.default contradicts value_type", path)
-				}
-				if valueType == "enum" {
-					member, _ := typed["string_value"].(string)
-					found := false
-					for _, raw := range enumValues {
-						if raw == member {
-							found = true
-						}
-					}
-					if !found {
-						return fmt.Errorf("%s.fields.default is not an active enum value", path)
-					}
+			if raw, present := fields["exporter_profile"]; present {
+				profile, ok := protocolObject(raw)
+				if !ok || profile["format"] != format {
+					return fmt.Errorf("%s.fields.exporter_profile.format contradicts format", path)
 				}
 			}
 		}

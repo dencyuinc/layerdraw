@@ -207,6 +207,78 @@ func TestGeneratedCompileInputBlobRefCollector(t *testing.T) {
 	}
 }
 
+func TestCreateSubjectAuthoredContractsAcrossGeneratedGo(t *testing.T) {
+	data := readProtocolFixture(t, "workbench-create-subject-contracts.json")
+	if _, err := engineprotocol.DecodeSemanticOperationBatch(data); err != nil {
+		t.Fatalf("positive create_subject contract corpus was rejected: %v", err)
+	}
+	var corpus struct {
+		Operations []map[string]any `json:"operations"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]map[string]any{}
+	for _, operation := range corpus.Operations {
+		id, _ := operation["id"].(string)
+		byID[id] = operation
+		encoded, err := json.Marshal(operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := engineprotocol.DecodeSemanticOperation(encoded); err != nil {
+			t.Errorf("positive create_subject %s was rejected: %v", id, err)
+		}
+	}
+	clone := func(value any) any {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result any
+		if err := json.Unmarshal(encoded, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	reject := func(name, id string, mutate func(map[string]any)) {
+		t.Helper()
+		operation := clone(byID[id]).(map[string]any)
+		fields := operation["fields"].(map[string]any)
+		mutate(fields)
+		encoded, err := json.Marshal(operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := engineprotocol.DecodeSemanticOperation(encoded); err == nil {
+			t.Errorf("single-cause negative %s was accepted: %s", name, encoded)
+		}
+	}
+	for _, format := range []string{"bpmn", "csv", "docx", "drawio", "html", "json", "markdown", "mermaid", "pdf", "png", "pptx", "svg", "tsv", "xlsx", "yaml"} {
+		reject(format+" exact extension", format, func(fields map[string]any) { fields["filename"] = "map.invalid" })
+	}
+	reject("basename only", "json", func(fields map[string]any) { fields["filename"] = "../map.json" })
+	reject("options format authority", "json", func(fields map[string]any) {
+		fields["options"] = clone(byID["yaml"]["fields"].(map[string]any)["options"])
+	})
+	reject("exporter profile format authority", "json", func(fields map[string]any) { fields["exporter_profile"].(map[string]any)["format"] = "yaml" })
+	reject("Column format domain", "email_value", func(fields map[string]any) { fields["format"] = "json" })
+	reject("View Export format domain", "json", func(fields map[string]any) {
+		fields["format"] = "email"
+		fields["filename"] = "map.email"
+		delete(fields, "options")
+		delete(fields, "exporter_profile")
+	})
+	reject("active and reserved enum disjointness", "choice", func(fields map[string]any) { fields["reserved_enum_values"] = []any{"a"} })
+	reject("nonempty enum member", "choice", func(fields map[string]any) { fields["enum_values"] = []any{""}; delete(fields, "default") })
+	reject("safe integer bound", "count", func(fields map[string]any) { fields["max"] = "9007199254740992" })
+	reject("integer default within bounds", "count", func(fields map[string]any) { fields["default"].(map[string]any)["integer_value"] = "-11" })
+	reject("minimum string length", "code", func(fields map[string]any) { fields["default"].(map[string]any)["string_value"] = "a" })
+	reject("maximum string length", "code", func(fields map[string]any) { fields["default"].(map[string]any)["string_value"] = "abcde" })
+	reject("canonical string format", "email_value", func(fields map[string]any) { fields["default"].(map[string]any)["string_value"] = "not-email" })
+	reject("active enum default", "choice", func(fields map[string]any) { fields["default"].(map[string]any)["string_value"] = "missing" })
+}
+
 func TestGeneratedCompileResultBlobRefCollector(t *testing.T) {
 	t.Parallel()
 	root := protocolRepositoryRoot(t)

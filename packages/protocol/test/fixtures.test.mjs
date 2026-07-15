@@ -346,6 +346,34 @@ test("Workbench preview fixture validates, preserves recursive values, and round
   assert.deepEqual(JSON.parse(encodePreviewOperationsRequestEnvelope(decoded)), fixture);
 });
 
+test("create_subject authored contracts accept every format and reject one-cause contradictions", async () => {
+  const batch = await readFixture("workbench-create-subject-contracts.json");
+  assert.equal(isSemanticOperationBatch(batch), true);
+  for (const operation of batch.operations) assert.equal(isSemanticOperation(operation), true, operation.id);
+  const byID = new Map(batch.operations.map((operation) => [operation.id, operation]));
+  const rejects = (name, id, mutate) => {
+    const operation = structuredClone(byID.get(id));
+    mutate(operation.fields);
+    assert.equal(isSemanticOperation(operation), false, name);
+  };
+  for (const format of ["bpmn", "csv", "docx", "drawio", "html", "json", "markdown", "mermaid", "pdf", "png", "pptx", "svg", "tsv", "xlsx", "yaml"]) {
+    rejects(`${format} exact extension`, format, (fields) => { fields.filename = "map.invalid"; });
+  }
+  rejects("basename only", "json", (fields) => { fields.filename = "../map.json"; });
+  rejects("options format authority", "json", (fields) => { fields.options = structuredClone(byID.get("yaml").fields.options); });
+  rejects("exporter profile format authority", "json", (fields) => { fields.exporter_profile.format = "yaml"; });
+  rejects("Column format domain", "email_value", (fields) => { fields.format = "json"; });
+  rejects("View Export format domain", "json", (fields) => { fields.format = "email"; fields.filename = "map.email"; delete fields.options; delete fields.exporter_profile; });
+  rejects("active and reserved enum disjointness", "choice", (fields) => { fields.reserved_enum_values = ["a"]; });
+  rejects("nonempty enum member", "choice", (fields) => { fields.enum_values = [""]; delete fields.default; });
+  rejects("safe integer bound", "count", (fields) => { fields.max = "9007199254740992"; });
+  rejects("integer default within bounds", "count", (fields) => { fields.default.integer_value = "-11"; });
+  rejects("minimum string length", "code", (fields) => { fields.default.string_value = "a"; });
+  rejects("maximum string length", "code", (fields) => { fields.default.string_value = "abcde"; });
+  rejects("canonical string format", "email_value", (fields) => { fields.default.string_value = "not-email"; });
+  rejects("active enum default", "choice", (fields) => { fields.default.string_value = "missing"; });
+});
+
 test("Workbench malformed handles, null contracts, ordering, and outcome payloads fail closed", async () => {
   for (const name of [
     "workbench-invalid-handle-request.json",

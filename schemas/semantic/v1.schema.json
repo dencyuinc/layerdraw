@@ -74,7 +74,7 @@
         "base_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "entries": {"type": "array", "items": {"$ref": "#/$defs/AuthoringImpactEntry"}, "x-layerdraw-canonical-collection-order": "authoring_impact"},
         "impact_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "required_capabilities": {"type": "array", "items": {"type": "string", "enum": ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"]}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
+        "required_capabilities": {"type": "array", "items": {"$ref": "#/$defs/AuthoringCapability"}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
         "resulting_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "semantic_diff_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "source_diff_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
@@ -414,7 +414,7 @@
         "address": {"$ref": "#/$defs/ParameterAddress"},
         "default": {"$ref": "#/$defs/RecipeScalar"},
         "enum_values": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
-        "format": {"type": "string", "enum": ["cidr", "email", "hostname", "ipv4", "ipv6", "uri"]},
+        "format": {"$ref": "#/$defs/StringFormat"},
         "id": {"$ref": "#/$defs/LocalIdentifier"},
         "max": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
         "max_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
@@ -623,6 +623,11 @@
     "ExportFormat": {
       "type": "string",
       "enum": ["bpmn", "csv", "docx", "drawio", "html", "json", "markdown", "mermaid", "pdf", "png", "pptx", "svg", "tsv", "xlsx", "yaml"]
+    },
+    "StringFormat": {
+      "type": "string",
+      "description": "The closed canonical string-format domain for authored Columns and Query Parameters.",
+      "enum": ["cidr", "email", "hostname", "ipv4", "ipv6", "uri"]
     },
     "ExporterProfileRef": {
       "type": "object",
@@ -953,7 +958,7 @@
       "type": "object",
       "properties": {
         "enum_values": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
-        "format": {"type": "string", "enum": ["cidr", "email", "hostname", "ipv4", "ipv6", "uri"]},
+        "format": {"$ref": "#/$defs/StringFormat"},
         "kind": {"type": "string", "enum": ["scalar", "stable_address", "string_set"]},
         "scalar_type": {"$ref": "#/$defs/ValueType"}
       },

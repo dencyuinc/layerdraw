@@ -941,8 +941,20 @@ function sameProtocolGeneration(left, right) { const a = protocolGenerationKey(l
 function nextProtocolGeneration(left, right) { const a = protocolGenerationKey(left), b = protocolGenerationKey(right); return a !== undefined && b !== undefined && a[0] === b[0] && a[1] === b[1] && b[2] === a[2] + 1n; }
 function protocolErrorDiagnostic(raw) { return Array.isArray(raw) && raw.some((item) => isObject(item) && item.severity === "error"); }
 function protocolBlobBytes(raw) { if (Array.isArray(raw)) return raw.reduce((sum, item) => sum + protocolBlobBytes(item), 0n); if (!isObject(raw)) return 0n; let total = typeof raw.blob_id === "string" && typeof raw.digest === "string" && typeof raw.size === "string" ? BigInt(raw.size) : 0n; for (const item of Object.values(raw)) total += protocolBlobBytes(item); return total; }
+function validCreateSubjectExport(fields) {
+  const extensions = new Map([
+    ["json", ".json"], ["yaml", ".yaml"], ["svg", ".svg"], ["png", ".png"], ["pdf", ".pdf"],
+    ["html", ".html"], ["csv", ".csv"], ["tsv", ".tsv"], ["xlsx", ".xlsx"], ["markdown", ".md"],
+    ["pptx", ".pptx"], ["docx", ".docx"], ["mermaid", ".mmd"], ["bpmn", ".bpmn"], ["drawio", ".drawio"],
+  ]);
+  const extension = extensions.get(fields.format);
+  if (extension === undefined || typeof fields.filename !== "string" || fields.filename === "" || fields.filename === "." || fields.filename === ".." ||
+      /[\\/\u0000]/.test(fields.filename) || !fields.filename.endsWith(extension) || fields.filename.slice(0, -extension.length).length === 0) return false;
+  if (hasOwn(fields, "options") && (!isObject(fields.options) || fields.options.kind !== fields.format)) return false;
+  return !hasOwn(fields, "exporter_profile") || isObject(fields.exporter_profile) && fields.exporter_profile.format === fields.format;
+}
 function validProtocolSemanticOperation(value) {
-  if (value.operation === "create_subject") { if (typeof value.subject_kind !== "string" || !isObject(value.fields)) return false; const common = ["description", "tags", "annotations"]; const allowed = {entity_type:["display_name","representation","icon","image","color",...common],relation_type:["display_name","semantic_kind","from","to","forward_label","allow_self","duplicate_policy","cardinality","reverse_label","traversal","projections","render","export",...common],layer:["display_name","order",...common],entity:["display_name","type_address","layer_address",...common],query:["display_name","select","state_input","where","relation_where","traverse","result",...common],view:["display_name","category","source","shape","intent","state_input","relation_projection_overrides",...common],reference:["text"],entity_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],relation_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],view_table_column:["source","label","aggregate"],view_export:["format","filename","fidelity","source_refs","exporter_profile","options"]}; const required = {entity_type:["display_name","representation"],relation_type:["display_name","semantic_kind","from","to","forward_label"],layer:["display_name","order"],entity:["display_name","type_address","layer_address"],query:["display_name","select"],view:["display_name","category","source","shape"],reference:["text"],entity_type_column:["display_name","value_type"],relation_type_column:["display_name","value_type"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type"],view_table_column:["source"],view_export:["format","filename","fidelity"]}; const names=allowed[value.subject_kind]; if (names === undefined || Object.keys(value.fields).some((name)=>!names.includes(name)) || required[value.subject_kind].some((name)=>!hasOwn(value.fields,name))) return false; if (value.subject_kind === "view") { const source=value.fields.source,shape=value.fields.shape,diff=value.fields.category === "diff"; if (!isObject(source)||!isObject(shape)||(source.kind === "diff")!==diff||(shape.kind === "diff")!==diff) return false; if (shape.kind === "matrix" && (!isObject(shape.cell)||(shape.cell.display === "attribute_summary")!==hasOwn(shape.cell,"attribute_column_addresses"))||shape.kind === "flow"&&(shape.lane_by === "attribute")!==hasOwn(shape,"lane_column_addresses")) return false; } if (value.subject_kind === "view_table_column" && (!isObject(value.fields.source)||value.fields.source.kind === "query"||value.fields.source.kind === "diff")) return false; if (value.subject_kind.includes("_column")||value.subject_kind === "query_parameter") { const t=value.fields.value_type,d=value.fields.default,e=value.fields.enum_values; if (hasOwn(value.fields,"enum_values")!==(t === "enum")||hasOwn(value.fields,"reserved_enum_values")&&t!=="enum"||hasOwn(value.fields,"format")&&t!=="string"||(hasOwn(value.fields,"min")||hasOwn(value.fields,"max"))&&t!=="integer"&&t!=="number"||(hasOwn(value.fields,"min_length")||hasOwn(value.fields,"max_length"))&&t!=="string"||t === "integer"&&[value.fields.min,value.fields.max].some((item)=>item!==undefined&&(typeof item!=="string"||!/^[-]?(0|[1-9][0-9]*)$/.test(item)))||hasOwn(value.fields,"default")&&(!isObject(d)||d.kind!==t||t === "enum"&&(!Array.isArray(e)||!e.includes(d.string_value)))) return false; } const owners={entity_type_column:"entity_type",entity_type_constraint:"entity_type",relation_type_column:"relation_type",relation_type_constraint:"relation_type",query_parameter:"query",view_table_column:"view",view_export:"view"}; return typeof value.parent_address === "string" && stableAddressSubject(value.parent_address)?.kind === (owners[value.subject_kind] ?? "project"); }
+  if (value.operation === "create_subject") { if (typeof value.subject_kind !== "string" || !isObject(value.fields)) return false; const common = ["description", "tags", "annotations"]; const allowed = {entity_type:["display_name","representation","icon","image","color",...common],relation_type:["display_name","semantic_kind","from","to","forward_label","allow_self","duplicate_policy","cardinality","reverse_label","traversal","projections","render","export",...common],layer:["display_name","order",...common],entity:["display_name","type_address","layer_address",...common],query:["display_name","select","state_input","where","relation_where","traverse","result",...common],view:["display_name","category","source","shape","intent","state_input","relation_projection_overrides",...common],reference:["text"],entity_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],relation_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],view_table_column:["source","label","aggregate"],view_export:["format","filename","fidelity","source_refs","exporter_profile","options"]}; const required = {entity_type:["display_name","representation"],relation_type:["display_name","semantic_kind","from","to","forward_label"],layer:["display_name","order"],entity:["display_name","type_address","layer_address"],query:["display_name","select"],view:["display_name","category","source","shape"],reference:["text"],entity_type_column:["display_name","value_type"],relation_type_column:["display_name","value_type"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type"],view_table_column:["source"],view_export:["format","filename","fidelity"]}; const names=allowed[value.subject_kind]; if (names === undefined || Object.keys(value.fields).some((name)=>!names.includes(name)) || required[value.subject_kind].some((name)=>!hasOwn(value.fields,name))) return false; if (value.subject_kind === "view") { const source=value.fields.source,shape=value.fields.shape,diff=value.fields.category === "diff"; if (!isObject(source)||!isObject(shape)||(source.kind === "diff")!==diff||(shape.kind === "diff")!==diff) return false; if (shape.kind === "matrix" && (!isObject(shape.cell)||(shape.cell.display === "attribute_summary")!==hasOwn(shape.cell,"attribute_column_addresses"))||shape.kind === "flow"&&(shape.lane_by === "attribute")!==hasOwn(shape,"lane_column_addresses")) return false; } if (value.subject_kind === "view_table_column" && (!isObject(value.fields.source)||value.fields.source.kind === "query"||value.fields.source.kind === "diff")) return false; if (value.subject_kind === "entity_type_column"||value.subject_kind === "relation_type_column"||value.subject_kind === "query_parameter") { const format=value.fields.format; if (format!==undefined&&(typeof format!=="string"||!["cidr","email","hostname","ipv4","ipv6","uri"].includes(format))) return false; if (!validQueryParameter({...value.fields,reserved_enum_values:value.fields.reserved_enum_values??[]})) return false; } if (value.subject_kind === "view_export" && !validCreateSubjectExport(value.fields)) return false; const owners={entity_type_column:"entity_type",entity_type_constraint:"entity_type",relation_type_column:"relation_type",relation_type_constraint:"relation_type",query_parameter:"query",view_table_column:"view",view_export:"view"}; return typeof value.parent_address === "string" && stableAddressSubject(value.parent_address)?.kind === (owners[value.subject_kind] ?? "project"); }
   return value.operation !== "create_relation" || !hasOwn(value,"fields") || isObject(value.fields) && Object.keys(value.fields).every((name)=>["display_name","description","tags","annotations"].includes(name));
 }
 function validProtocolInvariant(profile, value) {
@@ -1273,7 +1285,7 @@ function validChildSet(value) {
   return ownerKind !== undefined && (allowed[ownerKind]?.includes(value.child_kind) ?? false);
 }
 
-function addLayerDrawVocabulary(ajv, meta) {
+function addLayerDrawVocabulary(ajv, meta, enumAuthorities = new Map()) {
   const registrations = new Map();
   const register = (definition) => {
     assert.equal(registrations.has(definition.keyword), false, `duplicate LayerDraw keyword implementation ${definition.keyword}`);
@@ -1292,9 +1304,9 @@ function addLayerDrawVocabulary(ajv, meta) {
   }});
   register({keyword: "x-layerdraw-canonical-enum-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data, parentSchema) {
     if (!enabled) return true;
-    const values = parentSchema?.items?.enum ?? (parentSchema?.items?.$ref?.endsWith("/$defs/SubjectKind") ? [
-      "entity", "entity_row", "entity_type", "entity_type_column", "entity_type_constraint", "layer", "pack", "project", "query", "query_parameter", "reference", "relation", "relation_row", "relation_type", "relation_type_column", "relation_type_constraint", "view", "view_export", "view_table_column",
-    ] : undefined);
+    const reference = parentSchema?.items?.$ref;
+    const definition = typeof reference === "string" ? reference.split("#/$defs/")[1] : undefined;
+    const values = parentSchema?.items?.enum ?? enumAuthorities.get(definition);
     if (!Array.isArray(values)) return false;
     const ranks = new Map(values.map((value, index) => [value, index]));
     return data.every((item, index) => index === 0 || ranks.has(item) && ranks.has(data[index - 1]) && ranks.get(data[index - 1]) < ranks.get(item));
@@ -1490,7 +1502,14 @@ async function authority() {
     readJSON("engine-protocol/v1.schema.json"),
   ]);
   const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: true});
-  const rootRequirements = addLayerDrawVocabulary(ajv, meta);
+  const enumAuthorities = new Map();
+  for (const document of documents) for (const [name, definition] of Object.entries(document.$defs)) {
+    if (!Array.isArray(definition?.enum)) continue;
+    const previous = enumAuthorities.get(name);
+    assert.ok(previous === undefined || JSON.stringify(previous) === JSON.stringify(definition.enum), `conflicting enum authority ${name}`);
+    enumAuthorities.set(name, definition.enum);
+  }
+  const rootRequirements = addLayerDrawVocabulary(ajv, meta, enumAuthorities);
   addLayerDrawFormats(ajv);
   ajv.addMetaSchema(meta);
   for (const document of documents) {
@@ -1588,6 +1607,31 @@ test("Ajv enforces closed Workbench handles, recursive values, ordering, and out
   assert.equal(compile(engine, "PreviewOperationsResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-stale-generation-response.json")), false);
   const validateAllCreatableKinds = compile(engine, "SemanticOperationBatch");
   assert.equal(validateAllCreatableKinds(await readJSON("fixtures/engine/workbench-create-subject-all-kinds.json")), true, JSON.stringify(validateAllCreatableKinds.errors));
+  const validateSemanticOperation = compile(engine, "SemanticOperation");
+  const authoredContracts = await readJSON("fixtures/engine/workbench-create-subject-contracts.json");
+  assert.equal(validateAllCreatableKinds(authoredContracts), true, JSON.stringify(validateAllCreatableKinds.errors));
+  const contractByID = new Map(authoredContracts.operations.map((operation) => [operation.id, operation]));
+  const rejectContract = (name, id, mutate) => {
+    const operation = structuredClone(contractByID.get(id));
+    mutate(operation.fields);
+    assert.equal(validateSemanticOperation(operation), false, name);
+  };
+  for (const format of ["bpmn", "csv", "docx", "drawio", "html", "json", "markdown", "mermaid", "pdf", "png", "pptx", "svg", "tsv", "xlsx", "yaml"]) {
+    rejectContract(`${format} exact extension`, format, (fields) => { fields.filename = "map.invalid"; });
+  }
+  rejectContract("basename only", "json", (fields) => { fields.filename = "../map.json"; });
+  rejectContract("options format authority", "json", (fields) => { fields.options = structuredClone(contractByID.get("yaml").fields.options); });
+  rejectContract("exporter profile format authority", "json", (fields) => { fields.exporter_profile.format = "yaml"; });
+  rejectContract("Column format domain", "email_value", (fields) => { fields.format = "json"; });
+  rejectContract("View Export format domain", "json", (fields) => { fields.format = "email"; fields.filename = "map.email"; delete fields.options; delete fields.exporter_profile; });
+  rejectContract("active and reserved enum disjointness", "choice", (fields) => { fields.reserved_enum_values = ["a"]; });
+  rejectContract("nonempty enum member", "choice", (fields) => { fields.enum_values = [""]; delete fields.default; });
+  rejectContract("safe integer bound", "count", (fields) => { fields.max = "9007199254740992"; });
+  rejectContract("integer default within bounds", "count", (fields) => { fields.default.integer_value = "-11"; });
+  rejectContract("minimum string length", "code", (fields) => { fields.default.string_value = "a"; });
+  rejectContract("maximum string length", "code", (fields) => { fields.default.string_value = "abcde"; });
+  rejectContract("canonical string format", "email_value", (fields) => { fields.default.string_value = "not-email"; });
+  rejectContract("active enum default", "choice", (fields) => { fields.default.string_value = "missing"; });
   assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-create-relation-fields.json")), true);
   for (const name of ["workbench-invalid-create-subject-foreign-field.json", "workbench-invalid-create-subject-missing-field.json", "workbench-invalid-create-subject-parent-kind.json", "workbench-invalid-create-subject-nested.json", "workbench-invalid-create-subject-cardinality.json", "workbench-invalid-create-subject-enum-options.json", "workbench-invalid-create-subject-view-shape.json", "workbench-invalid-create-subject-flow-lanes.json"]) assert.equal(compile(engine, "SemanticOperation")(await readJSON(`fixtures/engine/${name}`)), false, name);
   const validateAuthoringImpact = compile("https://schemas.layerdraw.dev/semantic/v1", "AuthoringImpact");
@@ -1634,6 +1678,7 @@ test("every Workbench envelope preserves common metadata and uses the closed Wor
 
 test("Workbench invariant profiles and Language 1 domain type ownership stay explicit", async () => {
   const engine = await readJSON("engine-protocol/v1.schema.json");
+  const semantic = await readJSON("semantic/v1.schema.json");
   const pagedFamilies = ["ListModules", "FindSymbols", "InspectSubgraph", "ReadDeclarations", "ReadRows", "GetNeighbors", "FindUsages", "ReadScope", "ListReferences", "ReadReferences"];
   for (const family of pagedFamilies) {
     assert.equal(engine.$defs[`${family}Input`]["x-layerdraw-protocol-invariant"], "document_bound_input", family);
@@ -1646,6 +1691,10 @@ test("Workbench invariant profiles and Language 1 domain type ownership stay exp
   }
   assert.deepEqual(engine.$defs.CreateSubjectFields.properties.cardinality, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationCardinality"});
   assert.deepEqual(engine.$defs.CreateSubjectFields.properties.source, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredOperationSource"});
+  assert.deepEqual(semantic.$defs.AuthoringImpact.properties.required_capabilities.items, {$ref: "#/$defs/AuthoringCapability"});
+  assert.deepEqual(engine.$defs.WorkbenchPreviewResult.properties.required_authoring_capabilities.items, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"});
+  assert.deepEqual(semantic.$defs.QueryRecipeParameter.properties.format, {$ref: "#/$defs/StringFormat"});
+  assert.deepEqual(semantic.$defs.ViewTableValueType.properties.format, {$ref: "#/$defs/StringFormat"});
 });
 
 test("normalized schema and document authority require request lifetime and the exact byte profile", async () => {
