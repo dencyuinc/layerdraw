@@ -115,7 +115,10 @@ export async function assertCompileParityResponse(response, testCase, engineRele
 
 export async function assertPortableCompileParityOutcome(outcome, testCase, engineRelease) {
   if (outcome.origin !== "engine" || outcome.outcome !== testCase.expected.outcome) {
-    throw new Error(`${testCase.name} portable client outcome differs from Go`);
+    const actual = [outcome.origin, outcome.outcome, outcome.reason]
+      .filter((part) => part !== undefined)
+      .join("/");
+    throw new Error(`${testCase.name} portable client outcome ${actual} differs from Go`);
   }
   await assertCompileParityResponse({
     control: encode(outcome.response),
@@ -235,7 +238,14 @@ export async function performRequest(transport, exchangeID, input) {
   return exchange.response;
 }
 
-export async function handshakeAndCompileProjectAndPack(transport, schemaDigest, corpus, engineRelease, suffix) {
+export async function handshakeAndCompileCorpus(
+  transport,
+  schemaDigest,
+  corpus,
+  engineRelease,
+  suffix,
+  caseNames,
+) {
   if (corpus.schema_version !== 1 || corpus.engine_release_variable !== "$engine_release" ||
       corpus.cases.length !== 10 || corpus.required_features.length !== 10 || corpus.normalization.length !== 3) {
     throw new Error("transport-neutral parity corpus is incompatible");
@@ -250,7 +260,18 @@ export async function handshakeAndCompileProjectAndPack(transport, schemaDigest,
   if (!/^wasm-[0-9a-f]{32}$/.test(handshakeEnvelope.payload.endpoint_instance_id)) throw new Error("Go/WASM endpoint identity was not runtime-minted");
   if (handshakeEnvelope.payload.release_manifest_digest !== releaseManifestDigest) throw new Error("verified release manifest digest did not reach the descriptor");
 
+  const selectedNames = caseNames === undefined ? undefined : new Set(caseNames);
+  if (
+    selectedNames !== undefined &&
+    (selectedNames.size !== caseNames.length ||
+      [...selectedNames].some(
+        (name) => !corpus.cases.some((testCase) => testCase.name === name),
+      ))
+  ) {
+    throw new Error("selected parity corpus cases are invalid");
+  }
   for (const testCase of corpus.cases) {
+    if (selectedNames !== undefined && !selectedNames.has(testCase.name)) continue;
     if (testCase.execution === "cancel") continue;
     const input = parityInput(testCase);
     const owned = [input.control, ...input.blobs.map((blob) => blob.bytes)];

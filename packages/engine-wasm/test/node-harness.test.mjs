@@ -11,7 +11,7 @@ import {EngineWorkerTransportError} from "../dist/index.js";
 import {createEngineWorkerTransportWithFactory} from "../dist/host.js";
 import {
   encode,
-  handshakeAndCompileProjectAndPack,
+  handshakeAndCompileCorpus,
   handshakeControl,
   performRequest,
   projectCompileCase,
@@ -134,7 +134,7 @@ test("real Node worker_threads owns the packaged Go/WASM lifecycle", {timeout: 1
   assert.equal(staleControl.byteLength, 0);
   assert.deepEqual((await staleFailure).failure, {code: "engine.worker.stale_generation", phase: "lifecycle", retryable: true});
 
-  const firstEndpointID = await handshakeAndCompileProjectAndPack(first.transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-first");
+  const firstEndpointID = await handshakeAndCompileCorpus(first.transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-first");
   const firstDispose = first.transport.dispose();
   assert.equal(firstDispose, first.transport.dispose());
   await firstDispose;
@@ -154,7 +154,7 @@ test("real Node worker_threads owns the packaged Go/WASM lifecycle", {timeout: 1
   const replacement = createEndpoint("node-real-generation-replacement");
   exits.push(replacement.adapter.exited);
   await replacement.transport.ready;
-  const replacementEndpointID = await handshakeAndCompileProjectAndPack(replacement.transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-replacement");
+  const replacementEndpointID = await handshakeAndCompileCorpus(replacement.transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-replacement");
   assert.notEqual(replacementEndpointID, firstEndpointID);
   await replacement.transport.dispose();
 
@@ -193,7 +193,7 @@ test("Node executes the verified wasm_exec byte snapshot after its source path c
     });
     await transport.ready;
     assert.match(await readFile(join(artifactRoot, "wasm_exec.js"), "utf8"), /__layerdrawUnverifiedWasmExecRan/);
-    assert.equal(await handshakeAndCompileProjectAndPack(transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-snapshot-race").then(() => true), true);
+    assert.equal(await handshakeAndCompileCorpus(transport, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "node-snapshot-race").then(() => true), true);
     await transport.dispose();
     await adapter.exited;
   } finally {

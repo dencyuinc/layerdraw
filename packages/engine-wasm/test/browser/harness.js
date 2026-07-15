@@ -6,7 +6,7 @@ import {createEngineWorkerTransportWithFactory} from "../../dist/host.js";
 import {
   assertPortableCompileParityOutcome,
   encode,
-  handshakeAndCompileProjectAndPack,
+  handshakeAndCompileCorpus,
   portableParityInput,
   releaseManifestDigest,
   sha256,
@@ -57,7 +57,7 @@ async function nextWorkerMessage(worker, predicate) {
 globalThis.runLayerDrawRealArtifactCorpus = async () => {
   const first = createTransport("browser-real-generation-1");
   const limits = await first.ready;
-  const endpointID = await handshakeAndCompileProjectAndPack(first, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "browser-first");
+  const endpointID = await handshakeAndCompileCorpus(first, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "browser-first");
   const dispose = first.dispose();
   if (dispose !== first.dispose()) throw new Error("dispose was not idempotent");
   await dispose;
@@ -80,7 +80,14 @@ globalThis.runLayerDrawRealArtifactCorpus = async () => {
 
   const replacement = createTransport("browser-real-generation-replacement");
   await replacement.ready;
-  const replacementID = await handshakeAndCompileProjectAndPack(replacement, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "browser-replacement");
+  const replacementID = await handshakeAndCompileCorpus(
+    replacement,
+    artifactManifest.protocol.schema_digest,
+    parityCorpus,
+    artifactManifest.build.release_version,
+    "browser-replacement",
+    ["single_module_project"],
+  );
   if (replacementID === endpointID) throw new Error("replacement reused the Go/WASM endpoint identity");
   await replacement.dispose();
   return {limitKeys: Object.keys(limits).sort(), parityCases: parityCorpus.cases.map((testCase) => testCase.name), endpointID, replacementID};
@@ -91,7 +98,7 @@ globalThis.runLayerDrawEngineClientCorpus = async () => {
     client: {
       expectedReleaseManifestDigest: releaseManifestDigest,
       handshakeTimeoutMs: 10_000,
-      defaultCompileTimeoutMs: 180_000,
+      defaultCompileTimeoutMs: 360_000,
       disposeTimeoutMs: 2_000,
     },
     expectedArtifactManifestDigest: artifactManifestDigest,

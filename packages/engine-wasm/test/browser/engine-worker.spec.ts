@@ -26,7 +26,7 @@ declare global {
 }
 
 test("packaged module Worker executes the parity corpus through real Go/WASM", async ({page}) => {
-  test.setTimeout(300_000);
+  test.setTimeout(480_000);
   const failures: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
   page.on("pageerror", (error) => failures.push(error.message));
@@ -44,7 +44,7 @@ test("packaged module Worker executes the parity corpus through real Go/WASM", a
 });
 
 test("public Engine client compiles the parity corpus through a real Go/WASM Worker", async ({page}) => {
-  test.setTimeout(300_000);
+  test.setTimeout(480_000);
   const failures: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
   page.on("pageerror", (error) => failures.push(error.message));

@@ -33,15 +33,18 @@ const encode = (value) =>
     typeof value === "string" ? value : JSON.stringify(value),
   ).buffer;
 
-function runtimeWithSha256(startSha256) {
+function runtimeWithSha256(startSha256, timerOverrides = {}) {
   return {
     now: () => Date.now(),
     randomBytes: (length) => new Uint8Array(length).fill(11),
     sha256: startSha256,
     transferArrayBuffer: (buffer) =>
       structuredClone(buffer, { transfer: [buffer] }),
-    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-    clearTimer: (handle) => clearTimeout(handle),
+    setTimer:
+      timerOverrides.setTimer ??
+      ((callback, delayMs) => setTimeout(callback, delayMs)),
+    clearTimer:
+      timerOverrides.clearTimer ?? ((handle) => clearTimeout(handle)),
   };
 }
 
@@ -384,14 +387,32 @@ test("abort remains live until output digest validation is terminal", async () =
 
 test("compile timeout remains live while output digest validation is pending", async () => {
   let digestCalls = 0;
-  let outputDigestStarted = false;
   let outputLease;
+  let resolveOutputDigestStarted;
+  const outputDigestStarted = new Promise((resolve) => {
+    resolveOutputDigestStarted = resolve;
+  });
+  let compileTimer;
   const runtime = runtimeWithSha256((bytes) => {
     digestCalls++;
     if (digestCalls === 1) return completedDigestLease(bytes);
-    outputDigestStarted = true;
     outputLease = stalledDigestLease(bytes);
+    resolveOutputDigestStarted();
     return outputLease;
+  }, {
+    setTimer(callback, delayMs) {
+      if (delayMs !== 20) return setTimeout(callback, delayMs);
+      assert.equal(compileTimer, undefined);
+      compileTimer = { callback, cleared: false };
+      return compileTimer;
+    },
+    clearTimer(handle) {
+      if (handle === compileTimer) {
+        handle.cleared = true;
+        return;
+      }
+      clearTimeout(handle);
+    },
   });
   const { client, factory } = await create(
     {
@@ -405,7 +426,9 @@ test("compile timeout remains live while output digest validation is pending", a
   const compile = client.compile(makePortableRequest().request, {
     timeoutMs: 20,
   });
-  await waitFor(() => outputDigestStarted);
+  await outputDigestStarted;
+  assert.ok(compileTimer);
+  compileTimer.callback();
   const outcome = await compile;
   assert.equal(outcome.origin, "client");
   assert.equal(outcome.reason, "timeout");
@@ -413,6 +436,7 @@ test("compile timeout remains live while output digest validation is pending", a
   assert.equal(outputLease.abortCount, 1);
   assert.equal(outputLease.joinedSettled, true);
   assert.equal(outputLease.retainsInput, false);
+  assert.equal(compileTimer.cleared, true);
   await client.dispose();
 });
 
