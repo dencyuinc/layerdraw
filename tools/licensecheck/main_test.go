@@ -44,6 +44,27 @@ func TestCheckSourceHeaders(t *testing.T) {
 	}
 }
 
+func TestCheckSourceHeadersRequiresJSONSchemaSPDXComment(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "schemas", "example", "v1.schema.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := sourcePolicy{DefaultLicense: "Apache-2.0", Roots: []string{"schemas"}, Extensions: []string{".go"}}
+	if err := os.WriteFile(path, []byte(`{"$comment":"SPDX-License-Identifier: Apache-2.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSourceHeaders(root, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"$comment":"wrong"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSourceHeaders(root, source); err == nil || !strings.Contains(err.Error(), "$comment") {
+		t.Fatalf("missing JSON Schema SPDX comment was accepted: %v", err)
+	}
+}
+
 func TestRequireAllowedLicense(t *testing.T) {
 	allowed := map[string]bool{"MIT": true}
 	denied := map[string]bool{"AGPL-3.0-only": true}

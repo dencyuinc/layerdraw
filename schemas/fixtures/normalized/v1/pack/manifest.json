@@ -1,0 +1,10 @@
+{
+  "dependencies": {},
+  "entry": "pack.ldl",
+  "format": "layerdraw-pack",
+  "format_version": 1,
+  "id": "pub/schema",
+  "language": 1,
+  "name": "schema",
+  "version": "1.0.0"
+}

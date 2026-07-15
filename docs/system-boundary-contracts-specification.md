@@ -203,8 +203,10 @@ HandshakeRequest
   client_release
   protocols[]
     name
-    supported_range
-    schema_digests[]
+    supported_range: canonical "major.minor..major.minor", lower <= upper
+    versions[]
+      version: exact major.minor within supported_range
+      schema_digest: exact digest for that version
   required_capabilities[]
   optional_capabilities[]
   client_limits?
@@ -213,6 +215,11 @@ HandshakeResult
   host_release
   endpoint_instance_id
   negotiated_protocols[]
+  capability_statuses[]
+    capability_id
+    enabled
+    protocol_version
+    unavailable_reason?
   capability_manifest
   release_manifest_digest
 ```
@@ -241,11 +248,39 @@ CapabilityManifest
 
 OperationCapability
   enabled
-  unavailable_reason?: not_linked | not_configured | not_authorized | not_entitled | incompatible | offline | degraded
+  unavailable_reason?: not_linked | not_configured | not_authorized | not_entitled | incompatible | offline | degraded | unsupported
   protocol_version
   limits?
   required_authoring_capabilities[]?
 ```
+
+`enabled=true`は`unavailable_reason`を禁止し、`enabled=false`は理由を必須とする。
+`capability_statuses`はrequestのrequired / optional capability IDごとに一意な結果を返す。
+requestの`required_capabilities`と`optional_capabilities`はそれぞれ重複を禁止し、
+両集合のoverlapも禁止する。重複またはoverlapを持つHandshakeRequestはnegotiation前に
+wire validation errorとしてrequest全体をrejectし、deduplicate、required/optional間の
+再分類、複数statusへの展開を行わない。
+未知のoptional IDはrequest全体を失敗させず、`enabled=false`かつ
+`unavailable_reason=unsupported`として明示する。選択アルゴリズムとoverlap policyはIssue #28が所有する。
+
+`supported_range`は両端を含む単一major内のcanonical rangeで、各端はunsigned 32-bitの
+major/minorをleading zeroなしで表す。majorを跨ぐ場合は別offerを使う。range中の各advertise versionは`versions`の
+一意なentryでexact schema digestへ結び付ける。Engine handshake envelopeのbootstrap
+`protocol`は成功・拒否のどちらも`{name:"engine", version:"1.0"}`であり、これは
+version選択結果ではなくhandshake wire自体のversionである。
+
+Engine 1.0のlimit keyは9個に閉じる。byte、item、axis pixel、total pixelのunitを
+schemaどおりに固定し、endpoint descriptorはhard maximum、default、client-scoped
+effective maximumを区別する。effective maximumはclient ceilingがあればhost hard
+maximumとの最小値、なければhost hard maximumである。compile requestの正のoverrideが
+effective maximumを超える場合はrejectし、zeroまたは省略は
+`min(default_value, effective_maximum)`を適用する。dispatch時の診断生成はIssue #29で行う。
+
+release fieldはcanonical SemVer 2.0.0、release manifest identityと`manifest_etag`は
+lowercase SHA-256 digestである。`manifest_etag`は自身を除くcanonical effective manifest
+projectionのdigestとし、その構築はIssue #28が所有する。`endpoint_instance_id`は128文字以下の
+opaque non-secret identifierで、process / Worker instanceの生存期間だけ安定する。生成、restart時の
+更新、release metadataとの整合はIssue #28が所有し、schema/codegenはshapeだけを固定する。
 
 manifestはActorとentitlementに応じて変わる。authorization情報を漏らす場合、存在自体を返さず`not_authorized`を一般化してよい。manifest変更時は`manifest_etag`を変更し、long-lived clientへcapability changed eventを通知する。
 
@@ -429,6 +464,14 @@ schemas/engine-protocol/*.schema
 - `@layerdraw/engine-client`はgenerated型をtransportし、LDL semanticsを持たない。
 - Goの`error`は`ProtocolFailure`へmapし、source diagnosticを`error`文字列へ潰さない。
 - TSのexceptionはnetwork、decode、client misuseに限定し、正常に受信した`rejected`をthrowだけで表現しない。
+
+### 3.7 Normalized publication blob boundary
+
+portable compileの`NormalizedArtifact` control valueはProject/Packのclosed tagged unionであり、選択branch、root address、role固有canonical/public `BlobRef`をgenerated型として保持する。参照先はEngineが生成したimmutable opaque bytesである。Project/Pack media type、`schema_version: 1`、`format`、RFC 8785 canonical bytes、public artifactのexact one LF、raw digest/size、request lifetime、version bump規則の正本は[schemas/README.mdのNormalized blob payload contract](../schemas/README.md#normalized-blob-payload-contract)と[LDL詳細仕様5.1節](ldl-language-detailed-specification.md#51-エンベロープと不変条件)である。
+
+boundary mapperは同じGo materializer generationから得たbyte sliceをblobとして登録し、raw SHA-256とbyte countを計算し、kind/branch/root/role/media typeの一致を検証する。normalized bodyからgenerated domain treeを再構築または再serializeしてはならない。`@layerdraw/engine-client`を含むTypeScript clientはcontrol envelopeだけをdecode/canonical re-encodeし、blobはdigest/size検証後も同じbyte arrayとしてtransferする。normalized bodyを`JSON.parse`、default、repair、またはcanonical re-encodeしない。
+
+これに対しQuery/View/Export recipe documentは後続Engine/adapter operationが内容をtyped semantic inputとして読むため、`@layerdraw/protocol/semantic`にgenerated definitionを持つ。この実行inputと、portable-compilation milestoneにおけるoutput publication/conformance artifactは同じownershipではない。`@layerdraw/protocol/semantic`が現在generated `NormalizedDocument`または`NormalizedPackArtifact`を公開するとは解釈しない。Language 1 freezeに必要なmachine-readable normalized schemaは別ownerのlanguage artifactであり、transportまたはclientへ第2のcanonicalization pathを追加する根拠にしない。
 
 ## 4. Runtime / Host Port Boundary
 
@@ -2106,7 +2149,9 @@ LayerDrawReleaseManifest
   protocols[]
     name
     supported_range
-    schema_digest
+    versions[]
+      version
+      schema_digest
   ldl_generations[]
   container_versions[]
   renderer_profiles[]

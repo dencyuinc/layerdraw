@@ -187,9 +187,11 @@ func parseProfile(reader io.Reader, module string) ([]coverageBlock, error) {
 
 func collectAddedLines(baseRef string) (map[string]map[int]struct{}, error) {
 	result := make(map[string]map[int]struct{})
+	sourcePaths := []string{"cmd", "internal", "tools/protocolgen"}
 
 	if baseRef != "" && !allZeroRevision(baseRef) {
-		output, err := gitOutput("diff", "--unified=0", "--diff-filter=AMR", baseRef+"...HEAD", "--", "cmd", "internal")
+		arguments := append([]string{"diff", "--unified=0", "--diff-filter=AMR", baseRef + "...HEAD", "--"}, sourcePaths...)
+		output, err := gitOutput(arguments...)
 		if err != nil {
 			return nil, fmt.Errorf("diff from %s: %w", baseRef, err)
 		}
@@ -198,7 +200,8 @@ func collectAddedLines(baseRef string) (map[string]map[int]struct{}, error) {
 		}
 	}
 
-	workingOutput, err := gitOutput("diff", "--unified=0", "--diff-filter=AMR", "HEAD", "--", "cmd", "internal")
+	arguments := append([]string{"diff", "--unified=0", "--diff-filter=AMR", "HEAD", "--"}, sourcePaths...)
+	workingOutput, err := gitOutput(arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("working tree diff: %w", err)
 	}
@@ -206,7 +209,8 @@ func collectAddedLines(baseRef string) (map[string]map[int]struct{}, error) {
 		return nil, err
 	}
 
-	untrackedOutput, err := gitOutput("ls-files", "--others", "--exclude-standard", "--", "cmd", "internal")
+	arguments = append([]string{"ls-files", "--others", "--exclude-standard", "--"}, sourcePaths...)
+	untrackedOutput, err := gitOutput(arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("list untracked files: %w", err)
 	}

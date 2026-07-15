@@ -1711,6 +1711,7 @@ view production_topology "Production Topology" topology {
 - 0 個以上の一意に命名された export recipe。
 
 View は、削除された `table_columns` と `exports` のために 1 つの `reserve` ブロックを含んでもよい (MAY)。現在の shape が `table` でない場合、または export が残っていない場合でも、reservation は有効なままである。
+View-local reservationはcanonical ASCII identifierだけを含み、normalized wireではbyte-lexicographic昇順のsetとしてserializeする。active Export IDは`reserved_export_ids`に現れてはならない (MUST NOT)。
 
 カテゴリは以下である。
 
@@ -1966,6 +1967,7 @@ format 固有の canonical field:
 
 flag は true を意味し、不在は false を意味する。未知の option は error である。filename は canonical extension を持つ basename でなければならない。path separator と parent traversal は禁止される。
 Export recipe ID と正規化された case-sensitive filename は、それぞれ 1 つの View 内で一意でなければならない (MUST)。複数の View を 1 つの directory へ export する host は、View-address-derived directory を使用するか、明示的な collision check を行わなければならない。別の artifact を黙って上書きしてはならない (MUST NOT)。
+正規化済みrecipeでは`id`はtyped `address`の末尾IDと一致し、`format`、`options.kind`、および`exporter_profile.format`は同一でなければならない (MUST)。`extension`はformatのcanonical extensionと一致し、`filename`はそのexact suffixを持たなければならない (MUST)。Exporter profile IDは`[a-z0-9][a-z0-9._/-]*@[1-9][0-9]*`に一致しなければならない (MUST)。
 
 XLSX profileは`type_workbook`、`diagram_workbook`、`composed_diagram_workbook`、`matrix_workbook`、`tree_workbook`、`impact_workbook`、`flow_workbook`、`diff_workbook`、`context_workbook`、および`diagram_inventory_workbook`である。省略時のshape別profileは詳細仕様で一意に決める。
 

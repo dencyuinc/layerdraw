@@ -1,0 +1,37 @@
+{
+  "name": "@layerdraw/protocol",
+  "version": "0.0.0",
+  "description": "Generated transport-neutral LayerDraw protocol wire contracts.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist/*.gen.js", "dist/*.gen.d.ts", "LICENSE", "README.md"],
+  "exports": {
+    "./common": {
+      "types": "./dist/common.gen.d.ts",
+      "import": "./dist/common.gen.js"
+    },
+    "./engine": {
+      "types": "./dist/engine.gen.d.ts",
+      "import": "./dist/engine.gen.js"
+    },
+    "./semantic": {
+      "types": "./dist/semantic.gen.d.ts",
+      "import": "./dist/semantic.gen.js"
+    }
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "generate": "node -e \"\"",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "ajv": "8.17.1",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24.18.0 <25"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "generator_version": "layerdraw-protocolgen/1",
+  "aggregate_digest": "sha256:0f1f9fccc4f9f5193954415d0186aa6c9353b47b40ff74e00aeab1cd461ce172",
+  "group_digests": {
+    "common": "sha256:df359076b9359760ffe4089329c2d9972a2c85cdd01a6d7a8747d368a704231d",
+    "engine": "sha256:0f1f9fccc4f9f5193954415d0186aa6c9353b47b40ff74e00aeab1cd461ce172",
+    "semantic": "sha256:1e0e548453e44af33edb35688c7d2d5d8dd1eb3b390dc959825de64fd78fad02"
+  },
+  "file_digests": {
+    "schemas/engine-protocol/v1.schema.json": "sha256:0c05cadea2fbf4a2784389e6bc8e04ae5971edcfc9718e95c374fc21b33d3437",
+    "schemas/meta/layerdraw-protocol-schema-v1.json": "sha256:35ed26aa9934aa0f8d5cb938eeac40e14e4811d179aed2e3a9480f26655336cd",
+    "schemas/protocol-common/v1.schema.json": "sha256:183e1bc2824e04fd3582f1c6b1eda5eb2d6838c53b368a53d6bf437134263726",
+    "schemas/semantic/v1.schema.json": "sha256:ee8125ef6ff660dff5d7ccfe18f19c1492475aad083e9c99402e3380767930f8"
+  }
+}

@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.layerdraw.dev/meta/protocol/v1",
+  "$comment": "SPDX-License-Identifier: Apache-2.0",
+  "$dynamicAnchor": "meta",
+  "$vocabulary": {
+    "https://json-schema.org/draft/2020-12/vocab/core": true,
+    "https://json-schema.org/draft/2020-12/vocab/applicator": true,
+    "https://json-schema.org/draft/2020-12/vocab/unevaluated": true,
+    "https://json-schema.org/draft/2020-12/vocab/validation": true,
+    "https://json-schema.org/draft/2020-12/vocab/meta-data": true,
+    "https://json-schema.org/draft/2020-12/vocab/format-annotation": true,
+    "https://json-schema.org/draft/2020-12/vocab/format-assertion": true,
+    "https://json-schema.org/draft/2020-12/vocab/content": true,
+    "https://schemas.layerdraw.dev/vocab/protocol/v1": true
+  },
+  "title": "LayerDraw Protocol Schema Dialect v1",
+  "allOf": [
+    {"$ref": "https://json-schema.org/draft/2020-12/schema"}
+  ],
+  "properties": {
+    "x-layerdraw-address-terminal-id": {"$ref": "#/$defs/addressTerminalIDRule"},
+    "x-layerdraw-address-owners": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/addressOwnerRule"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["child_set", "export_binding", "module_scope", "reference_id", "semantic_reference", "source_asset", "source_binding", "source_file", "subject_kind"]},
+    "x-layerdraw-canonical-enum-order": {"type": "boolean", "const": true},
+    "x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
+    "x-layerdraw-child-set": {"type": "boolean", "const": true},
+    "x-layerdraw-go-package": {"type": "string", "minLength": 1},
+    "x-layerdraw-disjoint-arrays": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/disjointArrayPair"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "x-layerdraw-disjoint-array-keys": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/disjointArrayKey"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "x-layerdraw-diff-source": {"type": "boolean"},
+    "x-layerdraw-export-recipe": {"type": "boolean", "const": true},
+    "x-layerdraw-limit-capability": {"type": "boolean"},
+    "x-layerdraw-max-json-bytes": {"type": "integer", "minimum": 1024},
+    "x-layerdraw-max-json-depth": {"type": "integer", "minimum": 1},
+    "x-layerdraw-operator-value": {"$ref": "#/$defs/operatorValue"},
+    "x-layerdraw-ordered-pairs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/orderedPairRule"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "x-layerdraw-ordered-range": {"type": "boolean"},
+    "x-layerdraw-outcome-envelope": {"type": "boolean"},
+    "x-layerdraw-protocol-offer": {"type": "boolean"},
+    "x-layerdraw-query-parameter": {"type": "boolean", "const": true},
+    "x-layerdraw-query-recipe": {"type": "boolean", "const": true},
+    "x-layerdraw-recipe-predicate": {"type": "string", "enum": ["predicate", "row"]},
+    "x-layerdraw-recipe-scalar": {"type": "boolean", "const": true},
+    "x-layerdraw-stable-address-order": {
+      "type": "string",
+      "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."
+    },
+    "x-layerdraw-scalar-unicode": {"type": "boolean", "const": true},
+    "x-layerdraw-stable-address-roles": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/stableAddressRoleRule"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "x-layerdraw-state-read-order": {"type": "boolean", "const": true},
+    "x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
+    "x-layerdraw-state-read": {"type": "boolean", "const": true},
+    "x-layerdraw-ts-module": {"type": "string", "minLength": 1},
+    "x-layerdraw-unicode-scalar-order": {"type": "boolean", "const": true},
+    "x-layerdraw-unique-array-keys": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/uniqueArrayKey"}
+    },
+    "x-layerdraw-view-projection": {"type": "string", "enum": ["composed", "diagram", "flow", "matrix", "tree"]},
+    "x-layerdraw-view-recipe": {"type": "boolean", "const": true}
+  },
+  "$defs": {
+    "addressTerminalIDRule": {
+      "type": "object",
+      "properties": {
+        "address": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "required": ["address", "id"],
+      "additionalProperties": false
+    },
+    "addressOwnerRule": {
+      "type": "object",
+      "properties": {
+        "children": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1},
+        "selector": {"type": "string", "minLength": 1}
+      },
+      "required": ["owner", "children", "selector"],
+      "additionalProperties": false
+    },
+    "disjointArrayPair": {
+      "type": "object",
+      "properties": {
+        "left": {"type": "string", "minLength": 1},
+        "right": {"type": "string", "minLength": 1}
+      },
+      "required": ["left", "right"],
+      "additionalProperties": false
+    },
+    "disjointArrayKey": {
+      "type": "object",
+      "properties": {
+        "array": {"type": "string", "minLength": 1},
+        "property": {"type": "string", "minLength": 1},
+        "strings": {"type": "string", "minLength": 1}
+      },
+      "required": ["array", "property", "strings"],
+      "additionalProperties": false
+    },
+    "fieldNames": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "operatorValue": {
+      "type": "object",
+      "properties": {
+        "operator": {"type": "string", "minLength": 1},
+        "value": {"type": "string", "minLength": 1},
+        "valueless": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": ["operator", "value", "valueless"],
+      "additionalProperties": false
+    },
+    "orderedPairRule": {
+      "type": "object",
+      "properties": {
+        "comparison": {"type": "string", "enum": ["finite_binary64", "unsigned_decimal"]},
+        "lower": {"type": "string", "minLength": 1},
+        "upper": {"type": "string", "minLength": 1}
+      },
+      "required": ["lower", "upper", "comparison"],
+      "additionalProperties": false
+    },
+    "stableAddressRoleRule": {
+      "type": "object",
+      "properties": {
+        "address": {"type": "string", "minLength": 1},
+        "addresses": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1},
+        "owner_policy": {"type": "string", "enum": ["children", "exact", "if_present", "row_only"]}
+      },
+      "required": ["kind"],
+      "oneOf": [
+        {"properties": {"address": true}, "required": ["address"]},
+        {"properties": {"addresses": true}, "required": ["addresses"]}
+      ],
+      "additionalProperties": false
+    },
+    "taggedUnion": {
+      "type": "object",
+      "properties": {
+        "property": {"type": "string", "minLength": 1},
+        "variants": {
+          "type": "object",
+          "minProperties": 2,
+          "additionalProperties": {"$ref": "#/$defs/taggedVariant"}
+        }
+      },
+      "required": ["property", "variants"],
+      "additionalProperties": false
+    },
+    "taggedVariant": {
+      "type": "object",
+      "properties": {
+        "allowed_values": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        },
+        "empty": {"$ref": "#/$defs/fieldNames"},
+        "forbidden": {"$ref": "#/$defs/fieldNames"},
+        "non_empty": {"$ref": "#/$defs/fieldNames"},
+        "required": {"$ref": "#/$defs/fieldNames"}
+      },
+      "additionalProperties": false
+    },
+    "uniqueArrayKey": {
+      "type": "object",
+      "properties": {
+        "array": {"type": "string", "minLength": 1},
+        "property": {"type": "string", "minLength": 1}
+      },
+      "required": ["array", "property"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -227,7 +227,7 @@ OWNERS.yaml
 
 | Schema group | Owns | Must not own |
 | --- | --- | --- |
-| `semantic` | Diagnostic、StableAddress、NormalizedDocument、AuthoringImpact、SearchResult、QueryResult、AnalysisResult、ViewData、ExportPlan、StateQuerySnapshotのcanonical wire型 | transport、Actor / policy、storage locator、framework型 |
+| `semantic` | Diagnostic、StableAddress、typed Query/View/Export recipe document、AuthoringImpact、SearchResult、QueryResult、AnalysisResult、ViewData、ExportPlan、StateQuerySnapshotなど内容を読むcanonical wire型 | transport、Actor / policy、storage locator、framework型、portable compileのopaque normalized publication body |
 | `protocol-common` | request / response envelope、ProtocolFailure、PageInfo、BlobRef、handshake、CapabilityManifestの共通primitive | Engine / Runtime / Registry固有operation |
 | `access-protocol` | AuthoringCapability、HostOperationImpact、AuthoringPolicy、GrantSnapshot / Summary、AuthoringDecisionのtransport非依存wire型 | LDL意味分類、Policy永続化、Actor解決、decision実装 |
 | `engine-protocol` | Compiler、Workbench、Search、Query、Analysis、View、Export、Package operation payload | Runtime commit、Actor session、共通envelope |
@@ -262,6 +262,12 @@ OWNERS.yaml
 ```
 
 root entrypointから全型を一括exportしない。利用packageは必要なschema groupだけをimportする。
+
+### 5.4 Portable normalized publication ownership
+
+現在のportable-compilation boundaryでは、`@layerdraw/protocol/engine`が`NormalizedArtifact`のProject/Pack discriminator、root address、canonical/public role固有`BlobRef`をclosed control型として所有する。normalized Project/Pack body自体はGo materializerが生成するimmutable opaque bytesであり、`@layerdraw/protocol/semantic`はgenerated `NormalizedDocument`または`NormalizedPackArtifact`を公開しない。TS packageがbodyをparse/default/re-encodeすることも、handwritten domain型を追加することも禁止する。raw digest/size検証とbyte-preserving transferだけを行う。
+
+一方、Query/View/Export recipeは後続Engine/adapterが内容を実行inputとして読むためgenerated semantic型を持つ。この非対称性はpublication outputとtyped execution inputの違いであり、欠落したtransport mappingではない。Language 1 freezeに必要なmachine-readable normalized schemaは別途所有するlanguage-contract artifactで、Engine Protocol generator closureへ暗黙に含めない。media type、byte profile、root agreement、two-level compatibilityの規範は[schemas/README.mdのNormalized blob payload contract](../schemas/README.md#normalized-blob-payload-contract)を参照する。
 
 ## 6. Go Package Boundaries
 

@@ -1,0 +1,21 @@
+{
+  "diagnostics": [
+    {
+      "code": "protocol.upgrade_required",
+      "data": {
+        "affected_artifacts": ["engine"],
+        "current_version": "1.0",
+        "migration_available": false,
+        "readonly_possible": false,
+        "required_version_or_range": "2.0..2.1"
+      },
+      "message": "No compatible Engine protocol version is available.",
+      "related": [],
+      "severity": "error"
+    }
+  ],
+  "engine_release": "0.0.0-dev",
+  "outcome": "rejected",
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-handshake-rejected"
+}

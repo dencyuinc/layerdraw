@@ -42,6 +42,9 @@ jobs:
         with:
           node-version-file: .node-version
 
+      - name: Enable pinned package manager
+        run: corepack enable pnpm
+
       - name: Bootstrap workspace
         run: make bootstrap
 

@@ -284,7 +284,8 @@ func checkSourceHeaders(root string, source sourcePolicy) error {
 				}
 				return nil
 			}
-			if !extensions[filepath.Ext(path)] {
+			isJSONSchema := strings.HasSuffix(path, ".schema.json")
+			if !isJSONSchema && !extensions[filepath.Ext(path)] {
 				return nil
 			}
 			relative, err := filepath.Rel(root, path)
@@ -297,12 +298,24 @@ func checkSourceHeaders(root string, source sourcePolicy) error {
 			if err != nil {
 				return err
 			}
-			header := string(data)
-			if len(header) > 2048 {
-				header = header[:2048]
-			}
-			if !strings.Contains(header, spdxMarker+expected) {
-				return fmt.Errorf("%s must declare %s%s near the file header", relative, spdxMarker, expected)
+			if isJSONSchema {
+				var schema struct {
+					Comment string `json:"$comment"`
+				}
+				if err := json.Unmarshal(data, &schema); err != nil {
+					return fmt.Errorf("decode JSON Schema %s: %w", relative, err)
+				}
+				if schema.Comment != spdxMarker+expected {
+					return fmt.Errorf("%s must declare %q in $comment", relative, spdxMarker+expected)
+				}
+			} else {
+				header := string(data)
+				if len(header) > 2048 {
+					header = header[:2048]
+				}
+				if !strings.Contains(header, spdxMarker+expected) {
+					return fmt.Errorf("%s must declare %s%s near the file header", relative, spdxMarker, expected)
+				}
 			}
 			checked++
 			return nil

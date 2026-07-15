@@ -172,13 +172,14 @@ type Placement struct {
 }
 
 type TableShape struct {
-	RowSource           TableRowSource
-	EntityTypeAddresses *[]string
-	IncludeEntityID     bool
-	IncludeType         bool
-	IncludeLayer        bool
-	Columns             []TableColumn
-	Sorts               []TableSort
+	RowSource                TableRowSource
+	AutomaticRelationColumns []string
+	EntityTypeAddresses      *[]string
+	IncludeEntityID          bool
+	IncludeType              bool
+	IncludeLayer             bool
+	Columns                  []TableColumn
+	Sorts                    []TableSort
 }
 
 type TableRowSource string
