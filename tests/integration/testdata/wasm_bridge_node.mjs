@@ -127,7 +127,15 @@ async function handshakeAndCompile(endpoint, suffix) {
   const sourceBytes = new TextEncoder().encode('project p "Project" {}');
   const compile = await request(endpoint, compileControl(sourceBytes, `node-compile-${suffix}`), ["source"], [sourceBytes.buffer]);
   const compileEnvelope = compile.ok ? decode(compile.control) : undefined;
-  if (!compile.ok || compileEnvelope.outcome !== "success" || compile.blobs.length < 2) throw new Error("real Project compile failed");
+  if (!compile.ok || compileEnvelope.outcome !== "success" || compile.blobs.length < 2) {
+    throw new Error(`real Project compile failed: ${JSON.stringify({
+      ok: compile.ok,
+      failure: compile.failure,
+      envelope: compileEnvelope,
+      blob_ids: compile.blob_ids,
+      blob_count: compile.blobs?.length,
+    })}`);
+  }
   if (compile.blob_ids.length !== compile.blobs.length || compile.blobs.some((buffer) => !(buffer instanceof ArrayBuffer))) throw new Error("output ownership table is invalid");
   return envelope.payload.endpoint_instance_id;
 }

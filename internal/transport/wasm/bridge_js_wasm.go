@@ -376,7 +376,7 @@ func (table *jsBlobTable) Definitions(ctx context.Context) (definitions []endpoi
 		}
 		definitions[index] = endpoint.BlobDefinition{
 			BlobID: id,
-			Owned:  &endpoint.OwnedBlob{Bytes: bytes},
+			Owned:  &endpoint.OwnedBlob{Bytes: bytes, Release: func() {}},
 		}
 	}
 	return definitions, nil
