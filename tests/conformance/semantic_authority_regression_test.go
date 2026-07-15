@@ -115,6 +115,28 @@ func TestSemanticAuthorityReviewRegressions(t *testing.T) {
 	if _, err := semantic.DecodeViewRecipe(mustJSON(t, diff)); err == nil {
 		t.Fatal("no-query Diff accepted a non-derivable Entity dependency")
 	}
+	diffDependencies["entity_addresses"] = []any{}
+	diffDependencies["state_reads"] = []any{map[string]any{"subject_kind": "entity", "field_path": "system.created_at", "value_type": "datetime"}}
+	if _, err := semantic.DecodeViewRecipe(mustJSON(t, diff)); err == nil {
+		t.Fatal("no-query Diff accepted a non-derivable state read")
+	}
+
+	view = corpusValue(t, "view-export-semantics-v1.json", "complete_owned_view_graph")
+	relationTypeAddress := "ldl:project:p:relation-type:r"
+	branchColumnAddress := relationTypeAddress + ":column:branch"
+	view["relation_projection_overrides"] = map[string]any{relationTypeAddress: map[string]any{"flow": map[string]any{
+		"source_endpoint": "from", "target_endpoint": "to", "connector_kind": "control", "branch_value_column_address": branchColumnAddress,
+	}}}
+	viewDependencies := view["dependencies"].(map[string]any)
+	viewDependencies["relation_type_addresses"] = []any{relationTypeAddress}
+	viewDependencies["column_addresses"] = []any{branchColumnAddress}
+	if _, err := semantic.DecodeViewRecipe(mustJSON(t, view)); err != nil {
+		t.Fatalf("Flow branch Column dependency rejected: %v", err)
+	}
+	viewDependencies["column_addresses"] = []any{}
+	if _, err := semantic.DecodeViewRecipe(mustJSON(t, view)); err == nil {
+		t.Fatal("View accepted an omitted Flow branch Column dependency")
+	}
 
 	automatic := corpusValue(t, "semantic-root-authority-v1.json", "owned_table_columns_disjoint_from_reservations")
 	automatic["relation_projection_overrides"] = map[string]any{"ldl:project:p:relation-type:r": map[string]any{"table": map[string]any{"row_mode": "automatic", "include_from": true, "include_to": true, "include_relation_type": true}}}

@@ -1093,6 +1093,21 @@ test("generated TypeScript codecs preserve compiler semantic authority", async (
   assert.doesNotThrow(() => decodeViewRecipe(JSON.stringify(view)));
   view.dependencies.entity_addresses = ["ldl:project:p:entity:extra"];
   assert.throws(() => decodeViewRecipe(JSON.stringify(view)));
+  view.dependencies.entity_addresses = [];
+  view.dependencies.state_reads = [{subject_kind: "entity", field_path: "system.created_at", value_type: "datetime"}];
+  assert.throws(() => decodeViewRecipe(JSON.stringify(view)));
+
+  view = await corpusValue(viewExportSemanticsCorpusURL, "complete_owned_view_graph");
+  const relationTypeAddress = "ldl:project:p:relation-type:r";
+  const branchColumnAddress = `${relationTypeAddress}:column:branch`;
+  view.relation_projection_overrides = {[relationTypeAddress]: {flow: {
+    source_endpoint: "from", target_endpoint: "to", connector_kind: "control", branch_value_column_address: branchColumnAddress,
+  }}};
+  view.dependencies.relation_type_addresses = [relationTypeAddress];
+  view.dependencies.column_addresses = [branchColumnAddress];
+  assert.doesNotThrow(() => decodeViewRecipe(JSON.stringify(view)));
+  view.dependencies.column_addresses = [];
+  assert.throws(() => decodeViewRecipe(JSON.stringify(view)));
 
   view = await corpusValue(semanticRootAuthorityCorpusURL, "owned_table_columns_disjoint_from_reservations");
   view.relation_projection_overrides = {"ldl:project:p:relation-type:r": {table: {row_mode: "automatic", include_from: true, include_to: true, include_relation_type: true}}};

@@ -706,7 +706,7 @@ function collectViewDependencies(raw, sets) {
       if (isObject(item)) for (const address of Object.keys(item)) addViewDependencyValues(address, sets);
       continue;
     }
-    if (["query_address", "entity_address", "relation_address", "layer_address", "parameter_address",
+    if (["query_address", "entity_address", "relation_address", "layer_address", "parameter_address", "branch_value_column_address",
       "layer_addresses", "entity_type_addresses", "relation_type_addresses", "entity_addresses", "relation_addresses",
       "column_addresses", "lane_column_addresses", "attribute_column_addresses"].includes(property)) {
       addViewDependencyValues(item, sets);
@@ -722,7 +722,10 @@ function validLocallyDerivableViewDependencies(value) {
   const sets = viewDependencySets();
   collectViewDependencies(value.source, sets);
   collectViewDependencies(value.shape, sets);
-  for (const address of Object.keys(value.relation_projection_overrides)) addViewDependencyValues(address, sets);
+  for (const [address, override] of Object.entries(value.relation_projection_overrides)) {
+    addViewDependencyValues(address, sets);
+    collectViewDependencies(override, sets);
+  }
   if (!dependencySetEquals(dependencies.query_addresses, sets.query)) return false;
   const hasSourceQuery = typeof value.source.query_address === "string";
   for (const property of ["parameter", "layer", "entity_type", "relation_type", "entity", "relation", "column"]) {
@@ -832,8 +835,9 @@ function validViewRecipe(value) {
     if ((directReads.length !== 0) !== (value.state_input === "optional" || value.state_input === "required")) return false;
     if (!Array.isArray(table.sorts) || !table.sorts.every((sort) => isObject(sort) && typeof sort.column_id === "string" && available.has(sort.column_id))) return false;
     if (!isObject(value.dependencies) || !Array.isArray(value.dependencies.state_reads) || directReads.some((read) => !hasStateRead(value.dependencies.state_reads, read))) return false;
-    if (typeof source.query_address !== "string" && value.dependencies.state_reads.length !== directReads.length) return false;
   } else if (value.state_input !== "none") return false;
+  if (!isObject(value.dependencies) || !Array.isArray(value.dependencies.state_reads) ||
+      typeof source.query_address !== "string" && value.dependencies.state_reads.length !== directReads.length) return false;
   return Array.isArray(value.exports) && validLocallyDerivableViewDependencies(value) && value.exports.every((item) => isObject(item) && item.view_address === address && validExportInView(item, value.category, shape.kind, value.state_requirement, diffCount === 3));
 }
 
@@ -1696,6 +1700,21 @@ test("independent schema authority preserves compiler semantic authority", async
   Object.assign(view.dependencies, {query_addresses: [], export_addresses: []});
   assert.equal(validateView(view), true);
   view.dependencies.entity_addresses = ["ldl:project:p:entity:extra"];
+  assert.equal(validateView(view), false);
+  view.dependencies.entity_addresses = [];
+  view.dependencies.state_reads = [{subject_kind: "entity", field_path: "system.created_at", value_type: "datetime"}];
+  assert.equal(validateView(view), false);
+
+  view = await corpusValue("fixtures/conformance/view-export-semantics-v1.json", "complete_owned_view_graph");
+  const relationTypeAddress = "ldl:project:p:relation-type:r";
+  const branchColumnAddress = `${relationTypeAddress}:column:branch`;
+  view.relation_projection_overrides = {[relationTypeAddress]: {flow: {
+    source_endpoint: "from", target_endpoint: "to", connector_kind: "control", branch_value_column_address: branchColumnAddress,
+  }}};
+  view.dependencies.relation_type_addresses = [relationTypeAddress];
+  view.dependencies.column_addresses = [branchColumnAddress];
+  assert.equal(validateView(view), true);
+  view.dependencies.column_addresses = [];
   assert.equal(validateView(view), false);
 
   view = await corpusValue("fixtures/conformance/semantic-root-authority-v1.json", "owned_table_columns_disjoint_from_reservations");

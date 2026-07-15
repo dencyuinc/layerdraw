@@ -7298,6 +7298,7 @@ func collectViewDependencyAddresses(raw any, sets *viewDependencySets) {
 					}
 				}
 			case "query_address", "entity_address", "relation_address", "layer_address", "parameter_address",
+				"branch_value_column_address",
 				"layer_addresses", "entity_type_addresses", "relation_type_addresses", "entity_addresses", "relation_addresses",
 				"column_addresses", "lane_column_addresses", "attribute_column_addresses":
 				addViewDependencyValues(item, sets)
@@ -7340,8 +7341,9 @@ func validateLocallyDerivableViewDependencies(object map[string]any) bool {
 	sets := newViewDependencySets()
 	collectViewDependencyAddresses(source, &sets)
 	collectViewDependencyAddresses(shape, &sets)
-	for address := range overrides {
+	for address, override := range overrides {
 		sets.add(address)
+		collectViewDependencyAddresses(override, &sets)
 	}
 	if !dependencyArrayEquals(dependencies["query_addresses"], sets.query) {
 		return false
@@ -7408,6 +7410,15 @@ func validateViewRecipeConsistency(path string, object map[string]any) error {
 	if diffCount == 3 && stateRequirement != "none" {
 		return fmt.Errorf("%s Diff recipes forbid state requirements", path)
 	}
+	dependencies, dependenciesOK := object["dependencies"].(map[string]any)
+	if !dependenciesOK {
+		return fmt.Errorf("%s lacks View dependencies", path)
+	}
+	stateReads, stateReadsOK := dependencies["state_reads"].([]any)
+	if !stateReadsOK {
+		return fmt.Errorf("%s lacks View state reads", path)
+	}
+	var directReads []map[string]any
 	if shapeKind == "table" {
 		table, tableOK := shape["table"].(map[string]any)
 		columns, columnsOK := table["columns"].([]any)
@@ -7424,7 +7435,6 @@ func validateViewRecipeConsistency(path string, object map[string]any) error {
 				return fmt.Errorf("%s entity type selectors are forbidden for Relation rows", path)
 			}
 		}
-		var directReads []map[string]any
 		available := map[string]bool{}
 		if table["include_entity_id"] == true {
 			available["entity_id"] = true
@@ -7577,18 +7587,16 @@ func validateViewRecipeConsistency(path string, object map[string]any) error {
 				}
 			}
 		}
-		dependencies, _ := object["dependencies"].(map[string]any)
-		stateReads, _ := dependencies["state_reads"].([]any)
 		for _, read := range directReads {
 			if !containsStateRead(stateReads, read) {
 				return fmt.Errorf("%s dependencies omit a direct Table state read", path)
 			}
 		}
-		if _, hasSourceQuery := source["query_address"].(string); !hasSourceQuery && len(stateReads) != len(directReads) {
-			return fmt.Errorf("%s dependencies contain non-derivable state reads", path)
-		}
 	} else if stateInput != "none" {
 		return fmt.Errorf("%s state_input is forbidden without direct Table state reads", path)
+	}
+	if _, hasSourceQuery := source["query_address"].(string); !hasSourceQuery && len(stateReads) != len(directReads) {
+		return fmt.Errorf("%s dependencies contain non-derivable state reads", path)
 	}
 	exports, _ := object["exports"].([]any)
 	for _, raw := range exports {
