@@ -13,7 +13,7 @@ COVERAGE_BASE_REF ?= origin/main
 ENGINE_BINARY := dist/layerdraw-engine
 ENGINE_WASM_DIR := dist/engine-wasm
 LICENSE_REPORT := reports/dependency-licenses.json
-GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen ./tools/releaseset
+GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen ./tools/releaseset ./tools/wasmparity
 
 .DEFAULT_GOAL := build
 

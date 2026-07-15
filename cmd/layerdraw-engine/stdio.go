@@ -46,14 +46,18 @@ func serveStdio(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 }
 
 func resolvedReleaseManifestDigest() (string, error) {
-	if releaseManifestDigest != "" {
-		return releaseManifestDigest, nil
+	return releaseManifestDigestFromExecutable(releaseManifestDigest, os.Executable)
+}
+
+func releaseManifestDigestFromExecutable(linkedDigest string, executable func() (string, error)) (string, error) {
+	if linkedDigest != "" {
+		return linkedDigest, nil
 	}
-	executable, err := os.Executable()
+	path, err := executable()
 	if err != nil {
 		return "", err
 	}
-	return releaseManifestDigestFromFile(filepath.Join(filepath.Dir(executable), "layerdraw-release-manifest.json"))
+	return releaseManifestDigestFromFile(filepath.Join(filepath.Dir(path), "layerdraw-release-manifest.json"))
 }
 
 func releaseManifestDigestFromFile(path string) (string, error) {
