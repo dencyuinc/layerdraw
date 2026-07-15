@@ -92,7 +92,7 @@ func TestPackagedEngineWASMManifestHashesLegalAndSBOM(t *testing.T) {
 		}
 		seen[file.Path] = true
 	}
-	for _, required := range []string{"layerdraw-engine.wasm", "wasm_exec.js", "engine-wasm-worker-v1.json", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt", "engine-wasm.cdx.json"} {
+	for _, required := range []string{"layerdraw-engine.wasm", "wasm_exec.js", "engine-wasm-worker-v1.json", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt", "engine-wasm.authority.json", "engine-wasm.cdx.json"} {
 		if !seen[required] {
 			t.Fatalf("manifest omits %s", required)
 		}

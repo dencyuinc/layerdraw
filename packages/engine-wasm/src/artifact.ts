@@ -28,13 +28,13 @@ import {
   type EngineByteEndpointResult,
 } from "./worker-runtime.js";
 
-const expectedWasmExecDigest = "sha256:0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14";
 const requiredArtifactFiles = Object.freeze([
   "LICENSE",
   "LICENSING.md",
   "NOTICE",
   "THIRD_PARTY_NOTICES.txt",
   "engine-wasm-worker-v1.json",
+  "engine-wasm.authority.json",
   "engine-wasm.cdx.json",
   "layerdraw-engine.wasm",
   "licenses/Apache-2.0.txt",
@@ -46,6 +46,7 @@ const expectedArtifactMediaTypes: Readonly<Record<string, string>> = Object.free
   "NOTICE": "text/plain; charset=utf-8",
   "THIRD_PARTY_NOTICES.txt": "text/plain; charset=utf-8",
   "engine-wasm-worker-v1.json": "application/json",
+  "engine-wasm.authority.json": "application/json",
   "engine-wasm.cdx.json": "application/json",
   "layerdraw-engine.wasm": "application/wasm",
   "licenses/Apache-2.0.txt": "text/plain; charset=utf-8",
@@ -251,34 +252,30 @@ interface ValidatedManifest {
   readonly sourceRevision: string;
   readonly goVersion: string;
   readonly protocolSchemaDigest: string;
-  readonly sbomAuthority: ValidatedSBOMAuthority;
+  readonly runtimeSupport: Readonly<Record<string, unknown>>;
+  readonly licenses: Readonly<Record<string, unknown>>;
+  readonly sbomAuthority: ValidatedSBOMAuthorityDescriptor;
 }
 
-interface ValidatedSBOMRuntimeAuthority {
-  readonly type: string;
-  readonly name: string;
-  readonly version: string;
-  readonly purl: string;
-  readonly bom_ref: string;
-  readonly scope: string;
+interface ValidatedSBOMAuthorityDescriptor {
+  readonly file: string;
   readonly digest: string;
-  readonly license: string;
 }
 
-interface ValidatedSBOMModuleAuthority {
-  readonly type: string;
-  readonly name: string;
+interface GeneratedModuleBuildInfo {
+  readonly path: string;
   readonly version: string;
-  readonly purl: string;
-  readonly bom_ref: string;
-  readonly scope: string;
-  readonly license: string;
 }
 
-interface ValidatedSBOMAuthority {
-  readonly digest: string;
-  readonly runtime: ValidatedSBOMRuntimeAuthority;
-  readonly modules: readonly ValidatedSBOMModuleAuthority[];
+interface GeneratedSBOMAuthority {
+  readonly goVersion: string;
+  readonly manifestRuntimeSupport: Readonly<Record<string, unknown>>;
+  readonly manifestLicenses: Readonly<Record<string, unknown>>;
+  readonly moduleBuildInfo: readonly GeneratedModuleBuildInfo[];
+  readonly sbomComponents: readonly unknown[];
+  readonly sbomRootLicenses: readonly unknown[];
+  readonly sbomRootDependsOn: readonly unknown[];
+  readonly sbomLeafDependencies: readonly unknown[];
 }
 
 function validateContractCorpus(value: unknown): EngineWorkerTransportLimits {
@@ -316,14 +313,15 @@ function validateManifest(value: unknown, expectedReleaseVersion: string): Valid
   if (!isPlainRecord(value) || !hasExactKeys(value, keys) || value.artifact_id !== "@layerdraw/engine-wasm" || value.artifact_manifest_version !== 1) artifactMismatch();
   const build = value.build;
   if (!isPlainRecord(build) || !hasExactKeys(build, ["cgo_enabled", "go_version", "goexperiment", "goos_goarch", "main_package", "source_revision", "release_version", "flags"]) ||
-      build.cgo_enabled !== false || build.go_version !== "go1.26.5" || build.goexperiment !== "" || build.goos_goarch !== "js/wasm" ||
+      build.cgo_enabled !== false || typeof build.go_version !== "string" || build.go_version.length === 0 || build.goexperiment !== "" || build.goos_goarch !== "js/wasm" ||
       build.main_package !== "./cmd/layerdraw-engine" || typeof build.source_revision !== "string" || !/^[0-9a-f]{40}$/.test(build.source_revision) ||
       build.release_version !== expectedReleaseVersion) artifactMismatch();
   const protocol = value.protocol;
   if (!isPlainRecord(protocol) || !hasExactKeys(protocol, ["name", "version", "schema_digest"]) || protocol.name !== "engine" ||
       protocol.version !== "1.0" || !isDigest(protocol.schema_digest)) artifactMismatch();
   const runtime = value.runtime_support;
-  if (!isPlainRecord(runtime) || !hasExactKeys(runtime, ["file", "go_version", "digest"]) || runtime.file !== "wasm_exec.js" || runtime.go_version !== "go1.26.5" || runtime.digest !== expectedWasmExecDigest) artifactMismatch();
+  if (!isPlainRecord(runtime) || !hasExactKeys(runtime, ["file", "go_version", "digest"]) ||
+      typeof runtime.file !== "string" || runtime.file.length === 0 || typeof runtime.go_version !== "string" || runtime.go_version.length === 0 || !isDigest(runtime.digest)) artifactMismatch();
   const transport = value.transport;
   if (!isPlainRecord(transport) || !hasExactKeys(transport, [
     "id", "worker_protocol", "worker_protocol_version", "contract_file", "endpoint_instance_id_provenance",
@@ -343,8 +341,11 @@ function validateManifest(value: unknown, expectedReleaseVersion: string): Valid
       !exactStringArray(browser.required_primitives, requiredBrowserPrimitives)) artifactMismatch();
   const licenses = value.licenses;
   if (!isPlainRecord(licenses) || !hasExactKeys(licenses, ["product", "runtime_support", "sbom"]) ||
-      licenses.product !== "LicenseRef-LayerDraw-1.0" || licenses.runtime_support !== "BSD-3-Clause" || licenses.sbom !== "engine-wasm.cdx.json") artifactMismatch();
-  const sbomAuthority = validateSBOMAuthority(value.sbom_authority, runtime, licenses);
+      typeof licenses.product !== "string" || licenses.product.length === 0 || typeof licenses.runtime_support !== "string" || licenses.runtime_support.length === 0 ||
+      typeof licenses.sbom !== "string" || licenses.sbom.length === 0) artifactMismatch();
+  const sbomAuthority = value.sbom_authority;
+  if (!isPlainRecord(sbomAuthority) || !hasExactKeys(sbomAuthority, ["file", "digest"]) ||
+      sbomAuthority.file !== "engine-wasm.authority.json" || !isDigest(sbomAuthority.digest)) artifactMismatch();
   if (!exactStringArray(build.flags, [
     "-trimpath",
     "-buildvcs=false",
@@ -356,66 +357,55 @@ function validateManifest(value: unknown, expectedReleaseVersion: string): Valid
     sourceRevision: build.source_revision,
     goVersion: build.go_version,
     protocolSchemaDigest: protocol.schema_digest,
-    sbomAuthority,
+    runtimeSupport: runtime,
+    licenses,
+    sbomAuthority: sbomAuthority as unknown as ValidatedSBOMAuthorityDescriptor,
   });
 }
 
-function validateSBOMAuthority(value: unknown, runtimeSupport: Readonly<Record<string, unknown>>, licenses: Readonly<Record<string, unknown>>): ValidatedSBOMAuthority {
-  if (!isPlainRecord(value) || !hasExactKeys(value, ["digest", "runtime", "modules"]) || !isDigest(value.digest) || !isArrayRecord(value.modules)) artifactMismatch();
-  const runtime = value.runtime;
-  const runtimeRef = `pkg:generic/golang-wasm-runtime@${runtimeSupport.go_version as string}`;
-  if (!isPlainRecord(runtime) || !hasExactKeys(runtime, ["type", "name", "version", "purl", "bom_ref", "scope", "digest", "license"]) ||
-      runtime.type !== "framework" || runtime.name !== "Go WebAssembly runtime support" || runtime.version !== runtimeSupport.go_version ||
-      runtime.purl !== runtimeRef || runtime.bom_ref !== runtimeRef || runtime.scope !== "required" || runtime.digest !== runtimeSupport.digest ||
-      runtime.license !== licenses.runtime_support) artifactMismatch();
-  const modules: ValidatedSBOMModuleAuthority[] = [];
-  let previous = "";
-  for (const raw of value.modules) {
-    if (!isPlainRecord(raw) || !hasExactKeys(raw, ["type", "name", "version", "purl", "bom_ref", "scope", "license"]) ||
-        raw.type !== "library" || typeof raw.name !== "string" || raw.name.length === 0 || typeof raw.version !== "string" || raw.version.length === 0 ||
-        raw.purl !== `pkg:golang/${raw.name}@${raw.version}` || raw.bom_ref !== raw.purl || raw.scope !== "required" ||
-        typeof raw.license !== "string" || !/^[A-Za-z0-9.-]+$/.test(raw.license)) artifactMismatch();
-    const identity = `${raw.name}@${raw.version}`;
-    if (identity <= previous) artifactMismatch();
-    previous = identity;
-    modules.push(raw as unknown as ValidatedSBOMModuleAuthority);
+function validateGeneratedSBOMAuthority(value: unknown): GeneratedSBOMAuthority {
+  const keys = ["authority_version", "go_version", "manifest_runtime_support", "manifest_licenses", "module_build_info", "sbom_components", "sbom_root_licenses", "sbom_root_depends_on", "sbom_leaf_dependencies"];
+  if (!isPlainRecord(value) || !hasExactKeys(value, keys) || value.authority_version !== 1 || typeof value.go_version !== "string" || value.go_version.length === 0 ||
+      !isPlainRecord(value.manifest_runtime_support) || !hasExactKeys(value.manifest_runtime_support, ["file", "go_version", "digest"]) ||
+      typeof value.manifest_runtime_support.file !== "string" || typeof value.manifest_runtime_support.go_version !== "string" || !isDigest(value.manifest_runtime_support.digest) ||
+      !isPlainRecord(value.manifest_licenses) || !hasExactKeys(value.manifest_licenses, ["product", "runtime_support", "sbom"]) ||
+      typeof value.manifest_licenses.product !== "string" || typeof value.manifest_licenses.runtime_support !== "string" || typeof value.manifest_licenses.sbom !== "string" ||
+      !isArrayRecord(value.module_build_info) || !isArrayRecord(value.sbom_components) || !isArrayRecord(value.sbom_root_licenses) ||
+      !isArrayRecord(value.sbom_root_depends_on) || !isArrayRecord(value.sbom_leaf_dependencies)) artifactMismatch();
+  for (const module of value.module_build_info) {
+    if (!isPlainRecord(module) || !hasExactKeys(module, ["path", "version"]) || typeof module.path !== "string" || module.path.length === 0 ||
+        typeof module.version !== "string" || module.version.length === 0) artifactMismatch();
   }
-  return Object.freeze({digest: value.digest, runtime: runtime as unknown as ValidatedSBOMRuntimeAuthority, modules: Object.freeze(modules)});
+  if (!value.sbom_components.every(isPlainRecord) || !value.sbom_root_licenses.every(isPlainRecord) ||
+      !value.sbom_root_depends_on.every((item) => typeof item === "string" && item.length > 0)) artifactMismatch();
+  for (const dependency of value.sbom_leaf_dependencies) {
+    if (!isPlainRecord(dependency) || !hasExactKeys(dependency, ["ref", "dependsOn"]) || typeof dependency.ref !== "string" || dependency.ref.length === 0 ||
+        !isArrayRecord(dependency.dependsOn) || !dependency.dependsOn.every((item) => typeof item === "string" && item.length > 0)) artifactMismatch();
+  }
+  return Object.freeze({
+    goVersion: value.go_version,
+    manifestRuntimeSupport: value.manifest_runtime_support,
+    manifestLicenses: value.manifest_licenses,
+    moduleBuildInfo: Object.freeze(value.module_build_info as unknown as GeneratedModuleBuildInfo[]),
+    sbomComponents: Object.freeze(value.sbom_components),
+    sbomRootLicenses: Object.freeze(value.sbom_root_licenses),
+    sbomRootDependsOn: Object.freeze(value.sbom_root_depends_on),
+    sbomLeafDependencies: Object.freeze(value.sbom_leaf_dependencies),
+  });
 }
 
-async function calculateSBOMAuthorityDigest(authority: ValidatedSBOMAuthority): Promise<string> {
-  const projection = {
-    runtime: {
-      type: authority.runtime.type,
-      name: authority.runtime.name,
-      version: authority.runtime.version,
-      purl: authority.runtime.purl,
-      bom_ref: authority.runtime.bom_ref,
-      scope: authority.runtime.scope,
-      digest: authority.runtime.digest,
-      license: authority.runtime.license,
-    },
-    modules: authority.modules.map((module) => ({
-      type: module.type,
-      name: module.name,
-      version: module.version,
-      purl: module.purl,
-      bom_ref: module.bom_ref,
-      scope: module.scope,
-      license: module.license,
-    })),
-  };
-  const TextEncoderValue = Reflect.get(globalThis, "TextEncoder");
-  if (typeof TextEncoderValue !== "function") initializationFailure();
-  const encoder = Reflect.construct(TextEncoderValue, []);
-  const bytes = Reflect.apply(Reflect.get(encoder, "encode"), encoder, [`${JSON.stringify(projection)}\n`]) as unknown;
-  if (!(bytes instanceof Uint8Array)) initializationFailure();
-  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  if (!isFixedArrayBuffer(buffer)) initializationFailure();
-  return sha256(buffer);
+function exactJSONEqual(left: unknown, right: unknown): boolean {
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return Object.is(left, right);
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((item, index) => exactJSONEqual(item, right[index]));
+  }
+  if (!isPlainRecord(left) || !isPlainRecord(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return exactStringArray(leftKeys, rightKeys) && leftKeys.every((key) => exactJSONEqual(left[key], right[key]));
 }
 
-function validateSBOM(value: unknown, releaseVersion: string, wasmDigest: string, authority: ValidatedSBOMAuthority): void {
+function validateSBOM(value: unknown, releaseVersion: string, wasmDigest: string, authority: GeneratedSBOMAuthority): void {
   if (!isPlainRecord(value) || !hasExactKeys(value, ["$schema", "bomFormat", "specVersion", "version", "metadata", "components", "dependencies"]) ||
       value.$schema !== "http://cyclonedx.org/schema/bom-1.6.schema.json" || value.bomFormat !== "CycloneDX" || value.specVersion !== "1.6" ||
       value.version !== 1 || !isArrayRecord(value.components) || !isArrayRecord(value.dependencies)) artifactMismatch();
@@ -427,40 +417,11 @@ function validateSBOM(value: unknown, releaseVersion: string, wasmDigest: string
       component.type !== "application" || component.name !== "@layerdraw/engine-wasm" || component.version !== releaseVersion ||
       component.purl !== rootRef || component["bom-ref"] !== rootRef || !isArrayRecord(component.hashes) || component.hashes.length !== 1 ||
       !isPlainRecord(component.hashes[0]) || !hasExactKeys(component.hashes[0], ["alg", "content"]) || component.hashes[0].alg !== "SHA-256" ||
-      component.hashes[0].content !== wasmDigest.slice("sha256:".length) || !isArrayRecord(component.licenses) || component.licenses.length !== 1) artifactMismatch();
-  const licenseEntry = component.licenses[0];
-  if (!isPlainRecord(licenseEntry) || !hasExactKeys(licenseEntry, ["license"]) || !isPlainRecord(licenseEntry.license) ||
-      !hasExactKeys(licenseEntry.license, ["name"]) || licenseEntry.license.name !== "LayerDraw License 1.0") artifactMismatch();
-  if (value.components.length !== authority.modules.length + 1 || value.dependencies.length !== authority.modules.length + 2) artifactMismatch();
-  for (let index = 0; index < authority.modules.length; index += 1) {
-    const actual = value.components[index];
-    const expected = authority.modules[index];
-    if (expected === undefined || !isPlainRecord(actual) || !hasExactKeys(actual, ["type", "name", "version", "purl", "bom-ref", "scope", "licenses"]) ||
-        actual.type !== expected.type || actual.name !== expected.name || actual.version !== expected.version || actual.purl !== expected.purl ||
-        actual["bom-ref"] !== expected.bom_ref || actual.scope !== expected.scope || !hasExactLicenseID(actual.licenses, expected.license)) artifactMismatch();
-  }
-  const runtime = value.components[authority.modules.length];
-  if (!isPlainRecord(runtime) || !hasExactKeys(runtime, ["type", "name", "version", "purl", "bom-ref", "scope", "licenses", "hashes"]) ||
-      runtime.type !== authority.runtime.type || runtime.name !== authority.runtime.name || runtime.version !== authority.runtime.version ||
-      runtime.purl !== authority.runtime.purl || runtime["bom-ref"] !== authority.runtime.bom_ref || runtime.scope !== authority.runtime.scope ||
-      !hasExactLicenseID(runtime.licenses, authority.runtime.license) || !isArrayRecord(runtime.hashes) || runtime.hashes.length !== 1 ||
-      !isPlainRecord(runtime.hashes[0]) || !hasExactKeys(runtime.hashes[0], ["alg", "content"]) || runtime.hashes[0].alg !== "SHA-256" ||
-      runtime.hashes[0].content !== authority.runtime.digest.slice("sha256:".length)) artifactMismatch();
-  const componentRefs = [...authority.modules.map((module) => module.bom_ref), authority.runtime.bom_ref];
+      component.hashes[0].content !== wasmDigest.slice("sha256:".length) || !exactJSONEqual(component.licenses, authority.sbomRootLicenses) ||
+      !exactJSONEqual(value.components, authority.sbomComponents) || value.dependencies.length !== authority.sbomLeafDependencies.length + 1) artifactMismatch();
   const rootDependency = value.dependencies[0];
   if (!isPlainRecord(rootDependency) || !hasExactKeys(rootDependency, ["ref", "dependsOn"]) || rootDependency.ref !== rootRef ||
-      !exactStringArray(rootDependency.dependsOn, componentRefs)) artifactMismatch();
-  for (let index = 0; index < componentRefs.length; index += 1) {
-    const dependency = value.dependencies[index + 1];
-    if (!isPlainRecord(dependency) || !hasExactKeys(dependency, ["ref", "dependsOn"]) || dependency.ref !== componentRefs[index] ||
-        !isArrayRecord(dependency.dependsOn) || dependency.dependsOn.length !== 0) artifactMismatch();
-  }
-}
-
-function hasExactLicenseID(value: unknown, expected: string): boolean {
-  if (!isArrayRecord(value) || value.length !== 1 || !isPlainRecord(value[0]) || !hasExactKeys(value[0], ["license"]) ||
-      !isPlainRecord(value[0].license) || !hasExactKeys(value[0].license, ["id"])) return false;
-  return value[0].license.id === expected;
+      !exactJSONEqual(rootDependency.dependsOn, authority.sbomRootDependsOn) || !exactJSONEqual(value.dependencies.slice(1), authority.sbomLeafDependencies)) artifactMismatch();
 }
 
 function validatePackageReleaseAuthority(value: unknown): string {
@@ -474,18 +435,18 @@ function validateBridge(value: unknown): WasmBridge {
   return value as unknown as WasmBridge;
 }
 
-function validateInitialized(value: unknown, generation: string, authority: ValidatedManifest): EngineWorkerTransportLimits {
+function validateInitialized(
+  value: unknown,
+  generation: string,
+  manifest: ValidatedManifest,
+  generatedAuthority: GeneratedSBOMAuthority,
+): EngineWorkerTransportLimits {
   if (!isPlainRecord(value) || !hasExactKeys(value, ["ok", "endpoint_generation", "engine_release", "source_revision", "protocol_schema_digest", "go_version", "module_build_info", "sbom_authority_digest", "transport_limits"]) ||
-      value.ok !== true || value.endpoint_generation !== generation || value.engine_release !== authority.releaseVersion ||
-      value.source_revision !== authority.sourceRevision || value.protocol_schema_digest !== authority.protocolSchemaDigest ||
-      value.go_version !== authority.goVersion || value.sbom_authority_digest !== authority.sbomAuthority.digest ||
-      !hasInitialTransportLimits(value.transport_limits) || !isArrayRecord(value.module_build_info) ||
-      value.module_build_info.length !== authority.sbomAuthority.modules.length) initializationFailure();
-  for (let index = 0; index < authority.sbomAuthority.modules.length; index += 1) {
-    const actual = value.module_build_info[index];
-    const expected = authority.sbomAuthority.modules[index];
-    if (expected === undefined || !isPlainRecord(actual) || !hasExactKeys(actual, ["path", "version"]) || actual.path !== expected.name || actual.version !== expected.version) initializationFailure();
-  }
+      value.ok !== true || value.endpoint_generation !== generation || value.engine_release !== manifest.releaseVersion ||
+      value.source_revision !== manifest.sourceRevision || value.protocol_schema_digest !== manifest.protocolSchemaDigest ||
+      value.go_version !== manifest.goVersion || value.go_version !== generatedAuthority.goVersion ||
+      value.sbom_authority_digest !== manifest.sbomAuthority.digest || !hasInitialTransportLimits(value.transport_limits) ||
+      !exactJSONEqual(value.module_build_info, generatedAuthority.moduleBuildInfo)) initializationFailure();
   return value.transport_limits;
 }
 
@@ -549,7 +510,6 @@ export async function createVerifiedWasmEndpoint(init: EngineByteEndpointInit, o
   }
   if (await sha256(manifestBytes) !== init.expectedArtifactManifestDigest) artifactMismatch();
   const manifest = validateManifest(decodeJSON(manifestBytes), expectedReleaseVersion);
-  if (await calculateSBOMAuthorityDigest(manifest.sbomAuthority) !== manifest.sbomAuthority.digest) artifactMismatch();
   const files = manifest.files;
   const loaded = new Map<string, ArrayBuffer>();
   for (const file of files) {
@@ -563,12 +523,17 @@ export async function createVerifiedWasmEndpoint(init: EngineByteEndpointInit, o
     loaded.set(file.path, bytes);
   }
   const corpus = loaded.get("engine-wasm-worker-v1.json");
+  const authorityBytes = loaded.get(manifest.sbomAuthority.file);
   const sbom = loaded.get("engine-wasm.cdx.json");
   const wasm = loaded.get("layerdraw-engine.wasm");
   const wasmExec = loaded.get("wasm_exec.js");
   const wasmFile = files.find((file) => file.path === "layerdraw-engine.wasm");
-  if (corpus === undefined || sbom === undefined || wasm === undefined || wasmExec === undefined || wasmFile === undefined || await sha256(wasmExec) !== expectedWasmExecDigest) artifactMismatch();
-  validateSBOM(decodeJSON(sbom), manifest.releaseVersion, wasmFile.digest, manifest.sbomAuthority);
+  if (corpus === undefined || authorityBytes === undefined || sbom === undefined || wasm === undefined || wasmExec === undefined || wasmFile === undefined ||
+      await sha256(authorityBytes) !== manifest.sbomAuthority.digest || await sha256(wasmExec) !== manifest.runtimeSupport.digest) artifactMismatch();
+  const generatedAuthority = validateGeneratedSBOMAuthority(decodeJSON(authorityBytes));
+  if (generatedAuthority.goVersion !== manifest.goVersion || !exactJSONEqual(generatedAuthority.manifestRuntimeSupport, manifest.runtimeSupport) ||
+      !exactJSONEqual(generatedAuthority.manifestLicenses, manifest.licenses)) artifactMismatch();
+  validateSBOM(decodeJSON(sbom), manifest.releaseVersion, wasmFile.digest, generatedAuthority);
   const limits = validateContractCorpus(decodeJSON(corpus));
   try {
     await executeVerifiedJavaScript(wasmExec);
@@ -579,7 +544,7 @@ export async function createVerifiedWasmEndpoint(init: EngineByteEndpointInit, o
     void go.run(instantiated.instance);
     const bridge = await waitForBridge();
     const initialized = bridge.initialize(init.endpointGeneration, init.releaseManifestDigest);
-    const bridgeLimits = validateInitialized(initialized, init.endpointGeneration, manifest);
+    const bridgeLimits = validateInitialized(initialized, init.endpointGeneration, manifest, generatedAuthority);
     if (!transportLimitKeys.every((key) => bridgeLimits[key] === limits[key])) initializationFailure();
     let disposed = false;
     const endpoint: EngineByteEndpoint = {

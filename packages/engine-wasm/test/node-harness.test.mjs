@@ -56,15 +56,30 @@ async function createMutatedAuthorityFixture(prefix, mutate, packageVersion = ar
   await cp(new URL("../dist/", import.meta.url), artifactRoot, {recursive: true});
   const manifestPath = join(artifactRoot, "engine-wasm.manifest.json");
   const sbomPath = join(artifactRoot, "engine-wasm.cdx.json");
+  const authorityPath = join(artifactRoot, "engine-wasm.authority.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const sbom = JSON.parse(await readFile(sbomPath, "utf8"));
-  const sbomChanged = await mutate(manifest, sbom) === true;
+  const authority = JSON.parse(await readFile(authorityPath, "utf8"));
+  const mutation = await mutate(manifest, sbom, authority);
+  const sbomChanged = mutation === true || mutation?.sbom === true;
+  const authorityChanged = mutation?.authority === true;
   if (sbomChanged) {
     const sbomBytes = Buffer.from(`${JSON.stringify(sbom)}\n`);
     await writeFile(sbomPath, sbomBytes);
     const entry = manifest.files.find((file) => file.path === "engine-wasm.cdx.json");
     entry.size = sbomBytes.byteLength;
     entry.digest = await sha256(sbomBytes.buffer.slice(sbomBytes.byteOffset, sbomBytes.byteOffset + sbomBytes.byteLength));
+  }
+  if (authorityChanged) {
+    const authorityBytes = Buffer.from(`${JSON.stringify(authority)}\n`);
+    await writeFile(authorityPath, authorityBytes);
+    const authorityDigest = await sha256(authorityBytes.buffer.slice(authorityBytes.byteOffset, authorityBytes.byteOffset + authorityBytes.byteLength));
+    const oldDigest = manifest.sbom_authority.digest;
+    const entry = manifest.files.find((file) => file.path === "engine-wasm.authority.json");
+    entry.size = authorityBytes.byteLength;
+    entry.digest = authorityDigest;
+    manifest.sbom_authority.digest = authorityDigest;
+    manifest.build.flags[2] = manifest.build.flags[2].replace(`main.sbomAuthorityDigest=${oldDigest}`, `main.sbomAuthorityDigest=${authorityDigest}`);
   }
   const mutatedManifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
   await writeFile(manifestPath, mutatedManifestBytes);
@@ -219,19 +234,11 @@ test("Ready is blocked when the verified manifest schema digest differs from gen
   }
 });
 
-test("Ready is blocked by linked legal authority after a self-consistent manifest, SBOM, and digest forgery", {timeout: 120_000}, async () => {
-  const fixture = await createMutatedAuthorityFixture("layerdraw-engine-wasm-legal-authority-", async (manifest, sbom) => {
-    const oldDigest = manifest.sbom_authority.digest;
-    manifest.sbom_authority.modules[0].license = "MIT";
+test("Ready is blocked by linked legal authority after a self-consistent generated authority, manifest, SBOM, and digest forgery", {timeout: 120_000}, async () => {
+  const fixture = await createMutatedAuthorityFixture("layerdraw-engine-wasm-legal-authority-", (_manifest, sbom, authority) => {
+    authority.sbom_components[0].licenses[0].license.id = "MIT";
     sbom.components[0].licenses[0].license.id = "MIT";
-    const projection = {
-      runtime: manifest.sbom_authority.runtime,
-      modules: manifest.sbom_authority.modules,
-    };
-    const bytes = Buffer.from(`${JSON.stringify(projection)}\n`);
-    manifest.sbom_authority.digest = await sha256(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-    manifest.build.flags[2] = manifest.build.flags[2].replace(`main.sbomAuthorityDigest=${oldDigest}`, `main.sbomAuthorityDigest=${manifest.sbom_authority.digest}`);
-    return true;
+    return {sbom: true, authority: true};
   });
   try {
     await assertLinkedAuthorityRejected(fixture, "node-legal-authority-mismatch");

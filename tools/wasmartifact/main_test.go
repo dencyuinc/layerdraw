@@ -95,13 +95,8 @@ func TestManifestBrowserContractAndLicensesRejectEveryFieldMutation(t *testing.T
 		{"runtime license", func(value *artifactManifest) { value.Licenses.RuntimeSupport = "MIT" }},
 		{"SBOM path", func(value *artifactManifest) { value.Licenses.SBOM = "other.cdx.json" }},
 		{"release authority", func(value *artifactManifest) { value.Build.ReleaseVersion = "9.9.9" }},
+		{"SBOM authority file", func(value *artifactManifest) { value.SBOMAuthority.File = "forged.json" }},
 		{"SBOM authority digest", func(value *artifactManifest) { value.SBOMAuthority.Digest = "sha256:" + strings.Repeat("0", 64) }},
-		{"runtime component type", func(value *artifactManifest) { value.SBOMAuthority.Runtime.Type = "library" }},
-		{"runtime component digest", func(value *artifactManifest) {
-			value.SBOMAuthority.Runtime.Digest = "sha256:" + strings.Repeat("0", 64)
-		}},
-		{"runtime component license", func(value *artifactManifest) { value.SBOMAuthority.Runtime.License = "MIT" }},
-		{"module component license", func(value *artifactManifest) { value.SBOMAuthority.Modules[0].License = "Apache-2.0" }},
 	}
 	for index, primitive := range requiredBrowserPrimitives {
 		index, primitive := index, primitive
@@ -118,12 +113,65 @@ func TestManifestBrowserContractAndLicensesRejectEveryFieldMutation(t *testing.T
 			value := base
 			value.Build.Flags = slices.Clone(base.Build.Flags)
 			value.BrowserContract.RequiredPrimitives = slices.Clone(base.BrowserContract.RequiredPrimitives)
-			value.SBOMAuthority.Modules = slices.Clone(base.SBOMAuthority.Modules)
 			test.mutate(&value)
 			if err := verifyManifestAuthority(value, "0.0.0", modules); err == nil {
 				t.Fatal("falsified manifest authority was accepted")
 			}
 		})
+	}
+}
+
+func TestManifestRejectsSelfConsistentSBOMAuthorityDigestAndLDFlagForgery(t *testing.T) {
+	modules := []bundledModule{{Review: reviewedGoModule{Module: "example.com/module", Version: "v1.2.3", License: "MIT"}}}
+	manifest, err := buildManifest(t.TempDir(), "0.0.0", strings.Repeat("a", 40), modules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Build.Flags = slices.Clone(manifest.Build.Flags)
+	oldDigest := manifest.SBOMAuthority.Digest
+	forgedDigest := "sha256:" + strings.Repeat("0", 64)
+	manifest.SBOMAuthority.Digest = forgedDigest
+	manifest.Build.Flags[2] = strings.Replace(manifest.Build.Flags[2], "main.sbomAuthorityDigest="+oldDigest, "main.sbomAuthorityDigest="+forgedDigest, 1)
+	if err := verifyManifestAuthority(manifest, "0.0.0", modules); err == nil {
+		t.Fatal("self-consistent SBOM authority digest and ldflag forgery was accepted")
+	}
+}
+
+func TestGeneratedSBOMAuthorityArtifactIsCanonicalAndExact(t *testing.T) {
+	modules := []bundledModule{{Review: reviewedGoModule{Module: "example.com/module", Version: "v1.2.3", License: "MIT"}}}
+	output := t.TempDir()
+	digest, err := writeSBOMAuthority(filepath.Join(output, sbomAuthorityName), modules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sbomAuthorityManifest(modules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != manifest.Digest || manifest.File != sbomAuthorityName {
+		t.Fatalf("generated authority descriptor drifted: digest=%s manifest=%+v", digest, manifest)
+	}
+	if err := verifySBOMAuthority(output, modules); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(output, sbomAuthorityName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authority map[string]any
+	if err := json.Unmarshal(data, &authority); err != nil {
+		t.Fatal(err)
+	}
+	authority["go_version"] = "go9.9.9"
+	mutated, err := canonicalJSON(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(output, sbomAuthorityName), mutated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifySBOMAuthority(output, modules); err == nil {
+		t.Fatal("mutated generated SBOM authority artifact was accepted")
 	}
 }
 

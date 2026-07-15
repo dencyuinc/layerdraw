@@ -36,6 +36,7 @@ test("packed package is closed, legal-complete, offline-installable, and SSR-saf
     "package/dist/wasm_exec.js",
     "package/dist/engine-wasm-worker-v1.json",
     "package/dist/engine-wasm.manifest.json",
+    "package/dist/engine-wasm.authority.json",
     "package/dist/engine-wasm.cdx.json",
     "package/dist/LICENSING.md",
     "package/dist/licenses/Apache-2.0.txt",
@@ -67,7 +68,7 @@ test("packed package is closed, legal-complete, offline-installable, and SSR-saf
   assert.equal(sbom.metadata.component.name, manifest.name);
   assert.deepEqual(artifactManifest.files.map((file) => file.path).sort(), [
     "LICENSE", "LICENSING.md", "NOTICE", "THIRD_PARTY_NOTICES.txt",
-    "engine-wasm-worker-v1.json", "engine-wasm.cdx.json", "layerdraw-engine.wasm",
+    "engine-wasm-worker-v1.json", "engine-wasm.authority.json", "engine-wasm.cdx.json", "layerdraw-engine.wasm",
     "licenses/Apache-2.0.txt", "wasm_exec.js",
   ]);
   for (const file of artifactManifest.files) {
@@ -164,6 +165,17 @@ test("artifact build and reproducibility entrypoints reject unset and empty VERS
       }), /VERSION must be explicitly set and nonempty/, `${script} accepted ${mode} VERSION`);
     }
   }
+  for (const target of ["engine-wasm", "engine-wasm-reproducible"]) {
+    for (const mode of ["unset", "empty"]) {
+      const environment = {...process.env};
+      delete environment.VERSION;
+      const arguments_ = mode === "empty" ? [target, "VERSION="] : [target];
+      await assert.rejects(execute("make", arguments_, {
+        cwd: repositoryRoot,
+        env: environment,
+      }), /VERSION must be explicitly set and nonempty for make engine-wasm/, `make ${target} accepted ${mode} VERSION`);
+    }
+  }
 });
 
 test("Go artifact verification rejects a self-consistent forged release against package authority", async () => {
@@ -197,4 +209,41 @@ test("Go artifact verification rejects a self-consistent forged release against 
   await assert.rejects(execute("go", ["run", "./tools/wasmartifact", "verify", "-root", ".", "-output", artifactRoot, "-version", packageManifest.version], {
     cwd: repositoryRoot,
   }), /artifact manifest build identity mismatch/);
+});
+
+test("Go artifact verification rejects a self-consistent generated authority digest and ldflag forgery", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "layerdraw-engine-wasm-forged-authority-"));
+  const artifactRoot = join(temporary, "artifact");
+  await mkdir(artifactRoot);
+  const manifest = JSON.parse(await readFile(new URL("../dist/engine-wasm.manifest.json", import.meta.url), "utf8"));
+  for (const file of manifest.files) {
+    await mkdir(dirname(join(artifactRoot, file.path)), {recursive: true});
+    await cp(new URL(`../dist/${file.path}`, import.meta.url), join(artifactRoot, file.path));
+  }
+  const authorityPath = join(artifactRoot, "engine-wasm.authority.json");
+  const authority = JSON.parse(await readFile(authorityPath, "utf8"));
+  authority.sbom_components[0].licenses[0].license.id = "forged";
+  const authorityBytes = Buffer.from(`${JSON.stringify(authority)}\n`);
+  await writeFile(authorityPath, authorityBytes);
+  const authorityDigest = `sha256:${createHash("sha256").update(authorityBytes).digest("hex")}`;
+  const oldDigest = manifest.sbom_authority.digest;
+  manifest.sbom_authority.digest = authorityDigest;
+  manifest.build.flags[2] = manifest.build.flags[2].replace(`main.sbomAuthorityDigest=${oldDigest}`, `main.sbomAuthorityDigest=${authorityDigest}`);
+  const authorityEntry = manifest.files.find((file) => file.path === "engine-wasm.authority.json");
+  authorityEntry.size = authorityBytes.byteLength;
+  authorityEntry.digest = authorityDigest;
+
+  const sbomPath = join(artifactRoot, "engine-wasm.cdx.json");
+  const sbom = JSON.parse(await readFile(sbomPath, "utf8"));
+  sbom.components[0].licenses[0].license.id = "forged";
+  const sbomBytes = Buffer.from(`${JSON.stringify(sbom)}\n`);
+  await writeFile(sbomPath, sbomBytes);
+  const sbomEntry = manifest.files.find((file) => file.path === "engine-wasm.cdx.json");
+  sbomEntry.size = sbomBytes.byteLength;
+  sbomEntry.digest = `sha256:${createHash("sha256").update(sbomBytes).digest("hex")}`;
+  await writeFile(join(artifactRoot, "engine-wasm.manifest.json"), `${JSON.stringify(manifest)}\n`);
+
+  await assert.rejects(execute("go", ["run", "./tools/wasmartifact", "verify", "-root", ".", "-output", artifactRoot, "-version", "0.0.0"], {
+    cwd: repositoryRoot,
+  }), /artifact manifest generated\/build authority mismatch/);
 });

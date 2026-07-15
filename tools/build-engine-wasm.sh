@@ -83,7 +83,7 @@ sbom_authority_digest="$(env \
   GOWORK=off \
   GOEXPERIMENT= \
   GOFLAGS=-mod=readonly \
-  "$go_command" run ./tools/wasmartifact sbom-authority-digest -root "$repo_root")"
+  "$go_command" run ./tools/wasmartifact sbom-authority -root "$repo_root" -output "$stage/engine-wasm.authority.json")"
 ldflags="-buildid= -s -w -X main.releaseVersion=$version -X main.sourceRevision=$source_revision -X main.sbomAuthorityDigest=$sbom_authority_digest"
 env \
   GOTOOLCHAIN=go1.26.5 \

@@ -39,14 +39,11 @@ async function assertRejectedBeforeArtifactReads(mutate) {
   assert.equal(reads, 2, "falsified metadata reached artifact file loading");
 }
 
-test("the TypeScript loader rejects every closed browser-contract and license field mutation", async (context) => {
+test("the TypeScript loader rejects every closed browser-contract field mutation before artifact reads", async (context) => {
   const cases = [
     ["module dedicated Worker", (value) => { value.browser_contract.module_dedicated_worker = false; }],
     ["SharedArrayBuffer", (value) => { value.browser_contract.shared_array_buffer = true; }],
     ["WASM threads", (value) => { value.browser_contract.wasm_threads = true; }],
-    ["product license", (value) => { value.licenses.product = "MIT"; }],
-    ["runtime license", (value) => { value.licenses.runtime_support = "MIT"; }],
-    ["SBOM path", (value) => { value.licenses.sbom = "other.cdx.json"; }],
   ];
   for (let index = 0; index < canonicalManifest.browser_contract.required_primitives.length; index += 1) {
     const primitive = canonicalManifest.browser_contract.required_primitives[index];
@@ -89,6 +86,79 @@ async function assertSBOMMutationRejected(mutate) {
     },
   }), (error) => error?.failure?.code === "engine.worker.artifact_mismatch");
 }
+
+async function assertGeneratedAuthorityMutationRejected(mutate, expectedCode = "engine.worker.artifact_mismatch") {
+  const manifest = structuredClone(canonicalManifest);
+  const authority = JSON.parse(await readFile(new URL("../dist/engine-wasm.authority.json", import.meta.url), "utf8"));
+  mutate(authority, manifest);
+  const authorityBytes = arrayBuffer(`${JSON.stringify(authority)}\n`);
+  const authorityDigest = await sha256(authorityBytes);
+  const oldDigest = manifest.sbom_authority.digest;
+  const authorityEntry = manifest.files.find((file) => file.path === "engine-wasm.authority.json");
+  authorityEntry.size = authorityBytes.byteLength;
+  authorityEntry.digest = authorityDigest;
+  manifest.sbom_authority.digest = authorityDigest;
+  manifest.build.flags[2] = manifest.build.flags[2].replace(`main.sbomAuthorityDigest=${oldDigest}`, `main.sbomAuthorityDigest=${authorityDigest}`);
+  const manifestBytes = arrayBuffer(`${JSON.stringify(manifest)}\n`);
+  const expectedArtifactManifestDigest = await sha256(manifestBytes);
+  await assert.rejects(createVerifiedWasmEndpoint({
+    endpointGeneration: "generated-authority-negative-test",
+    expectedArtifactManifestDigest,
+    releaseManifestDigest: `sha256:${"5".repeat(64)}`,
+  }, {
+    artifactBaseURL: "https://artifact.invalid/dist/",
+    packageManifestURL,
+    async loadBytes(url) {
+      if (url === packageManifestURL) return arrayBuffer(canonicalPackageManifestBytes);
+      const relative = new URL(url).pathname.split("/dist/").at(-1);
+      if (relative === "engine-wasm.manifest.json") return manifestBytes.slice(0);
+      if (relative === "engine-wasm.authority.json") return authorityBytes.slice(0);
+      const bytes = await readFile(new URL(`../dist/${relative}`, import.meta.url));
+      return arrayBuffer(bytes);
+    },
+  }), (error) => error?.failure?.code === expectedCode);
+}
+
+test("the loader mechanically rejects every generated authority relation mutation", async (context) => {
+  const component = (value) => value.sbom_components[0];
+  const cases = [
+    ["authority version", (value) => { value.authority_version = 2; }],
+    ["Go version", (value) => { value.go_version = "go9.9.9"; }],
+    ["manifest runtime file", (value) => { value.manifest_runtime_support.file = "other.js"; }],
+    ["manifest runtime Go version", (value) => { value.manifest_runtime_support.go_version = "go9.9.9"; }],
+    ["manifest runtime digest", (value) => { value.manifest_runtime_support.digest = `sha256:${"0".repeat(64)}`; }],
+    ["manifest product license", (value) => { value.manifest_licenses.product = "MIT"; }],
+    ["manifest runtime license", (value) => { value.manifest_licenses.runtime_support = "MIT"; }],
+    ["manifest SBOM path", (value) => { value.manifest_licenses.sbom = "other.cdx.json"; }],
+    ["module build path", (value) => { value.module_build_info[0].path = "example.com/forged"; }, "engine.worker.initialization_failed"],
+    ["module build version", (value) => { value.module_build_info[0].version = "v9.9.9"; }, "engine.worker.initialization_failed"],
+    ["component type", (value) => { component(value).type = "framework"; }],
+    ["component name", (value) => { component(value).name = "example.com/forged"; }],
+    ["component version", (value) => { component(value).version = "v9.9.9"; }],
+    ["component purl", (value) => { component(value).purl = "pkg:golang/example.com/forged@v9.9.9"; }],
+    ["component bom ref", (value) => { component(value)["bom-ref"] = "pkg:golang/example.com/forged@v9.9.9"; }],
+    ["component scope", (value) => { component(value).scope = "optional"; }],
+    ["component license", (value) => { component(value).licenses[0].license.id = "forged"; }],
+    ["root license", (value) => { value.sbom_root_licenses[0].license.name = "forged"; }],
+    ["root dependency", (value) => { value.sbom_root_depends_on[0] = "forged"; }],
+    ["leaf dependency ref", (value) => { value.sbom_leaf_dependencies[0].ref = "forged"; }],
+    ["leaf dependency edge", (value) => { value.sbom_leaf_dependencies[0].dependsOn.push("forged"); }],
+  ];
+  for (const [name, mutate, expectedCode] of cases) {
+    await context.test(name, () => assertGeneratedAuthorityMutationRejected(mutate, expectedCode));
+  }
+});
+
+test("the loader rejects every manifest legal field that differs from generated Go authority", async (context) => {
+  const cases = [
+    ["product license", (value) => { value.licenses.product = "MIT"; }],
+    ["runtime license", (value) => { value.licenses.runtime_support = "MIT"; }],
+    ["SBOM path", (value) => { value.licenses.sbom = "other.cdx.json"; }],
+  ];
+  for (const [name, mutate] of cases) {
+    await context.test(name, () => assertGeneratedAuthorityMutationRejected((_authority, manifest) => mutate(manifest)));
+  }
+});
 
 test("the loader rejects every runtime, module, reference, and dependency mutation", async (context) => {
   const runtime = (value) => value.components.at(-1);
