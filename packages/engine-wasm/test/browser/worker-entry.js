@@ -9,4 +9,5 @@ globalThis.addEventListener("message", (event) => {
 
 installEngineWorker(globalThis, (init) => createVerifiedWasmEndpoint(init, {
   artifactBaseURL: new URL("../../dist/", import.meta.url).href,
+  packageManifestURL: new URL("../../package.json", import.meta.url).href,
 }));

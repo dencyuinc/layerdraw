@@ -6,13 +6,26 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+if [[ -z "${VERSION+x}" || -z "$VERSION" ]]; then
+  printf 'VERSION must be explicitly set and nonempty\n' >&2
+  exit 1
+fi
+version="$VERSION"
+
+env \
+  GOTOOLCHAIN=go1.26.5 \
+  GOENV=off \
+  GOWORK=off \
+  GOEXPERIMENT= \
+  GOFLAGS=-mod=readonly \
+  go run ./tools/wasmartifact validate-version -version "$version"
+
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   printf 'reproducibility comparison requires a clean source tree\n' >&2
   exit 1
 fi
 
 source_revision="${SOURCE_REVISION:-$(git rev-parse HEAD)}"
-version="${VERSION:-0.0.0-dev}"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/layerdraw-engine-wasm-repro.XXXXXX")"
 cleanup() {
   rm -rf "$temporary"

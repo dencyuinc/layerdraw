@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import assert from "node:assert/strict";
-import {chmod, cp, mkdtemp, readFile, rm} from "node:fs/promises";
+import {chmod, cp, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {pathToFileURL} from "node:url";
@@ -48,6 +48,54 @@ function createEndpoint(endpointGeneration) {
 
 function isFailure(code) {
   return (error) => error instanceof EngineWorkerTransportError && error.failure.code === code;
+}
+
+async function createMutatedAuthorityFixture(prefix, mutate, packageVersion = artifactManifest.build.release_version) {
+  const temporary = await mkdtemp(join(tmpdir(), prefix));
+  const artifactRoot = join(temporary, "dist");
+  await cp(new URL("../dist/", import.meta.url), artifactRoot, {recursive: true});
+  const manifestPath = join(artifactRoot, "engine-wasm.manifest.json");
+  const sbomPath = join(artifactRoot, "engine-wasm.cdx.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const sbom = JSON.parse(await readFile(sbomPath, "utf8"));
+  const sbomChanged = await mutate(manifest, sbom) === true;
+  if (sbomChanged) {
+    const sbomBytes = Buffer.from(`${JSON.stringify(sbom)}\n`);
+    await writeFile(sbomPath, sbomBytes);
+    const entry = manifest.files.find((file) => file.path === "engine-wasm.cdx.json");
+    entry.size = sbomBytes.byteLength;
+    entry.digest = await sha256(sbomBytes.buffer.slice(sbomBytes.byteOffset, sbomBytes.byteOffset + sbomBytes.byteLength));
+  }
+  const mutatedManifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+  await writeFile(manifestPath, mutatedManifestBytes);
+  const packageManifestPath = join(temporary, "package.json");
+  await writeFile(packageManifestPath, `${JSON.stringify({name: "@layerdraw/engine-wasm", version: packageVersion})}\n`);
+  const buffer = mutatedManifestBytes.buffer.slice(mutatedManifestBytes.byteOffset, mutatedManifestBytes.byteOffset + mutatedManifestBytes.byteLength);
+  return {
+    temporary,
+    artifactBaseURL: `${pathToFileURL(artifactRoot).href}/`,
+    packageManifestURL: pathToFileURL(packageManifestPath).href,
+    artifactManifestDigest: await sha256(buffer),
+  };
+}
+
+async function assertLinkedAuthorityRejected(fixture, endpointGeneration) {
+  let adapter;
+  const transport = createEngineWorkerTransportWithFactory({
+    endpointGeneration,
+    expectedArtifactManifestDigest: fixture.artifactManifestDigest,
+    releaseManifestDigest,
+    disposeTimeoutMilliseconds: 2_000,
+  }, workerModuleURL, (url, options) => {
+    adapter = new NodeWorkerAdapter(url, options, {
+      artifactBaseURL: fixture.artifactBaseURL,
+      packageManifestURL: fixture.packageManifestURL,
+    });
+    return adapter;
+  });
+  await assert.rejects(transport.ready, isFailure("engine.worker.initialization_failed"));
+  await transport.dispose();
+  await adapter.exited;
 }
 
 test("real Node worker_threads owns the packaged Go/WASM lifecycle", {timeout: 120_000}, async () => {
@@ -136,6 +184,59 @@ test("Node executes the verified wasm_exec byte snapshot after its source path c
   } finally {
     adapter?.terminate();
     await rm(temporary, {recursive: true, force: true});
+  }
+});
+
+test("Ready is blocked by linked Go release authority after a self-consistent package, manifest, and SBOM forgery", {timeout: 120_000}, async () => {
+  const forgedVersion = "9.9.9";
+  const fixture = await createMutatedAuthorityFixture("layerdraw-engine-wasm-linked-release-", (manifest, sbom) => {
+    const oldRef = `pkg:npm/%40layerdraw/engine-wasm@${manifest.build.release_version}`;
+    const forgedRef = `pkg:npm/%40layerdraw/engine-wasm@${forgedVersion}`;
+    manifest.build.flags[2] = manifest.build.flags[2].replace(`main.releaseVersion=${manifest.build.release_version}`, `main.releaseVersion=${forgedVersion}`);
+    manifest.build.release_version = forgedVersion;
+    sbom.metadata.component.version = forgedVersion;
+    sbom.metadata.component.purl = forgedRef;
+    sbom.metadata.component["bom-ref"] = forgedRef;
+    sbom.dependencies.find((entry) => entry.ref === oldRef).ref = forgedRef;
+    return true;
+  }, forgedVersion);
+  try {
+    await assertLinkedAuthorityRejected(fixture, "node-linked-release-mismatch");
+  } finally {
+    await rm(fixture.temporary, {recursive: true, force: true});
+  }
+});
+
+test("Ready is blocked when the verified manifest schema digest differs from generated Go authority", {timeout: 120_000}, async () => {
+  const fixture = await createMutatedAuthorityFixture("layerdraw-engine-wasm-schema-authority-", (manifest) => {
+    manifest.protocol.schema_digest = `sha256:${"0".repeat(64)}`;
+    return false;
+  });
+  try {
+    await assertLinkedAuthorityRejected(fixture, "node-schema-authority-mismatch");
+  } finally {
+    await rm(fixture.temporary, {recursive: true, force: true});
+  }
+});
+
+test("Ready is blocked by linked legal authority after a self-consistent manifest, SBOM, and digest forgery", {timeout: 120_000}, async () => {
+  const fixture = await createMutatedAuthorityFixture("layerdraw-engine-wasm-legal-authority-", async (manifest, sbom) => {
+    const oldDigest = manifest.sbom_authority.digest;
+    manifest.sbom_authority.modules[0].license = "MIT";
+    sbom.components[0].licenses[0].license.id = "MIT";
+    const projection = {
+      runtime: manifest.sbom_authority.runtime,
+      modules: manifest.sbom_authority.modules,
+    };
+    const bytes = Buffer.from(`${JSON.stringify(projection)}\n`);
+    manifest.sbom_authority.digest = await sha256(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    manifest.build.flags[2] = manifest.build.flags[2].replace(`main.sbomAuthorityDigest=${oldDigest}`, `main.sbomAuthorityDigest=${manifest.sbom_authority.digest}`);
+    return true;
+  });
+  try {
+    await assertLinkedAuthorityRejected(fixture, "node-legal-authority-mismatch");
+  } finally {
+    await rm(fixture.temporary, {recursive: true, force: true});
   }
 });
 

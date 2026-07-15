@@ -8,7 +8,8 @@ import wasmtransport "github.com/dencyuinc/layerdraw/internal/transport/wasm"
 
 func main() {
 	wasmtransport.Run(wasmtransport.StaticConfig{
-		EngineRelease:  releaseVersion,
-		SourceRevision: sourceRevision,
+		EngineRelease:       releaseVersion,
+		SourceRevision:      sourceRevision,
+		SBOMAuthorityDigest: sbomAuthorityDigest,
 	})
 }

@@ -107,7 +107,7 @@ engine-wasm:
 		./tools/build-engine-wasm.sh
 
 engine-wasm-check: engine-wasm
-	$(GO) run ./tools/wasmartifact verify -output "$(ENGINE_WASM_DIR)"
+	$(GO) run ./tools/wasmartifact verify -root "$(CURDIR)" -output "$(ENGINE_WASM_DIR)" -version "$(VERSION)"
 	LAYERDRAW_ENGINE_WASM_DIR="$(CURDIR)/$(ENGINE_WASM_DIR)" \
 		$(GO) test -run EngineWASM ./tests/packaged/...
 

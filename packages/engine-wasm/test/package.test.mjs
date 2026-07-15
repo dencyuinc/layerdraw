@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import {execFile} from "node:child_process";
 import {createHash} from "node:crypto";
-import {mkdtemp, readFile, writeFile} from "node:fs/promises";
+import {cp, mkdir, mkdtemp, readFile, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
-import {join} from "node:path";
+import {dirname, join} from "node:path";
 import {promisify} from "node:util";
 import test from "node:test";
 
@@ -82,6 +82,48 @@ test("packed package is closed, legal-complete, offline-installable, and SSR-saf
     artifactRoot,
     manifest.version,
   ], {cwd: repositoryRoot, maxBuffer: 10 * 1024 * 1024});
+  await execute("node", ["--input-type=module", "-e", `
+    import {createHash} from "node:crypto";
+    import {readFile} from "node:fs/promises";
+    import {pathToFileURL} from "node:url";
+    const artifactRoot = process.env.ARTIFACT_ROOT;
+    const packageRoot = process.env.PACKAGE_ROOT;
+    const {createVerifiedWasmEndpoint} = await import(pathToFileURL(artifactRoot + "/artifact.js"));
+    const manifestBytes = await readFile(artifactRoot + "/engine-wasm.manifest.json");
+    const manifest = JSON.parse(manifestBytes);
+    const packageManifest = JSON.parse(await readFile(packageRoot + "/package.json", "utf8"));
+    const arrayBuffer = (bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const endpoint = await createVerifiedWasmEndpoint({
+      endpointGeneration: "packed-release-authority",
+      expectedArtifactManifestDigest: "sha256:" + createHash("sha256").update(manifestBytes).digest("hex"),
+      releaseManifestDigest: "sha256:" + "5".repeat(64),
+    }, {
+      artifactBaseURL: pathToFileURL(artifactRoot + "/").href,
+      packageManifestURL: pathToFileURL(packageRoot + "/package.json").href,
+      async loadBytes(url) { return arrayBuffer(await readFile(new URL(url))); },
+    });
+    const control = new TextEncoder().encode(JSON.stringify({
+      operation: "engine.handshake",
+      payload: {
+        client_release: "0.0.0-dev",
+        protocols: [{name: "engine", supported_range: "1.0..1.0", versions: [{version: "1.0", schema_digest: manifest.protocol.schema_digest}]}],
+        required_capabilities: ["engine.compile"],
+        optional_capabilities: [],
+      },
+      protocol: {name: "engine", version: "1.0"},
+      request_id: "packed-release-authority-request",
+    })).buffer;
+    const result = endpoint.request({control, blobs: []});
+    if (!result.ok) throw new Error(result.failure.code);
+    const response = JSON.parse(new TextDecoder().decode(result.response.control));
+    if (manifest.build.release_version !== packageManifest.version || response.engine_release !== packageManifest.version ||
+        response.payload.host_release !== packageManifest.version) throw new Error("packed release authorities diverged");
+    endpoint.dispose();
+  `], {
+    cwd: repositoryRoot,
+    env: {...process.env, ARTIFACT_ROOT: artifactRoot, PACKAGE_ROOT: join(extracted, "package")},
+    maxBuffer: 10 * 1024 * 1024,
+  });
 
   const consumer = join(temporary, "consumer");
   await execute("mkdir", [consumer]);
@@ -108,4 +150,51 @@ test("package build rejects an explicit release version that differs from packag
     cwd: packageRoot,
     env: {...process.env, VERSION: "9.9.9-mismatch"},
   }), /VERSION must exactly equal package\.json version/);
+});
+
+test("artifact build and reproducibility entrypoints reject unset and empty VERSION", async () => {
+  for (const script of ["tools/build-engine-wasm.sh", "tools/check-engine-wasm-reproducible.sh"]) {
+    for (const mode of ["unset", "empty"]) {
+      const environment = {...process.env};
+      if (mode === "unset") delete environment.VERSION;
+      else environment.VERSION = "";
+      await assert.rejects(execute(new URL(script, repositoryRoot).pathname, [], {
+        cwd: repositoryRoot,
+        env: environment,
+      }), /VERSION must be explicitly set and nonempty/, `${script} accepted ${mode} VERSION`);
+    }
+  }
+});
+
+test("Go artifact verification rejects a self-consistent forged release against package authority", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "layerdraw-engine-wasm-forged-release-"));
+  const artifactRoot = join(temporary, "artifact");
+  await mkdir(artifactRoot);
+  const manifestPath = new URL("../dist/engine-wasm.manifest.json", import.meta.url);
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  for (const file of manifest.files) {
+    await mkdir(dirname(join(artifactRoot, file.path)), {recursive: true});
+    await cp(new URL(`../dist/${file.path}`, import.meta.url), join(artifactRoot, file.path));
+  }
+  const sbomPath = join(artifactRoot, "engine-wasm.cdx.json");
+  const sbom = JSON.parse(await readFile(sbomPath, "utf8"));
+  const packageManifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const forgedVersion = "9.9.9";
+  const oldRef = `pkg:npm/%40layerdraw/engine-wasm@${packageManifest.version}`;
+  const forgedRef = `pkg:npm/%40layerdraw/engine-wasm@${forgedVersion}`;
+  manifest.build.release_version = forgedVersion;
+  manifest.build.flags[2] = manifest.build.flags[2].replace(`main.releaseVersion=${packageManifest.version}`, `main.releaseVersion=${forgedVersion}`);
+  sbom.metadata.component.version = forgedVersion;
+  sbom.metadata.component.purl = forgedRef;
+  sbom.metadata.component["bom-ref"] = forgedRef;
+  sbom.dependencies.find((entry) => entry.ref === oldRef).ref = forgedRef;
+  const sbomBytes = Buffer.from(`${JSON.stringify(sbom)}\n`);
+  await writeFile(sbomPath, sbomBytes);
+  const entry = manifest.files.find((file) => file.path === "engine-wasm.cdx.json");
+  entry.size = sbomBytes.byteLength;
+  entry.digest = `sha256:${createHash("sha256").update(sbomBytes).digest("hex")}`;
+  await writeFile(join(artifactRoot, "engine-wasm.manifest.json"), `${JSON.stringify(manifest)}\n`);
+  await assert.rejects(execute("go", ["run", "./tools/wasmartifact", "verify", "-root", ".", "-output", artifactRoot, "-version", packageManifest.version], {
+    cwd: repositoryRoot,
+  }), /artifact manifest build identity mismatch/);
 });

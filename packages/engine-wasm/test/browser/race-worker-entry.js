@@ -16,6 +16,7 @@ URL.revokeObjectURL = (url) => {
 installEngineWorker(globalThis, async (init) => {
   const endpoint = await createVerifiedWasmEndpoint(init, {
     artifactBaseURL: new URL(`./race-artifact/${token}/`, import.meta.url).href,
+    packageManifestURL: new URL("../../package.json", import.meta.url).href,
   });
   globalThis.postMessage({kind: "__layerdraw_snapshot_resource", revoked});
   return endpoint;

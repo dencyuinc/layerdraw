@@ -5,4 +5,5 @@ import {installEngineWorker, type DedicatedWorkerScopeLike} from "./worker-runti
 
 installEngineWorker(globalThis as unknown as DedicatedWorkerScopeLike, (init) => createVerifiedWasmEndpoint(init, {
   artifactBaseURL: new URL("./", import.meta.url).href,
+  packageManifestURL: new URL("../package.json", import.meta.url).href,
 }));

@@ -56,6 +56,7 @@ type artifactManifest struct {
 	Build                   manifestBuild           `json:"build"`
 	Protocol                manifestProtocol        `json:"protocol"`
 	RuntimeSupport          manifestRuntimeSupport  `json:"runtime_support"`
+	SBOMAuthority           manifestSBOMAuthority   `json:"sbom_authority"`
 	Files                   []manifestFile          `json:"files"`
 	Transport               manifestTransport       `json:"transport"`
 	CompilerLimits          manifestCompilerLimits  `json:"compiler_limits"`
@@ -84,6 +85,33 @@ type manifestRuntimeSupport struct {
 	File      string `json:"file"`
 	GoVersion string `json:"go_version"`
 	Digest    string `json:"digest"`
+}
+
+type manifestSBOMAuthority struct {
+	Digest  string                        `json:"digest"`
+	Runtime manifestSBOMRuntimeComponent  `json:"runtime"`
+	Modules []manifestSBOMModuleComponent `json:"modules"`
+}
+
+type manifestSBOMRuntimeComponent struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	PURL    string `json:"purl"`
+	BOMRef  string `json:"bom_ref"`
+	Scope   string `json:"scope"`
+	Digest  string `json:"digest"`
+	License string `json:"license"`
+}
+
+type manifestSBOMModuleComponent struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	PURL    string `json:"purl"`
+	BOMRef  string `json:"bom_ref"`
+	Scope   string `json:"scope"`
+	License string `json:"license"`
 }
 
 type manifestFile struct {
@@ -147,7 +175,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("expected subcommand: finalize or verify")
+		return errors.New("expected subcommand: validate-version, sbom-authority-digest, finalize, or verify")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -160,21 +188,36 @@ func run(args []string) error {
 		return err
 	}
 	switch args[0] {
+	case "validate-version":
+		if *version == "" {
+			return errors.New("validate-version requires -version")
+		}
+		return validateReleaseVersion(*version)
+	case "sbom-authority-digest":
+		modules, err := linkedModules(*root)
+		if err != nil {
+			return err
+		}
+		fmt.Println(sbomAuthorityManifest(modules).Digest)
+		return nil
 	case "finalize":
 		if *version == "" || *sourceRevision == "" || *goLicense == "" {
 			return errors.New("finalize requires -version, -source-revision, and -go-license")
 		}
 		return finalize(*root, *output, *version, *sourceRevision, *goLicense)
 	case "verify":
-		return verify(*output)
+		if *version == "" {
+			return errors.New("verify requires authoritative -version")
+		}
+		return verify(*root, *output, *version)
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
 }
 
 func finalize(root, output, version, sourceRevision, goLicense string) error {
-	if _, err := protocolcommon.EncodeReleaseVersion(protocolcommon.ReleaseVersion(version)); err != nil {
-		return fmt.Errorf("invalid release version %q", version)
+	if err := validateReleaseVersion(version); err != nil {
+		return err
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(sourceRevision) {
 		return fmt.Errorf("source revision must be 40 lowercase hexadecimal characters")
@@ -182,10 +225,11 @@ func finalize(root, output, version, sourceRevision, goLicense string) error {
 	if err := verifyWasmExec(output); err != nil {
 		return err
 	}
-	if err := createLegalAndSBOM(root, output, version, goLicense); err != nil {
+	modules, err := createLegalAndSBOM(root, output, version, goLicense)
+	if err != nil {
 		return err
 	}
-	manifest, err := buildManifest(output, version, sourceRevision)
+	manifest, err := buildManifest(output, version, sourceRevision, modules)
 	if err != nil {
 		return err
 	}
@@ -196,10 +240,20 @@ func finalize(root, output, version, sourceRevision, goLicense string) error {
 	if err := os.WriteFile(filepath.Join(output, manifestName), data, 0o644); err != nil {
 		return err
 	}
-	return verify(output)
+	return verify(root, output, version)
 }
 
-func verify(output string) error {
+func validateReleaseVersion(version string) error {
+	if _, err := protocolcommon.EncodeReleaseVersion(protocolcommon.ReleaseVersion(version)); err != nil {
+		return fmt.Errorf("invalid release version %q", version)
+	}
+	return nil
+}
+
+func verify(root, output, expectedVersion string) error {
+	if err := validateReleaseVersion(expectedVersion); err != nil {
+		return err
+	}
 	if err := verifyWasmExec(output); err != nil {
 		return err
 	}
@@ -218,7 +272,11 @@ func verify(output string) error {
 	if !bytes.Equal(data, canonical) {
 		return errors.New("artifact manifest is not canonical JSON")
 	}
-	if err := verifyManifestAuthority(manifest); err != nil {
+	modules, err := linkedModules(root)
+	if err != nil {
+		return err
+	}
+	if err := verifyManifestAuthority(manifest, expectedVersion, modules); err != nil {
 		return err
 	}
 	seen := make(map[string]bool, len(manifest.Files))
@@ -252,17 +310,17 @@ func verify(output string) error {
 	if !slices.Equal(manifest.Files, actualFiles) {
 		return errors.New("artifact manifest does not describe the exact output file set")
 	}
-	if err := verifySBOM(output, manifest.Build.ReleaseVersion); err != nil {
+	if err := verifySBOM(output, expectedVersion, modules); err != nil {
 		return err
 	}
 	return nil
 }
 
-func verifyManifestAuthority(manifest artifactManifest) error {
+func verifyManifestAuthority(manifest artifactManifest, expectedVersion string, modules []bundledModule) error {
 	if manifest.ArtifactID != "@layerdraw/engine-wasm" || manifest.ArtifactManifestVersion != 1 || manifest.Build.GoVersion != expectedGoVersion || manifest.Protocol.SchemaDigest != engineprotocol.SchemaDigest {
 		return errors.New("artifact manifest authority mismatch")
 	}
-	if _, err := protocolcommon.EncodeReleaseVersion(protocolcommon.ReleaseVersion(manifest.Build.ReleaseVersion)); err != nil ||
+	if manifest.Build.ReleaseVersion != expectedVersion ||
 		!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(manifest.Build.SourceRevision) ||
 		manifest.Build.CGOEnabled || manifest.Build.GoExperiment != "" || manifest.Build.GOOSGOARCH != "js/wasm" || manifest.Build.MainPackage != "./cmd/layerdraw-engine" {
 		return errors.New("artifact manifest build identity mismatch")
@@ -270,12 +328,13 @@ func verifyManifestAuthority(manifest artifactManifest) error {
 	expectedFlags := []string{
 		"-trimpath",
 		"-buildvcs=false",
-		"-ldflags=-buildid= -s -w -X main.releaseVersion=" + manifest.Build.ReleaseVersion + " -X main.sourceRevision=" + manifest.Build.SourceRevision,
+		"-ldflags=-buildid= -s -w -X main.releaseVersion=" + manifest.Build.ReleaseVersion + " -X main.sourceRevision=" + manifest.Build.SourceRevision + " -X main.sbomAuthorityDigest=" + manifest.SBOMAuthority.Digest,
 	}
 	if !slices.Equal(manifest.Build.Flags, expectedFlags) ||
 		manifest.Protocol.Name != string(engineprotocol.EngineProtocolRefNameValue) ||
 		manifest.Protocol.Version != string(engineprotocol.EngineProtocolRefVersionValue) ||
-		manifest.RuntimeSupport != (manifestRuntimeSupport{File: "wasm_exec.js", GoVersion: expectedGoVersion, Digest: "sha256:" + expectedWasmExecSHA256}) {
+		manifest.RuntimeSupport != (manifestRuntimeSupport{File: "wasm_exec.js", GoVersion: expectedGoVersion, Digest: "sha256:" + expectedWasmExecSHA256}) ||
+		!reflectSBOMAuthority(manifest.SBOMAuthority, modules) {
 		return errors.New("artifact manifest generated/build authority mismatch")
 	}
 	if manifest.Transport != transportManifest() || manifest.CompilerLimits != compilerLimitsManifest() {
@@ -290,7 +349,7 @@ func verifyManifestAuthority(manifest artifactManifest) error {
 	return nil
 }
 
-func buildManifest(output, version, sourceRevision string) (artifactManifest, error) {
+func buildManifest(output, version, sourceRevision string, modules []bundledModule) (artifactManifest, error) {
 	files, err := artifactFiles(output)
 	if err != nil {
 		return artifactManifest{}, err
@@ -309,7 +368,7 @@ func buildManifest(output, version, sourceRevision string) (artifactManifest, er
 			Flags: []string{
 				"-trimpath",
 				"-buildvcs=false",
-				"-ldflags=-buildid= -s -w -X main.releaseVersion=" + version + " -X main.sourceRevision=" + sourceRevision,
+				"-ldflags=-buildid= -s -w -X main.releaseVersion=" + version + " -X main.sourceRevision=" + sourceRevision + " -X main.sbomAuthorityDigest=" + sbomAuthorityManifest(modules).Digest,
 			},
 		},
 		Protocol: manifestProtocol{
@@ -322,12 +381,47 @@ func buildManifest(output, version, sourceRevision string) (artifactManifest, er
 			GoVersion: expectedGoVersion,
 			Digest:    "sha256:" + expectedWasmExecSHA256,
 		},
+		SBOMAuthority:   sbomAuthorityManifest(modules),
 		Files:           files,
 		Transport:       transportManifest(),
 		CompilerLimits:  compilerLimitsManifest(),
 		BrowserContract: browserContractManifest(),
 		Licenses:        licenseManifest(),
 	}, nil
+}
+
+func sbomAuthorityManifest(modules []bundledModule) manifestSBOMAuthority {
+	runtimeRef := "pkg:generic/golang-wasm-runtime@" + expectedGoVersion
+	authority := manifestSBOMAuthority{
+		Runtime: manifestSBOMRuntimeComponent{
+			Type: "framework", Name: "Go WebAssembly runtime support", Version: expectedGoVersion,
+			PURL: runtimeRef, BOMRef: runtimeRef, Scope: "required",
+			Digest: "sha256:" + expectedWasmExecSHA256, License: "BSD-3-Clause",
+		},
+		Modules: make([]manifestSBOMModuleComponent, 0, len(modules)),
+	}
+	for _, module := range modules {
+		purl := "pkg:golang/" + module.Review.Module + "@" + module.Review.Version
+		authority.Modules = append(authority.Modules, manifestSBOMModuleComponent{
+			Type: "library", Name: module.Review.Module, Version: module.Review.Version,
+			PURL: purl, BOMRef: purl, Scope: "required", License: module.Review.License,
+		})
+	}
+	projection := struct {
+		Runtime manifestSBOMRuntimeComponent  `json:"runtime"`
+		Modules []manifestSBOMModuleComponent `json:"modules"`
+	}{Runtime: authority.Runtime, Modules: authority.Modules}
+	data, err := canonicalJSON(projection)
+	if err != nil {
+		panic(err)
+	}
+	digest := sha256.Sum256(data)
+	authority.Digest = "sha256:" + hex.EncodeToString(digest[:])
+	return authority
+}
+
+func reflectSBOMAuthority(value manifestSBOMAuthority, modules []bundledModule) bool {
+	return value.Runtime == sbomAuthorityManifest(modules).Runtime && slices.Equal(value.Modules, sbomAuthorityManifest(modules).Modules)
 }
 
 func browserContractManifest() manifestBrowserContract {
@@ -475,7 +569,7 @@ type bundledModule struct {
 	LicenseText []byte
 }
 
-func createLegalAndSBOM(root, output, version, goLicense string) error {
+func createLegalAndSBOM(root, output, version, goLicense string) ([]bundledModule, error) {
 	for source, destination := range map[string]string{
 		"LICENSE":                            "LICENSE",
 		"NOTICE":                             "NOTICE",
@@ -483,16 +577,16 @@ func createLegalAndSBOM(root, output, version, goLicense string) error {
 		"docs/legal/licenses/Apache-2.0.txt": "licenses/Apache-2.0.txt",
 	} {
 		if err := copyFile(filepath.Join(root, filepath.FromSlash(source)), filepath.Join(output, filepath.FromSlash(destination))); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	modules, err := linkedModules(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	license, err := os.ReadFile(goLicense)
 	if err != nil {
-		return fmt.Errorf("read Go distribution license: %w", err)
+		return nil, fmt.Errorf("read Go distribution license: %w", err)
 	}
 	var result bytes.Buffer
 	result.WriteString("Third-Party Notices for @layerdraw/engine-wasm\n\n")
@@ -511,9 +605,12 @@ func createLegalAndSBOM(root, output, version, goLicense string) error {
 	result.Write(bytes.TrimSpace(license))
 	result.WriteByte('\n')
 	if err := os.WriteFile(filepath.Join(output, "THIRD_PARTY_NOTICES.txt"), result.Bytes(), 0o644); err != nil {
-		return err
+		return nil, err
 	}
-	return writeSBOM(output, version, modules)
+	if err := writeSBOM(output, version, modules); err != nil {
+		return nil, err
+	}
+	return modules, nil
 }
 
 func linkedModules(root string) ([]bundledModule, error) {
@@ -590,11 +687,20 @@ func linkedModules(root string) ([]bundledModule, error) {
 }
 
 func writeSBOM(output, version string, modules []bundledModule) error {
-	rootRef := "pkg:npm/%40layerdraw/engine-wasm@" + version
 	wasmDigest, err := fileDigest(filepath.Join(output, "layerdraw-engine.wasm"))
 	if err != nil {
 		return err
 	}
+	document := sbomDocument(version, wasmDigest, modules)
+	canonical, err := canonicalJSON(document)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(output, sbomName), canonical, 0o644)
+}
+
+func sbomDocument(version, wasmDigest string, modules []bundledModule) map[string]any {
+	rootRef := "pkg:npm/%40layerdraw/engine-wasm@" + version
 	runtimeRef := "pkg:generic/golang-wasm-runtime@" + expectedGoVersion
 	rootComponent := map[string]any{
 		"type": "application", "name": "@layerdraw/engine-wasm", "version": version,
@@ -629,7 +735,7 @@ func writeSBOM(output, version string, modules []bundledModule) error {
 	rootDependencies = append(rootDependencies, runtimeRef)
 	dependencies = append([]any{map[string]any{"ref": rootRef, "dependsOn": rootDependencies}}, dependencies...)
 	dependencies = append(dependencies, map[string]any{"ref": runtimeRef, "dependsOn": []any{}})
-	document := map[string]any{
+	return map[string]any{
 		"$schema":      "http://cyclonedx.org/schema/bom-1.6.schema.json",
 		"bomFormat":    "CycloneDX",
 		"specVersion":  "1.6",
@@ -638,11 +744,6 @@ func writeSBOM(output, version string, modules []bundledModule) error {
 		"components":   components,
 		"dependencies": dependencies,
 	}
-	canonical, err := canonicalJSON(document)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(output, sbomName), canonical, 0o644)
 }
 
 func copyFile(source, destination string) error {
@@ -656,7 +757,7 @@ func copyFile(source, destination string) error {
 	return os.WriteFile(destination, data, 0o644)
 }
 
-func verifySBOM(output, expectedVersion string) error {
+func verifySBOM(output, expectedVersion string, modules []bundledModule) error {
 	data, err := os.ReadFile(filepath.Join(output, sbomName))
 	if err != nil {
 		return err
@@ -669,53 +770,24 @@ func verifySBOM(output, expectedVersion string) error {
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(data, canonical) || document["$schema"] != "http://cyclonedx.org/schema/bom-1.6.schema.json" || document["bomFormat"] != "CycloneDX" || document["specVersion"] != "1.6" || document["version"] != float64(1) {
+	if !bytes.Equal(data, canonical) {
 		return errors.New("artifact SBOM is not canonical CycloneDX 1.6")
-	}
-	metadata, ok := document["metadata"].(map[string]any)
-	if !ok || len(metadata) != 1 {
-		return errors.New("artifact SBOM metadata is not closed")
-	}
-	root, ok := metadata["component"].(map[string]any)
-	if !ok {
-		return errors.New("artifact SBOM root component is missing")
-	}
-	rootRef := "pkg:npm/%40layerdraw/engine-wasm@" + expectedVersion
-	if len(root) != 7 || root["type"] != "application" || root["name"] != "@layerdraw/engine-wasm" || root["version"] != expectedVersion || root["purl"] != rootRef || root["bom-ref"] != rootRef {
-		return errors.New("artifact SBOM root release authority mismatch")
 	}
 	wasmDigest, err := fileDigest(filepath.Join(output, "layerdraw-engine.wasm"))
 	if err != nil {
 		return err
 	}
-	hashes, hashesOK := root["hashes"].([]any)
-	licenses, licensesOK := root["licenses"].([]any)
-	if !hashesOK || len(hashes) != 1 || !licensesOK || len(licenses) != 1 {
-		return errors.New("artifact SBOM root hash/license authority mismatch")
-	}
-	hash, hashOK := hashes[0].(map[string]any)
-	licenseEntry, licenseOK := licenses[0].(map[string]any)
-	license, licenseValueOK := licenseEntry["license"].(map[string]any)
-	if !hashOK || len(hash) != 2 || hash["alg"] != "SHA-256" || hash["content"] != wasmDigest ||
-		!licenseOK || len(licenseEntry) != 1 || !licenseValueOK || len(license) != 1 || license["name"] != "LayerDraw License 1.0" {
-		return errors.New("artifact SBOM root hash/license authority mismatch")
-	}
-	components, ok := document["components"].([]any)
-	if !ok {
-		return errors.New("artifact SBOM components are missing")
-	}
-	var names []string
-	for _, raw := range components {
-		component, ok := raw.(map[string]any)
-		if ok {
-			name, _ := component["name"].(string)
-			names = append(names, name)
-		}
-	}
-	if !slices.Contains(names, "Go WebAssembly runtime support") {
-		return errors.New("artifact SBOM omits Go WebAssembly runtime support")
+	expected := sbomDocument(expectedVersion, wasmDigest, modules)
+	if !deepEqualJSON(document, expected) {
+		return errors.New("artifact SBOM release, legal, component, or dependency authority mismatch")
 	}
 	return nil
+}
+
+func deepEqualJSON(left, right any) bool {
+	leftJSON, leftErr := canonicalJSON(left)
+	rightJSON, rightErr := canonicalJSON(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func verifyWasmExec(output string) error {

@@ -34,8 +34,10 @@ parentPort.on("messageerror", () => {
 });
 
 const artifactBaseURL = typeof workerData?.artifactBaseURL === "string" ? workerData.artifactBaseURL : new URL("../../dist/", import.meta.url).href;
+const packageManifestURL = typeof workerData?.packageManifestURL === "string" ? workerData.packageManifestURL : new URL("../../package.json", import.meta.url).href;
 installEngineWorker(scope, (init) => createVerifiedWasmEndpoint(init, {
   artifactBaseURL,
+  packageManifestURL,
   async loadBytes(url) {
     const bytes = await readFile(fileURLToPath(url));
     const snapshot = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);

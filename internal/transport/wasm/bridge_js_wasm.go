@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
+	"sort"
 	"strconv"
 	"unicode/utf8"
 
@@ -20,8 +22,9 @@ import (
 const GlobalBridgeName = "__layerdrawEngineWasmV1"
 
 type StaticConfig struct {
-	EngineRelease  string
-	SourceRevision string
+	EngineRelease       string
+	SourceRevision      string
+	SBOMAuthorityDigest string
 }
 
 type jsBridge struct {
@@ -94,12 +97,68 @@ func (bridge *jsBridge) initialize(args []js.Value) any {
 	if err != nil {
 		return failureValue(localFailure(FailureInitializationFailed))
 	}
+	goVersion, modules, ok := linkedBuildInfo()
+	if !ok {
+		return failureValue(localFailure(FailureInitializationFailed))
+	}
 	bridge.session = session
 	result := js.Global().Get("Object").New()
 	result.Set("ok", true)
 	result.Set("endpoint_generation", generation)
+	result.Set("engine_release", bridge.static.EngineRelease)
+	result.Set("source_revision", bridge.static.SourceRevision)
 	result.Set("protocol_schema_digest", engineprotocol.SchemaDigest)
+	result.Set("go_version", goVersion)
+	result.Set("module_build_info", moduleBuildInfoValue(modules))
+	result.Set("sbom_authority_digest", bridge.static.SBOMAuthorityDigest)
 	result.Set("transport_limits", limitsValue(session.Limits()))
+	return result
+}
+
+type linkedModule struct {
+	Path    string
+	Version string
+}
+
+func linkedBuildInfo() (string, []linkedModule, bool) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info.GoVersion == "" {
+		return "", nil, false
+	}
+	modules := make([]linkedModule, 0, len(info.Deps))
+	seen := make(map[string]bool, len(info.Deps))
+	for _, dependency := range info.Deps {
+		if dependency == nil {
+			return "", nil, false
+		}
+		module := dependency
+		if dependency.Replace != nil {
+			module = dependency.Replace
+		}
+		if module.Path == "" || module.Version == "" {
+			return "", nil, false
+		}
+		key := module.Path + "@" + module.Version
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		modules = append(modules, linkedModule{Path: module.Path, Version: module.Version})
+	}
+	sort.Slice(modules, func(left, right int) bool {
+		return modules[left].Path+"@"+modules[left].Version < modules[right].Path+"@"+modules[right].Version
+	})
+	return info.GoVersion, modules, true
+}
+
+func moduleBuildInfoValue(modules []linkedModule) js.Value {
+	result := js.Global().Get("Array").New(len(modules))
+	for index, module := range modules {
+		value := js.Global().Get("Object").New()
+		value.Set("path", module.Path)
+		value.Set("version", module.Version)
+		result.SetIndex(index, value)
+	}
 	return result
 }
 

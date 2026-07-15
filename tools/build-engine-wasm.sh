@@ -7,11 +7,23 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 go_command="${GO:-go}"
-version="${VERSION:-0.0.0-dev}"
+if [[ -z "${VERSION+x}" || -z "$VERSION" ]]; then
+  printf 'VERSION must be explicitly set and nonempty\n' >&2
+  exit 1
+fi
+version="$VERSION"
 output="${ENGINE_WASM_OUTPUT_DIR:-$repo_root/dist/engine-wasm}"
 allow_dirty="${ENGINE_WASM_ALLOW_DIRTY:-0}"
 expected_go_version='go1.26.5'
 expected_wasm_exec_sha256='0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14'
+
+env \
+  GOTOOLCHAIN=go1.26.5 \
+  GOENV=off \
+  GOWORK=off \
+  GOEXPERIMENT= \
+  GOFLAGS=-mod=readonly \
+  "$go_command" run ./tools/wasmartifact validate-version -version "$version"
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   source_revision="${SOURCE_REVISION:-$(git rev-parse HEAD)}"
@@ -65,7 +77,14 @@ env \
   GOFLAGS=-mod=readonly \
   "$go_command" mod verify
 
-ldflags="-buildid= -s -w -X main.releaseVersion=$version -X main.sourceRevision=$source_revision"
+sbom_authority_digest="$(env \
+  GOTOOLCHAIN=go1.26.5 \
+  GOENV=off \
+  GOWORK=off \
+  GOEXPERIMENT= \
+  GOFLAGS=-mod=readonly \
+  "$go_command" run ./tools/wasmartifact sbom-authority-digest -root "$repo_root")"
+ldflags="-buildid= -s -w -X main.releaseVersion=$version -X main.sourceRevision=$source_revision -X main.sbomAuthorityDigest=$sbom_authority_digest"
 env \
   GOTOOLCHAIN=go1.26.5 \
   GOOS=js \

@@ -49,7 +49,7 @@ func TestArtifactFilesAndSBOMAreDeterministic(t *testing.T) {
 	if err := writeSBOM(output, "0.0.0-dev", modules); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifySBOM(output, "0.0.0-dev"); err != nil {
+	if err := verifySBOM(output, "0.0.0-dev", modules); err != nil {
 		t.Fatal(err)
 	}
 	first, err := os.ReadFile(filepath.Join(output, sbomName))
@@ -76,11 +76,12 @@ func TestArtifactFilesAndSBOMAreDeterministic(t *testing.T) {
 }
 
 func TestManifestBrowserContractAndLicensesRejectEveryFieldMutation(t *testing.T) {
-	base, err := buildManifest(t.TempDir(), "0.0.0", strings.Repeat("a", 40))
+	modules := []bundledModule{{Review: reviewedGoModule{Module: "example.com/module", Version: "v1.2.3", License: "MIT"}}}
+	base, err := buildManifest(t.TempDir(), "0.0.0", strings.Repeat("a", 40), modules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyManifestAuthority(base); err != nil {
+	if err := verifyManifestAuthority(base, "0.0.0", modules); err != nil {
 		t.Fatalf("valid authority rejected: %v", err)
 	}
 	tests := []struct {
@@ -93,6 +94,14 @@ func TestManifestBrowserContractAndLicensesRejectEveryFieldMutation(t *testing.T
 		{"product license", func(value *artifactManifest) { value.Licenses.Product = "MIT" }},
 		{"runtime license", func(value *artifactManifest) { value.Licenses.RuntimeSupport = "MIT" }},
 		{"SBOM path", func(value *artifactManifest) { value.Licenses.SBOM = "other.cdx.json" }},
+		{"release authority", func(value *artifactManifest) { value.Build.ReleaseVersion = "9.9.9" }},
+		{"SBOM authority digest", func(value *artifactManifest) { value.SBOMAuthority.Digest = "sha256:" + strings.Repeat("0", 64) }},
+		{"runtime component type", func(value *artifactManifest) { value.SBOMAuthority.Runtime.Type = "library" }},
+		{"runtime component digest", func(value *artifactManifest) {
+			value.SBOMAuthority.Runtime.Digest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{"runtime component license", func(value *artifactManifest) { value.SBOMAuthority.Runtime.License = "MIT" }},
+		{"module component license", func(value *artifactManifest) { value.SBOMAuthority.Modules[0].License = "Apache-2.0" }},
 	}
 	for index, primitive := range requiredBrowserPrimitives {
 		index, primitive := index, primitive
@@ -109,8 +118,9 @@ func TestManifestBrowserContractAndLicensesRejectEveryFieldMutation(t *testing.T
 			value := base
 			value.Build.Flags = slices.Clone(base.Build.Flags)
 			value.BrowserContract.RequiredPrimitives = slices.Clone(base.BrowserContract.RequiredPrimitives)
+			value.SBOMAuthority.Modules = slices.Clone(base.SBOMAuthority.Modules)
 			test.mutate(&value)
-			if err := verifyManifestAuthority(value); err == nil {
+			if err := verifyManifestAuthority(value, "0.0.0", modules); err == nil {
 				t.Fatal("falsified manifest authority was accepted")
 			}
 		})
@@ -125,7 +135,7 @@ func TestSBOMRootReleaseVersionIsAuthoritative(t *testing.T) {
 	if err := writeSBOM(output, "1.2.3", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifySBOM(output, "1.2.3"); err != nil {
+	if err := verifySBOM(output, "1.2.3", nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(output, sbomName))
@@ -144,7 +154,112 @@ func TestSBOMRootReleaseVersionIsAuthoritative(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(output, sbomName), mutated, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifySBOM(output, "1.2.3"); err == nil {
+	if err := verifySBOM(output, "1.2.3", nil); err == nil {
 		t.Fatal("SBOM root version mismatch was accepted")
 	}
+}
+
+func TestSBOMRejectsEveryRuntimeModuleAndDependencyMutation(t *testing.T) {
+	modules := []bundledModule{
+		{Review: reviewedGoModule{Module: "example.com/a", Version: "v1.2.3", License: "MIT"}},
+		{Review: reviewedGoModule{Module: "example.com/b", Version: "v2.3.4", License: "Apache-2.0"}},
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"runtime type", func(document map[string]any) { sbomRuntime(document)["type"] = "library" }},
+		{"runtime name", func(document map[string]any) { sbomRuntime(document)["name"] = "other" }},
+		{"runtime version", func(document map[string]any) { sbomRuntime(document)["version"] = "go9.9.9" }},
+		{"runtime purl", func(document map[string]any) { sbomRuntime(document)["purl"] = "pkg:generic/other@go1.26.5" }},
+		{"runtime bom ref", func(document map[string]any) { sbomRuntime(document)["bom-ref"] = "pkg:generic/other@go1.26.5" }},
+		{"runtime scope", func(document map[string]any) { sbomRuntime(document)["scope"] = "optional" }},
+		{"runtime hash algorithm", func(document map[string]any) {
+			sbomRuntime(document)["hashes"].([]any)[0].(map[string]any)["alg"] = "SHA-512"
+		}},
+		{"runtime hash content", func(document map[string]any) {
+			sbomRuntime(document)["hashes"].([]any)[0].(map[string]any)["content"] = strings.Repeat("0", 64)
+		}},
+		{"runtime license", func(document map[string]any) {
+			sbomRuntime(document)["licenses"].([]any)[0].(map[string]any)["license"].(map[string]any)["id"] = "MIT"
+		}},
+		{"module type", func(document map[string]any) { sbomModule(document)["type"] = "framework" }},
+		{"module name", func(document map[string]any) { sbomModule(document)["name"] = "example.com/forged" }},
+		{"module version", func(document map[string]any) { sbomModule(document)["version"] = "v9.9.9" }},
+		{"module purl", func(document map[string]any) { sbomModule(document)["purl"] = "pkg:golang/example.com/forged@v1.2.3" }},
+		{"module bom ref", func(document map[string]any) {
+			sbomModule(document)["bom-ref"] = "pkg:golang/example.com/forged@v1.2.3"
+		}},
+		{"module scope", func(document map[string]any) { sbomModule(document)["scope"] = "optional" }},
+		{"module license", func(document map[string]any) {
+			sbomModule(document)["licenses"].([]any)[0].(map[string]any)["license"].(map[string]any)["id"] = "BSD-3-Clause"
+		}},
+		{"duplicate component", func(document map[string]any) {
+			document["components"] = append(document["components"].([]any), sbomModule(document))
+		}},
+		{"missing component", func(document map[string]any) { document["components"] = document["components"].([]any)[1:] }},
+		{"root dependency ref", func(document map[string]any) {
+			sbomRootDependency(document)["ref"] = "pkg:npm/%40layerdraw/engine-wasm@9.9.9"
+		}},
+		{"missing dependency edge", func(document map[string]any) {
+			values := sbomRootDependency(document)["dependsOn"].([]any)
+			sbomRootDependency(document)["dependsOn"] = values[1:]
+		}},
+		{"extra dependency edge", func(document map[string]any) {
+			sbomRootDependency(document)["dependsOn"] = append(sbomRootDependency(document)["dependsOn"].([]any), "pkg:golang/forged@v1.0.0")
+		}},
+		{"reordered dependency edges", func(document map[string]any) {
+			values := sbomRootDependency(document)["dependsOn"].([]any)
+			values[0], values[1] = values[1], values[0]
+		}},
+		{"leaf dependency edge", func(document map[string]any) {
+			document["dependencies"].([]any)[1].(map[string]any)["dependsOn"] = []any{"pkg:golang/example.com/b@v2.3.4"}
+		}},
+		{"duplicate dependency ref", func(document map[string]any) {
+			document["dependencies"] = append(document["dependencies"].([]any), document["dependencies"].([]any)[1])
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := t.TempDir()
+			if err := os.WriteFile(filepath.Join(output, "layerdraw-engine.wasm"), []byte("wasm"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeSBOM(output, "1.2.3", modules); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(output, sbomName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(document)
+			mutated, err := canonicalJSON(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(output, sbomName), mutated, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := verifySBOM(output, "1.2.3", modules); err == nil {
+				t.Fatal("falsified SBOM authority was accepted")
+			}
+		})
+	}
+}
+
+func sbomRuntime(document map[string]any) map[string]any {
+	components := document["components"].([]any)
+	return components[len(components)-1].(map[string]any)
+}
+
+func sbomModule(document map[string]any) map[string]any {
+	return document["components"].([]any)[0].(map[string]any)
+}
+
+func sbomRootDependency(document map[string]any) map[string]any {
+	return document["dependencies"].([]any)[0].(map[string]any)
 }
