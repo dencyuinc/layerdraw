@@ -413,6 +413,7 @@ test("Workbench malformed handles, null contracts, ordering, and outcome payload
   assert.equal(isSemanticOperation(await readFixture("workbench-invalid-semantic-map-order.json")), false);
   assert.equal(isSemanticOperation(await readFixture("workbench-invalid-authored-path-depth.json")), false);
   assert.equal(isSemanticOperation(await readFixture("workbench-invalid-upsert-row-overlap.json")), false);
+  assert.equal(isSemanticOperation(await readFixture("workbench-invalid-non-upsert-explicit-absence.json")), false);
   assert.equal(isClassifyAuthoringImpactInput(await readFixture("workbench-invalid-classify-raw-diff.json")), false);
   assert.equal(isSemanticDiff(await readFixture("workbench-invalid-semantic-diff-order.json")), false);
   assert.equal(isSourceDiff(await readFixture("workbench-invalid-source-diff-order.json")), false);

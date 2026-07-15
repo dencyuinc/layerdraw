@@ -447,6 +447,9 @@ func TestGeneratedWorkbenchPreviewFixtures(t *testing.T) {
 	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-upsert-row-overlap.json")); err == nil {
 		t.Error("upsert_row value and explicit-absence overlap was accepted")
 	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-non-upsert-explicit-absence.json")); err == nil {
+		t.Error("non-upsert operation accepted explicit_absent_column_addresses")
+	}
 	if _, err := engineprotocol.DecodeClassifyAuthoringImpactInput(readProtocolFixture(t, "workbench-invalid-classify-raw-diff.json")); err == nil {
 		t.Error("caller-labeled raw diff was accepted as validated classification authority")
 	}

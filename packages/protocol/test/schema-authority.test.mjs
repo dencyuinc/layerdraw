@@ -1592,6 +1592,7 @@ test("Ajv enforces closed Workbench handles, recursive values, ordering, and out
   assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-semantic-map-order.json")), false);
   assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-authored-path-depth.json")), false);
   assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-upsert-row-overlap.json")), false);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-non-upsert-explicit-absence.json")), false);
   assert.equal(compile(engine, "ClassifyAuthoringImpactInput")(await readJSON("fixtures/engine/workbench-invalid-classify-raw-diff.json")), false);
   const semantic = "https://schemas.layerdraw.dev/semantic/v1";
   assert.equal(compile(semantic, "SemanticDiff")(await readJSON("fixtures/engine/workbench-invalid-semantic-diff-order.json")), false);
@@ -1692,6 +1693,25 @@ test("Workbench invariant profiles and Language 1 domain type ownership stay exp
   }
   assert.deepEqual(engine.$defs.SemanticOperation.oneOf, [{$ref: "#/$defs/CreateSubjectOperation"}, {$ref: "#/$defs/NonCreateSemanticOperation"}]);
   assert.equal(engine.$defs.CreateSubjectOperation.oneOf.length, semantic.$defs.CreatableSubjectKind.enum.length);
+  const nonCreate = engine.$defs.NonCreateSemanticOperation;
+  const expectedOptional = {
+    create_relation: ["fields", "placement"],
+    delete_row: [],
+    delete_subject: [],
+    migrate_project_identity: [],
+    move_entity_to_layer: [],
+    rename_subject: [],
+    update_relation_endpoint: [],
+    update_subject_field: ["value"],
+    upsert_row: ["explicit_absent_column_addresses", "placement"],
+  };
+  for (const [operation, expected] of Object.entries(expectedOptional)) {
+    const variant = nonCreate["x-layerdraw-tagged-union"].variants[operation];
+    const required = new Set(["operation", ...(variant.required ?? [])]);
+    const forbidden = new Set(variant.forbidden ?? []);
+    const optional = Object.keys(nonCreate.properties).filter((name) => !required.has(name) && !forbidden.has(name));
+    assert.deepEqual(optional, expected, `${operation} optional field inventory`);
+  }
   assert.deepEqual(engine.$defs.ColumnCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"});
   assert.deepEqual(engine.$defs.QueryParameterCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"});
   assert.deepEqual(engine.$defs.ViewExportCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportFormat"});
