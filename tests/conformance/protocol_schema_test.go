@@ -413,6 +413,7 @@ func TestGeneratedGoSemanticRecursiveCodecsRejectCyclesAndExcessDepth(t *testing
 	t.Parallel()
 	stringPointer := func(value string) *string { return &value }
 	stateFieldPathPointer := func(value semantic.StateFieldPath) *semantic.StateFieldPath { return &value }
+	valueTypePointer := func(value semantic.ValueType) *semantic.ValueType { return &value }
 	expectCycle := func(name string, encode func() error) {
 		t.Helper()
 		if err := encode(); err == nil || !strings.Contains(err.Error(), "cycle") {
@@ -481,13 +482,16 @@ func TestGeneratedGoSemanticRecursiveCodecsRejectCyclesAndExcessDepth(t *testing
 		_, err := semantic.EncodeRecipePredicate(*leftPredicate)
 		return err
 	})
-	sharedPredicate := &semantic.RecipePredicate{Kind: "field", Field: stringPointer("name"), Operator: stringPointer("exists")}
+	sharedPredicate := &semantic.RecipePredicate{
+		Kind: "field", Field: stringPointer("display_name"), Operator: stringPointer("exists"),
+		OperandType: &semantic.RecipeOperandType{Kind: "scalar", ScalarType: valueTypePointer("string")},
+	}
 	predicateAliases := []semantic.RecipePredicate{{Kind: "not", Child: sharedPredicate}, {Kind: "not", Child: sharedPredicate}}
 	if _, err := semantic.EncodeRecipePredicate(semantic.RecipePredicate{Kind: "all", Children: &predicateAliases}); err != nil {
 		t.Fatalf("RecipePredicate rejected an acyclic shared alias: %v", err)
 	}
 	predicateAtLimit := sharedPredicate
-	for range semantic.MaxWireJSONDepth - 1 {
+	for range semantic.MaxWireJSONDepth - 2 {
 		predicateAtLimit = &semantic.RecipePredicate{Kind: "not", Child: predicateAtLimit}
 	}
 	if _, err := semantic.EncodeRecipePredicate(*predicateAtLimit); err != nil {
@@ -511,13 +515,16 @@ func TestGeneratedGoSemanticRecursiveCodecsRejectCyclesAndExcessDepth(t *testing
 		_, err := semantic.EncodeRecipeRowPredicate(*leftRow)
 		return err
 	})
-	sharedRow := &semantic.RecipeRowPredicate{Kind: "state", FieldPath: stateFieldPathPointer("system.updated_at"), Operator: stringPointer("exists")}
+	sharedRow := &semantic.RecipeRowPredicate{
+		Kind: "state", FieldPath: stateFieldPathPointer("system.updated_at"), Operator: stringPointer("exists"),
+		OperandType: &semantic.RecipeOperandType{Kind: "scalar", ScalarType: valueTypePointer("datetime")},
+	}
 	rowAliases := []semantic.RecipeRowPredicate{{Kind: "not", Child: sharedRow}, {Kind: "not", Child: sharedRow}}
 	if _, err := semantic.EncodeRecipeRowPredicate(semantic.RecipeRowPredicate{Kind: "all", Children: &rowAliases}); err != nil {
 		t.Fatalf("RecipeRowPredicate rejected an acyclic shared alias: %v", err)
 	}
 	rowAtLimit := sharedRow
-	for range semantic.MaxWireJSONDepth - 1 {
+	for range semantic.MaxWireJSONDepth - 2 {
 		rowAtLimit = &semantic.RecipeRowPredicate{Kind: "not", Child: rowAtLimit}
 	}
 	if _, err := semantic.EncodeRecipeRowPredicate(*rowAtLimit); err != nil {
@@ -608,8 +615,12 @@ func FuzzGeneratedGoRecursiveCodecBoundaries(f *testing.F) {
 			wireDepth = 1 + 2*depth
 			_, err = semantic.EncodeDiagnosticArgumentValue(value)
 		case 1:
-			field, operator := "name", "exists"
-			value := &semantic.RecipePredicate{Kind: "field", Field: &field, Operator: &operator}
+			field, operator := "display_name", "exists"
+			scalarType := semantic.ValueType("string")
+			value := &semantic.RecipePredicate{
+				Kind: "field", Field: &field, Operator: &operator,
+				OperandType: &semantic.RecipeOperandType{Kind: "scalar", ScalarType: &scalarType},
+			}
 			if cycle {
 				value = &semantic.RecipePredicate{Kind: "not"}
 				value.Child = value
@@ -617,12 +628,16 @@ func FuzzGeneratedGoRecursiveCodecBoundaries(f *testing.F) {
 				for range depth {
 					value = &semantic.RecipePredicate{Kind: "not", Child: value}
 				}
-				wireDepth = 1 + depth
+				wireDepth = 2 + depth
 			}
 			_, err = semantic.EncodeRecipePredicate(*value)
 		case 2:
 			fieldPath, operator := semantic.StateFieldPath("system.updated_at"), "exists"
-			value := &semantic.RecipeRowPredicate{Kind: "state", FieldPath: &fieldPath, Operator: &operator}
+			scalarType := semantic.ValueType("datetime")
+			value := &semantic.RecipeRowPredicate{
+				Kind: "state", FieldPath: &fieldPath, Operator: &operator,
+				OperandType: &semantic.RecipeOperandType{Kind: "scalar", ScalarType: &scalarType},
+			}
 			if cycle {
 				value = &semantic.RecipeRowPredicate{Kind: "not"}
 				value.Child = value
@@ -630,7 +645,7 @@ func FuzzGeneratedGoRecursiveCodecBoundaries(f *testing.F) {
 				for range depth {
 					value = &semantic.RecipeRowPredicate{Kind: "not", Child: value}
 				}
-				wireDepth = 1 + depth
+				wireDepth = 2 + depth
 			}
 			_, err = semantic.EncodeRecipeRowPredicate(*value)
 		}
