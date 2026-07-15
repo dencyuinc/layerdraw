@@ -5,18 +5,22 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
+    "build:types": {
+      "dependsOn": ["^build:types"],
+      "outputs": ["dist/**/*.d.ts", "dist/**/*.js"]
+    },
     "generate": {
       "cache": false
     },
     "lint": {
-      "dependsOn": ["^lint"]
+      "dependsOn": ["^build:types", "^lint"]
     },
     "test": {
       "dependsOn": ["build", "^test"],
       "outputs": ["coverage/**"]
     },
     "typecheck": {
-      "dependsOn": ["^typecheck"]
+      "dependsOn": ["^build:types", "^typecheck"]
     }
   }
 }

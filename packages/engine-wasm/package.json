@@ -24,6 +24,7 @@
   },
   "scripts": {
     "build": "node tools/build-package.mjs --allow-dirty",
+    "build:types": "tsc -p tsconfig.build.json",
     "generate": "node -e \"\"",
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "prepack": "node tools/build-package.mjs && node tools/pack-legal.mjs prepare",
