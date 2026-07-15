@@ -23,8 +23,8 @@ func (d *Descriptor) Negotiate(ctx context.Context, request engineprotocol.Hands
 	if ctx == nil {
 		return engineprotocol.HandshakeResponseEnvelope{}, nil, fmt.Errorf("nil handshake context")
 	}
-	if !trustworthyRequestID(request.RequestID) {
-		return engineprotocol.HandshakeResponseEnvelope{}, nil, fmt.Errorf("handshake request ID must contain 1..%d valid UTF-8 code points", maxRequestIDLength)
+	if err := ValidateRequestID(request.RequestID); err != nil {
+		return engineprotocol.HandshakeResponseEnvelope{}, nil, fmt.Errorf("untrustworthy handshake request ID: %w", err)
 	}
 	if ctx.Err() != nil {
 		return d.cancelled(request.RequestID)

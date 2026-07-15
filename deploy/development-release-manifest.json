@@ -1,0 +1,6 @@
+{
+  "engine_protocol_schema_digest": "sha256:2d34eed0a79b9e5d1ac477d3e909fa1138800766ee9b77acd0f81ffde0ae0b8e",
+  "manifest_version": 1,
+  "release": "0.0.0-dev",
+  "spdx": "LicenseRef-LayerDraw-1.0"
+}

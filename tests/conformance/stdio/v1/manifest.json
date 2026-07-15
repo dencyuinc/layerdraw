@@ -1,0 +1,112 @@
+{
+  "format": "layerdraw-stdio-framing-golden-v1",
+  "framing_version": "1.0",
+  "header_bytes": 40,
+  "byte_order": "big-endian",
+  "fixtures": [
+    {
+      "file": "request-control.frame",
+      "sha256": "da30d2d2f37cb7865cf716174829a2f0ae3b5d399296c8d14defd7321c7e2eb7",
+      "wire_bytes": 98,
+      "kind": "REQUEST_CONTROL",
+      "kind_value": 1,
+      "flags": 0,
+      "stream_id": "72623859790382856",
+      "sequence": 0,
+      "name_hex": "",
+      "payload_hex": "7b226f7065726174696f6e223a22656e67696e652e68616e647368616b65222c22726571756573745f6964223a227265712d676f6c64656e227d",
+      "offset": "0"
+    },
+    {
+      "file": "request-ready.frame",
+      "sha256": "5c25ff3a334d278b529ca4bb306192fe875ac9266a7574b58bfe6100bb774ee9",
+      "wire_bytes": 40,
+      "kind": "REQUEST_READY",
+      "kind_value": 2,
+      "flags": 0,
+      "stream_id": "72623859790382856",
+      "sequence": 0,
+      "name_hex": "",
+      "payload_hex": "",
+      "offset": "0"
+    },
+    {
+      "file": "blob-chunk.frame",
+      "sha256": "ee9ee071d5b6ecb8ce42a9abb7fadbd7923782a22066e8d1526cb1dd8a196f56",
+      "wire_bytes": 59,
+      "kind": "BLOB_CHUNK",
+      "kind_value": 3,
+      "flags": 1,
+      "stream_id": "72623859790382856",
+      "sequence": 1,
+      "name_hex": "61737365742f002fe99baa",
+      "payload_hex": "000a0dff4c445350",
+      "offset": "0"
+    },
+    {
+      "file": "bundle-end.frame",
+      "sha256": "794c1a3a5a8a290d1089319c39fd545e993ef64ac0085a5e7a1c18900869f759",
+      "wire_bytes": 40,
+      "kind": "BUNDLE_END",
+      "kind_value": 4,
+      "flags": 0,
+      "stream_id": "72623859790382856",
+      "sequence": 2,
+      "name_hex": "",
+      "payload_hex": "",
+      "offset": "0"
+    },
+    {
+      "file": "cancel.frame",
+      "sha256": "8640ac02d0012e7e2f22a36d1f99994e6ada95c8f349ad0539c14a36fa730c32",
+      "wire_bytes": 40,
+      "kind": "CANCEL",
+      "kind_value": 5,
+      "flags": 0,
+      "stream_id": "9",
+      "sequence": 0,
+      "name_hex": "",
+      "payload_hex": "",
+      "offset": "0"
+    },
+    {
+      "file": "response-control.frame",
+      "sha256": "2e3a716824ef5e67882302ac60b6ddfd3a710a829410fa04e72797ea123ee2b6",
+      "wire_bytes": 86,
+      "kind": "RESPONSE_CONTROL",
+      "kind_value": 6,
+      "flags": 0,
+      "stream_id": "72623859790382856",
+      "sequence": 0,
+      "name_hex": "",
+      "payload_hex": "7b226f7574636f6d65223a226661696c6564222c22726571756573745f6964223a227265712d676f6c64656e227d",
+      "offset": "0"
+    },
+    {
+      "file": "close.frame",
+      "sha256": "a0bcf604f94a73b14816544af302fcedf891d553300db71428f8e28b12ddabbc",
+      "wire_bytes": 40,
+      "kind": "CLOSE",
+      "kind_value": 7,
+      "flags": 0,
+      "stream_id": "0",
+      "sequence": 0,
+      "name_hex": "",
+      "payload_hex": "",
+      "offset": "0"
+    },
+    {
+      "file": "stream-error.frame",
+      "sha256": "de6e2c111ecef9c9455fda5a7c0377faa9e6651067e7f17885975a89bfd39106",
+      "wire_bytes": 63,
+      "kind": "STREAM_ERROR",
+      "kind_value": 8,
+      "flags": 0,
+      "stream_id": "72623859790382856",
+      "sequence": 0,
+      "name_hex": "6672616d696e672e696e76616c69645f636f6e74726f6c",
+      "payload_hex": "",
+      "offset": "0"
+    }
+  ]
+}

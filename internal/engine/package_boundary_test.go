@@ -138,9 +138,16 @@ func TestGeneratedProtocolToEngineMappingHasOneHandwrittenPackageBoundary(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowed := filepath.Join(root, "internal", "engine", "endpoint")
+	allowed := map[string]bool{
+		filepath.Join(root, "internal", "engine", "endpoint"): true,
+		// The stdio transport decodes generated envelopes but may invoke only
+		// the public endpoint/CompilePlan facade, never Engine or compiler
+		// domain packages directly. Its own package-boundary test freezes that
+		// narrower exception.
+		filepath.Join(root, "internal", "transport", "stdio"): true,
+	}
 	for directory, seen := range byDirectory {
-		if seen.generatedProtocol && seen.internalEngine && directory != allowed {
+		if seen.generatedProtocol && seen.internalEngine && !allowed[directory] {
 			t.Errorf("generated protocol and internal Engine types meet outside endpoint boundary: %s", directory)
 		}
 	}
