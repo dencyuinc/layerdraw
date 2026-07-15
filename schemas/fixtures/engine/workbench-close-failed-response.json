@@ -1,0 +1,14 @@
+{
+  "diagnostics": [],
+  "engine_release": "0.0.0-dev",
+  "failure": {
+    "category": "transport",
+    "code": "workbench.handle.invalid",
+    "message": "The document handle is not valid for this endpoint.",
+    "retryable": false,
+    "workbench_category": "handle_invalid"
+  },
+  "outcome": "failed",
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-close-failed"
+}

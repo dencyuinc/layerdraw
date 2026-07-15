@@ -1,0 +1,9 @@
+{
+  "child_set_hashes": [],
+  "definition_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "graph_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "mode": "pack",
+  "pack_address": "ldl:pack:pub:schema",
+  "subject_hashes": [],
+  "subtree_hashes": []
+}

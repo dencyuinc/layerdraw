@@ -1,0 +1,14 @@
+{
+  "diagnostics": [],
+  "engine_release": "0.0.0-dev",
+  "failure": {
+    "category": "invariant",
+    "code": "workbench.generation.stale",
+    "message": "The supplied document generation is stale.",
+    "retryable": false,
+    "workbench_category": "generation_stale"
+  },
+  "outcome": "failed",
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-stale-generation"
+}

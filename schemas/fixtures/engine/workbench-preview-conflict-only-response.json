@@ -1,0 +1,19 @@
+{
+  "diagnostics": [],
+  "engine_release": "0.0.0-dev",
+  "outcome": "success",
+  "payload": {
+    "base_generation": {
+      "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+      "value": "7"
+    },
+    "changed_source_files": [],
+    "conflicts": [{"kind": "same_field_changed", "path": ["annotations", "fixture"], "target_address": "ldl:project:fixture"}],
+    "diagnostics": [],
+    "semantic_diff": {"digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "entries": []},
+    "source_diff": {"digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "edits": []},
+    "status": "invalid"
+  },
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-conflict-only"
+}

@@ -257,6 +257,165 @@ func TestGeneratedGoStrictDecodeRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestGeneratedWorkbenchPreviewFixtures(t *testing.T) {
+	t.Parallel()
+	positive := readProtocolFixture(t, "workbench-preview-operations-request.json")
+	envelope, err := engineprotocol.DecodePreviewOperationsRequestEnvelope(positive)
+	if err != nil {
+		t.Fatalf("decode positive Workbench fixture: %v", err)
+	}
+	encoded, err := engineprotocol.EncodePreviewOperationsRequestEnvelope(envelope)
+	if err != nil {
+		t.Fatalf("encode positive Workbench fixture: %v", err)
+	}
+	var before, after any
+	if err := json.Unmarshal(positive, &before); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &after); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("Workbench fixture changed on round-trip\nbefore=%s\nafter=%s", positive, encoded)
+	}
+
+	for _, name := range []string{
+		"workbench-invalid-handle-request.json",
+		"workbench-invalid-null-request.json",
+		"workbench-invalid-order-request.json",
+	} {
+		if _, err := engineprotocol.DecodePreviewOperationsRequestEnvelope(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid Workbench request fixture %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-invalid-outcome-response.json")); err == nil {
+		t.Error("success response without its outcome-dependent payload was accepted")
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-preview-conflict-only-response.json")); err != nil {
+		t.Errorf("conflict-only invalid preview was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-invalid-empty-preview-response.json")); err == nil {
+		t.Error("invalid preview without a conflict or diagnostic was accepted")
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-open-document-response.json")); err != nil {
+		t.Errorf("open-document response with exact per-document capabilities was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-open-pack-document-response.json")); err != nil {
+		t.Errorf("pack-mode open-document response was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-open-invalid-root-response.json")); err != nil {
+		t.Errorf("unavailable document without a fabricated root address was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-invalid-unavailable-warning-only-response.json")); err == nil {
+		t.Error("unavailable document without an error diagnostic was accepted")
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-invalid-open-document-capabilities-response.json")); err == nil {
+		t.Error("open-document response with an incomplete capability state was accepted")
+	}
+	if _, err := engineprotocol.DecodeReplaceSourceTreeResult(readProtocolFixture(t, "workbench-replace-pack-result.json")); err != nil {
+		t.Errorf("replacement result with refreshed pack state and capabilities was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeResultingHashes(readProtocolFixture(t, "workbench-invalid-pack-resulting-hashes.json")); err == nil {
+		t.Error("pack resulting hashes with a project-only graph hash were accepted")
+	}
+	if _, err := engineprotocol.DecodeInspectSubgraphResult(readProtocolFixture(t, "workbench-inspect-subgraph-result.json")); err != nil {
+		t.Errorf("subgraph relation facts were rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeInspectSubgraphResult(readProtocolFixture(t, "workbench-invalid-subgraph-relation-result.json")); err == nil {
+		t.Error("subgraph relation without both endpoints was accepted")
+	}
+	if _, err := engineprotocol.DecodeInspectSubgraphResult(readProtocolFixture(t, "workbench-invalid-subgraph-item-facts-result.json")); err == nil {
+		t.Error("relation item without its typed relation facts was accepted")
+	}
+	if _, err := engineprotocol.DecodeInspectSubgraphInput(readProtocolFixture(t, "workbench-invalid-subgraph-root-input.json")); err == nil {
+		t.Error("non-Entity inspect_subgraph root was accepted")
+	}
+	if _, err := engineprotocol.DecodeFindUsagesResult(readProtocolFixture(t, "workbench-find-usages-result.json")); err != nil {
+		t.Errorf("usage with SourceRange provenance and target kind was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeFindUsagesResult(readProtocolFixture(t, "workbench-invalid-find-usages-target-kind-result.json")); err == nil {
+		t.Error("usage without target kind was accepted")
+	}
+	if _, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(readProtocolFixture(t, "workbench-close-failed-response.json")); err != nil {
+		t.Errorf("closed Workbench failure was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(readProtocolFixture(t, "workbench-invalid-close-failed-response.json")); err == nil {
+		t.Error("caller-supplied invalid handle was misclassified as an Engine invariant")
+	}
+	if _, err := engineprotocol.DecodeReadDeclarationsResult(readProtocolFixture(t, "workbench-large-declaration-result.json")); err != nil {
+		t.Errorf("large declaration BlobRef was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeReadDeclarationsResult(readProtocolFixture(t, "workbench-invalid-declaration-chunk-order-result.json")); err == nil {
+		t.Error("out-of-order declaration chunks were accepted")
+	}
+	if _, err := engineprotocol.DecodeFindUsagesResult(readProtocolFixture(t, "workbench-invalid-find-usages-order-result.json")); err == nil {
+		t.Error("out-of-order usage page was accepted")
+	}
+	if _, err := engineprotocol.DecodeEngineEditPreconditions(readProtocolFixture(t, "workbench-optional-preconditions.json")); err != nil {
+		t.Errorf("omitted optional expected_source_digests was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeEngineEditPreconditions(readProtocolFixture(t, "workbench-invalid-source-digest-order.json")); err == nil {
+		t.Error("out-of-order source digest preconditions were accepted")
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-upsert-row-default-absent.json")); err != nil {
+		t.Errorf("upsert_row omitted default-empty explicit absences: %v", err)
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-create-subject-single-kind.json")); err != nil {
+		t.Errorf("create_subject without a duplicate fields discriminator was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-semantic-map-order.json")); err == nil {
+		t.Error("out-of-order recursive semantic map entries were accepted")
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-authored-path-depth.json")); err == nil {
+		t.Error("authored field path deeper than two tokens was accepted")
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-upsert-row-overlap.json")); err == nil {
+		t.Error("upsert_row value and explicit-absence overlap was accepted")
+	}
+	if _, err := engineprotocol.DecodeClassifyAuthoringImpactInput(readProtocolFixture(t, "workbench-invalid-classify-raw-diff.json")); err == nil {
+		t.Error("caller-labeled raw diff was accepted as validated classification authority")
+	}
+	if _, err := semantic.DecodeSemanticDiff(readProtocolFixture(t, "workbench-invalid-semantic-diff-order.json")); err == nil {
+		t.Error("out-of-order SemanticDiff entries were accepted")
+	}
+	if _, err := engineprotocol.DecodeSourceDiff(readProtocolFixture(t, "workbench-invalid-source-diff-order.json")); err == nil {
+		t.Error("out-of-order SourceDiff edits were accepted")
+	}
+	if _, err := engineprotocol.DecodeSourceDiff(readProtocolFixture(t, "workbench-source-diff-all-kinds.json")); err != nil {
+		t.Errorf("create/delete/move/replace SourceDiff was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeSourceDiff(readProtocolFixture(t, "workbench-invalid-replace-source-edit-identity.json")); err == nil {
+		t.Error("replace SourceEdit with a contradictory explicit module identity was accepted")
+	}
+	if _, err := semantic.DecodeAuthoringImpact(readProtocolFixture(t, "workbench-invalid-authoring-impact-order.json")); err == nil {
+		t.Error("out-of-order AuthoringImpact entries were accepted")
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-find-symbols-input.json")); err != nil {
+		t.Errorf("closed deterministic symbol match input was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-find-symbols-unrestricted-input.json")); err != nil {
+		t.Errorf("symbol lookup with absent unrestricted filters was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-invalid-find-symbols-mode-input.json")); err == nil {
+		t.Error("symbol lookup without deterministic match/case semantics was accepted")
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-invalid-find-symbols-empty-filter-input.json")); err == nil {
+		t.Error("symbol lookup with an ambiguous empty filter was accepted")
+	}
+	if _, err := engineprotocol.DecodePreviewSourcePatchRequestEnvelope(readProtocolFixture(t, "workbench-preview-source-patch-request.json")); err != nil {
+		t.Errorf("valid ordered source patch batch was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-stale-generation-response.json")); err != nil {
+		t.Errorf("stale-generation Workbench failure was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-invalid-stale-generation-response.json")); err == nil {
+		t.Error("stale-generation failure with invariant common category was accepted")
+	}
+	if _, err := engineprotocol.DecodePreviewSourcePatchRequestEnvelope(readProtocolFixture(t, "workbench-invalid-overlapping-source-patch-request.json")); err == nil {
+		t.Error("overlapping source patch batch was accepted")
+	}
+}
+
 func TestGeneratedCodecsShareCanonicalCommonFixtures(t *testing.T) {
 	t.Parallel()
 	root := protocolRepositoryRoot(t)

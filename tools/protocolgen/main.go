@@ -58,7 +58,7 @@ var (
 	requiredDialectKeywordSchemas = mustDecodeDialectObject(`{
 		"x-layerdraw-address-terminal-id": {"$ref": "#/$defs/addressTerminalIDRule"},
 		"x-layerdraw-address-owners": {"type": "array", "items": {"$ref": "#/$defs/addressOwnerRule"}, "minItems": 1, "uniqueItems": true},
-		"x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["child_set", "export_binding", "module_scope", "reference_id", "semantic_reference", "source_asset", "source_binding", "source_file", "subject_kind"]},
+		"x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["authored_field_path", "authoring_impact", "bounded_text_chunk", "child_set", "conflict", "export_binding", "module_scope", "neighbor", "reference_id", "semantic_diff", "semantic_map_entry", "semantic_reference", "source_asset", "source_binding", "source_diff", "source_file", "source_patch", "source_range", "subgraph", "subject_kind"]},
 		"x-layerdraw-canonical-enum-order": {"type": "boolean", "const": true},
 		"x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
 		"x-layerdraw-child-set": {"type": "boolean", "const": true},
@@ -174,7 +174,9 @@ var (
 			"type": "object",
 			"properties": {
 				"allowed_values": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}},
+				"any_non_empty": {"$ref": "#/$defs/fieldNames"},
 				"empty": {"$ref": "#/$defs/fieldNames"},
+				"error_diagnostic": {"$ref": "#/$defs/fieldNames"},
 				"forbidden": {"$ref": "#/$defs/fieldNames"},
 				"non_empty": {"$ref": "#/$defs/fieldNames"},
 				"required": {"$ref": "#/$defs/fieldNames"}
@@ -214,11 +216,13 @@ type taggedUnion struct {
 }
 
 type taggedVariant struct {
-	Required      []string            `json:"required"`
-	Forbidden     []string            `json:"forbidden"`
-	Empty         []string            `json:"empty"`
-	NonEmpty      []string            `json:"non_empty"`
-	AllowedValues map[string][]string `json:"allowed_values"`
+	Required        []string            `json:"required"`
+	Forbidden       []string            `json:"forbidden"`
+	Empty           []string            `json:"empty"`
+	ErrorDiagnostic []string            `json:"error_diagnostic"`
+	NonEmpty        []string            `json:"non_empty"`
+	AnyNonEmpty     []string            `json:"any_non_empty"`
+	AllowedValues   map[string][]string `json:"allowed_values"`
 }
 
 type operatorValueRule struct {
@@ -915,7 +919,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				forbiddenVariant := stringSet(variant.Forbidden)
 				emptyVariant := stringSet(variant.Empty)
 				nonEmptyVariant := stringSet(variant.NonEmpty)
-				properties := append(append(append(append([]string{}, variant.Required...), variant.Forbidden...), variant.Empty...), variant.NonEmpty...)
+				properties := append(append(append(append(append(append([]string{}, variant.Required...), variant.Forbidden...), variant.Empty...), variant.ErrorDiagnostic...), variant.NonEmpty...), variant.AnyNonEmpty...)
 				for property := range variant.AllowedValues {
 					properties = append(properties, property)
 				}
@@ -933,7 +937,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 						return fmt.Errorf("%s tagged union gives contradictory rules for %q", context, property)
 					}
 				}
-				for _, property := range append(append([]string{}, variant.Empty...), variant.NonEmpty...) {
+				for _, property := range append(append(append(append([]string{}, variant.Empty...), variant.ErrorDiagnostic...), variant.NonEmpty...), variant.AnyNonEmpty...) {
 					propertyType := value.Properties[property]
 					if propertyType.Ref != "" {
 						target, name, err := resolveRef(set, document, propertyType.Ref)
@@ -2718,14 +2722,46 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 	text := func(property string) (int, bool) { l, lOK := a[property].(string); r, rOK := b[property].(string); if !lOK || !rOK { return 0, false }; return compareText(l,r), true }
 	kind := func(property string) (int, bool) { l, lOK := a[property].(string); r, rOK := b[property].(string); if !lOK || !rOK { return 0, false }; lr, lok := semanticSubjectKindRank(l); rr, rok := semanticSubjectKindRank(r); if !lok || !rok { return 0, false }; if lr < rr { return -1,true }; if lr > rr { return 1,true }; return 0,true }
 	rangeValue := func() (int, bool) { l, lOK := a["range"].(map[string]any); r, rOK := b["range"].(map[string]any); if !lOK || !rOK { return 0,false }; return compareRangePosition(l,r) }
+	identity := func() (int, bool) { l, _ := a["before_address"].(string); if l == "" { l, _ = a["after_address"].(string) }; r, _ := b["before_address"].(string); if r == "" { r, _ = b["after_address"].(string) }; if l == "" || r == "" { return 0,false }; return compareStableAddressValues(l,r) }
+	conflictAddress := func() (int, bool) { l, _ := a["target_address"].(string); if l == "" { l, _ = a["owner_address"].(string) }; r, _ := b["target_address"].(string); if r == "" { r, _ = b["owner_address"].(string) }; if l == "" || r == "" { return compareText(l,r),true }; return compareStableAddressValues(l,r) }
+	pathProperty := func(property string) func()(int,bool) { return func() (int, bool) { l, lOK := a[property].([]any); r, rOK := b[property].([]any); if !lOK { l = []any{} }; if !rOK { r = []any{} }; for index := 0; index < len(l) && index < len(r); index++ { ls, lok := l[index].(string); rs, rok := r[index].(string); if !lok || !rok { return 0,false }; if compared := compareText(ls,rs); compared != 0 { return compared,true } }; if len(l) < len(r) { return -1,true }; if len(l) > len(r) { return 1,true }; return 0,true } }
+	path := pathProperty("path")
+	optionalSourceRange := func() (int, bool) { l, lOK := a["source_range"].(map[string]any); r, rOK := b["source_range"].(map[string]any); if !lOK || !rOK { if lOK { return 1,true }; if rOK { return -1,true }; return 0,true }; return compareRangePosition(l,r) }
 	chain := func(comparisons ...func() (int,bool)) (int,bool) { for _, comparison := range comparisons { value, ok := comparison(); if !ok || value != 0 { return value,ok } }; return 0,true }
 	switch profile {
+	case "authored_field_path": return pathProperty("tokens")()
+	case "authoring_impact":
+		address := func()(int,bool){ l,_:=a["subject_address"].(string); if l=="" { l,_=a["owner_address"].(string) }; r,_:=b["subject_address"].(string); if r=="" { r,_=b["owner_address"].(string) }; if l=="" || r=="" { return compareText(l,r),true }; return compareStableAddressValues(l,r) }
+		return chain(address,func()(int,bool){return text("capability")},func()(int,bool){return text("action")})
+	case "bounded_text_chunk":
+		address := func()(int,bool){ l,_:=a["address"].(string); if l=="" { l,_=a["owner_address"].(string) }; r,_:=b["address"].(string); if r=="" { r,_=b["owner_address"].(string) }; if l=="" || r=="" { return 0,false }; return compareStableAddressValues(l,r) }
+		offset := func()(int,bool){ lc,_:=a["source_chunk"].(map[string]any); if lc==nil { lc,_=a["text_chunk"].(map[string]any) }; rc,_:=b["source_chunk"].(map[string]any); if rc==nil { rc,_=b["text_chunk"].(map[string]any) }; l,lOK:=lc["offset"].(string); r,rOK:=rc["offset"].(string); if !lOK || !rOK{return 0,false}; return compareCanonicalUnsignedDecimals(l,r) }
+		return chain(address,offset)
 	case "child_set": return chain(func()(int,bool){return stable("owner_address")},func()(int,bool){return kind("child_kind")})
+	case "conflict": return chain(conflictAddress,func()(int,bool){return text("kind")},path)
 	case "reference_id": return text("id")
 	case "subject_kind": return kind("kind")
 	case "module_scope":
 		leftModule, leftOK := a["module"].(map[string]any); rightModule, rightOK := b["module"].(map[string]any); if !leftOK || !rightOK { return 0,false }; return compareModuleOrder(leftModule,rightModule)
+	case "neighbor":
+		depth := func()(int,bool){ l,lOK:=a["depth"].(float64); r,rOK:=b["depth"].(float64); if !lOK || !rOK { return 0,false }; if l<r{return -1,true}; if l>r{return 1,true}; return 0,true }
+		return chain(func()(int,bool){return stable("source_entity_address")},depth,func()(int,bool){return text("direction")},func()(int,bool){return stable("relation_address")},func()(int,bool){return stable("entity_address")})
 	case "source_file": return compareModuleOrder(a,b)
+	case "source_patch":
+		leftRange, leftOK := a["source_range"].(map[string]any); rightRange, rightOK := b["source_range"].(map[string]any); if !leftOK || !rightOK { return 0,false }
+		if compared, ok := compareModuleOrder(leftRange,rightRange); !ok || compared != 0 { return compared,ok }
+		return compareRangePosition(leftRange,rightRange)
+	case "semantic_diff": return chain(identity,func()(int,bool){return text("kind")})
+	case "semantic_map_entry": return text("key")
+	case "source_diff":
+		module := func(value map[string]any) map[string]any { if sourceRange,ok:=value["source_range"].(map[string]any); ok { return sourceRange }; if before,ok:=value["before_module"].(map[string]any); ok { return before }; after,_:=value["after_module"].(map[string]any); return after }
+		primary := func()(int,bool){ l,r:=module(a),module(b); if l==nil||r==nil{return 0,false}; return compareModuleOrder(l,r) }
+		after := func()(int,bool){ l,lOK:=a["after_module"].(map[string]any); r,rOK:=b["after_module"].(map[string]any); if !lOK||!rOK {if lOK{return 1,true};if rOK{return -1,true};return 0,true}; return compareModuleOrder(l,r) }
+		return chain(primary,func()(int,bool){return text("kind")},optionalSourceRange,after)
+	case "source_range":
+		if compared,ok:=compareModuleOrder(a,b); !ok || compared!=0 { return compared,ok }; return compareRangePosition(a,b)
+	case "subgraph":
+		l,lOK:=a["subject"].(map[string]any); r,rOK:=b["subject"].(map[string]any); if !lOK || !rOK { return 0,false }; la,laOK:=l["address"].(string); ra,raOK:=r["address"].(string); if !laOK || !raOK { return 0,false }; return compareStableAddressValues(la,ra)
 	case "source_asset": return chain(func()(int,bool){return stable("subject_address")},func()(int,bool){return text("locator")})
 	case "semantic_reference": return chain(func()(int,bool){return stable("source_address")},rangeValue,func()(int,bool){return stable("target_address")},func()(int,bool){return kind("target_kind")},func()(int,bool){return text("via")})
 	case "source_binding":
@@ -2740,7 +2776,17 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 }
 
 func validateCanonicalCollectionOrder(path string, items []any, profile string) error {
-	for index := 1; index < len(items); index++ { comparison, ok := compareCanonicalCollection(profile,items[index-1],items[index]); if !ok || comparison >= 0 { return fmt.Errorf("%s is not in strict %s order",path,profile) } }
+	for index := 1; index < len(items); index++ {
+		comparison, ok := compareCanonicalCollection(profile,items[index-1],items[index]); if !ok || comparison >= 0 { return fmt.Errorf("%s is not in strict %s order",path,profile) }
+		if profile == "source_patch" {
+			left, leftOK := items[index-1].(map[string]any); right, rightOK := items[index].(map[string]any); leftRange, leftRangeOK := left["source_range"].(map[string]any); rightRange, rightRangeOK := right["source_range"].(map[string]any)
+			if !leftOK || !rightOK || !leftRangeOK || !rightRangeOK { return fmt.Errorf("%s contains an invalid source patch",path) }
+			if moduleComparison, moduleOK := compareModuleOrder(leftRange,rightRange); moduleOK && moduleComparison == 0 {
+				leftEnd, leftEndOK := leftRange["end_byte"].(string); rightStart, rightStartOK := rightRange["start_byte"].(string); overlap, decimalsOK := compareCanonicalUnsignedDecimals(leftEnd,rightStart)
+				if !leftEndOK || !rightStartOK || !decimalsOK || overlap > 0 { return fmt.Errorf("%s contains overlapping source patches",path) }
+			}
+		}
+	}
 	return nil
 }
 
@@ -2791,8 +2837,8 @@ func validateDisjointArrayKeys(path string, object map[string]any, rules []any) 
 		arrayProperty, _ := rule["array"].(string)
 		keyProperty, _ := rule["property"].(string)
 		stringsProperty, _ := rule["strings"].(string)
-		items, itemsOK := object[arrayProperty].([]any)
-		stringsArray, stringsOK := object[stringsProperty].([]any)
+		items, itemsOK := object[arrayProperty].([]any); if _, exists := object[arrayProperty]; !exists { items, itemsOK = []any{}, true }
+		stringsArray, stringsOK := object[stringsProperty].([]any); if _, exists := object[stringsProperty]; !exists { stringsArray, stringsOK = []any{}, true }
 		if !itemsOK || !stringsOK { return fmt.Errorf("%s disjoint array-key assertion requires arrays", path) }
 		reserved := map[string]bool{}
 		for _, raw := range stringsArray { text, ok := raw.(string); if !ok { return fmt.Errorf("%s.%s contains a non-string", path, stringsProperty) }; reserved[text] = true }
@@ -3524,6 +3570,21 @@ func validatePresenceRule(path string, object map[string]any, rule map[string]an
 			if !ok || len(items) == 0 { return fmt.Errorf("%s tagged alternative requires non-empty %s", path, name) }
 		}
 	}
+	if values, ok := rule["error_diagnostic"].([]any); ok {
+		for _, rawName := range values {
+			name, _ := rawName.(string); items, ok := object[name].([]any); if !ok { return fmt.Errorf("%s tagged alternative requires diagnostic array %s", path, name) }
+			found := false; for _, rawItem := range items { if item, ok := rawItem.(map[string]any); ok && item["severity"] == "error" { found = true } }
+			if !found { return fmt.Errorf("%s tagged alternative requires an error diagnostic in %s", path, name) }
+		}
+	}
+	if values, ok := rule["any_non_empty"].([]any); ok {
+		found := false
+		for _, rawName := range values {
+			name, _ := rawName.(string)
+			if items, ok := object[name].([]any); ok && len(items) > 0 { found = true }
+		}
+		if !found { return fmt.Errorf("%s tagged alternative requires at least one non-empty collection", path) }
+	}
 	if rules, ok := rule["allowed_values"].(map[string]any); ok {
 		for property, rawValues := range rules {
 			value, present := object[property]
@@ -3717,7 +3778,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function hasOperatorValueRule(value: Record<string, unknown>, operatorProperty: string, valueProperty: string, valueless: ReadonlySet<string>): boolean { const operator = value[operatorProperty]; if (typeof operator !== \"string\") return true; return valueless.has(operator) ? !hasOwn(value, valueProperty) : hasOwn(value, valueProperty); }\n\n")
 	body.WriteString("function hasValidProtocolOffer(value: Record<string, unknown>): boolean { const range = value[\"supported_range\"]; const bindings = value[\"versions\"]; if (typeof range !== \"string\" || !isJSONArray(bindings)) return false; const parsedRange = parseProtocolVersionRange(range); if (parsedRange === undefined) return false; const seen = new Set<string>(); for (const raw of bindings) { if (!isObject(raw) || typeof raw[\"version\"] !== \"string\") return false; const text = raw[\"version\"]; const version = parseProtocolVersion(text); if (version === undefined || compareProtocolVersions(version, parsedRange[0]) < 0 || compareProtocolVersions(version, parsedRange[1]) > 0 || seen.has(text)) return false; seen.add(text); } return true; }\n\n")
 	body.WriteString("function hasValidLimitCapability(value: Record<string, unknown>): boolean { try { const fallback = BigInt(String(value[\"default_value\"])); const effective = BigInt(String(value[\"effective_maximum\"])); const hard = BigInt(String(value[\"hard_maximum\"])); return fallback <= hard && effective <= hard; } catch { return false; } }\n\n")
-	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
+	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { if (!hasOwn(value,arrayProperty)) return true; const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
 	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { try { return new Set(value.map(canonicalJSONStringify)).size === value.length; } catch { return false; } }\n\n")
 	body.WriteString("function stableAddressOrderValue(value: unknown, selector: string): string | undefined { if (selector === \"$item\") return typeof value === \"string\" ? value : undefined; return isObject(value) && typeof value[selector] === \"string\" ? value[selector] : undefined; }\n\n")
 	body.WriteString("function hasStableAddressOrder(value: ReadonlyArray<unknown>, selector: string): boolean { for (let index = 1; index < value.length; index++) { const left = stableAddressOrderValue(value[index - 1], selector); const right = stableAddressOrderValue(value[index], selector); if (left === undefined || right === undefined || compareStableAddresses(left, right) >= 0) return false; } return true; }\n\n")
@@ -3733,7 +3794,7 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function stableAddressKindRank(kind: string): number { return new Map<string, number>([[\"entity-type\",0],[\"relation-type\",1],[\"layer\",2],[\"entity\",3],[\"relation\",4],[\"query\",5],[\"view\",6],[\"reference\",7],[\"column\",8],[\"constraint\",9],[\"row\",10],[\"parameter\",11],[\"table-column\",12],[\"export\",13]]).get(kind) ?? Number.MAX_SAFE_INTEGER; }\n\n")
 	body.WriteString("function compareASCII(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }\n\n")
 	body.WriteString("function hasDisjointArrays(value: Record<string, unknown>, leftProperty: string, rightProperty: string): boolean { const left = hasOwn(value, leftProperty) ? value[leftProperty] : []; const right = hasOwn(value, rightProperty) ? value[rightProperty] : []; if (!isJSONArray(left) || !isJSONArray(right)) return false; const seen = new Set(left); return right.every((item) => !seen.has(item)); }\n\n")
-	body.WriteString("function hasDisjointArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string, stringsProperty: string): boolean { const items = value[arrayProperty]; const strings = value[stringsProperty]; if (!isJSONArray(items) || !isJSONArray(strings) || !strings.every((item) => typeof item === \"string\")) return false; const reserved = new Set(strings); return items.every((item) => isObject(item) && typeof item[keyProperty] === \"string\" && !reserved.has(item[keyProperty])); }\n\n")
+	body.WriteString("function hasDisjointArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string, stringsProperty: string): boolean { const items = hasOwn(value,arrayProperty) ? value[arrayProperty] : []; const strings = hasOwn(value,stringsProperty) ? value[stringsProperty] : []; if (!isJSONArray(items) || !isJSONArray(strings) || !strings.every((item) => typeof item === \"string\")) return false; const reserved = new Set(strings); return items.every((item) => isObject(item) && typeof item[keyProperty] === \"string\" && !reserved.has(item[keyProperty])); }\n\n")
 	body.WriteString("function compareCanonicalUnsignedDecimals(left: string, right: string): number | undefined { if (!/^(0|[1-9][0-9]*)$/.test(left) || !/^(0|[1-9][0-9]*)$/.test(right)) return undefined; return left.length === right.length ? (left < right ? -1 : left > right ? 1 : 0) : left.length - right.length; }\n\n")
 	body.WriteString(tsCanonicalCollectionRuntime)
 	body.WriteString("function hasOrderedPair(value: Record<string, unknown>, lowerProperty: string, upperProperty: string, comparison: string): boolean { if (!hasOwn(value, lowerProperty) || !hasOwn(value, upperProperty)) return true; const lower = value[lowerProperty]; const upper = value[upperProperty]; if (typeof lower !== \"string\" || typeof upper !== \"string\") return false; if (comparison === \"unsigned_decimal\") { const ordered = compareCanonicalUnsignedDecimals(lower, upper); return ordered !== undefined && ordered <= 0; } if (comparison === \"finite_binary64\") { const lowerValue = Number(lower); const upperValue = Number(upper); return Number.isFinite(lowerValue) && Number.isFinite(upperValue) && lowerValue <= upperValue; } return false; }\n\n")
@@ -3875,13 +3936,46 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
     const a = semanticSubjectKindRank(left[property]), b = semanticSubjectKindRank(right[property]); return a < 0 || b < 0 ? undefined : a-b;
   };
   const range = (): number | undefined => isObject(left["range"]) && isObject(right["range"]) ? compareRangePosition(left["range"],right["range"]) : undefined;
+  const identity = (): number | undefined => { const a = left["before_address"] ?? left["after_address"], b = right["before_address"] ?? right["after_address"]; return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a,b) : undefined; };
+  const conflictAddress = (): number | undefined => { const a = left["target_address"] ?? left["owner_address"] ?? "", b = right["target_address"] ?? right["owner_address"] ?? ""; return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b)) : undefined; };
+  const path = (): number | undefined => { const a = left["path"] ?? [], b = right["path"] ?? []; if (!Array.isArray(a) || !Array.isArray(b)) return undefined; for (let index=0; index<Math.min(a.length,b.length); index++) { if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined; const value=compareUnicodeScalars(a[index],b[index]); if (value !== 0) return value; } return a.length-b.length; };
+  const optionalSourceRange = (): number | undefined => { const a=left["source_range"], b=right["source_range"]; if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0; return compareRangePosition(a,b); };
+  const stringArray = (property: string): number | undefined => { const a=left[property] ?? [], b=right[property] ?? []; if (!Array.isArray(a) || !Array.isArray(b)) return undefined; for (let index=0; index<Math.min(a.length,b.length); index++) { if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined; const value=compareUnicodeScalars(a[index],b[index]); if (value !== 0) return value; } return a.length-b.length; };
   const chain = (...comparisons: ReadonlyArray<() => number | undefined>): number | undefined => { for (const compare of comparisons) { const value = compare(); if (value === undefined || value !== 0) return value; } return 0; };
+  if (profile === "authored_field_path") return stringArray("tokens");
+  if (profile === "authoring_impact") {
+    const address = (): number | undefined => { const a=left["subject_address"] ?? left["owner_address"] ?? "", b=right["subject_address"] ?? right["owner_address"] ?? ""; return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b)) : undefined; };
+    return chain(address,() => text("capability"),() => text("action"));
+  }
+  if (profile === "bounded_text_chunk") {
+    const address = (): number | undefined => { const a=left["address"] ?? left["owner_address"], b=right["address"] ?? right["owner_address"]; return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a,b) : undefined; };
+    const offset = (): number | undefined => { const a=left["source_chunk"] ?? left["text_chunk"], b=right["source_chunk"] ?? right["text_chunk"]; return isObject(a) && isObject(b) && typeof a["offset"] === "string" && typeof b["offset"] === "string" ? compareCanonicalUnsignedDecimals(a["offset"],b["offset"]) : undefined; };
+    return chain(address,offset);
+  }
   if (profile === "child_set") return chain(() => stable("owner_address"),() => kind("child_kind"));
+  if (profile === "conflict") return chain(conflictAddress,() => text("kind"),path);
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left["module"]) && isObject(right["module"]) ? compareModuleOrder(left["module"],right["module"]) : undefined;
+  if (profile === "neighbor") return chain(() => stable("source_entity_address"),() => typeof left["depth"] === "number" && typeof right["depth"] === "number" ? left["depth"]-right["depth"] : undefined,() => text("direction"),() => stable("relation_address"),() => stable("entity_address"));
   if (profile === "source_file") return compareModuleOrder(left,right);
   if (profile === "source_asset") return chain(() => stable("subject_address"),() => text("locator"));
+  if (profile === "source_patch") {
+    const leftRange = left["source_range"], rightRange = right["source_range"];
+    if (!isObject(leftRange) || !isObject(rightRange)) return undefined;
+    const module = compareModuleOrder(leftRange,rightRange);
+    return module === 0 ? compareRangePosition(leftRange,rightRange) : module;
+  }
+  if (profile === "semantic_diff") return chain(identity,() => text("kind"));
+  if (profile === "semantic_map_entry") return text("key");
+  if (profile === "source_diff") {
+    const module = (value: Record<string,unknown>): Record<string,unknown> | undefined => isObject(value["source_range"]) ? value["source_range"] : isObject(value["before_module"]) ? value["before_module"] : isObject(value["after_module"]) ? value["after_module"] : undefined;
+    const primary = (): number | undefined => { const a=module(left), b=module(right); return a === undefined || b === undefined ? undefined : compareModuleOrder(a,b); };
+    const after = (): number | undefined => { const a=left["after_module"], b=right["after_module"]; if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0; return compareModuleOrder(a,b); };
+    return chain(primary,() => text("kind"),optionalSourceRange,after);
+  }
+  if (profile === "source_range") { const module=compareModuleOrder(left,right); return module === 0 ? compareRangePosition(left,right) : module; }
+  if (profile === "subgraph") return isObject(left["subject"]) && isObject(right["subject"]) && typeof left["subject"]["address"] === "string" && typeof right["subject"]["address"] === "string" ? compareStableAddresses(left["subject"]["address"],right["subject"]["address"]) : undefined;
   if (profile === "semantic_reference") return chain(() => stable("source_address"),range,() => stable("target_address"),() => kind("target_kind"),() => text("via"));
   if (profile === "source_binding") {
     const owner = (): number | undefined => { const a = left["target_owner_address"] ?? "", b = right["target_owner_address"] ?? ""; if (typeof a !== "string" || typeof b !== "string") return undefined; return a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b); };
@@ -3895,7 +3989,17 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
   return undefined;
 }
 function hasCanonicalCollectionOrder(values: ReadonlyArray<unknown>, profile: string): boolean {
-  return values.every((_,index) => index === 0 || (compareCanonicalCollection(profile,values[index-1],values[index]) ?? 0) < 0);
+  return values.every((item,index) => {
+    if (index === 0) return true;
+    const previous = values[index-1];
+    if ((compareCanonicalCollection(profile,previous,item) ?? 0) >= 0) return false;
+    if (profile !== "source_patch" || !isObject(previous) || !isObject(item) || !isObject(previous["source_range"]) || !isObject(item["source_range"])) return profile !== "source_patch";
+    if (compareModuleOrder(previous["source_range"],item["source_range"]) !== 0) return true;
+    const leftEnd = previous["source_range"]["end_byte"], rightStart = item["source_range"]["start_byte"];
+    if (typeof leftEnd !== "string" || typeof rightStart !== "string") return false;
+    const overlap = compareCanonicalUnsignedDecimals(leftEnd,rightStart);
+    return overlap !== undefined && overlap <= 0;
+  });
 }
 function hasValidChildSet(value: Record<string,unknown>): boolean {
   const owner = value["owner_address"], child = value["child_kind"];
@@ -4353,6 +4457,16 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 				}
 				for _, property := range variant.NonEmpty {
 					conditions = append(conditions, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].length > 0", expression, property, expression, property))
+				}
+				for _, property := range variant.ErrorDiagnostic {
+					conditions = append(conditions, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].some((item) => isObject(item) && item[\"severity\"] === \"error\")", expression, property, expression, property))
+				}
+				if len(variant.AnyNonEmpty) != 0 {
+					alternatives := make([]string, 0, len(variant.AnyNonEmpty))
+					for _, property := range variant.AnyNonEmpty {
+						alternatives = append(alternatives, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].length > 0", expression, property, expression, property))
+					}
+					conditions = append(conditions, "("+strings.Join(alternatives, " || ")+")")
 				}
 				for _, property := range sortedKeys(variant.AllowedValues) {
 					values := variant.AllowedValues[property]

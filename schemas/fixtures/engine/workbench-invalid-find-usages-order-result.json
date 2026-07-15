@@ -1,0 +1,23 @@
+{
+  "document_generation": {
+    "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+    "value": "7"
+  },
+  "items": [
+    {
+      "range": {"end_byte": "24", "module_path": "p.ldl", "origin": {"kind": "project"}, "start_byte": "8"},
+      "source_address": "ldl:project:p:entity:b",
+      "target_address": "ldl:project:p:entity:a",
+      "target_kind": "entity",
+      "via": "field"
+    },
+    {
+      "range": {"end_byte": "8", "module_path": "p.ldl", "origin": {"kind": "project"}, "start_byte": "0"},
+      "source_address": "ldl:project:p:entity:a",
+      "target_address": "ldl:project:p:entity:b",
+      "target_kind": "entity",
+      "via": "field"
+    }
+  ],
+  "page": {"returned_bytes": "384", "returned_items": "2", "truncation": "complete"}
+}

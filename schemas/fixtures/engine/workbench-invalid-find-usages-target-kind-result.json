@@ -1,0 +1,13 @@
+{
+  "document_generation": {
+    "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+    "value": "7"
+  },
+  "items": [{
+    "range": {"end_byte": "24", "module_path": "p.ldl", "origin": {"kind": "project"}, "start_byte": "8"},
+    "source_address": "ldl:project:p",
+    "target_address": "ldl:project:p:entity:a",
+    "via": "field"
+  }],
+  "page": {"returned_bytes": "192", "returned_items": "1", "truncation": "complete"}
+}

@@ -1,0 +1,13 @@
+{
+  "document_generation": {
+    "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+    "value": "7"
+  },
+  "items": [],
+  "page": {"returned_bytes": "256", "returned_items": "1", "truncation": "complete"},
+  "relations": [{
+    "relation_address": "ldl:project:p:relation:r",
+    "to_address": "ldl:project:p:entity:b",
+    "type_address": "ldl:project:p:relation-type:connected"
+  }]
+}

@@ -1,0 +1,13 @@
+{
+  "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "edits": [
+    {
+      "after_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "before_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "before_module": {"module_path": "other.ldl", "origin": {"kind": "project"}},
+      "kind": "replace",
+      "replacement_blob": {"blob_id": "replace", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "lifetime": "request", "media_type": "text/plain; charset=utf-8", "size": "1"},
+      "source_range": {"end_byte": "1", "module_path": "document.ldl", "origin": {"kind": "project"}, "start_byte": "0"}
+    }
+  ]
+}

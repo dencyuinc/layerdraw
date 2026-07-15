@@ -1,0 +1,44 @@
+{
+  "operation": "engine.preview_operations",
+  "payload": {
+    "batch": {
+      "operations": [
+        {
+          "action": "set",
+          "operation": "update_subject_field",
+          "path": ["annotations", "fixture"],
+          "target_address": "ldl:project:fixture",
+          "value": {
+            "kind": "map",
+            "map": [{
+              "key": "nested",
+              "value": {
+                "kind": "array",
+                "array": [
+                  {"kind": "boolean", "boolean": true},
+                  {"kind": "absent"},
+                  {"kind": "map", "map": [{"key": "count", "value": {"kind": "integer", "integer": "1"}}]}
+                ]
+              }
+            }]
+          }
+        }
+      ]
+    },
+    "limits": {"max_items": "128", "max_output_bytes": "65536"},
+    "preconditions": {
+      "document_generation": {
+        "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+        "value": "7"
+      },
+      "expected_child_sets": [],
+      "expected_source_digests": [],
+      "expected_subject_hashes": [
+        {"address": "ldl:project:fixture", "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      ],
+      "expected_subtree_hashes": []
+    }
+  },
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-workbench-preview"
+}

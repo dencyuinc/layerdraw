@@ -1003,6 +1003,8 @@ func TestEveryGeneratedCodecAndRecursivePredicateUsesBoundedPreflight(t *testing
 	}
 	for _, name := range []string{
 		"common.JsonValue",
+		"engine.SemanticOperationMapEntry",
+		"engine.SemanticOperationValue",
 		"semantic.DiagnosticArgumentValue",
 		"semantic.RecipePredicate",
 		"semantic.RecipeRowPredicate",
@@ -1011,8 +1013,8 @@ func TestEveryGeneratedCodecAndRecursivePredicateUsesBoundedPreflight(t *testing
 			t.Errorf("schema recursion audit did not find %s", name)
 		}
 	}
-	if len(recursiveNames) != 4 {
-		t.Errorf("schema recursion audit found %d recursive definitions, want 4: %v", len(recursiveNames), recursiveNames)
+	if len(recursiveNames) != 6 {
+		t.Errorf("schema recursion audit found %d recursive definitions, want 6: %v", len(recursiveNames), recursiveNames)
 	}
 
 	reachesRecursive := map[definitionID]bool{}

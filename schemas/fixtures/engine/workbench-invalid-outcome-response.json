@@ -1,0 +1,7 @@
+{
+  "diagnostics": [],
+  "engine_release": "0.0.0-dev",
+  "outcome": "success",
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-invalid-outcome"
+}

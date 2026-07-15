@@ -1,0 +1,18 @@
+{
+  "operation": "engine.preview_source_patch",
+  "payload": {
+    "limits": {"max_items": "16", "max_output_bytes": "65536"},
+    "patch": {
+      "patches": [
+        {"expected_source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "replacement_blob": {"blob_id": "patch-one", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "lifetime": "request", "media_type": "text/plain; charset=utf-8", "size": "3"}, "source_range": {"origin": {"kind": "project"}, "module_path": "document.ldl", "start_byte": "0", "end_byte": "2"}},
+        {"expected_source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "replacement_blob": {"blob_id": "patch-two", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "lifetime": "request", "media_type": "text/plain; charset=utf-8", "size": "3"}, "source_range": {"origin": {"kind": "project"}, "module_path": "document.ldl", "start_byte": "2", "end_byte": "4"}}
+      ]
+    },
+    "preconditions": {
+      "document_generation": {"document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"}, "value": "7"},
+      "expected_child_sets": [], "expected_source_digests": [], "expected_subject_hashes": [], "expected_subtree_hashes": []
+    }
+  },
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-source-patch"
+}

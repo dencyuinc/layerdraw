@@ -1,0 +1,9 @@
+{
+  "explicit_absent_column_addresses": ["ldl:project:p:entity-type:t:column:c"],
+  "operation": "upsert_row",
+  "owner_address": "ldl:project:p:entity:a",
+  "row_id": "r",
+  "values": [
+    {"column_address": "ldl:project:p:entity-type:t:column:c", "value": {"kind": "string", "string": "value"}}
+  ]
+}

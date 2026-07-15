@@ -1111,6 +1111,44 @@ function compareCanonicalCollection(profile, left, right) {
     return leftRank < 0 || rightRank < 0 ? undefined : leftRank - rightRank;
   };
   const range = () => isObject(left.range) && isObject(right.range) ? compareRangePosition(left.range, right.range) : undefined;
+  const identity = () => {
+    const a = left.before_address ?? left.after_address;
+    const b = right.before_address ?? right.after_address;
+    return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a, b) : undefined;
+  };
+  const conflictAddress = () => {
+    const a = left.target_address ?? left.owner_address ?? "";
+    const b = right.target_address ?? right.owner_address ?? "";
+    return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a, b) : compareStableAddresses(a, b)) : undefined;
+  };
+  const path = () => {
+    const a = left.path ?? [];
+    const b = right.path ?? [];
+    if (!Array.isArray(a) || !Array.isArray(b)) return undefined;
+    for (let index = 0; index < Math.min(a.length, b.length); index++) {
+      if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined;
+      const value = compareUnicodeScalars(a[index], b[index]);
+      if (value !== 0) return value;
+    }
+    return a.length - b.length;
+  };
+  const optionalSourceRange = () => {
+    const a = left.source_range;
+    const b = right.source_range;
+    if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0;
+    return compareRangePosition(a, b);
+  };
+  const stringArray = (property) => {
+    const a = left[property] ?? [];
+    const b = right[property] ?? [];
+    if (!Array.isArray(a) || !Array.isArray(b)) return undefined;
+    for (let index = 0; index < Math.min(a.length, b.length); index++) {
+      if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined;
+      const value = compareUnicodeScalars(a[index], b[index]);
+      if (value !== 0) return value;
+    }
+    return a.length - b.length;
+  };
   const chain = (...comparisons) => {
     for (const comparison of comparisons) {
       const value = comparison();
@@ -1118,11 +1156,58 @@ function compareCanonicalCollection(profile, left, right) {
     }
     return 0;
   };
+  if (profile === "authored_field_path") return stringArray("tokens");
+  if (profile === "authoring_impact") {
+    const address = () => {
+      const a = left.subject_address ?? left.owner_address ?? "";
+      const b = right.subject_address ?? right.owner_address ?? "";
+      return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a, b) : compareStableAddresses(a, b)) : undefined;
+    };
+    return chain(address, () => text("capability"), () => text("action"));
+  }
+  if (profile === "bounded_text_chunk") {
+    const address = () => {
+      const a = left.address ?? left.owner_address;
+      const b = right.address ?? right.owner_address;
+      return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a, b) : undefined;
+    };
+    const offset = () => {
+      const a = left.source_chunk ?? left.text_chunk;
+      const b = right.source_chunk ?? right.text_chunk;
+      return isObject(a) && isObject(b) && typeof a.offset === "string" && typeof b.offset === "string"
+        ? compareCanonicalUnsignedDecimals(a.offset, b.offset) : undefined;
+    };
+    return chain(address, offset);
+  }
   if (profile === "child_set") return chain(() => stable("owner_address"), () => kind("child_kind"));
+  if (profile === "conflict") return chain(conflictAddress, () => text("kind"), path);
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left.module) && isObject(right.module) ? compareModuleOrder(left.module, right.module) : undefined;
+  if (profile === "neighbor") return chain(() => stable("source_entity_address"),
+    () => typeof left.depth === "number" && typeof right.depth === "number" ? left.depth - right.depth : undefined,
+    () => text("direction"), () => stable("relation_address"), () => stable("entity_address"));
   if (profile === "source_file") return compareModuleOrder(left, right);
+  if (profile === "source_patch") {
+    if (!isObject(left.source_range) || !isObject(right.source_range)) return undefined;
+    const module = compareModuleOrder(left.source_range, right.source_range);
+    return module === 0 ? compareRangePosition(left.source_range, right.source_range) : module;
+  }
+  if (profile === "semantic_diff") return chain(identity, () => text("kind"));
+  if (profile === "semantic_map_entry") return text("key");
+  if (profile === "source_diff") {
+    const module = (value) => isObject(value.source_range) ? value.source_range : isObject(value.before_module) ? value.before_module : isObject(value.after_module) ? value.after_module : undefined;
+    const primary = () => { const a = module(left), b = module(right); return a === undefined || b === undefined ? undefined : compareModuleOrder(a, b); };
+    const after = () => { const a = left.after_module, b = right.after_module; if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0; return compareModuleOrder(a, b); };
+    return chain(primary, () => text("kind"), optionalSourceRange, after);
+  }
+  if (profile === "source_range") {
+    const module = compareModuleOrder(left, right);
+    return module === 0 ? compareRangePosition(left, right) : module;
+  }
+  if (profile === "subgraph") return isObject(left.subject) && isObject(right.subject) &&
+    typeof left.subject.address === "string" && typeof right.subject.address === "string"
+    ? compareStableAddresses(left.subject.address, right.subject.address) : undefined;
   if (profile === "source_asset") return chain(() => stable("subject_address"), () => text("locator"));
   if (profile === "semantic_reference") return chain(() => stable("source_address"), range, () => stable("target_address"), () => kind("target_kind"), () => text("via"));
   if (profile === "source_binding") {
@@ -1173,7 +1258,9 @@ function addLayerDrawVocabulary(ajv, meta) {
   }});
   register({keyword: "x-layerdraw-canonical-enum-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data, parentSchema) {
     if (!enabled) return true;
-    const values = parentSchema?.items?.enum;
+    const values = parentSchema?.items?.enum ?? (parentSchema?.items?.$ref?.endsWith("/$defs/SubjectKind") ? [
+      "entity", "entity_row", "entity_type", "entity_type_column", "entity_type_constraint", "layer", "pack", "project", "query", "query_parameter", "reference", "relation", "relation_row", "relation_type", "relation_type_column", "relation_type_constraint", "view", "view_export", "view_table_column",
+    ] : undefined);
     if (!Array.isArray(values)) return false;
     const ranks = new Map(values.map((value, index) => [value, index]));
     return data.every((item, index) => index === 0 || ranks.has(item) && ranks.has(data[index - 1]) && ranks.get(data[index - 1]) < ranks.get(item));
@@ -1192,7 +1279,16 @@ function addLayerDrawVocabulary(ajv, meta) {
     return true;
   }});
   register({keyword: "x-layerdraw-canonical-collection-order", schemaType: "string", type: "array", errors: false, validate(profile, data) {
-    return data.every((_, index) => index === 0 || (compareCanonicalCollection(profile, data[index - 1], data[index]) ?? 0) < 0);
+    return data.every((item, index) => {
+      if (index === 0) return true;
+      const previous = data[index - 1];
+      if ((compareCanonicalCollection(profile, previous, item) ?? 0) >= 0) return false;
+      if (profile !== "source_patch") return true;
+      if (!isObject(previous?.source_range) || !isObject(item?.source_range)) return false;
+      if (compareModuleOrder(previous.source_range, item.source_range) !== 0) return true;
+      const overlap = compareCanonicalUnsignedDecimals(previous.source_range.end_byte, item.source_range.start_byte);
+      return overlap !== undefined && overlap <= 0;
+    });
   }});
   register({keyword: "x-layerdraw-child-set", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
     return !enabled || !isObject(data) || validChildSet(data);
@@ -1233,8 +1329,8 @@ function addLayerDrawVocabulary(ajv, meta) {
   register({keyword: "x-layerdraw-disjoint-array-keys", schemaType: "array", type: "object", errors: false, validate(rules, data) {
     if (data === null || Array.isArray(data)) return true;
     return rules.every((rule) => {
-      const items = data[rule.array];
-      const strings = data[rule.strings];
+      const items = Object.prototype.hasOwnProperty.call(data, rule.array) ? data[rule.array] : [];
+      const strings = Object.prototype.hasOwnProperty.call(data, rule.strings) ? data[rule.strings] : [];
       if (!Array.isArray(items) || !Array.isArray(strings) || !strings.every((item) => typeof item === "string")) return false;
       const reserved = new Set(strings);
       return items.every((item) => item !== null && typeof item === "object" && typeof item[rule.property] === "string" && !reserved.has(item[rule.property]));
@@ -1248,6 +1344,8 @@ function addLayerDrawVocabulary(ajv, meta) {
     return (variant.required ?? []).every(own) && (variant.forbidden ?? []).every((key) => !own(key)) &&
       (variant.empty ?? []).every((key) => Array.isArray(data[key]) && data[key].length === 0) &&
       (variant.non_empty ?? []).every((key) => Array.isArray(data[key]) && data[key].length > 0) &&
+      (variant.error_diagnostic ?? []).every((key) => Array.isArray(data[key]) && data[key].some((item) => item !== null && typeof item === "object" && !Array.isArray(item) && item.severity === "error")) &&
+      ((variant.any_non_empty ?? []).length === 0 || variant.any_non_empty.some((key) => Array.isArray(data[key]) && data[key].length > 0)) &&
       Object.entries(variant.allowed_values ?? {}).every(([key, values]) => !own(key) || values.includes(data[key]));
   }});
   register({keyword: "x-layerdraw-diff-source", schemaType: "boolean", errors: false, validate(enabled, data) {
@@ -1326,7 +1424,9 @@ function addLayerDrawVocabulary(ajv, meta) {
     if (data === null || typeof data !== "object") return true;
     return rules.every((rule) => {
       const seen = new Set();
-      return Array.isArray(data[rule.array]) && data[rule.array].every((item) => !seen.has(item[rule.property]) && Boolean(seen.add(item[rule.property])));
+      const items = Object.prototype.hasOwnProperty.call(data, rule.array) ? data[rule.array] : [];
+      return Array.isArray(items) && items.every((item) => item !== null && typeof item === "object" &&
+        typeof item[rule.property] === "string" && !seen.has(item[rule.property]) && Boolean(seen.add(item[rule.property])));
     });
   }});
   const inventory = Object.keys(meta.properties).filter((keyword) => keyword.startsWith("x-layerdraw-")).sort();
@@ -1390,6 +1490,84 @@ test("Ajv registration fails closed against the published dialect inventory and 
     () => addLayerDrawVocabulary(new Ajv2020({strict: true}), mistyped),
     /must derive from the published dialect/,
   );
+});
+
+test("Ajv enforces closed Workbench handles, recursive values, ordering, and outcome invariants", async () => {
+  const compile = await authority();
+  const engine = "https://schemas.layerdraw.dev/engine-protocol/v1";
+  const validateRequest = compile(engine, "PreviewOperationsRequestEnvelope");
+  const validateResponse = compile(engine, "PreviewOperationsResponseEnvelope");
+  assert.equal(validateRequest(await readJSON("fixtures/engine/workbench-preview-operations-request.json")), true);
+  for (const name of [
+    "workbench-invalid-handle-request.json",
+    "workbench-invalid-null-request.json",
+    "workbench-invalid-order-request.json",
+  ]) assert.equal(validateRequest(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(validateResponse(await readJSON("fixtures/engine/workbench-invalid-outcome-response.json")), false);
+  assert.equal(validateResponse(await readJSON("fixtures/engine/workbench-preview-conflict-only-response.json")), true);
+  assert.equal(validateResponse(await readJSON("fixtures/engine/workbench-invalid-empty-preview-response.json")), false);
+  const validatePatch = compile(engine, "PreviewSourcePatchRequestEnvelope");
+  assert.equal(validatePatch(await readJSON("fixtures/engine/workbench-preview-source-patch-request.json")), true);
+  assert.equal(validatePatch(await readJSON("fixtures/engine/workbench-invalid-overlapping-source-patch-request.json")), false);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-open-document-response.json")), true);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-open-pack-document-response.json")), true);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-open-invalid-root-response.json")), true);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-unavailable-warning-only-response.json")), false);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-open-document-capabilities-response.json")), false);
+  assert.equal(compile(engine, "ReplaceSourceTreeResult")(await readJSON("fixtures/engine/workbench-replace-pack-result.json")), true);
+  assert.equal(compile(engine, "ResultingHashes")(await readJSON("fixtures/engine/workbench-invalid-pack-resulting-hashes.json")), false);
+  assert.equal(compile(engine, "InspectSubgraphResult")(await readJSON("fixtures/engine/workbench-inspect-subgraph-result.json")), true);
+  assert.equal(compile(engine, "InspectSubgraphResult")(await readJSON("fixtures/engine/workbench-invalid-subgraph-relation-result.json")), false);
+  assert.equal(compile(engine, "InspectSubgraphResult")(await readJSON("fixtures/engine/workbench-invalid-subgraph-item-facts-result.json")), false);
+  assert.equal(compile(engine, "InspectSubgraphInput")(await readJSON("fixtures/engine/workbench-invalid-subgraph-root-input.json")), false);
+  assert.equal(compile(engine, "FindUsagesResult")(await readJSON("fixtures/engine/workbench-find-usages-result.json")), true);
+  assert.equal(compile(engine, "FindUsagesResult")(await readJSON("fixtures/engine/workbench-invalid-find-usages-target-kind-result.json")), false);
+  assert.equal(compile(engine, "CloseDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-close-failed-response.json")), true);
+  assert.equal(compile(engine, "CloseDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-close-failed-response.json")), false);
+  assert.equal(compile(engine, "ReadDeclarationsResult")(await readJSON("fixtures/engine/workbench-large-declaration-result.json")), true);
+  assert.equal(compile(engine, "ReadDeclarationsResult")(await readJSON("fixtures/engine/workbench-invalid-declaration-chunk-order-result.json")), false);
+  assert.equal(compile(engine, "FindUsagesResult")(await readJSON("fixtures/engine/workbench-invalid-find-usages-order-result.json")), false);
+  assert.equal(compile(engine, "EngineEditPreconditions")(await readJSON("fixtures/engine/workbench-optional-preconditions.json")), true);
+  assert.equal(compile(engine, "EngineEditPreconditions")(await readJSON("fixtures/engine/workbench-invalid-source-digest-order.json")), false);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-upsert-row-default-absent.json")), true);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-create-subject-single-kind.json")), true);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-semantic-map-order.json")), false);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-authored-path-depth.json")), false);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-upsert-row-overlap.json")), false);
+  assert.equal(compile(engine, "ClassifyAuthoringImpactInput")(await readJSON("fixtures/engine/workbench-invalid-classify-raw-diff.json")), false);
+  const semantic = "https://schemas.layerdraw.dev/semantic/v1";
+  assert.equal(compile(semantic, "SemanticDiff")(await readJSON("fixtures/engine/workbench-invalid-semantic-diff-order.json")), false);
+  assert.equal(compile(engine, "SourceDiff")(await readJSON("fixtures/engine/workbench-invalid-source-diff-order.json")), false);
+  assert.equal(compile(engine, "SourceDiff")(await readJSON("fixtures/engine/workbench-source-diff-all-kinds.json")), true);
+  assert.equal(compile(engine, "SourceDiff")(await readJSON("fixtures/engine/workbench-invalid-replace-source-edit-identity.json")), false);
+  assert.equal(compile(semantic, "AuthoringImpact")(await readJSON("fixtures/engine/workbench-invalid-authoring-impact-order.json")), false);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-find-symbols-input.json")), true);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-find-symbols-unrestricted-input.json")), true);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-invalid-find-symbols-mode-input.json")), false);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-invalid-find-symbols-empty-filter-input.json")), false);
+  assert.equal(compile(engine, "PreviewOperationsResponseEnvelope")(await readJSON("fixtures/engine/workbench-stale-generation-response.json")), true);
+  assert.equal(compile(engine, "PreviewOperationsResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-stale-generation-response.json")), false);
+  const engineSchema = await readJSON("engine-protocol/v1.schema.json");
+  assert.match(engineSchema.$defs.WorkbenchLimits.description, /outer Engine response envelope/);
+  assert.match(engineSchema.$defs.LogicalResponseByteCount.description, /BlobRef attachment/);
+  assert.match(engineSchema.$defs.FindSymbolsInput.description, /without normalization/);
+});
+
+test("every Workbench envelope preserves common metadata and uses the closed Workbench failure", async () => {
+  const engine = await readJSON("engine-protocol/v1.schema.json");
+  const workbenchRequests = Object.entries(engine.$defs).filter(([, schema]) =>
+    schema?.properties?.operation?.const?.startsWith("engine.") &&
+    !["engine.compile", "engine.handshake"].includes(schema.properties.operation.const));
+  assert.ok(workbenchRequests.length > 0);
+  for (const [requestName, request] of workbenchRequests) {
+    assert.deepEqual(request.properties.extensions, {$ref: "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"}, requestName);
+    assert.deepEqual(request.properties.trace_context, {$ref: "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}, requestName);
+    const responseName = requestName.replace(/RequestEnvelope$/, "ResponseEnvelope");
+    const response = engine.$defs[responseName];
+    assert.notEqual(response, undefined, responseName);
+    assert.deepEqual(response.properties.extensions, {$ref: "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"}, responseName);
+    assert.deepEqual(response.properties.failure, {$ref: "#/$defs/WorkbenchFailure"}, responseName);
+  }
 });
 
 test("normalized schema and document authority require request lifetime and the exact byte profile", async () => {

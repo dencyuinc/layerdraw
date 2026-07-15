@@ -26,7 +26,7 @@
       "minItems": 1,
       "uniqueItems": true
     },
-    "x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["child_set", "export_binding", "module_scope", "reference_id", "semantic_reference", "source_asset", "source_binding", "source_file", "subject_kind"]},
+    "x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["authored_field_path", "authoring_impact", "bounded_text_chunk", "child_set", "conflict", "export_binding", "module_scope", "neighbor", "reference_id", "semantic_diff", "semantic_map_entry", "semantic_reference", "source_asset", "source_binding", "source_diff", "source_file", "source_patch", "source_range", "subgraph", "subject_kind"]},
     "x-layerdraw-canonical-enum-order": {"type": "boolean", "const": true},
     "x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
     "x-layerdraw-child-set": {"type": "boolean", "const": true},
@@ -196,7 +196,9 @@
             "uniqueItems": true
           }
         },
+        "any_non_empty": {"$ref": "#/$defs/fieldNames"},
         "empty": {"$ref": "#/$defs/fieldNames"},
+        "error_diagnostic": {"$ref": "#/$defs/fieldNames"},
         "forbidden": {"$ref": "#/$defs/fieldNames"},
         "non_empty": {"$ref": "#/$defs/fieldNames"},
         "required": {"$ref": "#/$defs/fieldNames"}

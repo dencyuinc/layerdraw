@@ -1,0 +1,13 @@
+{
+  "document_generation": {
+    "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+    "value": "7"
+  },
+  "expected_child_sets": [],
+  "expected_source_digests": [
+    {"digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "module": {"module_path": "z.ldl", "origin": {"kind": "project"}}},
+    {"digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "module": {"module_path": "a.ldl", "origin": {"kind": "project"}}}
+  ],
+  "expected_subject_hashes": [],
+  "expected_subtree_hashes": []
+}

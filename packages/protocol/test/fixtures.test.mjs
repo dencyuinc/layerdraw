@@ -38,8 +38,28 @@ import {
   encodeHandshakeResponseEnvelope,
   isCompileRequestEnvelope,
   isCompileResponseEnvelope,
+  isCloseDocumentResponseEnvelope,
+  isClassifyAuthoringImpactInput,
   isHandshakeRequestEnvelope,
   isHandshakeResponseEnvelope,
+  decodePreviewOperationsRequestEnvelope,
+  decodePreviewOperationsResponseEnvelope,
+  encodePreviewOperationsRequestEnvelope,
+  encodePreviewOperationsResponseEnvelope,
+  isFindUsagesResult,
+  isFindSymbolsInput,
+  isEngineEditPreconditions,
+  isInspectSubgraphResult,
+  isInspectSubgraphInput,
+  isOpenDocumentResponseEnvelope,
+  isReadDeclarationsResult,
+  isReplaceSourceTreeResult,
+  isResultingHashes,
+  isSemanticOperation,
+  isSourceDiff,
+  isPreviewOperationsRequestEnvelope,
+  isPreviewOperationsResponseEnvelope,
+  isPreviewSourcePatchRequestEnvelope,
 } from "../dist/engine.gen.js";
 import {
   decodeBlobRef,
@@ -102,6 +122,8 @@ import {
   maxWireJSONDepth,
 } from "../dist/common.gen.js";
 import {
+  isAuthoringImpact,
+  isSemanticDiff,
   decodeChildSetHash,
   decodeCanonicalFiniteDecimal,
   decodeCanonicalPositiveFiniteDecimal,
@@ -302,6 +324,68 @@ test("compatibility rejection fixtures use generated UpgradeDiagnosticData", asy
 test("invalid compile input is rejected", async () => {
   const fixture = await readFixture("compile-invalid-request.json");
   assert.equal(isCompileRequestEnvelope(fixture), false);
+});
+
+test("Workbench preview fixture validates, preserves recursive values, and round-trips", async () => {
+  const source = await readFile(new URL("workbench-preview-operations-request.json", fixtureRoot), "utf8");
+  const fixture = JSON.parse(source);
+  assert.equal(isPreviewOperationsRequestEnvelope(fixture), true);
+  const decoded = decodePreviewOperationsRequestEnvelope(source);
+  assert.equal(decoded.payload.batch.operations[0].value.kind, "map");
+  assert.equal(decoded.payload.batch.operations[0].value.map[0].value.array[1].kind, "absent");
+  assert.deepEqual(JSON.parse(encodePreviewOperationsRequestEnvelope(decoded)), fixture);
+});
+
+test("Workbench malformed handles, null contracts, ordering, and outcome payloads fail closed", async () => {
+  for (const name of [
+    "workbench-invalid-handle-request.json",
+    "workbench-invalid-null-request.json",
+    "workbench-invalid-order-request.json",
+  ]) assert.equal(isPreviewOperationsRequestEnvelope(await readFixture(name)), false, name);
+  assert.equal(isPreviewOperationsResponseEnvelope(await readFixture("workbench-invalid-outcome-response.json")), false);
+  const conflictOnly = await readFixture("workbench-preview-conflict-only-response.json");
+  assert.equal(isPreviewOperationsResponseEnvelope(conflictOnly), true);
+  assert.deepEqual(JSON.parse(encodePreviewOperationsResponseEnvelope(decodePreviewOperationsResponseEnvelope(JSON.stringify(conflictOnly)))), conflictOnly);
+  assert.equal(isPreviewOperationsResponseEnvelope(await readFixture("workbench-invalid-empty-preview-response.json")), false);
+  assert.equal(isOpenDocumentResponseEnvelope(await readFixture("workbench-open-document-response.json")), true);
+  assert.equal(isOpenDocumentResponseEnvelope(await readFixture("workbench-open-pack-document-response.json")), true);
+  assert.equal(isOpenDocumentResponseEnvelope(await readFixture("workbench-open-invalid-root-response.json")), true);
+  assert.equal(isOpenDocumentResponseEnvelope(await readFixture("workbench-invalid-unavailable-warning-only-response.json")), false);
+  assert.equal(isOpenDocumentResponseEnvelope(await readFixture("workbench-invalid-open-document-capabilities-response.json")), false);
+  assert.equal(isReplaceSourceTreeResult(await readFixture("workbench-replace-pack-result.json")), true);
+  assert.equal(isResultingHashes(await readFixture("workbench-invalid-pack-resulting-hashes.json")), false);
+  assert.equal(isInspectSubgraphResult(await readFixture("workbench-inspect-subgraph-result.json")), true);
+  assert.equal(isInspectSubgraphResult(await readFixture("workbench-invalid-subgraph-relation-result.json")), false);
+  assert.equal(isInspectSubgraphResult(await readFixture("workbench-invalid-subgraph-item-facts-result.json")), false);
+  assert.equal(isInspectSubgraphInput(await readFixture("workbench-invalid-subgraph-root-input.json")), false);
+  assert.equal(isFindUsagesResult(await readFixture("workbench-find-usages-result.json")), true);
+  assert.equal(isFindUsagesResult(await readFixture("workbench-invalid-find-usages-target-kind-result.json")), false);
+  assert.equal(isCloseDocumentResponseEnvelope(await readFixture("workbench-close-failed-response.json")), true);
+  assert.equal(isCloseDocumentResponseEnvelope(await readFixture("workbench-invalid-close-failed-response.json")), false);
+  assert.equal(isReadDeclarationsResult(await readFixture("workbench-large-declaration-result.json")), true);
+  assert.equal(isReadDeclarationsResult(await readFixture("workbench-invalid-declaration-chunk-order-result.json")), false);
+  assert.equal(isFindUsagesResult(await readFixture("workbench-invalid-find-usages-order-result.json")), false);
+  assert.equal(isEngineEditPreconditions(await readFixture("workbench-optional-preconditions.json")), true);
+  assert.equal(isEngineEditPreconditions(await readFixture("workbench-invalid-source-digest-order.json")), false);
+  assert.equal(isSemanticOperation(await readFixture("workbench-upsert-row-default-absent.json")), true);
+  assert.equal(isSemanticOperation(await readFixture("workbench-create-subject-single-kind.json")), true);
+  assert.equal(isSemanticOperation(await readFixture("workbench-invalid-semantic-map-order.json")), false);
+  assert.equal(isSemanticOperation(await readFixture("workbench-invalid-authored-path-depth.json")), false);
+  assert.equal(isSemanticOperation(await readFixture("workbench-invalid-upsert-row-overlap.json")), false);
+  assert.equal(isClassifyAuthoringImpactInput(await readFixture("workbench-invalid-classify-raw-diff.json")), false);
+  assert.equal(isSemanticDiff(await readFixture("workbench-invalid-semantic-diff-order.json")), false);
+  assert.equal(isSourceDiff(await readFixture("workbench-invalid-source-diff-order.json")), false);
+  assert.equal(isSourceDiff(await readFixture("workbench-source-diff-all-kinds.json")), true);
+  assert.equal(isSourceDiff(await readFixture("workbench-invalid-replace-source-edit-identity.json")), false);
+  assert.equal(isAuthoringImpact(await readFixture("workbench-invalid-authoring-impact-order.json")), false);
+  assert.equal(isFindSymbolsInput(await readFixture("workbench-find-symbols-input.json")), true);
+  assert.equal(isFindSymbolsInput(await readFixture("workbench-find-symbols-unrestricted-input.json")), true);
+  assert.equal(isFindSymbolsInput(await readFixture("workbench-invalid-find-symbols-mode-input.json")), false);
+  assert.equal(isFindSymbolsInput(await readFixture("workbench-invalid-find-symbols-empty-filter-input.json")), false);
+  assert.equal(isPreviewSourcePatchRequestEnvelope(await readFixture("workbench-preview-source-patch-request.json")), true);
+  assert.equal(isPreviewSourcePatchRequestEnvelope(await readFixture("workbench-invalid-overlapping-source-patch-request.json")), false);
+  assert.equal(isPreviewOperationsResponseEnvelope(await readFixture("workbench-stale-generation-response.json")), true);
+  assert.equal(isPreviewOperationsResponseEnvelope(await readFixture("workbench-invalid-stale-generation-response.json")), false);
 });
 
 test("generated CompileInput BlobRef collector preserves traversal, duplicates, and detachment", async () => {

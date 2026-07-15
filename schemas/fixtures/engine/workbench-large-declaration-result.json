@@ -1,0 +1,35 @@
+{
+  "document_generation": {
+    "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+    "value": "7"
+  },
+  "items": [{
+    "address": "ldl:project:p:entity:a",
+    "kind": "entity",
+    "source_chunk": {
+      "blob": {
+        "blob_id": "large-declaration-0",
+        "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "lifetime": "request",
+        "media_type": "text/plain; charset=utf-8",
+        "size": "128"
+      },
+      "full_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "offset": "0",
+      "total_bytes": "1000000"
+    },
+    "source_range": {"end_byte": "1000000", "module_path": "p.ldl", "origin": {"kind": "project"}, "start_byte": "0"}
+  }],
+  "page": {
+    "next_cursor": {
+      "document_generation": {
+        "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+        "value": "7"
+      },
+      "value": "read_declarations_cursor_abcdefghijklmnop"
+    },
+    "returned_bytes": "256",
+    "returned_items": "1",
+    "truncation": "output_byte_limit"
+  }
+}

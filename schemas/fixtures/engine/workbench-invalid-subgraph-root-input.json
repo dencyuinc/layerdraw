@@ -1,0 +1,9 @@
+{
+  "depth": 1,
+  "document_generation": {
+    "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+    "value": "7"
+  },
+  "limits": {"max_items": "32", "max_output_bytes": "65536"},
+  "root_addresses": ["ldl:project:p:view:v"]
+}

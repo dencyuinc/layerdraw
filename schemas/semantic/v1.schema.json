@@ -21,7 +21,104 @@
     },
     "AuthoringCapability": {
       "type": "string",
-      "enum": ["graph:write", "project:configure", "query:write", "reference:write", "schema:write", "view:write"]
+      "enum": ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"]
+    },
+    "AuthoringAction": {
+      "type": "string",
+      "enum": ["create", "update", "delete", "rename", "move", "bind", "unbind", "maintain"]
+    },
+    "AuthoredFieldPath": {
+      "type": "object",
+      "description": "A registered authored semantic field path from Language 1 section 11.2; it is distinct from provenance StateFieldPath.",
+      "properties": {
+        "tokens": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 2}
+      },
+      "required": ["tokens"],
+      "additionalProperties": false
+    },
+    "GraphAuthoringFacts": {
+      "type": "object",
+      "properties": {
+        "action_flags": {"type": "array", "items": {"$ref": "#/$defs/AuthoringAction"}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
+        "column_addresses": {"type": "array", "items": {"$ref": "#/$defs/ColumnAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "endpoint_entity_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/LayerAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "relation_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}
+      },
+      "required": ["entity_type_addresses", "relation_type_addresses", "layer_addresses", "column_addresses", "endpoint_entity_addresses", "action_flags"],
+      "additionalProperties": false
+    },
+    "AuthoringImpactEntry": {
+      "type": "object",
+      "properties": {
+        "action": {"$ref": "#/$defs/AuthoringAction"},
+        "after_refs": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "before_refs": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "capability": {"$ref": "#/$defs/AuthoringCapability"},
+        "changed_field_paths": {"type": "array", "items": {"$ref": "#/$defs/AuthoredFieldPath"}, "uniqueItems": true, "x-layerdraw-canonical-collection-order": "authored_field_path"},
+        "graph_facts": {"$ref": "#/$defs/GraphAuthoringFacts"},
+        "owner_address": {"$ref": "#/$defs/StableAddress"},
+        "source_refs": {"type": "array", "items": {"$ref": "#/$defs/SourceRange"}, "x-layerdraw-canonical-collection-order": "source_range"},
+        "subject_address": {"$ref": "#/$defs/StableAddress"},
+        "subject_kind": {"$ref": "#/$defs/SubjectKind"}
+      },
+      "required": ["capability", "action", "subject_kind", "changed_field_paths", "before_refs", "after_refs", "source_refs"],
+      "additionalProperties": false
+    },
+    "AuthoringImpact": {
+      "type": "object",
+      "description": "The portable Engine classification of the complete before/after semantic and source change. Entries are in canonical subject-address, capability, action, and field-path order.",
+      "properties": {
+        "base_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "entries": {"type": "array", "items": {"$ref": "#/$defs/AuthoringImpactEntry"}, "x-layerdraw-canonical-collection-order": "authoring_impact"},
+        "impact_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "required_capabilities": {"type": "array", "items": {"$ref": "#/$defs/AuthoringCapability"}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
+        "resulting_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "semantic_diff_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "source_diff_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["base_definition_hash", "resulting_definition_hash", "semantic_diff_hash", "source_diff_hash", "entries", "required_capabilities", "impact_digest"],
+      "additionalProperties": false
+    },
+    "SemanticChangeKind": {
+      "type": "string",
+      "enum": ["created", "updated", "deleted", "renamed", "moved", "reference_changed"]
+    },
+    "SemanticDiffEntry": {
+      "type": "object",
+      "properties": {
+        "after_address": {"$ref": "#/$defs/StableAddress"},
+        "after_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "before_address": {"$ref": "#/$defs/StableAddress"},
+        "before_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "changed_field_paths": {"type": "array", "items": {"$ref": "#/$defs/AuthoredFieldPath"}, "uniqueItems": true, "x-layerdraw-canonical-collection-order": "authored_field_path"},
+        "kind": {"$ref": "#/$defs/SemanticChangeKind"},
+        "owner_address": {"$ref": "#/$defs/StableAddress"},
+        "subject_kind": {"$ref": "#/$defs/SubjectKind"}
+      },
+      "required": ["kind", "subject_kind", "changed_field_paths"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "created": {"required": ["after_address", "after_hash"], "forbidden": ["before_address", "before_hash"]},
+          "deleted": {"required": ["before_address", "before_hash"], "forbidden": ["after_address", "after_hash"]},
+          "moved": {"required": ["before_address", "before_hash", "after_address", "after_hash"]},
+          "reference_changed": {"required": ["before_address", "before_hash", "after_address", "after_hash"]},
+          "renamed": {"required": ["before_address", "before_hash", "after_address", "after_hash"]},
+          "updated": {"required": ["before_address", "before_hash", "after_address", "after_hash"]}
+        }
+      }
+    },
+    "SemanticDiff": {
+      "type": "object",
+      "properties": {
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "entries": {"type": "array", "items": {"$ref": "#/$defs/SemanticDiffEntry"}, "x-layerdraw-canonical-collection-order": "semantic_diff"}
+      },
+      "required": ["entries", "digest"],
+      "additionalProperties": false
     },
     "AuthoringSubjectClassification": {
       "type": "object",

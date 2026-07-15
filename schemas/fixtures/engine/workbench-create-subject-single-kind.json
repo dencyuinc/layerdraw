@@ -1,0 +1,7 @@
+{
+  "fields": {},
+  "id": "a",
+  "operation": "create_subject",
+  "parent_address": "ldl:project:p",
+  "subject_kind": "entity"
+}
