@@ -3966,7 +3966,7 @@ func validCanonicalStringFormat(format, value string) bool {
 		return validCanonicalHostname(value)
 	case "email":
 		match := regexp.MustCompile("^[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_\\x60{|}~-]+)*@([A-Za-z0-9.-]+)$").FindStringSubmatch(value)
-		return match != nil && validCanonicalHostname(match[1])
+		return match != nil && validCanonicalHostname(strings.ToLower(match[1]))
 	case "ipv4":
 		address, err := netip.ParseAddr(value)
 		return err == nil && address.Is4() && address.String() == value
@@ -4923,18 +4923,41 @@ func (sets *viewDependencySets) add(address string) {
 	}
 }
 
-func collectViewDependencyAddresses(raw any, sets *viewDependencySets) {
+func addViewDependencyValues(raw any, sets *viewDependencySets) {
 	switch value := raw.(type) {
 	case string:
 		sets.add(value)
 	case []any:
 		for _, item := range value {
+			if address, ok := item.(string); ok {
+				sets.add(address)
+			}
+		}
+	}
+}
+
+func collectViewDependencyAddresses(raw any, sets *viewDependencySets) {
+	switch value := raw.(type) {
+	case []any:
+		for _, item := range value {
 			collectViewDependencyAddresses(item, sets)
 		}
 	case map[string]any:
-		for key, item := range value {
-			sets.add(key)
-			collectViewDependencyAddresses(item, sets)
+		for property, item := range value {
+			switch property {
+			case "arguments":
+				if arguments, ok := item.(map[string]any); ok {
+					for address := range arguments {
+						sets.add(address)
+					}
+				}
+			case "query_address", "entity_address", "relation_address", "layer_address", "parameter_address",
+				"layer_addresses", "entity_type_addresses", "relation_type_addresses", "entity_addresses", "relation_addresses",
+				"column_addresses", "lane_column_addresses", "attribute_column_addresses":
+				addViewDependencyValues(item, sets)
+			default:
+				collectViewDependencyAddresses(item, sets)
+			}
 		}
 	}
 }
@@ -4971,16 +4994,23 @@ func validateLocallyDerivableViewDependencies(object map[string]any) bool {
 	sets := newViewDependencySets()
 	collectViewDependencyAddresses(source, &sets)
 	collectViewDependencyAddresses(shape, &sets)
-	collectViewDependencyAddresses(overrides, &sets)
+	for address := range overrides {
+		sets.add(address)
+	}
 	if !dependencyArrayEquals(dependencies["query_addresses"], sets.query) {
 		return false
 	}
+	_, hasSourceQuery := source["query_address"].(string)
 	checks := []struct {
 		property string
 		values   map[string]bool
 	}{{"parameter_addresses", sets.parameter}, {"layer_addresses", sets.layer}, {"entity_type_addresses", sets.entityType}, {"relation_type_addresses", sets.relationType}, {"entity_addresses", sets.entity}, {"relation_addresses", sets.relation}, {"column_addresses", sets.column}}
 	for _, check := range checks {
-		if !dependencyContainsAll(dependencies[check.property], check.values) {
+		if hasSourceQuery {
+			if !dependencyContainsAll(dependencies[check.property], check.values) {
+				return false
+			}
+		} else if !dependencyArrayEquals(dependencies[check.property], check.values) {
 			return false
 		}
 	}
@@ -5059,10 +5089,19 @@ func validateViewRecipeConsistency(path string, object map[string]any) error {
 		if table["include_layer"] == true {
 			available["entity_layer"] = true
 		}
-		if rowSource == "automatic_relations" {
-			available["from"] = true
-			available["to"] = true
-			available["relation_type"] = true
+		automaticColumns, automaticOK := table["automatic_relation_columns"].([]any)
+		if !automaticOK {
+			return fmt.Errorf("%s lacks automatic Relation column authority", path)
+		}
+		if rowSource != "automatic_relations" && len(automaticColumns) != 0 {
+			return fmt.Errorf("%s declares automatic Relation columns for a non-automatic row source", path)
+		}
+		for _, raw := range automaticColumns {
+			id, ok := raw.(string)
+			if !ok {
+				return fmt.Errorf("%s has a non-string automatic Relation column", path)
+			}
+			available[id] = true
 		}
 		reserved := map[string]bool{}
 		for _, raw := range reservedValues {
@@ -5198,6 +5237,9 @@ func validateViewRecipeConsistency(path string, object map[string]any) error {
 			if !containsStateRead(stateReads, read) {
 				return fmt.Errorf("%s dependencies omit a direct Table state read", path)
 			}
+		}
+		if _, hasSourceQuery := source["query_address"].(string); !hasSourceQuery && len(stateReads) != len(directReads) {
+			return fmt.Errorf("%s dependencies contain non-derivable state reads", path)
 		}
 	} else if stateInput != "none" {
 		return fmt.Errorf("%s state_input is forbidden without direct Table state reads", path)

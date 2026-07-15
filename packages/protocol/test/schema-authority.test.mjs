@@ -290,7 +290,7 @@ function validCanonicalStringFormat(format, value) {
   if (format === "hostname") return canonicalHostname(value);
   if (format === "email") {
     const match = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([A-Za-z0-9.-]+)$/.exec(value);
-    return match !== null && canonicalHostname(match[1]);
+    return match !== null && canonicalHostname(match[1].toLowerCase());
   }
   if (format === "ipv4") return parseCanonicalIPv4(value) !== undefined;
   if (format === "ipv6") { const parsed = parseIPv6(value); return parsed !== undefined && formatIPv6(parsed) === value; }
@@ -684,16 +684,35 @@ function viewDependencySets() {
   return {query: new Set(), parameter: new Set(), layer: new Set(), entity_type: new Set(), relation_type: new Set(), entity: new Set(), relation: new Set(), column: new Set()};
 }
 
-function collectViewDependencies(raw, sets) {
-  if (typeof raw === "string") {
-    const subject = stableAddressSubject(raw);
-    if (subject === undefined) return;
+function addViewDependencyValues(raw, sets) {
+  const values = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : [];
+  for (const item of values) {
+    if (typeof item !== "string") continue;
+    const subject = stableAddressSubject(item);
+    if (subject === undefined) continue;
     const property = subject.kind === "query_parameter" ? "parameter" : subject.kind === "entity_type_column" || subject.kind === "relation_type_column" ? "column" : subject.kind;
-    if (sets[property] instanceof Set) sets[property].add(raw);
-  } else if (Array.isArray(raw)) {
+    if (sets[property] instanceof Set) sets[property].add(item);
+  }
+}
+
+function collectViewDependencies(raw, sets) {
+  if (Array.isArray(raw)) {
     for (const item of raw) collectViewDependencies(item, sets);
-  } else if (isObject(raw)) {
-    for (const [key, item] of Object.entries(raw)) { collectViewDependencies(key, sets); collectViewDependencies(item, sets); }
+    return;
+  }
+  if (!isObject(raw)) return;
+  for (const [property, item] of Object.entries(raw)) {
+    if (property === "arguments") {
+      if (isObject(item)) for (const address of Object.keys(item)) addViewDependencyValues(address, sets);
+      continue;
+    }
+    if (["query_address", "entity_address", "relation_address", "layer_address", "parameter_address",
+      "layer_addresses", "entity_type_addresses", "relation_type_addresses", "entity_addresses", "relation_addresses",
+      "column_addresses", "lane_column_addresses", "attribute_column_addresses"].includes(property)) {
+      addViewDependencyValues(item, sets);
+      continue;
+    }
+    collectViewDependencies(item, sets);
   }
 }
 
@@ -703,10 +722,13 @@ function validLocallyDerivableViewDependencies(value) {
   const sets = viewDependencySets();
   collectViewDependencies(value.source, sets);
   collectViewDependencies(value.shape, sets);
-  collectViewDependencies(value.relation_projection_overrides, sets);
+  for (const address of Object.keys(value.relation_projection_overrides)) addViewDependencyValues(address, sets);
   if (!dependencySetEquals(dependencies.query_addresses, sets.query)) return false;
+  const hasSourceQuery = typeof value.source.query_address === "string";
   for (const property of ["parameter", "layer", "entity_type", "relation_type", "entity", "relation", "column"]) {
-    if (!Array.isArray(dependencies[`${property}_addresses`]) || [...sets[property]].some((address) => !dependencies[`${property}_addresses`].includes(address))) return false;
+    if (!Array.isArray(dependencies[`${property}_addresses`]) ||
+        (hasSourceQuery ? [...sets[property]].some((address) => !dependencies[`${property}_addresses`].includes(address)) :
+          !dependencySetEquals(dependencies[`${property}_addresses`], sets[property]))) return false;
   }
   return Array.isArray(dependencies.export_addresses) && dependencies.export_addresses.length === value.exports.length &&
     value.exports.every((item, index) => isObject(item) && item.address === dependencies.export_addresses[index]);
@@ -771,7 +793,10 @@ function validViewRecipe(value) {
     if (table.include_entity_id === true) available.add("entity_id");
     if (table.include_type === true) available.add("entity_type");
     if (table.include_layer === true) available.add("entity_layer");
-    if (table.row_source === "automatic_relations") { available.add("from"); available.add("to"); available.add("relation_type"); }
+    if (!Array.isArray(table.automatic_relation_columns) ||
+        table.row_source !== "automatic_relations" && table.automatic_relation_columns.length !== 0 ||
+        !table.automatic_relation_columns.every((item) => typeof item === "string")) return false;
+    for (const item of table.automatic_relation_columns) available.add(item);
     const reserved = new Set(reservedValues);
     for (const column of table.columns) {
       if (!isObject(column) || typeof column.address !== "string" || typeof column.id !== "string" ||
@@ -807,6 +832,7 @@ function validViewRecipe(value) {
     if ((directReads.length !== 0) !== (value.state_input === "optional" || value.state_input === "required")) return false;
     if (!Array.isArray(table.sorts) || !table.sorts.every((sort) => isObject(sort) && typeof sort.column_id === "string" && available.has(sort.column_id))) return false;
     if (!isObject(value.dependencies) || !Array.isArray(value.dependencies.state_reads) || directReads.some((read) => !hasStateRead(value.dependencies.state_reads, read))) return false;
+    if (typeof source.query_address !== "string" && value.dependencies.state_reads.length !== directReads.length) return false;
   } else if (value.state_input !== "none") return false;
   return Array.isArray(value.exports) && validLocallyDerivableViewDependencies(value) && value.exports.every((item) => isObject(item) && item.view_address === address && validExportInView(item, value.category, shape.kind, value.state_requirement, diffCount === 3));
 }
@@ -1624,8 +1650,9 @@ test("independent schema authority preserves compiler semantic authority", async
     default: {kind: "string", string_value: value},
   });
   const validateParameter = compile(semantic, "QueryRecipeParameter");
-  for (const [format, value] of [["email", "first.last@example.com"], ["ipv6", "::ffff:192.0.2.1"], ["cidr", "192.0.2.0/24"]]) assert.equal(validateParameter(parameter(format, value)), true);
+  for (const [format, value] of [["email", "first.last@example.com"], ["email", "first.last@EXAMPLE.COM"], ["ipv6", "::ffff:192.0.2.1"], ["cidr", "192.0.2.0/24"]]) assert.equal(validateParameter(parameter(format, value)), true);
   for (const [format, value] of [["uri", "http://exa mple.com"], ["ipv6", "1:2:3:4:5:6:7:8:9"], ["ipv6", "1::2::3"], ["cidr", "192.0.2.1/24"]]) assert.equal(validateParameter(parameter(format, value)), false);
+  assert.equal(compile(semantic, "RecipeScalar")({kind: "datetime", string_value: "2026-07-15T12:34:56.120Z"}), false);
 
   const validatePredicate = compile(semantic, "RecipePredicate");
   assert.equal(validatePredicate({kind: "field", field: "id", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "in", value: {kind: "scalar_set", scalar_values: [{kind: "string", string_value: "z"}, {kind: "string", string_value: "a"}]}}), true);
@@ -1652,11 +1679,33 @@ test("independent schema authority preserves compiler semantic authority", async
   view.exports = [zebra, alpha];
   view.dependencies.export_addresses = [zebra.address, alpha.address];
   assert.equal(validateView(view), true);
+
+  view = await corpusValue("fixtures/conformance/view-export-semantics-v1.json", "complete_owned_view_graph");
+  const parameterAddress = "ldl:project:p:query:all:parameter:x";
+  view.source.arguments = {[parameterAddress]: {kind: "string", string_value: "ldl:project:p:entity:not-a-dependency"}};
+  view.dependencies.parameter_addresses = [parameterAddress];
+  assert.equal(validateView(view), true);
+
+  view = await corpusValue("fixtures/conformance/view-export-semantics-v1.json", "complete_owned_view_graph");
+  Object.assign(view, {
+    category: "diff",
+    source: {kind: "diff", before: "before", after: "after", arguments: {}},
+    shape: {kind: "diff", diff: {include: [], detect_moves: false}},
+    exports: [],
+  });
+  Object.assign(view.dependencies, {query_addresses: [], export_addresses: []});
+  assert.equal(validateView(view), true);
+  view.dependencies.entity_addresses = ["ldl:project:p:entity:extra"];
+  assert.equal(validateView(view), false);
+
   view = await corpusValue("fixtures/conformance/semantic-root-authority-v1.json", "owned_table_columns_disjoint_from_reservations");
   view.relation_projection_overrides = {"ldl:project:p:relation-type:r": {table: {row_mode: "automatic", include_from: true, include_to: true, include_relation_type: true}}};
   view.dependencies.relation_type_addresses = ["ldl:project:p:relation-type:r"];
-  Object.assign(view.shape.table, {columns: [], include_entity_id: false, include_type: false, include_layer: false, row_source: "automatic_relations", sorts: [{column_id: "from", direction: "ascending", absent: "last"}]});
+  Object.assign(view.shape.table, {automatic_relation_columns: ["from", "relation_type", "to"], columns: [], include_entity_id: false, include_type: false, include_layer: false, row_source: "automatic_relations", sorts: [{column_id: "from", direction: "ascending", absent: "last"}]});
   assert.equal(validateView(view), true);
+  view.relation_projection_overrides["ldl:project:p:relation-type:r"].table = {row_mode: "automatic", include_from: false, include_to: false, include_relation_type: false};
+  view.shape.table.automatic_relation_columns = [];
+  assert.equal(validateView(view), false);
 
   const validateExport = compile(semantic, "ExportRecipe");
   const exported = await corpusValue("fixtures/conformance/view-export-semantics-v1.json", "contract_export_svg");

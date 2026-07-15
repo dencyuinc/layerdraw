@@ -122,6 +122,7 @@ import {
   decodeQueryRecipeSelect,
   decodeQueryRecipeTraversal,
   decodeRasterBackground,
+  decodeRecipeScalar,
   decodeRecipePredicateValue,
   decodeRecipePredicate,
   decodeRecipeRowPredicate,
@@ -1043,12 +1044,13 @@ test("generated TypeScript codecs preserve compiler semantic authority", async (
     format,
     default: {kind: "string", string_value: value},
   });
-  for (const [format, value] of [["email", "first.last@example.com"], ["ipv6", "::ffff:192.0.2.1"], ["cidr", "192.0.2.0/24"]]) {
+  for (const [format, value] of [["email", "first.last@example.com"], ["email", "first.last@EXAMPLE.COM"], ["ipv6", "::ffff:192.0.2.1"], ["cidr", "192.0.2.0/24"]]) {
     assert.doesNotThrow(() => decodeQueryRecipeParameter(JSON.stringify(parameter(format, value))));
   }
   for (const [format, value] of [["uri", "http://exa mple.com"], ["ipv6", "1:2:3:4:5:6:7:8:9"], ["ipv6", "1::2::3"], ["cidr", "192.0.2.1/24"]]) {
     assert.throws(() => decodeQueryRecipeParameter(JSON.stringify(parameter(format, value))));
   }
+  assert.throws(() => decodeRecipeScalar(JSON.stringify({kind: "datetime", string_value: "2026-07-15T12:34:56.120Z"})));
 
   const reversedMembership = {kind: "field", field: "id", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "in", value: {kind: "scalar_set", scalar_values: [{kind: "string", string_value: "z"}, {kind: "string", string_value: "a"}]}};
   assert.doesNotThrow(() => decodeRecipePredicate(JSON.stringify(reversedMembership)));
@@ -1074,11 +1076,32 @@ test("generated TypeScript codecs preserve compiler semantic authority", async (
   view.dependencies.export_addresses = [zebra.address, alpha.address];
   assert.doesNotThrow(() => decodeViewRecipe(JSON.stringify(view)));
 
+  view = await corpusValue(viewExportSemanticsCorpusURL, "complete_owned_view_graph");
+  const parameterAddress = "ldl:project:p:query:all:parameter:x";
+  view.source.arguments = {[parameterAddress]: {kind: "string", string_value: "ldl:project:p:entity:not-a-dependency"}};
+  view.dependencies.parameter_addresses = [parameterAddress];
+  assert.doesNotThrow(() => decodeViewRecipe(JSON.stringify(view)));
+
+  view = await corpusValue(viewExportSemanticsCorpusURL, "complete_owned_view_graph");
+  Object.assign(view, {
+    category: "diff",
+    source: {kind: "diff", before: "before", after: "after", arguments: {}},
+    shape: {kind: "diff", diff: {include: [], detect_moves: false}},
+    exports: [],
+  });
+  Object.assign(view.dependencies, {query_addresses: [], export_addresses: []});
+  assert.doesNotThrow(() => decodeViewRecipe(JSON.stringify(view)));
+  view.dependencies.entity_addresses = ["ldl:project:p:entity:extra"];
+  assert.throws(() => decodeViewRecipe(JSON.stringify(view)));
+
   view = await corpusValue(semanticRootAuthorityCorpusURL, "owned_table_columns_disjoint_from_reservations");
   view.relation_projection_overrides = {"ldl:project:p:relation-type:r": {table: {row_mode: "automatic", include_from: true, include_to: true, include_relation_type: true}}};
   view.dependencies.relation_type_addresses = ["ldl:project:p:relation-type:r"];
-  Object.assign(view.shape.table, {columns: [], include_entity_id: false, include_type: false, include_layer: false, row_source: "automatic_relations", sorts: [{column_id: "from", direction: "ascending", absent: "last"}]});
+  Object.assign(view.shape.table, {automatic_relation_columns: ["from", "relation_type", "to"], columns: [], include_entity_id: false, include_type: false, include_layer: false, row_source: "automatic_relations", sorts: [{column_id: "from", direction: "ascending", absent: "last"}]});
   assert.doesNotThrow(() => decodeViewRecipe(JSON.stringify(view)));
+  view.relation_projection_overrides["ldl:project:p:relation-type:r"].table = {row_mode: "automatic", include_from: false, include_to: false, include_relation_type: false};
+  view.shape.table.automatic_relation_columns = [];
+  assert.throws(() => decodeViewRecipe(JSON.stringify(view)));
 
   const exported = await corpusValue(viewExportSemanticsCorpusURL, "contract_export_svg");
   exported.source_refs = true;

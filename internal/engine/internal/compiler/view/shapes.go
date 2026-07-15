@@ -114,7 +114,7 @@ func (c *compiler) compilePlacement(source resolve.DeclarationSource, declaratio
 }
 
 func (c *compiler) compileTable(source resolve.DeclarationSource, declaration resolve.DeclarationSymbol, member authoredMember) TableShape {
-	shape := TableShape{RowSource: RowsEntity, Columns: []TableColumn{}, Sorts: []TableSort{}}
+	shape := TableShape{RowSource: RowsEntity, AutomaticRelationColumns: []string{}, Columns: []TableColumn{}, Sorts: []TableSort{}}
 	if member.block == nil || len(member.args) != 0 {
 		c.diag("LDL1701", "unsupported_view_shape_or_export", source, member.span, "table requires a body and no arguments", declaration.Address, "")
 		return shape
@@ -163,7 +163,9 @@ func (c *compiler) compileTable(source resolve.DeclarationSource, declaration re
 	if shape.RowSource == RowsAutomaticRelations {
 		for id := range c.automaticRelationFixedColumns(declaration.Address) {
 			columns[id] = true
+			shape.AutomaticRelationColumns = append(shape.AutomaticRelationColumns, id)
 		}
+		sort.Strings(shape.AutomaticRelationColumns)
 	}
 	for _, item := range members {
 		if item.head != "column" {

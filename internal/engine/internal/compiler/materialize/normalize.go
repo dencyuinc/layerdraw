@@ -440,7 +440,7 @@ func viewShape(value view.Shape) ViewShape {
 		for i, item := range value.Table.Sorts {
 			sorts[i] = TableSort{item.ColumnID, item.Direction, item.Absent}
 		}
-		out.Table = &TableShape{RowSource: value.Table.RowSource, EntityTypeAddresses: cloneStringSlicePointer(value.Table.EntityTypeAddresses), IncludeEntityID: value.Table.IncludeEntityID, IncludeType: value.Table.IncludeType, IncludeLayer: value.Table.IncludeLayer, Columns: columns, Sorts: sorts}
+		out.Table = &TableShape{RowSource: value.Table.RowSource, AutomaticRelationColumns: append([]string{}, value.Table.AutomaticRelationColumns...), EntityTypeAddresses: cloneStringSlicePointer(value.Table.EntityTypeAddresses), IncludeEntityID: value.Table.IncludeEntityID, IncludeType: value.Table.IncludeType, IncludeLayer: value.Table.IncludeLayer, Columns: columns, Sorts: sorts}
 	}
 	if value.Matrix != nil {
 		out.Matrix = &MatrixShape{RowAxis: matrixAxis(value.Matrix.RowAxis), ColumnAxis: matrixAxis(value.Matrix.ColumnAxis), Cell: matrixCell(value.Matrix.Cell)}

@@ -837,13 +837,14 @@ type Placement struct {
 }
 
 type TableShape struct {
-	RowSource           view.TableRowSource `json:"row_source"`
-	EntityTypeAddresses *[]string           `json:"entity_type_addresses,omitempty"`
-	IncludeEntityID     bool                `json:"include_entity_id"`
-	IncludeType         bool                `json:"include_type"`
-	IncludeLayer        bool                `json:"include_layer"`
-	Columns             []TableColumn       `json:"columns"`
-	Sorts               []TableSort         `json:"sorts"`
+	RowSource                view.TableRowSource `json:"row_source"`
+	AutomaticRelationColumns []string            `json:"automatic_relation_columns"`
+	EntityTypeAddresses      *[]string           `json:"entity_type_addresses,omitempty"`
+	IncludeEntityID          bool                `json:"include_entity_id"`
+	IncludeType              bool                `json:"include_type"`
+	IncludeLayer             bool                `json:"include_layer"`
+	Columns                  []TableColumn       `json:"columns"`
+	Sorts                    []TableSort         `json:"sorts"`
 }
 
 type TableColumn struct {

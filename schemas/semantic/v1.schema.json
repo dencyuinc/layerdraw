@@ -813,13 +813,14 @@
     "ViewTableShape": {
       "type": "object",
       "properties": {
+        "automatic_relation_columns": {"type": "array", "items": {"type": "string", "enum": ["from", "relation_type", "to"]}, "uniqueItems": true, "x-layerdraw-canonical-identifier-order": true},
         "columns": {"type": "array", "items": {"$ref": "#/$defs/ViewTableColumn"}},
         "entity_type_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityTypeAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "include_entity_id": {"type": "boolean"}, "include_layer": {"type": "boolean"}, "include_type": {"type": "boolean"},
         "row_source": {"type": "string", "enum": ["automatic_relations", "entity", "entity_rows", "relation", "relation_rows"]},
         "sorts": {"type": "array", "items": {"$ref": "#/$defs/ViewTableSort"}}
       },
-      "required": ["row_source", "include_entity_id", "include_type", "include_layer", "columns", "sorts"],
+      "required": ["row_source", "automatic_relation_columns", "include_entity_id", "include_type", "include_layer", "columns", "sorts"],
       "additionalProperties": false,
       "x-layerdraw-unique-array-keys": [
         {"array": "columns", "property": "id"},

@@ -25,6 +25,7 @@ func TestSemanticAuthorityReviewRegressions(t *testing.T) {
 		valid               bool
 	}{
 		{"dotted email", "email", "first.last@example.com", true},
+		{"uppercase email domain", "email", "first.last@EXAMPLE.COM", true},
 		{"URI space", "uri", "http://exa mple.com", false},
 		{"IPv6 nine fields", "ipv6", "1:2:3:4:5:6:7:8:9", false},
 		{"IPv6 multiple elisions", "ipv6", "1::2::3", false},
@@ -41,6 +42,9 @@ func TestSemanticAuthorityReviewRegressions(t *testing.T) {
 				t.Fatal("compiler-invalid format accepted")
 			}
 		})
+	}
+	if _, err := semantic.DecodeRecipeScalar([]byte(`{"kind":"datetime","string_value":"2026-07-15T12:34:56.120Z"}`)); err == nil {
+		t.Fatal("non-canonical datetime fraction accepted")
 	}
 
 	reversedMembership := []byte(`{"kind":"field","field":"id","operand_type":{"kind":"scalar","scalar_type":"string"},"operator":"in","value":{"kind":"scalar_set","scalar_values":[{"kind":"string","string_value":"z"},{"kind":"string","string_value":"a"}]}}`)
@@ -86,6 +90,32 @@ func TestSemanticAuthorityReviewRegressions(t *testing.T) {
 		t.Fatalf("compiler-preserved authored Export order rejected: %v", err)
 	}
 
+	view = corpusValue(t, "view-export-semantics-v1.json", "complete_owned_view_graph")
+	parameterAddress := "ldl:project:p:query:all:parameter:x"
+	view["source"].(map[string]any)["arguments"] = map[string]any{
+		parameterAddress: map[string]any{"kind": "string", "string_value": "ldl:project:p:entity:not-a-dependency"},
+	}
+	view["dependencies"].(map[string]any)["parameter_addresses"] = []any{parameterAddress}
+	if _, err := semantic.DecodeViewRecipe(mustJSON(t, view)); err != nil {
+		t.Fatalf("address-looking scalar argument was treated as a dependency: %v", err)
+	}
+
+	diff := corpusValue(t, "view-export-semantics-v1.json", "complete_owned_view_graph")
+	diff["category"] = "diff"
+	diff["source"] = map[string]any{"kind": "diff", "before": "before", "after": "after", "arguments": map[string]any{}}
+	diff["shape"] = map[string]any{"kind": "diff", "diff": map[string]any{"include": []any{}, "detect_moves": false}}
+	diff["exports"] = []any{}
+	diffDependencies := diff["dependencies"].(map[string]any)
+	diffDependencies["query_addresses"] = []any{}
+	diffDependencies["export_addresses"] = []any{}
+	if _, err := semantic.DecodeViewRecipe(mustJSON(t, diff)); err != nil {
+		t.Fatalf("complete no-query Diff rejected: %v", err)
+	}
+	diffDependencies["entity_addresses"] = []any{"ldl:project:p:entity:extra"}
+	if _, err := semantic.DecodeViewRecipe(mustJSON(t, diff)); err == nil {
+		t.Fatal("no-query Diff accepted a non-derivable Entity dependency")
+	}
+
 	automatic := corpusValue(t, "semantic-root-authority-v1.json", "owned_table_columns_disjoint_from_reservations")
 	automatic["relation_projection_overrides"] = map[string]any{"ldl:project:p:relation-type:r": map[string]any{"table": map[string]any{"row_mode": "automatic", "include_from": true, "include_to": true, "include_relation_type": true}}}
 	automatic["dependencies"].(map[string]any)["relation_type_addresses"] = []any{"ldl:project:p:relation-type:r"}
@@ -95,9 +125,16 @@ func TestSemanticAuthorityReviewRegressions(t *testing.T) {
 	table["include_type"] = false
 	table["include_layer"] = false
 	table["row_source"] = "automatic_relations"
+	table["automatic_relation_columns"] = []any{"from", "relation_type", "to"}
 	table["sorts"] = []any{map[string]any{"column_id": "from", "direction": "ascending", "absent": "last"}}
 	if _, err := semantic.DecodeViewRecipe(mustJSON(t, automatic)); err != nil {
 		t.Fatalf("automatic Relation fixed-column sort rejected: %v", err)
+	}
+	withoutFrom := cloneObject(t, automatic)
+	withoutFrom["relation_projection_overrides"] = map[string]any{"ldl:project:p:relation-type:r": map[string]any{"table": map[string]any{"row_mode": "automatic", "include_from": false, "include_to": false, "include_relation_type": false}}}
+	withoutFrom["shape"].(map[string]any)["table"].(map[string]any)["automatic_relation_columns"] = []any{}
+	if _, err := semantic.DecodeViewRecipe(mustJSON(t, withoutFrom)); err == nil {
+		t.Fatal("sort accepted an automatic Relation column omitted by the effective projection")
 	}
 
 	export := corpusValue(t, "view-export-semantics-v1.json", "contract_export_svg")

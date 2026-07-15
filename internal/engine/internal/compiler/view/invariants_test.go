@@ -469,7 +469,7 @@ func TestAutomaticRelationsFixedColumnsUseEffectiveProjectionUnion(t *testing.T)
 		t.Fatalf("non-projected fixed Column was rejected: %+v", got.Diagnostics)
 	}
 	table := recipeByID(t, got, "table_view").Shape.Table
-	if len(table.Columns) != 1 || table.Columns[0].ID != "from" || len(table.Sorts) != 1 {
+	if len(table.AutomaticRelationColumns) != 1 || table.AutomaticRelationColumns[0] != "to" || len(table.Columns) != 1 || table.Columns[0].ID != "from" || len(table.Sorts) != 1 {
 		t.Fatalf("automatic relation Table=%+v", table)
 	}
 
