@@ -44,6 +44,7 @@ import {
   isApplyToHandleResult,
   isBoundedTextChunk,
   isCloseDocumentInput,
+  isCreateSubjectFields,
   isHandshakeRequestEnvelope,
   isHandshakeResponseEnvelope,
   decodePreviewOperationsRequestEnvelope,
@@ -372,6 +373,7 @@ test("create_subject authored contracts accept every format and reject one-cause
   rejects("maximum string length", "code", (fields) => { fields.default.string_value = "abcde"; });
   rejects("canonical string format", "email_value", (fields) => { fields.default.string_value = "not-email"; });
   rejects("active enum default", "choice", (fields) => { fields.default.string_value = "missing"; });
+  assert.equal(isCreateSubjectFields({format: "garbage"}), false);
 });
 
 test("Workbench malformed handles, null contracts, ordering, and outcome payloads fail closed", async () => {
@@ -1268,6 +1270,8 @@ test("generated TypeScript codecs preserve compiler semantic authority", async (
   for (const [format, value] of [["uri", "http://exa mple.com"], ["ipv6", "1:2:3:4:5:6:7:8:9"], ["ipv6", "1::2::3"], ["cidr", "192.0.2.1/24"]]) {
     assert.throws(() => decodeQueryRecipeParameter(JSON.stringify(parameter(format, value))));
   }
+  assert.doesNotThrow(() => decodeQueryRecipeParameter(JSON.stringify({id: "x", address: "ldl:project:p:query:q:parameter:x", value_type: "enum", enum_values: ["z", "a"], reserved_enum_values: [], required: false})));
+  assert.throws(() => decodeQueryRecipeParameter(JSON.stringify({id: "x", address: "ldl:project:p:query:q:parameter:x", value_type: "enum", enum_values: ["choice"], reserved_enum_values: ["z", "a"], required: false})));
   assert.throws(() => decodeRecipeScalar(JSON.stringify({kind: "datetime", string_value: "2026-07-15T12:34:56.120Z"})));
 
   const reversedMembership = {kind: "field", field: "id", operand_type: {kind: "scalar", scalar_type: "string"}, operator: "in", value: {kind: "scalar_set", scalar_values: [{kind: "string", string_value: "z"}, {kind: "string", string_value: "a"}]}};

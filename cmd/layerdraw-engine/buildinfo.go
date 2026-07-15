@@ -7,6 +7,6 @@ import "github.com/dencyuinc/layerdraw/internal/engine"
 var (
 	releaseVersion        = engine.DevelopmentVersion
 	sourceRevision        = engine.UnknownSourceRevision
-	releaseManifestDigest = "sha256:7c4627774878ec99a52b30b0544e64b7731ef87e79371b39dd88159ba6ce91af"
+	releaseManifestDigest = "sha256:95a07f5a03134d00ee0e201fea5a76b96f4b0c3d38dcaa7f6b2056928c96d42f"
 	sbomAuthorityDigest   = ""
 )

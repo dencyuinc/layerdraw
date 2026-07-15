@@ -929,122 +929,337 @@
       "required": ["key", "value"],
       "additionalProperties": false
     },
-    "CreateSubjectFields": {
+    "EntityTypeCreateSubjectFields": {
       "type": "object",
-      "description": "The single generated authored-field authority for create_subject; the semantic_operation invariant closes the subject-kind-specific required/optional/forbidden matrix from Language 1 section 11.2.",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "color": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Color"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "icon": {"type": "string", "minLength": 1},
+        "image": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredAssetRef"},
+        "representation": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredEntityRepresentation"},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "required": ["display_name", "representation"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "RelationTypeCreateSubjectFields": {
+      "type": "object",
       "properties": {
         "allow_self": {"type": "boolean"},
         "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
-        "aggregate": {"type": "string", "enum": ["count", "count_distinct", "join_unique", "max", "min", "none"]},
         "cardinality": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationCardinality"},
-        "category": {"type": "string", "enum": ["context", "dependency", "diff", "flow", "hierarchy", "impact", "inventory", "topology"]},
-        "color": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Color"},
-        "column_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ColumnAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "default": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"},
         "description": {"type": "string"},
         "display_name": {"type": "string", "minLength": 1},
         "duplicate_policy": {"type": "string", "enum": ["allow", "deny_any_between_same_endpoints", "deny_same_type_between_same_endpoints"]},
-        "enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
         "export": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationExport"},
-        "exporter_profile": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExporterProfileRef"},
-        "fidelity": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportFidelity"},
-        "filename": {"type": "string", "minLength": 1},
-        "format": {"type": "string", "description": "A subject-kind-discriminated format: semantic.StringFormat for Columns and Query Parameters, semantic.ExportFormat for View Exports."},
         "forward_label": {"type": "string", "minLength": 1},
         "from": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationEndpointRule"},
-        "icon": {"type": "string", "minLength": 1},
-        "image": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredAssetRef"},
-        "intent": {"type": "string"},
-        "label": {"type": "string"},
+        "projections": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationProjectionSet"},
+        "render": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationRenderSet"},
+        "reverse_label": {"type": "string"},
+        "semantic_kind": {"type": "string", "enum": ["containment", "control_flow", "data_flow", "dependency", "deployment", "governance", "impact", "network", "ownership", "reference", "security", "sequence"]},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "to": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationEndpointRule"},
+        "traversal": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationTraversalPolicy"}
+      },
+      "required": ["display_name", "semantic_kind", "from", "to", "forward_label"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "LayerCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "order": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalSafeInteger"},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "required": ["display_name", "order"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "EntityCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
         "layer_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LayerAddress"},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityTypeAddress"}
+      },
+      "required": ["display_name", "type_address", "layer_address"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "QueryCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "relation_where": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipePredicate"},
+        "result": {"type": "array", "items": {"type": "string", "enum": ["seed_entities", "traversed_entities", "path_relations", "induced_relations"]}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
+        "select": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryRecipeSelect"},
+        "state_input": {"type": "string", "enum": ["none", "optional", "required"]},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "traverse": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryRecipeTraversal"},
+        "where": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipePredicate"}
+      },
+      "required": ["display_name", "select"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "ViewCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "category": {"type": "string", "enum": ["context", "dependency", "diff", "flow", "hierarchy", "impact", "inventory", "topology"]},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "intent": {"type": "string"},
+        "relation_projection_overrides": {"type": "array", "items": {"$ref": "#/$defs/ViewProjectionOverrideEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "shape": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredViewShape"},
+        "source": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredOperationSource"},
+        "state_input": {"type": "string", "enum": ["none", "optional", "required"]},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "required": ["display_name", "category", "source", "shape"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}, {"array": "relation_projection_overrides", "property": "key"}]
+    },
+    "ReferenceCreateSubjectFields": {
+      "type": "object",
+      "properties": {"text": {"type": "string"}},
+      "required": ["text"],
+      "additionalProperties": false
+    },
+    "ColumnCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "default": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"},
+        "display_name": {"type": "string", "minLength": 1},
+        "enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
+        "format": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"},
         "max": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
         "max_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
         "min": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
         "min_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
-        "options": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportOptions"},
-        "order": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalSafeInteger"},
-        "projections": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationProjectionSet"},
-        "relation_projection_overrides": {"type": "array", "items": {"$ref": "#/$defs/ViewProjectionOverrideEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
-        "relation_where": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipePredicate"},
-        "render": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationRenderSet"},
-        "representation": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredEntityRepresentation"},
         "required": {"type": "boolean"},
         "reserved_enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
-        "result": {"type": "array", "items": {"type": "string", "enum": ["seed_entities", "traversed_entities", "path_relations", "induced_relations"]}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
-        "reverse_label": {"type": "string"},
-        "select": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryRecipeSelect"},
-        "semantic_kind": {"type": "string", "enum": ["containment", "control_flow", "data_flow", "dependency", "deployment", "governance", "impact", "network", "ownership", "reference", "security", "sequence"]},
-        "shape": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredViewShape"},
-        "source": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredOperationSource"},
-        "source_refs": {"type": "boolean"},
-        "state_input": {"type": "string", "enum": ["none", "optional", "required"]},
-        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
-        "text": {"type": "string"},
-        "to": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationEndpointRule"},
-        "traversal": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationTraversalPolicy"},
-        "traverse": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryRecipeTraversal"},
-        "type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityTypeAddress"},
-        "value_type": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ValueType"},
-        "where": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipePredicate"}
+        "value_type": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ValueType"}
       },
+      "required": ["display_name", "value_type"],
       "additionalProperties": false,
-      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}, {"array": "relation_projection_overrides", "property": "key"}],
       "x-layerdraw-disjoint-arrays": [{"left": "enum_values", "right": "reserved_enum_values"}],
       "x-layerdraw-ordered-pairs": [{"lower": "min", "upper": "max", "comparison": "finite_binary64"}, {"lower": "min_length", "upper": "max_length", "comparison": "unsigned_decimal"}]
+    },
+    "ConstraintCreateSubjectFields": {
+      "type": "object",
+      "properties": {"column_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ColumnAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
+      "required": ["column_addresses"],
+      "additionalProperties": false
+    },
+    "QueryParameterCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "default": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"},
+        "enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
+        "format": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"},
+        "max": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
+        "max_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
+        "min": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
+        "min_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
+        "required": {"type": "boolean"},
+        "reserved_enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "value_type": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ValueType"}
+      },
+      "required": ["value_type"],
+      "additionalProperties": false,
+      "x-layerdraw-disjoint-arrays": [{"left": "enum_values", "right": "reserved_enum_values"}],
+      "x-layerdraw-ordered-pairs": [{"lower": "min", "upper": "max", "comparison": "finite_binary64"}, {"lower": "min_length", "upper": "max_length", "comparison": "unsigned_decimal"}]
+    },
+    "ViewTableColumnCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "aggregate": {"type": "string", "enum": ["count", "count_distinct", "join_unique", "max", "min", "none"]},
+        "label": {"type": "string"},
+        "source": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredOperationSource"}
+      },
+      "required": ["source"],
+      "additionalProperties": false
+    },
+    "ViewExportCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "exporter_profile": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExporterProfileRef"},
+        "fidelity": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportFidelity"},
+        "filename": {"type": "string", "minLength": 1},
+        "format": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportFormat"},
+        "options": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportOptions"},
+        "source_refs": {"type": "boolean"}
+      },
+      "required": ["format", "filename", "fidelity"],
+      "additionalProperties": false
+    },
+    "CreateSubjectFields": {
+      "description": "Closed union of the generated Language 1 subject-specific authored field objects.",
+      "oneOf": [
+        {"$ref": "#/$defs/EntityTypeCreateSubjectFields"},
+        {"$ref": "#/$defs/RelationTypeCreateSubjectFields"},
+        {"$ref": "#/$defs/LayerCreateSubjectFields"},
+        {"$ref": "#/$defs/EntityCreateSubjectFields"},
+        {"$ref": "#/$defs/QueryCreateSubjectFields"},
+        {"$ref": "#/$defs/ViewCreateSubjectFields"},
+        {"$ref": "#/$defs/ReferenceCreateSubjectFields"},
+        {"$ref": "#/$defs/ColumnCreateSubjectFields"},
+        {"$ref": "#/$defs/ConstraintCreateSubjectFields"},
+        {"$ref": "#/$defs/QueryParameterCreateSubjectFields"},
+        {"$ref": "#/$defs/ViewTableColumnCreateSubjectFields"},
+        {"$ref": "#/$defs/ViewExportCreateSubjectFields"}
+      ]
     },
     "SemanticOperationKind": {
       "type": "string",
       "enum": ["create_relation", "create_subject", "delete_row", "delete_subject", "migrate_project_identity", "move_entity_to_layer", "rename_subject", "update_relation_endpoint", "update_subject_field", "upsert_row"]
     },
-    "SemanticOperation": {
+    "CreateEntityTypeOperation": {
       "type": "object",
       "properties": {
-        "action": {"type": "string", "enum": ["remove", "set"]},
-        "endpoint": {"type": "string", "enum": ["from", "to"]},
+        "fields": {"$ref": "#/$defs/EntityTypeCreateSubjectFields"},
+        "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"},
+        "operation": {"type": "string", "const": "create_subject"},
+        "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"},
+        "placement": {"$ref": "#/$defs/PlacementHint"},
+        "subject_kind": {"type": "string", "const": "entity_type"}
+      },
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateRelationTypeOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/RelationTypeCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "relation_type"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateLayerOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/LayerCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "layer"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateEntityOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/EntityCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "entity"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateQueryOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/QueryCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "query"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateViewOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ViewCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "view"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateReferenceOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ReferenceCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "reference"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateEntityTypeColumnOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ColumnCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityTypeAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "entity_type_column"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateEntityTypeConstraintOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ConstraintCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityTypeAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "entity_type_constraint"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateRelationTypeColumnOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ColumnCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "relation_type_column"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateRelationTypeConstraintOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ConstraintCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "relation_type_constraint"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateQueryParameterOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/QueryParameterCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "query_parameter"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateViewTableColumnOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ViewTableColumnCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "view_table_column"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateViewExportOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ViewExportCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "view_export"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateSubjectOperation": {
+      "oneOf": [
+        {"$ref": "#/$defs/CreateEntityTypeOperation"}, {"$ref": "#/$defs/CreateRelationTypeOperation"}, {"$ref": "#/$defs/CreateLayerOperation"}, {"$ref": "#/$defs/CreateEntityOperation"}, {"$ref": "#/$defs/CreateQueryOperation"}, {"$ref": "#/$defs/CreateViewOperation"}, {"$ref": "#/$defs/CreateReferenceOperation"}, {"$ref": "#/$defs/CreateEntityTypeColumnOperation"}, {"$ref": "#/$defs/CreateEntityTypeConstraintOperation"}, {"$ref": "#/$defs/CreateRelationTypeColumnOperation"}, {"$ref": "#/$defs/CreateRelationTypeConstraintOperation"}, {"$ref": "#/$defs/CreateQueryParameterOperation"}, {"$ref": "#/$defs/CreateViewTableColumnOperation"}, {"$ref": "#/$defs/CreateViewExportOperation"}
+      ]
+    },
+    "RelationCreateFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "description": {"type": "string"}, "display_name": {"type": "string", "minLength": 1},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "NonCreateSemanticOperationKind": {
+      "type": "string",
+      "enum": ["create_relation", "delete_row", "delete_subject", "migrate_project_identity", "move_entity_to_layer", "rename_subject", "update_relation_endpoint", "update_subject_field", "upsert_row"]
+    },
+    "NonCreateSemanticOperation": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["remove", "set"]}, "endpoint": {"type": "string", "enum": ["from", "to"]},
         "entity_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
         "explicit_absent_column_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ColumnAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "fields": {"$ref": "#/$defs/CreateSubjectFields"},
-        "from_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
-        "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"},
-        "layer_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LayerAddress"},
-        "new_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"},
-        "new_project_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"},
-        "operation": {"$ref": "#/$defs/SemanticOperationKind"},
-        "owner_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
-        "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
-        "path": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 2},
-        "placement": {"$ref": "#/$defs/PlacementHint"},
-        "project_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"},
-        "relation_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"},
-        "row_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
-        "row_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"},
-        "subject_kind": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CreatableSubjectKind"},
-        "target_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
-        "to_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
-        "type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"},
-        "value": {"$ref": "#/$defs/SemanticOperationValue"},
-        "values": {"type": "array", "items": {"$ref": "#/$defs/RowCell"}, "x-layerdraw-stable-address-order": "column_address"}
+        "fields": {"$ref": "#/$defs/RelationCreateFields"}, "from_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
+        "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "layer_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LayerAddress"},
+        "new_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "new_project_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"},
+        "operation": {"$ref": "#/$defs/NonCreateSemanticOperationKind"}, "owner_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "path": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 2},
+        "placement": {"$ref": "#/$defs/PlacementHint"}, "project_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"},
+        "relation_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "row_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "row_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "target_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "to_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"},
+        "value": {"$ref": "#/$defs/SemanticOperationValue"}, "values": {"type": "array", "items": {"$ref": "#/$defs/RowCell"}, "x-layerdraw-stable-address-order": "column_address"}
       },
-      "required": ["operation"],
-      "additionalProperties": false,
+      "required": ["operation"], "additionalProperties": false,
       "x-layerdraw-disjoint-array-keys": [{"array": "values", "property": "column_address", "strings": "explicit_absent_column_addresses"}],
-      "x-layerdraw-tagged-union": {
-        "property": "operation",
-        "variants": {
-          "create_relation": {"required": ["parent_address", "id", "type_address", "from_address", "to_address"], "forbidden": ["action", "endpoint", "entity_address", "layer_address", "new_id", "new_project_id", "owner_address", "path", "project_address", "relation_address", "row_address", "row_id", "subject_kind", "target_address", "value", "values"]},
-          "create_subject": {"required": ["parent_address", "subject_kind", "id", "fields"], "forbidden": ["action", "endpoint", "entity_address", "from_address", "layer_address", "new_id", "new_project_id", "owner_address", "path", "project_address", "relation_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
-          "delete_row": {"required": ["row_address"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_id", "subject_kind", "target_address", "to_address", "type_address", "value", "values"]},
-          "delete_subject": {"required": ["target_address"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "subject_kind", "to_address", "type_address", "value", "values"]},
-          "migrate_project_identity": {"required": ["project_address", "new_project_id"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "owner_address", "parent_address", "path", "placement", "relation_address", "row_address", "row_id", "subject_kind", "target_address", "to_address", "type_address", "value", "values"]},
-          "move_entity_to_layer": {"required": ["entity_address", "layer_address"], "forbidden": ["action", "endpoint", "fields", "from_address", "id", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "subject_kind", "target_address", "to_address", "type_address", "value", "values"]},
-          "rename_subject": {"required": ["target_address", "new_id"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "subject_kind", "to_address", "type_address", "value", "values"]},
-          "update_relation_endpoint": {"required": ["relation_address", "endpoint", "entity_address"], "forbidden": ["action", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "row_address", "row_id", "subject_kind", "target_address", "to_address", "type_address", "value", "values"]},
-          "update_subject_field": {"required": ["target_address", "path", "action"], "forbidden": ["endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "placement", "project_address", "relation_address", "row_address", "row_id", "subject_kind", "to_address", "type_address", "values"]},
-          "upsert_row": {"required": ["owner_address", "row_id", "values"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "parent_address", "path", "project_address", "relation_address", "row_address", "subject_kind", "target_address", "to_address", "type_address", "value"]}
-        }
-      },
-      "x-layerdraw-operator-value": {"operator": "action", "value": "value", "valueless": ["remove"]}
-      ,"x-layerdraw-protocol-invariant": "semantic_operation"
+      "x-layerdraw-tagged-union": {"property": "operation", "variants": {
+        "create_relation": {"required": ["parent_address", "id", "type_address", "from_address", "to_address"], "forbidden": ["action", "endpoint", "entity_address", "layer_address", "new_id", "new_project_id", "owner_address", "path", "project_address", "relation_address", "row_address", "row_id", "target_address", "value", "values"]},
+        "delete_row": {"required": ["row_address"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
+        "delete_subject": {"required": ["target_address"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "to_address", "type_address", "value", "values"]},
+        "migrate_project_identity": {"required": ["project_address", "new_project_id"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "owner_address", "parent_address", "path", "placement", "relation_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
+        "move_entity_to_layer": {"required": ["entity_address", "layer_address"], "forbidden": ["action", "endpoint", "fields", "from_address", "id", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
+        "rename_subject": {"required": ["target_address", "new_id"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "to_address", "type_address", "value", "values"]},
+        "update_relation_endpoint": {"required": ["relation_address", "endpoint", "entity_address"], "forbidden": ["action", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
+        "update_subject_field": {"required": ["target_address", "path", "action"], "forbidden": ["endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "placement", "project_address", "relation_address", "row_address", "row_id", "to_address", "type_address", "values"]},
+        "upsert_row": {"required": ["owner_address", "row_id", "values"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "parent_address", "path", "project_address", "relation_address", "row_address", "target_address", "to_address", "type_address", "value"]}
+      }},
+      "x-layerdraw-operator-value": {"operator": "action", "value": "value", "valueless": ["remove"]},
+      "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "SemanticOperation": {
+      "oneOf": [{"$ref": "#/$defs/CreateSubjectOperation"}, {"$ref": "#/$defs/NonCreateSemanticOperation"}]
     },
     "SemanticOperationBatch": {
       "type": "object",

@@ -6042,41 +6042,6 @@ func validateSemanticOperationInvariant(path string, object map[string]any) erro
 		if !ok {
 			return fmt.Errorf("%s.fields must be an object", path)
 		}
-		common := map[string]bool{"description": true, "tags": true, "annotations": true}
-		allowed := map[string][]string{
-			"entity_type": {"display_name", "representation", "icon", "image", "color"}, "relation_type": {"display_name", "semantic_kind", "from", "to", "forward_label", "allow_self", "duplicate_policy", "cardinality", "reverse_label", "traversal", "projections", "render", "export"},
-			"layer": {"display_name", "order"}, "entity": {"display_name", "type_address", "layer_address"}, "query": {"display_name", "select", "state_input", "where", "relation_where", "traverse", "result"},
-			"view": {"display_name", "category", "source", "shape", "intent", "state_input", "relation_projection_overrides"}, "reference": {"text"},
-			"entity_type_column":     {"display_name", "value_type", "enum_values", "reserved_enum_values", "required", "default", "format", "min", "max", "min_length", "max_length"},
-			"relation_type_column":   {"display_name", "value_type", "enum_values", "reserved_enum_values", "required", "default", "format", "min", "max", "min_length", "max_length"},
-			"entity_type_constraint": {"column_addresses"}, "relation_type_constraint": {"column_addresses"},
-			"query_parameter":   {"value_type", "enum_values", "reserved_enum_values", "required", "default", "format", "min", "max", "min_length", "max_length"},
-			"view_table_column": {"source", "label", "aggregate"}, "view_export": {"format", "filename", "fidelity", "source_refs", "exporter_profile", "options"},
-		}
-		required := map[string][]string{"entity_type": {"display_name", "representation"}, "relation_type": {"display_name", "semantic_kind", "from", "to", "forward_label"}, "layer": {"display_name", "order"}, "entity": {"display_name", "type_address", "layer_address"}, "query": {"display_name", "select"}, "view": {"display_name", "category", "source", "shape"}, "reference": {"text"}, "entity_type_column": {"display_name", "value_type"}, "relation_type_column": {"display_name", "value_type"}, "entity_type_constraint": {"column_addresses"}, "relation_type_constraint": {"column_addresses"}, "query_parameter": {"value_type"}, "view_table_column": {"source"}, "view_export": {"format", "filename", "fidelity"}}
-		list, known := allowed[kind]
-		if !known {
-			return fmt.Errorf("%s.subject_kind is not creatable", path)
-		}
-		permits := map[string]bool{}
-		for _, name := range list {
-			permits[name] = true
-		}
-		if kind != "reference" && !strings.Contains(kind, "_column") && !strings.Contains(kind, "_constraint") && kind != "query_parameter" && kind != "view_table_column" && kind != "view_export" {
-			for name := range common {
-				permits[name] = true
-			}
-		}
-		for name := range fields {
-			if !permits[name] {
-				return fmt.Errorf("%s.fields.%s is foreign to %s", path, name, kind)
-			}
-		}
-		for _, name := range required[kind] {
-			if _, present := fields[name]; !present {
-				return fmt.Errorf("%s.fields.%s is required for %s", path, name, kind)
-			}
-		}
 		if kind == "view" {
 			source, sourceOK := protocolObject(fields["source"])
 			shape, shapeOK := protocolObject(fields["shape"])
@@ -6130,25 +6095,6 @@ func validateSemanticOperationInvariant(path string, object map[string]any) erro
 				if !ok || profile["format"] != format {
 					return fmt.Errorf("%s.fields.exporter_profile.format contradicts format", path)
 				}
-			}
-		}
-		parentKind, _, valid := stableAddressSubject(protocolString(object, "parent_address"))
-		expected := map[string]string{"entity_type_column": "entity_type", "entity_type_constraint": "entity_type", "relation_type_column": "relation_type", "relation_type_constraint": "relation_type", "query_parameter": "query", "view_table_column": "view", "view_export": "view"}[kind]
-		if expected == "" {
-			expected = "project"
-		}
-		if !valid || parentKind != expected {
-			return fmt.Errorf("%s.parent_address cannot own %s", path, kind)
-		}
-	}
-	if operation == "create_relation" && object["fields"] != nil {
-		fields, ok := protocolObject(object["fields"])
-		if !ok {
-			return fmt.Errorf("%s.fields must be an object", path)
-		}
-		for name := range fields {
-			if name != "display_name" && name != "description" && name != "tags" && name != "annotations" {
-				return fmt.Errorf("%s.fields.%s is foreign to relation", path, name)
 			}
 		}
 	}

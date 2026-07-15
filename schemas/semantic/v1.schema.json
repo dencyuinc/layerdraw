@@ -413,7 +413,7 @@
       "properties": {
         "address": {"$ref": "#/$defs/ParameterAddress"},
         "default": {"$ref": "#/$defs/RecipeScalar"},
-        "enum_values": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
         "format": {"$ref": "#/$defs/StringFormat"},
         "id": {"$ref": "#/$defs/LocalIdentifier"},
         "max": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
@@ -421,7 +421,7 @@
         "min": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
         "min_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
         "required": {"type": "boolean"},
-        "reserved_enum_values": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "reserved_enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
         "value_type": {"$ref": "#/$defs/ValueType"}
       },
       "required": ["id", "address", "value_type", "reserved_enum_values", "required"],

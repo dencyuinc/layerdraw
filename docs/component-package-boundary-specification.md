@@ -227,9 +227,9 @@ OWNERS.yaml
 
 | Schema group | Owns | Must not own |
 | --- | --- | --- |
-| `semantic` | Diagnostic、StableAddress、typed Query/View/Export recipe document、AuthoringImpact、SearchResult、QueryResult、AnalysisResult、ViewData、ExportPlan、StateQuerySnapshotなど内容を読むcanonical wire型 | transport、Actor / policy、storage locator、framework型、portable compileのopaque normalized publication body |
+| `semantic` | Diagnostic、StableAddress、typed Query/View/Export recipe document、Actor非依存のAuthoringCapability / AuthoringImpact、SearchResult、QueryResult、AnalysisResult、ViewData、ExportPlan、StateQuerySnapshotなど内容を読むcanonical wire型 | transport、Actor / policy、storage locator、framework型、portable compileのopaque normalized publication body |
 | `protocol-common` | request / response envelope、ProtocolFailure、PageInfo、BlobRef、handshake、CapabilityManifestの共通primitive | Engine / Runtime / Registry固有operation |
-| `access-protocol` | AuthoringCapability、HostOperationImpact、AuthoringPolicy、GrantSnapshot / Summary、AuthoringDecisionのtransport非依存wire型 | LDL意味分類、Policy永続化、Actor解決、decision実装 |
+| `access-protocol` | `semantic/AuthoringCapability`を一方向参照するHostOperationImpact、AuthoringPolicy、GrantSnapshot / Summary、AuthoringDecisionのtransport非依存wire型 | AuthoringCapabilityの再定義、LDL意味分類、Policy永続化、Actor解決、decision実装 |
 | `engine-protocol` | Compiler、Workbench、Search、Query、Analysis、View、Export、Package operation payload | Runtime commit、Actor session、共通envelope |
 | `runtime-protocol` | Document session、revision、operation commit、AuthoringProofとAccess decisionの適用binding、state、search index / embedding orchestration、history、Runtime固有capability | LDL構文・意味、AuthoringImpact分類、Policy判定、Realtime event wire |
 | `server-application-protocol` | Instance、Organization、membership、Team、Service Account、Workspace、Project directory、ACL、AuthoringPolicyのbinding / lifecycle、Share、Audit、Entitlement / UsageのServer API | LDL semantics、AuthoringPolicy wire型、managed-service commercial / distribution semantics |

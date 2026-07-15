@@ -47,7 +47,7 @@ schemas/
   release/
 ```
 
-`protocol-common`はrequest / response envelope、ProtocolFailure、PageInfo、BlobRef、handshake、CapabilityManifestの共通primitiveを所有する。`semantic`はAuthoringImpactを含むActor非依存domain型、`access-protocol`はAuthoringCapability、HostOperationImpact、AuthoringPolicy、Grant、Decisionのtransport非依存wire型を所有する。`server-application-protocol`はInstance、Organization、Workspace、Project directory、membership、AuthoringPolicy binding、Share、Audit、Entitlement / UsageのHost metadata APIを所有し、Policy wire型やRuntime document lifecycleを再定義しない。`realtime-protocol`はRuntime Protocolから参照される独立schema group、`query-adapter-protocol`はEngineとexecution adapterが使うadapter-facing wire groupである。これはadapter実装用の低レベルSPIであり、SDK利用者がQueryExecutionPlanを作るsemantic APIではない。`release`はrelease manifestと互換性metadataを所有する。
+`protocol-common`はrequest / response envelope、ProtocolFailure、PageInfo、BlobRef、handshake、CapabilityManifestの共通primitiveを所有する。`semantic`はAuthoringCapability、AuthoringImpactを含むActor非依存domain型を所有する。`access-protocol`はsemanticのAuthoringCapabilityを参照し、HostOperationImpact、AuthoringPolicy、Grant、Decisionのtransport非依存wire型を所有する。この依存は`access-protocol -> semantic`の一方向であり、semanticはActor、policy、grant、decisionを参照しない。`server-application-protocol`はInstance、Organization、Workspace、Project directory、membership、AuthoringPolicy binding、Share、Audit、Entitlement / UsageのHost metadata APIを所有し、Policy wire型やRuntime document lifecycleを再定義しない。`realtime-protocol`はRuntime Protocolから参照される独立schema group、`query-adapter-protocol`はEngineとexecution adapterが使うadapter-facing wire groupである。これはadapter実装用の低レベルSPIであり、SDK利用者がQueryExecutionPlanを作るsemantic APIではない。`release`はrelease manifestと互換性metadataを所有する。
 
 生成先は次に固定する。
 
@@ -2116,8 +2116,8 @@ release manifestと互換性の意味論はこの章を規範とする。reposit
 | Query Plan Protocol version | Engine / adapter wire | query adapter schema |
 | Search / Analysis Plan Protocol version | Engine / adapter wire | query adapter schema |
 | Registry Protocol version | registry API / transaction | registry protocol schema |
-| Access Protocol version | AuthoringCapability / HostOperationImpact / AuthoringPolicy / Grant / Decision | access protocol schema |
-| semantic schema version | AuthoringImpact / SearchResult / QueryResult / AnalysisResult / ViewData / ExportPlan | semantic schema |
+| Access Protocol version | HostOperationImpact / AuthoringPolicy / Grant / Decision | access protocol schema（`semantic/AuthoringCapability`を一方向参照） |
+| semantic schema version | AuthoringCapability / AuthoringImpact / SearchResult / QueryResult / AnalysisResult / ViewData / ExportPlan | semantic schema |
 | RenderData schema version | public RenderData / preview cache shape | `@layerdraw/render` schema |
 | `.layerdraw` / `.ldpack` format version | container read / write | container schema |
 | renderer / exporter / Search / Embedding profile version | visual、byte generation、ranking、vector compatibility | profile registry |

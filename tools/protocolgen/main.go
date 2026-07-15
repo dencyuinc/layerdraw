@@ -775,8 +775,8 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		return fmt.Errorf("%s: %w", context, err)
 	}
 	if len(value.OneOf) != 0 {
-		if context != "JsonValue" && context != "RelationCardinalityMaximum" {
-			return fmt.Errorf("%s uses unsupported oneOf; only the generated JsonValue union and RelationCardinalityMaximum scalar are supported", context)
+		if context != "JsonValue" && context != "RelationCardinalityMaximum" && !isGeneratedReferenceUnion(set, document, value) {
+			return fmt.Errorf("%s uses unsupported oneOf; only generated local-reference unions, JsonValue, and RelationCardinalityMaximum are supported", context)
 		}
 		if context == "RelationCardinalityMaximum" && !isRelationCardinalityMaximum(value) {
 			return fmt.Errorf("RelationCardinalityMaximum must be exactly the JSON integer 1 or string many")
@@ -1403,6 +1403,27 @@ func isRelationCardinalityMaximum(value *schemaType) bool {
 		manyType == "string" && many.Const == "many"
 }
 
+func isGeneratedReferenceUnion(set schemaSet, document *schemaDocument, value *schemaType) bool {
+	if value == nil || len(value.OneOf) < 2 {
+		return false
+	}
+	for _, branch := range value.OneOf {
+		if branch.Ref == "" {
+			return false
+		}
+		target, name, err := resolveRef(set, document, branch.Ref)
+		if err != nil || target.ID != document.ID {
+			return false
+		}
+		definition := target.Definitions[name]
+		typeValue, typeErr := scalarType(definition.Type)
+		if typeErr != nil || typeValue != "object" && !isGeneratedReferenceUnion(set, target, definition) {
+			return false
+		}
+	}
+	return true
+}
+
 func validateExportRecipeAssertionShape(set schemaSet, document *schemaDocument, context string, value *schemaType) error {
 	required := stringSet(value.Required)
 	for _, property := range []string{"exporter_profile", "extension", "filename", "format", "options", "fidelity", "source_refs", "native_maximum_fidelity", "effective_maximum_fidelity", "fidelity_basis", "requires_source_manifest"} {
@@ -1769,6 +1790,18 @@ func writeGoDefinition(body *strings.Builder, set schemaSet, document *schemaDoc
 		body.WriteString("type RelationCardinalityMaximum string\n\nconst (\n\tRelationCardinalityMaximumOne RelationCardinalityMaximum = \"1\"\n\tRelationCardinalityMaximumMany RelationCardinalityMaximum = \"many\"\n)\n")
 		return nil
 	}
+	if isGeneratedReferenceUnion(set, document, definition) {
+		fmt.Fprintf(body, "type %s struct {\n", name)
+		for _, branch := range definition.OneOf {
+			_, branchName, err := resolveRef(set, document, branch.Ref)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(body, "\t%s *%s `json:\"-\"`\n", branchName, branchName)
+		}
+		body.WriteString("}\n")
+		return nil
+	}
 	typeValue, err := scalarType(definition.Type)
 	if err != nil {
 		return err
@@ -1940,6 +1973,33 @@ func generateGoCodec(set schemaSet, document *schemaDocument) ([]byte, error) {
 	}
 	if document.Definitions["RelationCardinalityMaximum"] != nil {
 		body.WriteString(goRelationCardinalityMaximumRuntime)
+	}
+	for _, name := range sortedKeys(document.Definitions) {
+		definition := document.Definitions[name]
+		if !isGeneratedReferenceUnion(set, document, definition) {
+			continue
+		}
+		fmt.Fprintf(&body, "// UnmarshalJSON decodes the closed %s reference union.\n", name)
+		fmt.Fprintf(&body, "func (value *%s) UnmarshalJSON(data []byte) error {\n", name)
+		fmt.Fprintf(&body, "\traw, err := decodeWireJSON(data)\n\tif err != nil { return err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return err }\n", name)
+		for _, branch := range definition.OneOf {
+			_, branchName, err := resolveRef(set, document, branch.Ref)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&body, "\tif validateNamed(schemaDocumentID, %q, raw) == nil {\n\t\tvar decoded %s\n\t\tdecoder := json.NewDecoder(bytes.NewReader(data))\n\t\tdecoder.DisallowUnknownFields()\n\t\tif err := decoder.Decode(&decoded); err != nil { return err }\n\t\t*value = %s{%s: &decoded}\n\t\treturn nil\n\t}\n", branchName, branchName, name, branchName)
+		}
+		fmt.Fprintf(&body, "\treturn errors.New(%q)\n}\n\n", "validated "+name+" did not match a generated branch")
+		fmt.Fprintf(&body, "// MarshalJSON encodes the active %s branch.\n", name)
+		fmt.Fprintf(&body, "func (value %s) MarshalJSON() ([]byte, error) {\n\tvar selected any\n\tcount := 0\n", name)
+		for _, branch := range definition.OneOf {
+			_, branchName, err := resolveRef(set, document, branch.Ref)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&body, "\tif value.%s != nil { selected = *value.%s; count++ }\n", branchName, branchName)
+		}
+		fmt.Fprintf(&body, "\tif count != 1 { return nil, fmt.Errorf(%q, count) }\n\tencoded, err := marshalWireJSON(selected)\n\tif err != nil { return nil, err }\n\traw, err := decodeWireJSON(encoded)\n\tif err != nil { return nil, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return nil, err }\n\treturn appendCanonicalJSON(nil, raw)\n}\n\n", name+" requires exactly one active branch, got %d", name)
 	}
 	for _, name := range sortedKeys(document.Definitions) {
 		fmt.Fprintf(&body, "// Decode%s decodes and validates one %s JSON value.\n", name, name)
@@ -3759,20 +3819,6 @@ func validateSemanticOperationInvariant(path string, object map[string]any) erro
 	operation := protocolString(object, "operation")
 	if operation == "create_subject" {
 		kind := protocolString(object, "subject_kind"); fields, ok := protocolObject(object["fields"]); if !ok { return fmt.Errorf("%s.fields must be an object", path) }
-		common := map[string]bool{"description":true,"tags":true,"annotations":true}
-		allowed := map[string][]string{
-			"entity_type":{"display_name","representation","icon","image","color"}, "relation_type":{"display_name","semantic_kind","from","to","forward_label","allow_self","duplicate_policy","cardinality","reverse_label","traversal","projections","render","export"},
-			"layer":{"display_name","order"}, "entity":{"display_name","type_address","layer_address"}, "query":{"display_name","select","state_input","where","relation_where","traverse","result"},
-			"view":{"display_name","category","source","shape","intent","state_input","relation_projection_overrides"}, "reference":{"text"},
-			"entity_type_column":{"display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"},
-			"relation_type_column":{"display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"},
-			"entity_type_constraint":{"column_addresses"}, "relation_type_constraint":{"column_addresses"},
-			"query_parameter":{"value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"},
-			"view_table_column":{"source","label","aggregate"}, "view_export":{"format","filename","fidelity","source_refs","exporter_profile","options"},
-		}
-		required := map[string][]string{"entity_type":{"display_name","representation"},"relation_type":{"display_name","semantic_kind","from","to","forward_label"},"layer":{"display_name","order"},"entity":{"display_name","type_address","layer_address"},"query":{"display_name","select"},"view":{"display_name","category","source","shape"},"reference":{"text"},"entity_type_column":{"display_name","value_type"},"relation_type_column":{"display_name","value_type"},"entity_type_constraint":{"column_addresses"},"relation_type_constraint":{"column_addresses"},"query_parameter":{"value_type"},"view_table_column":{"source"},"view_export":{"format","filename","fidelity"}}
-		list, known := allowed[kind]; if !known { return fmt.Errorf("%s.subject_kind is not creatable", path) }; permits := map[string]bool{}; for _, name := range list { permits[name] = true }; if kind != "reference" && !strings.Contains(kind, "_column") && !strings.Contains(kind, "_constraint") && kind != "query_parameter" && kind != "view_table_column" && kind != "view_export" { for name := range common { permits[name] = true } }
-		for name := range fields { if !permits[name] { return fmt.Errorf("%s.fields.%s is foreign to %s", path, name, kind) } }; for _, name := range required[kind] { if _, present := fields[name]; !present { return fmt.Errorf("%s.fields.%s is required for %s", path, name, kind) } }
 		if kind == "view" { source, sourceOK := protocolObject(fields["source"]); shape, shapeOK := protocolObject(fields["shape"]); diff := fields["category"] == "diff"; if !sourceOK || !shapeOK || (source["kind"] == "diff") != diff || (shape["kind"] == "diff") != diff { return fmt.Errorf("%s.fields view category, source, and shape disagree", path) }; if shape["kind"] == "matrix" { cell, _ := protocolObject(shape["cell"]); _, columns := cell["attribute_column_addresses"]; if (cell["display"] == "attribute_summary") != columns { return fmt.Errorf("%s.fields.shape matrix attribute columns contradict display", path) } }; if shape["kind"] == "flow" { _, columns := shape["lane_column_addresses"]; if (shape["lane_by"] == "attribute") != columns { return fmt.Errorf("%s.fields.shape flow lane columns contradict lane_by", path) } } }
 		if kind == "view_table_column" { source, sourceOK := protocolObject(fields["source"]); if !sourceOK || source["kind"] == "query" || source["kind"] == "diff" { return fmt.Errorf("%s.fields.source is not a table column source", path) } }
 		if kind == "entity_type_column" || kind == "relation_type_column" || kind == "query_parameter" {
@@ -3786,9 +3832,7 @@ func validateSemanticOperationInvariant(path string, object map[string]any) erro
 			if raw, present := fields["options"]; present { options, ok := protocolObject(raw); if !ok || options["kind"] != format { return fmt.Errorf("%s.fields.options.kind contradicts format", path) } }
 			if raw, present := fields["exporter_profile"]; present { profile, ok := protocolObject(raw); if !ok || profile["format"] != format { return fmt.Errorf("%s.fields.exporter_profile.format contradicts format", path) } }
 		}
-		parentKind, _, valid := stableAddressSubject(protocolString(object,"parent_address")); expected := map[string]string{"entity_type_column":"entity_type","entity_type_constraint":"entity_type","relation_type_column":"relation_type","relation_type_constraint":"relation_type","query_parameter":"query","view_table_column":"view","view_export":"view"}[kind]; if expected == "" { expected = "project" }; if !valid || parentKind != expected { return fmt.Errorf("%s.parent_address cannot own %s", path, kind) }
 	}
-	if operation == "create_relation" && object["fields"] != nil { fields, ok := protocolObject(object["fields"]); if !ok { return fmt.Errorf("%s.fields must be an object", path) }; for name := range fields { if name != "display_name" && name != "description" && name != "tags" && name != "annotations" { return fmt.Errorf("%s.fields.%s is foreign to relation", path, name) } } }
 	return nil
 }
 
@@ -4223,14 +4267,11 @@ function protocolCreateSubjectExport(fields: Record<string,unknown>): boolean {
 }
 function protocolSemanticOperation(value: Record<string,unknown>): boolean {
   if (value["operation"]==="create_subject") { const kind=value["subject_kind"], fields=value["fields"]; if (typeof kind!=="string"||!isObject(fields)) return false;
-    const common=["description","tags","annotations"]; const allowed:Readonly<Record<string,ReadonlyArray<string>>>={entity_type:["display_name","representation","icon","image","color",...common],relation_type:["display_name","semantic_kind","from","to","forward_label","allow_self","duplicate_policy","cardinality","reverse_label","traversal","projections","render","export",...common],layer:["display_name","order",...common],entity:["display_name","type_address","layer_address",...common],query:["display_name","select","state_input","where","relation_where","traverse","result",...common],view:["display_name","category","source","shape","intent","state_input","relation_projection_overrides",...common],reference:["text"],entity_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],relation_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],view_table_column:["source","label","aggregate"],view_export:["format","filename","fidelity","source_refs","exporter_profile","options"]};
-    const required:Readonly<Record<string,ReadonlyArray<string>>>={entity_type:["display_name","representation"],relation_type:["display_name","semantic_kind","from","to","forward_label"],layer:["display_name","order"],entity:["display_name","type_address","layer_address"],query:["display_name","select"],view:["display_name","category","source","shape"],reference:["text"],entity_type_column:["display_name","value_type"],relation_type_column:["display_name","value_type"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type"],view_table_column:["source"],view_export:["format","filename","fidelity"]}; const names=allowed[kind]; if (names===undefined||Object.keys(fields).some((name)=>!names.includes(name))||required[kind]!.some((name)=>!hasOwn(fields,name))) return false;
     if (kind==="view") { const source=fields["source"],shape=fields["shape"],diff=fields["category"]==="diff"; if (!isObject(source)||!isObject(shape)||(source["kind"]==="diff")!==diff||(shape["kind"]==="diff")!==diff) return false; if (shape["kind"]==="matrix") { const cell=shape["cell"]; if (!isObject(cell)||(cell["display"]==="attribute_summary")!==hasOwn(cell,"attribute_column_addresses")) return false; } if (shape["kind"]==="flow"&&(shape["lane_by"]==="attribute")!==hasOwn(shape,"lane_column_addresses")) return false; }
     if (kind==="view_table_column") { const source=fields["source"]; if (!isObject(source)||source["kind"]==="query"||source["kind"]==="diff") return false; }
     if (kind==="entity_type_column"||kind==="relation_type_column"||kind==="query_parameter") { const format=fields["format"]; if (format!==undefined&&(typeof format!=="string"||!["cidr","email","hostname","ipv4","ipv6","uri"].includes(format))) return false; if (!hasValidQueryParameter({...fields,reserved_enum_values:fields["reserved_enum_values"]??[]})) return false; }
-    if (kind==="view_export"&&!protocolCreateSubjectExport(fields)) return false;
-    const owners:Readonly<Record<string,string>>={entity_type_column:"entity_type",entity_type_constraint:"entity_type",relation_type_column:"relation_type",relation_type_constraint:"relation_type",query_parameter:"query",view_table_column:"view",view_export:"view"}; const parent=value["parent_address"]; return typeof parent==="string" && authoritySubject(parent)?.kind===(owners[kind]??"project"); }
-  if (value["operation"]==="create_relation" && hasOwn(value,"fields")) return isObject(value["fields"]) && Object.keys(value["fields"]).every((name)=>["display_name","description","tags","annotations"].includes(name)); return true;
+    if (kind==="view_export"&&!protocolCreateSubjectExport(fields)) return false; }
+  return true;
 }
 function hasProtocolInvariant(value: Record<string,unknown>,profile: string): boolean {
   if (profile==="authoring_impact_entry") { if (value["capability"]!=="graph:write") return true; const address=value["subject_address"], facts=value["graph_facts"]; return typeof address==="string"&&isObject(facts)&&authoritySubject(address)?.kind===value["subject_kind"]&&isJSONArray(facts["action_flags"])&&facts["action_flags"].length===1&&facts["action_flags"][0]===value["action"]; }

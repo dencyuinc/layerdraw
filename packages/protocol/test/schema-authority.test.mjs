@@ -954,8 +954,8 @@ function validCreateSubjectExport(fields) {
   return !hasOwn(fields, "exporter_profile") || isObject(fields.exporter_profile) && fields.exporter_profile.format === fields.format;
 }
 function validProtocolSemanticOperation(value) {
-  if (value.operation === "create_subject") { if (typeof value.subject_kind !== "string" || !isObject(value.fields)) return false; const common = ["description", "tags", "annotations"]; const allowed = {entity_type:["display_name","representation","icon","image","color",...common],relation_type:["display_name","semantic_kind","from","to","forward_label","allow_self","duplicate_policy","cardinality","reverse_label","traversal","projections","render","export",...common],layer:["display_name","order",...common],entity:["display_name","type_address","layer_address",...common],query:["display_name","select","state_input","where","relation_where","traverse","result",...common],view:["display_name","category","source","shape","intent","state_input","relation_projection_overrides",...common],reference:["text"],entity_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],relation_type_column:["display_name","value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type","enum_values","reserved_enum_values","required","default","format","min","max","min_length","max_length"],view_table_column:["source","label","aggregate"],view_export:["format","filename","fidelity","source_refs","exporter_profile","options"]}; const required = {entity_type:["display_name","representation"],relation_type:["display_name","semantic_kind","from","to","forward_label"],layer:["display_name","order"],entity:["display_name","type_address","layer_address"],query:["display_name","select"],view:["display_name","category","source","shape"],reference:["text"],entity_type_column:["display_name","value_type"],relation_type_column:["display_name","value_type"],entity_type_constraint:["column_addresses"],relation_type_constraint:["column_addresses"],query_parameter:["value_type"],view_table_column:["source"],view_export:["format","filename","fidelity"]}; const names=allowed[value.subject_kind]; if (names === undefined || Object.keys(value.fields).some((name)=>!names.includes(name)) || required[value.subject_kind].some((name)=>!hasOwn(value.fields,name))) return false; if (value.subject_kind === "view") { const source=value.fields.source,shape=value.fields.shape,diff=value.fields.category === "diff"; if (!isObject(source)||!isObject(shape)||(source.kind === "diff")!==diff||(shape.kind === "diff")!==diff) return false; if (shape.kind === "matrix" && (!isObject(shape.cell)||(shape.cell.display === "attribute_summary")!==hasOwn(shape.cell,"attribute_column_addresses"))||shape.kind === "flow"&&(shape.lane_by === "attribute")!==hasOwn(shape,"lane_column_addresses")) return false; } if (value.subject_kind === "view_table_column" && (!isObject(value.fields.source)||value.fields.source.kind === "query"||value.fields.source.kind === "diff")) return false; if (value.subject_kind === "entity_type_column"||value.subject_kind === "relation_type_column"||value.subject_kind === "query_parameter") { const format=value.fields.format; if (format!==undefined&&(typeof format!=="string"||!["cidr","email","hostname","ipv4","ipv6","uri"].includes(format))) return false; if (!validQueryParameter({...value.fields,reserved_enum_values:value.fields.reserved_enum_values??[]})) return false; } if (value.subject_kind === "view_export" && !validCreateSubjectExport(value.fields)) return false; const owners={entity_type_column:"entity_type",entity_type_constraint:"entity_type",relation_type_column:"relation_type",relation_type_constraint:"relation_type",query_parameter:"query",view_table_column:"view",view_export:"view"}; return typeof value.parent_address === "string" && stableAddressSubject(value.parent_address)?.kind === (owners[value.subject_kind] ?? "project"); }
-  return value.operation !== "create_relation" || !hasOwn(value,"fields") || isObject(value.fields) && Object.keys(value.fields).every((name)=>["display_name","description","tags","annotations"].includes(name));
+  if (value.operation === "create_subject") { if (typeof value.subject_kind !== "string" || !isObject(value.fields)) return false; if (value.subject_kind === "view") { const source=value.fields.source,shape=value.fields.shape,diff=value.fields.category === "diff"; if (!isObject(source)||!isObject(shape)||(source.kind === "diff")!==diff||(shape.kind === "diff")!==diff) return false; if (shape.kind === "matrix" && (!isObject(shape.cell)||(shape.cell.display === "attribute_summary")!==hasOwn(shape.cell,"attribute_column_addresses"))||shape.kind === "flow"&&(shape.lane_by === "attribute")!==hasOwn(shape,"lane_column_addresses")) return false; } if (value.subject_kind === "view_table_column" && (!isObject(value.fields.source)||value.fields.source.kind === "query"||value.fields.source.kind === "diff")) return false; if (value.subject_kind === "entity_type_column"||value.subject_kind === "relation_type_column"||value.subject_kind === "query_parameter") { const format=value.fields.format; if (format!==undefined&&(typeof format!=="string"||!["cidr","email","hostname","ipv4","ipv6","uri"].includes(format))) return false; if (!validQueryParameter({...value.fields,reserved_enum_values:value.fields.reserved_enum_values??[]})) return false; } if (value.subject_kind === "view_export" && !validCreateSubjectExport(value.fields)) return false; }
+  return true;
 }
 function validProtocolInvariant(profile, value) {
   if (!isObject(value)) return true;
@@ -1679,6 +1679,7 @@ test("every Workbench envelope preserves common metadata and uses the closed Wor
 test("Workbench invariant profiles and Language 1 domain type ownership stay explicit", async () => {
   const engine = await readJSON("engine-protocol/v1.schema.json");
   const semantic = await readJSON("semantic/v1.schema.json");
+  const common = await readJSON("protocol-common/v1.schema.json");
   const pagedFamilies = ["ListModules", "FindSymbols", "InspectSubgraph", "ReadDeclarations", "ReadRows", "GetNeighbors", "FindUsages", "ReadScope", "ListReferences", "ReadReferences"];
   for (const family of pagedFamilies) {
     assert.equal(engine.$defs[`${family}Input`]["x-layerdraw-protocol-invariant"], "document_bound_input", family);
@@ -1689,12 +1690,39 @@ test("Workbench invariant profiles and Language 1 domain type ownership stay exp
   for (const name of ["AssetRef", "EntityRepresentation", "RelationEndpointRule", "RelationCardinality", "RelationTraversalPolicy", "RelationProjectionSet", "RelationRenderSet", "RelationExport", "AuthoredViewShape"]) {
     assert.equal(engine.$defs[name], undefined, `${name} must not be duplicated in the Engine schema`);
   }
-  assert.deepEqual(engine.$defs.CreateSubjectFields.properties.cardinality, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationCardinality"});
-  assert.deepEqual(engine.$defs.CreateSubjectFields.properties.source, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredOperationSource"});
+  assert.deepEqual(engine.$defs.SemanticOperation.oneOf, [{$ref: "#/$defs/CreateSubjectOperation"}, {$ref: "#/$defs/NonCreateSemanticOperation"}]);
+  assert.equal(engine.$defs.CreateSubjectOperation.oneOf.length, semantic.$defs.CreatableSubjectKind.enum.length);
+  assert.deepEqual(engine.$defs.ColumnCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"});
+  assert.deepEqual(engine.$defs.QueryParameterCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"});
+  assert.deepEqual(engine.$defs.ViewExportCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportFormat"});
+  assert.equal(engine.$defs.CreateSubjectFields.properties, undefined);
   assert.deepEqual(semantic.$defs.AuthoringImpact.properties.required_capabilities.items, {$ref: "#/$defs/AuthoringCapability"});
   assert.deepEqual(engine.$defs.WorkbenchPreviewResult.properties.required_authoring_capabilities.items, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"});
+  assert.notEqual(semantic.$defs.AuthoringCapability, undefined);
+  assert.equal(engine.$defs.AuthoringCapability, undefined);
+  assert.equal(common.$defs.AuthoringCapability, undefined);
   assert.deepEqual(semantic.$defs.QueryRecipeParameter.properties.format, {$ref: "#/$defs/StringFormat"});
   assert.deepEqual(semantic.$defs.ViewTableValueType.properties.format, {$ref: "#/$defs/StringFormat"});
+  const systemBoundary = await readFile(new URL("../../../docs/system-boundary-contracts-specification.md", import.meta.url), "utf8");
+  const packageBoundary = await readFile(new URL("../../../docs/component-package-boundary-specification.md", import.meta.url), "utf8");
+  assert.match(systemBoundary, /access-protocol -> semantic/);
+  assert.match(packageBoundary, /AuthoringCapabilityの再定義/);
+});
+
+test("query parameter active enum order is authored while reserved order is canonical", async () => {
+  const compile = await authority();
+  const validate = compile("https://schemas.layerdraw.dev/semantic/v1", "QueryRecipeParameter");
+  const base = {id: "x", address: "ldl:project:p:query:q:parameter:x", value_type: "enum", enum_values: ["z", "a"], reserved_enum_values: [], required: false};
+  assert.equal(validate(base), true, JSON.stringify(validate.errors));
+  assert.equal(validate({...base, enum_values: ["choice"], reserved_enum_values: ["z", "a"]}), false);
+});
+
+test("standalone create_subject field authority rejects loose formats", async () => {
+  const compile = await authority();
+  const engine = "https://schemas.layerdraw.dev/engine-protocol/v1";
+  assert.equal(compile(engine, "CreateSubjectFields")({format: "garbage"}), false);
+  assert.equal(compile(engine, "ColumnCreateSubjectFields")({display_name: "Email", value_type: "string", format: "garbage"}), false);
+  assert.equal(compile(engine, "ViewExportCreateSubjectFields")({format: "garbage", filename: "bad.out", fidelity: "lossless"}), false);
 });
 
 test("normalized schema and document authority require request lifetime and the exact byte profile", async () => {
