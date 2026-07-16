@@ -52,6 +52,7 @@ type workingDocument struct {
 
 type workingSnapshot struct {
 	compiled      Snapshot
+	input         CompileInput
 	mode          CompileMode
 	modules       []ModuleReadItem
 	moduleBytes   map[moduleKey][]byte
@@ -284,6 +285,7 @@ func (e Engine) compileWorkingSnapshot(ctx context.Context, input CompileInput) 
 func buildWorkingSnapshot(input CompileInput, compiled Snapshot) (*workingSnapshot, error) {
 	snapshot := &workingSnapshot{
 		compiled:    compiled,
+		input:       cloneWorkbenchCompileInput(input),
 		mode:        input.Mode,
 		moduleBytes: map[moduleKey][]byte{},
 	}
@@ -397,18 +399,22 @@ func workingCapabilities(compiled Snapshot) DocumentCapabilityState {
 	available := compiled.DefinitionHash != "" && compiled.SemanticIndex.SchemaVersion != 0 && compiled.SourceMap.SchemaVersion != 0
 	project := available && compiled.NormalizedDocument != nil && compiled.GraphHash != nil
 	return DocumentCapabilityState{
-		FindSymbols:       available,
-		FindUsages:        available,
-		GetNeighbors:      project,
-		InspectSubgraph:   project,
-		ListModules:       true,
-		ListReferences:    available,
-		ReadDeclarations:  available,
-		ReadModules:       true,
-		ReadReferences:    available,
-		ReadRows:          project,
-		ReadScope:         available,
-		ReplaceSourceTree: true,
+		FindSymbols:        available,
+		FindUsages:         available,
+		FormatScope:        project,
+		GetNeighbors:       project,
+		InspectSubgraph:    project,
+		ListModules:        true,
+		ListReferences:     available,
+		OrganizeWorkspace:  project,
+		PreviewFragment:    project,
+		PreviewSourcePatch: project,
+		ReadDeclarations:   available,
+		ReadModules:        true,
+		ReadReferences:     available,
+		ReadRows:           project,
+		ReadScope:          available,
+		ReplaceSourceTree:  true,
 	}
 }
 
@@ -417,6 +423,7 @@ func retainedSnapshotBytes(snapshot *workingSnapshot) int64 {
 	// The estimator deliberately includes conservative map/runtime overhead and
 	// separately owned clones even when their byte contents are equal.
 	total := retainedOwnedBytes(snapshot.compiled)
+	total = saturatingAdd(total, retainedOwnedBytes(snapshot.input))
 	total = saturatingAdd(total, retainedOwnedBytes(snapshot.modules))
 	total = saturatingAdd(total, retainedOwnedBytes(snapshot.moduleBytes))
 	total = saturatingAdd(total, retainedOwnedBytes(snapshot.rows))

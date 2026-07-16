@@ -12,7 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dencyuinc/layerdraw/internal/engine"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/index"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/materialize"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/query"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/resolve"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/graph"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/syntax"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/view"
 )
 
 func TestSourcePatchGuardsUnicodeLineEndingsAndSourceMaintain(t *testing.T) {
@@ -323,76 +330,193 @@ func testLimits() WorkbenchLimits {
 	return WorkbenchLimits{MaxItems: 10000, MaxOutputBytes: 10000000}
 }
 
-type testCompiler struct{ compiler engine.Engine }
+type testCompiler struct{}
 
 func newTestCompiler() testCompiler {
-	return testCompiler{compiler: engine.New(engine.BuildInfo{})}
+	return testCompiler{}
 }
 
 func (c testCompiler) Compile(ctx context.Context, input CompileInput) (CompileResult, error) {
-	installs := make([]engine.ResolvedPack, len(input.ResolvedDependencies.Installs))
-	for index, install := range input.ResolvedDependencies.Installs {
-		files := make([]engine.ResolvedPackFile, len(install.Files))
-		for fileIndex, file := range install.Files {
-			files[fileIndex] = engine.ResolvedPackFile{Path: file.Path, Digest: file.Digest}
+	if err := ctx.Err(); err != nil {
+		return CompileResult{}, err
+	}
+	resolvedInput := testResolveInput(input)
+	resolved := resolve.Resolve(resolvedInput)
+	if resolved.HasErrors {
+		diagnostics := testDiagnostics(resolved.Diagnostics)
+		return CompileResult{Output: Snapshot{Mode: CompileMode(resolved.Mode), Diagnostics: diagnostics}, Diagnostics: diagnostics}, nil
+	}
+	defined := definition.Compile(definition.Input{Resolve: resolved})
+	if defined.HasErrors {
+		diagnostics := testDiagnostics(defined.Diagnostics)
+		return CompileResult{Output: Snapshot{Mode: CompileMode(resolved.Mode), Diagnostics: diagnostics}, Diagnostics: diagnostics}, nil
+	}
+	graphed := graph.Compile(graph.Input{Resolve: resolved, Definition: defined})
+	if graphed.HasErrors {
+		diagnostics := testDiagnostics(graphed.Diagnostics)
+		return CompileResult{Output: Snapshot{Mode: CompileMode(resolved.Mode), Diagnostics: diagnostics}, Diagnostics: diagnostics}, nil
+	}
+	queried := query.Compile(query.Input{Resolve: resolved, Definition: defined, Graph: graphed})
+	if queried.HasErrors {
+		diagnostics := testDiagnostics(queried.Diagnostics)
+		return CompileResult{Output: Snapshot{Mode: CompileMode(resolved.Mode), Diagnostics: diagnostics}, Diagnostics: diagnostics}, nil
+	}
+	viewed := view.Compile(view.Input{Resolve: resolved, Definition: defined, Graph: graphed, Query: queried})
+	if viewed.HasErrors || viewed.ExportRecipes.HasErrors {
+		diagnostics := testDiagnostics(viewed.Diagnostics)
+		return CompileResult{Output: Snapshot{Mode: CompileMode(resolved.Mode), Diagnostics: diagnostics}, Diagnostics: diagnostics}, nil
+	}
+	materialized := materialize.Compile(materialize.Input{
+		Resolve: resolved, Definition: defined, Graph: graphed, Query: queried, View: viewed,
+		Resolved: testResolvedMetadata(input, resolved),
+	})
+	if materialized.HasErrors {
+		diagnostics := testDiagnostics(materialized.Diagnostics)
+		return CompileResult{Output: Snapshot{Mode: CompileMode(resolved.Mode), Diagnostics: diagnostics}, Diagnostics: diagnostics}, nil
+	}
+	indexed := index.Build(index.Input{Materialized: materialized})
+	if indexed.HasErrors {
+		diagnostics := testDiagnostics(indexed.Diagnostics)
+		return CompileResult{Output: Snapshot{Mode: CompileMode(resolved.Mode), Diagnostics: diagnostics}, Diagnostics: diagnostics}, nil
+	}
+	materializedSnapshot := materialized.Snapshot()
+	indexSnapshot := indexed.Snapshot()
+	diagnostics := testDiagnostics(indexed.Diagnostics)
+	output := Snapshot{
+		Mode: CompileMode(resolved.Mode), TypedAST: TypedAST{Graph: graphed.Graph},
+		NormalizedDocument: materializedSnapshot.Document, NormalizedPackArtifact: materializedSnapshot.Pack,
+		CanonicalJSON: bytes.Clone(materializedSnapshot.CanonicalJSON), SourceMap: indexSnapshot.SourceMap,
+		StableAddresses: testStableAddresses(indexSnapshot.SemanticIndex.Subjects), DefinitionHash: materializedSnapshot.Hashes.Definition,
+		GraphHash: materializedSnapshot.Hashes.Graph, SubjectSemanticHashes: materializedSnapshot.Hashes.OwnSubjects,
+		SubtreeHashes: materializedSnapshot.Hashes.Subtrees, ChildSetHashes: materializedSnapshot.Hashes.ChildSets,
+		AuthoringSubjectClassification: testAuthoringClassifications(indexSnapshot.SemanticIndex.Subjects), Diagnostics: diagnostics,
+	}
+	return CompileResult{Output: output, Diagnostics: diagnostics, DefinitionHash: output.DefinitionHash}, nil
+}
+
+func testResolveInput(input CompileInput) resolve.Input {
+	projectFiles := make(map[string]resolve.SourceFile, len(input.ProjectSourceTree))
+	for _, path := range sortedPaths(input.ProjectSourceTree) {
+		projectFiles[path] = resolve.SourceFromParse(syntax.Parse(input.ProjectSourceTree[path]))
+	}
+	installs := make(map[string]resolve.ResolvedPack, len(input.ResolvedDependencies.Installs))
+	for _, install := range input.ResolvedDependencies.Installs {
+		files := make(map[string]string, len(install.Files))
+		sourceFiles := map[string]resolve.SourceFile{}
+		for _, file := range install.Files {
+			files[file.Path] = file.Digest
+			if source, ok := input.InstalledPackTree[file.Path]; ok {
+				sourceFiles[file.Path] = resolve.SourceFromParse(syntax.Parse(source))
+			}
+			if source, ok := input.InstalledPackTree[strings.TrimSuffix(install.Path, "/")+"/"+file.Path]; ok {
+				sourceFiles[file.Path] = resolve.SourceFromParse(syntax.Parse(source))
+			}
 		}
-		dependencies := make([]engine.ResolvedPackDependency, len(install.Dependencies))
-		for dependencyIndex, dependency := range install.Dependencies {
-			dependencies[dependencyIndex] = engine.ResolvedPackDependency{LocalName: dependency.LocalName, InstallName: dependency.InstallName}
+		dependencies := make(map[string]string, len(install.Dependencies))
+		for _, dependency := range install.Dependencies {
+			dependencies[dependency.LocalName] = dependency.InstallName
 		}
-		installs[index] = engine.ResolvedPack{
-			InstallName: install.InstallName, CanonicalID: install.CanonicalID, Version: install.Version,
-			Digest: install.Digest, Path: install.Path, Entry: install.Entry, Files: files,
-			Dependencies: dependencies, ManifestPath: install.ManifestPath, Manifest: bytes.Clone(install.Manifest),
+		canonicalID := install.CanonicalID
+		if canonicalID == "" {
+			canonicalID = install.InstallName
+		}
+		manifestID, manifestName := canonicalID, canonicalID
+		if slash := strings.LastIndex(canonicalID, "/"); slash >= 0 && slash+1 < len(canonicalID) {
+			manifestName = canonicalID[slash+1:]
+		}
+		installs[install.InstallName] = resolve.ResolvedPack{
+			CanonicalID: canonicalID, Version: install.Version, Digest: install.Digest, Path: install.Path, Entry: install.Entry,
+			Files: files, Dependencies: dependencies, SourceFiles: sourceFiles,
+			Manifest: resolve.PackManifest{
+				Format: input.ResolvedDependencies.Format, FormatVersion: input.ResolvedDependencies.FormatVersion,
+				ID: manifestID, Name: manifestName, Version: install.Version, Language: input.ResolvedDependencies.Language,
+				Entry: install.Entry,
+			},
 		}
 	}
-	assets := make([]engine.AssetInput, len(input.ReferencedAssets))
-	for index, asset := range input.ReferencedAssets {
-		assets[index] = engine.AssetInput{
-			Origin: engine.SourceOriginKind(asset.Origin), PackID: asset.PackID, Locator: asset.Locator,
-			Bytes: bytes.Clone(asset.Bytes), Digest: asset.Digest, MediaType: asset.MediaType, ByteLength: asset.ByteLength,
-		}
-	}
-	result, err := c.compiler.Compile(ctx, engine.CompileInput{
-		Mode: engine.CompileMode(input.Mode), EntryPath: input.EntryPath, RootPackID: input.RootPackID,
-		ProjectSourceTree: cloneTree(input.ProjectSourceTree), InstalledPackTree: cloneTree(input.InstalledPackTree),
-		ResolvedDependencies: engine.ResolvedDependencies{
+	return resolve.Input{
+		Mode: resolve.CompileMode(input.Mode), EntryPath: input.EntryPath, RootPackID: input.RootPackID,
+		Project: resolve.ProjectInput{Files: projectFiles},
+		Packs: resolve.ResolvedDependencies{
 			Format: input.ResolvedDependencies.Format, FormatVersion: input.ResolvedDependencies.FormatVersion,
 			Language: input.ResolvedDependencies.Language, Installs: installs,
 		},
-		ReferencedAssets: assets,
-		ResourceLimits: engine.ResourceLimits{
-			MaxProjectSourceFiles: input.ResourceLimits.MaxProjectSourceFiles,
-			MaxProjectSourceBytes: input.ResourceLimits.MaxProjectSourceBytes,
-			MaxPackFiles:          input.ResourceLimits.MaxPackFiles, MaxPackBytes: input.ResourceLimits.MaxPackBytes,
-			MaxAssets: input.ResourceLimits.MaxAssets, MaxAssetBytes: input.ResourceLimits.MaxAssetBytes,
-			MaxRasterDimension: input.ResourceLimits.MaxRasterDimension, MaxRasterPixels: input.ResourceLimits.MaxRasterPixels,
-			MaxDeclarations: input.ResourceLimits.MaxDeclarations,
-		},
-	})
-	if err != nil {
-		return CompileResult{}, err
 	}
-	snapshot := result.Snapshot()
-	diagnostics := make([]CompileDiagnostic, len(snapshot.Diagnostics))
-	for index, value := range snapshot.Diagnostics {
-		diagnostics[index] = CompileDiagnostic{
+}
+
+func testResolvedMetadata(input CompileInput, resolved resolve.Result) materialize.ResolvedMetadata {
+	sources := make([]materialize.ResolvedSourceFile, 0, len(resolved.Modules))
+	for _, module := range resolved.Modules {
+		if module.Origin.Kind == resolve.OriginProject {
+			if value, ok := input.ProjectSourceTree[module.Path]; ok {
+				sources = append(sources, materialize.ResolvedSourceFile{Origin: resolve.SourceOrigin{Kind: resolve.OriginProject}, ModulePath: module.Path, Bytes: bytes.Clone(value)})
+			}
+			continue
+		}
+		if value, ok := input.InstalledPackTree[module.Path]; ok {
+			sources = append(sources, materialize.ResolvedSourceFile{Origin: resolve.SourceOrigin{Kind: resolve.OriginPack, PackAddress: "ldl:pack:" + module.Origin.Publisher + ":" + module.Origin.PackName}, ModulePath: module.Path, Bytes: bytes.Clone(value)})
+		}
+	}
+	assets := make([]materialize.ResolvedAsset, len(input.ReferencedAssets))
+	for index, asset := range input.ReferencedAssets {
+		origin := resolve.SourceOrigin{Kind: resolve.OriginProject}
+		if asset.Origin == string(OriginKindPack) {
+			origin = resolve.SourceOrigin{Kind: resolve.OriginPack}
+		}
+		assets[index] = materialize.ResolvedAsset{
+			Origin: origin, Locator: asset.Locator, Bytes: bytes.Clone(asset.Bytes), ExpectedDigest: asset.Digest,
+			ExpectedMediaType: asset.MediaType, ExpectedByteLength: asset.ByteLength,
+		}
+	}
+	return materialize.ResolvedMetadata{Assets: assets, SourceFiles: sources}
+}
+
+func testDiagnostics(in []resolve.Diagnostic) []CompileDiagnostic {
+	out := make([]CompileDiagnostic, len(in))
+	for index, value := range in {
+		out[index] = CompileDiagnostic{
 			Code: value.Code, Severity: value.Severity, MessageKey: value.MessageKey, Message: value.Message,
 			Range: value.Range, SubjectAddress: value.SubjectAddress, OwnerAddress: value.OwnerAddress, Related: value.Related,
 		}
 	}
-	classifications := make([]AuthoringSubjectClassification, len(snapshot.AuthoringSubjectClassification))
-	for index, value := range snapshot.AuthoringSubjectClassification {
-		classifications[index] = AuthoringSubjectClassification{Address: value.Address, Kind: value.Kind, Capability: AuthoringCapability(value.Capability)}
+	return out
+}
+
+func testStableAddresses(subjects []index.SemanticSubject) []string {
+	addresses := make([]string, len(subjects))
+	for index, subject := range subjects {
+		addresses[index] = subject.Address
 	}
-	output := Snapshot{
-		Mode: CompileMode(snapshot.Mode), TypedAST: TypedAST{Graph: snapshot.TypedAST.Graph},
-		NormalizedDocument: snapshot.NormalizedDocument, NormalizedPackArtifact: snapshot.NormalizedPackArtifact,
-		CanonicalJSON: bytes.Clone(snapshot.CanonicalJSON), SourceMap: snapshot.SourceMap,
-		StableAddresses: append([]string(nil), snapshot.StableAddresses...), DefinitionHash: snapshot.DefinitionHash,
-		GraphHash: snapshot.GraphHash, SubjectSemanticHashes: snapshot.SubjectSemanticHashes,
-		SubtreeHashes: snapshot.SubtreeHashes, ChildSetHashes: snapshot.ChildSetHashes,
-		AuthoringSubjectClassification: classifications, Diagnostics: diagnostics,
+	return addresses
+}
+
+func testAuthoringClassifications(subjects []index.SemanticSubject) []AuthoringSubjectClassification {
+	out := make([]AuthoringSubjectClassification, 0, len(subjects))
+	for _, subject := range subjects {
+		if capability, ok := testSubjectCapability(subject.Kind); ok {
+			out = append(out, AuthoringSubjectClassification{Address: subject.Address, Kind: subject.Kind, Capability: capability})
+		}
 	}
-	return CompileResult{Output: output, Diagnostics: diagnostics, DefinitionHash: output.DefinitionHash}, nil
+	return out
+}
+
+func testSubjectCapability(kind materialize.SubjectKind) (AuthoringCapability, bool) {
+	switch kind {
+	case materialize.SubjectProject:
+		return AuthoringCapabilityProjectConfigure, true
+	case materialize.SubjectEntityType, materialize.SubjectRelationType, materialize.SubjectLayer,
+		materialize.SubjectEntityTypeColumn, materialize.SubjectEntityTypeConstraint,
+		materialize.SubjectRelationTypeColumn, materialize.SubjectRelationTypeConstraint:
+		return AuthoringCapabilitySchemaWrite, true
+	case materialize.SubjectEntity, materialize.SubjectRelation, materialize.SubjectEntityRow, materialize.SubjectRelationRow:
+		return AuthoringCapabilityGraphWrite, true
+	case materialize.SubjectQuery, materialize.SubjectQueryParameter:
+		return AuthoringCapabilityQueryWrite, true
+	case materialize.SubjectView, materialize.SubjectViewTableColumn, materialize.SubjectViewExport:
+		return AuthoringCapabilityViewWrite, true
+	case materialize.SubjectReference:
+		return AuthoringCapabilityReferenceWrite, true
+	default:
+		return "", false
+	}
 }
