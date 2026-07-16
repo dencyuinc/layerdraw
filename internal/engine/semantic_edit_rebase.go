@@ -169,8 +169,13 @@ func typedAuthoredObject(object map[string]any) map[string]SemanticValue {
 }
 
 func typedAuthoredValue(key string, value any) SemanticValue {
-	addressField := key == "address" || strings.HasSuffix(key, "_address")
-	addressSet := strings.HasSuffix(key, "_addresses")
+	return typedAuthoredValueWithInference(key, value, true)
+}
+
+func typedAuthoredValueWithInference(key string, value any, inferAddresses bool) SemanticValue {
+	inferAddresses = inferAddresses && !isOpaqueSemanticMap(key)
+	addressField := inferAddresses && (key == "address" || strings.HasSuffix(key, "_address"))
+	addressSet := inferAddresses && strings.HasSuffix(key, "_addresses")
 	switch typed := value.(type) {
 	case nil:
 		return SemanticValue{Kind: SemanticValueAbsent}
@@ -195,7 +200,7 @@ func typedAuthoredValue(key string, value any) SemanticValue {
 					continue
 				}
 			}
-			items[index] = typedAuthoredValue("", typed[index])
+			items[index] = typedAuthoredValueWithInference("", typed[index], inferAddresses)
 		}
 		return SemanticValue{Kind: SemanticValueArray, Array: items}
 	case map[string]any:
@@ -206,12 +211,16 @@ func typedAuthoredValue(key string, value any) SemanticValue {
 		sort.Strings(keys)
 		entries := make([]SemanticMapEntry, 0, len(keys))
 		for _, child := range keys {
-			entries = append(entries, SemanticMapEntry{Key: child, Value: typedAuthoredValue(child, typed[child])})
+			entries = append(entries, SemanticMapEntry{Key: child, Value: typedAuthoredValueWithInference(child, typed[child], inferAddresses)})
 		}
 		return SemanticValue{Kind: SemanticValueMap, Map: entries}
 	default:
 		return plainSemanticValue(typed)
 	}
+}
+
+func isOpaqueSemanticMap(key string) bool {
+	return key == "annotations" || key == "arguments" || key == "values"
 }
 
 func normalizeTypedAuthoredField(key string, value SemanticValue) SemanticValue {
@@ -361,14 +370,14 @@ func (working *semanticWorkingOverlay) rename(source, destination, newID string)
 		if fields := working.typed[address]; fields != nil {
 			delete(working.typed, address)
 			for key, value := range fields {
-				fields[key] = rewriteTypedAuthoredAddresses(value, remap)
+				fields[key] = rewriteTypedAuthoredAddresses(key, value, remap)
 			}
 			working.typed[remap(address)] = fields
 		}
 	}
 	for address, fields := range working.typed {
 		for key, value := range fields {
-			fields[key] = rewriteTypedAuthoredAddresses(value, remap)
+			fields[key] = rewriteTypedAuthoredAddresses(key, value, remap)
 		}
 		working.typed[address] = fields
 	}
@@ -427,15 +436,18 @@ func (working *semanticWorkingOverlay) rename(source, destination, newID string)
 	remapMembers(working.snapshot.SemanticIndex.LayerMembership)
 }
 
-func rewriteTypedAuthoredAddresses(value SemanticValue, remap func(string) string) SemanticValue {
+func rewriteTypedAuthoredAddresses(field string, value SemanticValue, remap func(string) string) SemanticValue {
 	if value.Kind == SemanticValueAddress {
 		value.Address = remap(value.Address)
 	}
 	for index := range value.Array {
-		value.Array[index] = rewriteTypedAuthoredAddresses(value.Array[index], remap)
+		value.Array[index] = rewriteTypedAuthoredAddresses("", value.Array[index], remap)
 	}
 	for index := range value.Map {
-		value.Map[index].Value = rewriteTypedAuthoredAddresses(value.Map[index].Value, remap)
+		if field == "values" || field == "arguments" {
+			value.Map[index].Key = remap(value.Map[index].Key)
+		}
+		value.Map[index].Value = rewriteTypedAuthoredAddresses(value.Map[index].Key, value.Map[index].Value, remap)
 	}
 	return value
 }

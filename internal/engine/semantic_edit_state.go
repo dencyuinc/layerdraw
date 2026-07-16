@@ -177,6 +177,28 @@ func (state *semanticBatchLifecycle) lineageTo(destination string) []semanticMov
 	return selected
 }
 
+func (state *semanticBatchLifecycle) historicalAddresses(destination string) []string {
+	addresses := map[string]bool{destination: true}
+	for index := len(state.lineage) - 1; index >= 0; index-- {
+		edge := state.lineage[index]
+		current := make([]string, 0, len(addresses))
+		for address := range addresses {
+			current = append(current, address)
+		}
+		for _, address := range current {
+			if address == edge.destination || strings.HasPrefix(address, edge.destination+":") {
+				addresses[edge.source+strings.TrimPrefix(address, edge.destination)] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(addresses))
+	for address := range addresses {
+		result = append(result, address)
+	}
+	sort.Slice(result, func(i, j int) bool { return compareStableAddressText(result[i], result[j]) < 0 })
+	return result
+}
+
 func (state *semanticBatchLifecycle) advance(operation SemanticOperation) bool {
 	switch operation.Kind {
 	case OperationCreateSubject:
@@ -264,15 +286,12 @@ func semanticSourceReadSet(snapshot Snapshot, batch SemanticOperationBatch, entr
 		case OperationDeleteSubject, OperationRenameSubject:
 			addAddress(operation.TargetAddress)
 			addModule(entry)
-			roots := []string{operation.TargetAddress}
-			for _, edge := range state.lineageTo(operation.TargetAddress) {
-				roots = append(roots, edge.source, edge.destination)
-			}
+			roots := state.historicalAddresses(operation.TargetAddress)
 			for _, reference := range snapshot.SemanticIndex.References {
 				for _, root := range roots {
 					if reference.TargetAddress == root || strings.HasPrefix(reference.TargetAddress, root+":") {
-						if source, ok := state.subject(reference.SourceAddress); ok {
-							addModule(source.module)
+						if module, ok := snapshotSubjectModule(snapshot, reference.SourceAddress); ok {
+							addModule(module)
 						}
 					}
 				}
@@ -310,6 +329,20 @@ func semanticSourceReadSet(snapshot Snapshot, batch SemanticOperationBatch, entr
 		}
 	}
 	return set
+}
+
+func snapshotSubjectModule(snapshot Snapshot, address string) (PlannedModuleRef, bool) {
+	for _, subject := range snapshot.SourceMap.Subjects {
+		if subject.Address != address || subject.Module == nil {
+			continue
+		}
+		return PlannedModuleRef{
+			OriginKind:  SourceOriginKind(subject.Module.Origin.Kind),
+			PackAddress: subject.Module.Origin.PackAddress,
+			ModulePath:  subject.Module.ModulePath,
+		}, true
+	}
+	return PlannedModuleRef{}, false
 }
 
 func projectSourceGenerationChanged(ancestor, head Snapshot) bool {
@@ -359,8 +392,9 @@ type semanticOperationAddressFact struct {
 type semanticOperationFactAuthority uint8
 
 const (
-	semanticFactReferencePair semanticOperationFactAuthority = iota
-	semanticFactNormalizedField
+	semanticFactReferenceAndNormalizedPath semanticOperationFactAuthority = iota
+	semanticFactNormalizedValue
+	semanticFactNormalizedMapKey
 )
 
 func semanticAddressFactAuthority(kind SemanticSubjectKind, path []string) semanticOperationFactAuthority {
@@ -368,15 +402,15 @@ func semanticAddressFactAuthority(kind SemanticSubjectKind, path []string) seman
 		// Unique-column names are resolved owner-locally by the definition compiler,
 		// not published as resolver bindings. Their authoritative result is the
 		// normalized constraint child at the exact operation source address.
-		return semanticFactNormalizedField
+		return semanticFactNormalizedValue
 	}
 	if (kind == materialize.SubjectEntityRow || kind == materialize.SubjectRelationRow) && len(path) != 0 && path[0] == "values" {
 		// Row column keys and address-valued cells are materialized on the exact
 		// row object; the definition compiler does not publish them all as
 		// resolver bindings.
-		return semanticFactNormalizedField
+		return semanticFactNormalizedValue
 	}
-	return semanticFactReferencePair
+	return semanticFactReferenceAndNormalizedPath
 }
 
 func verifySemanticOperationFacts(base, result Snapshot, batch SemanticOperationBatch) []SemanticConflict {
@@ -458,7 +492,7 @@ func verifySemanticOperationFacts(base, result Snapshot, batch SemanticOperation
 			source = predictedChildAddress(operation.OwnerAddress, rowKind, operation.ID)
 			clearPathFacts(source, []string{"values"})
 			for _, cell := range operation.Values {
-				facts = append(facts, semanticOperationAddressFact{source: source, target: cell.ColumnAddress, path: []string{"values"}, authority: semanticAddressFactAuthority(rowKind, []string{"values"})})
+				facts = append(facts, semanticOperationAddressFact{source: source, target: cell.ColumnAddress, path: []string{"values"}, authority: semanticFactNormalizedMapKey})
 				collectValue(source, rowKind, []string{"values", cell.ColumnAddress}, cell.Value)
 			}
 		case OperationUpdateRelationEndpoint:
@@ -494,11 +528,18 @@ func verifySemanticOperationFacts(base, result Snapshot, batch SemanticOperation
 	}
 	conflicts := []SemanticConflict{}
 	for _, fact := range facts {
-		verified := references[fact.source+"\x00"+fact.target]
-		if fact.authority == semanticFactNormalizedField {
-			object := normalizedSubject(result, fact.source)
-			value, pathExists := semanticObjectPath(object, fact.path)
-			verified = pathExists && normalizedObjectContainsAddress(value, fact.target)
+		object := normalizedSubject(result, fact.source)
+		values := normalizedObjectPathValues(object, fact.path)
+		verified := false
+		switch fact.authority {
+		case semanticFactReferenceAndNormalizedPath:
+			verified = references[fact.source+"\x00"+fact.target] && normalizedValuesContainAddress(values, fact.target)
+		case semanticFactNormalizedValue:
+			verified = normalizedValuesContainAddress(values, fact.target)
+		case semanticFactNormalizedMapKey:
+			for _, value := range values {
+				verified = verified || normalizedObjectHasAddressKey(value, fact.target)
+			}
 		}
 		if !available[fact.target] || !verified {
 			conflicts = append(conflicts, SemanticConflict{Kind: ConflictReferenceBroken, TargetAddress: fact.target, OwnerAddress: fact.source, Path: append([]string(nil), fact.path...)})
@@ -508,17 +549,48 @@ func verifySemanticOperationFacts(base, result Snapshot, batch SemanticOperation
 	return uniqueSemanticConflicts(conflicts)
 }
 
-func normalizedObjectContainsAddress(value any, address string) bool {
+func normalizedObjectPathValues(value any, path []string) []any {
+	if len(path) == 0 {
+		return []any{value}
+	}
 	switch typed := value.(type) {
 	case map[string]any:
-		for key, child := range typed {
-			if key == address || normalizedObjectContainsAddress(child, address) {
+		child, ok := typed[path[0]]
+		if !ok {
+			return nil
+		}
+		return normalizedObjectPathValues(child, path[1:])
+	case []any:
+		result := []any{}
+		for _, child := range typed {
+			result = append(result, normalizedObjectPathValues(child, path)...)
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func normalizedValuesContainAddress(values []any, address string) bool {
+	for _, value := range values {
+		if normalizedObjectContainsAddressValue(value, address) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedObjectContainsAddressValue(value any, address string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, child := range typed {
+			if normalizedObjectContainsAddressValue(child, address) {
 				return true
 			}
 		}
 	case []any:
 		for _, child := range typed {
-			if normalizedObjectContainsAddress(child, address) {
+			if normalizedObjectContainsAddressValue(child, address) {
 				return true
 			}
 		}
@@ -526,4 +598,13 @@ func normalizedObjectContainsAddress(value any, address string) bool {
 		return typed == address
 	}
 	return false
+}
+
+func normalizedObjectHasAddressKey(value any, address string) bool {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = object[address]
+	return ok
 }

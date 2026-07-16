@@ -92,6 +92,55 @@ export { service }
 			t.Fatalf("unrelated module was forced into the source read set: status=%s err=%v conflicts=%+v", plan.Status, planErr, plan.Conflicts)
 		}
 	})
+
+	t.Run("project migration preserves descendant referencer authority", func(t *testing.T) {
+		multiInput := projectTreeCompileInput(map[string][]byte{
+			"document.ldl": []byte(`import { service } from "./schema.ldl"
+import { q } from "./queries.ldl"
+project p "Project" {}
+layers {
+  app "Application" @10
+}
+entities service @app {
+  a "A"
+}
+`),
+			"schema.ldl": []byte(`entity_type service "Service" {
+  representation shape rect
+}
+export { service }
+`),
+			"queries.ldl": []byte(`import { service } from "./schema.ldl"
+query q "Query" {
+  select {
+    entity_types [service]
+  }
+}
+export { q }
+`),
+		})
+		compiled, compileErr := planner.Compile(context.Background(), multiInput)
+		if compileErr != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile migrated descendant fixture: err=%v diagnostics=%+v", compileErr, compiled.Diagnostics)
+		}
+		ancestor := compiled.Snapshot()
+		preconditions := allSemanticPreconditions(ancestor)
+		kept := preconditions.ExpectedSourceDigests[:0]
+		for _, expected := range preconditions.ExpectedSourceDigests {
+			if expected.Module.ModulePath != "queries.ldl" {
+				kept = append(kept, expected)
+			}
+		}
+		preconditions.ExpectedSourceDigests = kept
+		operations := []SemanticOperation{
+			{Kind: OperationMigrateProjectIdentity, ProjectAddress: "ldl:project:p", NewProjectID: "q"},
+			{Kind: OperationRenameSubject, TargetAddress: "ldl:project:q:entity-type:service", NewID: "backend"},
+		}
+		plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: multiInput, BaseSnapshot: ancestor, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: preconditions})
+		if planErr != nil || plan.Status != "invalid" || !hasSourceModuleConflict(plan.Conflicts, "queries.ldl") || len(plan.SourceTree) != 0 {
+			t.Fatalf("migrated descendant lost cross-module read authority: status=%s err=%v conflicts=%+v", plan.Status, planErr, plan.Conflicts)
+		}
+	})
 }
 
 func hasSourceModuleConflict(conflicts []SemanticConflict, module string) bool {
@@ -349,6 +398,73 @@ func TestPlanSemanticEditsSharesProjectAndRenameLifecycle(t *testing.T) {
 			t.Fatalf("rename-chain descendant lifecycle diverged: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
 		}
 	})
+}
+
+func TestSemanticOperationFactsRequireTheExactNormalizedPath(t *testing.T) {
+	t.Parallel()
+	input, snapshot := semanticEditCompiledFixture(t)
+	operation := SemanticOperation{Kind: OperationUpdateRelationEndpoint, RelationAddress: "ldl:project:p:relation:r", Endpoint: "from", EntityAddress: "ldl:project:p:entity:b"}
+
+	conflicts := verifySemanticOperationFacts(snapshot, snapshot, SemanticOperationBatch{Operations: []SemanticOperation{operation}})
+	if len(conflicts) != 1 || conflicts[0].Kind != ConflictReferenceBroken || strings.Join(conflicts[0].Path, ".") != "from_address" {
+		t.Fatalf("a target referenced through the wrong endpoint satisfied the operation fact: %+v", conflicts)
+	}
+
+	plan, err := New(BuildInfo{}).PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+	if err != nil || plan.Status != "valid" {
+		t.Fatalf("exact endpoint update failed: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
+	}
+	object := normalizedSubject(*plan.Result, operation.RelationAddress)
+	if object["from_address"] != operation.EntityAddress || object["to_address"] != operation.EntityAddress {
+		t.Fatalf("relation endpoints were not updated at the exact path: %+v", object)
+	}
+}
+
+func TestProjectMigrationDoesNotInferAddressesInsideOpaqueMaps(t *testing.T) {
+	t.Parallel()
+	const literal = "ldl:project:p:entity:a"
+	source := strings.Replace(semanticEditFixture, `query q "Query" {
+  select {}
+}`, `query q "Query" {
+  parameters {
+    customer_address string
+  }
+  select {}
+}`, 1)
+	source = strings.Replace(source, `source query q {}`, `source query q { customer_address: "`+literal+`" }`, 1)
+	input := projectCompileInput(source)
+	planner := New(BuildInfo{})
+	compiled, compileErr := planner.Compile(context.Background(), input)
+	if compileErr != nil || len(compiled.Diagnostics) != 0 {
+		t.Fatalf("compile opaque-map fixture: err=%v diagnostics=%+v", compileErr, compiled.Diagnostics)
+	}
+	snapshot := compiled.Snapshot()
+
+	working := newSemanticWorkingOverlay(snapshot)
+	working.rename("ldl:project:p", "ldl:project:q", "q")
+	view := working.typed["ldl:project:q:view:v"]
+	sourceValue := semanticMap(view["source"].Map)
+	arguments := sourceValue["arguments"].Map
+	if len(arguments) != 1 || !strings.HasPrefix(arguments[0].Key, "ldl:project:q:") || arguments[0].Value.Kind != SemanticValueString || arguments[0].Value.String != literal {
+		t.Fatalf("opaque argument was inferred or remapped as an address: %+v", arguments)
+	}
+
+	operations := []SemanticOperation{
+		{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p:entity-type:service", SubjectKind: materialize.SubjectEntityTypeColumn, ID: "required_count", Fields: []SemanticMapEntry{
+			{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Required Count"}},
+			{Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "integer"}},
+			{Key: "required", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}},
+		}},
+		{Kind: OperationMigrateProjectIdentity, ProjectAddress: "ldl:project:p", NewProjectID: "q"},
+		{Kind: OperationUpsertRow, OwnerAddress: "ldl:project:q:entity:a", ID: "primary", Values: []SemanticRowCell{
+			{ColumnAddress: "ldl:project:q:entity-type:service:column:note", Value: SemanticValue{Kind: SemanticValueString, String: "old"}},
+			{ColumnAddress: "ldl:project:q:entity-type:service:column:required_count", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 1}},
+		}},
+	}
+	plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(snapshot)})
+	if err != nil || plan.Status != "valid" || !strings.Contains(string(plan.SourceTree["document.ldl"]), `customer_address: "`+literal+`"`) {
+		t.Fatalf("opaque argument changed during invalid-intermediate planning: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
+	}
 }
 
 func TestPlanSemanticEditsCleansDeterministicRenameChains(t *testing.T) {
