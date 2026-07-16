@@ -1296,7 +1296,8 @@ func renderSpecialField(snapshot Snapshot, module, key string, value SemanticVal
 		lines = append(lines, strings.Repeat(" ", indent)+"}")
 		return strings.Join(lines, "\n"), true, true
 	case "select":
-		return renderAddressBlock(snapshot, module, "select", entries, indent, map[string]string{"layer_addresses": "layers", "entity_type_addresses": "entity_types", "relation_type_addresses": "relation_types", "root_addresses": "roots"}), true, true
+		rendered, valid := renderAddressBlock(snapshot, module, "select", entries, indent, map[string]string{"layer_addresses": "layers", "entity_type_addresses": "entity_types", "relation_type_addresses": "relation_types", "root_addresses": "roots"})
+		return rendered, true, valid
 	case "where", "relation_where":
 		predicate, ok := renderPredicate(snapshot, module, value, indent)
 		return key + " " + predicate, true, ok
@@ -1489,7 +1490,7 @@ func portableRelativePath(fromDirectory, locator string) string {
 	return strings.Join(parts, "/")
 }
 
-func renderAddressBlock(snapshot Snapshot, module, head string, entries map[string]SemanticValue, indent int, names map[string]string) string {
+func renderAddressBlock(snapshot Snapshot, module, head string, entries map[string]SemanticValue, indent int, names map[string]string) (string, bool) {
 	keys := make([]string, 0, len(entries))
 	for key := range entries {
 		keys = append(keys, key)
@@ -1500,7 +1501,7 @@ func renderAddressBlock(snapshot Snapshot, module, head string, entries map[stri
 	for _, key := range keys {
 		rendered, ok := renderSemanticValue(snapshot, module, entries[key])
 		if !ok {
-			continue
+			return "", false
 		}
 		name := key
 		if mapped := names[key]; mapped != "" {
@@ -1509,7 +1510,7 @@ func renderAddressBlock(snapshot Snapshot, module, head string, entries map[stri
 		lines = append(lines, prefix+name+" "+rendered)
 	}
 	lines = append(lines, strings.Repeat(" ", indent)+"}")
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), true
 }
 
 func renderArgumentObject(snapshot Snapshot, module string, value SemanticValue) (string, bool) {
@@ -1964,6 +1965,11 @@ func quoteLDLString(value string) string {
 }
 
 func rootProjectAddress(snapshot Snapshot) string {
+	for _, subject := range snapshot.SemanticIndex.Subjects {
+		if subject.Kind == materialize.SubjectProject {
+			return subject.Address
+		}
+	}
 	if snapshot.NormalizedDocument != nil {
 		return snapshot.NormalizedDocument.Project.Address
 	}

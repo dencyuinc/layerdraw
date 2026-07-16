@@ -1173,6 +1173,14 @@ func TestSemanticWorkingOverlayFailsClosedOnRecoveredSyntax(t *testing.T) {
 	if _, _, _, ok := plannedSubjectRange(snapshot, after, materialize.SubjectEntityType, "ldl:project:p", "broken"); ok {
 		t.Fatal("parser recovery was accepted as working-overlay source authority")
 	}
+	malformed := cloneSemanticCompileInput(input)
+	malformed.ProjectSourceTree = after
+	value := SemanticValue{Kind: SemanticValueString, String: "Changed"}
+	operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"display_name"}, Action: "set", Value: &value}
+	plan, err := New(BuildInfo{}).PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: malformed, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+	if err != nil || plan.Status != "invalid" || len(plan.Diagnostics) == 0 || len(plan.SourceTree) != 0 {
+		t.Fatalf("public planner accepted parser recovery authority: plan=%+v err=%v", plan, err)
+	}
 }
 
 func TestRepeatedUpsertStillRequiresSecondOperationReads(t *testing.T) {
@@ -1193,9 +1201,9 @@ func TestRepeatedUpsertStillRequiresSecondOperationReads(t *testing.T) {
 	}
 	preconditions := allSemanticPreconditions(snapshot)
 	preconditions.ExpectedSubjectHashes = removeExpectedHash(preconditions.ExpectedSubjectHashes, extra.ColumnAddress)
-	conflicts := validateSemanticPreconditions(snapshot, preconditions, SemanticOperationBatch{Operations: operations})
-	if len(conflicts) != 1 || conflicts[0].Kind != ConflictSubjectChanged || conflicts[0].TargetAddress != extra.ColumnAddress {
-		t.Fatalf("second upsert skipped its column read set: %+v", conflicts)
+	plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: preconditions})
+	if planErr != nil || plan.Status != "invalid" || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictSubjectChanged || plan.Conflicts[0].TargetAddress != extra.ColumnAddress {
+		t.Fatalf("second upsert skipped its column read set: plan=%+v err=%v", plan, planErr)
 	}
 }
 

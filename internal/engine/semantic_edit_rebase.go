@@ -5,8 +5,8 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
-	"maps"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/index"
@@ -21,16 +21,21 @@ import (
 // compiler output is never merged. The final canonical compile remains the
 // only result authority returned to callers.
 type semanticWorkingOverlay struct {
-	snapshot Snapshot
-	authored map[string]map[string]any
-	aliases  map[string]string
+	snapshot  Snapshot
+	authored  map[string]map[string]any
+	typed     map[string]map[string]SemanticValue
+	lifecycle *semanticBatchLifecycle
 }
 
 func newSemanticWorkingOverlay(snapshot Snapshot) *semanticWorkingOverlay {
-	working := &semanticWorkingOverlay{snapshot: Snapshot{CompileOutput: deepClone(snapshot.CompileOutput)}, authored: map[string]map[string]any{}, aliases: map[string]string{}}
+	working := &semanticWorkingOverlay{
+		snapshot: Snapshot{CompileOutput: deepClone(snapshot.CompileOutput)}, authored: map[string]map[string]any{},
+		typed: map[string]map[string]SemanticValue{}, lifecycle: newSemanticBatchLifecycle(snapshot),
+	}
 	for _, subject := range snapshot.SemanticIndex.Subjects {
 		if object := normalizedSubject(snapshot, subject.Address); object != nil {
 			working.authored[subject.Address] = deepClone(object)
+			working.typed[subject.Address] = typedAuthoredObject(object)
 		}
 	}
 	working.syncCanonicalObjects()
@@ -38,19 +43,14 @@ func newSemanticWorkingOverlay(snapshot Snapshot) *semanticWorkingOverlay {
 }
 
 func (working *semanticWorkingOverlay) reset(snapshot Snapshot) {
-	aliases := maps.Clone(working.aliases)
+	lifecycle := working.lifecycle
 	replacement := newSemanticWorkingOverlay(snapshot)
-	replacement.aliases = aliases
+	replacement.lifecycle = lifecycle
 	*working = *replacement
 }
 
-func (working *semanticWorkingOverlay) aliasSource(destination string) (string, bool) {
-	for source, current := range working.aliases {
-		if current == destination {
-			return source, true
-		}
-	}
-	return "", false
+func (working *semanticWorkingOverlay) lineageTo(destination string) []semanticMoveEdge {
+	return working.lifecycle.lineageTo(destination)
 }
 
 func (working *semanticWorkingOverlay) supports(operation SemanticOperation) bool {
@@ -86,15 +86,17 @@ func (working *semanticWorkingOverlay) advance(before, after map[string][]byte, 
 		working.remove(operation.RowAddress)
 	case OperationCreateSubject:
 		address := predictedChildAddress(operation.ParentAddress, operation.SubjectKind, operation.ID)
-		if !working.add(after, address, operation.SubjectKind, operation.ParentAddress, operation.ID, semanticFieldsObject(address, operation.ID, operation.Fields)) {
+		if !working.add(after, address, operation.SubjectKind, operation.ParentAddress, operation.ID, semanticFieldsTyped(operation.Fields)) {
 			diagnostic := plannerDiagnostic("LDL1801", "invalid_working_overlay_source", "created subject has no unique diagnostic-free CST declaration")
 			return &diagnostic
 		}
 	case OperationCreateRelation:
 		address := predictedChildAddress(operation.ParentAddress, materialize.SubjectRelation, operation.ID)
-		object := semanticFieldsObject(address, operation.ID, operation.Fields)
-		object["type_address"], object["from_address"], object["to_address"] = operation.TypeAddress, operation.FromAddress, operation.ToAddress
-		if !working.add(after, address, materialize.SubjectRelation, operation.ParentAddress, operation.ID, object) {
+		fields := semanticFieldsTyped(operation.Fields)
+		fields["type_address"] = SemanticValue{Kind: SemanticValueAddress, Address: operation.TypeAddress}
+		fields["from_address"] = SemanticValue{Kind: SemanticValueAddress, Address: operation.FromAddress}
+		fields["to_address"] = SemanticValue{Kind: SemanticValueAddress, Address: operation.ToAddress}
+		if !working.add(after, address, materialize.SubjectRelation, operation.ParentAddress, operation.ID, fields) {
 			diagnostic := plannerDiagnostic("LDL1801", "invalid_working_overlay_source", "created relation has no unique diagnostic-free CST declaration")
 			return &diagnostic
 		}
@@ -103,14 +105,14 @@ func (working *semanticWorkingOverlay) advance(before, after map[string][]byte, 
 		kind := rowKindForOwner(owner)
 		address := predictedChildAddress(operation.OwnerAddress, kind, operation.ID)
 		working.remove(address)
-		values := map[string]any{}
+		values := []SemanticMapEntry{}
 		for _, cell := range operation.Values {
-			values[cell.ColumnAddress] = semanticValuePlain(cell.Value)
+			values = append(values, SemanticMapEntry{Key: cell.ColumnAddress, Value: deepClone(cell.Value)})
 		}
 		for _, column := range operation.ExplicitAbsentColumnAddresses {
-			values[column] = nil
+			values = append(values, SemanticMapEntry{Key: column, Value: SemanticValue{Kind: SemanticValueAbsent}})
 		}
-		if !working.add(after, address, kind, operation.OwnerAddress, operation.ID, map[string]any{"id": operation.ID, "address": address, "values": values}) {
+		if !working.add(after, address, kind, operation.OwnerAddress, operation.ID, map[string]SemanticValue{"values": {Kind: SemanticValueMap, Map: values}}) {
 			diagnostic := plannerDiagnostic("LDL1801", "invalid_working_overlay_source", "upserted row has no unique diagnostic-free CST declaration")
 			return &diagnostic
 		}
@@ -121,15 +123,15 @@ func (working *semanticWorkingOverlay) advance(before, after map[string][]byte, 
 		}
 	case OperationUpdateRelationEndpoint:
 		field := operation.Endpoint + "_address"
-		if object := working.authored[operation.RelationAddress]; object != nil {
-			object[field] = operation.EntityAddress
+		if object := working.typed[operation.RelationAddress]; object != nil {
+			object[field] = SemanticValue{Kind: SemanticValueAddress, Address: operation.EntityAddress}
 		} else {
 			diagnostic := plannerDiagnostic("LDL1801", "invalid_working_overlay_field", "relation endpoint target is unavailable in the working overlay")
 			return &diagnostic
 		}
 	case OperationMoveEntityToLayer:
-		if object := working.authored[operation.EntityAddress]; object != nil {
-			object["layer_address"] = operation.LayerAddress
+		if object := working.typed[operation.EntityAddress]; object != nil {
+			object["layer_address"] = SemanticValue{Kind: SemanticValueAddress, Address: operation.LayerAddress}
 		} else {
 			diagnostic := plannerDiagnostic("LDL1801", "invalid_working_overlay_field", "entity target is unavailable in the working overlay")
 			return &diagnostic
@@ -139,20 +141,133 @@ func (working *semanticWorkingOverlay) advance(before, after map[string][]byte, 
 	case OperationMigrateProjectIdentity:
 		working.rename(operation.ProjectAddress, renamedAddress(operation.ProjectAddress, operation.NewProjectID), operation.NewProjectID)
 	}
+	if !working.lifecycle.advance(operation) {
+		diagnostic := plannerDiagnostic("LDL1801", "invalid_working_overlay_lifecycle", "operation could not advance the working identity lifecycle")
+		return &diagnostic
+	}
 	working.syncCanonicalObjects()
 	return nil
 }
 
-func semanticFieldsObject(address, id string, fields []SemanticMapEntry) map[string]any {
-	object := map[string]any{"id": id, "address": address}
+func semanticFieldsTyped(fields []SemanticMapEntry) map[string]SemanticValue {
+	object := map[string]SemanticValue{}
 	for _, field := range fields {
-		object[field.Key] = semanticValuePlain(field.Value)
+		object[field.Key] = normalizeTypedAuthoredField(field.Key, deepClone(field.Value))
 	}
 	return object
 }
 
+func typedAuthoredObject(object map[string]any) map[string]SemanticValue {
+	fields := map[string]SemanticValue{}
+	for key, value := range object {
+		if key == "id" || key == "address" {
+			continue
+		}
+		fields[key] = typedAuthoredValue(key, value)
+	}
+	return fields
+}
+
+func typedAuthoredValue(key string, value any) SemanticValue {
+	addressField := key == "address" || strings.HasSuffix(key, "_address")
+	addressSet := strings.HasSuffix(key, "_addresses")
+	switch typed := value.(type) {
+	case nil:
+		return SemanticValue{Kind: SemanticValueAbsent}
+	case string:
+		if addressField {
+			return SemanticValue{Kind: SemanticValueAddress, Address: typed}
+		}
+		return SemanticValue{Kind: SemanticValueString, String: typed}
+	case bool:
+		return SemanticValue{Kind: SemanticValueBoolean, Boolean: typed}
+	case float64:
+		if typed == float64(int64(typed)) {
+			return SemanticValue{Kind: SemanticValueInteger, Integer: int64(typed)}
+		}
+		return SemanticValue{Kind: SemanticValueDecimal, Decimal: strings.TrimRight(strings.TrimRight(strconv.FormatFloat(typed, 'f', -1, 64), "0"), ".")}
+	case []any:
+		items := make([]SemanticValue, len(typed))
+		for index := range typed {
+			if addressSet {
+				if address, ok := typed[index].(string); ok {
+					items[index] = SemanticValue{Kind: SemanticValueAddress, Address: address}
+					continue
+				}
+			}
+			items[index] = typedAuthoredValue("", typed[index])
+		}
+		return SemanticValue{Kind: SemanticValueArray, Array: items}
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for child := range typed {
+			keys = append(keys, child)
+		}
+		sort.Strings(keys)
+		entries := make([]SemanticMapEntry, 0, len(keys))
+		for _, child := range keys {
+			entries = append(entries, SemanticMapEntry{Key: child, Value: typedAuthoredValue(child, typed[child])})
+		}
+		return SemanticValue{Kind: SemanticValueMap, Map: entries}
+	default:
+		return plainSemanticValue(typed)
+	}
+}
+
+func normalizeTypedAuthoredField(key string, value SemanticValue) SemanticValue {
+	if key != "annotations" || value.Kind != SemanticValueArray {
+		return value
+	}
+	entries := make([]SemanticMapEntry, 0, len(value.Array))
+	for _, item := range value.Array {
+		if item.Kind != SemanticValueMap {
+			return value
+		}
+		fields := semanticMap(item.Map)
+		name, text := rawString(fields["key"]), rawString(fields["value"])
+		if name == "" {
+			return value
+		}
+		entries = append(entries, SemanticMapEntry{Key: name, Value: SemanticValue{Kind: SemanticValueString, String: text}})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
+	return SemanticValue{Kind: SemanticValueMap, Map: entries}
+}
+
+func typedAuthoredPlain(key string, value SemanticValue) any {
+	value = normalizeTypedAuthoredField(key, value)
+	switch value.Kind {
+	case SemanticValueAbsent:
+		return nil
+	case SemanticValueAddress:
+		return value.Address
+	case SemanticValueBoolean:
+		return value.Boolean
+	case SemanticValueDecimal:
+		return json.Number(value.Decimal)
+	case SemanticValueInteger:
+		return value.Integer
+	case SemanticValueString, SemanticValueToken:
+		return value.String
+	case SemanticValueArray:
+		out := make([]any, len(value.Array))
+		for index := range value.Array {
+			out[index] = typedAuthoredPlain("", value.Array[index])
+		}
+		return out
+	case SemanticValueMap:
+		out := map[string]any{}
+		for _, entry := range value.Map {
+			out[entry.Key] = typedAuthoredPlain(entry.Key, entry.Value)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func (working *semanticWorkingOverlay) updateField(operation SemanticOperation) bool {
-	object := working.authored[operation.TargetAddress]
+	object := working.typed[operation.TargetAddress]
 	if object == nil || len(operation.Path) == 0 || len(operation.Path) > 2 {
 		return false
 	}
@@ -160,20 +275,30 @@ func (working *semanticWorkingOverlay) updateField(operation SemanticOperation) 
 		if operation.Action == "remove" {
 			delete(object, operation.Path[0])
 		} else if operation.Value != nil {
-			object[operation.Path[0]] = semanticValuePlain(*operation.Value)
+			object[operation.Path[0]] = normalizeTypedAuthoredField(operation.Path[0], deepClone(*operation.Value))
 		}
 		return true
 	}
-	nested, _ := object[operation.Path[0]].(map[string]any)
-	if nested == nil {
-		nested = map[string]any{}
-		object[operation.Path[0]] = nested
+	nested := object[operation.Path[0]]
+	if nested.Kind != SemanticValueMap {
+		nested = SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{}}
 	}
+	entries := semanticMap(nested.Map)
 	if operation.Action == "remove" {
-		delete(nested, operation.Path[1])
+		delete(entries, operation.Path[1])
 	} else if operation.Value != nil {
-		nested[operation.Path[1]] = semanticValuePlain(*operation.Value)
+		entries[operation.Path[1]] = deepClone(*operation.Value)
 	}
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	nested.Map = nested.Map[:0]
+	for _, key := range keys {
+		nested.Map = append(nested.Map, SemanticMapEntry{Key: key, Value: entries[key]})
+	}
+	object[operation.Path[0]] = nested
 	return true
 }
 
@@ -181,6 +306,7 @@ func (working *semanticWorkingOverlay) remove(address string) {
 	removed := removeOverlaySubject(&working.snapshot, address)
 	for value := range removed {
 		delete(working.authored, value)
+		delete(working.typed, value)
 	}
 }
 
@@ -198,11 +324,12 @@ func semanticDescendantSet(snapshot Snapshot, address string) map[string]bool {
 	return closure
 }
 
-func (working *semanticWorkingOverlay) add(after map[string][]byte, address string, kind SemanticSubjectKind, owner, id string, object map[string]any) bool {
+func (working *semanticWorkingOverlay) add(after map[string][]byte, address string, kind SemanticSubjectKind, owner, id string, fields map[string]SemanticValue) bool {
 	if !addOverlaySubject(&working.snapshot, after, address, kind, owner, id) {
 		return false
 	}
-	working.authored[address] = deepClone(object)
+	working.authored[address] = map[string]any{"id": id, "address": address}
+	working.typed[address] = deepClone(fields)
 	return true
 }
 
@@ -225,13 +352,25 @@ func (working *semanticWorkingOverlay) rename(source, destination, newID string)
 	for _, address := range addresses {
 		if object := working.authored[address]; object != nil {
 			delete(working.authored, address)
-			object = rewriteOverlayAddresses(object, remap).(map[string]any)
 			object["address"] = remap(address)
 			if address == source {
 				object["id"] = newID
 			}
 			working.authored[remap(address)] = object
 		}
+		if fields := working.typed[address]; fields != nil {
+			delete(working.typed, address)
+			for key, value := range fields {
+				fields[key] = rewriteTypedAuthoredAddresses(value, remap)
+			}
+			working.typed[remap(address)] = fields
+		}
+	}
+	for address, fields := range working.typed {
+		for key, value := range fields {
+			fields[key] = rewriteTypedAuthoredAddresses(value, remap)
+		}
+		working.typed[address] = fields
 	}
 	for i := range working.snapshot.SemanticIndex.Subjects {
 		subject := &working.snapshot.SemanticIndex.Subjects[i]
@@ -286,26 +425,17 @@ func (working *semanticWorkingOverlay) rename(source, destination, newID string)
 	remapMembers(working.snapshot.SemanticIndex.Columns)
 	remapMembers(working.snapshot.SemanticIndex.TypeMembership)
 	remapMembers(working.snapshot.SemanticIndex.LayerMembership)
-	for original, current := range working.aliases {
-		if current == source {
-			working.aliases[original] = destination
-		}
-	}
-	working.aliases[source] = destination
 }
 
-func rewriteOverlayAddresses(value any, remap func(string) string) any {
-	switch typed := value.(type) {
-	case string:
-		return remap(typed)
-	case []any:
-		for i := range typed {
-			typed[i] = rewriteOverlayAddresses(typed[i], remap)
-		}
-	case map[string]any:
-		for key := range typed {
-			typed[key] = rewriteOverlayAddresses(typed[key], remap)
-		}
+func rewriteTypedAuthoredAddresses(value SemanticValue, remap func(string) string) SemanticValue {
+	if value.Kind == SemanticValueAddress {
+		value.Address = remap(value.Address)
+	}
+	for index := range value.Array {
+		value.Array[index] = rewriteTypedAuthoredAddresses(value.Array[index], remap)
+	}
+	for index := range value.Map {
+		value.Map[index].Value = rewriteTypedAuthoredAddresses(value.Map[index].Value, remap)
 	}
 	return value
 }
@@ -318,7 +448,11 @@ func (working *semanticWorkingOverlay) syncCanonicalObjects() {
 	sort.Slice(addresses, func(i, j int) bool { return compareStableAddressText(addresses[i], addresses[j]) < 0 })
 	objects := make([]map[string]any, 0, len(addresses))
 	for _, address := range addresses {
-		objects = append(objects, working.authored[address])
+		object := deepClone(working.authored[address])
+		for key, value := range working.typed[address] {
+			object[key] = typedAuthoredPlain(key, value)
+		}
+		objects = append(objects, object)
 	}
 	working.snapshot.CanonicalJSON, _ = json.Marshal(objects)
 }
