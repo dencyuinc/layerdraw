@@ -4,6 +4,7 @@ package wasm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -89,7 +90,7 @@ type Session struct {
 	inFlightDone       chan struct{}
 	handshakeAttempted bool
 	negotiated         *endpoint.NegotiatedContext
-	activePlan         *endpoint.CompilePlan
+	activePlan         endpoint.DispatchPlan
 }
 
 func NewSession(authority *endpoint.CompilerEndpoint, generation string, limits TransportLimits) (*Session, error) {
@@ -209,11 +210,13 @@ func (session *Session) Dispatch(ctx context.Context, generation string, control
 		}
 		return session.dispatchHandshake(ctx, generation, request)
 	}
-	request, err := engineprotocol.DecodeCompileRequestEnvelope(control)
-	if err != nil {
+	var route struct {
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal(control, &route); err != nil || route.Operation == "" {
 		return Response{}, localFailure(FailureMalformedMessage)
 	}
-	return session.dispatchCompile(ctx, generation, request, blobs)
+	return session.dispatchOperation(ctx, generation, route.Operation, control, blobs)
 }
 
 func (session *Session) dispatchHandshake(ctx context.Context, generation string, request engineprotocol.HandshakeRequestEnvelope) (Response, *LocalFailure) {
@@ -254,20 +257,19 @@ func (session *Session) dispatchHandshake(ctx context.Context, generation string
 	return Response{EndpointGeneration: generation, Control: control}, nil
 }
 
-func (session *Session) dispatchCompile(ctx context.Context, generation string, request engineprotocol.CompileRequestEnvelope, blobs RequestBlobs) (Response, *LocalFailure) {
+func (session *Session) dispatchOperation(ctx context.Context, generation string, operation string, control []byte, blobs RequestBlobs) (Response, *LocalFailure) {
 	session.mu.Lock()
 	negotiated := session.negotiated
 	session.mu.Unlock()
-	plan, terminal, err := session.dispatcher.PrepareCompile(ctx, negotiated, request)
+	plan, terminal, err := session.dispatcher.PrepareDispatch(ctx, negotiated, operation, control)
 	if err != nil {
 		return Response{}, localFailure(FailureCrashed)
 	}
 	if terminal != nil {
-		control, encodeErr := engineprotocol.EncodeCompileResponseEnvelope(*terminal)
-		if encodeErr != nil || int64(len(control)) > session.limits.MaxControlBytes {
+		if int64(len(terminal.Control)) > session.limits.MaxControlBytes {
 			return Response{}, localFailure(FailureCrashed)
 		}
-		return session.publishableResponse(Response{EndpointGeneration: generation, Control: control})
+		return session.publishableResponse(Response{EndpointGeneration: generation, Control: terminal.Control})
 	}
 	if plan == nil {
 		return Response{}, localFailure(FailureCrashed)
@@ -279,21 +281,20 @@ func (session *Session) dispatchCompile(ctx context.Context, generation string, 
 		return Response{}, bindFailure
 	}
 	sink := &atomicOutputSink{limits: session.limits}
-	result, executeErr := plan.Execute(ctx, blobs, sink)
+	result, executeErr := plan.ExecuteDispatch(ctx, blobs, sink)
 	if executeErr != nil {
 		sink.Release()
 		return Response{}, localFailure(FailureCrashed)
 	}
-	control, encodeErr := engineprotocol.EncodeCompileResponseEnvelope(result)
-	if encodeErr != nil || int64(len(control)) > session.limits.MaxControlBytes {
+	if int64(len(result.Control)) > session.limits.MaxControlBytes {
 		sink.Release()
 		return Response{}, localFailure(FailureCrashed)
 	}
-	if int64(len(control))+sink.totalBytes > session.limits.MaxResponsePublishBytes {
+	if int64(len(result.Control))+sink.totalBytes > session.limits.MaxResponsePublishBytes {
 		sink.Release()
 		return Response{}, localFailure(FailureTransferFailed)
 	}
-	response := Response{EndpointGeneration: generation, Control: control, Blobs: sink.Take()}
+	response := Response{EndpointGeneration: generation, Control: result.Control, Blobs: sink.Take()}
 	return session.publishableResponse(response)
 }
 
@@ -335,7 +336,7 @@ func (session *Session) terminateHandshakeGeneration() {
 	session.mu.Unlock()
 }
 
-func (session *Session) setActivePlan(plan *endpoint.CompilePlan) {
+func (session *Session) setActivePlan(plan endpoint.DispatchPlan) {
 	session.mu.Lock()
 	if session.state == sessionActive {
 		session.activePlan = plan
@@ -345,7 +346,7 @@ func (session *Session) setActivePlan(plan *endpoint.CompilePlan) {
 	session.mu.Unlock()
 }
 
-func (session *Session) clearActivePlan(plan *endpoint.CompilePlan) {
+func (session *Session) clearActivePlan(plan endpoint.DispatchPlan) {
 	session.mu.Lock()
 	if session.activePlan == plan {
 		session.activePlan = nil

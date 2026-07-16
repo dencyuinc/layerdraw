@@ -13,7 +13,9 @@ import type {
   CompileInput,
   CompileResponseEnvelope,
   CompileResult,
+  WorkbenchFailure,
 } from "@layerdraw/protocol/engine";
+import type * as EngineProtocol from "@layerdraw/protocol/engine";
 import { snapshotSafeDetails } from "./internal/safe-details.js";
 
 export type EngineClientState =
@@ -62,6 +64,10 @@ export interface CompileOptions {
   readonly requestId?: string;
   readonly signal?: EngineAbortSignal;
   readonly timeoutMs?: number;
+}
+
+export interface WorkbenchOptions extends CompileOptions {
+  readonly blobs?: readonly CompileRequestBlob[];
 }
 
 export interface OutputBlob {
@@ -142,8 +148,114 @@ export type CompileOutcome =
       blobs: readonly [];
     }>;
 
+type WorkbenchResponseBase = Readonly<{
+  diagnostics: readonly unknown[];
+  engine_release: string;
+  failure?: WorkbenchFailure;
+  outcome: "success" | "rejected" | "failed" | "cancelled";
+  payload?: unknown;
+  protocol: { readonly name: "engine"; readonly version: "1.0" };
+  request_id: string;
+}>;
+
+export type WorkbenchOutcome<TResponse extends WorkbenchResponseBase> =
+  | Readonly<{
+      origin: "engine";
+      outcome: TResponse["outcome"];
+      response: TResponse;
+      blobs: readonly OutputBlob[];
+    }>
+  | Readonly<{
+      origin: "client";
+      outcome: "cancelled";
+      requestId: string;
+      endpointGeneration: number;
+      reason: ClientCancellationReason;
+      blobs: readonly [];
+    }>;
+
+export interface EngineWorkbenchClient {
+  applyToHandle(
+    input: EngineProtocol.ApplyToHandleInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ApplyToHandleResponseEnvelope>>;
+  closeDocument(
+    input: EngineProtocol.CloseDocumentInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.CloseDocumentResponseEnvelope>>;
+  findSymbols(
+    input: EngineProtocol.FindSymbolsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FindSymbolsResponseEnvelope>>;
+  findUsages(
+    input: EngineProtocol.FindUsagesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FindUsagesResponseEnvelope>>;
+  formatScope(
+    input: EngineProtocol.FormatScopeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FormatScopeResponseEnvelope>>;
+  getNeighbors(
+    input: EngineProtocol.GetNeighborsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.GetNeighborsResponseEnvelope>>;
+  inspectSubgraph(
+    input: EngineProtocol.InspectSubgraphInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.InspectSubgraphResponseEnvelope>>;
+  listModules(
+    input: EngineProtocol.ListModulesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ListModulesResponseEnvelope>>;
+  listReferences(
+    input: EngineProtocol.ListReferencesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ListReferencesResponseEnvelope>>;
+  openDocument(
+    input: EngineProtocol.OpenDocumentInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.OpenDocumentResponseEnvelope>>;
+  organizeWorkspace(
+    input: EngineProtocol.OrganizeWorkspaceInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.OrganizeWorkspaceResponseEnvelope>>;
+  previewFragment(
+    input: EngineProtocol.PreviewFragmentInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PreviewFragmentResponseEnvelope>>;
+  previewSourcePatch(
+    input: EngineProtocol.PreviewSourcePatchInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PreviewSourcePatchResponseEnvelope>>;
+  readDeclarations(
+    input: EngineProtocol.ReadDeclarationsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadDeclarationsResponseEnvelope>>;
+  readModules(
+    input: EngineProtocol.ReadModulesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadModulesResponseEnvelope>>;
+  readReferences(
+    input: EngineProtocol.ReadReferencesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadReferencesResponseEnvelope>>;
+  readRows(
+    input: EngineProtocol.ReadRowsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadRowsResponseEnvelope>>;
+  readScope(
+    input: EngineProtocol.ReadScopeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadScopeResponseEnvelope>>;
+  replaceSourceTree(
+    input: EngineProtocol.ReplaceSourceTreeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReplaceSourceTreeResponseEnvelope>>;
+}
+
 export interface EngineClient {
   readonly state: EngineClientState;
+  readonly workbench: EngineWorkbenchClient;
   getEndpoint(): EngineEndpointSnapshot;
   getCapabilities(): CapabilityManifest;
   hasCapability(capability: CapabilityID): boolean;

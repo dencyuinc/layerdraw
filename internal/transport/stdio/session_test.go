@@ -93,6 +93,49 @@ func TestSessionCompileBeforeHandshakeUsesGeneratedFailure(t *testing.T) {
 	}
 }
 
+func TestSessionWorkbenchOpenDocumentUsesGeneratedOperationEnvelope(t *testing.T) {
+	t.Parallel()
+	source := []byte("project p \"Project\" {}\n")
+	request := sessionOpenDocument("open-1", "source", source)
+	input := marshalFrames(t,
+		controlFrame(t, 1, sessionHandshake("hs")),
+		controlFrame(t, 2, request),
+		Frame{Kind: KindBlobChunk, Flags: FlagFinal, StreamID: 2, Sequence: 1, Name: []byte("source"), Payload: source},
+		Frame{Kind: KindBundleEnd, StreamID: 2, Sequence: 2},
+		Frame{Kind: KindClose},
+	)
+	var output bytes.Buffer
+	if err := Serve(context.Background(), bytes.NewReader(input), &output, sessionConfig(t, SessionLimits{})); err != nil {
+		t.Fatal(err)
+	}
+	frames := decodeFrames(t, output.Bytes())
+	ready, terminal := false, false
+	for _, frame := range frames {
+		if frame.StreamID != 2 {
+			continue
+		}
+		switch frame.Kind {
+		case KindRequestReady:
+			ready = true
+		case KindResponseControl:
+			terminal = true
+			response, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(frame.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.RequestID != "open-1" || response.Outcome != protocolcommon.OutcomeSuccess || response.Payload == nil {
+				t.Fatalf("open response = %+v", response)
+			}
+			if response.Payload.DocumentHandle.Value == "" || response.Payload.DocumentGeneration.Value == "" {
+				t.Fatalf("open payload omitted document identity: %+v", response.Payload)
+			}
+		}
+	}
+	if !ready || !terminal {
+		t.Fatalf("open_document did not complete through upload/response frames: %#v", frames)
+	}
+}
+
 func TestSessionSecondHandshakeEndsGeneration(t *testing.T) {
 	t.Parallel()
 	source := []byte("project p \"Project\" {}\n")
@@ -686,7 +729,11 @@ func TestSessionCommittedExecutionWinsLateFramingBeforeJoin(t *testing.T) {
 		t.Fatalf("execute = %+v, %v", response, err)
 	}
 	stream.terminal.claimExecution(response)
-	result := dispatchResult{stream: stream, response: response, blobs: sink.take()}
+	encodedResponse, ok := dispatchResponse(response)
+	if !ok {
+		t.Fatal("compile response did not encode")
+	}
+	result := dispatchResult{stream: stream, response: encodedResponse, blobs: sink.take()}
 	if err := s.failCorrelatedStream(stream); err != nil {
 		t.Fatal(err)
 	}
@@ -842,9 +889,9 @@ func TestSessionPostExecuteGapPublishesExactWinningTerminal(t *testing.T) {
 func TestTerminalArbiterLinearizesConcurrentEventsExactlyOnce(t *testing.T) {
 	for iteration := 0; iteration < 1_000; iteration++ {
 		var arbiter terminalArbiter
-		execution := engineprotocol.CompileResponseEnvelope{RequestID: "execution"}
-		cancellation := engineprotocol.CompileResponseEnvelope{RequestID: "cancellation"}
-		transport := engineprotocol.CompileResponseEnvelope{RequestID: "transport"}
+		execution := dispatchResponseForTest("execution")
+		cancellation := dispatchResponseForTest("cancellation")
+		transport := dispatchResponseForTest("transport")
 		start := make(chan struct{})
 		claims := make(chan bool, 3)
 		var workers sync.WaitGroup
@@ -1227,6 +1274,19 @@ func sessionCompile(requestID, blobID string, source []byte) engineprotocol.Comp
 	}
 }
 
+func sessionOpenDocument(requestID, blobID string, source []byte) engineprotocol.OpenDocumentRequestEnvelope {
+	compile := sessionCompile(requestID, blobID, source)
+	return engineprotocol.OpenDocumentRequestEnvelope{
+		Operation: engineprotocol.OpenDocumentRequestEnvelopeOperationValue,
+		Payload: engineprotocol.OpenDocumentInput{
+			CompileInput:    compile.Payload,
+			RequestedLimits: engineprotocol.WorkbenchLimits{MaxItems: "100", MaxOutputBytes: "1000000"},
+		},
+		Protocol:  engineprotocol.EngineProtocolRef{Name: engineprotocol.EngineProtocolRefNameValue, Version: engineprotocol.EngineProtocolRefVersionValue},
+		RequestID: requestID,
+	}
+}
+
 func sessionPackCompile(t *testing.T, requestID string) (engineprotocol.CompileRequestEnvelope, []byte, []byte) {
 	t.Helper()
 	packSource := []byte("entity_type service \"Service\" {\n  representation shape rect\n}\nexport { service }\n")
@@ -1264,6 +1324,8 @@ func controlFrame(t *testing.T, streamID uint64, value any) Frame {
 		payload, err = engineprotocol.EncodeHandshakeRequestEnvelope(typed)
 	case engineprotocol.CompileRequestEnvelope:
 		payload, err = engineprotocol.EncodeCompileRequestEnvelope(typed)
+	case engineprotocol.OpenDocumentRequestEnvelope:
+		payload, err = engineprotocol.EncodeOpenDocumentRequestEnvelope(typed)
 	default:
 		t.Fatalf("unknown control type %T", value)
 	}

@@ -4,10 +4,48 @@ import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import {
+  decodeApplyToHandleRequestEnvelope,
   decodeCompileRequestEnvelope,
+  decodeCloseDocumentRequestEnvelope,
+  decodeFindSymbolsRequestEnvelope,
+  decodeFindUsagesRequestEnvelope,
+  decodeFormatScopeRequestEnvelope,
+  decodeGetNeighborsRequestEnvelope,
   decodeHandshakeRequestEnvelope,
+  decodeInspectSubgraphRequestEnvelope,
+  decodeListModulesRequestEnvelope,
+  decodeListReferencesRequestEnvelope,
+  decodeOpenDocumentRequestEnvelope,
+  decodeOrganizeWorkspaceRequestEnvelope,
+  decodePreviewFragmentRequestEnvelope,
+  decodePreviewSourcePatchRequestEnvelope,
+  decodeReadDeclarationsRequestEnvelope,
+  decodeReadModulesRequestEnvelope,
+  decodeReadReferencesRequestEnvelope,
+  decodeReadRowsRequestEnvelope,
+  decodeReadScopeRequestEnvelope,
+  decodeReplaceSourceTreeRequestEnvelope,
+  encodeApplyToHandleResponseEnvelope,
   encodeCompileResponseEnvelope,
+  encodeCloseDocumentResponseEnvelope,
+  encodeFindSymbolsResponseEnvelope,
+  encodeFindUsagesResponseEnvelope,
+  encodeFormatScopeResponseEnvelope,
+  encodeGetNeighborsResponseEnvelope,
   encodeHandshakeResponseEnvelope,
+  encodeInspectSubgraphResponseEnvelope,
+  encodeListModulesResponseEnvelope,
+  encodeListReferencesResponseEnvelope,
+  encodeOpenDocumentResponseEnvelope,
+  encodeOrganizeWorkspaceResponseEnvelope,
+  encodePreviewFragmentResponseEnvelope,
+  encodePreviewSourcePatchResponseEnvelope,
+  encodeReadDeclarationsResponseEnvelope,
+  encodeReadModulesResponseEnvelope,
+  encodeReadReferencesResponseEnvelope,
+  encodeReadRowsResponseEnvelope,
+  encodeReadScopeResponseEnvelope,
+  encodeReplaceSourceTreeResponseEnvelope,
 } from "@layerdraw/protocol/engine";
 
 const root = new URL("../../../", import.meta.url);
@@ -258,10 +296,8 @@ export class StrictFakeTransport {
     }
     const control = JSON.parse(decode(input.control));
     const operation = control.operation;
-    const decoded =
-      operation === "engine.handshake"
-        ? decodeHandshakeRequestEnvelope(decode(input.control))
-        : decodeCompileRequestEnvelope(decode(input.control));
+    const controlText = decode(input.control);
+    const decoded = decodeRequestEnvelope(operation, controlText);
     const responseBox = promiseBox();
     const record = { input, decoded, operation, responseBox, cancelCount: 0 };
     this.requests.push(record);
@@ -277,6 +313,21 @@ export class StrictFakeTransport {
           responseBox.resolve({
             control: encode(encodeHandshakeResponseEnvelope(response)),
             blobs: [],
+          });
+          return;
+        }
+        if (operation !== "engine.compile") {
+          const result = await this.factory.workbench(
+            decoded,
+            input.blobs,
+            this.endpointIndex,
+            this,
+            record,
+          );
+          if (result === StrictFakeTransport.PENDING) return;
+          responseBox.resolve({
+            control: encode(encodeWorkbenchResponse(operation, result.response ?? result)),
+            blobs: result.blobs ?? [],
           });
           return;
         }
@@ -341,6 +392,100 @@ export class StrictFakeTransport {
 
 StrictFakeTransport.PENDING = Symbol("pending");
 
+function decodeRequestEnvelope(operation, controlText) {
+  switch (operation) {
+    case "engine.handshake":
+      return decodeHandshakeRequestEnvelope(controlText);
+    case "engine.compile":
+      return decodeCompileRequestEnvelope(controlText);
+    case "engine.apply_to_handle":
+      return decodeApplyToHandleRequestEnvelope(controlText);
+    case "engine.close_document":
+      return decodeCloseDocumentRequestEnvelope(controlText);
+    case "engine.find_symbols":
+      return decodeFindSymbolsRequestEnvelope(controlText);
+    case "engine.find_usages":
+      return decodeFindUsagesRequestEnvelope(controlText);
+    case "engine.format_scope":
+      return decodeFormatScopeRequestEnvelope(controlText);
+    case "engine.get_neighbors":
+      return decodeGetNeighborsRequestEnvelope(controlText);
+    case "engine.inspect_subgraph":
+      return decodeInspectSubgraphRequestEnvelope(controlText);
+    case "engine.open_document":
+      return decodeOpenDocumentRequestEnvelope(controlText);
+    case "engine.list_modules":
+      return decodeListModulesRequestEnvelope(controlText);
+    case "engine.list_references":
+      return decodeListReferencesRequestEnvelope(controlText);
+    case "engine.organize_workspace":
+      return decodeOrganizeWorkspaceRequestEnvelope(controlText);
+    case "engine.preview_fragment":
+      return decodePreviewFragmentRequestEnvelope(controlText);
+    case "engine.preview_source_patch":
+      return decodePreviewSourcePatchRequestEnvelope(controlText);
+    case "engine.read_declarations":
+      return decodeReadDeclarationsRequestEnvelope(controlText);
+    case "engine.read_modules":
+      return decodeReadModulesRequestEnvelope(controlText);
+    case "engine.read_references":
+      return decodeReadReferencesRequestEnvelope(controlText);
+    case "engine.read_rows":
+      return decodeReadRowsRequestEnvelope(controlText);
+    case "engine.read_scope":
+      return decodeReadScopeRequestEnvelope(controlText);
+    case "engine.replace_source_tree":
+      return decodeReplaceSourceTreeRequestEnvelope(controlText);
+    default:
+      throw new Error(`unsupported fake operation ${operation}`);
+  }
+}
+
+function encodeWorkbenchResponse(operation, response) {
+  switch (operation) {
+    case "engine.apply_to_handle":
+      return encodeApplyToHandleResponseEnvelope(response);
+    case "engine.close_document":
+      return encodeCloseDocumentResponseEnvelope(response);
+    case "engine.find_symbols":
+      return encodeFindSymbolsResponseEnvelope(response);
+    case "engine.find_usages":
+      return encodeFindUsagesResponseEnvelope(response);
+    case "engine.format_scope":
+      return encodeFormatScopeResponseEnvelope(response);
+    case "engine.get_neighbors":
+      return encodeGetNeighborsResponseEnvelope(response);
+    case "engine.inspect_subgraph":
+      return encodeInspectSubgraphResponseEnvelope(response);
+    case "engine.open_document":
+      return encodeOpenDocumentResponseEnvelope(response);
+    case "engine.list_modules":
+      return encodeListModulesResponseEnvelope(response);
+    case "engine.list_references":
+      return encodeListReferencesResponseEnvelope(response);
+    case "engine.organize_workspace":
+      return encodeOrganizeWorkspaceResponseEnvelope(response);
+    case "engine.preview_fragment":
+      return encodePreviewFragmentResponseEnvelope(response);
+    case "engine.preview_source_patch":
+      return encodePreviewSourcePatchResponseEnvelope(response);
+    case "engine.read_declarations":
+      return encodeReadDeclarationsResponseEnvelope(response);
+    case "engine.read_modules":
+      return encodeReadModulesResponseEnvelope(response);
+    case "engine.read_references":
+      return encodeReadReferencesResponseEnvelope(response);
+    case "engine.read_rows":
+      return encodeReadRowsResponseEnvelope(response);
+    case "engine.read_scope":
+      return encodeReadScopeResponseEnvelope(response);
+    case "engine.replace_source_tree":
+      return encodeReplaceSourceTreeResponseEnvelope(response);
+    default:
+      throw new Error(`unsupported fake workbench response ${operation}`);
+  }
+}
+
 export async function makeFactory(overrides = {}) {
   const handshakeFixture = await fixture(
     "schemas/fixtures/engine/handshake-success.json",
@@ -390,6 +535,26 @@ export async function makeFactory(overrides = {}) {
     async compile(request) {
       if (overrides.compile) return overrides.compile(...arguments);
       return { response: await rejectedResponse(request.request_id), blobs: [] };
+    },
+    async workbench(request) {
+      if (overrides.workbench) return overrides.workbench(...arguments);
+      return {
+        response: {
+          diagnostics: [],
+          engine_release: "0.0.0-dev",
+          failure: {
+            category: "io",
+            code: "workbench.fake.unimplemented",
+            message: "Fake workbench response is not implemented.",
+            retryable: false,
+            workbench_category: "execution_failed",
+          },
+          outcome: "failed",
+          protocol: { name: "engine", version: "1.0" },
+          request_id: request.request_id,
+        },
+        blobs: [],
+      };
     },
     async cancel(record, transport) {
       if (overrides.cancel) return overrides.cancel(record, transport);

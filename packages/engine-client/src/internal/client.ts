@@ -19,17 +19,84 @@ import type {
   CompileResponseEnvelope,
   HandshakeRequestEnvelope,
   HandshakeResponseEnvelope,
+  ListModulesInput,
+  ListModulesRequestEnvelope,
+  ListModulesResponseEnvelope,
+  OpenDocumentInput,
+  OpenDocumentRequestEnvelope,
+  OpenDocumentResponseEnvelope,
+  ReadModulesInput,
+  ReadModulesRequestEnvelope,
+  ReadModulesResponseEnvelope,
 } from "@layerdraw/protocol/engine";
 import {
+  decodeApplyToHandleResponseEnvelope,
   decodeCompileInput,
   decodeCompileResponseEnvelope,
+  decodeCloseDocumentResponseEnvelope,
+  decodeFindSymbolsResponseEnvelope,
+  decodeFindUsagesResponseEnvelope,
+  decodeFormatScopeResponseEnvelope,
+  decodeGetNeighborsResponseEnvelope,
   decodeHandshakeResponseEnvelope,
+  decodeInspectSubgraphResponseEnvelope,
+  decodeListModulesResponseEnvelope,
+  decodeListReferencesResponseEnvelope,
+  decodeOpenDocumentResponseEnvelope,
+  decodeOrganizeWorkspaceResponseEnvelope,
+  decodePreviewFragmentResponseEnvelope,
+  decodePreviewSourcePatchResponseEnvelope,
+  decodeReadDeclarationsResponseEnvelope,
+  decodeReadModulesResponseEnvelope,
+  decodeReadReferencesResponseEnvelope,
+  decodeReadRowsResponseEnvelope,
+  decodeReadScopeResponseEnvelope,
+  decodeReplaceSourceTreeResponseEnvelope,
+  encodeApplyToHandleRequestEnvelope,
   encodeCompileInput,
   encodeCompileRequestEnvelope,
+  encodeCloseDocumentRequestEnvelope,
+  encodeFindSymbolsRequestEnvelope,
+  encodeFindUsagesRequestEnvelope,
+  encodeFormatScopeRequestEnvelope,
+  encodeGetNeighborsRequestEnvelope,
   encodeHandshakeRequestEnvelope,
+  encodeInspectSubgraphRequestEnvelope,
+  encodeListModulesRequestEnvelope,
+  encodeListReferencesRequestEnvelope,
+  encodeOpenDocumentRequestEnvelope,
+  encodeOrganizeWorkspaceRequestEnvelope,
+  encodePreviewFragmentRequestEnvelope,
+  encodePreviewSourcePatchRequestEnvelope,
+  encodeReadDeclarationsRequestEnvelope,
+  encodeReadModulesRequestEnvelope,
+  encodeReadReferencesRequestEnvelope,
+  encodeReadRowsRequestEnvelope,
+  encodeReadScopeRequestEnvelope,
+  encodeReplaceSourceTreeRequestEnvelope,
+  isApplyToHandleInput,
+  isCloseDocumentInput,
   isCompileInput,
+  isFindSymbolsInput,
+  isFindUsagesInput,
+  isFormatScopeInput,
+  isGetNeighborsInput,
+  isInspectSubgraphInput,
+  isListModulesInput,
+  isListReferencesInput,
+  isOpenDocumentInput,
+  isOrganizeWorkspaceInput,
+  isPreviewFragmentInput,
+  isPreviewSourcePatchInput,
+  isReadDeclarationsInput,
+  isReadModulesInput,
+  isReadReferencesInput,
+  isReadRowsInput,
+  isReadScopeInput,
+  isReplaceSourceTreeInput,
   schemaDigest,
 } from "@layerdraw/protocol/engine";
+import type * as EngineProtocol from "@layerdraw/protocol/engine";
 import {
   EngineClientBackpressureError,
   EngineClientDecodeError,
@@ -40,6 +107,7 @@ import {
   type ClientCancellationReason,
   type CompileOptions,
   type CompileOutcome,
+  type CompileRequestBlob,
   type CompileSuccessResponse,
   type EngineAbortSignal,
   type EngineClient,
@@ -49,6 +117,8 @@ import {
   type EngineEndpointSnapshot,
   type OutputBlob,
   type PortableCompileRequest,
+  type WorkbenchOptions,
+  type WorkbenchOutcome,
 } from "../index.js";
 import {
   blobRefFingerprint,
@@ -398,6 +468,32 @@ type CompileTerminal =
   | Readonly<{ kind: "invalid"; error: unknown }>
   | Readonly<{ kind: "rejected"; error: unknown }>;
 
+type WorkbenchEnvelope =
+  | EngineProtocol.ApplyToHandleResponseEnvelope
+  | EngineProtocol.CloseDocumentResponseEnvelope
+  | EngineProtocol.FindSymbolsResponseEnvelope
+  | EngineProtocol.FindUsagesResponseEnvelope
+  | EngineProtocol.FormatScopeResponseEnvelope
+  | EngineProtocol.GetNeighborsResponseEnvelope
+  | EngineProtocol.InspectSubgraphResponseEnvelope
+  | OpenDocumentResponseEnvelope
+  | ListModulesResponseEnvelope
+  | EngineProtocol.ListReferencesResponseEnvelope
+  | EngineProtocol.OrganizeWorkspaceResponseEnvelope
+  | EngineProtocol.PreviewFragmentResponseEnvelope
+  | EngineProtocol.PreviewSourcePatchResponseEnvelope
+  | EngineProtocol.ReadDeclarationsResponseEnvelope
+  | ReadModulesResponseEnvelope
+  | EngineProtocol.ReadReferencesResponseEnvelope
+  | EngineProtocol.ReadRowsResponseEnvelope
+  | EngineProtocol.ReadScopeResponseEnvelope
+  | EngineProtocol.ReplaceSourceTreeResponseEnvelope;
+
+type WorkbenchTerminal<T extends WorkbenchEnvelope> =
+  | Readonly<{ kind: "valid"; outcome: WorkbenchOutcome<T> }>
+  | Readonly<{ kind: "invalid"; error: unknown }>
+  | Readonly<{ kind: "rejected"; error: unknown }>;
+
 interface Deferred<T> {
   readonly promise: Promise<T>;
   readonly settled: boolean;
@@ -607,6 +703,103 @@ class EngineClientImplementation implements EngineClient {
     TransportShutdownRecord
   >();
   private _state: EngineClientState = "failed";
+  readonly workbench = Object.freeze({
+    applyToHandle: (
+      input: EngineProtocol.ApplyToHandleInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ApplyToHandleResponseEnvelope>> =>
+      this.applyToHandle(input, options),
+    closeDocument: (
+      input: EngineProtocol.CloseDocumentInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.CloseDocumentResponseEnvelope>> =>
+      this.closeDocument(input, options),
+    findSymbols: (
+      input: EngineProtocol.FindSymbolsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.FindSymbolsResponseEnvelope>> =>
+      this.findSymbols(input, options),
+    findUsages: (
+      input: EngineProtocol.FindUsagesInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.FindUsagesResponseEnvelope>> =>
+      this.findUsages(input, options),
+    formatScope: (
+      input: EngineProtocol.FormatScopeInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.FormatScopeResponseEnvelope>> =>
+      this.formatScope(input, options),
+    getNeighbors: (
+      input: EngineProtocol.GetNeighborsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.GetNeighborsResponseEnvelope>> =>
+      this.getNeighbors(input, options),
+    inspectSubgraph: (
+      input: EngineProtocol.InspectSubgraphInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.InspectSubgraphResponseEnvelope>> =>
+      this.inspectSubgraph(input, options),
+    listModules: (
+      input: ListModulesInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<ListModulesResponseEnvelope>> =>
+      this.listModules(input, options),
+    listReferences: (
+      input: EngineProtocol.ListReferencesInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ListReferencesResponseEnvelope>> =>
+      this.listReferences(input, options),
+    openDocument: (
+      input: OpenDocumentInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>> =>
+      this.openDocument(input, options),
+    organizeWorkspace: (
+      input: EngineProtocol.OrganizeWorkspaceInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.OrganizeWorkspaceResponseEnvelope>> =>
+      this.organizeWorkspace(input, options),
+    previewFragment: (
+      input: EngineProtocol.PreviewFragmentInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.PreviewFragmentResponseEnvelope>> =>
+      this.previewFragment(input, options),
+    previewSourcePatch: (
+      input: EngineProtocol.PreviewSourcePatchInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.PreviewSourcePatchResponseEnvelope>> =>
+      this.previewSourcePatch(input, options),
+    readDeclarations: (
+      input: EngineProtocol.ReadDeclarationsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReadDeclarationsResponseEnvelope>> =>
+      this.readDeclarations(input, options),
+    readModules: (
+      input: ReadModulesInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<ReadModulesResponseEnvelope>> =>
+      this.readModules(input, options),
+    readReferences: (
+      input: EngineProtocol.ReadReferencesInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReadReferencesResponseEnvelope>> =>
+      this.readReferences(input, options),
+    readRows: (
+      input: EngineProtocol.ReadRowsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReadRowsResponseEnvelope>> =>
+      this.readRows(input, options),
+    readScope: (
+      input: EngineProtocol.ReadScopeInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReadScopeResponseEnvelope>> =>
+      this.readScope(input, options),
+    replaceSourceTree: (
+      input: EngineProtocol.ReplaceSourceTreeInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReplaceSourceTreeResponseEnvelope>> =>
+      this.replaceSourceTree(input, options),
+  });
 
   constructor(
     factory: AdmittedTransportFactory,
@@ -715,6 +908,208 @@ class EngineClientImplementation implements EngineClient {
       if (this.active === active) this.active = undefined;
     }).catch(() => undefined);
     return promise;
+  }
+
+  private openDocument(
+    input: OpenDocumentInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>> {
+    if (!isOpenDocumentInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation(
+      "engine.open_document",
+      input,
+      options,
+      (envelope) => encodeOpenDocumentRequestEnvelope(envelope as OpenDocumentRequestEnvelope),
+      decodeOpenDocumentResponseEnvelope,
+    );
+  }
+
+  private applyToHandle(
+    input: EngineProtocol.ApplyToHandleInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ApplyToHandleResponseEnvelope>> {
+    if (!isApplyToHandleInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.apply_to_handle", input, options, (envelope) =>
+      encodeApplyToHandleRequestEnvelope(envelope as EngineProtocol.ApplyToHandleRequestEnvelope),
+    decodeApplyToHandleResponseEnvelope);
+  }
+
+  private closeDocument(
+    input: EngineProtocol.CloseDocumentInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.CloseDocumentResponseEnvelope>> {
+    if (!isCloseDocumentInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.close_document", input, options, (envelope) =>
+      encodeCloseDocumentRequestEnvelope(envelope as EngineProtocol.CloseDocumentRequestEnvelope),
+    decodeCloseDocumentResponseEnvelope);
+  }
+
+  private findSymbols(
+    input: EngineProtocol.FindSymbolsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FindSymbolsResponseEnvelope>> {
+    if (!isFindSymbolsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.find_symbols", input, options, (envelope) =>
+      encodeFindSymbolsRequestEnvelope(envelope as EngineProtocol.FindSymbolsRequestEnvelope),
+    decodeFindSymbolsResponseEnvelope);
+  }
+
+  private findUsages(
+    input: EngineProtocol.FindUsagesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FindUsagesResponseEnvelope>> {
+    if (!isFindUsagesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.find_usages", input, options, (envelope) =>
+      encodeFindUsagesRequestEnvelope(envelope as EngineProtocol.FindUsagesRequestEnvelope),
+    decodeFindUsagesResponseEnvelope);
+  }
+
+  private formatScope(
+    input: EngineProtocol.FormatScopeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FormatScopeResponseEnvelope>> {
+    if (!isFormatScopeInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.format_scope", input, options, (envelope) =>
+      encodeFormatScopeRequestEnvelope(envelope as EngineProtocol.FormatScopeRequestEnvelope),
+    decodeFormatScopeResponseEnvelope);
+  }
+
+  private getNeighbors(
+    input: EngineProtocol.GetNeighborsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.GetNeighborsResponseEnvelope>> {
+    if (!isGetNeighborsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.get_neighbors", input, options, (envelope) =>
+      encodeGetNeighborsRequestEnvelope(envelope as EngineProtocol.GetNeighborsRequestEnvelope),
+    decodeGetNeighborsResponseEnvelope);
+  }
+
+  private inspectSubgraph(
+    input: EngineProtocol.InspectSubgraphInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.InspectSubgraphResponseEnvelope>> {
+    if (!isInspectSubgraphInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.inspect_subgraph", input, options, (envelope) =>
+      encodeInspectSubgraphRequestEnvelope(envelope as EngineProtocol.InspectSubgraphRequestEnvelope),
+    decodeInspectSubgraphResponseEnvelope);
+  }
+
+  private listModules(
+    input: ListModulesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<ListModulesResponseEnvelope>> {
+    if (!isListModulesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation(
+      "engine.list_modules",
+      input,
+      options,
+      (envelope) => encodeListModulesRequestEnvelope(envelope as ListModulesRequestEnvelope),
+      decodeListModulesResponseEnvelope,
+    );
+  }
+
+  private listReferences(
+    input: EngineProtocol.ListReferencesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ListReferencesResponseEnvelope>> {
+    if (!isListReferencesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.list_references", input, options, (envelope) =>
+      encodeListReferencesRequestEnvelope(envelope as EngineProtocol.ListReferencesRequestEnvelope),
+    decodeListReferencesResponseEnvelope);
+  }
+
+  private organizeWorkspace(
+    input: EngineProtocol.OrganizeWorkspaceInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.OrganizeWorkspaceResponseEnvelope>> {
+    if (!isOrganizeWorkspaceInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.organize_workspace", input, options, (envelope) =>
+      encodeOrganizeWorkspaceRequestEnvelope(envelope as EngineProtocol.OrganizeWorkspaceRequestEnvelope),
+    decodeOrganizeWorkspaceResponseEnvelope);
+  }
+
+  private previewFragment(
+    input: EngineProtocol.PreviewFragmentInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PreviewFragmentResponseEnvelope>> {
+    if (!isPreviewFragmentInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.preview_fragment", input, options, (envelope) =>
+      encodePreviewFragmentRequestEnvelope(envelope as EngineProtocol.PreviewFragmentRequestEnvelope),
+    decodePreviewFragmentResponseEnvelope);
+  }
+
+  private previewSourcePatch(
+    input: EngineProtocol.PreviewSourcePatchInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PreviewSourcePatchResponseEnvelope>> {
+    if (!isPreviewSourcePatchInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.preview_source_patch", input, options, (envelope) =>
+      encodePreviewSourcePatchRequestEnvelope(envelope as EngineProtocol.PreviewSourcePatchRequestEnvelope),
+    decodePreviewSourcePatchResponseEnvelope);
+  }
+
+  private readDeclarations(
+    input: EngineProtocol.ReadDeclarationsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadDeclarationsResponseEnvelope>> {
+    if (!isReadDeclarationsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.read_declarations", input, options, (envelope) =>
+      encodeReadDeclarationsRequestEnvelope(envelope as EngineProtocol.ReadDeclarationsRequestEnvelope),
+    decodeReadDeclarationsResponseEnvelope);
+  }
+
+  private readModules(
+    input: ReadModulesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<ReadModulesResponseEnvelope>> {
+    if (!isReadModulesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation(
+      "engine.read_modules",
+      input,
+      options,
+      (envelope) => encodeReadModulesRequestEnvelope(envelope as ReadModulesRequestEnvelope),
+      decodeReadModulesResponseEnvelope,
+    );
+  }
+
+  private readReferences(
+    input: EngineProtocol.ReadReferencesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadReferencesResponseEnvelope>> {
+    if (!isReadReferencesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.read_references", input, options, (envelope) =>
+      encodeReadReferencesRequestEnvelope(envelope as EngineProtocol.ReadReferencesRequestEnvelope),
+    decodeReadReferencesResponseEnvelope);
+  }
+
+  private readRows(
+    input: EngineProtocol.ReadRowsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadRowsResponseEnvelope>> {
+    if (!isReadRowsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.read_rows", input, options, (envelope) =>
+      encodeReadRowsRequestEnvelope(envelope as EngineProtocol.ReadRowsRequestEnvelope),
+    decodeReadRowsResponseEnvelope);
+  }
+
+  private readScope(
+    input: EngineProtocol.ReadScopeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadScopeResponseEnvelope>> {
+    if (!isReadScopeInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.read_scope", input, options, (envelope) =>
+      encodeReadScopeRequestEnvelope(envelope as EngineProtocol.ReadScopeRequestEnvelope),
+    decodeReadScopeResponseEnvelope);
+  }
+
+  private replaceSourceTree(
+    input: EngineProtocol.ReplaceSourceTreeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReplaceSourceTreeResponseEnvelope>> {
+    if (!isReplaceSourceTreeInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.replace_source_tree", input, options, (envelope) =>
+      encodeReplaceSourceTreeRequestEnvelope(envelope as EngineProtocol.ReplaceSourceTreeRequestEnvelope),
+    decodeReplaceSourceTreeResponseEnvelope);
   }
 
   restart(): Promise<void> {
@@ -982,6 +1377,150 @@ class EngineClientImplementation implements EngineClient {
     });
   }
 
+  private prepareWorkbenchMetadata(
+    payload: unknown,
+    rawBlobs: readonly CompileRequestBlob[],
+    limits: InternalTransportLimits,
+  ): readonly Readonly<{
+    ref: BlobRef;
+    bytes: Uint8Array | ArrayBuffer;
+    ownership: "copy" | "transfer";
+    byteLength: number;
+  }>[] {
+    let collected: readonly BlobRef[];
+    try {
+      collected = validateCollectedRefs(collectBlobRefsDeep(payload), true);
+    } catch (error) {
+      if (error instanceof EngineClientInputError) throw error;
+      throw new EngineClientInputError("INVALID_BLOB_TABLE");
+    }
+    const expected = uniqueRefs(collected, "input");
+    if (!strictArray(rawBlobs)) {
+      throw new EngineClientInputError("INVALID_BLOB_TABLE");
+    }
+    if (rawBlobs.length !== expected.size) {
+      throw new EngineClientInputError(
+        "INVALID_BLOB_TABLE",
+        safeCountDetails("blobCount", rawBlobs.length, expected.size),
+      );
+    }
+    if (rawBlobs.length > limits.maxBuffers) {
+      throw new EngineClientInputError(
+        "LIMIT_EXCEEDED",
+        safeCountDetails("blobCount", rawBlobs.length, limits.maxBuffers),
+      );
+    }
+    const seen = new Set<string>();
+    const seenBuffers = new Set<ArrayBuffer>();
+    const attachments: Array<Readonly<{
+      ref: BlobRef;
+      bytes: Uint8Array | ArrayBuffer;
+      ownership: "copy" | "transfer";
+      byteLength: number;
+    }>> = [];
+    let totalBytes = 0;
+    for (const raw of rawBlobs) {
+      const blob = dataObject(raw, ["ref", "bytes"], ["ownership"]);
+      if (blob === undefined) {
+        throw new EngineClientInputError("INVALID_BLOB_TABLE");
+      }
+      if (!isBlobRef(blob.ref) || blob.ref.lifetime !== "request") {
+        throw new EngineClientInputError("INVALID_BLOB_TABLE");
+      }
+      const candidateRef = blob.ref;
+      const wanted = expected.get(candidateRef.blob_id);
+      if (
+        wanted === undefined ||
+        seen.has(wanted.blob_id) ||
+        blobRefFingerprint(candidateRef) !== blobRefFingerprint(wanted)
+      ) {
+        throw new EngineClientInputError("INVALID_BLOB_TABLE");
+      }
+      if ((utf8ByteLength(wanted.blob_id) ?? Infinity) > limits.maxBlobIdBytes) {
+        throw new EngineClientInputError("LIMIT_EXCEEDED");
+      }
+      const ownership = blob.ownership ?? "copy";
+      let byteLength: number | undefined;
+      let sourceBuffer: ArrayBuffer | undefined;
+      if (ownership === "copy") {
+        const source = uint8ViewSource(blob.bytes);
+        byteLength = source?.byteLength;
+        sourceBuffer = source?.buffer;
+      } else if (ownership === "transfer") {
+        byteLength = fixedArrayBufferByteLength(blob.bytes);
+        sourceBuffer = blob.bytes as ArrayBuffer;
+      } else {
+        throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
+      }
+      if (
+        byteLength === undefined ||
+        sourceBuffer === undefined ||
+        seenBuffers.has(sourceBuffer)
+      ) {
+        throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
+      }
+      seenBuffers.add(sourceBuffer);
+      if (BigInt(wanted.size) !== BigInt(byteLength)) {
+        throw new EngineClientInputError("BLOB_SIZE_MISMATCH", {
+          blobCount: expected.size,
+        });
+      }
+      if (byteLength > limits.maxInputBlobBytes) {
+        throw new EngineClientInputError("LIMIT_EXCEEDED");
+      }
+      totalBytes += byteLength;
+      if (!Number.isSafeInteger(totalBytes) || totalBytes > limits.maxInputTotalBytes) {
+        throw new EngineClientInputError("LIMIT_EXCEEDED");
+      }
+      seen.add(wanted.blob_id);
+      attachments.push({
+        ref: wanted,
+        bytes: blob.bytes as Uint8Array | ArrayBuffer,
+        ownership,
+        byteLength,
+      });
+    }
+    if (seen.size !== expected.size) {
+      throw new EngineClientInputError("INVALID_BLOB_TABLE");
+    }
+    return Object.freeze(attachments);
+  }
+
+  private takeWorkbenchBytes(
+    attachments: ReturnType<EngineClientImplementation["prepareWorkbenchMetadata"]>,
+    limits: InternalTransportLimits,
+  ): readonly OwnedRequestBlob[] {
+    const blobs: OwnedRequestBlob[] = [];
+    let totalBytes = 0;
+    for (const attachment of attachments) {
+      let bytes: ArrayBuffer;
+      try {
+        if (attachment.ownership === "transfer") {
+          bytes = this.runtime.transferArrayBuffer(attachment.bytes as ArrayBuffer);
+        } else {
+          const source = uint8ViewSource(attachment.bytes);
+          if (source === undefined) {
+            throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
+          }
+          const copy = new Uint8Array(source.byteLength);
+          copy.set(
+            new Uint8Array(source.buffer, source.byteOffset, source.byteLength),
+          );
+          bytes = copy.buffer;
+        }
+      } catch (error) {
+        if (error instanceof EngineClientInputError) throw error;
+        throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
+      }
+      totalBytes += attachment.byteLength;
+      blobs.push({ ref: attachment.ref, bytes });
+    }
+    if (totalBytes > limits.maxInputTotalBytes) {
+      throw new EngineClientBackpressureError("BYTE_BUDGET_EXCEEDED");
+    }
+    return Object.freeze(blobs);
+  }
+
   private async executeCompile(
     active: ActiveCompile,
     endpoint: EndpointContext,
@@ -1122,6 +1661,235 @@ class EngineClientImplementation implements EngineClient {
         throw await this.replaceForFault(winner.error, active);
       }
 
+      await digests.abortAndJoin();
+      active.joined.resolve();
+      return winner.outcome;
+    } finally {
+      removeAbort?.();
+      if (timer !== undefined) this.runtime.clearTimer(timer);
+      await digests.abortAndJoin();
+      active.joined.resolve();
+    }
+  }
+
+  private executeWorkbenchOperation<TResponse extends WorkbenchEnvelope>(
+    operation: string,
+    payload: unknown,
+    options: WorkbenchOptions | undefined,
+    encodeEnvelope: (envelope: {
+      deadline_at: string;
+      operation: string;
+      payload: unknown;
+      protocol: typeof ENGINE_PROTOCOL;
+      request_id: string;
+    }) => string,
+    decodeEnvelope: (text: string) => TResponse,
+  ): Promise<WorkbenchOutcome<TResponse>> {
+    const endpoint = this.readyEndpoint();
+    if (!endpointSupportsOperation(endpoint, operation)) {
+      throw new EngineClientStateError("NOT_READY", { capability: operation });
+    }
+    let normalized: NormalizedCompileOptions;
+    let workbenchBlobs: readonly CompileRequestBlob[];
+    try {
+      const prepared = normalizeWorkbenchOptions(options, this.options);
+      normalized = prepared.normalized;
+      workbenchBlobs = prepared.blobs;
+    } catch (error) {
+      throw inputFault(error);
+    }
+    const requestId = normalized.requestId ?? this.nextRequestId();
+    if (this.active?.requestId === requestId) {
+      throw new EngineClientStateError("DUPLICATE_REQUEST_ID", { requestId });
+    }
+    if (this.active !== undefined) {
+      throw new EngineClientBackpressureError("SINGLE_FLIGHT_BUSY", {
+        generation: endpoint.generation,
+      });
+    }
+    if (normalized.signal !== undefined && signalAborted(normalized.signal)) {
+      return Promise.resolve(
+        deepFreeze({
+          origin: "client",
+          outcome: "cancelled",
+          requestId,
+          endpointGeneration: endpoint.generation,
+          reason: "signal",
+          blobs: [] as const,
+        }),
+      );
+    }
+    const active: ActiveCompile = {
+      requestId,
+      generation: endpoint.generation,
+      interrupt: deferred<CompileInterrupt>(),
+      joined: deferred<void>(),
+    };
+    this.active = active;
+    let prepared: readonly OwnedRequestBlob[];
+    try {
+      const metadata = this.prepareWorkbenchMetadata(payload, workbenchBlobs, endpoint.limits);
+      prepared = this.takeWorkbenchBytes(metadata, endpoint.limits);
+    } catch (error) {
+      if (this.active === active) this.active = undefined;
+      throw error;
+    }
+    const promise = this.executeWorkbench(
+      active,
+      endpoint,
+      operation,
+      payload,
+      prepared,
+      normalized,
+      encodeEnvelope,
+      decodeEnvelope,
+    );
+    void promise.finally(() => {
+      if (this.active === active) this.active = undefined;
+    }).catch(() => undefined);
+    return promise;
+  }
+
+  private async executeWorkbench<TResponse extends WorkbenchEnvelope>(
+    active: ActiveCompile,
+    endpoint: EndpointContext,
+    operation: string,
+    payload: unknown,
+    requestBlobs: readonly OwnedRequestBlob[],
+    options: NormalizedCompileOptions,
+    encodeEnvelope: (envelope: {
+      deadline_at: string;
+      operation: string;
+      payload: unknown;
+      protocol: typeof ENGINE_PROTOCOL;
+      request_id: string;
+    }) => string,
+    decodeEnvelope: (text: string) => TResponse,
+  ): Promise<WorkbenchOutcome<TResponse>> {
+    let timer: InternalTimerHandle | undefined;
+    let removeAbort: (() => void) | undefined;
+    let exchange: AdmittedExchange | undefined;
+    const digests = new DigestSequence(this.runtime);
+    const deadlineMs = this.runtime.now() + options.timeoutMs;
+    try {
+      timer = this.runtime.setTimer(() => {
+        active.interrupt.resolve({ kind: "cancel", reason: "timeout" });
+      }, options.timeoutMs);
+      if (options.signal !== undefined) {
+        const listener = (): void => {
+          active.interrupt.resolve({ kind: "cancel", reason: "signal" });
+        };
+        try {
+          options.signal.addEventListener("abort", listener, { once: true });
+          removeAbort = (): void => {
+            try {
+              options.signal?.removeEventListener("abort", listener);
+            } catch {
+              // Hostile signal cleanup cannot expose its thrown value.
+            }
+          };
+          if (signalAborted(options.signal)) listener();
+        } catch {
+          throw new EngineClientInputError("INVALID_ARGUMENT");
+        }
+      }
+
+      const beforeSend = await Promise.race([
+        Promise.resolve({ kind: "ready" as const }),
+        active.interrupt.promise,
+      ]);
+      if (beforeSend.kind === "cancel") {
+        active.joined.resolve();
+        if (beforeSend.barrier !== undefined) await beforeSend.barrier;
+        return clientCancellation(active, beforeSend.reason);
+      }
+      if (beforeSend.kind === "fault") {
+        active.joined.resolve();
+        throw await this.replaceForFault(beforeSend.fault, active);
+      }
+
+      const controlText = encodeEnvelope({
+        deadline_at: new Date(deadlineMs).toISOString(),
+        operation,
+        payload,
+        protocol: ENGINE_PROTOCOL,
+        request_id: active.requestId,
+      });
+      validateOutgoingControl(controlText, endpoint.limits);
+      const control = encodeControl(controlText);
+      try {
+        if (endpoint.request === undefined) throw new TypeError("Invalid request");
+        exchange = admitExchange(endpoint.request({
+          exchangeId: this.nextExchangeId(),
+          control,
+          blobs: requestBlobs.map((blob) => ({
+            blobId: blob.ref.blob_id,
+            bytes: blob.bytes,
+          })),
+        }));
+        if (!exchange.valid) throw new TypeError("Invalid exchange");
+      } catch {
+        throw await this.replaceForFault(
+          new EngineClientTransportError("TRANSFER_FAILED"),
+          active,
+        );
+      }
+
+      const terminal = this.observeWorkbenchTerminal(
+        exchange,
+        endpoint,
+        active.requestId,
+        digests,
+        decodeEnvelope,
+      );
+      const winner = await Promise.race([
+        terminal.then((result) =>
+          result.kind === "valid"
+            ? ({ kind: "response" as const, outcome: result.outcome })
+            : ({ kind: "response-fault" as const, error: result.error }),
+        ),
+        active.interrupt.promise,
+      ]);
+      if (winner.kind === "cancel") {
+        await digests.abortAndJoin();
+        const cancelResult = await this.cancelExchange(exchange);
+        const terminalResult = await this.withBound(
+          terminal,
+          this.options.cancelGraceMs,
+          undefined,
+        );
+        const terminalIsInvalid = terminalResult?.kind === "invalid";
+        const reusable =
+          cancelResult.reusable &&
+          !terminalIsInvalid &&
+          terminalResult !== undefined;
+        const engineCancellation =
+          terminalResult?.kind === "valid" &&
+          terminalResult.outcome.origin === "engine" &&
+          terminalResult.outcome.outcome === "cancelled"
+            ? terminalResult.outcome
+            : undefined;
+        active.joined.resolve();
+        if (
+          !reusable &&
+          winner.reason !== "restart" &&
+          winner.reason !== "dispose"
+        ) {
+          await this.replaceAfterCancellation(active);
+        }
+        if (winner.barrier !== undefined) await winner.barrier;
+        return engineCancellation ?? clientCancellation(active, winner.reason);
+      }
+      if (winner.kind === "fault") {
+        await digests.abortAndJoin();
+        active.joined.resolve();
+        throw await this.replaceForFault(winner.fault, active);
+      }
+      if (winner.kind === "response-fault") {
+        await digests.abortAndJoin();
+        active.joined.resolve();
+        throw await this.replaceForFault(winner.error, active);
+      }
       await digests.abortAndJoin();
       active.joined.resolve();
       return winner.outcome;
@@ -1281,6 +2049,131 @@ class EngineClientImplementation implements EngineClient {
       origin: "engine",
       outcome: "success",
       response: envelope as unknown as CompileSuccessResponse,
+      blobs: outputs,
+    });
+  }
+
+  private observeWorkbenchTerminal<TResponse extends WorkbenchEnvelope>(
+    exchange: AdmittedExchange,
+    endpoint: EndpointContext,
+    requestId: string,
+    digests: DigestSequence,
+    decodeEnvelope: (text: string) => TResponse,
+  ): Promise<WorkbenchTerminal<TResponse>> {
+    return exchange.response.then(
+      async (settlement): Promise<WorkbenchTerminal<TResponse>> => {
+        if (settlement.kind !== "fulfilled") {
+          return {
+            kind: "rejected",
+            error: settlement.kind === "rejected"
+              ? settlement.reason
+              : new EngineClientTransportError("TRANSFER_FAILED"),
+          };
+        }
+        try {
+          return {
+            kind: "valid",
+            outcome: await this.decodeWorkbenchOutcome(
+              settlement.value,
+              endpoint,
+              requestId,
+              digests,
+              decodeEnvelope,
+            ),
+          };
+        } catch (error) {
+          return { kind: "invalid", error };
+        }
+      },
+    );
+  }
+
+  private async decodeWorkbenchOutcome<TResponse extends WorkbenchEnvelope>(
+    raw: InternalTransportResponse,
+    endpoint: EndpointContext,
+    requestId: string,
+    digests: DigestSequence,
+    decodeEnvelope: (text: string) => TResponse,
+  ): Promise<WorkbenchOutcome<TResponse>> {
+    const response = validateTransportResponse(raw, endpoint.limits);
+    let envelope: TResponse;
+    try {
+      envelope = decodeEnvelope(
+        decodeControl(response.control, endpoint.limits.maxControlDepth),
+      );
+    } catch {
+      throw new EngineClientDecodeError("MALFORMED_MESSAGE");
+    }
+    if (envelope.request_id !== requestId) {
+      throw new EngineClientDecodeError("CORRELATION_MISMATCH", {
+        generation: endpoint.generation,
+      });
+    }
+    if (
+      envelope.protocol.name !== "engine" ||
+      envelope.protocol.version !== "1.0"
+    ) {
+      throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+    }
+    if (envelope.engine_release !== endpoint.engineRelease) {
+      throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+    }
+    if (envelope.outcome !== "success") {
+      if (response.blobs.length !== 0) {
+        throw new EngineClientDecodeError("UNEXPECTED_BLOB");
+      }
+      return deepFreeze({
+        origin: "engine",
+        outcome: envelope.outcome,
+        response: envelope,
+        blobs: [] as const,
+      });
+    }
+    const expected = uniqueRefs(collectBlobRefsDeep(envelope.payload), "output");
+    if (response.blobs.length < expected.size) {
+      throw new EngineClientDecodeError("MISSING_BLOB");
+    }
+    if (response.blobs.length > expected.size) {
+      throw new EngineClientDecodeError("UNEXPECTED_BLOB");
+    }
+    const received = new Map<string, ArrayBuffer>();
+    for (const blob of response.blobs) {
+      const ref = expected.get(blob.blobId);
+      if (ref === undefined || received.has(blob.blobId)) {
+        throw new EngineClientDecodeError("UNEXPECTED_BLOB");
+      }
+      const length = fixedArrayBufferByteLength(blob.bytes);
+      if (length === undefined || BigInt(ref.size) !== BigInt(length)) {
+        throw new EngineClientDecodeError("OUTPUT_SIZE_MISMATCH");
+      }
+      let owned: ArrayBuffer;
+      try {
+        owned = this.runtime.transferArrayBuffer(blob.bytes);
+      } catch {
+        throw new EngineClientDecodeError("MALFORMED_MESSAGE");
+      }
+      let digestBytes: Uint8Array;
+      try {
+        digestBytes = await digests.sha256(new Uint8Array(owned));
+      } catch {
+        throw new EngineClientTransportError("DIGEST_FAILED");
+      }
+      const digest = bytesToHex(digestBytes);
+      if (`sha256:${digest}` !== ref.digest) {
+        throw new EngineClientDecodeError("OUTPUT_DIGEST_MISMATCH");
+      }
+      received.set(blob.blobId, owned);
+    }
+    const outputs: OutputBlob[] = [];
+    for (const ref of expected.values()) {
+      const bytes = received.get(ref.blob_id);
+      if (bytes === undefined) throw new EngineClientDecodeError("MISSING_BLOB");
+      outputs.push(deepFreeze({ ref, bytes: new Uint8Array(bytes) }));
+    }
+    return deepFreeze({
+      origin: "engine",
+      outcome: "success",
+      response: envelope,
       blobs: outputs,
     });
   }
@@ -1755,6 +2648,38 @@ function normalizeCompileOptions(
   };
 }
 
+function normalizeWorkbenchOptions(
+  input: WorkbenchOptions | undefined,
+  creation: NormalizedCreationOptions,
+): Readonly<{ normalized: NormalizedCompileOptions; blobs: readonly CompileRequestBlob[] }> {
+  if (input === undefined) {
+    return { normalized: { timeoutMs: creation.defaultCompileTimeoutMs }, blobs: [] };
+  }
+  const value = dataObject(input, [], ["requestId", "signal", "timeoutMs", "blobs"]);
+  if (value === undefined) throw new EngineClientInputError("INVALID_ARGUMENT");
+  if (value.requestId !== undefined && !validRequestId(value.requestId)) {
+    throw new EngineClientInputError("INVALID_REQUEST_ID");
+  }
+  if (value.signal !== undefined && !validSignal(value.signal)) {
+    throw new EngineClientInputError("INVALID_ARGUMENT");
+  }
+  if (value.blobs !== undefined && !strictArray(value.blobs)) {
+    throw new EngineClientInputError("INVALID_BLOB_TABLE");
+  }
+  return {
+    normalized: {
+      ...(value.requestId === undefined
+        ? {}
+        : { requestId: value.requestId as string }),
+      ...(value.signal === undefined
+        ? {}
+        : { signal: value.signal as EngineAbortSignal }),
+      timeoutMs: timeoutOption(value.timeoutMs, creation.defaultCompileTimeoutMs),
+    },
+    blobs: value.blobs === undefined ? [] : value.blobs as readonly CompileRequestBlob[],
+  };
+}
+
 function validSignal(value: unknown): value is EngineAbortSignal {
   if (typeof value !== "object" || value === null) return false;
   try {
@@ -1777,10 +2702,22 @@ function signalAborted(signal: EngineAbortSignal): boolean {
   }
 }
 
+function endpointSupportsOperation(endpoint: EndpointContext, operation: string): boolean {
+  const capability = endpoint.snapshot.handshake.capability_manifest.operations[operation];
+  return capability?.enabled === true;
+}
+
 function clientCancellation(
   active: ActiveCompile,
   reason: ClientCancellationReason,
-): CompileOutcome {
+): Readonly<{
+  origin: "client";
+  outcome: "cancelled";
+  requestId: string;
+  endpointGeneration: number;
+  reason: ClientCancellationReason;
+  blobs: readonly [];
+}> {
   return deepFreeze({
     origin: "client",
     outcome: "cancelled",
@@ -1789,6 +2726,29 @@ function clientCancellation(
     reason,
     blobs: [] as const,
   });
+}
+
+function collectBlobRefsDeep(value: unknown): readonly BlobRef[] {
+  const refs: BlobRef[] = [];
+  const visit = (candidate: unknown): void => {
+    if (isBlobRef(candidate)) {
+      refs.push(candidate);
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item);
+      return;
+    }
+    if (
+      typeof candidate === "object" &&
+      candidate !== null &&
+      Object.getPrototypeOf(candidate) === Object.prototype
+    ) {
+      for (const item of Object.values(candidate)) visit(item);
+    }
+  };
+  visit(value);
+  return refs;
 }
 
 function uniqueRefs(

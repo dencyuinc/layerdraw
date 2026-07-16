@@ -19,23 +19,13 @@ func (d *Descriptor) capabilityManifest(clientScoped bool, selected protocolBind
 		manifestScope = protocolcommon.ManifestScopeEffective
 	}
 	manifest := protocolcommon.CapabilityManifest{
-		EmbeddingProfiles: []protocolcommon.ProfileCapability{},
-		ExporterProfiles:  []protocolcommon.ProfileCapability{},
-		Limits:            manifestLimits(d.limits, effective),
-		ManifestEtag:      protocolcommon.ManifestETag("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
-		ManifestScope:     manifestScope,
-		ManifestVersion:   1,
-		Operations: map[string]protocolcommon.OperationCapability{
-			OperationCompile: {
-				Enabled:         true,
-				Limits:          &compileLimits,
-				ProtocolVersion: selected.wireVersion,
-			},
-			OperationHandshake: {
-				Enabled:         true,
-				ProtocolVersion: selected.wireVersion,
-			},
-		},
+		EmbeddingProfiles:         []protocolcommon.ProfileCapability{},
+		ExporterProfiles:          []protocolcommon.ProfileCapability{},
+		Limits:                    manifestLimits(d.limits, effective),
+		ManifestEtag:              protocolcommon.ManifestETag("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+		ManifestScope:             manifestScope,
+		ManifestVersion:           1,
+		Operations:                operationCapabilities(selected.wireVersion, compileLimits),
 		QueryAdapters:             []protocolcommon.ProfileCapability{},
 		RealtimeProfiles:          []protocolcommon.ProfileCapability{},
 		RegistrySources:           []protocolcommon.ProfileCapability{},
@@ -54,6 +44,40 @@ func (d *Descriptor) capabilityManifest(clientScoped bool, selected protocolBind
 		return protocolcommon.CapabilityManifest{}, fmt.Errorf("constructed capability manifest is invalid: %w", err)
 	}
 	return manifest, nil
+}
+
+func operationCapabilities(version protocolcommon.ProtocolVersion, compileLimits protocolcommon.CompileResourceLimitConstraints) map[string]protocolcommon.OperationCapability {
+	operations := map[string]protocolcommon.OperationCapability{}
+	for _, operation := range []string{
+		OperationApplyToHandle,
+		OperationCloseDocument,
+		OperationCompile,
+		OperationFindSymbols,
+		OperationFindUsages,
+		OperationFormatScope,
+		OperationGetNeighbors,
+		OperationHandshake,
+		OperationInspectSubgraph,
+		OperationListModules,
+		OperationListReferences,
+		OperationOpenDocument,
+		OperationOrganizeWorkspace,
+		OperationPreviewFragment,
+		OperationPreviewSourcePatch,
+		OperationReadDeclarations,
+		OperationReadModules,
+		OperationReadReferences,
+		OperationReadRows,
+		OperationReadScope,
+		OperationReplaceSourceTree,
+	} {
+		capability := protocolcommon.OperationCapability{Enabled: true, ProtocolVersion: version}
+		if operation == OperationCompile {
+			capability.Limits = &compileLimits
+		}
+		operations[operation] = capability
+	}
+	return operations
 }
 
 func manifestETag(manifest protocolcommon.CapabilityManifest) (protocolcommon.ManifestETag, error) {

@@ -162,6 +162,428 @@ func TestDispatchCompileProjectSuccessPublishesExactOpaqueArtifacts(t *testing.T
 	}
 }
 
+func TestPrepareDispatchWorkbenchOpenListAndReadModules(t *testing.T) {
+	sourceBytes := []byte(allRecipeDeclarationsFixture)
+	compile := compileRequest(sourceBytes)
+	dispatcher := NewCompileDispatcher(engine.New(engine.BuildInfo{}))
+	negotiated := compileContext(t)
+	source := sourceFor(compile.Payload.ProjectSourceTree[0].Blob, sourceBytes)
+	sink := &memoryBlobSink{}
+
+	openRequest := engineprotocol.OpenDocumentRequestEnvelope{
+		Operation: engineprotocol.OpenDocumentRequestEnvelopeOperationValue,
+		Payload: engineprotocol.OpenDocumentInput{
+			CompileInput:    compile.Payload,
+			RequestedLimits: engineprotocol.WorkbenchLimits{MaxItems: "100", MaxOutputBytes: "1000000"},
+		},
+		Protocol:  bootstrapProtocolRef(),
+		RequestID: "open-dispatch",
+	}
+	openControl, err := engineprotocol.EncodeOpenDocumentRequestEnvelope(openRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err := dispatcher.PrepareDispatch(context.Background(), negotiated, OperationOpenDocument, openControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("open prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	if got := plan.BlobRequirements(); len(got) != 1 || got[0].Ref.BlobID != compile.Payload.ProjectSourceTree[0].Blob.BlobID {
+		t.Fatalf("open blob requirements = %+v", got)
+	}
+	openDispatch, err := plan.ExecuteDispatch(context.Background(), source, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if openDispatch.Operation != OperationOpenDocument || openDispatch.Outcome != protocolcommon.OutcomeSuccess || openDispatch.RequestID != "open-dispatch" {
+		t.Fatalf("open dispatch = %+v", openDispatch)
+	}
+	openResponse, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(openDispatch.Control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if openResponse.Payload == nil || openResponse.Payload.DocumentHandle.Value == "" {
+		t.Fatalf("open response = %+v", openResponse)
+	}
+
+	listRequest := engineprotocol.ListModulesRequestEnvelope{
+		Operation: engineprotocol.ListModulesRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ListModulesInput{
+			DocumentGeneration: openResponse.Payload.DocumentGeneration,
+			Limits:             engineprotocol.WorkbenchLimits{MaxItems: "100", MaxOutputBytes: "1000000"},
+		},
+		Protocol:  bootstrapProtocolRef(),
+		RequestID: "list-dispatch",
+	}
+	listControl, err := engineprotocol.EncodeListModulesRequestEnvelope(listRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err = dispatcher.PrepareDispatch(context.Background(), negotiated, OperationListModules, listControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("list prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	listDispatch, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.BlobRequirements(); got != nil {
+		t.Fatalf("finished list requirements = %+v", got)
+	}
+	if got := plan.AdmissionBudget(); got.RequiredBlobCount != 0 || got.RequiredBlobBytes != 0 {
+		t.Fatalf("finished list budget = %+v", got)
+	}
+	if _, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{}); err == nil {
+		t.Fatal("finished list plan executed twice")
+	}
+	listResponse, err := engineprotocol.DecodeListModulesResponseEnvelope(listDispatch.Control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listResponse.Payload == nil || len(listResponse.Payload.Items) != 1 || listResponse.Payload.Items[0].Module.ModulePath != "document.ldl" {
+		t.Fatalf("list response = %+v", listResponse)
+	}
+
+	readRequest := engineprotocol.ReadModulesRequestEnvelope{
+		Operation: engineprotocol.ReadModulesRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ReadModulesInput{
+			DocumentGeneration: openResponse.Payload.DocumentGeneration,
+			Limits:             engineprotocol.WorkbenchLimits{MaxItems: "100", MaxOutputBytes: "1000000"},
+			Modules:            []semantic.ModuleRef{listResponse.Payload.Items[0].Module},
+		},
+		Protocol:  bootstrapProtocolRef(),
+		RequestID: "read-dispatch",
+	}
+	readControl, err := engineprotocol.EncodeReadModulesRequestEnvelope(readRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err = dispatcher.PrepareDispatch(context.Background(), negotiated, OperationReadModules, readControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("read prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	readSink := &memoryBlobSink{}
+	readDispatch, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, readSink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readResponse, err := engineprotocol.DecodeReadModulesResponseEnvelope(readDispatch.Control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readResponse.Payload == nil || len(readResponse.Payload.Items) != 1 {
+		t.Fatalf("read response = %+v", readResponse)
+	}
+	if readDispatch.Operation != OperationReadModules || readDispatch.RequestID != "read-dispatch" || readDispatch.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("read dispatch = %+v", readDispatch)
+	}
+	if len(readSink.blobs) != 1 || !bytes.Equal(readSink.blobs[0].Bytes, sourceBytes) {
+		t.Fatalf("read blobs = %+v", readSink.blobs)
+	}
+
+	dispatch := func(operation string, control []byte) DispatchResponse {
+		t.Helper()
+		plan, terminal, err := dispatcher.PrepareDispatch(context.Background(), negotiated, operation, control)
+		if err != nil || terminal != nil || plan == nil {
+			t.Fatalf("%s prepare plan=%v terminal=%+v err=%v", operation, plan, terminal, err)
+		}
+		response, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
+		if err != nil {
+			t.Fatalf("%s execute: %v", operation, err)
+		}
+		if response.Operation != operation || response.Outcome != protocolcommon.OutcomeSuccess {
+			t.Fatalf("%s dispatch = %+v", operation, response)
+		}
+		return response
+	}
+	limits := engineprotocol.WorkbenchLimits{MaxItems: "100", MaxOutputBytes: "1000000"}
+	generation := openResponse.Payload.DocumentGeneration
+
+	findControl, err := engineprotocol.EncodeFindSymbolsRequestEnvelope(engineprotocol.FindSymbolsRequestEnvelope{
+		Operation: engineprotocol.FindSymbolsRequestEnvelopeOperationValue,
+		Payload: engineprotocol.FindSymbolsInput{
+			CaseMode: "unicode_simple_fold", DocumentGeneration: generation, Limits: limits, MatchMode: "exact", Query: "ALPHA",
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "find-symbols-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	findResponse, err := engineprotocol.DecodeFindSymbolsResponseEnvelope(dispatch(OperationFindSymbols, findControl).Control)
+	if err != nil || findResponse.Payload == nil || len(findResponse.Payload.Items) != 1 || findResponse.Payload.Items[0].Address != "ldl:project:p:entity:alpha" {
+		t.Fatalf("find symbols response = %+v err=%v", findResponse, err)
+	}
+
+	declarationControl, err := engineprotocol.EncodeReadDeclarationsRequestEnvelope(engineprotocol.ReadDeclarationsRequestEnvelope{
+		Operation: engineprotocol.ReadDeclarationsRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ReadDeclarationsInput{
+			Addresses: []semantic.StableAddress{"ldl:project:p:entity:alpha"}, DocumentGeneration: generation, Limits: limits,
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "read-declarations-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	declarationSink := &memoryBlobSink{}
+	plan, terminal, err = dispatcher.PrepareDispatch(context.Background(), negotiated, OperationReadDeclarations, declarationControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("read declarations prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	declarationDispatch, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, declarationSink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declarationResponse, err := engineprotocol.DecodeReadDeclarationsResponseEnvelope(declarationDispatch.Control)
+	if err != nil || declarationResponse.Payload == nil || len(declarationResponse.Payload.Items) != 1 || len(declarationSink.blobs) != 1 || !bytes.Contains(declarationSink.blobs[0].Bytes, []byte(`alpha "Alpha"`)) {
+		t.Fatalf("read declarations response = %+v blobs=%+v err=%v", declarationResponse, declarationSink.blobs, err)
+	}
+
+	rowsControl, err := engineprotocol.EncodeReadRowsRequestEnvelope(engineprotocol.ReadRowsRequestEnvelope{
+		Operation: engineprotocol.ReadRowsRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ReadRowsInput{
+			DocumentGeneration: generation, Limits: limits, OwnerAddresses: []semantic.StableAddress{"ldl:project:p:entity:alpha"},
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "read-rows-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rowsResponse, err := engineprotocol.DecodeReadRowsResponseEnvelope(dispatch(OperationReadRows, rowsControl).Control)
+	if err != nil || rowsResponse.Payload == nil || len(rowsResponse.Payload.Items) != 1 {
+		t.Fatalf("read rows response = %+v err=%v", rowsResponse, err)
+	}
+
+	usagesControl, err := engineprotocol.EncodeFindUsagesRequestEnvelope(engineprotocol.FindUsagesRequestEnvelope{
+		Operation: engineprotocol.FindUsagesRequestEnvelopeOperationValue,
+		Payload: engineprotocol.FindUsagesInput{
+			DocumentGeneration: generation, Limits: limits, TargetAddresses: []semantic.StableAddress{"ldl:project:p:entity:alpha"},
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "find-usages-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usagesResponse, err := engineprotocol.DecodeFindUsagesResponseEnvelope(dispatch(OperationFindUsages, usagesControl).Control)
+	if err != nil || usagesResponse.Payload == nil || len(usagesResponse.Payload.Items) == 0 {
+		t.Fatalf("find usages response = %+v err=%v", usagesResponse, err)
+	}
+
+	neighborsControl, err := engineprotocol.EncodeGetNeighborsRequestEnvelope(engineprotocol.GetNeighborsRequestEnvelope{
+		Operation: engineprotocol.GetNeighborsRequestEnvelopeOperationValue,
+		Payload: engineprotocol.GetNeighborsInput{
+			Depth: 1, Direction: "outgoing", DocumentGeneration: generation, Limits: limits,
+			EntityAddresses: []semantic.EntityAddress{"ldl:project:p:entity:alpha"},
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "get-neighbors-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	neighborsResponse, err := engineprotocol.DecodeGetNeighborsResponseEnvelope(dispatch(OperationGetNeighbors, neighborsControl).Control)
+	if err != nil || neighborsResponse.Payload == nil || len(neighborsResponse.Payload.Items) != 1 {
+		t.Fatalf("get neighbors response = %+v err=%v", neighborsResponse, err)
+	}
+
+	subgraphControl, err := engineprotocol.EncodeInspectSubgraphRequestEnvelope(engineprotocol.InspectSubgraphRequestEnvelope{
+		Operation: engineprotocol.InspectSubgraphRequestEnvelopeOperationValue,
+		Payload: engineprotocol.InspectSubgraphInput{
+			Depth: 1, DocumentGeneration: generation, Limits: limits, RootAddresses: []semantic.EntityAddress{"ldl:project:p:entity:alpha"},
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "inspect-subgraph-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subgraphResponse, err := engineprotocol.DecodeInspectSubgraphResponseEnvelope(dispatch(OperationInspectSubgraph, subgraphControl).Control)
+	if err != nil || subgraphResponse.Payload == nil || len(subgraphResponse.Payload.Items) != 3 {
+		t.Fatalf("inspect subgraph response = %+v err=%v", subgraphResponse, err)
+	}
+
+	scopeControl, err := engineprotocol.EncodeReadScopeRequestEnvelope(engineprotocol.ReadScopeRequestEnvelope{
+		Operation: engineprotocol.ReadScopeRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ReadScopeInput{
+			DocumentGeneration: generation, Limits: limits, OwnerAddress: "ldl:project:p:entity:missing",
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "read-scope-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err = dispatcher.PrepareDispatch(context.Background(), negotiated, OperationReadScope, scopeControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("read scope prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	scopeDispatch, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
+	if err != nil || scopeDispatch.Outcome != protocolcommon.OutcomeRejected {
+		t.Fatalf("read scope dispatch = %+v err=%v", scopeDispatch, err)
+	}
+	scopeResponse, err := engineprotocol.DecodeReadScopeResponseEnvelope(scopeDispatch.Control)
+	if err != nil || scopeResponse.Payload != nil || len(scopeResponse.Diagnostics) != 1 {
+		t.Fatalf("read scope response = %+v err=%v", scopeResponse, err)
+	}
+
+	referencesControl, err := engineprotocol.EncodeListReferencesRequestEnvelope(engineprotocol.ListReferencesRequestEnvelope{
+		Operation: engineprotocol.ListReferencesRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ListReferencesInput{
+			DocumentGeneration: generation, Limits: limits,
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "list-references-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	referencesResponse, err := engineprotocol.DecodeListReferencesResponseEnvelope(dispatch(OperationListReferences, referencesControl).Control)
+	if err != nil || referencesResponse.Payload == nil || len(referencesResponse.Payload.Items) != 1 {
+		t.Fatalf("list references response = %+v err=%v", referencesResponse, err)
+	}
+
+	referenceContentControl, err := engineprotocol.EncodeReadReferencesRequestEnvelope(engineprotocol.ReadReferencesRequestEnvelope{
+		Operation: engineprotocol.ReadReferencesRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ReadReferencesInput{
+			Addresses: []semantic.ReferenceAddress{referencesResponse.Payload.Items[0].Address}, DocumentGeneration: generation, Limits: limits,
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "read-references-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	referenceSink := &memoryBlobSink{}
+	plan, terminal, err = dispatcher.PrepareDispatch(context.Background(), negotiated, OperationReadReferences, referenceContentControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("read references prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	referenceDispatch, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, referenceSink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	referenceResponse, err := engineprotocol.DecodeReadReferencesResponseEnvelope(referenceDispatch.Control)
+	if err != nil || referenceResponse.Payload == nil || len(referenceResponse.Payload.Items) != 1 || len(referenceSink.blobs) != 1 || !bytes.Contains(referenceSink.blobs[0].Bytes, []byte("source of truth")) {
+		t.Fatalf("read references response = %+v blobs=%+v err=%v", referenceResponse, referenceSink.blobs, err)
+	}
+
+	replacementBytes := []byte("project p \"Project Updated\" {}\n")
+	replacementCompile := compileRequest(replacementBytes)
+	replaceControl, err := engineprotocol.EncodeReplaceSourceTreeRequestEnvelope(engineprotocol.ReplaceSourceTreeRequestEnvelope{
+		Operation: engineprotocol.ReplaceSourceTreeRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ReplaceSourceTreeInput{
+			CompileInput: replacementCompile.Payload, ExpectedGeneration: generation,
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "replace-source-tree-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err = dispatcher.PrepareDispatch(context.Background(), negotiated, OperationReplaceSourceTree, replaceControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("replace prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	replaceDispatch, err := plan.ExecuteDispatch(context.Background(), sourceFor(replacementCompile.Payload.ProjectSourceTree[0].Blob, replacementBytes), &memoryBlobSink{})
+	if err != nil || replaceDispatch.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("replace dispatch = %+v err=%v", replaceDispatch, err)
+	}
+	replaceResponse, err := engineprotocol.DecodeReplaceSourceTreeResponseEnvelope(replaceDispatch.Control)
+	if err != nil || replaceResponse.Payload == nil || replaceResponse.Payload.DocumentGeneration.Value != "2" {
+		t.Fatalf("replace response = %+v err=%v", replaceResponse, err)
+	}
+	generation = replaceResponse.Payload.DocumentGeneration
+
+	closeControl, err := engineprotocol.EncodeCloseDocumentRequestEnvelope(engineprotocol.CloseDocumentRequestEnvelope{
+		Operation: engineprotocol.CloseDocumentRequestEnvelopeOperationValue,
+		Payload: engineprotocol.CloseDocumentInput{
+			DocumentGeneration: generation, DocumentHandle: openResponse.Payload.DocumentHandle,
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "close-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResponse, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(dispatch(OperationCloseDocument, closeControl).Control)
+	if err != nil || closeResponse.Payload == nil || !closeResponse.Payload.Closed {
+		t.Fatalf("close response = %+v err=%v", closeResponse, err)
+	}
+}
+
+func TestGenericDispatchHelpersProduceOperationSpecificEnvelopes(t *testing.T) {
+	dispatcher := NewCompileDispatcher(engine.New(engine.BuildInfo{}))
+	negotiated := compileContext(t)
+	release := negotiated.EngineRelease()
+
+	compileValue := []byte("project p \"Project\" {}\n")
+	compileRequest := compileRequest(compileValue)
+	compileControl, err := engineprotocol.EncodeCompileRequestEnvelope(compileRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err := dispatcher.PrepareDispatch(context.Background(), negotiated, OperationCompile, compileControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("compile prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	response, err := plan.ExecuteDispatch(context.Background(), sourceFor(compileRequest.Payload.ProjectSourceTree[0].Blob, compileValue), &memoryBlobSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compileResponse, err := engineprotocol.DecodeCompileResponseEnvelope(response.Control)
+	if err != nil || response.Operation != OperationCompile || response.Outcome != protocolcommon.OutcomeSuccess || compileResponse.Payload == nil {
+		t.Fatalf("compile dispatch = %+v decoded=%+v err=%v", response, compileResponse, err)
+	}
+
+	cancelled, err := dispatcher.DispatchCancellationResponse(OperationOpenDocument, "cancel-open", release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelledOpen, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(cancelled.Control)
+	if err != nil || cancelled.Outcome != protocolcommon.OutcomeCancelled || cancelledOpen.Failure == nil || cancelledOpen.Outcome != protocolcommon.OutcomeCancelled {
+		t.Fatalf("cancel open = %+v decoded=%+v err=%v", cancelled, cancelledOpen, err)
+	}
+
+	transport, err := dispatcher.DispatchTransportFailureResponse(OperationReadModules, "transport-read", release, CompileTransportDuplicateRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transportRead, err := engineprotocol.DecodeReadModulesResponseEnvelope(transport.Control)
+	if err != nil || transport.Outcome != protocolcommon.OutcomeFailed || transportRead.Failure == nil || transportRead.Outcome != protocolcommon.OutcomeFailed {
+		t.Fatalf("transport read = %+v decoded=%+v err=%v", transport, transportRead, err)
+	}
+
+	compileCancelled, err := dispatcher.DispatchCancellationResponse(OperationCompile, "cancel-compile", release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedCompileCancelled, err := engineprotocol.DecodeCompileResponseEnvelope(compileCancelled.Control)
+	if err != nil || decodedCompileCancelled.Outcome != protocolcommon.OutcomeCancelled || decodedCompileCancelled.Failure == nil {
+		t.Fatalf("compile cancel = %+v decoded=%+v err=%v", compileCancelled, decodedCompileCancelled, err)
+	}
+
+	contextRequest := engineprotocol.ListModulesRequestEnvelope{
+		DeadlineAt: pointer(protocolcommon.Rfc3339Time("2099-01-02T03:04:05Z")),
+		Operation:  engineprotocol.ListModulesRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ListModulesInput{
+			DocumentGeneration: engineprotocol.DocumentGeneration{
+				DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_1234567890abcdef"},
+				Value:          "1",
+			},
+			Limits: engineprotocol.WorkbenchLimits{MaxItems: "1", MaxOutputBytes: "1000"},
+		},
+		Protocol:  bootstrapProtocolRef(),
+		RequestID: "context-request",
+	}
+	contextControl, err := engineprotocol.EncodeListModulesRequestEnvelope(contextRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestContext, cancel, err := RequestContextFromControl(context.Background(), contextControl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if _, ok := requestContext.Deadline(); !ok {
+		t.Fatal("deadline was not propagated from control envelope")
+	}
+
+	if got := DispatchRelease(negotiated, newTestDescriptor(t)); got != release {
+		t.Fatalf("dispatch release = %q want %q", got, release)
+	}
+}
+
 func TestDispatchCompilePackSuccessHasNoProjectOnlyPayload(t *testing.T) {
 	packSource := []byte("entity_type service \"Service\" {\n  representation shape rect\n}\nexport { service }\n")
 	manifest, err := json.Marshal(map[string]any{"format": "layerdraw-pack", "format_version": 1, "id": "pub/schema", "name": "schema", "version": "1.0.0", "language": 1, "entry": "pack.ldl", "dependencies": map[string]any{}})

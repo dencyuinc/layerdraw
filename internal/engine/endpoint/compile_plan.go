@@ -58,6 +58,28 @@ type CompileAdmissionBudget struct {
 	EffectiveCompilerLimits CompileEffectiveLimits
 }
 
+// DispatchResponse is an already generated and encoded Engine Protocol
+// response. Byte transports publish Control exactly once with the accompanying
+// output blobs supplied through BlobSink.
+type DispatchResponse struct {
+	Operation string
+	RequestID string
+	Control   []byte
+	Outcome   protocolcommon.Outcome
+	Failure   *protocolcommon.ProtocolFailure
+}
+
+// DispatchPlan is the transport-facing lifecycle shared by compile and
+// Workbench operations. It owns no framing semantics; transports still own
+// stream IDs, cancellation delivery, and queueing.
+type DispatchPlan interface {
+	BlobRequirements() []BlobRequirement
+	AdmissionBudget() CompileAdmissionBudget
+	Abort()
+	Execute(context.Context, BlobSource, BlobSink) (engineprotocol.CompileResponseEnvelope, error)
+	ExecuteDispatch(context.Context, BlobSource, BlobSink) (DispatchResponse, error)
+}
+
 type compilePlanState uint8
 
 const (
@@ -259,6 +281,20 @@ func (p *CompilePlan) Execute(ctx context.Context, source BlobSource, sink BlobS
 			nil,
 		))
 	}
+}
+
+// ExecuteDispatch adapts the existing compile lifecycle to the generic
+// transport plan without changing compile response construction.
+func (p *CompilePlan) ExecuteDispatch(ctx context.Context, source BlobSource, sink BlobSink) (DispatchResponse, error) {
+	response, err := p.Execute(ctx, source, sink)
+	if err != nil {
+		return DispatchResponse{}, err
+	}
+	control, err := engineprotocol.EncodeCompileResponseEnvelope(response)
+	if err != nil {
+		return DispatchResponse{}, err
+	}
+	return DispatchResponse{Operation: OperationCompile, RequestID: response.RequestID, Control: control, Outcome: response.Outcome, Failure: response.Failure}, nil
 }
 
 func (p *CompilePlan) executePrepared(ctx context.Context, prepared *preparedCompileInput, source BlobSource, sink BlobSink) (response engineprotocol.CompileResponseEnvelope, err error) {

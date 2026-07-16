@@ -5,29 +5,34 @@ package engine
 import (
 	"bytes"
 	"context"
+	"math"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/sourceplanner"
 )
 
 type (
-	SourcePlannerBlobs         = sourceplanner.PlannerBlobs
-	SourcePlannerBlobRef       = sourceplanner.BlobRef
-	SourcePlannerDigest        = sourceplanner.Digest
-	SourcePlannerPlan          = sourceplanner.SourcePlan
-	SourcePlannerPreconditions = sourceplanner.EngineEditPreconditions
-	SourcePlannerSourceRange   = sourceplanner.SourceRange
-	SourcePlannerSourceOrigin  = sourceplanner.SourceOrigin
-	SourcePlannerModuleRef     = sourceplanner.ModuleRef
-	SourcePlannerGeneration    = sourceplanner.Generation
-	SourcePlannerStableAddress = sourceplanner.StableAddress
-	SourcePlannerSubjectKind   = sourceplanner.SubjectKind
-	ExpectedSourceDigest       = sourceplanner.ExpectedSourceDigest
-	ExpectedHash               = sourceplanner.ExpectedHash
-	ExpectedChildSet           = sourceplanner.ExpectedChildSet
-	SourcePatchInput           = sourceplanner.SourcePatchInput
-	SourcePatchBatch           = sourceplanner.SourcePatchBatch
-	PlacementHint              = sourceplanner.PlacementHint
-	FragmentInput              = sourceplanner.FragmentInput
+	SourcePlannerBlobs           = sourceplanner.PlannerBlobs
+	SourcePlannerBlobRef         = sourceplanner.BlobRef
+	SourcePlannerDigest          = sourceplanner.Digest
+	SourcePlannerPlan            = sourceplanner.SourcePlan
+	SourcePlannerPreconditions   = sourceplanner.EngineEditPreconditions
+	SourcePlannerSourceRange     = sourceplanner.SourceRange
+	SourcePlannerSourceOrigin    = sourceplanner.SourceOrigin
+	SourcePlannerModuleRef       = sourceplanner.ModuleRef
+	SourcePlannerGeneration      = sourceplanner.Generation
+	SourcePlannerPreviewID       = sourceplanner.PreviewID
+	SourcePlannerSourceDiff      = sourceplanner.SourceDiff
+	SourcePlannerAuthoringImpact = sourceplanner.AuthoringImpact
+	SourcePlannerResultingHashes = sourceplanner.ResultingHashes
+	SourcePlannerStableAddress   = sourceplanner.StableAddress
+	SourcePlannerSubjectKind     = sourceplanner.SubjectKind
+	ExpectedSourceDigest         = sourceplanner.ExpectedSourceDigest
+	ExpectedHash                 = sourceplanner.ExpectedHash
+	ExpectedChildSet             = sourceplanner.ExpectedChildSet
+	SourcePatchInput             = sourceplanner.SourcePatchInput
+	SourcePatchBatch             = sourceplanner.SourcePatchBatch
+	PlacementHint                = sourceplanner.PlacementHint
+	FragmentInput                = sourceplanner.FragmentInput
 )
 
 type PreviewSourcePatchInput struct {
@@ -60,6 +65,20 @@ type OrganizeWorkspaceInput struct {
 	Strategy           string
 }
 
+type ApplyToHandleInput struct {
+	BaseGeneration DocumentGeneration
+	PreviewDigest  SourcePlannerDigest
+	PreviewID      SourcePlannerPreviewID
+}
+
+type ApplyToHandleResult struct {
+	AuthoringImpact    SourcePlannerAuthoringImpact
+	DocumentGeneration DocumentGeneration
+	PreviewDigest      SourcePlannerDigest
+	ResultingHashes    SourcePlannerResultingHashes
+	SourceDiff         SourcePlannerSourceDiff
+}
+
 // PreviewSourcePatch runs guarded source patches against one retained Working
 // Document generation. It never mutates the handle; callers must explicitly
 // apply the returned candidate through ReplaceSourceTree.
@@ -76,7 +95,14 @@ func (e Engine) PreviewSourcePatch(ctx context.Context, input PreviewSourcePatch
 		Preconditions: bindSourcePlannerGeneration(input.Preconditions, document),
 		Patch:         input.Patch,
 	}
-	return e.sourcePlanner().PreviewSourcePatch(ctx, sourcePlanningBase(document, snapshot), request, clonePlannerBlobs(input.Blobs))
+	plan, err := e.sourcePlanner().PreviewSourcePatch(ctx, sourcePlanningBase(document, snapshot), request, clonePlannerBlobs(input.Blobs))
+	if err != nil {
+		return SourcePlannerPlan{}, err
+	}
+	if err := e.retainPreview(ctx, document, plan); err != nil {
+		return SourcePlannerPlan{}, err
+	}
+	return plan, nil
 }
 
 // PreviewFragment runs a scoped LDL fragment edit against one retained Working
@@ -94,7 +120,14 @@ func (e Engine) PreviewFragment(ctx context.Context, input PreviewFragmentInput)
 		Preconditions: bindSourcePlannerGeneration(input.Preconditions, document),
 		Fragment:      input.Fragment,
 	}
-	return e.sourcePlanner().PreviewFragment(ctx, sourcePlanningBase(document, snapshot), request, clonePlannerBlobs(input.Blobs))
+	plan, err := e.sourcePlanner().PreviewFragment(ctx, sourcePlanningBase(document, snapshot), request, clonePlannerBlobs(input.Blobs))
+	if err != nil {
+		return SourcePlannerPlan{}, err
+	}
+	if err := e.retainPreview(ctx, document, plan); err != nil {
+		return SourcePlannerPlan{}, err
+	}
+	return plan, nil
 }
 
 // FormatScope plans a complete-scope, comment-preserving source formatting
@@ -112,7 +145,14 @@ func (e Engine) FormatScope(ctx context.Context, input FormatScopeInput) (Source
 		Preconditions:  bindSourcePlannerGeneration(input.Preconditions, document),
 		ScopeAddresses: append([]sourceplanner.StableAddress(nil), input.ScopeAddresses...),
 	}
-	return e.sourcePlanner().FormatScope(ctx, sourcePlanningBase(document, snapshot), request)
+	plan, err := e.sourcePlanner().FormatScope(ctx, sourcePlanningBase(document, snapshot), request)
+	if err != nil {
+		return SourcePlannerPlan{}, err
+	}
+	if err := e.retainPreview(ctx, document, plan); err != nil {
+		return SourcePlannerPlan{}, err
+	}
+	return plan, nil
 }
 
 // OrganizeWorkspace plans the standard LDL source layout in memory. It returns
@@ -130,7 +170,178 @@ func (e Engine) OrganizeWorkspace(ctx context.Context, input OrganizeWorkspaceIn
 		Preconditions: bindSourcePlannerGeneration(input.Preconditions, document),
 		Strategy:      input.Strategy,
 	}
-	return e.sourcePlanner().OrganizeWorkspace(ctx, sourcePlanningBase(document, snapshot), request)
+	plan, err := e.sourcePlanner().OrganizeWorkspace(ctx, sourcePlanningBase(document, snapshot), request)
+	if err != nil {
+		return SourcePlannerPlan{}, err
+	}
+	if err := e.retainPreview(ctx, document, plan); err != nil {
+		return SourcePlannerPlan{}, err
+	}
+	return plan, nil
+}
+
+// ApplyToHandle commits the last matching valid preview retained for one
+// Working Document generation. The preview digest, preview ID, and base
+// generation are the commit token; stale handles and superseded previews cannot
+// mutate the store.
+func (e Engine) ApplyToHandle(ctx context.Context, input ApplyToHandleInput) (ApplyToHandleResult, error) {
+	document, snapshot, err := e.acquireSnapshot(ctx, input.BaseGeneration)
+	if err != nil {
+		return ApplyToHandleResult{}, err
+	}
+	if !snapshot.capabilities.ApplyToHandle {
+		return ApplyToHandleResult{}, operationDisabled("apply_to_handle")
+	}
+	if input.PreviewDigest == "" || input.PreviewID.Namespace != input.BaseGeneration.DocumentHandle.EndpointInstanceID || input.PreviewID.Value == "" {
+		return ApplyToHandleResult{}, &WorkbenchError{Code: "engine.workbench.preview_invalid", Category: WorkbenchErrorInputInvalid}
+	}
+
+	store := e.workbench
+	store.mu.RLock()
+	retained, err := matchingRetainedPreviewLocked(document, input)
+	if err != nil {
+		store.mu.RUnlock()
+		return ApplyToHandleResult{}, err
+	}
+	candidate := cloneWorkbenchCompileInput(retained.candidate)
+	sourceDiff := retained.sourceDiff
+	authoringImpact := retained.authoringImpact
+	resultingHashes := retained.resultingHashes
+	previewDigest := retained.previewDigest
+	store.mu.RUnlock()
+
+	replacement, err := e.compileWorkingSnapshot(ctx, candidate)
+	if err != nil {
+		return ApplyToHandleResult{}, err
+	}
+	if replacement.retained > store.config.MaxRetainedBytes {
+		return ApplyToHandleResult{}, workbenchLimit("snapshot_bytes", store.config.MaxRetainedBytes, replacement.retained)
+	}
+	if err := checkWorkbenchContext(ctx); err != nil {
+		return ApplyToHandleResult{}, err
+	}
+
+	store.mu.Lock()
+	current, exists := store.documents[document.handle.Value]
+	if !exists || current != document {
+		store.mu.Unlock()
+		return ApplyToHandleResult{}, invalidHandle()
+	}
+	if current.generation != input.BaseGeneration.Value {
+		store.mu.Unlock()
+		return ApplyToHandleResult{}, staleGeneration()
+	}
+	if _, err := matchingRetainedPreviewLocked(current, input); err != nil {
+		store.mu.Unlock()
+		return ApplyToHandleResult{}, err
+	}
+	if current.generation == math.MaxUint64 {
+		store.mu.Unlock()
+		return ApplyToHandleResult{}, &WorkbenchError{Code: "engine.workbench.generation_overflow", Category: WorkbenchErrorInvariant}
+	}
+	if err := checkWorkbenchContext(ctx); err != nil {
+		store.mu.Unlock()
+		return ApplyToHandleResult{}, err
+	}
+	store.retainedBytes -= current.retainedBytes()
+	store.evictToMakeRoomLocked(current.handle.Value, replacement.retained, false)
+	current.snapshot = replacement
+	current.preview = nil
+	current.generation++
+	store.retainedBytes += replacement.retained
+	newGeneration := current.generation
+	store.mu.Unlock()
+
+	return ApplyToHandleResult{
+		AuthoringImpact:    authoringImpact,
+		DocumentGeneration: DocumentGeneration{DocumentHandle: document.handle, Value: newGeneration},
+		PreviewDigest:      SourcePlannerDigest(previewDigest),
+		ResultingHashes:    resultingHashes,
+		SourceDiff:         sourceDiff,
+	}, nil
+}
+
+func (e Engine) retainPreview(ctx context.Context, document *workingDocument, plan SourcePlannerPlan) error {
+	if err := checkWorkbenchContext(ctx); err != nil {
+		return err
+	}
+	preview := plan.Preview
+	if preview.Status != "valid" || preview.PreviewID == nil || preview.PreviewDigest == nil || preview.AuthoringImpact == nil || preview.ResultingHashes == nil || preview.ProposedGeneration == nil {
+		return nil
+	}
+	if preview.BaseGeneration.Namespace != document.handle.EndpointInstanceID || preview.BaseGeneration.DocumentID != document.handle.Value || preview.BaseGeneration.Value != document.generation {
+		return &WorkbenchError{Code: "engine.workbench.preview_generation_mismatch", Category: WorkbenchErrorInputInvalid}
+	}
+	retained := &retainedPreview{
+		baseGeneration:  document.generation,
+		previewID:       *preview.PreviewID,
+		previewDigest:   *preview.PreviewDigest,
+		candidate:       mapEngineCompileInput(plan.Candidate),
+		sourceDiff:      preview.SourceDiff,
+		authoringImpact: *preview.AuthoringImpact,
+		resultingHashes: *preview.ResultingHashes,
+	}
+	retained.retained = retainedPreviewBytes(retained)
+
+	store := e.workbench
+	store.mu.Lock()
+	current, exists := store.documents[document.handle.Value]
+	if !exists || current != document {
+		store.mu.Unlock()
+		return invalidHandle()
+	}
+	if current.generation != preview.BaseGeneration.Value {
+		store.mu.Unlock()
+		return staleGeneration()
+	}
+	if saturatingAdd(current.snapshot.retained, retained.retained) > store.config.MaxRetainedBytes {
+		store.mu.Unlock()
+		return workbenchLimit("retained_preview_bytes", store.config.MaxRetainedBytes, saturatingAdd(current.snapshot.retained, retained.retained))
+	}
+	old := current.preview
+	if old != nil {
+		store.retainedBytes -= old.retained
+	}
+	store.evictToMakeRoomLocked(current.handle.Value, retained.retained, false)
+	if store.retainedBytes > store.config.MaxRetainedBytes-retained.retained {
+		if old != nil {
+			store.retainedBytes += old.retained
+		}
+		store.mu.Unlock()
+		return workbenchLimit("retained_preview_bytes", store.config.MaxRetainedBytes, saturatingAdd(store.retainedBytes, retained.retained))
+	}
+	current.preview = retained
+	store.retainedBytes += retained.retained
+	store.mu.Unlock()
+	return nil
+}
+
+func matchingRetainedPreviewLocked(document *workingDocument, input ApplyToHandleInput) (*retainedPreview, error) {
+	if document == nil || document.preview == nil {
+		return nil, &WorkbenchError{Code: "engine.workbench.preview_not_found", Category: WorkbenchErrorNotFound}
+	}
+	preview := document.preview
+	if preview.baseGeneration != input.BaseGeneration.Value {
+		return nil, staleGeneration()
+	}
+	if preview.previewDigest != sourceplanner.Digest(input.PreviewDigest) || preview.previewID != input.PreviewID {
+		return nil, &WorkbenchError{Code: "engine.workbench.preview_mismatch", Category: WorkbenchErrorInputInvalid}
+	}
+	return preview, nil
+}
+
+func retainedPreviewBytes(preview *retainedPreview) int64 {
+	if preview == nil {
+		return 0
+	}
+	total := retainedOwnedBytes(preview.baseGeneration)
+	total = saturatingAdd(total, retainedOwnedBytes(preview.previewID))
+	total = saturatingAdd(total, retainedOwnedBytes(preview.previewDigest))
+	total = saturatingAdd(total, retainedOwnedBytes(preview.candidate))
+	total = saturatingAdd(total, retainedOwnedBytes(preview.sourceDiff))
+	total = saturatingAdd(total, retainedOwnedBytes(preview.authoringImpact))
+	total = saturatingAdd(total, retainedOwnedBytes(preview.resultingHashes))
+	return total
 }
 
 func (e Engine) sourcePlanner() sourceplanner.SourcePlanner {

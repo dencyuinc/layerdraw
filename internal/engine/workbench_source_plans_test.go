@@ -62,6 +62,161 @@ func TestWorkbenchPreviewSourcePatchPlansAgainstRetainedGeneration(t *testing.T)
 	}
 }
 
+func TestWorkbenchApplyToHandleCommitsRetainedPreview(t *testing.T) {
+	instance := New(BuildInfo{Workbench: WorkbenchConfig{EndpointInstanceID: "source-plan-apply"}})
+	source := []byte("project p \"Project\" {}\n// keep\n")
+	opened := openWorkbench(t, instance, projectCompileInput(string(source)))
+
+	start := bytes.Index(source, []byte("keep"))
+	replacement := []byte("kept")
+	blob := SourcePlannerBlobRef{
+		BlobID:    "replacement",
+		Digest:    sourcePlannerDigestForTest(replacement),
+		Lifetime:  "request",
+		MediaType: "text/plain; charset=utf-8",
+		Size:      uint64(len(replacement)),
+	}
+	sources := []ExpectedSourceDigest{{
+		Module: SourcePlannerModuleRef{Origin: SourcePlannerSourceOrigin{Kind: "project"}, ModulePath: "document.ldl"},
+		Digest: sourcePlannerDigestForTest(source),
+	}}
+	plan, err := instance.PreviewSourcePatch(context.Background(), PreviewSourcePatchInput{
+		Blobs:              SourcePlannerBlobs{"replacement": replacement},
+		DocumentGeneration: opened.DocumentGeneration,
+		Limits:             generousWorkbenchLimits,
+		Preconditions:      SourcePlannerPreconditions{ExpectedSourceDigests: &sources},
+		Patch: SourcePatchBatch{Patches: []SourcePatchInput{{
+			SourceRange: SourcePlannerSourceRange{
+				Origin:     SourcePlannerSourceOrigin{Kind: "project"},
+				ModulePath: "document.ldl",
+				StartByte:  start,
+				EndByte:    start + len("keep"),
+			},
+			ExpectedSourceDigest: sourcePlannerDigestForTest(source),
+			ReplacementBlob:      blob,
+		}}},
+	})
+	if err != nil || plan.Preview.PreviewID == nil || plan.Preview.PreviewDigest == nil {
+		t.Fatalf("PreviewSourcePatch() = %+v, %v", plan.Preview, err)
+	}
+
+	applied, err := instance.ApplyToHandle(context.Background(), ApplyToHandleInput{
+		BaseGeneration: opened.DocumentGeneration,
+		PreviewDigest:  SourcePlannerDigest(*plan.Preview.PreviewDigest),
+		PreviewID:      *plan.Preview.PreviewID,
+	})
+	if err != nil {
+		t.Fatalf("ApplyToHandle() error = %v", err)
+	}
+	if applied.DocumentGeneration.Value != opened.DocumentGeneration.Value+1 {
+		t.Fatalf("applied generation = %+v", applied.DocumentGeneration)
+	}
+	if applied.PreviewDigest != SourcePlannerDigest(*plan.Preview.PreviewDigest) || applied.AuthoringImpact.ImpactDigest == "" || applied.ResultingHashes.DefinitionHash == "" || applied.SourceDiff.Digest == "" {
+		t.Fatalf("incomplete apply result: %+v", applied)
+	}
+	modules, err := instance.ReadModules(context.Background(), ReadModulesInput{
+		DocumentGeneration: applied.DocumentGeneration,
+		Limits:             generousWorkbenchLimits,
+		Modules:            []ModuleRef{{Origin: SourceOrigin{Kind: "project"}, ModulePath: "document.ldl"}},
+	})
+	if err != nil || len(modules.Items) != 1 || !bytes.Contains(modules.Items[0].SourceChunk.Bytes, []byte("// kept\n")) {
+		t.Fatalf("applied source = %+v, %v", modules, err)
+	}
+	if _, err := instance.ApplyToHandle(context.Background(), ApplyToHandleInput{
+		BaseGeneration: opened.DocumentGeneration,
+		PreviewDigest:  SourcePlannerDigest(*plan.Preview.PreviewDigest),
+		PreviewID:      *plan.Preview.PreviewID,
+	}); !IsWorkbenchError(err, WorkbenchErrorGenerationStale) {
+		t.Fatalf("duplicate stale apply error = %v", err)
+	}
+}
+
+func TestWorkbenchApplyToHandleRequiresCurrentRetainedPreview(t *testing.T) {
+	instance := New(BuildInfo{Workbench: WorkbenchConfig{EndpointInstanceID: "source-plan-apply-guard"}})
+	source := []byte("project p \"Project\" {}\n// keep\n")
+	opened := openWorkbench(t, instance, projectCompileInput(string(source)))
+
+	if _, err := instance.ApplyToHandle(context.Background(), ApplyToHandleInput{
+		BaseGeneration: opened.DocumentGeneration,
+	}); !IsWorkbenchError(err, WorkbenchErrorInputInvalid) {
+		t.Fatalf("empty apply token error = %v", err)
+	}
+	if _, err := instance.ApplyToHandle(context.Background(), ApplyToHandleInput{
+		BaseGeneration: opened.DocumentGeneration,
+		PreviewDigest:  "sha256:missing",
+		PreviewID: SourcePlannerPreviewID{
+			Namespace: opened.DocumentGeneration.DocumentHandle.EndpointInstanceID,
+			Value:     "preview-missing",
+		},
+	}); !IsWorkbenchError(err, WorkbenchErrorNotFound) {
+		t.Fatalf("missing preview error = %v", err)
+	}
+
+	first := previewKeepPatchForTest(t, instance, opened.DocumentGeneration, source, "kept")
+	second := previewKeepPatchForTest(t, instance, opened.DocumentGeneration, source, "preserved")
+	if _, err := instance.ApplyToHandle(context.Background(), ApplyToHandleInput{
+		BaseGeneration: opened.DocumentGeneration,
+		PreviewDigest:  SourcePlannerDigest(*first.Preview.PreviewDigest),
+		PreviewID:      *first.Preview.PreviewID,
+	}); !IsWorkbenchError(err, WorkbenchErrorInputInvalid) {
+		t.Fatalf("superseded preview error = %v", err)
+	}
+	if _, err := instance.ApplyToHandle(context.Background(), ApplyToHandleInput{
+		BaseGeneration: opened.DocumentGeneration,
+		PreviewDigest:  SourcePlannerDigest(*second.Preview.PreviewDigest) + "-tampered",
+		PreviewID:      *second.Preview.PreviewID,
+	}); !IsWorkbenchError(err, WorkbenchErrorInputInvalid) {
+		t.Fatalf("digest-mismatched preview error = %v", err)
+	}
+
+	replaced, err := instance.ReplaceSourceTree(context.Background(), ReplaceSourceTreeInput{
+		ExpectedGeneration: opened.DocumentGeneration,
+		CompileInput:       projectCompileInput(string(source)),
+	})
+	if err != nil {
+		t.Fatalf("ReplaceSourceTree() error = %v", err)
+	}
+	if _, err := instance.ApplyToHandle(context.Background(), ApplyToHandleInput{
+		BaseGeneration: replaced.DocumentGeneration,
+		PreviewDigest:  SourcePlannerDigest(*second.Preview.PreviewDigest),
+		PreviewID:      *second.Preview.PreviewID,
+	}); !IsWorkbenchError(err, WorkbenchErrorNotFound) {
+		t.Fatalf("replaced preview error = %v", err)
+	}
+}
+
+func TestWorkbenchRetainPreviewGuardsGenerationAndInvalidPlans(t *testing.T) {
+	instance := New(BuildInfo{Workbench: WorkbenchConfig{EndpointInstanceID: "source-plan-retain-guard"}})
+	source := []byte("project p \"Project\" {}\n// keep\n")
+	opened := openWorkbench(t, instance, projectCompileInput(string(source)))
+	document, _, err := instance.acquireSnapshot(context.Background(), opened.DocumentGeneration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := retainedPreviewBytes(nil); got != 0 {
+		t.Fatalf("nil retained preview bytes = %d", got)
+	}
+	if err := instance.retainPreview(context.Background(), document, SourcePlannerPlan{}); err != nil {
+		t.Fatalf("invalid preview should be ignored: %v", err)
+	}
+	if _, err := instance.ApplyToHandle(context.Background(), ApplyToHandleInput{
+		BaseGeneration: opened.DocumentGeneration,
+		PreviewDigest:  "sha256:missing",
+		PreviewID: SourcePlannerPreviewID{
+			Namespace: opened.DocumentGeneration.DocumentHandle.EndpointInstanceID,
+			Value:     "preview-missing",
+		},
+	}); !IsWorkbenchError(err, WorkbenchErrorNotFound) {
+		t.Fatalf("invalid preview was retained: %v", err)
+	}
+
+	plan := previewKeepPatchForTest(t, instance, opened.DocumentGeneration, source, "kept")
+	plan.Preview.BaseGeneration.Value++
+	if err := instance.retainPreview(context.Background(), document, plan); !IsWorkbenchError(err, WorkbenchErrorInputInvalid) {
+		t.Fatalf("mismatched preview generation error = %v", err)
+	}
+}
+
 func TestWorkbenchPreviewSourcePatchRejectsStaleGeneration(t *testing.T) {
 	instance := New(BuildInfo{Workbench: WorkbenchConfig{EndpointInstanceID: "source-plan-stale"}})
 	opened := openWorkbench(t, instance, projectCompileInput("project p \"Project\" {}\n"))
@@ -164,6 +319,46 @@ func TestSourcePlannerMappersClonePacksAndAssets(t *testing.T) {
 
 func sourcePlannerDigestForTest(value []byte) SourcePlannerDigest {
 	return SourcePlannerDigest(digestBytesForWorkbench(value))
+}
+
+func previewKeepPatchForTest(t *testing.T, instance Engine, generation DocumentGeneration, source []byte, replacementText string) SourcePlannerPlan {
+	t.Helper()
+	start := bytes.Index(source, []byte("keep"))
+	if start < 0 {
+		t.Fatalf("source fixture does not contain keep: %q", source)
+	}
+	replacement := []byte(replacementText)
+	blob := SourcePlannerBlobRef{
+		BlobID:    "replacement-" + replacementText,
+		Digest:    sourcePlannerDigestForTest(replacement),
+		Lifetime:  "request",
+		MediaType: "text/plain; charset=utf-8",
+		Size:      uint64(len(replacement)),
+	}
+	sources := []ExpectedSourceDigest{{
+		Module: SourcePlannerModuleRef{Origin: SourcePlannerSourceOrigin{Kind: "project"}, ModulePath: "document.ldl"},
+		Digest: sourcePlannerDigestForTest(source),
+	}}
+	plan, err := instance.PreviewSourcePatch(context.Background(), PreviewSourcePatchInput{
+		Blobs:              SourcePlannerBlobs{blob.BlobID: replacement},
+		DocumentGeneration: generation,
+		Limits:             generousWorkbenchLimits,
+		Preconditions:      SourcePlannerPreconditions{ExpectedSourceDigests: &sources},
+		Patch: SourcePatchBatch{Patches: []SourcePatchInput{{
+			SourceRange: SourcePlannerSourceRange{
+				Origin:     SourcePlannerSourceOrigin{Kind: "project"},
+				ModulePath: "document.ldl",
+				StartByte:  start,
+				EndByte:    start + len("keep"),
+			},
+			ExpectedSourceDigest: sourcePlannerDigestForTest(source),
+			ReplacementBlob:      blob,
+		}}},
+	})
+	if err != nil || plan.Preview.Status != "valid" || plan.Preview.PreviewID == nil || plan.Preview.PreviewDigest == nil {
+		t.Fatalf("PreviewSourcePatch() = %+v, %v", plan.Preview, err)
+	}
+	return plan
 }
 
 func sourcePlannerPreconditionsForTest(t *testing.T, instance Engine, generation DocumentGeneration) SourcePlannerPreconditions {

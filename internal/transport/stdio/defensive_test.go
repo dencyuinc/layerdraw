@@ -15,13 +15,17 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 )
 
+func dispatchResponseForTest(requestID string) endpoint.DispatchResponse {
+	return endpoint.DispatchResponse{Operation: endpoint.OperationCompile, RequestID: requestID, Control: []byte(`{"request_id":"` + requestID + `"}`)}
+}
+
 func TestTerminalArbiterClaimsAreImmutable(t *testing.T) {
 	t.Parallel()
 	var nilArbiter *terminalArbiter
 	if nilArbiter.claimExecutionPublication() ||
-		nilArbiter.claimExecution(engineprotocol.CompileResponseEnvelope{}) ||
-		nilArbiter.claimCancellation(engineprotocol.CompileResponseEnvelope{}) ||
-		nilArbiter.claimTransport(engineprotocol.CompileResponseEnvelope{}) {
+		nilArbiter.claimExecution(endpoint.DispatchResponse{}) ||
+		nilArbiter.claimCancellation(endpoint.DispatchResponse{}) ||
+		nilArbiter.claimTransport(endpoint.DispatchResponse{}) {
 		t.Fatal("nil arbiter accepted a terminal claim")
 	}
 	if kind, _, set := nilArbiter.snapshot(); kind != terminalUndecided || set {
@@ -29,8 +33,8 @@ func TestTerminalArbiterClaimsAreImmutable(t *testing.T) {
 	}
 
 	execution := &terminalArbiter{}
-	first := engineprotocol.CompileResponseEnvelope{RequestID: "first"}
-	second := engineprotocol.CompileResponseEnvelope{RequestID: "second"}
+	first := dispatchResponseForTest("first")
+	second := dispatchResponseForTest("second")
 	if !execution.claimExecutionPublication() ||
 		execution.claimCancellation(second) || execution.claimTransport(second) ||
 		!execution.claimExecution(first) || !execution.claimExecution(second) {

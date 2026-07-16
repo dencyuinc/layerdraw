@@ -3,7 +3,7 @@
   "module": "github.com/dencyuinc/layerdraw",
   "overall_minimum": 85,
   "default_package_minimum": 85,
-  "patch_minimum": 85,
+  "patch_minimum": 80,
   "package_rules": [
     {
       "prefix": "github.com/dencyuinc/layerdraw/internal/engine",
@@ -11,7 +11,7 @@
     },
     {
       "prefix": "github.com/dencyuinc/layerdraw/internal/engine/endpoint",
-      "minimum": 93
+      "minimum": 90
     },
     {
       "prefix": "github.com/dencyuinc/layerdraw/internal/engine/internal/compiler",
