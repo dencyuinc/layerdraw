@@ -62,6 +62,7 @@ func TestEngineCompilerPackageBoundary(t *testing.T) {
 				t.Errorf("TypeScript dependency in %s: %s", path, importPath)
 			}
 			allowedLocalImport := strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/internal/compiler") ||
+				strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/internal/sourceplanner") ||
 				strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/gen/go/") ||
 				(strings.HasPrefix(path, "endpoint/") && importPath == "github.com/dencyuinc/layerdraw/internal/engine")
 			if strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/") && !allowedLocalImport {
