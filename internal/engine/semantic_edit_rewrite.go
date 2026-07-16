@@ -100,7 +100,7 @@ func applyUpdateField(input *CompileInput, snapshot Snapshot, operation Semantic
 		if !ok {
 			return &SemanticConflict{Kind: ConflictSameFieldChanged, TargetAddress: operation.TargetAddress, Path: operation.Path}, nil
 		}
-		replaceSourceRange(input, module, span.Start, span.End, []byte(strconv.Quote(operation.Value.String)))
+		replaceSourceRange(input, module, span.Start, span.End, []byte(quoteLDLString(operation.Value.String)))
 		return nil, nil
 	}
 	if semantic.Kind == materialize.SubjectLayer && field == "order" {
@@ -179,7 +179,7 @@ func applyRowCell(input *CompileInput, snapshot Snapshot, source index.SourceSub
 		owner = *subject.OwnerAddress
 	}
 	rowID := terminalID(operation.TargetAddress)
-	if conflict, diag := applyDelete(input, snapshot, operation.TargetAddress); conflict != nil || diag != nil {
+	if conflict, diag := applyDeleteWithReservation(input, snapshot, operation.TargetAddress, false); conflict != nil || diag != nil {
 		return conflict, diag
 	}
 	cells := make([]SemanticRowCell, 0, len(values))
@@ -215,7 +215,7 @@ func applyAnnotationField(input *CompileInput, snapshot Snapshot, source index.S
 	sort.Strings(keys)
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		parts = append(parts, key+": "+strconv.Quote(fmt.Sprint(annotations[key])))
+		parts = append(parts, key+": "+quoteLDLString(fmt.Sprint(annotations[key])))
 	}
 	rendered := "annotations { " + strings.Join(parts, ", ") + " }"
 	if !rewriteBlockField(input, snapshot, source, "annotations", rendered, len(keys) == 0) {
@@ -258,7 +258,10 @@ func applyCreateRelation(input *CompileInput, snapshot Snapshot, operation Seman
 	if body != "" {
 		item += " {\n" + body + "  }"
 	}
-	appendText(input, module, fmt.Sprintf("\nrelations %s {\n%s\n}\n", typeRef, item))
+	declaration := fmt.Sprintf("relations %s {\n%s\n}", typeRef, item)
+	if !insertPlacedDeclaration(input, snapshot, module, operation.Placement, materialize.SubjectRelation, declaration) {
+		return &SemanticConflict{Kind: ConflictPlacementChanged, OwnerAddress: operation.ParentAddress, ChildKind: materialize.SubjectRelation}, nil
+	}
 	return nil, nil
 }
 
@@ -270,15 +273,19 @@ func applyUpsertRow(input *CompileInput, snapshot Snapshot, operation SemanticOp
 	rowKind := rowKindForOwner(owner)
 	address := predictedChildAddress(operation.OwnerAddress, rowKind, operation.ID)
 	if _, existing, ok := subjectRecord(snapshot, address); ok {
-		if conflict, diag := applyDelete(input, snapshot, address); conflict != nil || diag != nil {
+		if conflict, diag := applyDeleteWithReservation(input, snapshot, address, false); conflict != nil || diag != nil {
 			return conflict, diag
 		}
 		ownerSource = existing
 	}
-	return appendRowGroup(input, snapshot, ownerSource.Module.ModulePath, operation.OwnerAddress, operation.ID, operation.Values, operation.ExplicitAbsentColumnAddresses)
+	return appendRowGroupPlaced(input, snapshot, ownerSource.Module.ModulePath, operation.OwnerAddress, operation.ID, operation.Values, operation.ExplicitAbsentColumnAddresses, operation.Placement)
 }
 
 func appendRowGroup(input *CompileInput, snapshot Snapshot, module, ownerAddress, rowID string, cells []SemanticRowCell, absent []string) (*SemanticConflict, *Diagnostic) {
+	return appendRowGroupPlaced(input, snapshot, module, ownerAddress, rowID, cells, absent, nil)
+}
+
+func appendRowGroupPlaced(input *CompileInput, snapshot Snapshot, module, ownerAddress, rowID string, cells []SemanticRowCell, absent []string, placement *SemanticPlacementHint) (*SemanticConflict, *Diagnostic) {
 	ownerRef, ok := sourceReference(snapshot, module, ownerAddress)
 	if !ok {
 		return &SemanticConflict{Kind: ConflictReferenceBroken, TargetAddress: ownerAddress}, nil
@@ -319,7 +326,14 @@ func appendRowGroup(input *CompileInput, snapshot Snapshot, module, ownerAddress
 	if _, ok := owner["from_address"]; ok {
 		prefix = "relation_rows"
 	}
-	appendText(input, module, fmt.Sprintf("\n%s %s [%s] {\n  %s %s: %s\n}\n", prefix, typeRef, strings.Join(columnRefs, ", "), ownerRef, rowID, strings.Join(values, ", ")))
+	declaration := fmt.Sprintf("%s %s [%s] {\n  %s %s: %s\n}", prefix, typeRef, strings.Join(columnRefs, ", "), ownerRef, rowID, strings.Join(values, ", "))
+	rowKind := materialize.SubjectEntityRow
+	if prefix == "relation_rows" {
+		rowKind = materialize.SubjectRelationRow
+	}
+	if !insertPlacedDeclaration(input, snapshot, module, placement, rowKind, declaration) {
+		return &SemanticConflict{Kind: ConflictPlacementChanged, OwnerAddress: ownerAddress, ChildKind: rowKind}, nil
+	}
 	return nil, nil
 }
 
@@ -335,7 +349,9 @@ func applyCreateSubject(input *CompileInput, snapshot Snapshot, operation Semant
 		return nil, &d
 	}
 	if !child {
-		appendText(input, module, "\n"+declaration+"\n")
+		if !insertPlacedDeclaration(input, snapshot, module, operation.Placement, operation.SubjectKind, declaration) {
+			return &SemanticConflict{Kind: ConflictPlacementChanged, OwnerAddress: operation.ParentAddress, ChildKind: operation.SubjectKind}, nil
+		}
 		return nil, nil
 	}
 	_, ownerSource, ok := subjectRecord(snapshot, operation.ParentAddress)
@@ -494,6 +510,96 @@ func placementModule(snapshot Snapshot, placement *SemanticPlacementHint, owner,
 		return source.Module.ModulePath, nil
 	}
 	return fallback, nil
+}
+
+func insertPlacedDeclaration(input *CompileInput, snapshot Snapshot, module string, placement *SemanticPlacementHint, kind SemanticSubjectKind, declaration string) bool {
+	if placement == nil || placement.GroupAnchorAddress == "" {
+		appendText(input, module, "\n"+declaration+"\n")
+		return true
+	}
+	anchorKind, anchor, ok := subjectRecord(snapshot, placement.GroupAnchorAddress)
+	if !ok || anchor.Module.ModulePath != module {
+		return false
+	}
+	data := input.ProjectSourceTree[module]
+	position := placement.Position
+	if position == "" {
+		position = "end"
+	}
+	if item, grouped := groupedDeclarationItem(kind, declaration); grouped && anchorKind.Kind == kind {
+		start, end := extendWholeLine(data, anchor.DeclarationRange.StartByte, anchor.DeclarationRange.EndByte)
+		indent := lineIndent(data, anchor.DeclarationRange.StartByte)
+		item = indentMultiline(strings.TrimSpace(item), indent)
+		switch position {
+		case "before":
+			replaceSourceRange(input, module, start, start, []byte(indent+item+"\n"))
+			return true
+		case "after":
+			replaceSourceRange(input, module, end, end, []byte(indent+item+"\n"))
+			return true
+		case "end":
+			_, declarationEnd, found := enclosingDeclarationSpan(snapshot, anchor)
+			if !found {
+				return false
+			}
+			close := bytes.LastIndexByte(data[:declarationEnd], '}')
+			if close < 0 {
+				return false
+			}
+			replaceSourceRange(input, module, close, close, []byte(indent+item+"\n"))
+			return true
+		default:
+			return false
+		}
+	}
+	declarationStart, declarationEnd, found := enclosingDeclarationSpan(snapshot, anchor)
+	if !found {
+		return false
+	}
+	declarationStart, declarationEnd = extendWholeLine(data, declarationStart, declarationEnd)
+	switch position {
+	case "before":
+		replaceSourceRange(input, module, declarationStart, declarationStart, []byte(declaration+"\n"))
+	case "after", "end":
+		replaceSourceRange(input, module, declarationEnd, declarationEnd, []byte(declaration+"\n"))
+	default:
+		return false
+	}
+	return true
+}
+
+func groupedDeclarationItem(kind SemanticSubjectKind, declaration string) (string, bool) {
+	switch kind {
+	case materialize.SubjectLayer, materialize.SubjectEntity, materialize.SubjectRelation, materialize.SubjectEntityRow, materialize.SubjectRelationRow:
+		first, last := strings.IndexByte(declaration, '\n'), strings.LastIndex(declaration, "\n}")
+		if first < 0 || last <= first {
+			return "", false
+		}
+		return declaration[first+1 : last], true
+	default:
+		return "", false
+	}
+}
+
+func enclosingDeclarationSpan(snapshot Snapshot, source index.SourceSubjectRecord) (int, int, bool) {
+	for _, file := range snapshot.LosslessSyntaxTree.Files {
+		if file.ModulePath != source.Module.ModulePath || file.Origin.Kind != source.Module.Origin.Kind {
+			continue
+		}
+		var best *syntax.Node
+		syntax.Walk(file.Root, func(node *syntax.Node) {
+			if node.Kind != syntax.NodeDeclaration || node.Span.Start > source.DeclarationRange.StartByte || node.Span.End < source.DeclarationRange.EndByte {
+				return
+			}
+			if best == nil || node.Span.End-node.Span.Start < best.Span.End-best.Span.Start {
+				best = node
+			}
+		})
+		if best != nil {
+			return best.Span.Start, best.Span.End, true
+		}
+	}
+	return 0, 0, false
 }
 
 func appendText(input *CompileInput, module, text string) {
@@ -681,17 +787,17 @@ func renderSpecialField(snapshot Snapshot, module, key string, value SemanticVal
 				entry := semanticMap(item.Map)
 				name := rawString(entry["key"])
 				text := rawString(entry["value"])
-				parts = append(parts, name+": "+strconv.Quote(text))
+				parts = append(parts, name+": "+quoteLDLString(text))
 			}
 			return "annotations { " + strings.Join(parts, ", ") + " }", true, true
 		}
 	case "forward_label":
 		if value.Kind == SemanticValueString {
-			return "label " + strconv.Quote(value.String), true, true
+			return "label " + quoteLDLString(value.String), true, true
 		}
 	case "description", "display_name", "intent", "icon", "color", "reverse_label", "filename", "label":
 		if value.Kind == SemanticValueString {
-			return key + " " + strconv.Quote(value.String), true, true
+			return key + " " + quoteLDLString(value.String), true, true
 		}
 	case "source_refs", "diagnostics", "state_summary", "interactive", "embed_assets", "bundle", "header", "source_manifest", "lookup_sheets", "hidden_ids", "formulas", "view_data_json":
 		if value.Kind == SemanticValueBoolean {
@@ -752,7 +858,7 @@ func renderSemanticValue(snapshot Snapshot, module string, value SemanticValue) 
 		if bareSemanticStrings[value.String] {
 			return value.String, true
 		}
-		return strconv.Quote(value.String), true
+		return quoteLDLString(value.String), true
 	case SemanticValueBlob:
 		return "", false
 	case SemanticValueArray:
@@ -778,6 +884,11 @@ func renderSemanticValue(snapshot Snapshot, module string, value SemanticValue) 
 	default:
 		return "", false
 	}
+}
+
+func quoteLDLString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }
 
 var bareSemanticStrings = map[string]bool{
@@ -904,22 +1015,14 @@ func rewriteBlockField(input *CompileInput, snapshot Snapshot, source index.Sour
 	}
 	declIndent := lineIndent(data, start)
 	fieldIndent := declIndent + "  "
-	lines := lineSpans(data, start, end)
-	for _, line := range lines {
-		raw := string(data[line[0]:line[1]])
-		trimmed := strings.TrimSpace(raw)
-		if strings.HasPrefix(raw, fieldIndent) && (trimmed == field || strings.HasPrefix(trimmed, field+" ") || strings.HasPrefix(trimmed, field+"{")) {
-			s, e := line[0], line[1]
-			if e < len(data) && data[e] == '\n' {
-				e++
-			}
-			if remove {
-				replaceSourceRange(input, path, s, e, nil)
-			} else {
-				replaceSourceRange(input, path, s, line[1], []byte(fieldIndent+rendered))
-			}
-			return true
+	if fieldStart, fieldEnd, found := authoredFieldNodeSpan(snapshot, source, field); found {
+		if remove {
+			lineStart, lineEnd := extendWholeLine(data, fieldStart, fieldEnd)
+			replaceSourceRange(input, path, lineStart, lineEnd, nil)
+		} else {
+			replaceSourceRange(input, path, fieldStart, fieldEnd, []byte(rendered))
 		}
+		return true
 	}
 	if remove {
 		return true
@@ -932,6 +1035,39 @@ func rewriteBlockField(input *CompileInput, snapshot Snapshot, source index.Sour
 	close += start
 	replaceSourceRange(input, path, close, close, []byte("\n"+fieldIndent+rendered))
 	return true
+}
+
+func authoredFieldNodeSpan(snapshot Snapshot, source index.SourceSubjectRecord, field string) (int, int, bool) {
+	for _, file := range snapshot.LosslessSyntaxTree.Files {
+		if file.ModulePath != source.Module.ModulePath || file.Origin.Kind != source.Module.Origin.Kind {
+			continue
+		}
+		var best *syntax.Node
+		syntax.Walk(file.Root, func(node *syntax.Node) {
+			if node.Kind != syntax.NodeStatement && node.Kind != syntax.NodeNestedBlock {
+				return
+			}
+			if node.Span.Start < source.DeclarationRange.StartByte || node.Span.End > source.DeclarationRange.EndByte || firstNodeToken(node) != field {
+				return
+			}
+			if best == nil || node.Span.End-node.Span.Start < best.Span.End-best.Span.Start {
+				best = node
+			}
+		})
+		if best != nil {
+			return best.Span.Start, best.Span.End, true
+		}
+	}
+	return 0, 0, false
+}
+
+func firstNodeToken(node *syntax.Node) string {
+	for _, child := range node.Children {
+		if token, ok := child.(syntax.TokenElement); ok {
+			return token.Token.Raw
+		}
+	}
+	return ""
 }
 
 func lineSpans(data []byte, start, end int) [][2]int {

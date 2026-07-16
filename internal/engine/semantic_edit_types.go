@@ -157,18 +157,44 @@ type PlannedSourceEditKind string
 const (
 	PlannedSourceCreate  PlannedSourceEditKind = "create"
 	PlannedSourceDelete  PlannedSourceEditKind = "delete"
+	PlannedSourceMove    PlannedSourceEditKind = "move"
 	PlannedSourceReplace PlannedSourceEditKind = "replace"
 )
 
-// PlannedSourceEdit is an in-process source edit. Replacement owns its bytes.
+// PlannedModuleRef and PlannedBlobRef mirror the frozen portable source-edit
+// identities without importing transport/generated packages into Engine.
+type PlannedModuleRef struct {
+	OriginKind  SourceOriginKind
+	PackAddress string
+	ModulePath  string
+}
+
+type PlannedBlobRef struct {
+	BlobID    string
+	Digest    string
+	Lifetime  string
+	MediaType string
+	Size      uint64
+	Bytes     []byte
+}
+
+// PlannedSourceEdit is the complete in-process SourceEdit union. Replacement
+// bytes are owned by the plan and mapped to a request-lifetime BlobRef only at
+// the endpoint boundary.
 type PlannedSourceEdit struct {
-	Kind         PlannedSourceEditKind
-	ModulePath   string
-	StartByte    int
-	EndByte      int
-	BeforeDigest string
-	AfterDigest  string
-	Replacement  []byte
+	Kind            PlannedSourceEditKind
+	BeforeModule    *PlannedModuleRef
+	AfterModule     *PlannedModuleRef
+	SourceRange     *SourceRange
+	BeforeDigest    string
+	AfterDigest     string
+	ReplacementBlob *PlannedBlobRef
+	// Byte-edit coordinates are retained for private overlay rebasing; they are
+	// never serialized as independent wire fields.
+	ModulePath  string
+	StartByte   int
+	EndByte     int
+	Replacement []byte
 }
 
 type PlannedSourceDiff struct {
@@ -239,13 +265,41 @@ type PlannedAuthoringImpact struct {
 	ImpactDigest            string
 }
 
+// IdentityLineage is authored rename/migration authority. Semantic diff never
+// infers identity from structural similarity; only these exact edges may pair
+// a before and after StableAddress.
+type IdentityLineage struct {
+	ChangeKind    SemanticChangeKind
+	Kind          SemanticSubjectKind
+	BeforeAddress string
+	AfterAddress  string
+}
+
+// SemanticPlanLimits are the generated Workbench limits after checked decimal
+// conversion. Zero values are accepted only for direct in-process callers and
+// select conservative compiler-derived defaults.
+type SemanticPlanLimits struct {
+	MaxItems       int64
+	MaxOutputBytes int64
+}
+
+type SemanticDocumentGeneration struct {
+	EndpointInstanceID string
+	DocumentHandle     string
+	Value              string
+}
+
 // SemanticEditPlanInput binds operations to the exact immutable source and
 // compile generation from which every precondition and diff is derived.
 type SemanticEditPlanInput struct {
-	BaseInput     CompileInput
+	BaseInput CompileInput
+	// BaseSnapshot is the ancestor generation named by Preconditions. BaseInput
+	// is the current head to which the batch is rebased.
 	BaseSnapshot  Snapshot
 	Batch         SemanticOperationBatch
 	Preconditions SemanticEditPreconditions
+	Generation    SemanticDocumentGeneration
+	Limits        SemanticPlanLimits
 }
 
 type SemanticEditPlan struct {

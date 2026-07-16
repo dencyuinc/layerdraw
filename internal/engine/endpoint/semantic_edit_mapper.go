@@ -3,9 +3,8 @@
 package endpoint
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,21 +17,26 @@ import (
 // complete generated Workbench operation contract and the pure Engine
 // planner. Generated validation runs before any planner-domain value exists.
 func MapSemanticEditPlanInput(baseInput engine.CompileInput, base engine.Snapshot, preconditions engineprotocol.EngineEditPreconditions, batch engineprotocol.SemanticOperationBatch) (engine.SemanticEditPlanInput, error) {
-	encoded, err := engineprotocol.EncodeSemanticOperationBatch(batch)
+	return mapSemanticEditPlanInput(baseInput, base, preconditions, batch, nil)
+}
+
+// MapPreviewOperationsPlanInput preserves the complete generated request,
+// including document generation and explicit response/work bounds.
+func MapPreviewOperationsPlanInput(baseInput engine.CompileInput, base engine.Snapshot, input engineprotocol.PreviewOperationsInput) (engine.SemanticEditPlanInput, error) {
+	if _, err := engineprotocol.EncodePreviewOperationsInput(input); err != nil {
+		return engine.SemanticEditPlanInput{}, fmt.Errorf("map preview operations input: %w", err)
+	}
+	return mapSemanticEditPlanInput(baseInput, base, input.Preconditions, input.Batch, &input.Limits)
+}
+
+func mapSemanticEditPlanInput(baseInput engine.CompileInput, base engine.Snapshot, preconditions engineprotocol.EngineEditPreconditions, batch engineprotocol.SemanticOperationBatch, limits *engineprotocol.WorkbenchLimits) (engine.SemanticEditPlanInput, error) {
+	_, err := engineprotocol.EncodeSemanticOperationBatch(batch)
 	if err != nil {
 		return engine.SemanticEditPlanInput{}, fmt.Errorf("map semantic operation batch: %w", err)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.UseNumber()
-	var wire struct {
-		Operations []map[string]any `json:"operations"`
-	}
-	if err := decoder.Decode(&wire); err != nil {
-		return engine.SemanticEditPlanInput{}, fmt.Errorf("decode validated semantic operation batch: %w", err)
-	}
-	operations := make([]engine.SemanticOperation, 0, len(wire.Operations))
-	for _, raw := range wire.Operations {
-		operation, mapErr := mapSemanticOperation(raw)
+	operations := make([]engine.SemanticOperation, 0, len(batch.Operations))
+	for _, generated := range batch.Operations {
+		operation, mapErr := mapGeneratedSemanticOperation(generated)
 		if mapErr != nil {
 			return engine.SemanticEditPlanInput{}, mapErr
 		}
@@ -57,163 +61,242 @@ func MapSemanticEditPlanInput(baseInput engine.CompileInput, base engine.Snapsho
 			pre.ExpectedSourceDigests = append(pre.ExpectedSourceDigests, engine.ExpectedSemanticSourceDigest{ModulePath: expected.Module.ModulePath, Digest: string(expected.Digest)})
 		}
 	}
-	return engine.SemanticEditPlanInput{BaseInput: baseInput, BaseSnapshot: base, Batch: engine.SemanticOperationBatch{Operations: operations}, Preconditions: pre}, nil
+	plan := engine.SemanticEditPlanInput{BaseInput: baseInput, BaseSnapshot: base, Batch: engine.SemanticOperationBatch{Operations: operations}, Preconditions: pre, Generation: engine.SemanticDocumentGeneration{EndpointInstanceID: string(preconditions.DocumentGeneration.DocumentHandle.EndpointInstanceID), DocumentHandle: preconditions.DocumentGeneration.DocumentHandle.Value, Value: string(preconditions.DocumentGeneration.Value)}}
+	if limits != nil {
+		maxItems, parseErr := strconv.ParseInt(string(limits.MaxItems), 10, 64)
+		if parseErr != nil {
+			return engine.SemanticEditPlanInput{}, fmt.Errorf("map max_items: %w", parseErr)
+		}
+		maxBytes, parseErr := strconv.ParseInt(string(limits.MaxOutputBytes), 10, 64)
+		if parseErr != nil {
+			return engine.SemanticEditPlanInput{}, fmt.Errorf("map max_output_bytes: %w", parseErr)
+		}
+		plan.Limits = engine.SemanticPlanLimits{MaxItems: maxItems, MaxOutputBytes: maxBytes}
+	}
+	return plan, nil
 }
 
-func mapSemanticOperation(raw map[string]any) (engine.SemanticOperation, error) {
-	op := engine.SemanticOperation{Kind: engine.SemanticOperationKind(stringValue(raw, "operation")), SubjectKind: engine.SemanticSubjectKind(stringValue(raw, "subject_kind")), ParentAddress: stringValue(raw, "parent_address"), TargetAddress: stringValue(raw, "target_address"), OwnerAddress: stringValue(raw, "owner_address"), ProjectAddress: stringValue(raw, "project_address"), RelationAddress: stringValue(raw, "relation_address"), RowAddress: stringValue(raw, "row_address"), EntityAddress: stringValue(raw, "entity_address"), LayerAddress: stringValue(raw, "layer_address"), TypeAddress: stringValue(raw, "type_address"), FromAddress: stringValue(raw, "from_address"), ToAddress: stringValue(raw, "to_address"), ID: stringValue(raw, "id"), NewID: stringValue(raw, "new_id"), NewProjectID: stringValue(raw, "new_project_id"), Endpoint: stringValue(raw, "endpoint"), Action: stringValue(raw, "action")}
-	if path, ok := raw["path"].([]any); ok {
-		for _, item := range path {
-			op.Path = append(op.Path, fmt.Sprint(item))
-		}
-	}
-	if value, ok := raw["value"]; ok {
-		mapped, err := mapTaggedSemanticValue(value)
-		if err != nil {
-			return op, err
-		}
-		op.Value = &mapped
-	}
-	if fields, ok := raw["fields"].(map[string]any); ok {
-		op.Fields = mapPlainObject(fields)
-	}
-	if values, ok := raw["values"].([]any); ok {
-		for _, item := range values {
-			cell, ok := item.(map[string]any)
-			if !ok {
-				return op, fmt.Errorf("map semantic row cell")
+func mapGeneratedSemanticOperation(generated engineprotocol.SemanticOperation) (engine.SemanticOperation, error) {
+	if generated.NonCreateSemanticOperation != nil {
+		value := generated.NonCreateSemanticOperation
+		op := engine.SemanticOperation{Kind: engine.SemanticOperationKind(value.Operation)}
+		copyGeneratedString := func(source any, target *string) {
+			reflected := reflect.ValueOf(source)
+			if reflected.Kind() == reflect.Pointer && !reflected.IsNil() {
+				*target = fmt.Sprint(reflected.Elem().Interface())
 			}
-			value, err := mapTaggedSemanticValue(cell["value"])
+		}
+		copyGeneratedString(value.Action, &op.Action)
+		copyGeneratedString(value.Endpoint, &op.Endpoint)
+		copyGeneratedString(value.EntityAddress, &op.EntityAddress)
+		copyGeneratedString(value.FromAddress, &op.FromAddress)
+		copyGeneratedString(value.ID, &op.ID)
+		if value.RowID != nil {
+			op.ID = string(*value.RowID)
+		}
+		copyGeneratedString(value.LayerAddress, &op.LayerAddress)
+		copyGeneratedString(value.NewID, &op.NewID)
+		copyGeneratedString(value.NewProjectID, &op.NewProjectID)
+		copyGeneratedString(value.OwnerAddress, &op.OwnerAddress)
+		copyGeneratedString(value.ParentAddress, &op.ParentAddress)
+		copyGeneratedString(value.ProjectAddress, &op.ProjectAddress)
+		copyGeneratedString(value.RelationAddress, &op.RelationAddress)
+		copyGeneratedString(value.RowAddress, &op.RowAddress)
+		copyGeneratedString(value.TargetAddress, &op.TargetAddress)
+		copyGeneratedString(value.ToAddress, &op.ToAddress)
+		copyGeneratedString(value.TypeAddress, &op.TypeAddress)
+		if value.Path != nil {
+			op.Path = append([]string(nil), (*value.Path)...)
+		}
+		if value.Value != nil {
+			mapped, err := mapGeneratedTaggedValue(*value.Value)
 			if err != nil {
 				return op, err
 			}
-			op.Values = append(op.Values, engine.SemanticRowCell{ColumnAddress: stringValue(cell, "column_address"), Value: value})
+			op.Value = &mapped
 		}
-	}
-	if absent, ok := raw["explicit_absent_column_addresses"].([]any); ok {
-		for _, item := range absent {
-			op.ExplicitAbsentColumnAddresses = append(op.ExplicitAbsentColumnAddresses, fmt.Sprint(item))
+		if value.Fields != nil {
+			op.Fields = mapGeneratedStructFields(reflect.ValueOf(*value.Fields))
 		}
+		if value.Values != nil {
+			for _, cell := range *value.Values {
+				mapped, err := mapGeneratedTaggedValue(cell.Value)
+				if err != nil {
+					return op, err
+				}
+				op.Values = append(op.Values, engine.SemanticRowCell{ColumnAddress: string(cell.ColumnAddress), Value: mapped})
+			}
+		}
+		if value.ExplicitAbsentColumnAddresses != nil {
+			for _, address := range *value.ExplicitAbsentColumnAddresses {
+				op.ExplicitAbsentColumnAddresses = append(op.ExplicitAbsentColumnAddresses, string(address))
+			}
+		}
+		if value.Placement != nil {
+			op.Placement = mapGeneratedPlacement(value.Placement)
+		}
+		return op, nil
 	}
-	if placement, ok := raw["placement"].(map[string]any); ok {
-		op.Placement = &engine.SemanticPlacementHint{ModulePath: stringValue(placement, "module_path"), GroupAnchorAddress: stringValue(placement, "group_anchor_address"), Position: stringValue(placement, "position")}
+	if generated.CreateSubjectOperation == nil {
+		return engine.SemanticOperation{}, fmt.Errorf("generated semantic operation has no alternative")
 	}
-	return op, nil
+	union := reflect.ValueOf(*generated.CreateSubjectOperation)
+	for index := 0; index < union.NumField(); index++ {
+		alternative := union.Field(index)
+		if alternative.IsNil() {
+			continue
+		}
+		operation := alternative.Elem()
+		op := engine.SemanticOperation{Kind: engine.OperationCreateSubject, ParentAddress: fmt.Sprint(operation.FieldByName("ParentAddress").Interface()), SubjectKind: engine.SemanticSubjectKind(fmt.Sprint(operation.FieldByName("SubjectKind").Interface())), ID: fmt.Sprint(operation.FieldByName("ID").Interface()), Fields: mapGeneratedStructFields(operation.FieldByName("Fields"))}
+		if placement := operation.FieldByName("Placement"); placement.IsValid() && !placement.IsNil() {
+			op.Placement = mapGeneratedPlacement(placement.Interface().(*engineprotocol.PlacementHint))
+		}
+		return op, nil
+	}
+	return engine.SemanticOperation{}, fmt.Errorf("generated create operation has no alternative")
 }
 
-func mapTaggedSemanticValue(input any) (engine.SemanticValue, error) {
-	raw, ok := input.(map[string]any)
-	if !ok {
-		return engine.SemanticValue{}, fmt.Errorf("semantic operation value is not an object")
+func mapGeneratedPlacement(value *engineprotocol.PlacementHint) *engine.SemanticPlacementHint {
+	out := &engine.SemanticPlacementHint{Position: string(value.Position)}
+	if value.ModulePath != nil {
+		out.ModulePath = string(*value.ModulePath)
 	}
-	kind := engine.SemanticValueKind(stringValue(raw, "kind"))
-	out := engine.SemanticValue{Kind: kind}
-	switch kind {
-	case engine.SemanticValueAbsent:
-	case engine.SemanticValueAddress:
-		out.Address = stringValue(raw, "address")
-	case engine.SemanticValueBoolean:
-		out.Boolean, _ = raw["boolean"].(bool)
-	case engine.SemanticValueDecimal:
-		out.Decimal = stringValue(raw, "decimal")
-	case engine.SemanticValueInteger:
-		value, err := numberInt64(raw["integer"])
+	if value.GroupAnchorAddress != nil {
+		out.GroupAnchorAddress = string(*value.GroupAnchorAddress)
+	}
+	return out
+}
+
+func mapGeneratedTaggedValue(value engineprotocol.SemanticOperationValue) (engine.SemanticValue, error) {
+	out := engine.SemanticValue{Kind: engine.SemanticValueKind(value.Kind)}
+	switch value.Kind {
+	case engineprotocol.SemanticOperationValueKindAbsent:
+	case engineprotocol.SemanticOperationValueKindAddress:
+		out.Address = string(*value.Address)
+	case engineprotocol.SemanticOperationValueKindBoolean:
+		out.Boolean = *value.Boolean
+	case engineprotocol.SemanticOperationValueKindDecimal:
+		out.Decimal = string(*value.Decimal)
+	case engineprotocol.SemanticOperationValueKindInteger:
+		integer, err := strconv.ParseInt(string(*value.Integer), 10, 64)
 		if err != nil {
 			return out, err
 		}
-		out.Integer = value
-	case engine.SemanticValueString:
-		out.String = stringValue(raw, "string")
-	case engine.SemanticValueBlob:
-		if blob, ok := raw["blob"].(map[string]any); ok {
-			out.Blob = stringValue(blob, "digest")
-		}
-	case engine.SemanticValueArray:
-		if values, ok := raw["array"].([]any); ok {
-			for _, value := range values {
-				mapped, err := mapTaggedSemanticValue(value)
-				if err != nil {
-					return out, err
-				}
-				out.Array = append(out.Array, mapped)
+		out.Integer = integer
+	case engineprotocol.SemanticOperationValueKindString:
+		out.String = *value.String
+	case engineprotocol.SemanticOperationValueKindBlob:
+		out.Blob = string(value.Blob.Digest)
+	case engineprotocol.SemanticOperationValueKindArray:
+		for _, item := range *value.Array {
+			mapped, err := mapGeneratedTaggedValue(item)
+			if err != nil {
+				return out, err
 			}
+			out.Array = append(out.Array, mapped)
 		}
-	case engine.SemanticValueMap:
-		if entries, ok := raw["map"].([]any); ok {
-			for _, value := range entries {
-				entry, ok := value.(map[string]any)
-				if !ok {
-					return out, fmt.Errorf("semantic map entry is not an object")
-				}
-				mapped, err := mapTaggedSemanticValue(entry["value"])
-				if err != nil {
-					return out, err
-				}
-				out.Map = append(out.Map, engine.SemanticMapEntry{Key: stringValue(entry, "key"), Value: mapped})
+	case engineprotocol.SemanticOperationValueKindMap:
+		for _, item := range *value.Map {
+			mapped, err := mapGeneratedTaggedValue(item.Value)
+			if err != nil {
+				return out, err
 			}
+			out.Map = append(out.Map, engine.SemanticMapEntry{Key: item.Key, Value: mapped})
 		}
 	default:
-		return out, fmt.Errorf("unknown semantic operation value kind %q", kind)
+		return out, fmt.Errorf("unknown semantic operation value kind %q", value.Kind)
 	}
 	return out, nil
 }
 
-func mapPlainObject(input map[string]any) []engine.SemanticMapEntry {
-	keys := make([]string, 0, len(input))
-	for key := range input {
-		keys = append(keys, key)
+func mapGeneratedStructFields(value reflect.Value) []engine.SemanticMapEntry {
+	if value.Kind() == reflect.Pointer {
+		value = value.Elem()
 	}
-	sort.Strings(keys)
-	out := make([]engine.SemanticMapEntry, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, engine.SemanticMapEntry{Key: key, Value: mapPlainValue(input[key])})
+	out := make([]engine.SemanticMapEntry, 0, value.NumField())
+	typeOf := value.Type()
+	for index := 0; index < value.NumField(); index++ {
+		field := value.Field(index)
+		if field.Kind() == reflect.Pointer && field.IsNil() {
+			continue
+		}
+		name := strings.Split(typeOf.Field(index).Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		out = append(out, engine.SemanticMapEntry{Key: name, Value: mapGeneratedPlainValue(field)})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
 }
-func mapPlainValue(input any) engine.SemanticValue {
-	switch value := input.(type) {
-	case nil:
-		return engine.SemanticValue{Kind: engine.SemanticValueAbsent}
-	case bool:
-		return engine.SemanticValue{Kind: engine.SemanticValueBoolean, Boolean: value}
-	case string:
-		if strings.HasPrefix(value, "ldl:") {
-			return engine.SemanticValue{Kind: engine.SemanticValueAddress, Address: value}
+
+func mapGeneratedPlainValue(value reflect.Value) engine.SemanticValue {
+	for value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface {
+		value = value.Elem()
+	}
+	typeOf := value.Type()
+	name, packagePath := typeOf.Name(), typeOf.PkgPath()
+	if value.Kind() == reflect.String {
+		text := value.String()
+		if name == "RelationCardinalityMaximum" && text == "1" {
+			return engine.SemanticValue{Kind: engine.SemanticValueInteger, Integer: 1}
 		}
-		return engine.SemanticValue{Kind: engine.SemanticValueString, String: value}
-	case json.Number:
-		if integer, err := value.Int64(); err == nil {
+		if strings.Contains(packagePath, "/gen/go/semantic") && (name == "StableAddress" || strings.HasSuffix(name, "Address")) {
+			return engine.SemanticValue{Kind: engine.SemanticValueAddress, Address: text}
+		}
+		if strings.Contains(packagePath, "/gen/go/protocolcommon") && strings.Contains(name, "Canonical") && (strings.Contains(name, "Integer") || strings.Contains(name, "Int64")) {
+			integer, _ := strconv.ParseInt(text, 10, 64)
 			return engine.SemanticValue{Kind: engine.SemanticValueInteger, Integer: integer}
 		}
-		return engine.SemanticValue{Kind: engine.SemanticValueDecimal, Decimal: value.String()}
-	case []any:
-		items := make([]engine.SemanticValue, 0, len(value))
-		for _, item := range value {
-			items = append(items, mapPlainValue(item))
+		if strings.Contains(packagePath, "/gen/go/semantic") && strings.Contains(name, "FiniteDecimal") {
+			return engine.SemanticValue{Kind: engine.SemanticValueDecimal, Decimal: text}
+		}
+		return engine.SemanticValue{Kind: engine.SemanticValueString, String: text}
+	}
+	switch value.Kind() {
+	case reflect.Bool:
+		return engine.SemanticValue{Kind: engine.SemanticValueBoolean, Boolean: value.Bool()}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return engine.SemanticValue{Kind: engine.SemanticValueInteger, Integer: value.Int()}
+	case reflect.Slice, reflect.Array:
+		items := make([]engine.SemanticValue, 0, value.Len())
+		for index := 0; index < value.Len(); index++ {
+			items = append(items, mapGeneratedPlainValue(value.Index(index)))
 		}
 		return engine.SemanticValue{Kind: engine.SemanticValueArray, Array: items}
-	case map[string]any:
-		return engine.SemanticValue{Kind: engine.SemanticValueMap, Map: mapPlainObject(value)}
+	case reflect.Struct:
+		if typeOf.Name() == "BlobRef" {
+			return engine.SemanticValue{Kind: engine.SemanticValueBlob, Blob: fmt.Sprint(value.FieldByName("Digest").Interface())}
+		}
+		if alternative, ok := generatedUnionAlternative(value); ok {
+			return mapGeneratedPlainValue(alternative)
+		}
+		return engine.SemanticValue{Kind: engine.SemanticValueMap, Map: mapGeneratedStructFields(value)}
+	case reflect.Map:
+		keys := value.MapKeys()
+		sort.Slice(keys, func(i, j int) bool { return fmt.Sprint(keys[i].Interface()) < fmt.Sprint(keys[j].Interface()) })
+		entries := make([]engine.SemanticMapEntry, 0, len(keys))
+		for _, key := range keys {
+			entries = append(entries, engine.SemanticMapEntry{Key: fmt.Sprint(key.Interface()), Value: mapGeneratedPlainValue(value.MapIndex(key))})
+		}
+		return engine.SemanticValue{Kind: engine.SemanticValueMap, Map: entries}
 	}
-	return engine.SemanticValue{Kind: engine.SemanticValueString, String: fmt.Sprint(input)}
+	return engine.SemanticValue{Kind: engine.SemanticValueString, String: fmt.Sprint(value.Interface())}
 }
-func stringValue(input map[string]any, key string) string {
-	if value, ok := input[key].(string); ok {
-		return value
+
+func generatedUnionAlternative(value reflect.Value) (reflect.Value, bool) {
+	typeOf := value.Type()
+	selected := reflect.Value{}
+	for index := 0; index < value.NumField(); index++ {
+		if strings.Split(typeOf.Field(index).Tag.Get("json"), ",")[0] != "-" || value.Field(index).Kind() != reflect.Pointer {
+			return reflect.Value{}, false
+		}
+		if !value.Field(index).IsNil() {
+			if selected.IsValid() {
+				return reflect.Value{}, false
+			}
+			selected = value.Field(index).Elem()
+		}
 	}
-	if value, ok := input[key].(json.Number); ok {
-		return value.String()
-	}
-	return ""
-}
-func numberInt64(input any) (int64, error) {
-	switch value := input.(type) {
-	case json.Number:
-		return value.Int64()
-	case string:
-		return strconv.ParseInt(value, 10, 64)
-	case float64:
-		return int64(value), nil
-	}
-	return 0, fmt.Errorf("invalid semantic integer")
+	return selected, selected.IsValid()
 }

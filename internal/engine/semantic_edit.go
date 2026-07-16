@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +37,9 @@ func (e Engine) PlanSemanticEdits(ctx context.Context, input SemanticEditPlanInp
 	if input.BaseInput.Mode != CompileProject || len(input.Batch.Operations) == 0 {
 		return invalidPlan(nil, []Diagnostic{plannerDiagnostic("LDL1801", "invalid_semantic_operation_batch", "semantic operations require a non-empty Project batch")}), nil
 	}
+	if input.Limits.MaxItems > 0 && int64(len(input.Batch.Operations)) > input.Limits.MaxItems {
+		return SemanticEditPlan{}, semanticPlanLimitError("semantic_operations", input.Limits.MaxItems, int64(len(input.Batch.Operations)))
+	}
 
 	// Recompile rather than trusting a caller-assembled snapshot. This binds all
 	// ranges, ownership, hashes, and semantic authority to the supplied bytes.
@@ -43,30 +47,44 @@ func (e Engine) PlanSemanticEdits(ctx context.Context, input SemanticEditPlanInp
 	if err != nil {
 		return SemanticEditPlan{}, err
 	}
-	base := baseResult.Snapshot()
-	if len(base.Diagnostics) != 0 {
-		return invalidPlan(nil, base.Diagnostics), nil
+	head := baseResult.Snapshot()
+	if len(head.Diagnostics) != 0 {
+		return invalidPlan(nil, head.Diagnostics), nil
 	}
-	if input.BaseSnapshot.DefinitionHash != "" && input.BaseSnapshot.DefinitionHash != base.DefinitionHash {
-		conflict := SemanticConflict{Kind: ConflictStaleRevision}
-		return invalidPlan([]SemanticConflict{conflict}, nil), nil
+	ancestor := input.BaseSnapshot
+	if ancestor.DefinitionHash == "" {
+		ancestor = head
 	}
-	if conflicts := validateSemanticPreconditions(base, input.Preconditions, input.Batch); len(conflicts) != 0 {
+	if ancestor.DefinitionHash != head.DefinitionHash && reflect.DeepEqual(ancestor.SemanticIndex, head.SemanticIndex) {
+		return invalidPlan([]SemanticConflict{{Kind: ConflictStaleRevision}}, nil), nil
+	}
+	if conflicts := validateSemanticPreconditions(ancestor, input.Preconditions, input.Batch); len(conflicts) != 0 {
 		return invalidPlan(conflicts, nil), nil
+	}
+	if ancestor.DefinitionHash != head.DefinitionHash {
+		if conflicts := validateSemanticRebase(ancestor, head, input.Batch); len(conflicts) != 0 {
+			return invalidPlan(conflicts, nil), nil
+		}
 	}
 
 	candidateInput := cloneSemanticCompileInput(input.BaseInput)
-	current := base
+	current := head
+	lineage := make([]IdentityLineage, 0)
 	for operationIndex, operation := range input.Batch.Operations {
 		if err := semanticEditCancellation(ctx, "semantic_edit_operation"); err != nil {
 			return SemanticEditPlan{}, err
 		}
 		beforeOperationTree := cloneSourceTree(candidateInput.ProjectSourceTree)
+		lineage = append(lineage, authoredIdentityLineage(current, operation)...)
 		conflict, diagnostic := applySemanticOperation(&candidateInput, current, operation)
 		if conflict != nil {
 			return invalidPlan([]SemanticConflict{*conflict}, nil), nil
 		}
 		if diagnostic != nil {
+			if diagnostic.Arguments == nil {
+				diagnostic.Arguments = map[string]string{}
+			}
+			diagnostic.Arguments["operation_index"] = strconv.Itoa(operationIndex)
 			return invalidPlan(nil, []Diagnostic{*diagnostic}), nil
 		}
 
@@ -102,9 +120,10 @@ func (e Engine) PlanSemanticEdits(ctx context.Context, input SemanticEditPlanInp
 	if err := semanticEditCancellation(ctx, "semantic_edit_diff"); err != nil {
 		return SemanticEditPlan{}, err
 	}
-	sourceDiff := buildPlannedSourceDiff(input.BaseInput.ProjectSourceTree, candidateInput.ProjectSourceTree)
-	semanticDiff := buildPlannedSemanticDiff(base, current)
-	impact := buildPlannedAuthoringImpact(base, current, sourceDiff, semanticDiff)
+	sourceDiff, semanticDiff, impact, derivedErr := BuildCanonicalAuthoringPlan(ctx, head, current, input.BaseInput.ProjectSourceTree, candidateInput.ProjectSourceTree, collapseIdentityLineage(lineage), input.Limits)
+	if derivedErr != nil {
+		return SemanticEditPlan{}, derivedErr
+	}
 	changed := make([]string, 0)
 	for path := range candidateInput.ProjectSourceTree {
 		if !bytes.Equal(input.BaseInput.ProjectSourceTree[path], candidateInput.ProjectSourceTree[path]) {
@@ -124,6 +143,154 @@ func semanticEditCancellation(ctx context.Context, stage string) error {
 		return &CompileError{Code: ErrorCodeCancelled, Category: ErrorCategoryCancelled, Stage: stage, cause: err}
 	}
 	return nil
+}
+
+func authoredIdentityLineage(snapshot Snapshot, operation SemanticOperation) []IdentityLineage {
+	var beforePrefix, afterPrefix string
+	changeKind := SemanticRenamed
+	switch operation.Kind {
+	case OperationRenameSubject:
+		beforePrefix = operation.TargetAddress
+		afterPrefix = renamedAddress(operation.TargetAddress, operation.NewID)
+	case OperationMigrateProjectIdentity:
+		beforePrefix = operation.ProjectAddress
+		afterPrefix = renamedAddress(operation.ProjectAddress, operation.NewProjectID)
+	case OperationMoveEntityToLayer:
+		return []IdentityLineage{{ChangeKind: SemanticMoved, Kind: materialize.SubjectEntity, BeforeAddress: operation.EntityAddress, AfterAddress: operation.EntityAddress}}
+	case OperationUpdateRelationEndpoint:
+		return []IdentityLineage{{ChangeKind: SemanticReferenceChanged, Kind: materialize.SubjectRelation, BeforeAddress: operation.RelationAddress, AfterAddress: operation.RelationAddress}}
+	default:
+		return nil
+	}
+	lineage := make([]IdentityLineage, 0)
+	for _, subject := range snapshot.SemanticIndex.Subjects {
+		if subject.Address == beforePrefix || strings.HasPrefix(subject.Address, beforePrefix+":") {
+			lineage = append(lineage, IdentityLineage{ChangeKind: changeKind, Kind: subject.Kind, BeforeAddress: subject.Address, AfterAddress: afterPrefix + strings.TrimPrefix(subject.Address, beforePrefix)})
+		}
+	}
+	return lineage
+}
+
+func collapseIdentityLineage(input []IdentityLineage) []IdentityLineage {
+	for index := range input {
+		for {
+			advanced := false
+			for _, candidate := range input {
+				if input[index].AfterAddress == candidate.BeforeAddress && candidate.AfterAddress != candidate.BeforeAddress {
+					input[index].AfterAddress = candidate.AfterAddress
+					advanced = true
+					break
+				}
+			}
+			if !advanced {
+				break
+			}
+		}
+	}
+	return input
+}
+
+func validateSemanticRebase(ancestor, head Snapshot, batch SemanticOperationBatch) []SemanticConflict {
+	ancestorSubjects := semanticSubjectsByAddress(ancestor)
+	headSubjects := semanticSubjectsByAddress(head)
+	conflicts := make([]SemanticConflict, 0)
+	for _, operation := range batch.Operations {
+		target := operation.TargetAddress
+		switch operation.Kind {
+		case OperationUpdateSubjectField:
+			if _, ok := headSubjects[target]; !ok {
+				conflicts = append(conflicts, SemanticConflict{Kind: ConflictDeleteVsUpdate, TargetAddress: target, Path: append([]string(nil), operation.Path...)})
+				continue
+			}
+			beforeValue, beforeOK := semanticObjectPath(normalizedSubject(ancestor, target), operation.Path)
+			headValue, headOK := semanticObjectPath(normalizedSubject(head, target), operation.Path)
+			if beforeOK != headOK || !reflect.DeepEqual(beforeValue, headValue) {
+				conflicts = append(conflicts, SemanticConflict{Kind: ConflictSameFieldChanged, TargetAddress: target, Path: append([]string(nil), operation.Path...)})
+			}
+		case OperationMoveEntityToLayer:
+			validateRebaseField(&conflicts, ancestor, head, operation.EntityAddress, []string{"layer_address"})
+		case OperationUpdateRelationEndpoint:
+			validateRebaseField(&conflicts, ancestor, head, operation.RelationAddress, []string{operation.Endpoint + "_address"})
+		case OperationDeleteSubject, OperationRenameSubject:
+			validateRebaseSubject(&conflicts, ancestorSubjects, headSubjects, operation.TargetAddress)
+		case OperationDeleteRow:
+			validateRebaseSubject(&conflicts, ancestorSubjects, headSubjects, operation.RowAddress)
+		case OperationMigrateProjectIdentity:
+			validateRebaseSubject(&conflicts, ancestorSubjects, headSubjects, operation.ProjectAddress)
+		case OperationUpsertRow:
+			kind := rowKindForOwner(ancestorSubjects[operation.OwnerAddress])
+			address := predictedChildAddress(operation.OwnerAddress, kind, operation.ID)
+			if _, existed := ancestorSubjects[address]; existed {
+				validateRebaseSubject(&conflicts, ancestorSubjects, headSubjects, address)
+			} else if childSetHashFor(ancestor, operation.OwnerAddress, kind) != childSetHashFor(head, operation.OwnerAddress, kind) {
+				conflicts = append(conflicts, SemanticConflict{Kind: ConflictChildSetChanged, OwnerAddress: operation.OwnerAddress, ChildKind: kind})
+			}
+		case OperationCreateSubject, OperationCreateRelation:
+			kind := operation.SubjectKind
+			if operation.Kind == OperationCreateRelation {
+				kind = materialize.SubjectRelation
+			}
+			if childSetHashFor(ancestor, operation.ParentAddress, kind) != childSetHashFor(head, operation.ParentAddress, kind) {
+				conflicts = append(conflicts, SemanticConflict{Kind: ConflictChildSetChanged, OwnerAddress: operation.ParentAddress, ChildKind: kind})
+			}
+		}
+	}
+	sortSemanticConflicts(conflicts)
+	return uniqueSemanticConflicts(conflicts)
+}
+
+func semanticSubjectsByAddress(snapshot Snapshot) map[string]index.SemanticSubject {
+	out := make(map[string]index.SemanticSubject, len(snapshot.SemanticIndex.Subjects))
+	for _, subject := range snapshot.SemanticIndex.Subjects {
+		out[subject.Address] = subject
+	}
+	return out
+}
+
+func validateRebaseSubject(conflicts *[]SemanticConflict, ancestor, head map[string]index.SemanticSubject, address string) {
+	prior, existed := ancestor[address]
+	current, present := head[address]
+	if !existed || !present {
+		*conflicts = append(*conflicts, SemanticConflict{Kind: ConflictDeleteVsUpdate, TargetAddress: address})
+	} else if prior.OwnHash != current.OwnHash {
+		*conflicts = append(*conflicts, SemanticConflict{Kind: ConflictSubjectChanged, TargetAddress: address})
+	}
+}
+
+func validateRebaseField(conflicts *[]SemanticConflict, ancestor, head Snapshot, address string, path []string) {
+	if normalizedSubject(head, address) == nil {
+		*conflicts = append(*conflicts, SemanticConflict{Kind: ConflictDeleteVsUpdate, TargetAddress: address, Path: path})
+		return
+	}
+	beforeValue, beforeOK := semanticObjectPath(normalizedSubject(ancestor, address), path)
+	afterValue, afterOK := semanticObjectPath(normalizedSubject(head, address), path)
+	if beforeOK != afterOK || !reflect.DeepEqual(beforeValue, afterValue) {
+		*conflicts = append(*conflicts, SemanticConflict{Kind: ConflictSameFieldChanged, TargetAddress: address, Path: path})
+	}
+}
+
+func semanticObjectPath(object map[string]any, path []string) (any, bool) {
+	var current any = object
+	for _, token := range path {
+		mapping, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = mapping[token]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func childSetHashFor(snapshot Snapshot, owner string, kind SemanticSubjectKind) string {
+	for _, childSet := range snapshot.ChildSetHashes {
+		if childSet.OwnerAddress == owner && childSet.ChildKind == kind {
+			return childSet.Hash
+		}
+	}
+	return ""
 }
 
 func invalidPlan(conflicts []SemanticConflict, diagnostics []Diagnostic) SemanticEditPlan {
@@ -238,7 +405,12 @@ func validateSemanticPreconditions(snapshot Snapshot, pre SemanticEditPreconditi
 			conflicts = append(conflicts, SemanticConflict{Kind: ConflictSubjectChanged, TargetAddress: address})
 		}
 	}
+	createdInBatch := map[string]bool{}
+	createdKinds := map[string]SemanticSubjectKind{}
 	requireChild := func(owner string, kind SemanticSubjectKind) {
+		if createdInBatch[owner] {
+			return
+		}
 		key := owner + "\x00" + string(kind)
 		if _, ok := providedChildren[key]; !ok {
 			conflicts = append(conflicts, SemanticConflict{Kind: ConflictChildSetChanged, OwnerAddress: owner, ChildKind: kind})
@@ -248,14 +420,26 @@ func validateSemanticPreconditions(snapshot Snapshot, pre SemanticEditPreconditi
 		switch operation.Kind {
 		case OperationCreateSubject:
 			requireChild(operation.ParentAddress, operation.SubjectKind)
+			createdAddress := predictedChildAddress(operation.ParentAddress, operation.SubjectKind, operation.ID)
+			createdInBatch[createdAddress], createdKinds[createdAddress] = true, operation.SubjectKind
 		case OperationCreateRelation:
 			requireChild(operation.ParentAddress, materialize.SubjectRelation)
+			createdAddress := predictedChildAddress(operation.ParentAddress, materialize.SubjectRelation, operation.ID)
+			createdInBatch[createdAddress], createdKinds[createdAddress] = true, materialize.SubjectRelation
 		case OperationUpsertRow:
-			rowAddress := predictedChildAddress(operation.OwnerAddress, rowKindForOwner(subjects[operation.OwnerAddress]), operation.ID)
-			if _, ok := subjects[rowAddress]; ok {
+			ownerSubject := subjects[operation.OwnerAddress]
+			if kind := createdKinds[operation.OwnerAddress]; kind != "" {
+				ownerSubject.Kind = kind
+			}
+			rowKind := rowKindForOwner(ownerSubject)
+			rowAddress := predictedChildAddress(operation.OwnerAddress, rowKind, operation.ID)
+			if createdInBatch[rowAddress] {
+				continue
+			} else if _, ok := subjects[rowAddress]; ok {
 				requireSubject(rowAddress)
 			} else {
-				requireChild(operation.OwnerAddress, rowKindForOwner(subjects[operation.OwnerAddress]))
+				requireChild(operation.OwnerAddress, rowKind)
+				createdInBatch[rowAddress] = true
 			}
 		case OperationDeleteRow:
 			requireSubject(operation.RowAddress)
@@ -410,6 +594,10 @@ func subjectRecord(snapshot Snapshot, address string) (index.SemanticSubject, in
 }
 
 func applyDelete(input *CompileInput, snapshot Snapshot, address string) (*SemanticConflict, *Diagnostic) {
+	return applyDeleteWithReservation(input, snapshot, address, true)
+}
+
+func applyDeleteWithReservation(input *CompileInput, snapshot Snapshot, address string, reserve bool) (*SemanticConflict, *Diagnostic) {
 	semantic, source, ok := subjectRecord(snapshot, address)
 	if !ok {
 		return &SemanticConflict{Kind: ConflictDeleteVsUpdate, TargetAddress: address}, nil
@@ -426,7 +614,14 @@ func applyDelete(input *CompileInput, snapshot Snapshot, address string) (*Seman
 		}
 	}
 	start, end = extendWholeLine(data, start, end)
+	beforeTree := cloneSourceTree(input.ProjectSourceTree)
 	replaceSourceRange(input, path, start, end, nil)
+	if reserve {
+		rebased := rebaseSnapshotSourceRanges(snapshot, beforeTree, input.ProjectSourceTree)
+		if !materializeDeletionReservation(input, rebased, semantic, address) {
+			return &SemanticConflict{Kind: ConflictPlacementChanged, TargetAddress: address}, nil
+		}
+	}
 	return nil, nil
 }
 
@@ -517,7 +712,228 @@ func applyRename(input *CompileInput, snapshot Snapshot, address, newID string, 
 	for _, edit := range replacements {
 		replaceSourceRange(input, edit.path, edit.start, edit.end, []byte(edit.text))
 	}
+	if !materializeRenameMove(input, snapshot, semantic, address, newID, project) {
+		return &SemanticConflict{Kind: ConflictPlacementChanged, TargetAddress: address}, nil
+	}
 	return nil, nil
+}
+
+func materializeDeletionReservation(input *CompileInput, snapshot Snapshot, subject index.SemanticSubject, address string) bool {
+	id := terminalID(address)
+	category := reservationCategory(subject.Kind)
+	if category == "" {
+		return false
+	}
+	if subject.Kind == materialize.SubjectEntityRow || subject.Kind == materialize.SubjectRelationRow {
+		if subject.OwnerAddress == nil {
+			return false
+		}
+		_, owner, ok := subjectRecord(snapshot, *subject.OwnerAddress)
+		return ok && upsertOwnerIdentifierList(input, snapshot, owner, "", "reserve_rows", id)
+	}
+	if !isTopLevelReservationKind(subject.Kind) && subject.OwnerAddress != nil {
+		_, owner, ok := subjectRecord(snapshot, *subject.OwnerAddress)
+		return ok && upsertOwnerIdentifierList(input, snapshot, owner, "reserve", category, id)
+	}
+	return upsertTopLevelIdentifierList(input, input.EntryPath, "reserved", category, id)
+}
+
+func isTopLevelReservationKind(kind SemanticSubjectKind) bool {
+	switch kind {
+	case materialize.SubjectEntityType, materialize.SubjectRelationType, materialize.SubjectLayer, materialize.SubjectEntity, materialize.SubjectRelation, materialize.SubjectQuery, materialize.SubjectView, materialize.SubjectReference:
+		return true
+	default:
+		return false
+	}
+}
+
+func reservationCategory(kind SemanticSubjectKind) string {
+	switch kind {
+	case materialize.SubjectEntityType:
+		return "entity_types"
+	case materialize.SubjectRelationType:
+		return "relation_types"
+	case materialize.SubjectLayer:
+		return "layers"
+	case materialize.SubjectEntity:
+		return "entities"
+	case materialize.SubjectRelation:
+		return "relations"
+	case materialize.SubjectQuery:
+		return "queries"
+	case materialize.SubjectView:
+		return "views"
+	case materialize.SubjectReference:
+		return "references"
+	case materialize.SubjectEntityTypeColumn, materialize.SubjectRelationTypeColumn:
+		return "columns"
+	case materialize.SubjectEntityTypeConstraint, materialize.SubjectRelationTypeConstraint:
+		return "constraints"
+	case materialize.SubjectQueryParameter:
+		return "parameters"
+	case materialize.SubjectViewTableColumn:
+		return "table_columns"
+	case materialize.SubjectViewExport:
+		return "exports"
+	case materialize.SubjectEntityRow, materialize.SubjectRelationRow:
+		return "rows"
+	default:
+		return ""
+	}
+}
+
+func materializeRenameMove(input *CompileInput, snapshot Snapshot, subject index.SemanticSubject, address, newID string, project bool) bool {
+	kind := moveSourceKind(subject.Kind)
+	if project {
+		kind = "project"
+	}
+	if kind == "" {
+		return false
+	}
+	parts := []string{kind}
+	if !isTopLevelReservationKind(subject.Kind) && subject.OwnerAddress != nil {
+		parts = append(parts, terminalID(*subject.OwnerAddress))
+	}
+	parts = append(parts, terminalID(address), "->", newID)
+	return appendTopLevelBlockEntry(input, input.EntryPath, "moves", strings.Join(parts, " "))
+}
+
+func moveSourceKind(kind SemanticSubjectKind) string {
+	switch kind {
+	case materialize.SubjectEntityType:
+		return "entity_type"
+	case materialize.SubjectRelationType:
+		return "relation_type"
+	case materialize.SubjectLayer:
+		return "layer"
+	case materialize.SubjectEntity:
+		return "entity"
+	case materialize.SubjectRelation:
+		return "relation"
+	case materialize.SubjectQuery:
+		return "query"
+	case materialize.SubjectView:
+		return "view"
+	case materialize.SubjectReference:
+		return "reference"
+	case materialize.SubjectEntityTypeColumn:
+		return "entity_type_column"
+	case materialize.SubjectRelationTypeColumn:
+		return "relation_type_column"
+	case materialize.SubjectEntityTypeConstraint:
+		return "entity_type_constraint"
+	case materialize.SubjectRelationTypeConstraint:
+		return "relation_type_constraint"
+	case materialize.SubjectEntityRow:
+		return "entity_row"
+	case materialize.SubjectRelationRow:
+		return "relation_row"
+	case materialize.SubjectQueryParameter:
+		return "query_parameter"
+	case materialize.SubjectViewTableColumn:
+		return "view_table_column"
+	case materialize.SubjectViewExport:
+		return "view_export"
+	default:
+		return ""
+	}
+}
+
+func upsertTopLevelIdentifierList(input *CompileInput, module, block, category, id string) bool {
+	data, ok := input.ProjectSourceTree[module]
+	if !ok {
+		return false
+	}
+	if open, close, found := findNamedBlock(data, 0, len(data), block); found {
+		return upsertIdentifierList(input, module, open, close, category, id, lineIndent(data, open)+"  ")
+	}
+	appendText(input, module, "\n"+block+" {\n  "+category+" ["+id+"]\n}\n")
+	return true
+}
+
+func upsertOwnerIdentifierList(input *CompileInput, snapshot Snapshot, owner index.SourceSubjectRecord, block, category, id string) bool {
+	path := owner.Module.ModulePath
+	data := input.ProjectSourceTree[path]
+	start, end := owner.DeclarationRange.StartByte, owner.DeclarationRange.EndByte
+	if block == "" {
+		return insertOrUpdateOwnerStatement(input, data, path, start, end, category, id)
+	}
+	if open, close, found := findNamedBlock(data, start, end, block); found {
+		return upsertIdentifierList(input, path, open, close, category, id, lineIndent(data, open)+"  ")
+	}
+	close := bytes.LastIndexByte(data[start:end], '}')
+	if close < 0 {
+		return false
+	}
+	close += start
+	indent := lineIndent(data, start) + "  "
+	text := "\n" + indent + block + " {\n" + indent + "  " + category + " [" + id + "]\n" + indent + "}"
+	replaceSourceRange(input, path, close, close, []byte(text))
+	return true
+}
+
+func insertOrUpdateOwnerStatement(input *CompileInput, data []byte, path string, start, end int, statement, id string) bool {
+	for _, span := range lineSpans(data, start, end) {
+		line := strings.TrimSpace(string(data[span[0]:span[1]]))
+		if strings.HasPrefix(line, statement+" [") {
+			return replaceIdentifierListLine(input, data, path, span[0], span[1], statement, id)
+		}
+	}
+	close := bytes.LastIndexByte(data[start:end], '}')
+	if close < 0 {
+		indent := lineIndent(data, start)
+		replaceSourceRange(input, path, end, end, []byte(" {\n"+indent+"  "+statement+" ["+id+"]\n"+indent+"}"))
+		return true
+	}
+	close += start
+	indent := lineIndent(data, start) + "  "
+	replaceSourceRange(input, path, close, close, []byte(indent+statement+" ["+id+"]\n"))
+	return true
+}
+
+func upsertIdentifierList(input *CompileInput, path string, open, close int, category, id, indent string) bool {
+	data := input.ProjectSourceTree[path]
+	for _, span := range lineSpans(data, open+1, close) {
+		if strings.HasPrefix(strings.TrimSpace(string(data[span[0]:span[1]])), category+" [") {
+			return replaceIdentifierListLine(input, data, path, span[0], span[1], category, id)
+		}
+	}
+	replaceSourceRange(input, path, close, close, []byte(indent+category+" ["+id+"]\n"))
+	return true
+}
+
+func replaceIdentifierListLine(input *CompileInput, data []byte, path string, start, end int, category, id string) bool {
+	raw := string(data[start:end])
+	left, right := strings.Index(raw, "["), strings.LastIndex(raw, "]")
+	if left < 0 || right < left {
+		return false
+	}
+	set := map[string]bool{id: true}
+	for _, value := range strings.Fields(strings.ReplaceAll(raw[left+1:right], ",", " ")) {
+		set[value] = true
+	}
+	values := make([]string, 0, len(set))
+	for value := range set {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	replacement := raw[:left+1] + strings.Join(values, ", ") + raw[right:]
+	replaceSourceRange(input, path, start, end, []byte(replacement))
+	return true
+}
+
+func appendTopLevelBlockEntry(input *CompileInput, module, block, entry string) bool {
+	data, ok := input.ProjectSourceTree[module]
+	if !ok {
+		return false
+	}
+	if open, close, found := findNamedBlock(data, 0, len(data), block); found {
+		indent := lineIndent(data, open) + "  "
+		replaceSourceRange(input, module, close, close, []byte(indent+entry+"\n"))
+		return true
+	}
+	appendText(input, module, "\n"+block+" {\n  "+entry+"\n}\n")
+	return true
 }
 
 func declarationFirstIdentifierSpan(snapshot Snapshot, source index.SourceSubjectRecord) (syntax.Span, bool) {
@@ -620,7 +1036,7 @@ func sourceReference(snapshot Snapshot, modulePath, address string) (string, boo
 		}
 	}
 	for _, subject := range snapshot.SemanticIndex.Subjects {
-		if subject.Address == address && subject.Module != nil && subject.Module.Origin.Kind == "project" {
+		if subject.Address == address {
 			if i := strings.LastIndex(address, ":"); i >= 0 {
 				return address[i+1:], true
 			}
