@@ -19,15 +19,33 @@ import type {
   CompileResponseEnvelope,
   HandshakeRequestEnvelope,
   HandshakeResponseEnvelope,
+  ListModulesInput,
+  ListModulesRequestEnvelope,
+  ListModulesResponseEnvelope,
+  OpenDocumentInput,
+  OpenDocumentRequestEnvelope,
+  OpenDocumentResponseEnvelope,
+  ReadModulesInput,
+  ReadModulesRequestEnvelope,
+  ReadModulesResponseEnvelope,
 } from "@layerdraw/protocol/engine";
 import {
   decodeCompileInput,
   decodeCompileResponseEnvelope,
   decodeHandshakeResponseEnvelope,
+  decodeListModulesResponseEnvelope,
+  decodeOpenDocumentResponseEnvelope,
+  decodeReadModulesResponseEnvelope,
   encodeCompileInput,
   encodeCompileRequestEnvelope,
   encodeHandshakeRequestEnvelope,
+  encodeListModulesRequestEnvelope,
+  encodeOpenDocumentRequestEnvelope,
+  encodeReadModulesRequestEnvelope,
   isCompileInput,
+  isListModulesInput,
+  isOpenDocumentInput,
+  isReadModulesInput,
   schemaDigest,
 } from "@layerdraw/protocol/engine";
 import {
@@ -49,6 +67,7 @@ import {
   type EngineEndpointSnapshot,
   type OutputBlob,
   type PortableCompileRequest,
+  type WorkbenchOutcome,
 } from "../index.js";
 import {
   blobRefFingerprint,
@@ -398,6 +417,16 @@ type CompileTerminal =
   | Readonly<{ kind: "invalid"; error: unknown }>
   | Readonly<{ kind: "rejected"; error: unknown }>;
 
+type WorkbenchEnvelope =
+  | OpenDocumentResponseEnvelope
+  | ListModulesResponseEnvelope
+  | ReadModulesResponseEnvelope;
+
+type WorkbenchTerminal<T extends WorkbenchEnvelope> =
+  | Readonly<{ kind: "valid"; outcome: WorkbenchOutcome<T> }>
+  | Readonly<{ kind: "invalid"; error: unknown }>
+  | Readonly<{ kind: "rejected"; error: unknown }>;
+
 interface Deferred<T> {
   readonly promise: Promise<T>;
   readonly settled: boolean;
@@ -607,6 +636,23 @@ class EngineClientImplementation implements EngineClient {
     TransportShutdownRecord
   >();
   private _state: EngineClientState = "failed";
+  readonly workbench = Object.freeze({
+    openDocument: (
+      input: OpenDocumentInput,
+      options?: CompileOptions,
+    ): Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>> =>
+      this.openDocument(input, options),
+    listModules: (
+      input: ListModulesInput,
+      options?: CompileOptions,
+    ): Promise<WorkbenchOutcome<ListModulesResponseEnvelope>> =>
+      this.listModules(input, options),
+    readModules: (
+      input: ReadModulesInput,
+      options?: CompileOptions,
+    ): Promise<WorkbenchOutcome<ReadModulesResponseEnvelope>> =>
+      this.readModules(input, options),
+  });
 
   constructor(
     factory: AdmittedTransportFactory,
@@ -715,6 +761,48 @@ class EngineClientImplementation implements EngineClient {
       if (this.active === active) this.active = undefined;
     }).catch(() => undefined);
     return promise;
+  }
+
+  private openDocument(
+    input: OpenDocumentInput,
+    options?: CompileOptions,
+  ): Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>> {
+    if (!isOpenDocumentInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation(
+      "engine.open_document",
+      input,
+      options,
+      (envelope) => encodeOpenDocumentRequestEnvelope(envelope as OpenDocumentRequestEnvelope),
+      decodeOpenDocumentResponseEnvelope,
+    );
+  }
+
+  private listModules(
+    input: ListModulesInput,
+    options?: CompileOptions,
+  ): Promise<WorkbenchOutcome<ListModulesResponseEnvelope>> {
+    if (!isListModulesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation(
+      "engine.list_modules",
+      input,
+      options,
+      (envelope) => encodeListModulesRequestEnvelope(envelope as ListModulesRequestEnvelope),
+      decodeListModulesResponseEnvelope,
+    );
+  }
+
+  private readModules(
+    input: ReadModulesInput,
+    options?: CompileOptions,
+  ): Promise<WorkbenchOutcome<ReadModulesResponseEnvelope>> {
+    if (!isReadModulesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation(
+      "engine.read_modules",
+      input,
+      options,
+      (envelope) => encodeReadModulesRequestEnvelope(envelope as ReadModulesRequestEnvelope),
+      decodeReadModulesResponseEnvelope,
+    );
   }
 
   restart(): Promise<void> {
@@ -1133,6 +1221,219 @@ class EngineClientImplementation implements EngineClient {
     }
   }
 
+  private executeWorkbenchOperation<TResponse extends WorkbenchEnvelope>(
+    operation: OpenDocumentRequestEnvelope["operation"] | ListModulesRequestEnvelope["operation"] | ReadModulesRequestEnvelope["operation"],
+    payload: unknown,
+    options: CompileOptions | undefined,
+    encodeEnvelope: (envelope: {
+      deadline_at: string;
+      operation: string;
+      payload: unknown;
+      protocol: typeof ENGINE_PROTOCOL;
+      request_id: string;
+    }) => string,
+    decodeEnvelope: (text: string) => TResponse,
+  ): Promise<WorkbenchOutcome<TResponse>> {
+    const endpoint = this.readyEndpoint();
+    if (!endpointSupportsOperation(endpoint, operation)) {
+      throw new EngineClientStateError("NOT_READY", { capability: operation });
+    }
+    let normalized: NormalizedCompileOptions;
+    try {
+      normalized = normalizeCompileOptions(options, this.options);
+    } catch (error) {
+      throw inputFault(error);
+    }
+    const requestId = normalized.requestId ?? this.nextRequestId();
+    if (this.active?.requestId === requestId) {
+      throw new EngineClientStateError("DUPLICATE_REQUEST_ID", { requestId });
+    }
+    if (this.active !== undefined) {
+      throw new EngineClientBackpressureError("SINGLE_FLIGHT_BUSY", {
+        generation: endpoint.generation,
+      });
+    }
+    if (normalized.signal !== undefined && signalAborted(normalized.signal)) {
+      return Promise.resolve(
+        deepFreeze({
+          origin: "client",
+          outcome: "cancelled",
+          requestId,
+          endpointGeneration: endpoint.generation,
+          reason: "signal",
+          blobs: [] as const,
+        }),
+      );
+    }
+    const active: ActiveCompile = {
+      requestId,
+      generation: endpoint.generation,
+      interrupt: deferred<CompileInterrupt>(),
+      joined: deferred<void>(),
+    };
+    this.active = active;
+    const promise = this.executeWorkbench(
+      active,
+      endpoint,
+      operation,
+      payload,
+      normalized,
+      encodeEnvelope,
+      decodeEnvelope,
+    );
+    void promise.finally(() => {
+      if (this.active === active) this.active = undefined;
+    }).catch(() => undefined);
+    return promise;
+  }
+
+  private async executeWorkbench<TResponse extends WorkbenchEnvelope>(
+    active: ActiveCompile,
+    endpoint: EndpointContext,
+    operation: string,
+    payload: unknown,
+    options: NormalizedCompileOptions,
+    encodeEnvelope: (envelope: {
+      deadline_at: string;
+      operation: string;
+      payload: unknown;
+      protocol: typeof ENGINE_PROTOCOL;
+      request_id: string;
+    }) => string,
+    decodeEnvelope: (text: string) => TResponse,
+  ): Promise<WorkbenchOutcome<TResponse>> {
+    let timer: InternalTimerHandle | undefined;
+    let removeAbort: (() => void) | undefined;
+    let exchange: AdmittedExchange | undefined;
+    const digests = new DigestSequence(this.runtime);
+    const deadlineMs = this.runtime.now() + options.timeoutMs;
+    try {
+      timer = this.runtime.setTimer(() => {
+        active.interrupt.resolve({ kind: "cancel", reason: "timeout" });
+      }, options.timeoutMs);
+      if (options.signal !== undefined) {
+        const listener = (): void => {
+          active.interrupt.resolve({ kind: "cancel", reason: "signal" });
+        };
+        try {
+          options.signal.addEventListener("abort", listener, { once: true });
+          removeAbort = (): void => {
+            try {
+              options.signal?.removeEventListener("abort", listener);
+            } catch {
+              // Hostile signal cleanup cannot expose its thrown value.
+            }
+          };
+          if (signalAborted(options.signal)) listener();
+        } catch {
+          throw new EngineClientInputError("INVALID_ARGUMENT");
+        }
+      }
+
+      const beforeSend = await Promise.race([
+        Promise.resolve({ kind: "ready" as const }),
+        active.interrupt.promise,
+      ]);
+      if (beforeSend.kind === "cancel") {
+        active.joined.resolve();
+        if (beforeSend.barrier !== undefined) await beforeSend.barrier;
+        return clientCancellation(active, beforeSend.reason);
+      }
+      if (beforeSend.kind === "fault") {
+        active.joined.resolve();
+        throw await this.replaceForFault(beforeSend.fault, active);
+      }
+
+      const controlText = encodeEnvelope({
+        deadline_at: new Date(deadlineMs).toISOString(),
+        operation,
+        payload,
+        protocol: ENGINE_PROTOCOL,
+        request_id: active.requestId,
+      });
+      validateOutgoingControl(controlText, endpoint.limits);
+      const control = encodeControl(controlText);
+      try {
+        if (endpoint.request === undefined) throw new TypeError("Invalid request");
+        exchange = admitExchange(endpoint.request({
+          exchangeId: this.nextExchangeId(),
+          control,
+          blobs: [],
+        }));
+        if (!exchange.valid) throw new TypeError("Invalid exchange");
+      } catch {
+        throw await this.replaceForFault(
+          new EngineClientTransportError("TRANSFER_FAILED"),
+          active,
+        );
+      }
+
+      const terminal = this.observeWorkbenchTerminal(
+        exchange,
+        endpoint,
+        active.requestId,
+        digests,
+        decodeEnvelope,
+      );
+      const winner = await Promise.race([
+        terminal.then((result) =>
+          result.kind === "valid"
+            ? ({ kind: "response" as const, outcome: result.outcome })
+            : ({ kind: "response-fault" as const, error: result.error }),
+        ),
+        active.interrupt.promise,
+      ]);
+      if (winner.kind === "cancel") {
+        await digests.abortAndJoin();
+        const cancelResult = await this.cancelExchange(exchange);
+        const terminalResult = await this.withBound(
+          terminal,
+          this.options.cancelGraceMs,
+          undefined,
+        );
+        const terminalIsInvalid = terminalResult?.kind === "invalid";
+        const reusable =
+          cancelResult.reusable &&
+          !terminalIsInvalid &&
+          terminalResult !== undefined;
+        const engineCancellation =
+          terminalResult?.kind === "valid" &&
+          terminalResult.outcome.origin === "engine" &&
+          terminalResult.outcome.outcome === "cancelled"
+            ? terminalResult.outcome
+            : undefined;
+        active.joined.resolve();
+        if (
+          !reusable &&
+          winner.reason !== "restart" &&
+          winner.reason !== "dispose"
+        ) {
+          await this.replaceAfterCancellation(active);
+        }
+        if (winner.barrier !== undefined) await winner.barrier;
+        return engineCancellation ?? clientCancellation(active, winner.reason);
+      }
+      if (winner.kind === "fault") {
+        await digests.abortAndJoin();
+        active.joined.resolve();
+        throw await this.replaceForFault(winner.fault, active);
+      }
+      if (winner.kind === "response-fault") {
+        await digests.abortAndJoin();
+        active.joined.resolve();
+        throw await this.replaceForFault(winner.error, active);
+      }
+      await digests.abortAndJoin();
+      active.joined.resolve();
+      return winner.outcome;
+    } finally {
+      removeAbort?.();
+      if (timer !== undefined) this.runtime.clearTimer(timer);
+      await digests.abortAndJoin();
+      active.joined.resolve();
+    }
+  }
+
   private async verifyInputDigests(
     prepared: PreparedCompile,
     digests: DigestSequence,
@@ -1281,6 +1582,131 @@ class EngineClientImplementation implements EngineClient {
       origin: "engine",
       outcome: "success",
       response: envelope as unknown as CompileSuccessResponse,
+      blobs: outputs,
+    });
+  }
+
+  private observeWorkbenchTerminal<TResponse extends WorkbenchEnvelope>(
+    exchange: AdmittedExchange,
+    endpoint: EndpointContext,
+    requestId: string,
+    digests: DigestSequence,
+    decodeEnvelope: (text: string) => TResponse,
+  ): Promise<WorkbenchTerminal<TResponse>> {
+    return exchange.response.then(
+      async (settlement): Promise<WorkbenchTerminal<TResponse>> => {
+        if (settlement.kind !== "fulfilled") {
+          return {
+            kind: "rejected",
+            error: settlement.kind === "rejected"
+              ? settlement.reason
+              : new EngineClientTransportError("TRANSFER_FAILED"),
+          };
+        }
+        try {
+          return {
+            kind: "valid",
+            outcome: await this.decodeWorkbenchOutcome(
+              settlement.value,
+              endpoint,
+              requestId,
+              digests,
+              decodeEnvelope,
+            ),
+          };
+        } catch (error) {
+          return { kind: "invalid", error };
+        }
+      },
+    );
+  }
+
+  private async decodeWorkbenchOutcome<TResponse extends WorkbenchEnvelope>(
+    raw: InternalTransportResponse,
+    endpoint: EndpointContext,
+    requestId: string,
+    digests: DigestSequence,
+    decodeEnvelope: (text: string) => TResponse,
+  ): Promise<WorkbenchOutcome<TResponse>> {
+    const response = validateTransportResponse(raw, endpoint.limits);
+    let envelope: TResponse;
+    try {
+      envelope = decodeEnvelope(
+        decodeControl(response.control, endpoint.limits.maxControlDepth),
+      );
+    } catch {
+      throw new EngineClientDecodeError("MALFORMED_MESSAGE");
+    }
+    if (envelope.request_id !== requestId) {
+      throw new EngineClientDecodeError("CORRELATION_MISMATCH", {
+        generation: endpoint.generation,
+      });
+    }
+    if (
+      envelope.protocol.name !== "engine" ||
+      envelope.protocol.version !== "1.0"
+    ) {
+      throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+    }
+    if (envelope.engine_release !== endpoint.engineRelease) {
+      throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+    }
+    if (envelope.outcome !== "success") {
+      if (response.blobs.length !== 0) {
+        throw new EngineClientDecodeError("UNEXPECTED_BLOB");
+      }
+      return deepFreeze({
+        origin: "engine",
+        outcome: envelope.outcome,
+        response: envelope,
+        blobs: [] as const,
+      });
+    }
+    const expected = uniqueRefs(collectBlobRefsDeep(envelope.payload), "output");
+    if (response.blobs.length < expected.size) {
+      throw new EngineClientDecodeError("MISSING_BLOB");
+    }
+    if (response.blobs.length > expected.size) {
+      throw new EngineClientDecodeError("UNEXPECTED_BLOB");
+    }
+    const received = new Map<string, ArrayBuffer>();
+    for (const blob of response.blobs) {
+      const ref = expected.get(blob.blobId);
+      if (ref === undefined || received.has(blob.blobId)) {
+        throw new EngineClientDecodeError("UNEXPECTED_BLOB");
+      }
+      const length = fixedArrayBufferByteLength(blob.bytes);
+      if (length === undefined || BigInt(ref.size) !== BigInt(length)) {
+        throw new EngineClientDecodeError("OUTPUT_SIZE_MISMATCH");
+      }
+      let owned: ArrayBuffer;
+      try {
+        owned = this.runtime.transferArrayBuffer(blob.bytes);
+      } catch {
+        throw new EngineClientDecodeError("MALFORMED_MESSAGE");
+      }
+      let digestBytes: Uint8Array;
+      try {
+        digestBytes = await digests.sha256(new Uint8Array(owned));
+      } catch {
+        throw new EngineClientTransportError("DIGEST_FAILED");
+      }
+      const digest = bytesToHex(digestBytes);
+      if (`sha256:${digest}` !== ref.digest) {
+        throw new EngineClientDecodeError("OUTPUT_DIGEST_MISMATCH");
+      }
+      received.set(blob.blobId, owned);
+    }
+    const outputs: OutputBlob[] = [];
+    for (const ref of expected.values()) {
+      const bytes = received.get(ref.blob_id);
+      if (bytes === undefined) throw new EngineClientDecodeError("MISSING_BLOB");
+      outputs.push(deepFreeze({ ref, bytes: new Uint8Array(bytes) }));
+    }
+    return deepFreeze({
+      origin: "engine",
+      outcome: "success",
+      response: envelope,
       blobs: outputs,
     });
   }
@@ -1777,10 +2203,22 @@ function signalAborted(signal: EngineAbortSignal): boolean {
   }
 }
 
+function endpointSupportsOperation(endpoint: EndpointContext, operation: string): boolean {
+  const capability = endpoint.snapshot.handshake.capability_manifest.operations[operation];
+  return capability?.enabled === true;
+}
+
 function clientCancellation(
   active: ActiveCompile,
   reason: ClientCancellationReason,
-): CompileOutcome {
+): Readonly<{
+  origin: "client";
+  outcome: "cancelled";
+  requestId: string;
+  endpointGeneration: number;
+  reason: ClientCancellationReason;
+  blobs: readonly [];
+}> {
   return deepFreeze({
     origin: "client",
     outcome: "cancelled",
@@ -1789,6 +2227,29 @@ function clientCancellation(
     reason,
     blobs: [] as const,
   });
+}
+
+function collectBlobRefsDeep(value: unknown): readonly BlobRef[] {
+  const refs: BlobRef[] = [];
+  const visit = (candidate: unknown): void => {
+    if (isBlobRef(candidate)) {
+      refs.push(candidate);
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item);
+      return;
+    }
+    if (
+      typeof candidate === "object" &&
+      candidate !== null &&
+      Object.getPrototypeOf(candidate) === Object.prototype
+    ) {
+      for (const item of Object.values(candidate)) visit(item);
+    }
+  };
+  visit(value);
+  return refs;
 }
 
 function uniqueRefs(

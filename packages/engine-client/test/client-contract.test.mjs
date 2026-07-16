@@ -95,6 +95,45 @@ test("compile preserves exact engine outcome provenance", async () => {
   }
 });
 
+test("workbench facade routes generated operations without interpreting LDL", async () => {
+  const { request } = makePortableRequest();
+  const seen = [];
+  const { client } = await create({
+    async workbench(request) {
+      seen.push(request.operation);
+      return {
+        response: {
+          diagnostics: [],
+          engine_release: "0.0.0-dev",
+          failure: {
+            category: "io",
+            code: "workbench.test.failed",
+            message: "safe failure",
+            retryable: false,
+            workbench_category: "execution_failed",
+          },
+          outcome: "failed",
+          protocol: { name: "engine", version: "1.0" },
+          request_id: request.request_id,
+        },
+        blobs: [],
+      };
+    },
+  });
+  const limits = { max_items: "10", max_output_bytes: "10000" };
+  const opened = await client.workbench.openDocument(
+    { compile_input: request.input, requested_limits: limits },
+    { requestId: "wb-open" },
+  );
+  assert.equal(opened.origin, "engine");
+  assert.equal(opened.outcome, "failed");
+  assert.equal(opened.response.request_id, "wb-open");
+  assert.equal(opened.response.failure.workbench_category, "execution_failed");
+  assert.deepEqual(opened.blobs, []);
+  assert.deepEqual(seen, ["engine.open_document"]);
+  await client.dispose();
+});
+
 test("success validates every output and transfers caller-owned bytes", async () => {
   let delivered;
   const { client } = await create({

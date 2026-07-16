@@ -171,14 +171,14 @@ func FuzzCapabilityNormalization(f *testing.F) {
 		if !idempotent || !slices.Equal(required, idempotentRequired) || !slices.Equal(optional, idempotentOptional) {
 			t.Fatalf("normalization is not idempotent: %v/%v -> %v/%v", required, optional, idempotentRequired, idempotentOptional)
 		}
-		statuses := requestedCapabilityStatuses([]string{OperationCompile, OperationHandshake}, required, optional, ProtocolVersion)
+		statuses := requestedCapabilityStatuses(expectedOperations(), required, optional, ProtocolVersion)
 		if !slices.IsSortedFunc(statuses, func(left, right protocolcommon.RequestedCapabilityStatus) int {
 			return stringCompare(string(left.CapabilityID), string(right.CapabilityID))
 		}) {
 			t.Fatalf("capability statuses are not canonical: %+v", statuses)
 		}
 		for _, status := range statuses {
-			known := status.CapabilityID == OperationCompile || status.CapabilityID == OperationHandshake
+			known := slices.Contains(expectedOperations(), string(status.CapabilityID))
 			if status.Enabled != known {
 				t.Fatalf("capability changed known/unknown status: %+v", status)
 			}
@@ -196,7 +196,7 @@ func FuzzCapabilityNormalization(f *testing.F) {
 }
 
 func fuzzCapabilityInputs(data []byte) ([]protocolcommon.CapabilityID, []protocolcommon.CapabilityID) {
-	universe := []protocolcommon.CapabilityID{OperationCompile, OperationHandshake, "engine.alpha", "engine.beta", "engine.gamma", "future.delta"}
+	universe := []protocolcommon.CapabilityID{OperationCompile, OperationHandshake, OperationOpenDocument, OperationReadModules, "engine.alpha", "engine.beta", "engine.gamma", "future.delta"}
 	if len(data) == 0 {
 		return []protocolcommon.CapabilityID{}, []protocolcommon.CapabilityID{}
 	}
@@ -325,8 +325,10 @@ func FuzzManifestETagOrderIndependence(f *testing.F) {
 
 		reordered := firstManifest
 		reordered.Operations = map[string]protocolcommon.OperationCapability{}
-		reordered.Operations[OperationHandshake] = firstManifest.Operations[OperationHandshake]
-		reordered.Operations[OperationCompile] = firstManifest.Operations[OperationCompile]
+		for index := len(expectedOperations()) - 1; index >= 0; index-- {
+			operation := expectedOperations()[index]
+			reordered.Operations[operation] = firstManifest.Operations[operation]
+		}
 		etag, err := manifestETag(reordered)
 		if err != nil || etag != firstManifest.ManifestEtag {
 			t.Fatalf("operation map insertion order changed manifest ETag: %s != %s (%v)", etag, firstManifest.ManifestEtag, err)

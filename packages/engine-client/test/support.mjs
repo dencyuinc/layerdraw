@@ -6,8 +6,14 @@ import { readFile } from "node:fs/promises";
 import {
   decodeCompileRequestEnvelope,
   decodeHandshakeRequestEnvelope,
+  decodeListModulesRequestEnvelope,
+  decodeOpenDocumentRequestEnvelope,
+  decodeReadModulesRequestEnvelope,
   encodeCompileResponseEnvelope,
   encodeHandshakeResponseEnvelope,
+  encodeListModulesResponseEnvelope,
+  encodeOpenDocumentResponseEnvelope,
+  encodeReadModulesResponseEnvelope,
 } from "@layerdraw/protocol/engine";
 
 const root = new URL("../../../", import.meta.url);
@@ -258,10 +264,8 @@ export class StrictFakeTransport {
     }
     const control = JSON.parse(decode(input.control));
     const operation = control.operation;
-    const decoded =
-      operation === "engine.handshake"
-        ? decodeHandshakeRequestEnvelope(decode(input.control))
-        : decodeCompileRequestEnvelope(decode(input.control));
+    const controlText = decode(input.control);
+    const decoded = decodeRequestEnvelope(operation, controlText);
     const responseBox = promiseBox();
     const record = { input, decoded, operation, responseBox, cancelCount: 0 };
     this.requests.push(record);
@@ -277,6 +281,21 @@ export class StrictFakeTransport {
           responseBox.resolve({
             control: encode(encodeHandshakeResponseEnvelope(response)),
             blobs: [],
+          });
+          return;
+        }
+        if (operation !== "engine.compile") {
+          const result = await this.factory.workbench(
+            decoded,
+            input.blobs,
+            this.endpointIndex,
+            this,
+            record,
+          );
+          if (result === StrictFakeTransport.PENDING) return;
+          responseBox.resolve({
+            control: encode(encodeWorkbenchResponse(operation, result.response ?? result)),
+            blobs: result.blobs ?? [],
           });
           return;
         }
@@ -341,6 +360,36 @@ export class StrictFakeTransport {
 
 StrictFakeTransport.PENDING = Symbol("pending");
 
+function decodeRequestEnvelope(operation, controlText) {
+  switch (operation) {
+    case "engine.handshake":
+      return decodeHandshakeRequestEnvelope(controlText);
+    case "engine.compile":
+      return decodeCompileRequestEnvelope(controlText);
+    case "engine.open_document":
+      return decodeOpenDocumentRequestEnvelope(controlText);
+    case "engine.list_modules":
+      return decodeListModulesRequestEnvelope(controlText);
+    case "engine.read_modules":
+      return decodeReadModulesRequestEnvelope(controlText);
+    default:
+      throw new Error(`unsupported fake operation ${operation}`);
+  }
+}
+
+function encodeWorkbenchResponse(operation, response) {
+  switch (operation) {
+    case "engine.open_document":
+      return encodeOpenDocumentResponseEnvelope(response);
+    case "engine.list_modules":
+      return encodeListModulesResponseEnvelope(response);
+    case "engine.read_modules":
+      return encodeReadModulesResponseEnvelope(response);
+    default:
+      throw new Error(`unsupported fake workbench response ${operation}`);
+  }
+}
+
 export async function makeFactory(overrides = {}) {
   const handshakeFixture = await fixture(
     "schemas/fixtures/engine/handshake-success.json",
@@ -390,6 +439,26 @@ export async function makeFactory(overrides = {}) {
     async compile(request) {
       if (overrides.compile) return overrides.compile(...arguments);
       return { response: await rejectedResponse(request.request_id), blobs: [] };
+    },
+    async workbench(request) {
+      if (overrides.workbench) return overrides.workbench(...arguments);
+      return {
+        response: {
+          diagnostics: [],
+          engine_release: "0.0.0-dev",
+          failure: {
+            category: "io",
+            code: "workbench.fake.unimplemented",
+            message: "Fake workbench response is not implemented.",
+            retryable: false,
+            workbench_category: "execution_failed",
+          },
+          outcome: "failed",
+          protocol: { name: "engine", version: "1.0" },
+          request_id: request.request_id,
+        },
+        blobs: [],
+      };
     },
     async cancel(record, transport) {
       if (overrides.cancel) return overrides.cancel(record, transport);

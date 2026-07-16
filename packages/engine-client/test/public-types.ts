@@ -5,9 +5,15 @@ import type {
   CompileRequestBlob,
   EngineClient,
   EngineClientErrorKind,
+  EngineWorkbenchClient,
   PortableCompileRequest,
   RequestBlobRef,
+  WorkbenchOutcome,
 } from "../src/index.js";
+import type {
+  OpenDocumentInput,
+  OpenDocumentResponseEnvelope,
+} from "@layerdraw/protocol/engine";
 
 declare const client: EngineClient;
 declare const ref: RequestBlobRef;
@@ -38,10 +44,16 @@ void invalidCopy;
 declare const request: PortableCompileRequest;
 const outcomePromise: Promise<CompileOutcome> = client.compile(request);
 void outcomePromise;
+declare const openInput: OpenDocumentInput;
+const workbench: EngineWorkbenchClient = client.workbench;
+const openPromise: Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>> =
+  workbench.openDocument(openInput);
+void openPromise;
 
 type PublicKeys = keyof EngineClient;
 const allowed: PublicKeys[] = [
   "state",
+  "workbench",
   "getEndpoint",
   "getCapabilities",
   "hasCapability",

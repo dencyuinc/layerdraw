@@ -4,6 +4,7 @@ package endpoint
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -31,4 +32,17 @@ func RequestContext(parent context.Context, deadline *protocolcommon.Rfc3339Time
 	}
 	ctx, cancel := context.WithDeadline(parent, parsed)
 	return ctx, cancel, nil
+}
+
+// RequestContextFromControl extracts the shared optional deadline field from a
+// generated Engine operation envelope without exposing generated scalar types
+// to byte transports.
+func RequestContextFromControl(parent context.Context, control []byte) (context.Context, context.CancelFunc, error) {
+	var meta struct {
+		DeadlineAt *protocolcommon.Rfc3339Time `json:"deadline_at,omitempty"`
+	}
+	if err := json.Unmarshal(control, &meta); err != nil {
+		return nil, nil, fmt.Errorf("decode request deadline metadata: %w", err)
+	}
+	return RequestContext(parent, meta.DeadlineAt)
 }

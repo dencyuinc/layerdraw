@@ -47,6 +47,31 @@ func newTestDescriptor(t *testing.T) *Descriptor {
 	return descriptor
 }
 
+func expectedOperations() []string {
+	return []string{
+		OperationCloseDocument,
+		OperationCompile,
+		OperationFindSymbols,
+		OperationFindUsages,
+		OperationFormatScope,
+		OperationGetNeighbors,
+		OperationHandshake,
+		OperationInspectSubgraph,
+		OperationListModules,
+		OperationListReferences,
+		OperationOpenDocument,
+		OperationOrganizeWorkspace,
+		OperationPreviewFragment,
+		OperationPreviewSourcePatch,
+		OperationReadDeclarations,
+		OperationReadModules,
+		OperationReadReferences,
+		OperationReadRows,
+		OperationReadScope,
+		OperationReplaceSourceTree,
+	}
+}
+
 func validRequest() engineprotocol.HandshakeRequestEnvelope {
 	return engineprotocol.HandshakeRequestEnvelope{
 		Operation: engineprotocol.HandshakeRequestEnvelopeOperationValue,
@@ -124,10 +149,10 @@ func TestNegotiateCompatibleEngineProtocol(t *testing.T) {
 	if manifest.ManifestScope != protocolcommon.ManifestScopeEndpoint || manifest.ManifestVersion != 1 {
 		t.Fatalf("unexpected manifest identity: %+v", manifest)
 	}
-	if !slices.Equal(manifest.Transports, []string{TransportInProcess}) || len(manifest.Operations) != 2 {
+	if !slices.Equal(manifest.Transports, []string{TransportInProcess}) || len(manifest.Operations) != len(expectedOperations()) {
 		t.Fatalf("unexpected endpoint catalog: %+v", manifest)
 	}
-	for _, operation := range []string{OperationCompile, OperationHandshake} {
+	for _, operation := range expectedOperations() {
 		capability, found := manifest.Operations[operation]
 		if !found || !capability.Enabled || capability.UnavailableReason != nil || capability.ProtocolVersion != ProtocolVersion {
 			t.Fatalf("invalid operation capability %s: %+v", operation, capability)
@@ -138,6 +163,11 @@ func TestNegotiateCompatibleEngineProtocol(t *testing.T) {
 	}
 	if manifest.Operations[OperationCompile].Limits == nil || manifest.Operations[OperationHandshake].Limits != nil {
 		t.Fatalf("operation limit ownership is incorrect: %+v", manifest.Operations)
+	}
+	for _, operation := range expectedOperations() {
+		if operation != OperationCompile && manifest.Operations[operation].Limits != nil {
+			t.Fatalf("non-compile operation owns compile limits: %s %+v", operation, manifest.Operations[operation])
+		}
 	}
 	assertEmptyManifestSurfaces(t, manifest)
 	computedETag, err := manifestETag(manifest)
@@ -151,7 +181,12 @@ func TestNegotiateCompatibleEngineProtocol(t *testing.T) {
 	if negotiated.EndpointInstanceID() != descriptor.EndpointInstanceID() || negotiated.ManifestETag() != manifest.ManifestEtag || negotiated.EngineRelease() != response.EngineRelease || negotiated.ReleaseManifestDigest() != descriptor.ReleaseManifestDigest() {
 		t.Fatalf("context identity does not match response")
 	}
-	if !negotiated.SupportsOperation(OperationCompile) || !negotiated.SupportsOperation(OperationHandshake) || negotiated.SupportsOperation("engine.describe") {
+	for _, operation := range expectedOperations() {
+		if !negotiated.SupportsOperation(operation) {
+			t.Fatalf("context does not support advertised operation %s", operation)
+		}
+	}
+	if negotiated.SupportsOperation("engine.describe") {
 		t.Fatalf("context operation set is not exact: %v", negotiated.Operations())
 	}
 	if _, err := engineprotocol.EncodeHandshakeResponseEnvelope(response); err != nil {
@@ -511,7 +546,7 @@ func TestDescriptorValidationAndDefensiveCopies(t *testing.T) {
 	transports[0] = "mutated"
 	operations := descriptor.Operations()
 	operations[0] = "engine.describe"
-	if descriptor.Transports()[0] != TransportInProcess || descriptor.Operations()[0] != OperationCompile {
+	if descriptor.Transports()[0] != TransportInProcess || slices.Contains(descriptor.Operations(), "engine.describe") {
 		t.Fatal("descriptor getter exposed mutable storage")
 	}
 	if descriptor.SourceRevision() != "2420c79361ba6875a997ff1053f559c051a4b14b" || descriptor.Limits() != DefaultLimitPolicy() {
@@ -563,9 +598,10 @@ func TestManifestETagDeterminismAndSensitivity(t *testing.T) {
 	}
 
 	reordered := baseManifest
-	reordered.Operations = map[string]protocolcommon.OperationCapability{
-		OperationHandshake: baseManifest.Operations[OperationHandshake],
-		OperationCompile:   baseManifest.Operations[OperationCompile],
+	reordered.Operations = map[string]protocolcommon.OperationCapability{}
+	for index := len(expectedOperations()) - 1; index >= 0; index-- {
+		operation := expectedOperations()[index]
+		reordered.Operations[operation] = baseManifest.Operations[operation]
 	}
 	reorderedETag, err := manifestETag(reordered)
 	if err != nil || reorderedETag != baseETag {
@@ -635,13 +671,13 @@ func TestMutationIsolationAcrossResponsesAndContext(t *testing.T) {
 	returnedOperations[0] = "engine.changed"
 
 	second, secondContext := negotiate(t, descriptor, request)
-	if second.Payload.CapabilityManifest.Transports[0] != TransportInProcess || len(second.Payload.CapabilityManifest.Operations) != 2 || second.Payload.CapabilityStatuses[0].CapabilityID != OperationCompile {
+	if second.Payload.CapabilityManifest.Transports[0] != TransportInProcess || len(second.Payload.CapabilityManifest.Operations) != len(expectedOperations()) || second.Payload.CapabilityStatuses[0].CapabilityID != OperationCompile {
 		t.Fatalf("caller mutation contaminated later response: %+v", second.Payload)
 	}
 	if second.Payload.CapabilityStatuses[1].UnavailableReason == nil || *second.Payload.CapabilityStatuses[1].UnavailableReason != protocolcommon.UnavailableReasonUnsupported {
 		t.Fatalf("caller mutation contaminated unavailable reason: %+v", second.Payload.CapabilityStatuses)
 	}
-	if negotiated.ManifestETag() != originalETag || secondContext.ManifestETag() != originalETag || negotiated.Operations()[0] != OperationCompile || negotiated.DefaultCompileLimits() != originalDefaults {
+	if negotiated.ManifestETag() != originalETag || secondContext.ManifestETag() != originalETag || !negotiated.SupportsOperation(OperationCompile) || negotiated.DefaultCompileLimits() != originalDefaults {
 		t.Fatal("caller mutation contaminated immutable context")
 	}
 }

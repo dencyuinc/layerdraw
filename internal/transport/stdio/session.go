@@ -102,7 +102,7 @@ const (
 type terminalArbiter struct {
 	mu          sync.Mutex
 	kind        terminalKind
-	response    engineprotocol.CompileResponseEnvelope
+	response    endpoint.DispatchResponse
 	responseSet bool
 }
 
@@ -122,8 +122,12 @@ func (arbiter *terminalArbiter) claimExecutionPublication() bool {
 
 // claimExecution linearizes a non-publication Execute result, or completes an
 // already-committed publication with its exact generated response.
-func (arbiter *terminalArbiter) claimExecution(response engineprotocol.CompileResponseEnvelope) bool {
+func (arbiter *terminalArbiter) claimExecution(raw any) bool {
 	if arbiter == nil {
+		return false
+	}
+	response, ok := dispatchResponse(raw)
+	if !ok {
 		return false
 	}
 	arbiter.mu.Lock()
@@ -141,8 +145,12 @@ func (arbiter *terminalArbiter) claimExecution(response engineprotocol.CompileRe
 	return true
 }
 
-func (arbiter *terminalArbiter) claimCancellation(response engineprotocol.CompileResponseEnvelope) bool {
+func (arbiter *terminalArbiter) claimCancellation(raw any) bool {
 	if arbiter == nil {
+		return false
+	}
+	response, ok := dispatchResponse(raw)
+	if !ok {
 		return false
 	}
 	arbiter.mu.Lock()
@@ -156,8 +164,12 @@ func (arbiter *terminalArbiter) claimCancellation(response engineprotocol.Compil
 	return true
 }
 
-func (arbiter *terminalArbiter) claimTransport(response engineprotocol.CompileResponseEnvelope) bool {
+func (arbiter *terminalArbiter) claimTransport(raw any) bool {
 	if arbiter == nil {
+		return false
+	}
+	response, ok := dispatchResponse(raw)
+	if !ok {
 		return false
 	}
 	arbiter.mu.Lock()
@@ -171,9 +183,24 @@ func (arbiter *terminalArbiter) claimTransport(response engineprotocol.CompileRe
 	return true
 }
 
-func (arbiter *terminalArbiter) snapshot() (terminalKind, engineprotocol.CompileResponseEnvelope, bool) {
+func dispatchResponse(raw any) (endpoint.DispatchResponse, bool) {
+	switch value := raw.(type) {
+	case endpoint.DispatchResponse:
+		return value, value.Control != nil
+	case engineprotocol.CompileResponseEnvelope:
+		encoded, err := engineprotocol.EncodeCompileResponseEnvelope(value)
+		if err != nil {
+			return endpoint.DispatchResponse{}, false
+		}
+		return endpoint.DispatchResponse{Operation: endpoint.OperationCompile, RequestID: value.RequestID, Control: encoded, Outcome: value.Outcome, Failure: value.Failure}, true
+	default:
+		return endpoint.DispatchResponse{}, false
+	}
+}
+
+func (arbiter *terminalArbiter) snapshot() (terminalKind, endpoint.DispatchResponse, bool) {
 	if arbiter == nil {
-		return terminalUndecided, engineprotocol.CompileResponseEnvelope{}, false
+		return terminalUndecided, endpoint.DispatchResponse{}, false
 	}
 	arbiter.mu.Lock()
 	defer arbiter.mu.Unlock()
@@ -183,8 +210,9 @@ func (arbiter *terminalArbiter) snapshot() (terminalKind, engineprotocol.Compile
 type requestStream struct {
 	id           uint64
 	requestID    string
+	operation    string
 	controlBytes uint64
-	plan         *endpoint.CompilePlan
+	plan         endpoint.DispatchPlan
 	ctx          context.Context
 	cancel       context.CancelFunc
 	phase        streamPhase
@@ -198,6 +226,13 @@ type requestStream struct {
 	terminal     terminalArbiter
 }
 
+func (stream *requestStream) planOperation() string {
+	if stream == nil || stream.operation == "" {
+		return endpoint.OperationCompile
+	}
+	return stream.operation
+}
+
 type readResult struct {
 	frame Frame
 	err   error
@@ -205,7 +240,7 @@ type readResult struct {
 
 type dispatchResult struct {
 	stream   *requestStream
-	response engineprotocol.CompileResponseEnvelope
+	response endpoint.DispatchResponse
 	blobs    []endpoint.OutputBlob
 	err      error
 }
@@ -444,12 +479,12 @@ func (s *session) acceptControl(frame Frame) error {
 		return s.writeStreamError(frame.StreamID, "invalid_request_id")
 	}
 	if active := s.requestIDs[route.RequestID]; active != nil && active.phase != phaseTerminal {
-		if route.Operation == endpoint.OperationCompile {
-			response, err := s.config.Dispatcher.CompileTransportResponse(route.RequestID, endpoint.CompileTransportDuplicateRequest)
+		if s.negotiated != nil && s.negotiated.SupportsOperation(route.Operation) {
+			response, err := s.config.Dispatcher.DispatchTransportFailureResponse(route.Operation, route.RequestID, endpoint.DispatchRelease(s.negotiated, s.config.Descriptor), endpoint.CompileTransportDuplicateRequest)
 			if err != nil {
 				return &SessionError{Code: SessionErrorInvariant}
 			}
-			return s.writeCompile(frame.StreamID, response, nil)
+			return s.writeDispatch(frame.StreamID, response, nil)
 		}
 		return s.writeStreamError(frame.StreamID, "duplicate_request_id")
 	}
@@ -458,9 +493,12 @@ func (s *session) acceptControl(frame Frame) error {
 	case endpoint.OperationHandshake:
 		return s.acceptHandshake(frame)
 	case endpoint.OperationCompile:
-		return s.acceptCompile(frame)
+		return s.acceptOperation(frame, route)
 	default:
-		return s.writeStreamError(frame.StreamID, "unknown_operation")
+		if s.negotiated == nil || !s.negotiated.SupportsOperation(route.Operation) {
+			return s.writeStreamError(frame.StreamID, "unknown_operation")
+		}
+		return s.acceptOperation(frame, route)
 	}
 }
 
@@ -502,12 +540,8 @@ func (s *session) acceptHandshake(frame Frame) error {
 	return nil
 }
 
-func (s *session) acceptCompile(frame Frame) error {
-	request, err := engineprotocol.DecodeCompileRequestEnvelope(frame.Payload)
-	if err != nil {
-		return s.writeStreamError(frame.StreamID, "invalid_control")
-	}
-	ctx, cancel, err := endpoint.RequestContext(s.root, request.DeadlineAt)
+func (s *session) acceptOperation(frame Frame, route operationRoute) error {
+	ctx, cancel, err := endpoint.RequestContextFromControl(s.root, frame.Payload)
 	if err != nil {
 		return s.writeStreamError(frame.StreamID, "invalid_deadline")
 	}
@@ -516,20 +550,20 @@ func (s *session) acceptCompile(frame Frame) error {
 		s.controlSum > math.MaxUint64-controlBytes ||
 		s.controlSum+controlBytes > s.limits.MaxPendingControlBytes {
 		cancel()
-		response, responseErr := s.config.Dispatcher.CompileTransportResponse(request.RequestID, endpoint.CompileTransportResourceLimit)
+		response, responseErr := s.config.Dispatcher.DispatchTransportFailureResponse(route.Operation, route.RequestID, endpoint.DispatchRelease(s.negotiated, s.config.Descriptor), endpoint.CompileTransportResourceLimit)
 		if responseErr != nil {
 			return &SessionError{Code: SessionErrorInvariant}
 		}
-		return s.writeCompile(frame.StreamID, response, nil)
+		return s.writeDispatch(frame.StreamID, response, nil)
 	}
-	plan, terminal, err := s.config.Dispatcher.PrepareCompile(ctx, s.negotiated, request)
+	plan, terminal, err := s.config.Dispatcher.PrepareDispatch(ctx, s.negotiated, route.Operation, frame.Payload)
 	if err != nil {
 		cancel()
 		return s.writeStreamError(frame.StreamID, "endpoint_invariant")
 	}
 	if terminal != nil {
 		cancel()
-		return s.writeCompile(frame.StreamID, *terminal, nil)
+		return s.writeDispatch(frame.StreamID, *terminal, nil)
 	}
 	requirements := plan.BlobRequirements()
 	budget := plan.AdmissionBudget()
@@ -540,19 +574,19 @@ func (s *session) acceptCompile(frame Frame) error {
 		metadataBytes > s.limits.MaxUploadMetadataBytes {
 		plan.Abort()
 		cancel()
-		response, responseErr := s.config.Dispatcher.CompileTransportResponse(request.RequestID, endpoint.CompileTransportResourceLimit)
+		response, responseErr := s.config.Dispatcher.DispatchTransportFailureResponse(route.Operation, route.RequestID, endpoint.DispatchRelease(s.negotiated, s.config.Descriptor), endpoint.CompileTransportResourceLimit)
 		if responseErr != nil {
 			return &SessionError{Code: SessionErrorInvariant}
 		}
-		return s.writeCompile(frame.StreamID, response, nil)
+		return s.writeDispatch(frame.StreamID, response, nil)
 	}
 	stream := &requestStream{
-		id: frame.StreamID, requestID: request.RequestID, controlBytes: controlBytes,
+		id: frame.StreamID, requestID: route.RequestID, operation: route.Operation, controlBytes: controlBytes,
 		plan: plan, requirements: requirements, ctx: ctx, cancel: cancel, phase: phaseQueued,
 		reserved: uint64(budget.RequiredBlobBytes),
 	}
 	s.streams[frame.StreamID] = stream
-	s.requestIDs[request.RequestID] = stream
+	s.requestIDs[route.RequestID] = stream
 	s.controls++
 	s.controlSum += stream.controlBytes
 	go func(id uint64, done <-chan struct{}) {
@@ -669,7 +703,7 @@ func (s *session) dispatch(stream *requestStream) {
 			ctx: stream.ctx, maximum: s.limits.MaxOutputBlobBytes,
 			beforeCommit: s.beforeSinkCommit, commit: stream.terminal.claimExecutionPublication,
 		}
-		response, err := stream.plan.Execute(stream.ctx, source, sink)
+		response, err := stream.plan.ExecuteDispatch(stream.ctx, source, sink)
 		if s.beforeResultClaim != nil {
 			s.beforeResultClaim()
 		}
@@ -699,7 +733,7 @@ func (s *session) finishDispatch(result dispatchResult) error {
 		}
 		switch kind {
 		case terminalTransport, terminalCancellation:
-			if err := s.writeCompile(stream.id, terminal, nil); err != nil {
+			if err := s.writeDispatch(stream.id, terminal, nil); err != nil {
 				s.releaseStream(stream)
 				return err
 			}
@@ -708,7 +742,7 @@ func (s *session) finishDispatch(result dispatchResult) error {
 				s.releaseStream(stream)
 				return &SessionError{Code: SessionErrorInvariant}
 			}
-			if err := s.writeCompile(stream.id, terminal, result.blobs); err != nil {
+			if err := s.writeDispatch(stream.id, terminal, result.blobs); err != nil {
 				s.releaseStream(stream)
 				return err
 			}
@@ -733,7 +767,7 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 			stream.plan.Abort()
 			return nil
 		}
-		response, err := s.config.Dispatcher.CompileCancellationResponse(stream.requestID)
+		response, err := s.config.Dispatcher.DispatchCancellationResponse(stream.planOperation(), stream.requestID, s.negotiated.EngineRelease())
 		if err != nil {
 			return &SessionError{Code: SessionErrorInvariant}
 		}
@@ -744,7 +778,7 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 		stream.plan.Abort()
 		return nil
 	}
-	response, err := s.config.Dispatcher.CompileCancellationResponse(stream.requestID)
+	response, err := s.config.Dispatcher.DispatchCancellationResponse(stream.planOperation(), stream.requestID, s.negotiated.EngineRelease())
 	if err != nil {
 		return &SessionError{Code: SessionErrorInvariant}
 	}
@@ -769,7 +803,7 @@ func (s *session) cancelStream(stream *requestStream, emit bool) error {
 	}
 	stream.phase = phaseTerminal
 	if emit {
-		if err := s.writeCompile(stream.id, response, nil); err != nil {
+		if err := s.writeDispatch(stream.id, response, nil); err != nil {
 			return err
 		}
 	}
@@ -781,7 +815,7 @@ func (s *session) failCorrelatedStream(stream *requestStream) error {
 	if stream == nil || stream.phase == phaseTerminal || stream.suppress {
 		return nil
 	}
-	response, err := s.config.Dispatcher.CompileTransportResponse(stream.requestID, endpoint.CompileTransportProtocolViolation)
+	response, err := s.config.Dispatcher.DispatchTransportResponse(stream.planOperation(), stream.requestID, s.negotiated.EngineRelease())
 	if err != nil {
 		return &SessionError{Code: SessionErrorInvariant}
 	}
@@ -811,7 +845,7 @@ func (s *session) failCorrelatedStream(stream *requestStream) error {
 	}
 	stream.phase = phaseTerminal
 	s.releaseStream(stream)
-	if err := s.writeCompile(stream.id, response, nil); err != nil {
+	if err := s.writeDispatch(stream.id, response, nil); err != nil {
 		return err
 	}
 	return s.admit()
@@ -930,12 +964,8 @@ func controlBundle(kind Kind, streamID uint64, payload []byte) []Frame {
 	}
 }
 
-func (s *session) writeCompile(streamID uint64, response engineprotocol.CompileResponseEnvelope, blobs []endpoint.OutputBlob) error {
-	encoded, err := engineprotocol.EncodeCompileResponseEnvelope(response)
-	if err != nil {
-		return &SessionError{Code: SessionErrorInvariant}
-	}
-	frames, err := responseBundle(streamID, encoded, blobs)
+func (s *session) writeDispatch(streamID uint64, response endpoint.DispatchResponse, blobs []endpoint.OutputBlob) error {
+	frames, err := responseBundle(streamID, response.Control, blobs)
 	if err != nil {
 		return &SessionError{Code: SessionErrorInvariant}
 	}
@@ -943,6 +973,14 @@ func (s *session) writeCompile(streamID uint64, response engineprotocol.CompileR
 		return &SessionError{Code: SessionErrorOutput}
 	}
 	return nil
+}
+
+func (s *session) writeCompile(streamID uint64, response engineprotocol.CompileResponseEnvelope, blobs []endpoint.OutputBlob) error {
+	encoded, err := engineprotocol.EncodeCompileResponseEnvelope(response)
+	if err != nil {
+		return &SessionError{Code: SessionErrorInvariant}
+	}
+	return s.writeDispatch(streamID, endpoint.DispatchResponse{Operation: endpoint.OperationCompile, RequestID: response.RequestID, Control: encoded, Outcome: response.Outcome, Failure: response.Failure}, blobs)
 }
 
 func responseBundle(streamID uint64, control []byte, blobs []endpoint.OutputBlob) ([]Frame, error) {

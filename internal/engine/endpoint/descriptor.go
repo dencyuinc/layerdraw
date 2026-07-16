@@ -25,7 +25,27 @@ const (
 	// OperationHandshake is the Engine Protocol bootstrap operation.
 	OperationHandshake = "engine.handshake"
 	// OperationCompile is the closed-input compiler operation wired by the Go Engine.
-	OperationCompile = "engine.compile"
+	OperationCompile            = "engine.compile"
+	OperationApplyToHandle      = "engine.apply_to_handle"
+	OperationCloseDocument      = "engine.close_document"
+	OperationFindSymbols        = "engine.find_symbols"
+	OperationFindUsages         = "engine.find_usages"
+	OperationFormatScope        = "engine.format_scope"
+	OperationGetNeighbors       = "engine.get_neighbors"
+	OperationInspectSubgraph    = "engine.inspect_subgraph"
+	OperationListModules        = "engine.list_modules"
+	OperationListReferences     = "engine.list_references"
+	OperationOpenDocument       = "engine.open_document"
+	OperationOrganizeWorkspace  = "engine.organize_workspace"
+	OperationPreviewFragment    = "engine.preview_fragment"
+	OperationPreviewOperations  = "engine.preview_operations"
+	OperationPreviewSourcePatch = "engine.preview_source_patch"
+	OperationReadDeclarations   = "engine.read_declarations"
+	OperationReadModules        = "engine.read_modules"
+	OperationReadReferences     = "engine.read_references"
+	OperationReadRows           = "engine.read_rows"
+	OperationReadScope          = "engine.read_scope"
+	OperationReplaceSourceTree  = "engine.replace_source_tree"
 
 	// TransportInProcess is the stable identifier for typed in-process calls.
 	TransportInProcess = "in_process"
@@ -107,8 +127,29 @@ func NewDescriptor(config DescriptorConfig) (*Descriptor, error) {
 		releaseManifestDigest: config.ReleaseManifestDigest,
 		endpointInstanceID:    config.EndpointInstanceID,
 		transports:            transports,
-		operations:            []string{OperationCompile, OperationHandshake},
-		limits:                config.Limits,
+		operations: []string{
+			OperationCloseDocument,
+			OperationCompile,
+			OperationFindSymbols,
+			OperationFindUsages,
+			OperationFormatScope,
+			OperationGetNeighbors,
+			OperationHandshake,
+			OperationInspectSubgraph,
+			OperationListModules,
+			OperationListReferences,
+			OperationOpenDocument,
+			OperationOrganizeWorkspace,
+			OperationPreviewFragment,
+			OperationPreviewSourcePatch,
+			OperationReadDeclarations,
+			OperationReadModules,
+			OperationReadReferences,
+			OperationReadRows,
+			OperationReadScope,
+			OperationReplaceSourceTree,
+		},
+		limits: config.Limits,
 		protocols: []protocolBinding{{
 			version:      protocolNumber{major: 1, minor: 0},
 			wireVersion:  protocolcommon.ProtocolVersion(ProtocolVersion),
@@ -139,6 +180,19 @@ func (d *Descriptor) EngineRelease() protocolcommon.ReleaseVersion {
 		return ""
 	}
 	return d.engineRelease
+}
+
+// DispatchRelease returns the release that should be stamped on operation
+// terminal responses. Negotiated context wins after handshake; descriptor
+// release is the only trustworthy value before negotiation.
+func DispatchRelease(negotiated *NegotiatedContext, descriptor *Descriptor) protocolcommon.ReleaseVersion {
+	if negotiated != nil {
+		return negotiated.EngineRelease()
+	}
+	if descriptor != nil {
+		return descriptor.EngineRelease()
+	}
+	return ""
 }
 
 // SourceRevision returns internal build provenance. It is not handshake wire

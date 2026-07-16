@@ -13,6 +13,13 @@ import type {
   CompileInput,
   CompileResponseEnvelope,
   CompileResult,
+  ListModulesInput,
+  ListModulesResponseEnvelope,
+  OpenDocumentInput,
+  OpenDocumentResponseEnvelope,
+  ReadModulesInput,
+  ReadModulesResponseEnvelope,
+  WorkbenchFailure,
 } from "@layerdraw/protocol/engine";
 import { snapshotSafeDetails } from "./internal/safe-details.js";
 
@@ -142,8 +149,50 @@ export type CompileOutcome =
       blobs: readonly [];
     }>;
 
+type WorkbenchResponseBase = Readonly<{
+  diagnostics: readonly unknown[];
+  engine_release: string;
+  failure?: WorkbenchFailure;
+  outcome: "success" | "rejected" | "failed" | "cancelled";
+  payload?: unknown;
+  protocol: { readonly name: "engine"; readonly version: "1.0" };
+  request_id: string;
+}>;
+
+export type WorkbenchOutcome<TResponse extends WorkbenchResponseBase> =
+  | Readonly<{
+      origin: "engine";
+      outcome: TResponse["outcome"];
+      response: TResponse;
+      blobs: readonly OutputBlob[];
+    }>
+  | Readonly<{
+      origin: "client";
+      outcome: "cancelled";
+      requestId: string;
+      endpointGeneration: number;
+      reason: ClientCancellationReason;
+      blobs: readonly [];
+    }>;
+
+export interface EngineWorkbenchClient {
+  openDocument(
+    input: OpenDocumentInput,
+    options?: CompileOptions,
+  ): Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>>;
+  listModules(
+    input: ListModulesInput,
+    options?: CompileOptions,
+  ): Promise<WorkbenchOutcome<ListModulesResponseEnvelope>>;
+  readModules(
+    input: ReadModulesInput,
+    options?: CompileOptions,
+  ): Promise<WorkbenchOutcome<ReadModulesResponseEnvelope>>;
+}
+
 export interface EngineClient {
   readonly state: EngineClientState;
+  readonly workbench: EngineWorkbenchClient;
   getEndpoint(): EngineEndpointSnapshot;
   getCapabilities(): CapabilityManifest;
   hasCapability(capability: CapabilityID): boolean;
