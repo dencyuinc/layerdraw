@@ -53,7 +53,7 @@ func applyFragment(ctx context.Context, compiler Compiler, input CompileInput, b
 
 	candidate := cloneCompileInput(input)
 	targets := sourceSubjects(before)
-	modulePath := input.EntryPath
+	var modulePath string
 	start, end := -1, -1
 	if fragment.Intent == "replace" {
 		if fragment.ReplacementTarget == nil {
