@@ -293,6 +293,7 @@ const (
 	CapabilityQueryWrite       AuthoringCapability = "query:write"
 	CapabilityViewWrite        AuthoringCapability = "view:write"
 	CapabilityReferenceWrite   AuthoringCapability = "reference:write"
+	CapabilitySourceMaintain   AuthoringCapability = "source:maintain"
 	CapabilityProjectConfigure AuthoringCapability = "project:configure"
 )
 
