@@ -239,6 +239,7 @@ type (
 	TypedRelationType      = definition.RelationType
 	TypedLayer             = definition.Layer
 	TypedReference         = definition.Reference
+	TypedScalar            = definition.Scalar
 	TypedMasterGraph       = graph.MasterGraph
 	CompiledQueryRecipe    = query.Recipe
 	CompiledViewRecipe     = view.Recipe
