@@ -956,6 +956,249 @@ entities service @app {
 	})
 }
 
+func TestPlanSemanticEditsWorkingOverlayCarriesCompleteOperationState(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	requiredColumn := func() SemanticOperation {
+		return SemanticOperation{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p:entity-type:service", SubjectKind: materialize.SubjectEntityTypeColumn, ID: "required_count", Fields: []SemanticMapEntry{
+			{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Required Count"}},
+			{Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "integer"}},
+			{Key: "required", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}},
+		}}
+	}
+	row := func(owner, id, note string, count int64) SemanticOperation {
+		return SemanticOperation{Kind: OperationUpsertRow, OwnerAddress: owner, ID: id, Values: []SemanticRowCell{
+			{ColumnAddress: "ldl:project:p:entity-type:service:column:note", Value: SemanticValue{Kind: SemanticValueString, String: note}},
+			{ColumnAddress: "ldl:project:p:entity-type:service:column:required_count", Value: SemanticValue{Kind: SemanticValueInteger, Integer: count}},
+		}}
+	}
+	plan := func(t *testing.T, input CompileInput, snapshot Snapshot, operations []SemanticOperation) SemanticEditPlan {
+		t.Helper()
+		result, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || result.Status != "valid" {
+			t.Fatalf("working-overlay batch failed: status=%s err=%v conflicts=%+v diagnostics=%+v", result.Status, err, result.Conflicts, result.Diagnostics)
+		}
+		return result
+	}
+
+	t.Run("successive annotation map deltas survive invalid intermediate", func(t *testing.T) {
+		input, snapshot := semanticEditCompiledFixture(t)
+		team := SemanticValue{Kind: SemanticValueString, String: "platform"}
+		owner := SemanticValue{Kind: SemanticValueString, String: "architecture"}
+		result := plan(t, input, snapshot, []SemanticOperation{
+			requiredColumn(),
+			{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"annotations", "team"}, Action: "set", Value: &team},
+			{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"annotations", "owner"}, Action: "set", Value: &owner},
+			row("ldl:project:p:entity:a", "primary", "old", 1),
+		})
+		got := string(result.SourceTree["document.ldl"])
+		if !strings.Contains(got, `annotations { owner: "architecture", team: "platform" }`) {
+			t.Fatalf("successive map deltas were rebuilt from stale normalized state:\n%s", got)
+		}
+	})
+
+	t.Run("annotation removal remains current through invalid intermediate", func(t *testing.T) {
+		input, snapshot := semanticEditCompiledFixture(t)
+		team := SemanticValue{Kind: SemanticValueString, String: "platform"}
+		owner := SemanticValue{Kind: SemanticValueString, String: "architecture"}
+		result := plan(t, input, snapshot, []SemanticOperation{
+			requiredColumn(),
+			{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"annotations", "team"}, Action: "set", Value: &team},
+			{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"annotations", "owner"}, Action: "set", Value: &owner},
+			{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"annotations", "team"}, Action: "remove"},
+			row("ldl:project:p:entity:a", "primary", "old", 1),
+		})
+		got := string(result.SourceTree["document.ldl"])
+		if !strings.Contains(got, `annotations { owner: "architecture" }`) || strings.Contains(got, `team: "platform"`) {
+			t.Fatalf("removed annotation was restored from stale normalized state:\n%s", got)
+		}
+	})
+
+	t.Run("same-batch-created entity is a complete row owner", func(t *testing.T) {
+		input, snapshot := semanticEditCompiledFixture(t)
+		result := plan(t, input, snapshot, []SemanticOperation{
+			requiredColumn(),
+			{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: materialize.SubjectEntity, ID: "c", Fields: []SemanticMapEntry{
+				{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "C"}},
+				{Key: "type_address", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:entity-type:service"}},
+				{Key: "layer_address", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:layer:app"}},
+			}},
+			row("ldl:project:p:entity:c", "primary", "new", 2),
+			row("ldl:project:p:entity:a", "primary", "old", 1),
+		})
+		got := string(result.SourceTree["document.ldl"])
+		if !strings.Contains(got, `c "C"`) || !strings.Contains(got, `c primary: "new", 2`) {
+			t.Fatalf("created entity lacked normalized owner fields or membership:\n%s", got)
+		}
+	})
+
+	t.Run("replacement row remains current while another row is invalid", func(t *testing.T) {
+		source := strings.Replace(semanticEditFixture, "  a primary: \"old\"", "  a primary: \"old\"\n  b primary: \"older\"", 1)
+		input := projectCompileInput(source)
+		compiled, err := planner.Compile(context.Background(), input)
+		if err != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile two-row fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+		}
+		snapshot := compiled.Snapshot()
+		value := SemanticValue{Kind: SemanticValueInteger, Integer: 3}
+		result := plan(t, input, snapshot, []SemanticOperation{
+			requiredColumn(),
+			row("ldl:project:p:entity:a", "primary", "new-a", 1),
+			{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a:row:primary", Path: []string{"values", "ldl:project:p:entity-type:service:column:required_count"}, Action: "set", Value: &value},
+			row("ldl:project:p:entity:b", "primary", "new-b", 2),
+		})
+		got := string(result.SourceTree["document.ldl"])
+		if !strings.Contains(got, `a primary: "new-a", 3`) || !strings.Contains(got, `b primary: "new-b", 2`) {
+			t.Fatalf("replacement row range or normalized values were lost:\n%s", got)
+		}
+	})
+
+	t.Run("replacement row can be deleted without touching its sibling", func(t *testing.T) {
+		source := strings.Replace(semanticEditFixture, "  a primary: \"old\"", "  a primary: \"old\"\n  b primary: \"older\"", 1)
+		input := projectCompileInput(source)
+		compiled, err := planner.Compile(context.Background(), input)
+		if err != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile two-row fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+		}
+		snapshot := compiled.Snapshot()
+		result := plan(t, input, snapshot, []SemanticOperation{
+			requiredColumn(), row("ldl:project:p:entity:a", "primary", "new-a", 1),
+			{Kind: OperationDeleteRow, RowAddress: "ldl:project:p:entity:a:row:primary"},
+			{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:entity-type:service:column:required_count"},
+		})
+		got := string(result.SourceTree["document.ldl"])
+		if strings.Contains(got, `a primary:`) || !strings.Contains(got, `b primary: "older"`) {
+			t.Fatalf("replacement row delete used stale or sibling range:\n%s", got)
+		}
+	})
+}
+
+func TestPlanSemanticEditsRenameOwnerClosesDescendantIdentityAndBindings(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	input := projectCompileInput(semanticEditFixture)
+	compiled, err := planner.Compile(context.Background(), input)
+	if err != nil || len(compiled.Diagnostics) != 0 {
+		t.Fatalf("compile qualified child fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+	}
+	snapshot := compiled.Snapshot()
+	operation := SemanticOperation{Kind: OperationRenameSubject, TargetAddress: "ldl:project:p:entity-type:service", NewID: "backend"}
+	result, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+	if err != nil || result.Status != "valid" {
+		t.Fatalf("owner rename failed: status=%s err=%v conflicts=%+v diagnostics=%+v", result.Status, err, result.Conflicts, result.Diagnostics)
+	}
+	got := string(result.SourceTree["document.ldl"])
+	if !strings.Contains(got, "rows backend [note]") {
+		t.Fatalf("owner rename did not rewrite descendant binding closure:\n%s", got)
+	}
+	for _, address := range result.Result.StableAddresses {
+		if address == "ldl:project:p:entity-type:service:column:note" {
+			t.Fatal("renamed owner retained stale descendant StableAddress")
+		}
+	}
+	found := false
+	for _, address := range result.Result.StableAddresses {
+		found = found || address == "ldl:project:p:entity-type:backend:column:note"
+	}
+	if !found {
+		t.Fatal("renamed owner did not publish the descendant destination StableAddress")
+	}
+}
+
+func TestPlanSemanticEditsRebaseTracksRenameLifecycleAndDescendantDependencies(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	ancestorInput, ancestor := semanticEditCompiledFixture(t)
+	generationOne := SemanticDocumentGeneration{EndpointInstanceID: "test-endpoint", DocumentHandle: "document_abcdefghijklmnop", Value: "1"}
+	generationTwo := SemanticDocumentGeneration{EndpointInstanceID: "test-endpoint", DocumentHandle: "document_abcdefghijklmnop", Value: "2"}
+	compileHead := func(t *testing.T, old, replacement string) (CompileInput, *SemanticRebaseAuthority) {
+		t.Helper()
+		headInput := cloneSemanticCompileInput(ancestorInput)
+		headInput.ProjectSourceTree["document.ldl"] = bytes.Replace(headInput.ProjectSourceTree["document.ldl"], []byte(old), []byte(replacement), 1)
+		compiled, err := planner.Compile(context.Background(), headInput)
+		if err != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile rebase head: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+		}
+		authority := &SemanticRebaseAuthority{AncestorGeneration: generationOne, CurrentGeneration: generationTwo, AncestorDefinitionHash: ancestor.DefinitionHash, CurrentDefinitionHash: compiled.DefinitionHash}
+		return headInput, authority
+	}
+
+	t.Run("rename destination supports later update", func(t *testing.T) {
+		headInput, authority := compileHead(t, `query q "Query"`, `query q "Concurrent Query"`)
+		name := SemanticValue{Kind: SemanticValueString, String: "Alpha"}
+		operations := []SemanticOperation{
+			{Kind: OperationRenameSubject, TargetAddress: "ldl:project:p:entity:a", NewID: "alpha"},
+			{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:alpha", Path: []string{"display_name"}, Action: "set", Value: &name},
+		}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Generation: generationTwo, RebaseAuthority: authority, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(ancestor)})
+		if err != nil || plan.Status != "valid" || !strings.Contains(string(plan.SourceTree["document.ldl"]), `alpha "Alpha"`) {
+			t.Fatalf("renamed destination was not available: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
+		}
+	})
+
+	t.Run("rename destination supports later delete", func(t *testing.T) {
+		headInput, authority := compileHead(t, `query q "Query"`, `query q "Concurrent Query"`)
+		operations := []SemanticOperation{
+			{Kind: OperationRenameSubject, TargetAddress: "ldl:project:p:reference:guide", NewID: "archive"},
+			{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:reference:archive"},
+		}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Generation: generationTwo, RebaseAuthority: authority, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(ancestor)})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("renamed destination delete was rejected: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
+		}
+	})
+
+	t.Run("owner rename protects changed descendant referencer", func(t *testing.T) {
+		headInput, authority := compileHead(t, `a primary: "old"`, `a primary: "concurrent"`)
+		operation := SemanticOperation{Kind: OperationRenameSubject, TargetAddress: "ldl:project:p:entity-type:service", NewID: "backend"}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Generation: generationTwo, RebaseAuthority: authority, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor)})
+		if err != nil || plan.Status != "invalid" {
+			t.Fatalf("changed descendant referencer was not rejected: plan=%+v err=%v", plan, err)
+		}
+		found := false
+		for _, conflict := range plan.Conflicts {
+			found = found || (conflict.Kind == ConflictSubjectChanged && conflict.TargetAddress == "ldl:project:p:entity:a:row:primary")
+		}
+		if !found {
+			t.Fatalf("descendant dependency closure omitted changed row: %+v", plan.Conflicts)
+		}
+	})
+}
+
+func TestSemanticWorkingOverlayFailsClosedOnRecoveredSyntax(t *testing.T) {
+	t.Parallel()
+	input, snapshot := semanticEditCompiledFixture(t)
+	after := cloneSourceTree(input.ProjectSourceTree)
+	after["document.ldl"] = append(after["document.ldl"], []byte("\nentity_type broken\n")...)
+	if _, _, _, ok := plannedSubjectRange(snapshot, after, materialize.SubjectEntityType, "ldl:project:p", "broken"); ok {
+		t.Fatal("parser recovery was accepted as working-overlay source authority")
+	}
+}
+
+func TestRepeatedUpsertStillRequiresSecondOperationReads(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	source := strings.Replace(semanticEditFixture, `    note "Note" string`, "    note \"Note\" string\n    extra \"Extra\" string", 1)
+	input := projectCompileInput(source)
+	compiled, err := planner.Compile(context.Background(), input)
+	if err != nil || len(compiled.Diagnostics) != 0 {
+		t.Fatalf("compile repeated-upsert fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+	}
+	snapshot := compiled.Snapshot()
+	note := SemanticRowCell{ColumnAddress: "ldl:project:p:entity-type:service:column:note", Value: SemanticValue{Kind: SemanticValueString, String: "first"}}
+	extra := SemanticRowCell{ColumnAddress: "ldl:project:p:entity-type:service:column:extra", Value: SemanticValue{Kind: SemanticValueString, String: "second"}}
+	operations := []SemanticOperation{
+		{Kind: OperationUpsertRow, OwnerAddress: "ldl:project:p:entity:b", ID: "primary", Values: []SemanticRowCell{note}},
+		{Kind: OperationUpsertRow, OwnerAddress: "ldl:project:p:entity:b", ID: "primary", Values: []SemanticRowCell{extra}},
+	}
+	preconditions := allSemanticPreconditions(snapshot)
+	preconditions.ExpectedSubjectHashes = removeExpectedHash(preconditions.ExpectedSubjectHashes, extra.ColumnAddress)
+	conflicts := validateSemanticPreconditions(snapshot, preconditions, SemanticOperationBatch{Operations: operations})
+	if len(conflicts) != 1 || conflicts[0].Kind != ConflictSubjectChanged || conflicts[0].TargetAddress != extra.ColumnAddress {
+		t.Fatalf("second upsert skipped its column read set: %+v", conflicts)
+	}
+}
+
 func TestPlanSemanticEditsCanonicalOwnerChildPlacement(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1096,6 +1339,104 @@ entity_type zeta "Zeta" {
 	if alpha < 0 || zeta < 0 || omega < 0 || !(alpha < zeta && zeta < omega) {
 		t.Fatalf("explicit end followed the anchor instead of the existing kind-group end:\n%s", got)
 	}
+}
+
+func TestPlanSemanticEditsExplicitEndPlacementBoundaries(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	column := func(placement *SemanticPlacementHint) SemanticOperation {
+		return SemanticOperation{
+			Kind: OperationCreateSubject, ParentAddress: "ldl:project:p:entity-type:service", SubjectKind: materialize.SubjectEntityTypeColumn, ID: "alpha", Placement: placement,
+			Fields: []SemanticMapEntry{
+				{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Alpha"}},
+				{Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "string"}},
+			},
+		}
+	}
+	planFixture := func(t *testing.T, operation SemanticOperation) string {
+		t.Helper()
+		input, snapshot := semanticEditCompiledFixture(t)
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+			BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot),
+		})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("explicit end plan failed: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
+		}
+		return string(plan.SourceTree["document.ldl"])
+	}
+
+	t.Run("owner is a valid child-group anchor", func(t *testing.T) {
+		got := planFixture(t, column(&SemanticPlacementHint{GroupAnchorAddress: "ldl:project:p:entity-type:service", Position: "end"}))
+		if strings.Index(got, `note "Note" string`) >= strings.Index(got, `alpha "Alpha" string`) {
+			t.Fatalf("owner-anchored end did not append to the owner child group:\n%s", got)
+		}
+	})
+
+	t.Run("module-only child end overrides canonical address sorting", func(t *testing.T) {
+		got := planFixture(t, column(&SemanticPlacementHint{ModulePath: "document.ldl", Position: "end"}))
+		if strings.Index(got, `note "Note" string`) >= strings.Index(got, `alpha "Alpha" string`) {
+			t.Fatalf("module-only end used standard child sorting:\n%s", got)
+		}
+	})
+
+	t.Run("module-only top-level end overrides canonical address sorting", func(t *testing.T) {
+		operation := SemanticOperation{
+			Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: materialize.SubjectLayer, ID: "aardvark",
+			Placement: &SemanticPlacementHint{ModulePath: "document.ldl", Position: "end"},
+			Fields: []SemanticMapEntry{
+				{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Aardvark"}},
+				{Key: "order", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 30}},
+			},
+		}
+		got := planFixture(t, operation)
+		if strings.Index(got, `data "Data" @20`) >= strings.Index(got, `aardvark "Aardvark" @30`) {
+			t.Fatalf("module-only top-level end used standard address sorting:\n%s", got)
+		}
+	})
+
+	t.Run("anchored end stops at the contiguous kind group", func(t *testing.T) {
+		const source = `project p "Project" {}
+entity_type alpha "Alpha" {
+  representation shape rect
+}
+entity_type zeta "Zeta" {
+  representation shape rect
+}
+reference divider <<-TEXT
+Divider.
+TEXT
+entity_type omega "Omega" {
+  representation shape rect
+}
+`
+		input := projectCompileInput(source)
+		compiled, err := planner.Compile(context.Background(), input)
+		if err != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile contiguous-group fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+		}
+		operation := SemanticOperation{
+			Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: materialize.SubjectEntityType, ID: "beta",
+			Placement: &SemanticPlacementHint{GroupAnchorAddress: "ldl:project:p:entity-type:alpha", Position: "end"},
+			Fields: []SemanticMapEntry{
+				{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Beta"}},
+				{Key: "representation", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+					{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "shape"}},
+					{Key: "shape", Value: SemanticValue{Kind: SemanticValueToken, String: "rect"}},
+				}}},
+			},
+		}
+		plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+			BaseInput: input, BaseSnapshot: compiled.Snapshot(), Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(compiled.Snapshot()),
+		})
+		if planErr != nil || plan.Status != "valid" {
+			t.Fatalf("contiguous-group plan failed: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, planErr, plan.Conflicts, plan.Diagnostics)
+		}
+		got := string(plan.SourceTree["document.ldl"])
+		zeta, beta, divider, omega := strings.Index(got, "entity_type zeta"), strings.Index(got, "entity_type beta"), strings.Index(got, "reference divider"), strings.Index(got, "entity_type omega")
+		if zeta < 0 || beta < 0 || divider < 0 || omega < 0 || !(zeta < beta && beta < divider && divider < omega) {
+			t.Fatalf("anchored end escaped its contiguous kind group:\n%s", got)
+		}
+	})
 }
 
 func TestCanonicalAuthoringPlanUsesBeforeAndAfterGraphFacts(t *testing.T) {

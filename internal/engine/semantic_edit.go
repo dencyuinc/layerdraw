@@ -69,13 +69,19 @@ func (e Engine) PlanSemanticEdits(ctx context.Context, input SemanticEditPlanInp
 	}
 
 	candidateInput := cloneSemanticCompileInput(input.BaseInput)
-	current := head
+	working := newSemanticWorkingOverlay(head)
+	current := working.snapshot
 	for operationIndex, operation := range input.Batch.Operations {
 		if err := semanticEditCancellation(ctx, "semantic_edit_operation"); err != nil {
 			return SemanticEditPlan{}, err
 		}
+		if !working.supports(operation) {
+			diagnostic := plannerDiagnostic("LDL1801", "unsupported_working_overlay_operation", "semantic operation has no working-overlay behavior")
+			diagnostic.Arguments["operation_index"] = strconv.Itoa(operationIndex)
+			return invalidPlan(nil, []Diagnostic{diagnostic}), nil
+		}
 		beforeOperationTree := cloneSourceTree(candidateInput.ProjectSourceTree)
-		conflict, diagnostic := applySemanticOperation(&candidateInput, current, operation)
+		conflict, diagnostic := applySemanticOperation(&candidateInput, working.snapshot, operation)
 		if conflict != nil {
 			return invalidPlan([]SemanticConflict{*conflict}, nil), nil
 		}
@@ -86,11 +92,21 @@ func (e Engine) PlanSemanticEdits(ctx context.Context, input SemanticEditPlanInp
 			diagnostic.Arguments["operation_index"] = strconv.Itoa(operationIndex)
 			return invalidPlan(nil, []Diagnostic{*diagnostic}), nil
 		}
+		if operation.Kind == OperationDeleteSubject {
+			if sourceAddress, renamed := working.aliasSource(operation.TargetAddress); renamed && !removeWorkingRenameMove(&candidateInput, sourceAddress, operation.TargetAddress) {
+				return invalidPlan([]SemanticConflict{{Kind: ConflictPlacementChanged, TargetAddress: operation.TargetAddress}}, nil), nil
+			}
+		}
+		if operationIndex+1 < len(input.Batch.Operations) {
+			if overlayDiagnostic := working.advance(beforeOperationTree, candidateInput.ProjectSourceTree, operation); overlayDiagnostic != nil {
+				overlayDiagnostic.Arguments["operation_index"] = strconv.Itoa(operationIndex)
+				return invalidPlan(nil, []Diagnostic{*overlayDiagnostic}), nil
+			}
+		}
 
 		// Recompile every accepted overlay step. Besides allowing later operations
 		// to address newly created subjects, this prevents an invalid intermediate
 		// candidate from becoming authority for later target resolution.
-		previous := current
 		compiled, compileErr := e.Compile(ctx, candidateInput)
 		if compileErr != nil {
 			return SemanticEditPlan{}, compileErr
@@ -102,7 +118,7 @@ func (e Engine) PlanSemanticEdits(ctx context.Context, input SemanticEditPlanInp
 			// authoritative semantic index, but rebase all source ranges over the
 			// private overlay so later existing targets remain addressable. Only the
 			// complete final tree is accepted as semantic authority.
-			current = advanceInvalidSemanticOverlay(previous, beforeOperationTree, candidateInput.ProjectSourceTree, operation)
+			current = working.snapshot
 			continue
 		}
 		if len(current.Diagnostics) != 0 {
@@ -114,6 +130,7 @@ func (e Engine) PlanSemanticEdits(ctx context.Context, input SemanticEditPlanInp
 			}
 			return invalidPlan(nil, current.Diagnostics), nil
 		}
+		working.reset(current)
 	}
 
 	if err := semanticEditCancellation(ctx, "semantic_edit_diff"); err != nil {
@@ -152,9 +169,10 @@ func validateSemanticRebase(ancestor, head Snapshot, batch SemanticOperationBatc
 	ancestorSubjects := semanticSubjectsByAddress(ancestor)
 	headSubjects := semanticSubjectsByAddress(head)
 	conflicts := make([]SemanticConflict, 0)
-	createdInBatch := map[string]bool{}
+	availableInBatch := map[string]bool{}
+	batchKinds := map[string]SemanticSubjectKind{}
 	validateAvailable := func(address string) {
-		if !createdInBatch[address] {
+		if !availableInBatch[address] {
 			validateRebaseSubject(&conflicts, ancestorSubjects, headSubjects, address)
 		}
 	}
@@ -174,6 +192,12 @@ func validateSemanticRebase(ancestor, head Snapshot, batch SemanticOperationBatc
 		target := operation.TargetAddress
 		switch operation.Kind {
 		case OperationUpdateSubjectField:
+			if availableInBatch[target] {
+				if operation.Value != nil {
+					validateValueAddresses(*operation.Value)
+				}
+				continue
+			}
 			if _, ok := headSubjects[target]; !ok {
 				conflicts = append(conflicts, SemanticConflict{Kind: ConflictDeleteVsUpdate, TargetAddress: target, Path: append([]string(nil), operation.Path...)})
 				continue
@@ -190,26 +214,52 @@ func validateSemanticRebase(ancestor, head Snapshot, batch SemanticOperationBatc
 				validateValueAddresses(*operation.Value)
 			}
 		case OperationMoveEntityToLayer:
-			validateRebaseField(&conflicts, ancestor, head, operation.EntityAddress, []string{"layer_address"})
+			if !availableInBatch[operation.EntityAddress] {
+				validateRebaseField(&conflicts, ancestor, head, operation.EntityAddress, []string{"layer_address"})
+			}
 			validateAvailable(operation.LayerAddress)
 		case OperationUpdateRelationEndpoint:
-			validateRebaseField(&conflicts, ancestor, head, operation.RelationAddress, []string{operation.Endpoint + "_address"})
+			if !availableInBatch[operation.RelationAddress] {
+				validateRebaseField(&conflicts, ancestor, head, operation.RelationAddress, []string{operation.Endpoint + "_address"})
+			}
 			validateAvailable(operation.EntityAddress)
 		case OperationDeleteSubject, OperationRenameSubject:
-			if !createdInBatch[operation.TargetAddress] {
+			if !availableInBatch[operation.TargetAddress] {
 				validateRebaseSubtree(&conflicts, ancestor, head, operation.TargetAddress)
 				validateRebaseDependencies(&conflicts, ancestor, head, operation.TargetAddress)
 			}
+			if operation.Kind == OperationRenameSubject {
+				destination := renamedAddress(operation.TargetAddress, operation.NewID)
+				availableInBatch[destination] = true
+				batchKinds[destination] = batchKinds[operation.TargetAddress]
+				if batchKinds[destination] == "" {
+					batchKinds[destination] = ancestorSubjects[operation.TargetAddress].Kind
+				}
+				for descendant := range semanticDescendantSet(ancestor, operation.TargetAddress) {
+					if descendant != operation.TargetAddress {
+						availableInBatch[destination+strings.TrimPrefix(descendant, operation.TargetAddress)] = true
+					}
+				}
+				delete(availableInBatch, operation.TargetAddress)
+			}
 		case OperationDeleteRow:
-			validateRebaseSubject(&conflicts, ancestorSubjects, headSubjects, operation.RowAddress)
-			validateRebaseRowSchema(&conflicts, ancestor, head, operation.RowAddress)
+			if !availableInBatch[operation.RowAddress] {
+				validateRebaseSubject(&conflicts, ancestorSubjects, headSubjects, operation.RowAddress)
+				validateRebaseRowSchema(&conflicts, ancestor, head, operation.RowAddress)
+			}
 		case OperationMigrateProjectIdentity:
 			validateRebaseSubtree(&conflicts, ancestor, head, operation.ProjectAddress)
 		case OperationUpsertRow:
 			validateAvailable(operation.OwnerAddress)
-			kind := rowKindForOwner(ancestorSubjects[operation.OwnerAddress])
+			owner := ancestorSubjects[operation.OwnerAddress]
+			if batchKinds[operation.OwnerAddress] != "" {
+				owner.Kind = batchKinds[operation.OwnerAddress]
+			}
+			kind := rowKindForOwner(owner)
 			address := predictedChildAddress(operation.OwnerAddress, kind, operation.ID)
-			if _, existed := ancestorSubjects[address]; existed {
+			if availableInBatch[address] {
+				// The row identity is operation-derived; schema and cell reads below remain validated.
+			} else if _, existed := ancestorSubjects[address]; existed {
 				validateRebaseSubject(&conflicts, ancestorSubjects, headSubjects, address)
 				validateRebaseRowSchema(&conflicts, ancestor, head, address)
 			} else if childSetHashFor(ancestor, operation.OwnerAddress, kind) != childSetHashFor(head, operation.OwnerAddress, kind) {
@@ -223,6 +273,7 @@ func validateSemanticRebase(ancestor, head Snapshot, batch SemanticOperationBatc
 				validateAvailable(cell.ColumnAddress)
 				validateValueAddresses(cell.Value)
 			}
+			availableInBatch[address], batchKinds[address] = true, kind
 		case OperationCreateSubject, OperationCreateRelation:
 			kind := operation.SubjectKind
 			if operation.Kind == OperationCreateRelation {
@@ -240,7 +291,8 @@ func validateSemanticRebase(ancestor, head Snapshot, batch SemanticOperationBatc
 			for _, field := range operation.Fields {
 				validateValueAddresses(field.Value)
 			}
-			createdInBatch[predictedChildAddress(operation.ParentAddress, kind, operation.ID)] = true
+			created := predictedChildAddress(operation.ParentAddress, kind, operation.ID)
+			availableInBatch[created], batchKinds[created] = true, kind
 		}
 	}
 	sortSemanticConflicts(conflicts)
@@ -269,7 +321,8 @@ func subtreeHashFor(snapshot Snapshot, address string) (string, bool) {
 }
 
 func validateRebaseDependencies(conflicts *[]SemanticConflict, ancestor, head Snapshot, target string) {
-	priorSources, currentSources := referenceSources(ancestor, target), referenceSources(head, target)
+	priorSources := referenceSourcesForTargets(ancestor, semanticDescendantSet(ancestor, target))
+	currentSources := referenceSourcesForTargets(head, semanticDescendantSet(head, target))
 	if !reflect.DeepEqual(priorSources, currentSources) {
 		*conflicts = append(*conflicts, SemanticConflict{Kind: ConflictReferenceBroken, TargetAddress: target})
 		return
@@ -278,6 +331,21 @@ func validateRebaseDependencies(conflicts *[]SemanticConflict, ancestor, head Sn
 	for _, source := range priorSources {
 		validateRebaseSubject(conflicts, prior, current, source)
 	}
+}
+
+func referenceSourcesForTargets(snapshot Snapshot, targets map[string]bool) []string {
+	set := map[string]bool{}
+	for _, reference := range snapshot.SemanticIndex.References {
+		if targets[reference.TargetAddress] {
+			set[reference.SourceAddress] = true
+		}
+	}
+	values := make([]string, 0, len(set))
+	for value := range set {
+		values = append(values, value)
+	}
+	sort.Slice(values, func(i, j int) bool { return compareStableAddressText(values[i], values[j]) < 0 })
+	return values
 }
 
 func referenceSources(snapshot Snapshot, target string) []string {
@@ -533,7 +601,8 @@ func validateSemanticPreconditions(snapshot Snapshot, pre SemanticEditPreconditi
 			rowKind := rowKindForOwner(ownerSubject)
 			rowAddress := predictedChildAddress(operation.OwnerAddress, rowKind, operation.ID)
 			if createdInBatch[rowAddress] {
-				continue
+				// The row itself has no ancestor hash, but every owner/schema,
+				// column and address-valued cell read below remains protected.
 			} else if _, ok := subjects[rowAddress]; ok {
 				requireSubject(rowAddress)
 			} else {
@@ -560,20 +629,28 @@ func validateSemanticPreconditions(snapshot Snapshot, pre SemanticEditPreconditi
 				requireSubtree(typeAddress)
 			}
 		case OperationDeleteSubject, OperationRenameSubject:
-			if createdInBatch[operation.TargetAddress] {
-				continue
-			}
-			requireSubject(operation.TargetAddress)
-			if subject, ok := subjects[operation.TargetAddress]; ok {
-				owner := ownerForSubject(snapshot, subject)
-				requireChild(owner, subject.Kind)
-				if subject.SubtreeHash != nil {
-					requireSubtree(operation.TargetAddress)
-				}
-				for _, ref := range snapshot.SemanticIndex.References {
-					if ref.TargetAddress == operation.TargetAddress {
-						requireSubject(ref.SourceAddress)
+			if !createdInBatch[operation.TargetAddress] {
+				requireSubject(operation.TargetAddress)
+				if subject, ok := subjects[operation.TargetAddress]; ok {
+					owner := ownerForSubject(snapshot, subject)
+					requireChild(owner, subject.Kind)
+					if subject.SubtreeHash != nil {
+						requireSubtree(operation.TargetAddress)
 					}
+					closure := semanticDescendantSet(snapshot, operation.TargetAddress)
+					for _, ref := range snapshot.SemanticIndex.References {
+						if closure[ref.TargetAddress] {
+							requireSubject(ref.SourceAddress)
+						}
+					}
+				}
+			}
+			if operation.Kind == OperationRenameSubject {
+				destination := renamedAddress(operation.TargetAddress, operation.NewID)
+				createdInBatch[destination] = true
+				createdKinds[destination] = createdKinds[operation.TargetAddress]
+				if createdKinds[destination] == "" {
+					createdKinds[destination] = subjects[operation.TargetAddress].Kind
 				}
 			}
 		case OperationMigrateProjectIdentity:
@@ -825,8 +902,14 @@ func applyRename(input *CompileInput, snapshot Snapshot, address, newID string, 
 	if !project && semantic.Kind == materialize.SubjectProject {
 		return &SemanticConflict{Kind: ConflictProjectIdentityChanged, TargetAddress: address}, nil
 	}
+	destination := renamedAddress(address, newID)
+	closure := semanticDescendantSet(snapshot, address)
 	for _, subject := range snapshot.SemanticIndex.Subjects {
-		if subject.Address == renamedAddress(address, newID) {
+		candidate := subject.Address
+		if strings.HasPrefix(candidate, address+":") {
+			candidate = destination + strings.TrimPrefix(candidate, address)
+		}
+		if !closure[subject.Address] && (candidate == destination || strings.HasPrefix(candidate, destination+":")) {
 			return &SemanticConflict{Kind: ConflictDuplicateIdentity, TargetAddress: address}, nil
 		}
 	}
@@ -844,10 +927,15 @@ func applyRename(input *CompileInput, snapshot Snapshot, address, newID string, 
 	replacements = append(replacements, replacement{path: path, start: idSpan.Start, end: idSpan.End, text: newID})
 	if !project {
 		for _, binding := range snapshot.SourceMap.Bindings {
-			if binding.TargetAddress != address || binding.Module.Origin.Kind != "project" {
+			if !closure[binding.TargetAddress] || binding.Module.Origin.Kind != "project" {
 				continue
 			}
-			replacements = append(replacements, replacement{path: binding.Module.ModulePath, start: binding.Range.StartByte, end: binding.Range.EndByte, text: replaceTerminalBinding(input.ProjectSourceTree[binding.Module.ModulePath][binding.Range.StartByte:binding.Range.EndByte], newID)})
+			raw := input.ProjectSourceTree[binding.Module.ModulePath][binding.Range.StartByte:binding.Range.EndByte]
+			text, representable := replaceRenamedBinding(raw, address, binding.TargetAddress, newID)
+			if !representable {
+				return &SemanticConflict{Kind: ConflictReferenceBroken, TargetAddress: binding.TargetAddress}, nil
+			}
+			replacements = append(replacements, replacement{path: binding.Module.ModulePath, start: binding.Range.StartByte, end: binding.Range.EndByte, text: text})
 		}
 		// Row owner identifiers participate in row identity rather than ordinary
 		// reference binding extraction. Resolve them through the declared owner
@@ -958,6 +1046,31 @@ func materializeRenameMove(input *CompileInput, snapshot Snapshot, subject index
 	}
 	parts = append(parts, terminalID(address), "->", newID)
 	return appendTopLevelBlockEntry(input, input.EntryPath, "moves", strings.Join(parts, " "))
+}
+
+func removeWorkingRenameMove(input *CompileInput, sourceAddress, destinationAddress string) bool {
+	module := input.EntryPath
+	data := input.ProjectSourceTree[module]
+	start, end, found := namedBlockDeclarationSpan(data, "moves")
+	if !found {
+		return false
+	}
+	needle := terminalID(sourceAddress) + " -> " + terminalID(destinationAddress)
+	for _, span := range lineSpans(data, start, end) {
+		if !strings.Contains(strings.TrimSpace(string(data[span[0]:span[1]])), needle) {
+			continue
+		}
+		lineStart, lineEnd := extendWholeLine(data, span[0], span[1])
+		remaining := append(bytes.Clone(data[start:lineStart]), data[lineEnd:end]...)
+		if open, close, ok := findNamedBlock(remaining, 0, len(remaining), "moves"); ok && len(bytes.TrimSpace(remaining[open+1:close])) == 0 {
+			blockStart, blockEnd := extendWholeLine(data, start, end)
+			replaceSourceRange(input, module, blockStart, blockEnd, nil)
+		} else {
+			replaceSourceRange(input, module, lineStart, lineEnd, nil)
+		}
+		return true
+	}
+	return false
 }
 
 func moveSourceKind(kind SemanticSubjectKind) string {
@@ -1218,6 +1331,22 @@ func replaceTerminalBinding(raw []byte, newID string) string {
 		return "$" + newID
 	}
 	return newID
+}
+
+func replaceRenamedBinding(raw []byte, renamedOwner, targetAddress, newID string) (string, bool) {
+	if targetAddress == renamedOwner {
+		return replaceTerminalBinding(raw, newID), true
+	}
+	text := string(raw)
+	marker := terminalID(renamedOwner) + "."
+	index := strings.LastIndex(text, marker)
+	if index < 0 {
+		if strings.TrimPrefix(text, "$") == terminalID(targetAddress) {
+			return text, true
+		}
+		return "", false
+	}
+	return text[:index] + newID + text[index+len(marker)-1:], true
 }
 
 func declarationIDSpan(snapshot Snapshot, source index.SourceSubjectRecord, kind SemanticSubjectKind) (syntax.Span, bool) {

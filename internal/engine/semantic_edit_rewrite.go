@@ -722,11 +722,15 @@ func insertOwnerChildPlaced(input *CompileInput, snapshot Snapshot, owner index.
 		return insertAt(candidateEnd, lineIndent(source, last.DeclarationRange.StartByte))
 	}
 	if placement != nil && placement.GroupAnchorAddress != "" {
+		position := placement.Position
+		ownerAnchor := placement.GroupAnchorAddress == owner.Address
 		anchorSemantic, anchor, ok := subjectRecord(snapshot, placement.GroupAnchorAddress)
-		if !ok || anchorSemantic.Kind != kind || anchorSemantic.OwnerAddress == nil || *anchorSemantic.OwnerAddress != owner.Address || anchor.Module.ModulePath != path {
+		if !ok || anchor.Module.ModulePath != path || (!ownerAnchor && (anchorSemantic.Kind != kind || anchorSemantic.OwnerAddress == nil || *anchorSemantic.OwnerAddress != owner.Address)) {
 			return false
 		}
-		position := placement.Position
+		if ownerAnchor && position != "end" {
+			return false
+		}
 		if position == "before" || position == "after" {
 			anchorStart, anchorEnd := extendWholeLine(source, anchor.DeclarationRange.StartByte, anchor.DeclarationRange.EndByte)
 			if position == "after" {
@@ -739,6 +743,10 @@ func insertOwnerChildPlaced(input *CompileInput, snapshot Snapshot, owner index.
 		}
 		// Explicit end means the end of this owner's same-kind group, not
 		// merely after whichever member happened to be supplied as anchor.
+		if insertAfterGroup() {
+			return true
+		}
+	} else if placement != nil && placement.ModulePath != "" && placement.Position == "end" {
 		if insertAfterGroup() {
 			return true
 		}
@@ -804,7 +812,8 @@ func placementModule(snapshot Snapshot, placement *SemanticPlacementHint, owner,
 
 func insertPlacedDeclaration(input *CompileInput, snapshot Snapshot, module string, placement *SemanticPlacementHint, kind SemanticSubjectKind, owner, id, declaration string) bool {
 	if placement == nil || placement.GroupAnchorAddress == "" {
-		return insertStandardDeclaration(input, snapshot, module, kind, owner, id, declaration)
+		forceEnd := placement != nil && placement.ModulePath != "" && placement.Position == "end"
+		return insertStandardDeclaration(input, snapshot, module, kind, owner, id, declaration, forceEnd)
 	}
 	anchorKind, anchor, ok := subjectRecord(snapshot, placement.GroupAnchorAddress)
 	if !ok || anchor.Module.ModulePath != module || anchorKind.Kind != kind || ownerForSubject(snapshot, anchorKind) != owner {
@@ -852,23 +861,9 @@ func insertPlacedDeclaration(input *CompileInput, snapshot Snapshot, module stri
 	case "after":
 		replaceSourceRange(input, module, declarationEnd, declarationEnd, []byte(declaration+"\n"))
 	case "end":
-		groupEnd := declarationEnd
-		for _, semantic := range snapshot.SemanticIndex.Subjects {
-			if semantic.Kind != kind || ownerForSubject(snapshot, semantic) != owner {
-				continue
-			}
-			_, candidate, present := subjectRecord(snapshot, semantic.Address)
-			if !present || candidate.Module.ModulePath != module {
-				continue
-			}
-			candidateStart, candidateEnd, present := enclosingDeclarationSpan(snapshot, candidate)
-			if !present {
-				continue
-			}
-			_, candidateEnd = extendWholeLine(data, candidateStart, candidateEnd)
-			if candidateEnd > groupEnd {
-				groupEnd = candidateEnd
-			}
+		groupEnd := contiguousKindGroupEnd(snapshot, module, anchor, kind, owner)
+		if groupEnd < 0 {
+			return false
 		}
 		replaceSourceRange(input, module, groupEnd, groupEnd, []byte(declaration+"\n"))
 	default:
@@ -877,7 +872,64 @@ func insertPlacedDeclaration(input *CompileInput, snapshot Snapshot, module stri
 	return true
 }
 
-func insertStandardDeclaration(input *CompileInput, snapshot Snapshot, module string, kind SemanticSubjectKind, owner, id, declaration string) bool {
+func contiguousKindGroupEnd(snapshot Snapshot, module string, anchor index.SourceSubjectRecord, kind SemanticSubjectKind, owner string) int {
+	type declaration struct {
+		start, end int
+		kind       SemanticSubjectKind
+		owner      string
+	}
+	bySpan := map[[2]int]declaration{}
+	anchorStart, anchorEnd, found := enclosingDeclarationSpan(snapshot, anchor)
+	if !found {
+		return -1
+	}
+	for _, semantic := range snapshot.SemanticIndex.Subjects {
+		_, source, ok := subjectRecord(snapshot, semantic.Address)
+		if !ok || source.Module.ModulePath != module {
+			continue
+		}
+		start, end, ok := enclosingDeclarationSpan(snapshot, source)
+		if !ok {
+			continue
+		}
+		key := [2]int{start, end}
+		if _, exists := bySpan[key]; !exists {
+			bySpan[key] = declaration{start: start, end: end, kind: semantic.Kind, owner: ownerForSubject(snapshot, semantic)}
+		}
+	}
+	declarations := make([]declaration, 0, len(bySpan))
+	for _, value := range bySpan {
+		declarations = append(declarations, value)
+	}
+	sort.Slice(declarations, func(i, j int) bool { return declarations[i].start < declarations[j].start })
+	anchorIndex := -1
+	for i, value := range declarations {
+		if value.start == anchorStart && value.end == anchorEnd {
+			anchorIndex = i
+			break
+		}
+	}
+	if anchorIndex < 0 {
+		return -1
+	}
+	end := declarations[anchorIndex].end
+	for i := anchorIndex + 1; i < len(declarations); i++ {
+		if declarations[i].kind != kind || declarations[i].owner != owner {
+			break
+		}
+		end = declarations[i].end
+	}
+	data := snapshot.LosslessSyntaxTree.Files
+	for _, file := range data {
+		if file.ModulePath == module && file.Origin.Kind == resolve.OriginProject {
+			_, end = extendWholeLine(file.Source, end, end)
+			break
+		}
+	}
+	return end
+}
+
+func insertStandardDeclaration(input *CompileInput, snapshot Snapshot, module string, kind SemanticSubjectKind, owner, id, declaration string, forceEnd bool) bool {
 	data, exists := input.ProjectSourceTree[module]
 	if !exists {
 		return false
@@ -909,6 +961,27 @@ func insertStandardDeclaration(input *CompileInput, snapshot Snapshot, module st
 	sort.Slice(candidates, func(i, j int) bool {
 		return compareStableAddressText(candidates[i].semantic.Address, candidates[j].semantic.Address) < 0
 	})
+	if forceEnd && len(candidates) != 0 {
+		selected := candidates[0]
+		for _, candidate := range candidates[1:] {
+			if candidate.end > selected.end {
+				selected = candidate
+			}
+		}
+		if grouped {
+			indent := lineIndent(data, selected.source.DeclarationRange.StartByte)
+			newItem = indentMultiline(strings.TrimSpace(newItem), indent)
+			close := bytes.LastIndexByte(data[:selected.end], '}')
+			if close < selected.start {
+				return false
+			}
+			replaceSourceRange(input, module, close, close, []byte(indent+newItem+"\n"))
+			return true
+		}
+		_, end := extendWholeLine(data, selected.start, selected.end)
+		replaceSourceRange(input, module, end, end, []byte(declaration+"\n"))
+		return true
+	}
 	if grouped {
 		groupKey := declarationGroupKey([]byte(declaration))
 		compatible := make([]candidate, 0, len(candidates))
