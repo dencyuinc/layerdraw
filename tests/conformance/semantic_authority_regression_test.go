@@ -43,6 +43,23 @@ func TestSemanticAuthorityReviewRegressions(t *testing.T) {
 			}
 		})
 	}
+	activeAuthoredOrder := mustJSON(t, map[string]any{
+		"id": "x", "address": "ldl:project:p:query:q:parameter:x", "value_type": "enum",
+		"enum_values": []any{"z", "a"}, "reserved_enum_values": []any{}, "required": false,
+	})
+	if _, err := semantic.DecodeQueryRecipeParameter(activeAuthoredOrder); err != nil {
+		t.Fatalf("reversed authored enum option order rejected: %v", err)
+	}
+	reservedNoncanonicalOrder := mustJSON(t, map[string]any{
+		"id": "x", "address": "ldl:project:p:query:q:parameter:x", "value_type": "enum",
+		"enum_values": []any{"choice"}, "reserved_enum_values": []any{"z", "a"}, "required": false,
+	})
+	if _, err := semantic.DecodeQueryRecipeParameter(reservedNoncanonicalOrder); err == nil {
+		t.Fatal("reversed reserved enum option order accepted")
+	}
+	if _, err := engineprotocol.DecodeCreateSubjectFields([]byte(`{"format":"garbage"}`)); err == nil {
+		t.Fatal("standalone CreateSubjectFields accepted an untyped garbage format")
+	}
 	if _, err := semantic.DecodeRecipeScalar([]byte(`{"kind":"datetime","string_value":"2026-07-15T12:34:56.120Z"}`)); err == nil {
 		t.Fatal("non-canonical datetime fraction accepted")
 	}
@@ -177,6 +194,15 @@ func TestSemanticAuthorityReviewRegressions(t *testing.T) {
 	if _, err := semantic.DecodeSourceBindingRecord(mustJSON(t, binding)); err == nil {
 		t.Fatal("child SourceBinding accepted without exact target owner")
 	}
+}
+
+func TestCreateSubjectGeneratedFormatCompileSurface(t *testing.T) {
+	var column engineprotocol.ColumnCreateSubjectFields
+	var parameter engineprotocol.QueryParameterCreateSubjectFields
+	var export engineprotocol.ViewExportCreateSubjectFields
+	var _ *semantic.StringFormat = column.Format
+	var _ *semantic.StringFormat = parameter.Format
+	var _ semantic.ExportFormat = export.Format
 }
 
 func TestCompilerCompoundCollectionOrderRegressions(t *testing.T) {

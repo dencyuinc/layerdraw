@@ -10,8 +10,10 @@ for invariants that stock JSON Schema cannot express, and is split into:
 
 - `protocol-common/`: envelopes, failures, blob references, pagination, and
   capability handshake primitives.
-- `semantic/`: Actor-independent diagnostics, StableAddress-indexed compiler
-  projections, hashes, source maps, semantic indexes, and search documents.
+- `semantic/`: Actor-independent diagnostics, AuthoringCapability and
+  AuthoringImpact, StableAddress-indexed compiler projections, hashes, source
+  maps, semantic indexes, and search documents. Future `access-protocol/`
+  schemas consume AuthoringCapability from this group and must not redefine it.
 - `engine-protocol/`: `engine.handshake` and `engine.compile` operation payloads
   and concrete envelopes.
 - `meta/`: the dialect meta-schema and the schema for every required

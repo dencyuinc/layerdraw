@@ -207,6 +207,78 @@ func TestGeneratedCompileInputBlobRefCollector(t *testing.T) {
 	}
 }
 
+func TestCreateSubjectAuthoredContractsAcrossGeneratedGo(t *testing.T) {
+	data := readProtocolFixture(t, "workbench-create-subject-contracts.json")
+	if _, err := engineprotocol.DecodeSemanticOperationBatch(data); err != nil {
+		t.Fatalf("positive create_subject contract corpus was rejected: %v", err)
+	}
+	var corpus struct {
+		Operations []map[string]any `json:"operations"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]map[string]any{}
+	for _, operation := range corpus.Operations {
+		id, _ := operation["id"].(string)
+		byID[id] = operation
+		encoded, err := json.Marshal(operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := engineprotocol.DecodeSemanticOperation(encoded); err != nil {
+			t.Errorf("positive create_subject %s was rejected: %v", id, err)
+		}
+	}
+	clone := func(value any) any {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result any
+		if err := json.Unmarshal(encoded, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	reject := func(name, id string, mutate func(map[string]any)) {
+		t.Helper()
+		operation := clone(byID[id]).(map[string]any)
+		fields := operation["fields"].(map[string]any)
+		mutate(fields)
+		encoded, err := json.Marshal(operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := engineprotocol.DecodeSemanticOperation(encoded); err == nil {
+			t.Errorf("single-cause negative %s was accepted: %s", name, encoded)
+		}
+	}
+	for _, format := range []string{"bpmn", "csv", "docx", "drawio", "html", "json", "markdown", "mermaid", "pdf", "png", "pptx", "svg", "tsv", "xlsx", "yaml"} {
+		reject(format+" exact extension", format, func(fields map[string]any) { fields["filename"] = "map.invalid" })
+	}
+	reject("basename only", "json", func(fields map[string]any) { fields["filename"] = "../map.json" })
+	reject("options format authority", "json", func(fields map[string]any) {
+		fields["options"] = clone(byID["yaml"]["fields"].(map[string]any)["options"])
+	})
+	reject("exporter profile format authority", "json", func(fields map[string]any) { fields["exporter_profile"].(map[string]any)["format"] = "yaml" })
+	reject("Column format domain", "email_value", func(fields map[string]any) { fields["format"] = "json" })
+	reject("View Export format domain", "json", func(fields map[string]any) {
+		fields["format"] = "email"
+		fields["filename"] = "map.email"
+		delete(fields, "options")
+		delete(fields, "exporter_profile")
+	})
+	reject("active and reserved enum disjointness", "choice", func(fields map[string]any) { fields["reserved_enum_values"] = []any{"a"} })
+	reject("nonempty enum member", "choice", func(fields map[string]any) { fields["enum_values"] = []any{""}; delete(fields, "default") })
+	reject("safe integer bound", "count", func(fields map[string]any) { fields["max"] = "9007199254740992" })
+	reject("integer default within bounds", "count", func(fields map[string]any) { fields["default"].(map[string]any)["integer_value"] = "-11" })
+	reject("minimum string length", "code", func(fields map[string]any) { fields["default"].(map[string]any)["string_value"] = "a" })
+	reject("maximum string length", "code", func(fields map[string]any) { fields["default"].(map[string]any)["string_value"] = "abcde" })
+	reject("canonical string format", "email_value", func(fields map[string]any) { fields["default"].(map[string]any)["string_value"] = "not-email" })
+	reject("active enum default", "choice", func(fields map[string]any) { fields["default"].(map[string]any)["string_value"] = "missing" })
+}
+
 func TestGeneratedCompileResultBlobRefCollector(t *testing.T) {
 	t.Parallel()
 	root := protocolRepositoryRoot(t)
@@ -254,6 +326,249 @@ func TestGeneratedGoStrictDecodeRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 	if _, err := engineprotocol.DecodeCompileRequestEnvelope(readProtocolFixture(t, "compile-invalid-request.json")); err == nil {
 		t.Fatal("invalid fixture with actor_context_ref and negative unsigned limit was accepted")
+	}
+}
+
+func TestGeneratedWorkbenchPreviewFixtures(t *testing.T) {
+	t.Parallel()
+	positive := readProtocolFixture(t, "workbench-preview-operations-request.json")
+	envelope, err := engineprotocol.DecodePreviewOperationsRequestEnvelope(positive)
+	if err != nil {
+		t.Fatalf("decode positive Workbench fixture: %v", err)
+	}
+	encoded, err := engineprotocol.EncodePreviewOperationsRequestEnvelope(envelope)
+	if err != nil {
+		t.Fatalf("encode positive Workbench fixture: %v", err)
+	}
+	var before, after any
+	if err := json.Unmarshal(positive, &before); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &after); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("Workbench fixture changed on round-trip\nbefore=%s\nafter=%s", positive, encoded)
+	}
+
+	for _, name := range []string{
+		"workbench-invalid-handle-request.json",
+		"workbench-invalid-null-request.json",
+		"workbench-invalid-order-request.json",
+	} {
+		if _, err := engineprotocol.DecodePreviewOperationsRequestEnvelope(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid Workbench request fixture %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-invalid-outcome-response.json")); err == nil {
+		t.Error("success response without its outcome-dependent payload was accepted")
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-preview-conflict-only-response.json")); err != nil {
+		t.Errorf("conflict-only invalid preview was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-invalid-empty-preview-response.json")); err == nil {
+		t.Error("invalid preview without a conflict or diagnostic was accepted")
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-open-document-response.json")); err != nil {
+		t.Errorf("open-document response with exact per-document capabilities was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-open-pack-document-response.json")); err != nil {
+		t.Errorf("pack-mode open-document response was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-open-invalid-root-response.json")); err != nil {
+		t.Errorf("unavailable document without a fabricated root address was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-invalid-unavailable-warning-only-response.json")); err == nil {
+		t.Error("unavailable document without an error diagnostic was accepted")
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(readProtocolFixture(t, "workbench-invalid-open-document-capabilities-response.json")); err == nil {
+		t.Error("open-document response with an incomplete capability state was accepted")
+	}
+	if _, err := engineprotocol.DecodeReplaceSourceTreeResult(readProtocolFixture(t, "workbench-replace-pack-result.json")); err != nil {
+		t.Errorf("replacement result with refreshed pack state and capabilities was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeResultingHashes(readProtocolFixture(t, "workbench-invalid-pack-resulting-hashes.json")); err == nil {
+		t.Error("pack resulting hashes with a project-only graph hash were accepted")
+	}
+	if _, err := engineprotocol.DecodeInspectSubgraphResult(readProtocolFixture(t, "workbench-inspect-subgraph-result.json")); err != nil {
+		t.Errorf("subgraph relation facts were rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeInspectSubgraphResult(readProtocolFixture(t, "workbench-invalid-subgraph-relation-result.json")); err == nil {
+		t.Error("subgraph relation without both endpoints was accepted")
+	}
+	if _, err := engineprotocol.DecodeInspectSubgraphResult(readProtocolFixture(t, "workbench-invalid-subgraph-item-facts-result.json")); err == nil {
+		t.Error("relation item without its typed relation facts was accepted")
+	}
+	if _, err := engineprotocol.DecodeInspectSubgraphInput(readProtocolFixture(t, "workbench-invalid-subgraph-root-input.json")); err == nil {
+		t.Error("non-Entity inspect_subgraph root was accepted")
+	}
+	if _, err := engineprotocol.DecodeFindUsagesResult(readProtocolFixture(t, "workbench-find-usages-result.json")); err != nil {
+		t.Errorf("usage with SourceRange provenance and target kind was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeFindUsagesResult(readProtocolFixture(t, "workbench-invalid-find-usages-target-kind-result.json")); err == nil {
+		t.Error("usage without target kind was accepted")
+	}
+	if _, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(readProtocolFixture(t, "workbench-close-failed-response.json")); err != nil {
+		t.Errorf("closed Workbench failure was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(readProtocolFixture(t, "workbench-invalid-close-failed-response.json")); err == nil {
+		t.Error("caller-supplied invalid handle was misclassified as an Engine invariant")
+	}
+	if _, err := engineprotocol.DecodeReadDeclarationsResult(readProtocolFixture(t, "workbench-large-declaration-result.json")); err != nil {
+		t.Errorf("large declaration BlobRef was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeReadDeclarationsResult(readProtocolFixture(t, "workbench-invalid-declaration-chunk-order-result.json")); err == nil {
+		t.Error("out-of-order declaration chunks were accepted")
+	}
+	if _, err := engineprotocol.DecodeReadDeclarationsResult(readProtocolFixture(t, "workbench-invalid-page-byte-overflow.json")); err == nil {
+		t.Error("overflowing logical response byte count was accepted")
+	}
+	if _, err := engineprotocol.DecodeFindUsagesResult(readProtocolFixture(t, "workbench-invalid-find-usages-order-result.json")); err == nil {
+		t.Error("out-of-order usage page was accepted")
+	}
+	if _, err := engineprotocol.DecodeEngineEditPreconditions(readProtocolFixture(t, "workbench-optional-preconditions.json")); err != nil {
+		t.Errorf("omitted optional expected_source_digests was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeEngineEditPreconditions(readProtocolFixture(t, "workbench-invalid-source-digest-order.json")); err == nil {
+		t.Error("out-of-order source digest preconditions were accepted")
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-upsert-row-default-absent.json")); err != nil {
+		t.Errorf("upsert_row omitted default-empty explicit absences: %v", err)
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-create-subject-single-kind.json")); err != nil {
+		t.Errorf("create_subject without a duplicate fields discriminator was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-semantic-map-order.json")); err == nil {
+		t.Error("out-of-order recursive semantic map entries were accepted")
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-authored-path-depth.json")); err == nil {
+		t.Error("authored field path deeper than two tokens was accepted")
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-upsert-row-overlap.json")); err == nil {
+		t.Error("upsert_row value and explicit-absence overlap was accepted")
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-invalid-non-upsert-explicit-absence.json")); err == nil {
+		t.Error("non-upsert operation accepted explicit_absent_column_addresses")
+	}
+	if _, err := engineprotocol.DecodeClassifyAuthoringImpactInput(readProtocolFixture(t, "workbench-invalid-classify-raw-diff.json")); err == nil {
+		t.Error("caller-labeled raw diff was accepted as validated classification authority")
+	}
+	if _, err := semantic.DecodeSemanticDiff(readProtocolFixture(t, "workbench-invalid-semantic-diff-order.json")); err == nil {
+		t.Error("out-of-order SemanticDiff entries were accepted")
+	}
+	if _, err := engineprotocol.DecodeSourceDiff(readProtocolFixture(t, "workbench-invalid-source-diff-order.json")); err == nil {
+		t.Error("out-of-order SourceDiff edits were accepted")
+	}
+	if _, err := engineprotocol.DecodeSourceDiff(readProtocolFixture(t, "workbench-source-diff-all-kinds.json")); err != nil {
+		t.Errorf("create/delete/move/replace SourceDiff was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeSourceDiff(readProtocolFixture(t, "workbench-invalid-replace-source-edit-identity.json")); err == nil {
+		t.Error("replace SourceEdit with a contradictory explicit module identity was accepted")
+	}
+	if _, err := semantic.DecodeAuthoringImpact(readProtocolFixture(t, "workbench-invalid-authoring-impact-order.json")); err == nil {
+		t.Error("out-of-order AuthoringImpact entries were accepted")
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-find-symbols-input.json")); err != nil {
+		t.Errorf("closed deterministic symbol match input was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-find-symbols-unrestricted-input.json")); err != nil {
+		t.Errorf("symbol lookup with absent unrestricted filters was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-invalid-find-symbols-mode-input.json")); err == nil {
+		t.Error("symbol lookup without deterministic match/case semantics was accepted")
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-invalid-find-symbols-empty-filter-input.json")); err == nil {
+		t.Error("symbol lookup with an ambiguous empty filter was accepted")
+	}
+	if _, err := engineprotocol.DecodePreviewSourcePatchRequestEnvelope(readProtocolFixture(t, "workbench-preview-source-patch-request.json")); err != nil {
+		t.Errorf("valid ordered source patch batch was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-stale-generation-response.json")); err != nil {
+		t.Errorf("stale-generation Workbench failure was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(readProtocolFixture(t, "workbench-invalid-stale-generation-response.json")); err == nil {
+		t.Error("stale-generation failure with invariant common category was accepted")
+	}
+	if _, err := engineprotocol.DecodePreviewSourcePatchRequestEnvelope(readProtocolFixture(t, "workbench-invalid-overlapping-source-patch-request.json")); err == nil {
+		t.Error("overlapping source patch batch was accepted")
+	}
+	semanticBatch, err := engineprotocol.DecodeSemanticOperationBatch(readProtocolFixture(t, "workbench-create-subject-all-kinds.json"))
+	if err != nil {
+		t.Errorf("complete creatable-subject fixture was rejected: %v", err)
+	} else if encoded, encodeErr := engineprotocol.EncodeSemanticOperationBatch(semanticBatch); encodeErr != nil {
+		t.Errorf("complete creatable-subject fixture could not be encoded: %v", encodeErr)
+	} else if !bytes.Contains(encoded, []byte(`"max":1`)) || !bytes.Contains(encoded, []byte(`"max":"many"`)) {
+		t.Errorf("cardinality scalar union changed wire representation: %s", encoded)
+	}
+	if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, "workbench-create-relation-fields.json")); err != nil {
+		t.Errorf("create_relation common fields were rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-create-subject-foreign-field.json", "workbench-invalid-create-subject-missing-field.json", "workbench-invalid-create-subject-parent-kind.json", "workbench-invalid-create-subject-nested.json", "workbench-invalid-create-subject-cardinality.json", "workbench-invalid-create-subject-enum-options.json", "workbench-invalid-create-subject-view-shape.json", "workbench-invalid-create-subject-flow-lanes.json"} {
+		if _, err := engineprotocol.DecodeSemanticOperation(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid semantic operation %s was accepted", name)
+		}
+	}
+	if _, err := semantic.DecodeAuthoringImpact(readProtocolFixture(t, "workbench-authoring-impact-graph.json")); err != nil {
+		t.Errorf("valid graph AuthoringImpact was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-authoring-impact-missing-facts.json", "workbench-invalid-authoring-impact-address-kind.json", "workbench-invalid-authoring-impact-action.json", "workbench-invalid-authoring-impact-capabilities.json"} {
+		if _, err := semantic.DecodeAuthoringImpact(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid AuthoringImpact %s was accepted", name)
+		}
+	}
+	for _, name := range []string{"workbench-invalid-source-create-digest.json", "workbench-invalid-source-blob-media.json", "workbench-invalid-source-blob-lifetime.json", "workbench-invalid-source-move-module.json", "workbench-invalid-source-move-digest.json"} {
+		if _, err := engineprotocol.DecodeSourceDiff(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("non-reconstructable SourceDiff %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodeWorkbenchPreviewResult(readProtocolFixture(t, "workbench-preview-valid-warning.json")); err != nil {
+		t.Errorf("valid warning preview was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-preview-impact-digest.json", "workbench-invalid-preview-capabilities.json", "workbench-invalid-preview-semantic-hash.json", "workbench-invalid-preview-source-hash.json", "workbench-invalid-preview-resulting-hash.json", "workbench-invalid-preview-endpoint.json", "workbench-invalid-preview-generation.json", "workbench-invalid-preview-warning-only.json"} {
+		if _, err := engineprotocol.DecodeWorkbenchPreviewResult(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid preview integrity fixture %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodeApplyToHandleResult(readProtocolFixture(t, "workbench-apply-result.json")); err != nil {
+		t.Errorf("valid apply result was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-apply-source-hash.json", "workbench-invalid-apply-resulting-hash.json"} {
+		if _, err := engineprotocol.DecodeApplyToHandleResult(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid apply integrity fixture %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodeFindSymbolsInput(readProtocolFixture(t, "workbench-invalid-input-cursor-generation.json")); err == nil {
+		t.Error("input cursor generation mismatch was accepted")
+	}
+	if _, err := engineprotocol.DecodeCloseDocumentInput(readProtocolFixture(t, "workbench-invalid-close-generation.json")); err == nil {
+		t.Error("close handle/generation mismatch was accepted")
+	}
+	if _, err := engineprotocol.DecodeApplyToHandleInput(readProtocolFixture(t, "workbench-invalid-apply-endpoint.json")); err == nil {
+		t.Error("apply preview endpoint mismatch was accepted")
+	}
+	if _, err := engineprotocol.DecodeOpenDocumentResult(readProtocolFixture(t, "workbench-invalid-open-handle-generation.json")); err == nil {
+		t.Error("open result handle/generation mismatch was accepted")
+	}
+	if _, err := engineprotocol.DecodeListModulesResult(readProtocolFixture(t, "workbench-page-empty.json")); err != nil {
+		t.Errorf("self-accounted empty page was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-invalid-page-count.json", "workbench-invalid-page-bytes.json", "workbench-invalid-page-cursor-generation.json"} {
+		if _, err := engineprotocol.DecodeListModulesResult(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid self-accounting page %s was accepted", name)
+		}
+	}
+	for _, name := range []string{"workbench-invalid-chunk-overflow.json", "workbench-invalid-chunk-media.json"} {
+		if _, err := engineprotocol.DecodeBoundedTextChunk(readProtocolFixture(t, name)); err == nil {
+			t.Errorf("invalid bounded chunk %s was accepted", name)
+		}
+	}
+	if _, err := engineprotocol.DecodeClassifyAuthoringImpactInput(readProtocolFixture(t, "workbench-classify-authoring-impact-input.json")); err != nil {
+		t.Errorf("bounded classify_authoring_impact input was rejected: %v", err)
+	}
+	for _, name := range []string{"workbench-rejected-handle-response.json", "workbench-rejected-cursor-response.json", "workbench-rejected-generation-response.json", "workbench-rejected-input-response.json", "workbench-rejected-not_found-response.json", "workbench-rejected-preview-response.json", "workbench-rejected-unsupported-response.json", "workbench-rejected-precondition-response.json", "workbench-failed-execution-response.json", "workbench-cancelled-response.json"} {
+		if _, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(readProtocolFixture(t, name)); err != nil {
+			t.Errorf("closed outcome taxonomy fixture %s was rejected: %v", name, err)
+		}
 	}
 }
 

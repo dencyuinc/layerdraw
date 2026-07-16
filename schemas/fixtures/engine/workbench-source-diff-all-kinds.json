@@ -1,0 +1,30 @@
+{
+  "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "edits": [
+    {
+      "after_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "after_module": {"module_path": "a.ldl", "origin": {"kind": "project"}},
+      "kind": "create",
+      "replacement_blob": {"blob_id": "create-a", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "lifetime": "request", "media_type": "text/plain; charset=utf-8", "size": "1"}
+    },
+    {
+      "before_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "before_module": {"module_path": "b.ldl", "origin": {"kind": "project"}},
+      "kind": "delete"
+    },
+    {
+      "after_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "after_module": {"module_path": "d.ldl", "origin": {"kind": "project"}},
+      "before_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "before_module": {"module_path": "c.ldl", "origin": {"kind": "project"}},
+      "kind": "move"
+    },
+    {
+      "after_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "before_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "kind": "replace",
+      "replacement_blob": {"blob_id": "replace-e", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "lifetime": "request", "media_type": "text/plain; charset=utf-8", "size": "1"},
+      "source_range": {"end_byte": "1", "module_path": "e.ldl", "origin": {"kind": "project"}, "start_byte": "0"}
+    }
+  ]
+}

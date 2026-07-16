@@ -1,0 +1,6 @@
+{
+  "operation": "upsert_row",
+  "owner_address": "ldl:project:p:entity:a",
+  "row_id": "r",
+  "values": []
+}

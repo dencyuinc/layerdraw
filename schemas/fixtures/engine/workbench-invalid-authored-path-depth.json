@@ -1,0 +1,7 @@
+{
+  "action": "set",
+  "operation": "update_subject_field",
+  "path": ["annotations", "group", "key"],
+  "target_address": "ldl:project:fixture",
+  "value": {"kind": "boolean", "boolean": true}
+}

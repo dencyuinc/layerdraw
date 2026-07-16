@@ -1,0 +1,40 @@
+{
+  "diagnostics": [],
+  "engine_release": "0.0.0-dev",
+  "outcome": "success",
+  "payload": {
+    "capabilities": {
+      "apply_to_handle": false,
+      "find_symbols": false,
+      "find_usages": false,
+      "format_scope": false,
+      "get_neighbors": false,
+      "inspect_subgraph": false,
+      "list_modules": true,
+      "list_references": false,
+      "organize_workspace": false,
+      "preview_fragment": false,
+      "preview_operations": false,
+      "preview_source_patch": false,
+      "read_declarations": false,
+      "read_references": false,
+      "read_rows": false,
+      "read_scope": false,
+      "replace_source_tree": true
+    },
+    "document_generation": {
+      "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+      "value": "1"
+    },
+    "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+    "effective_limits": {"max_items": "128", "max_output_bytes": "65536"},
+    "state": {
+      "diagnostics": [{"arguments": {"expected": {"kind": "string", "string_value": "project"}}, "code": "LDL1101", "message": "expected a project declaration", "message_key": "invalid_structure_syntax", "protocol_version": 1, "range": {"end_byte": "7", "module_path": "document.ldl", "origin": {"kind": "project"}, "start_byte": "0"}, "related": [], "severity": "error"}],
+      "mode": "project",
+      "semantic_state": "unavailable",
+      "state_kind": "project_unavailable"
+    }
+  },
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-open-invalid-root"
+}

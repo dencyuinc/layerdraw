@@ -1,0 +1,9 @@
+{
+  "document_generation": {
+    "document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "document_abcdefghijklmnop"},
+    "value": "7"
+  },
+  "expected_child_sets": [],
+  "expected_subject_hashes": [],
+  "expected_subtree_hashes": []
+}

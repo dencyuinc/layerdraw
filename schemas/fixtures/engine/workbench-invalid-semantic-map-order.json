@@ -1,0 +1,13 @@
+{
+  "action": "set",
+  "operation": "update_subject_field",
+  "path": ["annotations"],
+  "target_address": "ldl:project:fixture",
+  "value": {
+    "kind": "map",
+    "map": [
+      {"key": "zeta", "value": {"kind": "boolean", "boolean": true}},
+      {"key": "alpha", "value": {"kind": "absent"}}
+    ]
+  }
+}

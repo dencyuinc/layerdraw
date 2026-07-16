@@ -7,10 +7,15 @@ import {
   isHandshakeResponseEnvelope,
 } from "../src/engine.gen.js";
 import type {
+  ColumnCreateSubjectFields,
   CompileRequestEnvelope,
   CompileResponseEnvelope,
+  CreateEntityTypeColumnOperation,
+  CreateViewExportOperation,
   HandshakeRequestEnvelope,
   HandshakeResponseEnvelope,
+  QueryParameterCreateSubjectFields,
+  ViewExportCreateSubjectFields,
 } from "../src/engine.gen.js";
 import type {
   ViewRecipeSource,
@@ -48,6 +53,16 @@ export const typedInvalidDiffSources: ReadonlyArray<ViewRecipeSource> = [
   {kind: "diff", before: "same", after: "same", arguments: {}},
   {kind: "diff", before: "base", after: "head", arguments: typedArguments},
 ];
+
+export const typedColumnCreateFields: ColumnCreateSubjectFields = {display_name: "Email", value_type: "string", format: "email"};
+export const typedQueryParameterCreateFields: QueryParameterCreateSubjectFields = {value_type: "string", format: "uri"};
+export const typedViewExportCreateFields: ViewExportCreateSubjectFields = {format: "json", filename: "view.json", fidelity: "lossless"};
+export const typedColumnCreateOperation: CreateEntityTypeColumnOperation = {operation: "create_subject", parent_address: "ldl:project:p:entity-type:t", subject_kind: "entity_type_column", id: "email", fields: typedColumnCreateFields};
+export const typedViewExportCreateOperation: CreateViewExportOperation = {operation: "create_subject", parent_address: "ldl:project:p:view:v", subject_kind: "view_export", id: "json", fields: typedViewExportCreateFields};
+// @ts-expect-error generated Column create fields retain semantic.StringFormat rather than string
+export const typedInvalidColumnFormat: ColumnCreateSubjectFields = {display_name: "Bad", value_type: "string", format: "garbage"};
+// @ts-expect-error generated View Export create fields retain semantic.ExportFormat rather than string
+export const typedInvalidExportFormat: ViewExportCreateSubjectFields = {format: "garbage", filename: "bad.out", fidelity: "lossless"};
 
 export function narrowFixture(value: unknown):
   | CompileRequestEnvelope

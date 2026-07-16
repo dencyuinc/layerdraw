@@ -115,7 +115,7 @@
     "negotiated_protocols": [
       {
         "name": "engine",
-        "schema_digest": "sha256:2d34eed0a79b9e5d1ac477d3e909fa1138800766ee9b77acd0f81ffde0ae0b8e",
+        "schema_digest": "sha256:d66232fcdea7b2c5c7f2b25b087b114a133f1721fb9370b1cc94f88b8b627fd7",
         "version": "1.0"
       }
     ],

@@ -58,7 +58,7 @@ var (
 	requiredDialectKeywordSchemas = mustDecodeDialectObject(`{
 		"x-layerdraw-address-terminal-id": {"$ref": "#/$defs/addressTerminalIDRule"},
 		"x-layerdraw-address-owners": {"type": "array", "items": {"$ref": "#/$defs/addressOwnerRule"}, "minItems": 1, "uniqueItems": true},
-		"x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["child_set", "export_binding", "module_scope", "reference_id", "semantic_reference", "source_asset", "source_binding", "source_file", "subject_kind"]},
+		"x-layerdraw-canonical-collection-order": {"type": "string", "enum": ["authored_field_path", "authoring_impact", "bounded_text_chunk", "child_set", "conflict", "export_binding", "module_scope", "neighbor", "reference_id", "semantic_diff", "semantic_map_entry", "semantic_reference", "source_asset", "source_binding", "source_diff", "source_file", "source_patch", "source_range", "subgraph", "subject_kind"]},
 		"x-layerdraw-canonical-enum-order": {"type": "boolean", "const": true},
 		"x-layerdraw-canonical-identifier-order": {"type": "boolean", "const": true},
 		"x-layerdraw-child-set": {"type": "boolean", "const": true},
@@ -83,6 +83,7 @@ var (
 		"x-layerdraw-stable-address-roles": {"type": "array", "items": {"$ref": "#/$defs/stableAddressRoleRule"}, "minItems": 1, "uniqueItems": true},
 		"x-layerdraw-stable-address-order": {"type": "string", "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."},
 		"x-layerdraw-state-read-order": {"type": "boolean", "const": true},
+		"x-layerdraw-protocol-invariant": {"type": "string", "enum": ["apply_input", "apply_result", "authoring_impact", "authoring_impact_entry", "bounded_text_chunk", "document_bound_input", "open_document_result", "paged_result", "preview_result", "semantic_operation", "source_edit"]},
 		"x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
 		"x-layerdraw-state-read": {"type": "boolean", "const": true},
 		"x-layerdraw-ts-module": {"type": "string", "minLength": 1},
@@ -174,7 +175,9 @@ var (
 			"type": "object",
 			"properties": {
 				"allowed_values": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}},
+				"any_non_empty": {"$ref": "#/$defs/fieldNames"},
 				"empty": {"$ref": "#/$defs/fieldNames"},
+				"error_diagnostic": {"$ref": "#/$defs/fieldNames"},
 				"forbidden": {"$ref": "#/$defs/fieldNames"},
 				"non_empty": {"$ref": "#/$defs/fieldNames"},
 				"required": {"$ref": "#/$defs/fieldNames"}
@@ -214,11 +217,13 @@ type taggedUnion struct {
 }
 
 type taggedVariant struct {
-	Required      []string            `json:"required"`
-	Forbidden     []string            `json:"forbidden"`
-	Empty         []string            `json:"empty"`
-	NonEmpty      []string            `json:"non_empty"`
-	AllowedValues map[string][]string `json:"allowed_values"`
+	Required        []string            `json:"required"`
+	Forbidden       []string            `json:"forbidden"`
+	Empty           []string            `json:"empty"`
+	ErrorDiagnostic []string            `json:"error_diagnostic"`
+	NonEmpty        []string            `json:"non_empty"`
+	AnyNonEmpty     []string            `json:"any_non_empty"`
+	AllowedValues   map[string][]string `json:"allowed_values"`
 }
 
 type operatorValueRule struct {
@@ -317,6 +322,7 @@ type schemaType struct {
 	StableAddressRoles   []stableAddressRoleRule `json:"x-layerdraw-stable-address-roles,omitempty"`
 	StateRead            bool                    `json:"x-layerdraw-state-read,omitempty"`
 	StateReadOrder       bool                    `json:"x-layerdraw-state-read-order,omitempty"`
+	ProtocolInvariant    string                  `json:"x-layerdraw-protocol-invariant,omitempty"`
 	ViewProjection       string                  `json:"x-layerdraw-view-projection,omitempty"`
 	ViewRecipe           bool                    `json:"x-layerdraw-view-recipe,omitempty"`
 }
@@ -769,8 +775,11 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		return fmt.Errorf("%s: %w", context, err)
 	}
 	if len(value.OneOf) != 0 {
-		if context != "JsonValue" {
-			return fmt.Errorf("%s uses unsupported oneOf; only the generated JsonValue union is supported", context)
+		if context != "JsonValue" && context != "RelationCardinalityMaximum" && !isGeneratedReferenceUnion(set, document, value) {
+			return fmt.Errorf("%s uses unsupported oneOf; only generated local-reference unions, JsonValue, and RelationCardinalityMaximum are supported", context)
+		}
+		if context == "RelationCardinalityMaximum" && !isRelationCardinalityMaximum(value) {
+			return fmt.Errorf("RelationCardinalityMaximum must be exactly the JSON integer 1 or string many")
 		}
 		for index, branch := range value.OneOf {
 			if err := validateType(set, document, fmt.Sprintf("%s.oneOf[%d]", context, index), branch, seen); err != nil {
@@ -824,6 +833,12 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 		}
 	}
 	if typeValue == "object" {
+		if value.ProtocolInvariant != "" {
+			allowed := map[string]bool{"apply_input": true, "apply_result": true, "authoring_impact": true, "authoring_impact_entry": true, "bounded_text_chunk": true, "document_bound_input": true, "open_document_result": true, "paged_result": true, "preview_result": true, "semantic_operation": true, "source_edit": true}
+			if !allowed[value.ProtocolInvariant] {
+				return fmt.Errorf("%s has unknown protocol invariant %q", context, value.ProtocolInvariant)
+			}
+		}
 		if value.PropertyNames != nil {
 			if err := validateType(set, document, context+".propertyNames", value.PropertyNames, seen); err != nil {
 				return err
@@ -915,7 +930,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 				forbiddenVariant := stringSet(variant.Forbidden)
 				emptyVariant := stringSet(variant.Empty)
 				nonEmptyVariant := stringSet(variant.NonEmpty)
-				properties := append(append(append(append([]string{}, variant.Required...), variant.Forbidden...), variant.Empty...), variant.NonEmpty...)
+				properties := append(append(append(append(append(append([]string{}, variant.Required...), variant.Forbidden...), variant.Empty...), variant.ErrorDiagnostic...), variant.NonEmpty...), variant.AnyNonEmpty...)
 				for property := range variant.AllowedValues {
 					properties = append(properties, property)
 				}
@@ -933,7 +948,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 						return fmt.Errorf("%s tagged union gives contradictory rules for %q", context, property)
 					}
 				}
-				for _, property := range append(append([]string{}, variant.Empty...), variant.NonEmpty...) {
+				for _, property := range append(append(append(append([]string{}, variant.Empty...), variant.ErrorDiagnostic...), variant.NonEmpty...), variant.AnyNonEmpty...) {
 					propertyType := value.Properties[property]
 					if propertyType.Ref != "" {
 						target, name, err := resolveRef(set, document, propertyType.Ref)
@@ -1377,6 +1392,38 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 	return nil
 }
 
+func isRelationCardinalityMaximum(value *schemaType) bool {
+	if value == nil || len(value.OneOf) != 2 {
+		return false
+	}
+	one, many := value.OneOf[0], value.OneOf[1]
+	oneType, oneErr := scalarType(one.Type)
+	manyType, manyErr := scalarType(many.Type)
+	return oneErr == nil && manyErr == nil && oneType == "integer" && one.Minimum != nil && *one.Minimum == 1 && one.Maximum != nil && *one.Maximum == 1 &&
+		manyType == "string" && many.Const == "many"
+}
+
+func isGeneratedReferenceUnion(set schemaSet, document *schemaDocument, value *schemaType) bool {
+	if value == nil || len(value.OneOf) < 2 {
+		return false
+	}
+	for _, branch := range value.OneOf {
+		if branch.Ref == "" {
+			return false
+		}
+		target, name, err := resolveRef(set, document, branch.Ref)
+		if err != nil || target.ID != document.ID {
+			return false
+		}
+		definition := target.Definitions[name]
+		typeValue, typeErr := scalarType(definition.Type)
+		if typeErr != nil || typeValue != "object" && !isGeneratedReferenceUnion(set, target, definition) {
+			return false
+		}
+	}
+	return true
+}
+
 func validateExportRecipeAssertionShape(set schemaSet, document *schemaDocument, context string, value *schemaType) error {
 	required := stringSet(value.Required)
 	for _, property := range []string{"exporter_profile", "extension", "filename", "format", "options", "fidelity", "source_refs", "native_maximum_fidelity", "effective_maximum_fidelity", "fidelity_basis", "requires_source_manifest"} {
@@ -1739,6 +1786,22 @@ func writeGoDefinition(body *strings.Builder, set schemaSet, document *schemaDoc
 		body.WriteString("type JsonValue struct {\n\tKind JsonValueKind\n\tBoolean bool\n\tString string\n\tArray []JsonValue\n\tObject map[string]JsonValue\n}\n")
 		return nil
 	}
+	if name == "RelationCardinalityMaximum" && isRelationCardinalityMaximum(definition) {
+		body.WriteString("type RelationCardinalityMaximum string\n\nconst (\n\tRelationCardinalityMaximumOne RelationCardinalityMaximum = \"1\"\n\tRelationCardinalityMaximumMany RelationCardinalityMaximum = \"many\"\n)\n")
+		return nil
+	}
+	if isGeneratedReferenceUnion(set, document, definition) {
+		fmt.Fprintf(body, "type %s struct {\n", name)
+		for _, branch := range definition.OneOf {
+			_, branchName, err := resolveRef(set, document, branch.Ref)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(body, "\t%s *%s `json:\"-\"`\n", branchName, branchName)
+		}
+		body.WriteString("}\n")
+		return nil
+	}
 	typeValue, err := scalarType(definition.Type)
 	if err != nil {
 		return err
@@ -1908,6 +1971,36 @@ func generateGoCodec(set schemaSet, document *schemaDocument) ([]byte, error) {
 	if document.Definitions["JsonValue"] != nil {
 		body.WriteString(goJSONValueRuntime)
 	}
+	if document.Definitions["RelationCardinalityMaximum"] != nil {
+		body.WriteString(goRelationCardinalityMaximumRuntime)
+	}
+	for _, name := range sortedKeys(document.Definitions) {
+		definition := document.Definitions[name]
+		if !isGeneratedReferenceUnion(set, document, definition) {
+			continue
+		}
+		fmt.Fprintf(&body, "// UnmarshalJSON decodes the closed %s reference union.\n", name)
+		fmt.Fprintf(&body, "func (value *%s) UnmarshalJSON(data []byte) error {\n", name)
+		fmt.Fprintf(&body, "\traw, err := decodeWireJSON(data)\n\tif err != nil { return err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return err }\n", name)
+		for _, branch := range definition.OneOf {
+			_, branchName, err := resolveRef(set, document, branch.Ref)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&body, "\tif validateNamed(schemaDocumentID, %q, raw) == nil {\n\t\tvar decoded %s\n\t\tdecoder := json.NewDecoder(bytes.NewReader(data))\n\t\tdecoder.DisallowUnknownFields()\n\t\tif err := decoder.Decode(&decoded); err != nil { return err }\n\t\t*value = %s{%s: &decoded}\n\t\treturn nil\n\t}\n", branchName, branchName, name, branchName)
+		}
+		fmt.Fprintf(&body, "\treturn errors.New(%q)\n}\n\n", "validated "+name+" did not match a generated branch")
+		fmt.Fprintf(&body, "// MarshalJSON encodes the active %s branch.\n", name)
+		fmt.Fprintf(&body, "func (value %s) MarshalJSON() ([]byte, error) {\n\tvar selected any\n\tcount := 0\n", name)
+		for _, branch := range definition.OneOf {
+			_, branchName, err := resolveRef(set, document, branch.Ref)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&body, "\tif value.%s != nil { selected = *value.%s; count++ }\n", branchName, branchName)
+		}
+		fmt.Fprintf(&body, "\tif count != 1 { return nil, fmt.Errorf(%q, count) }\n\tencoded, err := marshalWireJSON(selected)\n\tif err != nil { return nil, err }\n\traw, err := decodeWireJSON(encoded)\n\tif err != nil { return nil, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return nil, err }\n\treturn appendCanonicalJSON(nil, raw)\n}\n\n", name+" requires exactly one active branch, got %d", name)
+	}
 	for _, name := range sortedKeys(document.Definitions) {
 		fmt.Fprintf(&body, "// Decode%s decodes and validates one %s JSON value.\n", name, name)
 		fmt.Fprintf(&body, "func Decode%s(data []byte) (%s, error) {\n\tvar result %s\n\traw, err := decodeWireJSON(data)\n\tif err != nil { return result, err }\n\tif err := validateNamed(schemaDocumentID, %q, raw); err != nil { return result, err }\n\tdecoder := json.NewDecoder(bytes.NewReader(data))\n\tdecoder.DisallowUnknownFields()\n\tif err := decoder.Decode(&result); err != nil { return result, err }\n\treturn result, nil\n}\n\n", name, name, name, name)
@@ -2043,6 +2136,34 @@ func validateJSONValueInactiveFields(value JsonValue) error {
 		return fmt.Errorf("unknown JsonValue kind %q", value.Kind)
 	}
 	return nil
+}
+
+`
+
+const goRelationCardinalityMaximumRuntime = `// UnmarshalJSON decodes the deliberately scoped Language 1 cardinality maximum scalar union.
+func (value *RelationCardinalityMaximum) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case "1":
+		*value = RelationCardinalityMaximumOne
+		return nil
+	case "\"many\"":
+		*value = RelationCardinalityMaximumMany
+		return nil
+	default:
+		return fmt.Errorf("relation cardinality maximum must be JSON integer 1 or string many")
+	}
+}
+
+// MarshalJSON encodes the deliberately scoped Language 1 cardinality maximum scalar union.
+func (value RelationCardinalityMaximum) MarshalJSON() ([]byte, error) {
+	switch value {
+	case RelationCardinalityMaximumOne:
+		return []byte("1"), nil
+	case RelationCardinalityMaximumMany:
+		return []byte("\"many\""), nil
+	default:
+		return nil, fmt.Errorf("relation cardinality maximum has invalid value %q", value)
+	}
 }
 
 `
@@ -2333,6 +2454,16 @@ func validateNamed(documentID, name string, value any) error {
 	return validateSchema(documentID, schema, value, "$", 0)
 }
 
+func schemaEnumValues(documentID string, schema map[string]any) []any {
+	for range 16 {
+		if values, ok := schema["enum"].([]any); ok { return values }
+		ref, ok := schema["$ref"].(string); if !ok { return nil }
+		parts := strings.SplitN(ref, "#/$defs/", 2); if len(parts) != 2 { return nil }; if parts[0] != "" { documentID = parts[0] }
+		document := schemaDocuments[documentID]; definitions, _ := document["$defs"].(map[string]any); schema, _ = definitions[parts[1]].(map[string]any); if schema == nil { return nil }
+	}
+	return nil
+}
+
 func validateSchema(documentID string, schema map[string]any, value any, path string, depth int) error {
 	if ref, ok := schema["$ref"].(string); ok {
 		parts := strings.SplitN(ref, "#/$defs/", 2)
@@ -2449,7 +2580,7 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 			if len(items) == 1 { if text, ok := items[0].(string); !ok || !isCanonicalLocalIdentifier(text) { return fmt.Errorf("%s contains a noncanonical identifier", path) } }
 		}
 		if ordered, _ := schema["x-layerdraw-canonical-enum-order"].(bool); ordered {
-			values, _ := itemSchema["enum"].([]any)
+			values := schemaEnumValues(documentID, itemSchema)
 			ranks := map[string]int{}
 			for index, raw := range values { if text, ok := raw.(string); ok { ranks[text] = index } }
 			for index := 1; index < len(items); index++ {
@@ -2579,7 +2710,8 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 				if len(diagnostics) == 0 { return fmt.Errorf("%s rejected outcome requires diagnostics", path) }
 			case "failed", "cancelled":
 				if _, ok := object["payload"]; ok { return fmt.Errorf("%s %s outcome forbids payload", path, outcome) }
-				if _, ok := object["failure"]; !ok { return fmt.Errorf("%s %s outcome requires failure", path, outcome) }
+				failure, ok := object["failure"].(map[string]any); if !ok { return fmt.Errorf("%s %s outcome requires failure", path, outcome) }
+				if category, present := failure["workbench_category"].(string); present { if outcome == "cancelled" && category != "cancelled" || outcome == "failed" && category == "cancelled" { return fmt.Errorf("%s outcome contradicts Workbench failure category", path) } }
 			}
 		}
 		if enabled, _ := schema["x-layerdraw-ordered-range"].(bool); enabled {
@@ -2629,6 +2761,9 @@ func validateSchema(documentID string, schema map[string]any, value any, path st
 		}
 		if enabled, _ := schema["x-layerdraw-child-set"].(bool); enabled {
 			if err := validateChildSetConsistency(path,object); err != nil { return err }
+		}
+		if profile, _ := schema["x-layerdraw-protocol-invariant"].(string); profile != "" {
+			if err := validateProtocolInvariant(path, object, profile); err != nil { return err }
 		}
 	default:
 		return fmt.Errorf("%s uses unsupported generated schema type %q", path, typeName)
@@ -2718,14 +2853,46 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 	text := func(property string) (int, bool) { l, lOK := a[property].(string); r, rOK := b[property].(string); if !lOK || !rOK { return 0, false }; return compareText(l,r), true }
 	kind := func(property string) (int, bool) { l, lOK := a[property].(string); r, rOK := b[property].(string); if !lOK || !rOK { return 0, false }; lr, lok := semanticSubjectKindRank(l); rr, rok := semanticSubjectKindRank(r); if !lok || !rok { return 0, false }; if lr < rr { return -1,true }; if lr > rr { return 1,true }; return 0,true }
 	rangeValue := func() (int, bool) { l, lOK := a["range"].(map[string]any); r, rOK := b["range"].(map[string]any); if !lOK || !rOK { return 0,false }; return compareRangePosition(l,r) }
+	identity := func() (int, bool) { l, _ := a["before_address"].(string); if l == "" { l, _ = a["after_address"].(string) }; r, _ := b["before_address"].(string); if r == "" { r, _ = b["after_address"].(string) }; if l == "" || r == "" { return 0,false }; return compareStableAddressValues(l,r) }
+	conflictAddress := func() (int, bool) { l, _ := a["target_address"].(string); if l == "" { l, _ = a["owner_address"].(string) }; r, _ := b["target_address"].(string); if r == "" { r, _ = b["owner_address"].(string) }; if l == "" || r == "" { return compareText(l,r),true }; return compareStableAddressValues(l,r) }
+	pathProperty := func(property string) func()(int,bool) { return func() (int, bool) { l, lOK := a[property].([]any); r, rOK := b[property].([]any); if !lOK { l = []any{} }; if !rOK { r = []any{} }; for index := 0; index < len(l) && index < len(r); index++ { ls, lok := l[index].(string); rs, rok := r[index].(string); if !lok || !rok { return 0,false }; if compared := compareText(ls,rs); compared != 0 { return compared,true } }; if len(l) < len(r) { return -1,true }; if len(l) > len(r) { return 1,true }; return 0,true } }
+	path := pathProperty("path")
+	optionalSourceRange := func() (int, bool) { l, lOK := a["source_range"].(map[string]any); r, rOK := b["source_range"].(map[string]any); if !lOK || !rOK { if lOK { return 1,true }; if rOK { return -1,true }; return 0,true }; return compareRangePosition(l,r) }
 	chain := func(comparisons ...func() (int,bool)) (int,bool) { for _, comparison := range comparisons { value, ok := comparison(); if !ok || value != 0 { return value,ok } }; return 0,true }
 	switch profile {
+	case "authored_field_path": return pathProperty("tokens")()
+	case "authoring_impact":
+		address := func()(int,bool){ l,_:=a["subject_address"].(string); if l=="" { l,_=a["owner_address"].(string) }; r,_:=b["subject_address"].(string); if r=="" { r,_=b["owner_address"].(string) }; if l=="" || r=="" { return compareText(l,r),true }; return compareStableAddressValues(l,r) }
+		return chain(address,func()(int,bool){return text("capability")},func()(int,bool){return text("action")})
+	case "bounded_text_chunk":
+		address := func()(int,bool){ l,_:=a["address"].(string); if l=="" { l,_=a["owner_address"].(string) }; r,_:=b["address"].(string); if r=="" { r,_=b["owner_address"].(string) }; if l=="" || r=="" { return 0,false }; return compareStableAddressValues(l,r) }
+		offset := func()(int,bool){ lc,_:=a["source_chunk"].(map[string]any); if lc==nil { lc,_=a["text_chunk"].(map[string]any) }; rc,_:=b["source_chunk"].(map[string]any); if rc==nil { rc,_=b["text_chunk"].(map[string]any) }; l,lOK:=lc["offset"].(string); r,rOK:=rc["offset"].(string); if !lOK || !rOK{return 0,false}; return compareCanonicalUnsignedDecimals(l,r) }
+		return chain(address,offset)
 	case "child_set": return chain(func()(int,bool){return stable("owner_address")},func()(int,bool){return kind("child_kind")})
+	case "conflict": return chain(conflictAddress,func()(int,bool){return text("kind")},path)
 	case "reference_id": return text("id")
 	case "subject_kind": return kind("kind")
 	case "module_scope":
 		leftModule, leftOK := a["module"].(map[string]any); rightModule, rightOK := b["module"].(map[string]any); if !leftOK || !rightOK { return 0,false }; return compareModuleOrder(leftModule,rightModule)
+	case "neighbor":
+		depth := func()(int,bool){ l,lOK:=a["depth"].(float64); r,rOK:=b["depth"].(float64); if !lOK || !rOK { return 0,false }; if l<r{return -1,true}; if l>r{return 1,true}; return 0,true }
+		return chain(func()(int,bool){return stable("source_entity_address")},depth,func()(int,bool){return text("direction")},func()(int,bool){return stable("relation_address")},func()(int,bool){return stable("entity_address")})
 	case "source_file": return compareModuleOrder(a,b)
+	case "source_patch":
+		leftRange, leftOK := a["source_range"].(map[string]any); rightRange, rightOK := b["source_range"].(map[string]any); if !leftOK || !rightOK { return 0,false }
+		if compared, ok := compareModuleOrder(leftRange,rightRange); !ok || compared != 0 { return compared,ok }
+		return compareRangePosition(leftRange,rightRange)
+	case "semantic_diff": return chain(identity,func()(int,bool){return text("kind")})
+	case "semantic_map_entry": return text("key")
+	case "source_diff":
+		module := func(value map[string]any) map[string]any { if sourceRange,ok:=value["source_range"].(map[string]any); ok { return sourceRange }; if before,ok:=value["before_module"].(map[string]any); ok { return before }; after,_:=value["after_module"].(map[string]any); return after }
+		primary := func()(int,bool){ l,r:=module(a),module(b); if l==nil||r==nil{return 0,false}; return compareModuleOrder(l,r) }
+		after := func()(int,bool){ l,lOK:=a["after_module"].(map[string]any); r,rOK:=b["after_module"].(map[string]any); if !lOK||!rOK {if lOK{return 1,true};if rOK{return -1,true};return 0,true}; return compareModuleOrder(l,r) }
+		return chain(primary,func()(int,bool){return text("kind")},optionalSourceRange,after)
+	case "source_range":
+		if compared,ok:=compareModuleOrder(a,b); !ok || compared!=0 { return compared,ok }; return compareRangePosition(a,b)
+	case "subgraph":
+		l,lOK:=a["subject"].(map[string]any); r,rOK:=b["subject"].(map[string]any); if !lOK || !rOK { return 0,false }; la,laOK:=l["address"].(string); ra,raOK:=r["address"].(string); if !laOK || !raOK { return 0,false }; return compareStableAddressValues(la,ra)
 	case "source_asset": return chain(func()(int,bool){return stable("subject_address")},func()(int,bool){return text("locator")})
 	case "semantic_reference": return chain(func()(int,bool){return stable("source_address")},rangeValue,func()(int,bool){return stable("target_address")},func()(int,bool){return kind("target_kind")},func()(int,bool){return text("via")})
 	case "source_binding":
@@ -2740,7 +2907,17 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 }
 
 func validateCanonicalCollectionOrder(path string, items []any, profile string) error {
-	for index := 1; index < len(items); index++ { comparison, ok := compareCanonicalCollection(profile,items[index-1],items[index]); if !ok || comparison >= 0 { return fmt.Errorf("%s is not in strict %s order",path,profile) } }
+	for index := 1; index < len(items); index++ {
+		comparison, ok := compareCanonicalCollection(profile,items[index-1],items[index]); if !ok || comparison >= 0 { return fmt.Errorf("%s is not in strict %s order",path,profile) }
+		if profile == "source_patch" {
+			left, leftOK := items[index-1].(map[string]any); right, rightOK := items[index].(map[string]any); leftRange, leftRangeOK := left["source_range"].(map[string]any); rightRange, rightRangeOK := right["source_range"].(map[string]any)
+			if !leftOK || !rightOK || !leftRangeOK || !rightRangeOK { return fmt.Errorf("%s contains an invalid source patch",path) }
+			if moduleComparison, moduleOK := compareModuleOrder(leftRange,rightRange); moduleOK && moduleComparison == 0 {
+				leftEnd, leftEndOK := leftRange["end_byte"].(string); rightStart, rightStartOK := rightRange["start_byte"].(string); overlap, decimalsOK := compareCanonicalUnsignedDecimals(leftEnd,rightStart)
+				if !leftEndOK || !rightStartOK || !decimalsOK || overlap > 0 { return fmt.Errorf("%s contains overlapping source patches",path) }
+			}
+		}
+	}
 	return nil
 }
 
@@ -2791,8 +2968,8 @@ func validateDisjointArrayKeys(path string, object map[string]any, rules []any) 
 		arrayProperty, _ := rule["array"].(string)
 		keyProperty, _ := rule["property"].(string)
 		stringsProperty, _ := rule["strings"].(string)
-		items, itemsOK := object[arrayProperty].([]any)
-		stringsArray, stringsOK := object[stringsProperty].([]any)
+		items, itemsOK := object[arrayProperty].([]any); if _, exists := object[arrayProperty]; !exists { items, itemsOK = []any{}, true }
+		stringsArray, stringsOK := object[stringsProperty].([]any); if _, exists := object[stringsProperty]; !exists { stringsArray, stringsOK = []any{}, true }
 		if !itemsOK || !stringsOK { return fmt.Errorf("%s disjoint array-key assertion requires arrays", path) }
 		reserved := map[string]bool{}
 		for _, raw := range stringsArray { text, ok := raw.(string); if !ok { return fmt.Errorf("%s.%s contains a non-string", path, stringsProperty) }; reserved[text] = true }
@@ -3524,6 +3701,21 @@ func validatePresenceRule(path string, object map[string]any, rule map[string]an
 			if !ok || len(items) == 0 { return fmt.Errorf("%s tagged alternative requires non-empty %s", path, name) }
 		}
 	}
+	if values, ok := rule["error_diagnostic"].([]any); ok {
+		for _, rawName := range values {
+			name, _ := rawName.(string); items, ok := object[name].([]any); if !ok { return fmt.Errorf("%s tagged alternative requires diagnostic array %s", path, name) }
+			found := false; for _, rawItem := range items { if item, ok := rawItem.(map[string]any); ok && item["severity"] == "error" { found = true } }
+			if !found { return fmt.Errorf("%s tagged alternative requires an error diagnostic in %s", path, name) }
+		}
+	}
+	if values, ok := rule["any_non_empty"].([]any); ok {
+		found := false
+		for _, rawName := range values {
+			name, _ := rawName.(string)
+			if items, ok := object[name].([]any); ok && len(items) > 0 { found = true }
+		}
+		if !found { return fmt.Errorf("%s tagged alternative requires at least one non-empty collection", path) }
+	}
 	if rules, ok := rule["allowed_values"].(map[string]any); ok {
 		for property, rawValues := range rules {
 			value, present := object[property]
@@ -3572,6 +3764,103 @@ func validateLimitCapability(path string, object map[string]any) error {
 	effective, effectiveErr := strconv.ParseInt(fmt.Sprint(object["effective_maximum"]), 10, 64)
 	hard, hardErr := strconv.ParseInt(fmt.Sprint(object["hard_maximum"]), 10, 64)
 	if defaultErr != nil || effectiveErr != nil || hardErr != nil || defaultValue > hard || effective > hard { return fmt.Errorf("%s default and effective limits must not exceed the hard maximum", path) }
+	return nil
+}
+
+func protocolObject(value any) (map[string]any, bool) { object, ok := value.(map[string]any); return object, ok }
+
+func protocolString(object map[string]any, name string) string { value, _ := object[name].(string); return value }
+
+func equalProtocolValue(left, right any) bool { return reflect.DeepEqual(left, right) }
+
+func protocolGenerationKey(raw any) (string, string, string, bool) {
+	generation, ok := protocolObject(raw); if !ok { return "", "", "", false }
+	handle, ok := protocolObject(generation["document_handle"]); if !ok { return "", "", "", false }
+	endpoint, endpointOK := handle["endpoint_instance_id"].(string); value, valueOK := handle["value"].(string); number, numberOK := generation["value"].(string)
+	return endpoint, value, number, endpointOK && valueOK && numberOK
+}
+
+func sameProtocolGeneration(left, right any) bool { le, lh, lg, lok := protocolGenerationKey(left); re, rh, rg, rok := protocolGenerationKey(right); return lok && rok && le == re && lh == rh && lg == rg }
+
+func nextProtocolGeneration(base, proposed any) bool {
+	be, bh, bg, bok := protocolGenerationKey(base); pe, ph, pg, pok := protocolGenerationKey(proposed); if !bok || !pok || be != pe || bh != ph { return false }
+	b, err := strconv.ParseUint(bg, 10, 64); if err != nil || b == math.MaxUint64 { return false }; p, err := strconv.ParseUint(pg, 10, 64); return err == nil && p == b+1
+}
+
+func protocolHasErrorDiagnostic(raw any) bool { values, ok := raw.([]any); if !ok { return false }; for _, item := range values { object, _ := protocolObject(item); if object["severity"] == "error" { return true } }; return false }
+
+func protocolBlobSize(value any) (uint64, error) {
+	switch typed := value.(type) {
+	case []any:
+		var total uint64; for _, item := range typed { size, err := protocolBlobSize(item); if err != nil || math.MaxUint64-total < size { return 0, errors.New("logical BlobRef byte count overflows uint64") }; total += size }; return total, nil
+	case map[string]any:
+		var total uint64
+		if _, blob := typed["blob_id"].(string); blob {
+			if _, digest := typed["digest"].(string); digest { if text, size := typed["size"].(string); size { parsed, err := strconv.ParseUint(text, 10, 64); if err != nil { return 0, err }; total = parsed } }
+		}
+		for _, item := range typed { size, err := protocolBlobSize(item); if err != nil || math.MaxUint64-total < size { return 0, errors.New("logical BlobRef byte count overflows uint64") }; total += size }
+		return total, nil
+	default: return 0, nil
+	}
+}
+
+func validatePagedResult(path string, object map[string]any) error {
+	items, itemsOK := object["items"].([]any); page, pageOK := protocolObject(object["page"]); if !itemsOK || !pageOK { return fmt.Errorf("%s must contain items and page", path) }
+	returnedItems, ok := page["returned_items"].(string); if !ok || returnedItems != strconv.Itoa(len(items)) { return fmt.Errorf("%s.page.returned_items must equal the item count", path) }
+	if cursor, present := page["next_cursor"]; present { cursorObject, ok := protocolObject(cursor); if !ok || !sameProtocolGeneration(object["document_generation"], cursorObject["document_generation"]) { return fmt.Errorf("%s.page.next_cursor is bound to another document generation", path) } }
+	want, ok := page["returned_bytes"].(string); if !ok { return fmt.Errorf("%s.page.returned_bytes is invalid", path) }
+	page["returned_bytes"] = "0"; canonical, err := appendCanonicalJSON(nil, object); page["returned_bytes"] = want; if err != nil { return err }
+	blobs, err := protocolBlobSize(object); if err != nil || uint64(len(canonical)) > math.MaxUint64-blobs { return fmt.Errorf("%s logical response byte count overflows", path) }
+	if want != strconv.FormatUint(uint64(len(canonical))+blobs, 10) { return fmt.Errorf("%s.page.returned_bytes is not the exact logical response byte count", path) }
+	return nil
+}
+
+func validateSemanticOperationInvariant(path string, object map[string]any) error {
+	operation := protocolString(object, "operation")
+	if operation == "create_subject" {
+		kind := protocolString(object, "subject_kind"); fields, ok := protocolObject(object["fields"]); if !ok { return fmt.Errorf("%s.fields must be an object", path) }
+		if kind == "view" { source, sourceOK := protocolObject(fields["source"]); shape, shapeOK := protocolObject(fields["shape"]); diff := fields["category"] == "diff"; if !sourceOK || !shapeOK || (source["kind"] == "diff") != diff || (shape["kind"] == "diff") != diff { return fmt.Errorf("%s.fields view category, source, and shape disagree", path) }; if shape["kind"] == "matrix" { cell, _ := protocolObject(shape["cell"]); _, columns := cell["attribute_column_addresses"]; if (cell["display"] == "attribute_summary") != columns { return fmt.Errorf("%s.fields.shape matrix attribute columns contradict display", path) } }; if shape["kind"] == "flow" { _, columns := shape["lane_column_addresses"]; if (shape["lane_by"] == "attribute") != columns { return fmt.Errorf("%s.fields.shape flow lane columns contradict lane_by", path) } } }
+		if kind == "view_table_column" { source, sourceOK := protocolObject(fields["source"]); if !sourceOK || source["kind"] == "query" || source["kind"] == "diff" { return fmt.Errorf("%s.fields.source is not a table column source", path) } }
+		if kind == "entity_type_column" || kind == "relation_type_column" || kind == "query_parameter" {
+			if format, present := fields["format"].(string); present && !map[string]bool{"cidr":true,"email":true,"hostname":true,"ipv4":true,"ipv6":true,"uri":true}[format] { return fmt.Errorf("%s.fields.format is not a canonical string format", path) }
+			if err := validateQueryParameterConsistency(path+".fields", fields); err != nil { return err }
+		}
+		if kind == "view_export" {
+			format, _ := fields["format"].(string); filename, _ := fields["filename"].(string)
+			extension, exists := map[string]string{"json":".json","yaml":".yaml","svg":".svg","png":".png","pdf":".pdf","html":".html","csv":".csv","tsv":".tsv","xlsx":".xlsx","markdown":".md","pptx":".pptx","docx":".docx","mermaid":".mmd","bpmn":".bpmn","drawio":".drawio"}[format]
+			if !exists || filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename,"/\\\x00") || !strings.HasSuffix(filename,extension) || len(strings.TrimSuffix(filename,extension)) == 0 { return fmt.Errorf("%s.fields.filename is not the exact non-empty basename for %s", path, format) }
+			if raw, present := fields["options"]; present { options, ok := protocolObject(raw); if !ok || options["kind"] != format { return fmt.Errorf("%s.fields.options.kind contradicts format", path) } }
+			if raw, present := fields["exporter_profile"]; present { profile, ok := protocolObject(raw); if !ok || profile["format"] != format { return fmt.Errorf("%s.fields.exporter_profile.format contradicts format", path) } }
+		}
+	}
+	return nil
+}
+
+func validateProtocolInvariant(path string, object map[string]any, profile string) error {
+	switch profile {
+	case "authoring_impact_entry":
+		if object["capability"] == "graph:write" { address, ok := object["subject_address"].(string); facts, factsOK := protocolObject(object["graph_facts"]); kind := protocolString(object,"subject_kind"); actual, _, valid := stableAddressSubject(address); if !ok || !factsOK || !valid || actual != kind { return fmt.Errorf("%s graph:write entry lacks matching subject identity/facts", path) }; flags, _ := facts["action_flags"].([]any); if len(flags) != 1 || flags[0] != object["action"] { return fmt.Errorf("%s graph action facts contradict entry action", path) } }
+	case "authoring_impact":
+		entries, _ := object["entries"].([]any); capabilities, _ := object["required_capabilities"].([]any); derived := map[string]bool{}; for _, raw := range entries { entry, _ := protocolObject(raw); capability, _ := entry["capability"].(string); derived[capability] = true }; if len(derived) != len(capabilities) { return fmt.Errorf("%s.required_capabilities contradict entries", path) }; for _, raw := range capabilities { capability, _ := raw.(string); if !derived[capability] { return fmt.Errorf("%s.required_capabilities contradict entries", path) } }
+	case "open_document_result":
+		if !sameProtocolGeneration(object["document_generation"], map[string]any{"document_handle":object["document_handle"],"value":protocolString(object["document_generation"].(map[string]any),"value")}) { return fmt.Errorf("%s outer handle does not match document generation", path) }
+	case "document_bound_input":
+		if handle, present := object["document_handle"]; present && !sameProtocolGeneration(object["document_generation"], map[string]any{"document_handle":handle,"value":protocolString(object["document_generation"].(map[string]any),"value")}) { return fmt.Errorf("%s outer handle does not match document generation", path) }
+		if cursor, present := object["cursor"]; present { cursorObject, ok := protocolObject(cursor); if !ok || !sameProtocolGeneration(object["document_generation"], cursorObject["document_generation"]) { return fmt.Errorf("%s.cursor is bound to another document generation", path) } }
+	case "paged_result": return validatePagedResult(path, object)
+	case "bounded_text_chunk":
+		blob, _ := protocolObject(object["blob"]); offset, e1 := strconv.ParseUint(protocolString(object,"offset"),10,64); total, e2 := strconv.ParseUint(protocolString(object,"total_bytes"),10,64); size, e3 := strconv.ParseUint(protocolString(blob,"size"),10,64); if e1 != nil || e2 != nil || e3 != nil || offset > total || size > total-offset || blob["media_type"] != "text/plain; charset=utf-8" || blob["lifetime"] != "request" { return fmt.Errorf("%s has an invalid bounded UTF-8 chunk range", path) }; if offset == 0 && size == total && blob["digest"] != object["full_digest"] { return fmt.Errorf("%s complete chunk digest must equal full_digest", path) }
+	case "source_edit":
+		kind := protocolString(object,"kind"); blob, hasBlob := protocolObject(object["replacement_blob"]); if hasBlob && (blob["digest"] != object["after_digest"] || blob["media_type"] != "text/plain; charset=utf-8" || blob["lifetime"] != "request") { return fmt.Errorf("%s replacement blob is not reconstructable", path) }; if kind == "move" { if object["before_digest"] != object["after_digest"] || equalProtocolValue(object["before_module"],object["after_module"]) { return fmt.Errorf("%s move must preserve bytes and change module identity", path) } }
+	case "preview_result":
+		if object["status"] == "valid" { if protocolHasErrorDiagnostic(object["diagnostics"]) { return fmt.Errorf("%s valid preview contains an error diagnostic", path) }; impact, _ := protocolObject(object["authoring_impact"]); semanticDiff, _ := protocolObject(object["semantic_diff"]); sourceDiff, _ := protocolObject(object["source_diff"]); hashes, _ := protocolObject(object["resulting_hashes"]); if object["authoring_impact_digest"] != impact["impact_digest"] || !equalProtocolValue(object["required_authoring_capabilities"],impact["required_capabilities"]) || impact["semantic_diff_hash"] != semanticDiff["digest"] || impact["source_diff_hash"] != sourceDiff["digest"] || impact["resulting_definition_hash"] != hashes["definition_hash"] { return fmt.Errorf("%s preview integrity fields disagree", path) }; preview, _ := protocolObject(object["preview_id"]); endpoint, _, _, _ := protocolGenerationKey(object["base_generation"]); if preview["endpoint_instance_id"] != endpoint || !nextProtocolGeneration(object["base_generation"],object["proposed_generation"]) { return fmt.Errorf("%s preview identities disagree", path) } } else if len(object["conflicts"].([]any)) == 0 && !protocolHasErrorDiagnostic(object["diagnostics"]) { return fmt.Errorf("%s invalid preview requires a conflict or error diagnostic", path) }
+	case "apply_input":
+		preview, _ := protocolObject(object["preview_id"]); endpoint, _, _, ok := protocolGenerationKey(object["base_generation"]); if !ok || preview["endpoint_instance_id"] != endpoint { return fmt.Errorf("%s preview and base generation endpoints disagree", path) }
+	case "apply_result":
+		impact, _ := protocolObject(object["authoring_impact"]); sourceDiff, _ := protocolObject(object["source_diff"]); hashes, _ := protocolObject(object["resulting_hashes"]); if impact["source_diff_hash"] != sourceDiff["digest"] || impact["resulting_definition_hash"] != hashes["definition_hash"] { return fmt.Errorf("%s apply integrity fields disagree", path) }
+	case "semantic_operation": return validateSemanticOperationInvariant(path, object)
+	default: return fmt.Errorf("%s has unknown protocol invariant %q", path, profile)
+	}
 	return nil
 }
 
@@ -3626,6 +3915,43 @@ func appendCanonicalJSON(destination []byte, value any) ([]byte, error) {
 	}
 }
 `
+
+func schemaDocumentUses(document *schemaDocument, predicate func(*schemaType) bool) bool {
+	visited := map[*schemaType]bool{}
+	var visit func(*schemaType) bool
+	visit = func(value *schemaType) bool {
+		if value == nil || visited[value] {
+			return false
+		}
+		visited[value] = true
+		if predicate(value) {
+			return true
+		}
+		for _, property := range value.Properties {
+			if visit(property) {
+				return true
+			}
+		}
+		if visit(value.Items) || visit(value.PropertyNames) {
+			return true
+		}
+		for _, variant := range value.OneOf {
+			if visit(variant) {
+				return true
+			}
+		}
+		if additional, ok := value.AdditionalProperties.(*schemaType); ok && visit(additional) {
+			return true
+		}
+		return false
+	}
+	for _, definition := range document.Definitions {
+		if visit(definition) {
+			return true
+		}
+	}
+	return false
+}
 
 func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error) {
 	imports := tsImports(set, document)
@@ -3715,9 +4041,12 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function compareProtocolVersions(left: readonly [number, number], right: readonly [number, number]): number { return left[0] === right[0] ? left[1] - right[1] : left[0] - right[0]; }\n\n")
 	body.WriteString("function matchesCanonicalSourcePath(value: string): boolean { return value !== \"\" && !value.startsWith(\"/\") && !value.includes(\"\\\\\") && !value.includes(\"\\0\") && value.split(\"/\").every((segment) => segment !== \"\" && segment !== \".\" && segment !== \"..\"); }\n\n")
 	body.WriteString("function hasOperatorValueRule(value: Record<string, unknown>, operatorProperty: string, valueProperty: string, valueless: ReadonlySet<string>): boolean { const operator = value[operatorProperty]; if (typeof operator !== \"string\") return true; return valueless.has(operator) ? !hasOwn(value, valueProperty) : hasOwn(value, valueProperty); }\n\n")
+	if schemaDocumentUses(document, func(value *schemaType) bool { return value.OutcomeEnvelope }) {
+		body.WriteString("function hasValidOutcomeEnvelope(value: Record<string, unknown>): boolean { const outcome=value[\"outcome\"]; if (outcome===\"success\") return hasOwn(value,\"payload\")&&!hasOwn(value,\"failure\"); if (outcome===\"rejected\") return !hasOwn(value,\"payload\")&&!hasOwn(value,\"failure\")&&isJSONArray(value[\"diagnostics\"])&&value[\"diagnostics\"].length>0; if (outcome===\"failed\"||outcome===\"cancelled\") { const failure=value[\"failure\"]; if (hasOwn(value,\"payload\")||!isObject(failure)) return false; const category=failure[\"workbench_category\"]; return typeof category!==\"string\"||(outcome===\"cancelled\"?category===\"cancelled\":category!==\"cancelled\"); } return false; }\n\n")
+	}
 	body.WriteString("function hasValidProtocolOffer(value: Record<string, unknown>): boolean { const range = value[\"supported_range\"]; const bindings = value[\"versions\"]; if (typeof range !== \"string\" || !isJSONArray(bindings)) return false; const parsedRange = parseProtocolVersionRange(range); if (parsedRange === undefined) return false; const seen = new Set<string>(); for (const raw of bindings) { if (!isObject(raw) || typeof raw[\"version\"] !== \"string\") return false; const text = raw[\"version\"]; const version = parseProtocolVersion(text); if (version === undefined || compareProtocolVersions(version, parsedRange[0]) < 0 || compareProtocolVersions(version, parsedRange[1]) > 0 || seen.has(text)) return false; seen.add(text); } return true; }\n\n")
 	body.WriteString("function hasValidLimitCapability(value: Record<string, unknown>): boolean { try { const fallback = BigInt(String(value[\"default_value\"])); const effective = BigInt(String(value[\"effective_maximum\"])); const hard = BigInt(String(value[\"hard_maximum\"])); return fallback <= hard && effective <= hard; } catch { return false; } }\n\n")
-	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
+	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { if (!hasOwn(value,arrayProperty)) return true; const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
 	body.WriteString("function hasUniqueItems(value: ReadonlyArray<unknown>): boolean { try { return new Set(value.map(canonicalJSONStringify)).size === value.length; } catch { return false; } }\n\n")
 	body.WriteString("function stableAddressOrderValue(value: unknown, selector: string): string | undefined { if (selector === \"$item\") return typeof value === \"string\" ? value : undefined; return isObject(value) && typeof value[selector] === \"string\" ? value[selector] : undefined; }\n\n")
 	body.WriteString("function hasStableAddressOrder(value: ReadonlyArray<unknown>, selector: string): boolean { for (let index = 1; index < value.length; index++) { const left = stableAddressOrderValue(value[index - 1], selector); const right = stableAddressOrderValue(value[index], selector); if (left === undefined || right === undefined || compareStableAddresses(left, right) >= 0) return false; } return true; }\n\n")
@@ -3733,9 +4062,14 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function stableAddressKindRank(kind: string): number { return new Map<string, number>([[\"entity-type\",0],[\"relation-type\",1],[\"layer\",2],[\"entity\",3],[\"relation\",4],[\"query\",5],[\"view\",6],[\"reference\",7],[\"column\",8],[\"constraint\",9],[\"row\",10],[\"parameter\",11],[\"table-column\",12],[\"export\",13]]).get(kind) ?? Number.MAX_SAFE_INTEGER; }\n\n")
 	body.WriteString("function compareASCII(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }\n\n")
 	body.WriteString("function hasDisjointArrays(value: Record<string, unknown>, leftProperty: string, rightProperty: string): boolean { const left = hasOwn(value, leftProperty) ? value[leftProperty] : []; const right = hasOwn(value, rightProperty) ? value[rightProperty] : []; if (!isJSONArray(left) || !isJSONArray(right)) return false; const seen = new Set(left); return right.every((item) => !seen.has(item)); }\n\n")
-	body.WriteString("function hasDisjointArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string, stringsProperty: string): boolean { const items = value[arrayProperty]; const strings = value[stringsProperty]; if (!isJSONArray(items) || !isJSONArray(strings) || !strings.every((item) => typeof item === \"string\")) return false; const reserved = new Set(strings); return items.every((item) => isObject(item) && typeof item[keyProperty] === \"string\" && !reserved.has(item[keyProperty])); }\n\n")
+	if schemaDocumentUses(document, func(value *schemaType) bool { return len(value.DisjointArrayKeys) != 0 }) {
+		body.WriteString("function hasDisjointArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string, stringsProperty: string): boolean { const items = hasOwn(value,arrayProperty) ? value[arrayProperty] : []; const strings = hasOwn(value,stringsProperty) ? value[stringsProperty] : []; if (!isJSONArray(items) || !isJSONArray(strings) || !strings.every((item) => typeof item === \"string\")) return false; const reserved = new Set(strings); return items.every((item) => isObject(item) && typeof item[keyProperty] === \"string\" && !reserved.has(item[keyProperty])); }\n\n")
+	}
 	body.WriteString("function compareCanonicalUnsignedDecimals(left: string, right: string): number | undefined { if (!/^(0|[1-9][0-9]*)$/.test(left) || !/^(0|[1-9][0-9]*)$/.test(right)) return undefined; return left.length === right.length ? (left < right ? -1 : left > right ? 1 : 0) : left.length - right.length; }\n\n")
 	body.WriteString(tsCanonicalCollectionRuntime)
+	if schemaDocumentUses(document, func(value *schemaType) bool { return value.ProtocolInvariant != "" }) {
+		body.WriteString(tsProtocolInvariantRuntime)
+	}
 	body.WriteString("function hasOrderedPair(value: Record<string, unknown>, lowerProperty: string, upperProperty: string, comparison: string): boolean { if (!hasOwn(value, lowerProperty) || !hasOwn(value, upperProperty)) return true; const lower = value[lowerProperty]; const upper = value[upperProperty]; if (typeof lower !== \"string\" || typeof upper !== \"string\") return false; if (comparison === \"unsigned_decimal\") { const ordered = compareCanonicalUnsignedDecimals(lower, upper); return ordered !== undefined && ordered <= 0; } if (comparison === \"finite_binary64\") { const lowerValue = Number(lower); const upperValue = Number(upper); return Number.isFinite(lowerValue) && Number.isFinite(upperValue) && lowerValue <= upperValue; } return false; }\n\n")
 	body.WriteString("function hasAddressTerminalID(value: Record<string, unknown>, addressProperty: string, idProperty: string): boolean { const address = value[addressProperty]; const id = value[idProperty]; return typeof address === \"string\" && typeof id === \"string\" && address.split(\":\").at(-1) === id; }\n\n")
 	body.WriteString(tsAuthorityRuntime)
@@ -3875,13 +4209,46 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
     const a = semanticSubjectKindRank(left[property]), b = semanticSubjectKindRank(right[property]); return a < 0 || b < 0 ? undefined : a-b;
   };
   const range = (): number | undefined => isObject(left["range"]) && isObject(right["range"]) ? compareRangePosition(left["range"],right["range"]) : undefined;
+  const identity = (): number | undefined => { const a = left["before_address"] ?? left["after_address"], b = right["before_address"] ?? right["after_address"]; return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a,b) : undefined; };
+  const conflictAddress = (): number | undefined => { const a = left["target_address"] ?? left["owner_address"] ?? "", b = right["target_address"] ?? right["owner_address"] ?? ""; return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b)) : undefined; };
+  const path = (): number | undefined => { const a = left["path"] ?? [], b = right["path"] ?? []; if (!Array.isArray(a) || !Array.isArray(b)) return undefined; for (let index=0; index<Math.min(a.length,b.length); index++) { if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined; const value=compareUnicodeScalars(a[index],b[index]); if (value !== 0) return value; } return a.length-b.length; };
+  const optionalSourceRange = (): number | undefined => { const a=left["source_range"], b=right["source_range"]; if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0; return compareRangePosition(a,b); };
+  const stringArray = (property: string): number | undefined => { const a=left[property] ?? [], b=right[property] ?? []; if (!Array.isArray(a) || !Array.isArray(b)) return undefined; for (let index=0; index<Math.min(a.length,b.length); index++) { if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined; const value=compareUnicodeScalars(a[index],b[index]); if (value !== 0) return value; } return a.length-b.length; };
   const chain = (...comparisons: ReadonlyArray<() => number | undefined>): number | undefined => { for (const compare of comparisons) { const value = compare(); if (value === undefined || value !== 0) return value; } return 0; };
+  if (profile === "authored_field_path") return stringArray("tokens");
+  if (profile === "authoring_impact") {
+    const address = (): number | undefined => { const a=left["subject_address"] ?? left["owner_address"] ?? "", b=right["subject_address"] ?? right["owner_address"] ?? ""; return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b)) : undefined; };
+    return chain(address,() => text("capability"),() => text("action"));
+  }
+  if (profile === "bounded_text_chunk") {
+    const address = (): number | undefined => { const a=left["address"] ?? left["owner_address"], b=right["address"] ?? right["owner_address"]; return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a,b) : undefined; };
+    const offset = (): number | undefined => { const a=left["source_chunk"] ?? left["text_chunk"], b=right["source_chunk"] ?? right["text_chunk"]; return isObject(a) && isObject(b) && typeof a["offset"] === "string" && typeof b["offset"] === "string" ? compareCanonicalUnsignedDecimals(a["offset"],b["offset"]) : undefined; };
+    return chain(address,offset);
+  }
   if (profile === "child_set") return chain(() => stable("owner_address"),() => kind("child_kind"));
+  if (profile === "conflict") return chain(conflictAddress,() => text("kind"),path);
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left["module"]) && isObject(right["module"]) ? compareModuleOrder(left["module"],right["module"]) : undefined;
+  if (profile === "neighbor") return chain(() => stable("source_entity_address"),() => typeof left["depth"] === "number" && typeof right["depth"] === "number" ? left["depth"]-right["depth"] : undefined,() => text("direction"),() => stable("relation_address"),() => stable("entity_address"));
   if (profile === "source_file") return compareModuleOrder(left,right);
   if (profile === "source_asset") return chain(() => stable("subject_address"),() => text("locator"));
+  if (profile === "source_patch") {
+    const leftRange = left["source_range"], rightRange = right["source_range"];
+    if (!isObject(leftRange) || !isObject(rightRange)) return undefined;
+    const module = compareModuleOrder(leftRange,rightRange);
+    return module === 0 ? compareRangePosition(leftRange,rightRange) : module;
+  }
+  if (profile === "semantic_diff") return chain(identity,() => text("kind"));
+  if (profile === "semantic_map_entry") return text("key");
+  if (profile === "source_diff") {
+    const module = (value: Record<string,unknown>): Record<string,unknown> | undefined => isObject(value["source_range"]) ? value["source_range"] : isObject(value["before_module"]) ? value["before_module"] : isObject(value["after_module"]) ? value["after_module"] : undefined;
+    const primary = (): number | undefined => { const a=module(left), b=module(right); return a === undefined || b === undefined ? undefined : compareModuleOrder(a,b); };
+    const after = (): number | undefined => { const a=left["after_module"], b=right["after_module"]; if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0; return compareModuleOrder(a,b); };
+    return chain(primary,() => text("kind"),optionalSourceRange,after);
+  }
+  if (profile === "source_range") { const module=compareModuleOrder(left,right); return module === 0 ? compareRangePosition(left,right) : module; }
+  if (profile === "subgraph") return isObject(left["subject"]) && isObject(right["subject"]) && typeof left["subject"]["address"] === "string" && typeof right["subject"]["address"] === "string" ? compareStableAddresses(left["subject"]["address"],right["subject"]["address"]) : undefined;
   if (profile === "semantic_reference") return chain(() => stable("source_address"),range,() => stable("target_address"),() => kind("target_kind"),() => text("via"));
   if (profile === "source_binding") {
     const owner = (): number | undefined => { const a = left["target_owner_address"] ?? "", b = right["target_owner_address"] ?? ""; if (typeof a !== "string" || typeof b !== "string") return undefined; return a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b); };
@@ -3895,7 +4262,17 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
   return undefined;
 }
 function hasCanonicalCollectionOrder(values: ReadonlyArray<unknown>, profile: string): boolean {
-  return values.every((_,index) => index === 0 || (compareCanonicalCollection(profile,values[index-1],values[index]) ?? 0) < 0);
+  return values.every((item,index) => {
+    if (index === 0) return true;
+    const previous = values[index-1];
+    if ((compareCanonicalCollection(profile,previous,item) ?? 0) >= 0) return false;
+    if (profile !== "source_patch" || !isObject(previous) || !isObject(item) || !isObject(previous["source_range"]) || !isObject(item["source_range"])) return profile !== "source_patch";
+    if (compareModuleOrder(previous["source_range"],item["source_range"]) !== 0) return true;
+    const leftEnd = previous["source_range"]["end_byte"], rightStart = item["source_range"]["start_byte"];
+    if (typeof leftEnd !== "string" || typeof rightStart !== "string") return false;
+    const overlap = compareCanonicalUnsignedDecimals(leftEnd,rightStart);
+    return overlap !== undefined && overlap <= 0;
+  });
 }
 function hasValidChildSet(value: Record<string,unknown>): boolean {
   const owner = value["owner_address"], child = value["child_kind"];
@@ -3908,6 +4285,49 @@ function hasValidChildSet(value: Record<string,unknown>): boolean {
     entity:["entity_row"], relation:["relation_row"], query:["query_parameter"], view:["view_table_column","view_export"],
   };
   return ownerKind !== undefined && (allowed[ownerKind]?.includes(child) ?? false);
+}
+
+`
+
+const tsProtocolInvariantRuntime = `function protocolGenerationKey(raw: unknown): readonly [string,string,bigint] | undefined {
+  if (!isObject(raw) || !isObject(raw["document_handle"])) return undefined; const handle=raw["document_handle"], endpoint=handle["endpoint_instance_id"], value=handle["value"], generation=raw["value"];
+  if (typeof endpoint !== "string" || typeof value !== "string" || typeof generation !== "string") return undefined; try { return [endpoint,value,BigInt(generation)]; } catch { return undefined; }
+}
+function sameProtocolGeneration(left: unknown,right: unknown): boolean { const a=protocolGenerationKey(left), b=protocolGenerationKey(right); return a !== undefined && b !== undefined && a[0]===b[0] && a[1]===b[1] && a[2]===b[2]; }
+function nextProtocolGeneration(base: unknown,proposed: unknown): boolean { const a=protocolGenerationKey(base), b=protocolGenerationKey(proposed); return a !== undefined && b !== undefined && a[0]===b[0] && a[1]===b[1] && b[2]===a[2]+1n; }
+function protocolHasErrorDiagnostic(raw: unknown): boolean { return isJSONArray(raw) && raw.some((item)=>isObject(item) && item["severity"]==="error"); }
+function protocolBlobBytes(raw: unknown): bigint | undefined { if (isJSONArray(raw)) { let total=0n; for (const item of raw) { const size=protocolBlobBytes(item); if (size===undefined) return undefined; total+=size; } return total; } if (!isObject(raw)) return 0n; let total=0n; if (typeof raw["blob_id"]==="string" && typeof raw["digest"]==="string" && typeof raw["size"]==="string") { try { total=BigInt(raw["size"]); } catch { return undefined; } } for (const item of Object.values(raw)) { const size=protocolBlobBytes(item); if (size===undefined) return undefined; total+=size; } return total; }
+function protocolPagedResult(value: Record<string,unknown>): boolean {
+  const items=value["items"], page=value["page"]; if (!isJSONArray(items)||!isObject(page)||page["returned_items"]!==String(items.length)) return false;
+  if (hasOwn(page,"next_cursor") && (!isObject(page["next_cursor"]) || !sameProtocolGeneration(value["document_generation"],page["next_cursor"]["document_generation"]))) return false;
+  const returned=page["returned_bytes"]; if (typeof returned!=="string") return false; const copy=JSON.parse(canonicalJSONStringify(value)) as Record<string,unknown>; if (!isObject(copy["page"])) return false; copy["page"]["returned_bytes"]="0"; const blobs=protocolBlobBytes(value); return blobs!==undefined && BigInt(new TextEncoder().encode(canonicalJSONStringify(copy)).length)+blobs===BigInt(returned);
+}
+function protocolCreateSubjectExport(fields: Record<string,unknown>): boolean {
+  const format=fields["format"], filename=fields["filename"]; if (typeof format!=="string"||typeof filename!=="string") return false;
+  const extension=new Map<string,string>([["json",".json"],["yaml",".yaml"],["svg",".svg"],["png",".png"],["pdf",".pdf"],["html",".html"],["csv",".csv"],["tsv",".tsv"],["xlsx",".xlsx"],["markdown",".md"],["pptx",".pptx"],["docx",".docx"],["mermaid",".mmd"],["bpmn",".bpmn"],["drawio",".drawio"]]).get(format);
+  if (extension===undefined||filename===""||filename==="."||filename===".."||/[\\/\u0000]/.test(filename)||!filename.endsWith(extension)||filename.slice(0,-extension.length).length===0) return false;
+  const options=fields["options"]; if (options!==undefined&&(!isObject(options)||options["kind"]!==format)) return false; const profile=fields["exporter_profile"]; return profile===undefined||isObject(profile)&&profile["format"]===format;
+}
+function protocolSemanticOperation(value: Record<string,unknown>): boolean {
+  if (value["operation"]==="create_subject") { const kind=value["subject_kind"], fields=value["fields"]; if (typeof kind!=="string"||!isObject(fields)) return false;
+    if (kind==="view") { const source=fields["source"],shape=fields["shape"],diff=fields["category"]==="diff"; if (!isObject(source)||!isObject(shape)||(source["kind"]==="diff")!==diff||(shape["kind"]==="diff")!==diff) return false; if (shape["kind"]==="matrix") { const cell=shape["cell"]; if (!isObject(cell)||(cell["display"]==="attribute_summary")!==hasOwn(cell,"attribute_column_addresses")) return false; } if (shape["kind"]==="flow"&&(shape["lane_by"]==="attribute")!==hasOwn(shape,"lane_column_addresses")) return false; }
+    if (kind==="view_table_column") { const source=fields["source"]; if (!isObject(source)||source["kind"]==="query"||source["kind"]==="diff") return false; }
+    if (kind==="entity_type_column"||kind==="relation_type_column"||kind==="query_parameter") { const format=fields["format"]; if (format!==undefined&&(typeof format!=="string"||!["cidr","email","hostname","ipv4","ipv6","uri"].includes(format))) return false; if (!hasValidQueryParameter({...fields,reserved_enum_values:fields["reserved_enum_values"]??[]})) return false; }
+    if (kind==="view_export"&&!protocolCreateSubjectExport(fields)) return false; }
+  return true;
+}
+function hasProtocolInvariant(value: Record<string,unknown>,profile: string): boolean {
+  if (profile==="authoring_impact_entry") { if (value["capability"]!=="graph:write") return true; const address=value["subject_address"], facts=value["graph_facts"]; return typeof address==="string"&&isObject(facts)&&authoritySubject(address)?.kind===value["subject_kind"]&&isJSONArray(facts["action_flags"])&&facts["action_flags"].length===1&&facts["action_flags"][0]===value["action"]; }
+  if (profile==="authoring_impact") { const entries=value["entries"], capabilities=value["required_capabilities"]; if (!isJSONArray(entries)||!isJSONArray(capabilities)) return false; const derived=new Set(entries.map((item)=>isObject(item)?item["capability"]:undefined)); return derived.size===capabilities.length&&capabilities.every((item)=>derived.has(item)); }
+  if (profile==="open_document_result") { return isObject(value["document_generation"])&&sameProtocolGeneration(value["document_generation"],{document_handle:value["document_handle"],value:value["document_generation"]["value"]}); }
+  if (profile==="document_bound_input") { if (hasOwn(value,"document_handle")&&(!isObject(value["document_generation"])||!sameProtocolGeneration(value["document_generation"],{document_handle:value["document_handle"],value:value["document_generation"]["value"]}))) return false; return !hasOwn(value,"cursor") || isObject(value["cursor"])&&sameProtocolGeneration(value["document_generation"],value["cursor"]["document_generation"]); }
+  if (profile==="paged_result") return protocolPagedResult(value);
+  if (profile==="bounded_text_chunk") { const blob=value["blob"]; if (!isObject(blob)||typeof value["offset"]!=="string"||typeof value["total_bytes"]!=="string"||typeof blob["size"]!=="string") return false; try { const offset=BigInt(value["offset"]), total=BigInt(value["total_bytes"]), size=BigInt(blob["size"]); return offset<=total&&size<=total-offset&&blob["media_type"]==="text/plain; charset=utf-8"&&blob["lifetime"]==="request"&&(offset!==0n||size!==total||blob["digest"]===value["full_digest"]); } catch { return false; } }
+  if (profile==="source_edit") { const blob=value["replacement_blob"]; if (isObject(blob)&&(blob["digest"]!==value["after_digest"]||blob["media_type"]!=="text/plain; charset=utf-8"||blob["lifetime"]!=="request")) return false; return value["kind"]!=="move" || value["before_digest"]===value["after_digest"]&&canonicalJSONStringify(value["before_module"])!==canonicalJSONStringify(value["after_module"]); }
+  if (profile==="preview_result") { if (value["status"]!=="valid") return isJSONArray(value["conflicts"])&&value["conflicts"].length>0||protocolHasErrorDiagnostic(value["diagnostics"]); const impact=value["authoring_impact"], semantic=value["semantic_diff"], source=value["source_diff"], hashes=value["resulting_hashes"], preview=value["preview_id"], base=protocolGenerationKey(value["base_generation"]); return isObject(impact)&&isObject(semantic)&&isObject(source)&&isObject(hashes)&&isObject(preview)&&base!==undefined&&!protocolHasErrorDiagnostic(value["diagnostics"])&&value["authoring_impact_digest"]===impact["impact_digest"]&&canonicalJSONStringify(value["required_authoring_capabilities"])===canonicalJSONStringify(impact["required_capabilities"])&&impact["semantic_diff_hash"]===semantic["digest"]&&impact["source_diff_hash"]===source["digest"]&&impact["resulting_definition_hash"]===hashes["definition_hash"]&&preview["endpoint_instance_id"]===base[0]&&nextProtocolGeneration(value["base_generation"],value["proposed_generation"]); }
+  if (profile==="apply_input") { const preview=value["preview_id"], base=protocolGenerationKey(value["base_generation"]); return isObject(preview)&&base!==undefined&&preview["endpoint_instance_id"]===base[0]; }
+  if (profile==="apply_result") { const impact=value["authoring_impact"], source=value["source_diff"], hashes=value["resulting_hashes"]; return isObject(impact)&&isObject(source)&&isObject(hashes)&&impact["source_diff_hash"]===source["digest"]&&impact["resulting_definition_hash"]===hashes["definition_hash"]; }
+  if (profile==="semantic_operation") return protocolSemanticOperation(value); return false;
 }
 
 `
@@ -4354,6 +4774,16 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 				for _, property := range variant.NonEmpty {
 					conditions = append(conditions, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].length > 0", expression, property, expression, property))
 				}
+				for _, property := range variant.ErrorDiagnostic {
+					conditions = append(conditions, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].some((item) => isObject(item) && item[\"severity\"] === \"error\")", expression, property, expression, property))
+				}
+				if len(variant.AnyNonEmpty) != 0 {
+					alternatives := make([]string, 0, len(variant.AnyNonEmpty))
+					for _, property := range variant.AnyNonEmpty {
+						alternatives = append(alternatives, fmt.Sprintf("isJSONArray(%s[%q]) && %s[%q].length > 0", expression, property, expression, property))
+					}
+					conditions = append(conditions, "("+strings.Join(alternatives, " || ")+")")
+				}
 				for _, property := range sortedKeys(variant.AllowedValues) {
 					values := variant.AllowedValues[property]
 					literals := make([]string, len(values))
@@ -4370,9 +4800,7 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 			parts = append(parts, "hasValidDiffSource("+expression+")")
 		}
 		if value.OutcomeEnvelope {
-			outcome := expression + "[\"outcome\"]"
-			diagnostics := expression + "[\"diagnostics\"]"
-			parts = append(parts, "(("+outcome+" === \"success\" && hasOwn("+expression+", \"payload\") && !hasOwn("+expression+", \"failure\")) || ("+outcome+" === \"rejected\" && !hasOwn("+expression+", \"payload\") && !hasOwn("+expression+", \"failure\") && isJSONArray("+diagnostics+") && "+diagnostics+".length > 0) || (("+outcome+" === \"failed\" || "+outcome+" === \"cancelled\") && !hasOwn("+expression+", \"payload\") && hasOwn("+expression+", \"failure\")))")
+			parts = append(parts, "hasValidOutcomeEnvelope("+expression+")")
 		}
 		if value.OrderedRange {
 			parts = append(parts, "BigInt("+expression+"[\"start_byte\"]) <= BigInt("+expression+"[\"end_byte\"])")
@@ -4442,6 +4870,9 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 		if value.ChildSet {
 			parts = append(parts, "hasValidChildSet("+expression+")")
 		}
+		if value.ProtocolInvariant != "" {
+			parts = append(parts, fmt.Sprintf("hasProtocolInvariant(%s, %q)", expression, value.ProtocolInvariant))
+		}
 		return strings.Join(parts, " && "), nil
 	default:
 		return "", fmt.Errorf("unsupported schema type %q", typeValue)
@@ -4449,6 +4880,10 @@ func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, exp
 }
 
 func writeTSDefinition(body *strings.Builder, set schemaSet, document *schemaDocument, name string, definition *schemaType) error {
+	if name == "RelationCardinalityMaximum" && isRelationCardinalityMaximum(definition) {
+		body.WriteString("export type RelationCardinalityMaximum = 1 | \"many\";\n")
+		return nil
+	}
 	typeValue, err := scalarType(definition.Type)
 	if err != nil {
 		return err

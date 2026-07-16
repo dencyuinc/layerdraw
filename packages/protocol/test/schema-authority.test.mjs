@@ -927,6 +927,52 @@ function fitsCanonicalJSONBytes(value, maximum) {
   }
 }
 
+function protocolCanonicalJSON(value) {
+  if (Array.isArray(value)) return `[${value.map(protocolCanonicalJSON).join(",")}]`;
+  if (isObject(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${protocolCanonicalJSON(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function protocolGenerationKey(raw) {
+  if (!isObject(raw) || !isObject(raw.document_handle) || typeof raw.document_handle.endpoint_instance_id !== "string" || typeof raw.document_handle.value !== "string" || typeof raw.value !== "string") return undefined;
+  try { return [raw.document_handle.endpoint_instance_id, raw.document_handle.value, BigInt(raw.value)]; } catch { return undefined; }
+}
+function sameProtocolGeneration(left, right) { const a = protocolGenerationKey(left), b = protocolGenerationKey(right); return a !== undefined && b !== undefined && a[0] === b[0] && a[1] === b[1] && a[2] === b[2]; }
+function nextProtocolGeneration(left, right) { const a = protocolGenerationKey(left), b = protocolGenerationKey(right); return a !== undefined && b !== undefined && a[0] === b[0] && a[1] === b[1] && b[2] === a[2] + 1n; }
+function protocolErrorDiagnostic(raw) { return Array.isArray(raw) && raw.some((item) => isObject(item) && item.severity === "error"); }
+function protocolBlobBytes(raw) { if (Array.isArray(raw)) return raw.reduce((sum, item) => sum + protocolBlobBytes(item), 0n); if (!isObject(raw)) return 0n; let total = typeof raw.blob_id === "string" && typeof raw.digest === "string" && typeof raw.size === "string" ? BigInt(raw.size) : 0n; for (const item of Object.values(raw)) total += protocolBlobBytes(item); return total; }
+function validCreateSubjectExport(fields) {
+  const extensions = new Map([
+    ["json", ".json"], ["yaml", ".yaml"], ["svg", ".svg"], ["png", ".png"], ["pdf", ".pdf"],
+    ["html", ".html"], ["csv", ".csv"], ["tsv", ".tsv"], ["xlsx", ".xlsx"], ["markdown", ".md"],
+    ["pptx", ".pptx"], ["docx", ".docx"], ["mermaid", ".mmd"], ["bpmn", ".bpmn"], ["drawio", ".drawio"],
+  ]);
+  const extension = extensions.get(fields.format);
+  if (extension === undefined || typeof fields.filename !== "string" || fields.filename === "" || fields.filename === "." || fields.filename === ".." ||
+      /[\\/\u0000]/.test(fields.filename) || !fields.filename.endsWith(extension) || fields.filename.slice(0, -extension.length).length === 0) return false;
+  if (hasOwn(fields, "options") && (!isObject(fields.options) || fields.options.kind !== fields.format)) return false;
+  return !hasOwn(fields, "exporter_profile") || isObject(fields.exporter_profile) && fields.exporter_profile.format === fields.format;
+}
+function validProtocolSemanticOperation(value) {
+  if (value.operation === "create_subject") { if (typeof value.subject_kind !== "string" || !isObject(value.fields)) return false; if (value.subject_kind === "view") { const source=value.fields.source,shape=value.fields.shape,diff=value.fields.category === "diff"; if (!isObject(source)||!isObject(shape)||(source.kind === "diff")!==diff||(shape.kind === "diff")!==diff) return false; if ((shape.kind === "matrix" && (!isObject(shape.cell)||(shape.cell.display === "attribute_summary")!==hasOwn(shape.cell,"attribute_column_addresses"))) || (shape.kind === "flow" && (shape.lane_by === "attribute")!==hasOwn(shape,"lane_column_addresses"))) return false; } if (value.subject_kind === "view_table_column" && (!isObject(value.fields.source)||value.fields.source.kind === "query"||value.fields.source.kind === "diff")) return false; if (value.subject_kind === "entity_type_column"||value.subject_kind === "relation_type_column"||value.subject_kind === "query_parameter") { const format=value.fields.format; if (format!==undefined&&(typeof format!=="string"||!["cidr","email","hostname","ipv4","ipv6","uri"].includes(format))) return false; if (!validQueryParameter({...value.fields,reserved_enum_values:value.fields.reserved_enum_values??[]})) return false; } if (value.subject_kind === "view_export" && !validCreateSubjectExport(value.fields)) return false; }
+  return true;
+}
+function validProtocolInvariant(profile, value) {
+  if (!isObject(value)) return true;
+  if (profile === "authoring_impact_entry") { if (value.capability !== "graph:write") return true; return typeof value.subject_address === "string" && isObject(value.graph_facts) && stableAddressSubject(value.subject_address)?.kind === value.subject_kind && Array.isArray(value.graph_facts.action_flags) && value.graph_facts.action_flags.length === 1 && value.graph_facts.action_flags[0] === value.action; }
+  if (profile === "authoring_impact") { if (!Array.isArray(value.entries) || !Array.isArray(value.required_capabilities)) return false; const derived = new Set(value.entries.map((entry)=>entry?.capability)); return derived.size === value.required_capabilities.length && value.required_capabilities.every((item)=>derived.has(item)); }
+  if (profile === "open_document_result") return isObject(value.document_generation) && sameProtocolGeneration(value.document_generation,{document_handle:value.document_handle,value:value.document_generation.value});
+  if (profile === "document_bound_input") { if (hasOwn(value,"document_handle") && (!isObject(value.document_generation) || !sameProtocolGeneration(value.document_generation,{document_handle:value.document_handle,value:value.document_generation.value}))) return false; return !hasOwn(value,"cursor") || isObject(value.cursor) && sameProtocolGeneration(value.document_generation,value.cursor.document_generation); }
+  if (profile === "paged_result") { if (!Array.isArray(value.items)||!isObject(value.page)||value.page.returned_items!==String(value.items.length)) return false; if (hasOwn(value.page,"next_cursor")&&(!isObject(value.page.next_cursor)||!sameProtocolGeneration(value.document_generation,value.page.next_cursor.document_generation))) return false; const copy=structuredClone(value); copy.page.returned_bytes="0"; try { return BigInt(utf8ByteLength(protocolCanonicalJSON(copy)))+protocolBlobBytes(value)===BigInt(value.page.returned_bytes); } catch { return false; } }
+  if (profile === "bounded_text_chunk") { if (!isObject(value.blob)) return false; try { const offset=BigInt(value.offset),total=BigInt(value.total_bytes),size=BigInt(value.blob.size); return offset<=total&&size<=total-offset&&value.blob.media_type==="text/plain; charset=utf-8"&&value.blob.lifetime==="request"&&(offset!==0n||size!==total||value.blob.digest===value.full_digest); } catch { return false; } }
+  if (profile === "source_edit") { if (isObject(value.replacement_blob)&&(value.replacement_blob.digest!==value.after_digest||value.replacement_blob.media_type!=="text/plain; charset=utf-8"||value.replacement_blob.lifetime!=="request")) return false; return value.kind!=="move"||value.before_digest===value.after_digest&&protocolCanonicalJSON(value.before_module)!==protocolCanonicalJSON(value.after_module); }
+  if (profile === "preview_result") { if (value.status!=="valid") return Array.isArray(value.conflicts)&&value.conflicts.length>0||protocolErrorDiagnostic(value.diagnostics); const impact=value.authoring_impact,semantic=value.semantic_diff,source=value.source_diff,hashes=value.resulting_hashes,base=protocolGenerationKey(value.base_generation); return isObject(impact)&&isObject(semantic)&&isObject(source)&&isObject(hashes)&&isObject(value.preview_id)&&base!==undefined&&!protocolErrorDiagnostic(value.diagnostics)&&value.authoring_impact_digest===impact.impact_digest&&protocolCanonicalJSON(value.required_authoring_capabilities)===protocolCanonicalJSON(impact.required_capabilities)&&impact.semantic_diff_hash===semantic.digest&&impact.source_diff_hash===source.digest&&impact.resulting_definition_hash===hashes.definition_hash&&value.preview_id.endpoint_instance_id===base[0]&&nextProtocolGeneration(value.base_generation,value.proposed_generation); }
+  if (profile === "apply_input") { const base=protocolGenerationKey(value.base_generation); return isObject(value.preview_id)&&base!==undefined&&value.preview_id.endpoint_instance_id===base[0]; }
+  if (profile === "apply_result") return isObject(value.authoring_impact)&&isObject(value.source_diff)&&isObject(value.resulting_hashes)&&value.authoring_impact.source_diff_hash===value.source_diff.digest&&value.authoring_impact.resulting_definition_hash===value.resulting_hashes.definition_hash;
+  if (profile === "semantic_operation") return validProtocolSemanticOperation(value);
+  return false;
+}
+
 function skipJSONWhitespace(input, start) {
   let index = start;
   while (index < input.length && /[ \t\r\n]/.test(input[index])) index++;
@@ -1111,6 +1157,44 @@ function compareCanonicalCollection(profile, left, right) {
     return leftRank < 0 || rightRank < 0 ? undefined : leftRank - rightRank;
   };
   const range = () => isObject(left.range) && isObject(right.range) ? compareRangePosition(left.range, right.range) : undefined;
+  const identity = () => {
+    const a = left.before_address ?? left.after_address;
+    const b = right.before_address ?? right.after_address;
+    return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a, b) : undefined;
+  };
+  const conflictAddress = () => {
+    const a = left.target_address ?? left.owner_address ?? "";
+    const b = right.target_address ?? right.owner_address ?? "";
+    return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a, b) : compareStableAddresses(a, b)) : undefined;
+  };
+  const path = () => {
+    const a = left.path ?? [];
+    const b = right.path ?? [];
+    if (!Array.isArray(a) || !Array.isArray(b)) return undefined;
+    for (let index = 0; index < Math.min(a.length, b.length); index++) {
+      if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined;
+      const value = compareUnicodeScalars(a[index], b[index]);
+      if (value !== 0) return value;
+    }
+    return a.length - b.length;
+  };
+  const optionalSourceRange = () => {
+    const a = left.source_range;
+    const b = right.source_range;
+    if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0;
+    return compareRangePosition(a, b);
+  };
+  const stringArray = (property) => {
+    const a = left[property] ?? [];
+    const b = right[property] ?? [];
+    if (!Array.isArray(a) || !Array.isArray(b)) return undefined;
+    for (let index = 0; index < Math.min(a.length, b.length); index++) {
+      if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined;
+      const value = compareUnicodeScalars(a[index], b[index]);
+      if (value !== 0) return value;
+    }
+    return a.length - b.length;
+  };
   const chain = (...comparisons) => {
     for (const comparison of comparisons) {
       const value = comparison();
@@ -1118,11 +1202,58 @@ function compareCanonicalCollection(profile, left, right) {
     }
     return 0;
   };
+  if (profile === "authored_field_path") return stringArray("tokens");
+  if (profile === "authoring_impact") {
+    const address = () => {
+      const a = left.subject_address ?? left.owner_address ?? "";
+      const b = right.subject_address ?? right.owner_address ?? "";
+      return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a, b) : compareStableAddresses(a, b)) : undefined;
+    };
+    return chain(address, () => text("capability"), () => text("action"));
+  }
+  if (profile === "bounded_text_chunk") {
+    const address = () => {
+      const a = left.address ?? left.owner_address;
+      const b = right.address ?? right.owner_address;
+      return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a, b) : undefined;
+    };
+    const offset = () => {
+      const a = left.source_chunk ?? left.text_chunk;
+      const b = right.source_chunk ?? right.text_chunk;
+      return isObject(a) && isObject(b) && typeof a.offset === "string" && typeof b.offset === "string"
+        ? compareCanonicalUnsignedDecimals(a.offset, b.offset) : undefined;
+    };
+    return chain(address, offset);
+  }
   if (profile === "child_set") return chain(() => stable("owner_address"), () => kind("child_kind"));
+  if (profile === "conflict") return chain(conflictAddress, () => text("kind"), path);
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left.module) && isObject(right.module) ? compareModuleOrder(left.module, right.module) : undefined;
+  if (profile === "neighbor") return chain(() => stable("source_entity_address"),
+    () => typeof left.depth === "number" && typeof right.depth === "number" ? left.depth - right.depth : undefined,
+    () => text("direction"), () => stable("relation_address"), () => stable("entity_address"));
   if (profile === "source_file") return compareModuleOrder(left, right);
+  if (profile === "source_patch") {
+    if (!isObject(left.source_range) || !isObject(right.source_range)) return undefined;
+    const module = compareModuleOrder(left.source_range, right.source_range);
+    return module === 0 ? compareRangePosition(left.source_range, right.source_range) : module;
+  }
+  if (profile === "semantic_diff") return chain(identity, () => text("kind"));
+  if (profile === "semantic_map_entry") return text("key");
+  if (profile === "source_diff") {
+    const module = (value) => isObject(value.source_range) ? value.source_range : isObject(value.before_module) ? value.before_module : isObject(value.after_module) ? value.after_module : undefined;
+    const primary = () => { const a = module(left), b = module(right); return a === undefined || b === undefined ? undefined : compareModuleOrder(a, b); };
+    const after = () => { const a = left.after_module, b = right.after_module; if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0; return compareModuleOrder(a, b); };
+    return chain(primary, () => text("kind"), optionalSourceRange, after);
+  }
+  if (profile === "source_range") {
+    const module = compareModuleOrder(left, right);
+    return module === 0 ? compareRangePosition(left, right) : module;
+  }
+  if (profile === "subgraph") return isObject(left.subject) && isObject(right.subject) &&
+    typeof left.subject.address === "string" && typeof right.subject.address === "string"
+    ? compareStableAddresses(left.subject.address, right.subject.address) : undefined;
   if (profile === "source_asset") return chain(() => stable("subject_address"), () => text("locator"));
   if (profile === "semantic_reference") return chain(() => stable("source_address"), range, () => stable("target_address"), () => kind("target_kind"), () => text("via"));
   if (profile === "source_binding") {
@@ -1154,7 +1285,7 @@ function validChildSet(value) {
   return ownerKind !== undefined && (allowed[ownerKind]?.includes(value.child_kind) ?? false);
 }
 
-function addLayerDrawVocabulary(ajv, meta) {
+function addLayerDrawVocabulary(ajv, meta, enumAuthorities = new Map()) {
   const registrations = new Map();
   const register = (definition) => {
     assert.equal(registrations.has(definition.keyword), false, `duplicate LayerDraw keyword implementation ${definition.keyword}`);
@@ -1173,7 +1304,9 @@ function addLayerDrawVocabulary(ajv, meta) {
   }});
   register({keyword: "x-layerdraw-canonical-enum-order", schemaType: "boolean", type: "array", errors: false, validate(enabled, data, parentSchema) {
     if (!enabled) return true;
-    const values = parentSchema?.items?.enum;
+    const reference = parentSchema?.items?.$ref;
+    const definition = typeof reference === "string" ? reference.split("#/$defs/")[1] : undefined;
+    const values = parentSchema?.items?.enum ?? enumAuthorities.get(definition);
     if (!Array.isArray(values)) return false;
     const ranks = new Map(values.map((value, index) => [value, index]));
     return data.every((item, index) => index === 0 || ranks.has(item) && ranks.has(data[index - 1]) && ranks.get(data[index - 1]) < ranks.get(item));
@@ -1192,7 +1325,16 @@ function addLayerDrawVocabulary(ajv, meta) {
     return true;
   }});
   register({keyword: "x-layerdraw-canonical-collection-order", schemaType: "string", type: "array", errors: false, validate(profile, data) {
-    return data.every((_, index) => index === 0 || (compareCanonicalCollection(profile, data[index - 1], data[index]) ?? 0) < 0);
+    return data.every((item, index) => {
+      if (index === 0) return true;
+      const previous = data[index - 1];
+      if ((compareCanonicalCollection(profile, previous, item) ?? 0) >= 0) return false;
+      if (profile !== "source_patch") return true;
+      if (!isObject(previous?.source_range) || !isObject(item?.source_range)) return false;
+      if (compareModuleOrder(previous.source_range, item.source_range) !== 0) return true;
+      const overlap = compareCanonicalUnsignedDecimals(previous.source_range.end_byte, item.source_range.start_byte);
+      return overlap !== undefined && overlap <= 0;
+    });
   }});
   register({keyword: "x-layerdraw-child-set", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
     return !enabled || !isObject(data) || validChildSet(data);
@@ -1233,8 +1375,8 @@ function addLayerDrawVocabulary(ajv, meta) {
   register({keyword: "x-layerdraw-disjoint-array-keys", schemaType: "array", type: "object", errors: false, validate(rules, data) {
     if (data === null || Array.isArray(data)) return true;
     return rules.every((rule) => {
-      const items = data[rule.array];
-      const strings = data[rule.strings];
+      const items = Object.prototype.hasOwnProperty.call(data, rule.array) ? data[rule.array] : [];
+      const strings = Object.prototype.hasOwnProperty.call(data, rule.strings) ? data[rule.strings] : [];
       if (!Array.isArray(items) || !Array.isArray(strings) || !strings.every((item) => typeof item === "string")) return false;
       const reserved = new Set(strings);
       return items.every((item) => item !== null && typeof item === "object" && typeof item[rule.property] === "string" && !reserved.has(item[rule.property]));
@@ -1248,6 +1390,8 @@ function addLayerDrawVocabulary(ajv, meta) {
     return (variant.required ?? []).every(own) && (variant.forbidden ?? []).every((key) => !own(key)) &&
       (variant.empty ?? []).every((key) => Array.isArray(data[key]) && data[key].length === 0) &&
       (variant.non_empty ?? []).every((key) => Array.isArray(data[key]) && data[key].length > 0) &&
+      (variant.error_diagnostic ?? []).every((key) => Array.isArray(data[key]) && data[key].some((item) => item !== null && typeof item === "object" && !Array.isArray(item) && item.severity === "error")) &&
+      ((variant.any_non_empty ?? []).length === 0 || variant.any_non_empty.some((key) => Array.isArray(data[key]) && data[key].length > 0)) &&
       Object.entries(variant.allowed_values ?? {}).every(([key, values]) => !own(key) || values.includes(data[key]));
   }});
   register({keyword: "x-layerdraw-diff-source", schemaType: "boolean", errors: false, validate(enabled, data) {
@@ -1266,7 +1410,11 @@ function addLayerDrawVocabulary(ajv, meta) {
     const own = (key) => Object.prototype.hasOwnProperty.call(data, key);
     if (data.outcome === "success") return own("payload") && !own("failure");
     if (data.outcome === "rejected") return !own("payload") && !own("failure") && Array.isArray(data.diagnostics) && data.diagnostics.length > 0;
-    if (data.outcome === "failed" || data.outcome === "cancelled") return !own("payload") && own("failure");
+    if (data.outcome === "failed" || data.outcome === "cancelled") {
+      if (own("payload") || !isObject(data.failure)) return false;
+      const category = data.failure.workbench_category;
+      return typeof category !== "string" || (data.outcome === "cancelled" ? category === "cancelled" : category !== "cancelled");
+    }
     return true;
   }});
   register({keyword: "x-layerdraw-ordered-range", schemaType: "boolean", errors: false, validate(enabled, data) {
@@ -1294,6 +1442,7 @@ function addLayerDrawVocabulary(ajv, meta) {
       return true;
     });
   }});
+  register({keyword: "x-layerdraw-protocol-invariant", schemaType: "string", type: "object", errors: false, validate: validProtocolInvariant});
   register({keyword: "x-layerdraw-query-parameter", schemaType: "boolean", type: "object", errors: false, validate(enabled, data) {
     return !enabled || !isObject(data) || validQueryParameter(data);
   }});
@@ -1326,7 +1475,9 @@ function addLayerDrawVocabulary(ajv, meta) {
     if (data === null || typeof data !== "object") return true;
     return rules.every((rule) => {
       const seen = new Set();
-      return Array.isArray(data[rule.array]) && data[rule.array].every((item) => !seen.has(item[rule.property]) && Boolean(seen.add(item[rule.property])));
+      const items = Object.prototype.hasOwnProperty.call(data, rule.array) ? data[rule.array] : [];
+      return Array.isArray(items) && items.every((item) => item !== null && typeof item === "object" &&
+        typeof item[rule.property] === "string" && !seen.has(item[rule.property]) && Boolean(seen.add(item[rule.property])));
     });
   }});
   const inventory = Object.keys(meta.properties).filter((keyword) => keyword.startsWith("x-layerdraw-")).sort();
@@ -1351,7 +1502,14 @@ async function authority() {
     readJSON("engine-protocol/v1.schema.json"),
   ]);
   const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: true});
-  const rootRequirements = addLayerDrawVocabulary(ajv, meta);
+  const enumAuthorities = new Map();
+  for (const document of documents) for (const [name, definition] of Object.entries(document.$defs)) {
+    if (!Array.isArray(definition?.enum)) continue;
+    const previous = enumAuthorities.get(name);
+    assert.ok(previous === undefined || JSON.stringify(previous) === JSON.stringify(definition.enum), `conflicting enum authority ${name}`);
+    enumAuthorities.set(name, definition.enum);
+  }
+  const rootRequirements = addLayerDrawVocabulary(ajv, meta, enumAuthorities);
   addLayerDrawFormats(ajv);
   ajv.addMetaSchema(meta);
   for (const document of documents) {
@@ -1390,6 +1548,201 @@ test("Ajv registration fails closed against the published dialect inventory and 
     () => addLayerDrawVocabulary(new Ajv2020({strict: true}), mistyped),
     /must derive from the published dialect/,
   );
+});
+
+test("Ajv enforces closed Workbench handles, recursive values, ordering, and outcome invariants", async () => {
+  const compile = await authority();
+  const engine = "https://schemas.layerdraw.dev/engine-protocol/v1";
+  const validateRequest = compile(engine, "PreviewOperationsRequestEnvelope");
+  const validateResponse = compile(engine, "PreviewOperationsResponseEnvelope");
+  assert.equal(validateRequest(await readJSON("fixtures/engine/workbench-preview-operations-request.json")), true);
+  for (const name of [
+    "workbench-invalid-handle-request.json",
+    "workbench-invalid-null-request.json",
+    "workbench-invalid-order-request.json",
+  ]) assert.equal(validateRequest(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(validateResponse(await readJSON("fixtures/engine/workbench-invalid-outcome-response.json")), false);
+  assert.equal(validateResponse(await readJSON("fixtures/engine/workbench-preview-conflict-only-response.json")), true);
+  assert.equal(validateResponse(await readJSON("fixtures/engine/workbench-invalid-empty-preview-response.json")), false);
+  const validatePatch = compile(engine, "PreviewSourcePatchRequestEnvelope");
+  assert.equal(validatePatch(await readJSON("fixtures/engine/workbench-preview-source-patch-request.json")), true);
+  assert.equal(validatePatch(await readJSON("fixtures/engine/workbench-invalid-overlapping-source-patch-request.json")), false);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-open-document-response.json")), true);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-open-pack-document-response.json")), true);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-open-invalid-root-response.json")), true);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-unavailable-warning-only-response.json")), false);
+  assert.equal(compile(engine, "OpenDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-open-document-capabilities-response.json")), false);
+  assert.equal(compile(engine, "ReplaceSourceTreeResult")(await readJSON("fixtures/engine/workbench-replace-pack-result.json")), true);
+  assert.equal(compile(engine, "ResultingHashes")(await readJSON("fixtures/engine/workbench-invalid-pack-resulting-hashes.json")), false);
+  assert.equal(compile(engine, "InspectSubgraphResult")(await readJSON("fixtures/engine/workbench-inspect-subgraph-result.json")), true);
+  assert.equal(compile(engine, "InspectSubgraphResult")(await readJSON("fixtures/engine/workbench-invalid-subgraph-relation-result.json")), false);
+  assert.equal(compile(engine, "InspectSubgraphResult")(await readJSON("fixtures/engine/workbench-invalid-subgraph-item-facts-result.json")), false);
+  assert.equal(compile(engine, "InspectSubgraphInput")(await readJSON("fixtures/engine/workbench-invalid-subgraph-root-input.json")), false);
+  assert.equal(compile(engine, "FindUsagesResult")(await readJSON("fixtures/engine/workbench-find-usages-result.json")), true);
+  assert.equal(compile(engine, "FindUsagesResult")(await readJSON("fixtures/engine/workbench-invalid-find-usages-target-kind-result.json")), false);
+  assert.equal(compile(engine, "CloseDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-close-failed-response.json")), true);
+  assert.equal(compile(engine, "CloseDocumentResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-close-failed-response.json")), false);
+  assert.equal(compile(engine, "ReadDeclarationsResult")(await readJSON("fixtures/engine/workbench-large-declaration-result.json")), true);
+  assert.equal(compile(engine, "ReadDeclarationsResult")(await readJSON("fixtures/engine/workbench-invalid-declaration-chunk-order-result.json")), false);
+  assert.equal(compile(engine, "FindUsagesResult")(await readJSON("fixtures/engine/workbench-invalid-find-usages-order-result.json")), false);
+  assert.equal(compile(engine, "EngineEditPreconditions")(await readJSON("fixtures/engine/workbench-optional-preconditions.json")), true);
+  assert.equal(compile(engine, "EngineEditPreconditions")(await readJSON("fixtures/engine/workbench-invalid-source-digest-order.json")), false);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-upsert-row-default-absent.json")), true);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-create-subject-single-kind.json")), true);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-semantic-map-order.json")), false);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-authored-path-depth.json")), false);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-upsert-row-overlap.json")), false);
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-invalid-non-upsert-explicit-absence.json")), false);
+  assert.equal(compile(engine, "ClassifyAuthoringImpactInput")(await readJSON("fixtures/engine/workbench-invalid-classify-raw-diff.json")), false);
+  const semantic = "https://schemas.layerdraw.dev/semantic/v1";
+  assert.equal(compile(semantic, "SemanticDiff")(await readJSON("fixtures/engine/workbench-invalid-semantic-diff-order.json")), false);
+  assert.equal(compile(engine, "SourceDiff")(await readJSON("fixtures/engine/workbench-invalid-source-diff-order.json")), false);
+  assert.equal(compile(engine, "SourceDiff")(await readJSON("fixtures/engine/workbench-source-diff-all-kinds.json")), true);
+  assert.equal(compile(engine, "SourceDiff")(await readJSON("fixtures/engine/workbench-invalid-replace-source-edit-identity.json")), false);
+  assert.equal(compile(semantic, "AuthoringImpact")(await readJSON("fixtures/engine/workbench-invalid-authoring-impact-order.json")), false);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-find-symbols-input.json")), true);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-find-symbols-unrestricted-input.json")), true);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-invalid-find-symbols-mode-input.json")), false);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-invalid-find-symbols-empty-filter-input.json")), false);
+  assert.equal(compile(engine, "PreviewOperationsResponseEnvelope")(await readJSON("fixtures/engine/workbench-stale-generation-response.json")), true);
+  assert.equal(compile(engine, "PreviewOperationsResponseEnvelope")(await readJSON("fixtures/engine/workbench-invalid-stale-generation-response.json")), false);
+  const validateAllCreatableKinds = compile(engine, "SemanticOperationBatch");
+  assert.equal(validateAllCreatableKinds(await readJSON("fixtures/engine/workbench-create-subject-all-kinds.json")), true, JSON.stringify(validateAllCreatableKinds.errors));
+  const validateSemanticOperation = compile(engine, "SemanticOperation");
+  const authoredContracts = await readJSON("fixtures/engine/workbench-create-subject-contracts.json");
+  assert.equal(validateAllCreatableKinds(authoredContracts), true, JSON.stringify(validateAllCreatableKinds.errors));
+  const contractByID = new Map(authoredContracts.operations.map((operation) => [operation.id, operation]));
+  const rejectContract = (name, id, mutate) => {
+    const operation = structuredClone(contractByID.get(id));
+    mutate(operation.fields);
+    assert.equal(validateSemanticOperation(operation), false, name);
+  };
+  for (const format of ["bpmn", "csv", "docx", "drawio", "html", "json", "markdown", "mermaid", "pdf", "png", "pptx", "svg", "tsv", "xlsx", "yaml"]) {
+    rejectContract(`${format} exact extension`, format, (fields) => { fields.filename = "map.invalid"; });
+  }
+  rejectContract("basename only", "json", (fields) => { fields.filename = "../map.json"; });
+  rejectContract("options format authority", "json", (fields) => { fields.options = structuredClone(contractByID.get("yaml").fields.options); });
+  rejectContract("exporter profile format authority", "json", (fields) => { fields.exporter_profile.format = "yaml"; });
+  rejectContract("Column format domain", "email_value", (fields) => { fields.format = "json"; });
+  rejectContract("View Export format domain", "json", (fields) => { fields.format = "email"; fields.filename = "map.email"; delete fields.options; delete fields.exporter_profile; });
+  rejectContract("active and reserved enum disjointness", "choice", (fields) => { fields.reserved_enum_values = ["a"]; });
+  rejectContract("nonempty enum member", "choice", (fields) => { fields.enum_values = [""]; delete fields.default; });
+  rejectContract("safe integer bound", "count", (fields) => { fields.max = "9007199254740992"; });
+  rejectContract("integer default within bounds", "count", (fields) => { fields.default.integer_value = "-11"; });
+  rejectContract("minimum string length", "code", (fields) => { fields.default.string_value = "a"; });
+  rejectContract("maximum string length", "code", (fields) => { fields.default.string_value = "abcde"; });
+  rejectContract("canonical string format", "email_value", (fields) => { fields.default.string_value = "not-email"; });
+  rejectContract("active enum default", "choice", (fields) => { fields.default.string_value = "missing"; });
+  assert.equal(compile(engine, "SemanticOperation")(await readJSON("fixtures/engine/workbench-create-relation-fields.json")), true);
+  for (const name of ["workbench-invalid-create-subject-foreign-field.json", "workbench-invalid-create-subject-missing-field.json", "workbench-invalid-create-subject-parent-kind.json", "workbench-invalid-create-subject-nested.json", "workbench-invalid-create-subject-cardinality.json", "workbench-invalid-create-subject-enum-options.json", "workbench-invalid-create-subject-view-shape.json", "workbench-invalid-create-subject-flow-lanes.json"]) assert.equal(compile(engine, "SemanticOperation")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  const validateAuthoringImpact = compile("https://schemas.layerdraw.dev/semantic/v1", "AuthoringImpact");
+  assert.equal(validateAuthoringImpact(await readJSON("fixtures/engine/workbench-authoring-impact-graph.json")), true, JSON.stringify(validateAuthoringImpact.errors));
+  for (const name of ["workbench-invalid-authoring-impact-missing-facts.json", "workbench-invalid-authoring-impact-address-kind.json", "workbench-invalid-authoring-impact-action.json", "workbench-invalid-authoring-impact-capabilities.json"]) assert.equal(compile("https://schemas.layerdraw.dev/semantic/v1", "AuthoringImpact")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  for (const name of ["workbench-invalid-source-create-digest.json", "workbench-invalid-source-blob-media.json", "workbench-invalid-source-blob-lifetime.json", "workbench-invalid-source-move-module.json", "workbench-invalid-source-move-digest.json"]) assert.equal(compile(engine, "SourceDiff")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  const validateCompletePreview = compile(engine, "WorkbenchPreviewResult");
+  assert.equal(validateCompletePreview(await readJSON("fixtures/engine/workbench-preview-valid-warning.json")), true, JSON.stringify(validateCompletePreview.errors));
+  for (const name of ["workbench-invalid-preview-impact-digest.json", "workbench-invalid-preview-capabilities.json", "workbench-invalid-preview-semantic-hash.json", "workbench-invalid-preview-source-hash.json", "workbench-invalid-preview-resulting-hash.json", "workbench-invalid-preview-endpoint.json", "workbench-invalid-preview-generation.json", "workbench-invalid-preview-warning-only.json"]) assert.equal(compile(engine, "WorkbenchPreviewResult")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "ApplyToHandleResult")(await readJSON("fixtures/engine/workbench-apply-result.json")), true);
+  for (const name of ["workbench-invalid-apply-source-hash.json", "workbench-invalid-apply-resulting-hash.json"]) assert.equal(compile(engine, "ApplyToHandleResult")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "FindSymbolsInput")(await readJSON("fixtures/engine/workbench-invalid-input-cursor-generation.json")), false);
+  assert.equal(compile(engine, "CloseDocumentInput")(await readJSON("fixtures/engine/workbench-invalid-close-generation.json")), false);
+  assert.equal(compile(engine, "ApplyToHandleInput")(await readJSON("fixtures/engine/workbench-invalid-apply-endpoint.json")), false);
+  assert.equal(compile(engine, "OpenDocumentResult")(await readJSON("fixtures/engine/workbench-invalid-open-handle-generation.json")), false);
+  assert.equal(compile(engine, "ListModulesResult")(await readJSON("fixtures/engine/workbench-page-empty.json")), true);
+  for (const name of ["workbench-invalid-page-count.json", "workbench-invalid-page-bytes.json", "workbench-invalid-page-cursor-generation.json"]) assert.equal(compile(engine, "ListModulesResult")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "ReadDeclarationsResult")(await readJSON("fixtures/engine/workbench-invalid-page-byte-overflow.json")), false);
+  for (const name of ["workbench-invalid-chunk-overflow.json", "workbench-invalid-chunk-media.json"]) assert.equal(compile(engine, "BoundedTextChunk")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "ClassifyAuthoringImpactInput")(await readJSON("fixtures/engine/workbench-classify-authoring-impact-input.json")), true);
+  for (const name of ["workbench-rejected-handle-response.json", "workbench-rejected-cursor-response.json", "workbench-rejected-generation-response.json", "workbench-rejected-input-response.json", "workbench-rejected-not_found-response.json", "workbench-rejected-preview-response.json", "workbench-rejected-unsupported-response.json", "workbench-rejected-precondition-response.json", "workbench-failed-execution-response.json", "workbench-cancelled-response.json"]) assert.equal(compile(engine, "CloseDocumentResponseEnvelope")(await readJSON(`fixtures/engine/${name}`)), true, name);
+  const engineSchema = await readJSON("engine-protocol/v1.schema.json");
+  assert.match(engineSchema.$defs.WorkbenchLimits.description, /outer Engine response envelope/);
+  assert.match(engineSchema.$defs.LogicalResponseByteCount.description, /BlobRef attachment/);
+  assert.match(engineSchema.$defs.FindSymbolsInput.description, /without normalization/);
+});
+
+test("every Workbench envelope preserves common metadata and uses the closed Workbench failure", async () => {
+  const engine = await readJSON("engine-protocol/v1.schema.json");
+  const workbenchRequests = Object.entries(engine.$defs).filter(([, schema]) =>
+    schema?.properties?.operation?.const?.startsWith("engine.") &&
+    !["engine.compile", "engine.handshake"].includes(schema.properties.operation.const));
+  assert.ok(workbenchRequests.length > 0);
+  for (const [requestName, request] of workbenchRequests) {
+    assert.deepEqual(request.properties.extensions, {$ref: "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"}, requestName);
+    assert.deepEqual(request.properties.trace_context, {$ref: "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}, requestName);
+    const responseName = requestName.replace(/RequestEnvelope$/, "ResponseEnvelope");
+    const response = engine.$defs[responseName];
+    assert.notEqual(response, undefined, responseName);
+    assert.deepEqual(response.properties.extensions, {$ref: "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"}, responseName);
+    assert.deepEqual(response.properties.failure, {$ref: "#/$defs/WorkbenchFailure"}, responseName);
+  }
+});
+
+test("Workbench invariant profiles and Language 1 domain type ownership stay explicit", async () => {
+  const engine = await readJSON("engine-protocol/v1.schema.json");
+  const semantic = await readJSON("semantic/v1.schema.json");
+  const common = await readJSON("protocol-common/v1.schema.json");
+  const pagedFamilies = ["ListModules", "FindSymbols", "InspectSubgraph", "ReadDeclarations", "ReadRows", "GetNeighbors", "FindUsages", "ReadScope", "ListReferences", "ReadReferences"];
+  for (const family of pagedFamilies) {
+    assert.equal(engine.$defs[`${family}Input`]["x-layerdraw-protocol-invariant"], "document_bound_input", family);
+    assert.equal(engine.$defs[`${family}Result`]["x-layerdraw-protocol-invariant"], "paged_result", family);
+  }
+  assert.equal(engine.$defs.CloseDocumentInput["x-layerdraw-protocol-invariant"], "document_bound_input");
+  assert.equal(engine.$defs.OpenDocumentResult["x-layerdraw-protocol-invariant"], "open_document_result");
+  for (const name of ["AssetRef", "EntityRepresentation", "RelationEndpointRule", "RelationCardinality", "RelationTraversalPolicy", "RelationProjectionSet", "RelationRenderSet", "RelationExport", "AuthoredViewShape"]) {
+    assert.equal(engine.$defs[name], undefined, `${name} must not be duplicated in the Engine schema`);
+  }
+  assert.deepEqual(engine.$defs.SemanticOperation.oneOf, [{$ref: "#/$defs/CreateSubjectOperation"}, {$ref: "#/$defs/NonCreateSemanticOperation"}]);
+  assert.equal(engine.$defs.CreateSubjectOperation.oneOf.length, semantic.$defs.CreatableSubjectKind.enum.length);
+  const nonCreate = engine.$defs.NonCreateSemanticOperation;
+  const expectedOptional = {
+    create_relation: ["fields", "placement"],
+    delete_row: [],
+    delete_subject: [],
+    migrate_project_identity: [],
+    move_entity_to_layer: [],
+    rename_subject: [],
+    update_relation_endpoint: [],
+    update_subject_field: ["value"],
+    upsert_row: ["explicit_absent_column_addresses", "placement"],
+  };
+  for (const [operation, expected] of Object.entries(expectedOptional)) {
+    const variant = nonCreate["x-layerdraw-tagged-union"].variants[operation];
+    const required = new Set(["operation", ...(variant.required ?? [])]);
+    const forbidden = new Set(variant.forbidden ?? []);
+    const optional = Object.keys(nonCreate.properties).filter((name) => !required.has(name) && !forbidden.has(name));
+    assert.deepEqual(optional, expected, `${operation} optional field inventory`);
+  }
+  assert.deepEqual(engine.$defs.ColumnCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"});
+  assert.deepEqual(engine.$defs.QueryParameterCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"});
+  assert.deepEqual(engine.$defs.ViewExportCreateSubjectFields.properties.format, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportFormat"});
+  assert.equal(engine.$defs.CreateSubjectFields.properties, undefined);
+  assert.deepEqual(semantic.$defs.AuthoringImpact.properties.required_capabilities.items, {$ref: "#/$defs/AuthoringCapability"});
+  assert.deepEqual(engine.$defs.WorkbenchPreviewResult.properties.required_authoring_capabilities.items, {$ref: "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"});
+  assert.notEqual(semantic.$defs.AuthoringCapability, undefined);
+  assert.equal(engine.$defs.AuthoringCapability, undefined);
+  assert.equal(common.$defs.AuthoringCapability, undefined);
+  assert.deepEqual(semantic.$defs.QueryRecipeParameter.properties.format, {$ref: "#/$defs/StringFormat"});
+  assert.deepEqual(semantic.$defs.ViewTableValueType.properties.format, {$ref: "#/$defs/StringFormat"});
+  const systemBoundary = await readFile(new URL("../../../docs/system-boundary-contracts-specification.md", import.meta.url), "utf8");
+  const packageBoundary = await readFile(new URL("../../../docs/component-package-boundary-specification.md", import.meta.url), "utf8");
+  assert.match(systemBoundary, /access-protocol -> semantic/);
+  assert.match(packageBoundary, /AuthoringCapabilityの再定義/);
+});
+
+test("query parameter active enum order is authored while reserved order is canonical", async () => {
+  const compile = await authority();
+  const validate = compile("https://schemas.layerdraw.dev/semantic/v1", "QueryRecipeParameter");
+  const base = {id: "x", address: "ldl:project:p:query:q:parameter:x", value_type: "enum", enum_values: ["z", "a"], reserved_enum_values: [], required: false};
+  assert.equal(validate(base), true, JSON.stringify(validate.errors));
+  assert.equal(validate({...base, enum_values: ["choice"], reserved_enum_values: ["z", "a"]}), false);
+});
+
+test("standalone create_subject field authority rejects loose formats", async () => {
+  const compile = await authority();
+  const engine = "https://schemas.layerdraw.dev/engine-protocol/v1";
+  assert.equal(compile(engine, "CreateSubjectFields")({format: "garbage"}), false);
+  assert.equal(compile(engine, "ColumnCreateSubjectFields")({display_name: "Email", value_type: "string", format: "garbage"}), false);
+  assert.equal(compile(engine, "ViewExportCreateSubjectFields")({format: "garbage", filename: "bad.out", fidelity: "lossless"}), false);
 });
 
 test("normalized schema and document authority require request lifetime and the exact byte profile", async () => {

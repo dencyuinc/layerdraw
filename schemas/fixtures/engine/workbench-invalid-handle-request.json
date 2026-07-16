@@ -1,0 +1,16 @@
+{
+  "operation": "engine.preview_operations",
+  "payload": {
+    "batch": {"operations": [{"operation": "delete_subject", "target_address": "ldl:project:fixture"}]},
+    "limits": {"max_items": "1", "max_output_bytes": "1"},
+    "preconditions": {
+      "document_generation": {"document_handle": {"endpoint_instance_id": "fixture-endpoint", "value": "preview_abcdefghijklmnop"}, "value": "1"},
+      "expected_child_sets": [],
+      "expected_source_digests": [],
+      "expected_subject_hashes": [],
+      "expected_subtree_hashes": []
+    }
+  },
+  "protocol": {"name": "engine", "version": "1.0"},
+  "request_id": "fixture-invalid-handle"
+}

@@ -1,0 +1,18 @@
+{
+  "operations": [
+    {"fields": {"display_name": "Type", "representation": {"kind": "container"}}, "id": "item", "operation": "create_subject", "parent_address": "ldl:project:p", "subject_kind": "entity_type"},
+    {"fields": {"cardinality": {"from_per_to": {"max": 1, "min": 0}, "to_per_from": {"max": "many", "min": 1}}, "display_name": "Contains", "forward_label": "contains", "from": {"role": "parent"}, "semantic_kind": "containment", "to": {"role": "child"}}, "id": "contains", "operation": "create_subject", "parent_address": "ldl:project:p", "subject_kind": "relation_type"},
+    {"fields": {"display_name": "Default", "order": "0"}, "id": "default", "operation": "create_subject", "parent_address": "ldl:project:p", "subject_kind": "layer"},
+    {"fields": {"display_name": "One", "layer_address": "ldl:project:p:layer:default", "type_address": "ldl:project:p:entity-type:item"}, "id": "one", "operation": "create_subject", "parent_address": "ldl:project:p", "subject_kind": "entity"},
+    {"fields": {"display_name": "All", "select": {}}, "id": "all", "operation": "create_subject", "parent_address": "ldl:project:p", "subject_kind": "query"},
+    {"fields": {"category": "topology", "display_name": "Map", "shape": {"kind": "diagram"}, "source": {"arguments": {}, "kind": "query", "query_address": "ldl:project:p:query:all"}}, "id": "map", "operation": "create_subject", "parent_address": "ldl:project:p", "subject_kind": "view"},
+    {"fields": {"text": "Reference text"}, "id": "note", "operation": "create_subject", "parent_address": "ldl:project:p", "subject_kind": "reference"},
+    {"fields": {"display_name": "Name", "value_type": "string"}, "id": "name", "operation": "create_subject", "parent_address": "ldl:project:p:entity-type:item", "subject_kind": "entity_type_column"},
+    {"fields": {"column_addresses": ["ldl:project:p:entity-type:item:column:name"]}, "id": "unique_name", "operation": "create_subject", "parent_address": "ldl:project:p:entity-type:item", "subject_kind": "entity_type_constraint"},
+    {"fields": {"display_name": "Weight", "value_type": "number"}, "id": "weight", "operation": "create_subject", "parent_address": "ldl:project:p:relation-type:contains", "subject_kind": "relation_type_column"},
+    {"fields": {"column_addresses": ["ldl:project:p:relation-type:contains:column:weight"]}, "id": "unique_weight", "operation": "create_subject", "parent_address": "ldl:project:p:relation-type:contains", "subject_kind": "relation_type_constraint"},
+    {"fields": {"value_type": "string"}, "id": "needle", "operation": "create_subject", "parent_address": "ldl:project:p:query:all", "subject_kind": "query_parameter"},
+    {"fields": {"source": {"field": "display_name", "kind": "field"}}, "id": "name", "operation": "create_subject", "parent_address": "ldl:project:p:view:map", "subject_kind": "view_table_column"},
+    {"fields": {"fidelity": "lossless", "filename": "map.json", "format": "json"}, "id": "json", "operation": "create_subject", "parent_address": "ldl:project:p:view:map", "subject_kind": "view_export"}
+  ]
+}

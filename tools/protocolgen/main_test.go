@@ -467,6 +467,10 @@ func TestSchemaTypeValidationFailures(t *testing.T) {
 	if _, err := scalarType(42); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported type declaration was accepted: %v", err)
 	}
+	invalidCardinalityMaximum := &schemaType{OneOf: []*schemaType{{Type: "string"}, {Type: "boolean"}}}
+	if err := validateType(set, document, "RelationCardinalityMaximum", invalidCardinalityMaximum, map[*schemaType]bool{}); err == nil || !strings.Contains(err.Error(), "must be exactly") {
+		t.Fatalf("invalid scoped cardinality union was accepted: %v", err)
+	}
 	booleanUnion := &schemaType{
 		Type: "object", Properties: map[string]*schemaType{"enabled": {Type: "boolean"}, "reason": {Type: "string"}},
 		Required: []string{"enabled"}, AdditionalProperties: false,
@@ -902,6 +906,9 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 		`function matchesCanonicalBinary64`,
 		`lifetime: "request";`,
 		`function hasDisjointArrays`,
+		`function hasValidOutcomeEnvelope`,
+		`function hasDisjointArrayKey`,
+		`function hasProtocolInvariant`,
 		`export function collectCompileInputBlobRefs(value: CompileInput): ReadonlyArray<BlobRef>`,
 		`for (const blobItem3 of value["resolved_dependencies"]["installs"])`,
 		`export function collectCompileResultBlobRefs(value: CompileResult): ReadonlyArray<BlobRef>`,
@@ -918,6 +925,15 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 	} {
 		if !strings.Contains(commonTypes, expected) {
 			t.Errorf("generated TypeScript bound guard missing %q", expected)
+		}
+	}
+	for _, unused := range []string{
+		`function hasValidOutcomeEnvelope`,
+		`function hasDisjointArrayKey`,
+		`function hasProtocolInvariant`,
+	} {
+		if strings.Contains(commonTypes, unused) {
+			t.Errorf("generated common TypeScript contains unused helper %q", unused)
 		}
 	}
 }
@@ -1003,6 +1019,8 @@ func TestEveryGeneratedCodecAndRecursivePredicateUsesBoundedPreflight(t *testing
 	}
 	for _, name := range []string{
 		"common.JsonValue",
+		"engine.SemanticOperationMapEntry",
+		"engine.SemanticOperationValue",
 		"semantic.DiagnosticArgumentValue",
 		"semantic.RecipePredicate",
 		"semantic.RecipeRowPredicate",
@@ -1011,8 +1029,8 @@ func TestEveryGeneratedCodecAndRecursivePredicateUsesBoundedPreflight(t *testing
 			t.Errorf("schema recursion audit did not find %s", name)
 		}
 	}
-	if len(recursiveNames) != 4 {
-		t.Errorf("schema recursion audit found %d recursive definitions, want 4: %v", len(recursiveNames), recursiveNames)
+	if len(recursiveNames) != 6 {
+		t.Errorf("schema recursion audit found %d recursive definitions, want 6: %v", len(recursiveNames), recursiveNames)
 	}
 
 	reachesRecursive := map[definitionID]bool{}

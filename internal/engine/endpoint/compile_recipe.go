@@ -263,7 +263,7 @@ func mapQueryParameter(input materialize.QueryParameter) (semantic.QueryRecipePa
 		result.Default = &value
 	}
 	if input.Format != nil {
-		value := string(*input.Format)
+		value := semantic.StringFormat(*input.Format)
 		result.Format = &value
 	}
 	if input.Min != nil {
@@ -662,7 +662,7 @@ func mapTableValueType(input viewcompiler.TableValueType) (semantic.ViewTableVal
 			result.EnumValues = &values
 		}
 		if input.Format != nil {
-			format := string(*input.Format)
+			format := semantic.StringFormat(*input.Format)
 			result.Format = &format
 		}
 	case viewcompiler.TableValueStableAddress, viewcompiler.TableValueStringSet:

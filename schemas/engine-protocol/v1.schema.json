@@ -252,6 +252,1821 @@
       "required": ["project_address", "canonical_json", "artifact_json"],
       "additionalProperties": false
     },
+    "DocumentHandle": {
+      "type": "object",
+      "description": "An opaque process-local Working Document handle bound to one Engine endpoint instance.",
+      "properties": {
+        "endpoint_instance_id": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/EndpointInstanceID"},
+        "value": {"type": "string", "pattern": "^document_[A-Za-z0-9_-]{16,128}$"}
+      },
+      "required": ["endpoint_instance_id", "value"],
+      "additionalProperties": false
+    },
+    "DocumentGeneration": {
+      "type": "object",
+      "description": "An opaque monotonic generation valid only for its endpoint-bound document handle.",
+      "properties": {
+        "document_handle": {"$ref": "#/$defs/DocumentHandle"},
+        "value": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["document_handle", "value"],
+      "additionalProperties": false
+    },
+    "PreviewID": {
+      "type": "object",
+      "description": "An opaque endpoint-local preview identity, type-separated from documents and cursors.",
+      "properties": {
+        "endpoint_instance_id": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/EndpointInstanceID"},
+        "value": {"type": "string", "pattern": "^preview_[A-Za-z0-9_-]{16,128}$"}
+      },
+      "required": ["endpoint_instance_id", "value"],
+      "additionalProperties": false
+    },
+    "WorkbenchLimits": {
+      "type": "object",
+      "description": "Explicit positive caller bounds; every read and edit carries both item and complete logical response-payload byte ceilings. Logical bytes exclude the outer Engine response envelope, include the canonical JSON UTF-8 bytes of the complete operation result with page.returned_bytes replaced by the string 0 to avoid self-reference, and add every referenced BlobRef attachment's declared size once per occurrence.",
+      "properties": {
+        "max_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "max_output_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64", "description": "Maximum logical response-payload bytes measured by the WorkbenchLimits rule, including referenced attachment bytes."}
+      },
+      "required": ["max_items", "max_output_bytes"],
+      "additionalProperties": false
+    },
+    "TruncationOutcome": {
+      "type": "string",
+      "enum": ["complete", "item_limit", "output_byte_limit"]
+    },
+    "LogicalResponseByteCount": {
+      "description": "Exact logical response-payload bytes returned: canonical result JSON UTF-8 bytes with this field encoded as the string 0, excluding the outer Engine response envelope, plus each BlobRef attachment's declared size once per occurrence. This count uses the same rule as max_output_bytes.",
+      "$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"
+    },
+    "WorkbenchFailureCategory": {
+      "type": "string",
+      "description": "A stable execution-platform failure reason. Predictable handle, cursor, generation, input, not-found, preview, unsupported, and precondition conditions are rejected with lifecycle-safe diagnostics and never represented as WorkbenchFailure.",
+      "enum": ["cancelled", "execution_failed", "limit_exceeded"]
+    },
+    "WorkbenchFailure": {
+      "type": "object",
+      "description": "A safe transport or execution-platform failure with a closed Workbench reason. category retains the common protocol failure semantics; workbench_category is the stable operation-layer reason.",
+      "properties": {
+        "category": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailureCategory"},
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"},
+        "correlation_id": {"type": "string"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "message": {"type": "string"},
+        "retry_after_ms": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "retryable": {"type": "boolean"},
+        "safe_details": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"},
+        "workbench_category": {"$ref": "#/$defs/WorkbenchFailureCategory"}
+      },
+      "required": ["code", "category", "workbench_category", "message", "retryable"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "workbench_category",
+        "variants": {
+          "cancelled": {"allowed_values": {"category": ["cancelled"]}},
+          "execution_failed": {"allowed_values": {"category": ["adapter", "invariant", "io", "transport"]}},
+          "limit_exceeded": {"allowed_values": {"category": ["resource"]}}
+        }
+      }
+    },
+    "DocumentCapabilityState": {
+      "type": "object",
+      "description": "Exact availability of every operation for this document generation. These values refine, and never broaden, endpoint handshake capabilities.",
+      "properties": {
+        "apply_to_handle": {"type": "boolean"},
+        "find_symbols": {"type": "boolean"},
+        "find_usages": {"type": "boolean"},
+        "format_scope": {"type": "boolean"},
+        "get_neighbors": {"type": "boolean"},
+        "inspect_subgraph": {"type": "boolean"},
+        "list_modules": {"type": "boolean"},
+        "list_references": {"type": "boolean"},
+        "organize_workspace": {"type": "boolean"},
+        "preview_fragment": {"type": "boolean"},
+        "preview_operations": {"type": "boolean"},
+        "preview_source_patch": {"type": "boolean"},
+        "read_declarations": {"type": "boolean"},
+        "read_references": {"type": "boolean"},
+        "read_rows": {"type": "boolean"},
+        "read_scope": {"type": "boolean"},
+        "replace_source_tree": {"type": "boolean"}
+      },
+      "required": ["apply_to_handle", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "organize_workspace", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_references", "read_rows", "read_scope", "replace_source_tree"],
+      "additionalProperties": false
+    },
+    "WorkingDocumentState": {
+      "type": "object",
+      "description": "The authoritative mode, root identity, and semantic hash summary for one Working Document generation. Pack documents intentionally have no project graph hash.",
+      "properties": {
+        "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "graph_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "mode": {"$ref": "#/$defs/CompileMode"},
+        "pack_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/PackRootAddress"},
+        "project_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"},
+        "semantic_state": {"type": "string", "enum": ["available", "unavailable"]},
+        "state_kind": {"type": "string", "enum": ["pack_available", "pack_unavailable", "project_available", "project_unavailable"]}
+      },
+      "required": ["state_kind", "mode", "semantic_state", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "state_kind",
+        "variants": {
+          "pack_available": {"required": ["pack_address", "definition_hash"], "forbidden": ["graph_hash", "project_address"], "allowed_values": {"mode": ["pack"], "semantic_state": ["available"]}},
+          "pack_unavailable": {"forbidden": ["definition_hash", "graph_hash", "project_address"], "error_diagnostic": ["diagnostics"], "allowed_values": {"mode": ["pack"], "semantic_state": ["unavailable"]}},
+          "project_available": {"required": ["project_address", "definition_hash", "graph_hash"], "forbidden": ["pack_address"], "allowed_values": {"mode": ["project"], "semantic_state": ["available"]}},
+          "project_unavailable": {"forbidden": ["definition_hash", "graph_hash", "pack_address"], "error_diagnostic": ["diagnostics"], "allowed_values": {"mode": ["project"], "semantic_state": ["unavailable"]}}
+        }
+      }
+    },
+    "OpenDocumentInput": {
+      "type": "object",
+      "properties": {
+        "compile_input": {"$ref": "#/$defs/CompileInput"},
+        "requested_limits": {"$ref": "#/$defs/WorkbenchLimits"}
+      },
+      "required": ["compile_input", "requested_limits"],
+      "additionalProperties": false
+    },
+    "OpenDocumentResult": {
+      "type": "object",
+      "properties": {
+        "capabilities": {"$ref": "#/$defs/DocumentCapabilityState"},
+        "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "document_handle": {"$ref": "#/$defs/DocumentHandle"},
+        "effective_limits": {"$ref": "#/$defs/WorkbenchLimits"},
+        "state": {"$ref": "#/$defs/WorkingDocumentState"}
+      },
+      "required": ["document_handle", "document_generation", "state", "capabilities", "effective_limits"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "open_document_result"
+    },
+    "ReplaceSourceTreeInput": {
+      "type": "object",
+      "description": "Atomically replaces the complete source tree. The replacement may change project/pack mode and root identity; the result is the sole authoritative refreshed document state.",
+      "properties": {
+        "compile_input": {"$ref": "#/$defs/CompileInput"},
+        "expected_generation": {"$ref": "#/$defs/DocumentGeneration"}
+      },
+      "required": ["expected_generation", "compile_input"],
+      "additionalProperties": false
+    },
+    "ReplaceSourceTreeResult": {
+      "type": "object",
+      "properties": {
+        "capabilities": {"$ref": "#/$defs/DocumentCapabilityState"},
+        "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "state": {"$ref": "#/$defs/WorkingDocumentState"}
+      },
+      "required": ["document_generation", "state", "capabilities"],
+      "additionalProperties": false
+    },
+    "CloseDocumentInput": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "document_handle": {"$ref": "#/$defs/DocumentHandle"}},
+      "required": ["document_handle", "document_generation"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "CloseDocumentResult": {
+      "type": "object",
+      "properties": {"closed": {"type": "boolean", "const": true}},
+      "required": ["closed"],
+      "additionalProperties": false
+    },
+    "RowCell": {
+      "type": "object",
+      "properties": {"column_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ColumnAddress"}, "value": {"$ref": "#/$defs/SemanticOperationValue"}},
+      "required": ["column_address", "value"],
+      "additionalProperties": false
+    },
+    "ModuleCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^list_modules_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "ModulePageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/ModuleCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "ModuleReadItem": {
+      "type": "object",
+      "properties": {"module": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ModuleRef"}, "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "byte_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}},
+      "required": ["module","digest","byte_length"],
+      "additionalProperties": false
+    },
+    "ListModulesInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/ModuleCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}},
+      "required": ["document_generation", "limits"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "ListModulesResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/ModuleReadItem"}, "x-layerdraw-canonical-collection-order": "module_scope"}, "page": {"$ref": "#/$defs/ModulePageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "SymbolCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^find_symbols_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "SymbolPageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/SymbolCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "SymbolReadItem": {
+      "type": "object",
+      "description": "One address-ordered symbol match. If several searched fields match, matched_field deterministically selects address before id before display_name; matched_value is that field's original, unnormalized spelling.",
+      "properties": {"address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "kind": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectKind"}, "display_name": {"type": "string"}, "matched_field": {"type": "string", "enum": ["address", "id", "display_name"]}, "matched_value": {"type": "string"}, "source_range": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceRange"}},
+      "required": ["address","kind","display_name","matched_field","matched_value","source_range"],
+      "additionalProperties": false
+    },
+    "FindSymbolsInput": {
+      "type": "object",
+      "description": "Deterministic symbol-index lookup over each subject's canonical StableAddress string, terminal local id, and display_name. exact, prefix, and substring compare Unicode-scalar sequences without normalization; unicode_simple_fold applies Unicode default simple case folding to query and candidate before that comparison. owner_addresses and subject_kinds are optional non-empty filters; absence means unrestricted.",
+      "properties": {"case_mode": {"type": "string", "enum": ["sensitive", "unicode_simple_fold"]}, "cursor": {"$ref": "#/$defs/SymbolCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "match_mode": {"type": "string", "enum": ["exact", "prefix", "substring"]}, "owner_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "query": {"type": "string", "minLength": 1, "maxLength": 1024}, "subject_kinds": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectKind"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true}},
+      "required": ["document_generation", "limits", "query", "match_mode", "case_mode"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "FindSymbolsResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/SymbolReadItem"}, "x-layerdraw-stable-address-order": "address"}, "page": {"$ref": "#/$defs/SymbolPageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "SubgraphCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^inspect_subgraph_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "SubgraphPageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/SubgraphCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "SubgraphGraphFacts": {
+      "type": "object",
+      "description": "Closed graph facts paired with one inspected subject. Entity and Relation branches expose type, placement/endpoints, and bounded row identities without inference.",
+      "properties": {
+        "from_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
+        "entity_type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityTypeAddress"},
+        "kind": {"type": "string", "enum": ["entity", "other", "relation"]},
+        "layer_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LayerAddress"},
+        "relation_type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"},
+        "row_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "to_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}
+      },
+      "required": ["kind", "row_addresses"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "entity": {"required": ["entity_type_address", "layer_address"], "forbidden": ["from_address", "relation_type_address", "to_address"]},
+          "other": {"forbidden": ["entity_type_address", "from_address", "layer_address", "relation_type_address", "to_address"]},
+          "relation": {"required": ["relation_type_address", "from_address", "to_address"], "forbidden": ["entity_type_address", "layer_address"]}
+        }
+      }
+    },
+    "SubgraphReadItem": {
+      "type": "object",
+      "properties": {"adjacency": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AdjacencyRecord"}, "facts": {"$ref": "#/$defs/SubgraphGraphFacts"}, "subject": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SemanticSubject"}},
+      "required": ["subject", "facts"],
+      "additionalProperties": false
+    },
+    "SubgraphRelationFact": {
+      "type": "object",
+      "properties": {
+        "from_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
+        "relation_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"},
+        "to_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
+        "type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"}
+      },
+      "required": ["relation_address", "type_address", "from_address", "to_address"],
+      "additionalProperties": false
+    },
+    "InspectSubgraphInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/SubgraphCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "root_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "depth": {"type": "integer", "minimum": 0, "maximum": 32}},
+      "required": ["document_generation", "limits", "root_addresses", "depth"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "InspectSubgraphResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/SubgraphReadItem"}, "x-layerdraw-canonical-collection-order": "subgraph"}, "page": {"$ref": "#/$defs/SubgraphPageInfo"}, "relations": {"type": "array", "items": {"$ref": "#/$defs/SubgraphRelationFact"}, "x-layerdraw-stable-address-order": "relation_address"}},
+      "required": ["document_generation", "items", "relations", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "DeclarationCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^read_declarations_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "BoundedTextChunk": {
+      "type": "object",
+      "description": "One bounded byte chunk of a larger UTF-8 logical value. blob.size is the chunk length; offset and total_bytes locate it within the value; full_digest identifies the complete value across pages.",
+      "properties": {
+        "blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "full_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "offset": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "total_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["blob", "full_digest", "offset", "total_bytes"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "bounded_text_chunk"
+    },
+    "DeclarationPageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/DeclarationCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "DeclarationReadItem": {
+      "type": "object",
+      "properties": {"address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "kind": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectKind"}, "source_chunk": {"$ref": "#/$defs/BoundedTextChunk"}, "source_range": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceRange"}},
+      "required": ["address","kind","source_chunk","source_range"],
+      "additionalProperties": false
+    },
+    "ReadDeclarationsInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/DeclarationCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
+      "required": ["document_generation", "limits", "addresses"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "ReadDeclarationsResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/DeclarationReadItem"}, "x-layerdraw-canonical-collection-order": "bounded_text_chunk"}, "page": {"$ref": "#/$defs/DeclarationPageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "RowCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^read_rows_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "RowPageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/RowCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "RowReadItem": {
+      "type": "object",
+      "properties": {"row_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "owner_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "values": {"type": "array", "items": {"$ref": "#/$defs/RowCell"}, "x-layerdraw-stable-address-order": "column_address"}},
+      "required": ["row_address","owner_address","values"],
+      "additionalProperties": false
+    },
+    "ReadRowsInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/RowCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "owner_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
+      "required": ["document_generation", "limits", "owner_addresses"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "ReadRowsResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/RowReadItem"}, "x-layerdraw-stable-address-order": "row_address"}, "page": {"$ref": "#/$defs/RowPageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "NeighborCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^get_neighbors_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "NeighborPageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/NeighborCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "NeighborReadItem": {
+      "type": "object",
+      "properties": {"depth": {"type": "integer", "minimum": 1, "maximum": 32}, "direction": {"type": "string", "enum": ["incoming", "outgoing"]}, "entity_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "relation_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "source_entity_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}},
+      "required": ["source_entity_address","entity_address","relation_address","direction","depth"],
+      "additionalProperties": false
+    },
+    "GetNeighborsInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/NeighborCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}, "direction": {"type": "string", "enum": ["both", "incoming", "outgoing"]}, "depth": {"type": "integer", "minimum": 1, "maximum": 32}},
+      "required": ["document_generation", "limits", "entity_addresses", "direction", "depth"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "GetNeighborsResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/NeighborReadItem"}, "x-layerdraw-canonical-collection-order": "neighbor"}, "page": {"$ref": "#/$defs/NeighborPageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "UsageCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^find_usages_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "UsagePageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/UsageCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "UsageReadItem": {
+      "type": "object",
+      "properties": {"source_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "target_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "target_kind": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectKind"}, "via": {"type": "string", "minLength": 1}, "range": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceRange"}},
+      "required": ["source_address","target_address","target_kind","via","range"],
+      "additionalProperties": false
+    },
+    "FindUsagesInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/UsageCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "target_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
+      "required": ["document_generation", "limits", "target_addresses"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "FindUsagesResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/UsageReadItem"}, "x-layerdraw-canonical-collection-order": "semantic_reference"}, "page": {"$ref": "#/$defs/UsagePageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "ScopeCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^read_scope_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "ScopePageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/ScopeCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "ScopeReadItem": {
+      "type": "object",
+      "properties": {"owner_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "source_chunk": {"$ref": "#/$defs/BoundedTextChunk"}, "source_range": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceRange"}},
+      "required": ["owner_address","source_chunk","source_range"],
+      "additionalProperties": false
+    },
+    "ReadScopeInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/ScopeCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "owner_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}},
+      "required": ["document_generation", "limits", "owner_address"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "ReadScopeResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/ScopeReadItem"}, "x-layerdraw-canonical-collection-order": "bounded_text_chunk"}, "page": {"$ref": "#/$defs/ScopePageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "ReferenceSummaryCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^list_references_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "ReferenceSummaryPageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/ReferenceSummaryCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "ReferenceSummaryReadItem": {
+      "type": "object",
+      "properties": {"address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ReferenceAddress"}, "source_range": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceRange"}, "text_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}},
+      "required": ["address","source_range","text_digest"],
+      "additionalProperties": false
+    },
+    "ListReferencesInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/ReferenceSummaryCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}},
+      "required": ["document_generation", "limits"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "ListReferencesResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/ReferenceSummaryReadItem"}, "x-layerdraw-stable-address-order": "address"}, "page": {"$ref": "#/$defs/ReferenceSummaryPageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+    "ReferenceContentCursor": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^read_references_cursor_[A-Za-z0-9_-]{16,128}$"}},
+      "required": ["document_generation", "value"],
+      "additionalProperties": false
+    },
+    "ReferenceContentPageInfo": {
+      "type": "object",
+      "properties": {"next_cursor": {"$ref": "#/$defs/ReferenceContentCursor"}, "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"}, "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}, "truncation": {"$ref": "#/$defs/TruncationOutcome"}},
+      "required": ["returned_items", "returned_bytes", "truncation"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "truncation", "variants": {"complete": {"forbidden": ["next_cursor"]}, "item_limit": {"required": ["next_cursor"]}, "output_byte_limit": {"required": ["next_cursor"]}}}
+    },
+    "ReferenceContentReadItem": {
+      "type": "object",
+      "properties": {"address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ReferenceAddress"}, "source_range": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceRange"}, "text_chunk": {"$ref": "#/$defs/BoundedTextChunk"}},
+      "required": ["address","source_range","text_chunk"],
+      "additionalProperties": false
+    },
+    "ReadReferencesInput": {
+      "type": "object",
+      "properties": {"cursor": {"$ref": "#/$defs/ReferenceContentCursor"}, "document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ReferenceAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
+      "required": ["document_generation", "limits", "addresses"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "ReadReferencesResult": {
+      "type": "object",
+      "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "items": {"type": "array", "items": {"$ref": "#/$defs/ReferenceContentReadItem"}, "x-layerdraw-canonical-collection-order": "bounded_text_chunk"}, "page": {"$ref": "#/$defs/ReferenceContentPageInfo"}},
+      "required": ["document_generation", "items", "page"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "paged_result"
+    },
+
+    "ExpectedHash": {
+      "type": "object",
+      "properties": {
+        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["address", "hash"],
+      "additionalProperties": false
+    },
+    "ExpectedChildSet": {
+      "type": "object",
+      "properties": {
+        "child_kind": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectKind"},
+        "hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "owner_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}
+      },
+      "required": ["owner_address", "child_kind", "hash"],
+      "additionalProperties": false
+    },
+    "ExpectedSourceDigest": {
+      "type": "object",
+      "properties": {
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "module": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ModuleRef"}
+      },
+      "required": ["module", "digest"],
+      "additionalProperties": false
+    },
+    "EngineEditPreconditions": {
+      "type": "object",
+      "properties": {
+        "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "expected_child_sets": {"type": "array", "items": {"$ref": "#/$defs/ExpectedChildSet"}, "x-layerdraw-canonical-collection-order": "child_set"},
+        "expected_source_digests": {"type": "array", "items": {"$ref": "#/$defs/ExpectedSourceDigest"}, "x-layerdraw-canonical-collection-order": "module_scope"},
+        "expected_subject_hashes": {"type": "array", "items": {"$ref": "#/$defs/ExpectedHash"}, "x-layerdraw-stable-address-order": "address"},
+        "expected_subtree_hashes": {"type": "array", "items": {"$ref": "#/$defs/ExpectedHash"}, "x-layerdraw-stable-address-order": "address"}
+      },
+      "required": ["document_generation", "expected_subject_hashes", "expected_subtree_hashes", "expected_child_sets"],
+      "additionalProperties": false
+    },
+    "PlacementHint": {
+      "type": "object",
+      "properties": {
+        "group_anchor_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "module_path": {"$ref": "#/$defs/CanonicalSourcePath"},
+        "position": {"type": "string", "enum": ["before", "after", "end"]}
+      },
+      "required": ["position"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "position", "variants": {"before": {"required": ["group_anchor_address"]}, "after": {"required": ["group_anchor_address"]}, "end": {}}}
+    },
+    "SemanticOperationValueKind": {
+      "type": "string",
+      "enum": ["absent", "address", "array", "blob", "boolean", "decimal", "integer", "map", "string"]
+    },
+    "SemanticOperationMapEntry": {
+      "type": "object",
+      "properties": {
+        "key": {"type": "string", "minLength": 1},
+        "value": {"$ref": "#/$defs/SemanticOperationValue"}
+      },
+      "required": ["key", "value"],
+      "additionalProperties": false
+    },
+    "SemanticOperationValue": {
+      "type": "object",
+      "description": "A closed recursive authored value; arbitrary untagged JSON is never accepted.",
+      "properties": {
+        "address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "array": {"type": "array", "items": {"$ref": "#/$defs/SemanticOperationValue"}},
+        "blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "boolean": {"type": "boolean"},
+        "decimal": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
+        "integer": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalSafeInteger"},
+        "kind": {"$ref": "#/$defs/SemanticOperationValueKind"},
+        "map": {"type": "array", "items": {"$ref": "#/$defs/SemanticOperationMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "string": {"type": "string", "maxLength": 4096, "description": "Inline authored text, capped at 4096 Unicode scalars (therefore at most 16384 UTF-8 bytes); use kind=blob for larger text."}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "map", "property": "key"}],
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "absent": {"forbidden": ["address", "array", "blob", "boolean", "decimal", "integer", "map", "string"]},
+          "address": {"required": ["address"], "forbidden": ["array", "blob", "boolean", "decimal", "integer", "map", "string"]},
+          "array": {"required": ["array"], "forbidden": ["address", "blob", "boolean", "decimal", "integer", "map", "string"]},
+          "blob": {"required": ["blob"], "forbidden": ["address", "array", "boolean", "decimal", "integer", "map", "string"]},
+          "boolean": {"required": ["boolean"], "forbidden": ["address", "array", "blob", "decimal", "integer", "map", "string"]},
+          "decimal": {"required": ["decimal"], "forbidden": ["address", "array", "blob", "boolean", "integer", "map", "string"]},
+          "integer": {"required": ["integer"], "forbidden": ["address", "array", "blob", "boolean", "decimal", "map", "string"]},
+          "map": {"required": ["map"], "forbidden": ["address", "array", "blob", "boolean", "decimal", "integer", "string"]},
+          "string": {"required": ["string"], "forbidden": ["address", "array", "blob", "boolean", "decimal", "integer", "map"]}
+        }
+      }
+    },
+    "SemanticStringMapEntry": {
+      "type": "object",
+      "properties": {"key": {"type": "string"}, "value": {"type": "string"}},
+      "required": ["key", "value"],
+      "additionalProperties": false
+    },
+    "ViewProjectionOverrideEntry": {
+      "type": "object",
+      "properties": {"key": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"}, "value": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredViewProjectionOverride"}},
+      "required": ["key", "value"],
+      "additionalProperties": false
+    },
+    "EntityTypeCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "color": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Color"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "icon": {"type": "string", "minLength": 1},
+        "image": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredAssetRef"},
+        "representation": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredEntityRepresentation"},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "required": ["display_name", "representation"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "RelationTypeCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "allow_self": {"type": "boolean"},
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "cardinality": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationCardinality"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "duplicate_policy": {"type": "string", "enum": ["allow", "deny_any_between_same_endpoints", "deny_same_type_between_same_endpoints"]},
+        "export": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationExport"},
+        "forward_label": {"type": "string", "minLength": 1},
+        "from": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationEndpointRule"},
+        "projections": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationProjectionSet"},
+        "render": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationRenderSet"},
+        "reverse_label": {"type": "string"},
+        "semantic_kind": {"type": "string", "enum": ["containment", "control_flow", "data_flow", "dependency", "deployment", "governance", "impact", "network", "ownership", "reference", "security", "sequence"]},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "to": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationEndpointRule"},
+        "traversal": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredRelationTraversalPolicy"}
+      },
+      "required": ["display_name", "semantic_kind", "from", "to", "forward_label"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "LayerCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "order": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalSafeInteger"},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "required": ["display_name", "order"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "EntityCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "layer_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LayerAddress"},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityTypeAddress"}
+      },
+      "required": ["display_name", "type_address", "layer_address"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "QueryCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "relation_where": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipePredicate"},
+        "result": {"type": "array", "items": {"type": "string", "enum": ["seed_entities", "traversed_entities", "path_relations", "induced_relations"]}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
+        "select": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryRecipeSelect"},
+        "state_input": {"type": "string", "enum": ["none", "optional", "required"]},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "traverse": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryRecipeTraversal"},
+        "where": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipePredicate"}
+      },
+      "required": ["display_name", "select"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "ViewCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "category": {"type": "string", "enum": ["context", "dependency", "diff", "flow", "hierarchy", "impact", "inventory", "topology"]},
+        "description": {"type": "string"},
+        "display_name": {"type": "string", "minLength": 1},
+        "intent": {"type": "string"},
+        "relation_projection_overrides": {"type": "array", "items": {"$ref": "#/$defs/ViewProjectionOverrideEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "shape": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredViewShape"},
+        "source": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredOperationSource"},
+        "state_input": {"type": "string", "enum": ["none", "optional", "required"]},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "required": ["display_name", "category", "source", "shape"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}, {"array": "relation_projection_overrides", "property": "key"}]
+    },
+    "ReferenceCreateSubjectFields": {
+      "type": "object",
+      "properties": {"text": {"type": "string"}},
+      "required": ["text"],
+      "additionalProperties": false
+    },
+    "ColumnCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "default": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"},
+        "display_name": {"type": "string", "minLength": 1},
+        "enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
+        "format": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"},
+        "max": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
+        "max_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
+        "min": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
+        "min_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
+        "required": {"type": "boolean"},
+        "reserved_enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "value_type": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ValueType"}
+      },
+      "required": ["display_name", "value_type"],
+      "additionalProperties": false,
+      "x-layerdraw-disjoint-arrays": [{"left": "enum_values", "right": "reserved_enum_values"}],
+      "x-layerdraw-ordered-pairs": [{"lower": "min", "upper": "max", "comparison": "finite_binary64"}, {"lower": "min_length", "upper": "max_length", "comparison": "unsigned_decimal"}]
+    },
+    "ConstraintCreateSubjectFields": {
+      "type": "object",
+      "properties": {"column_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ColumnAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
+      "required": ["column_addresses"],
+      "additionalProperties": false
+    },
+    "QueryParameterCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "default": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"},
+        "enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
+        "format": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StringFormat"},
+        "max": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
+        "max_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
+        "min": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/CanonicalFiniteDecimal"},
+        "min_length": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeSafeInteger"},
+        "required": {"type": "boolean"},
+        "reserved_enum_values": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "value_type": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ValueType"}
+      },
+      "required": ["value_type"],
+      "additionalProperties": false,
+      "x-layerdraw-disjoint-arrays": [{"left": "enum_values", "right": "reserved_enum_values"}],
+      "x-layerdraw-ordered-pairs": [{"lower": "min", "upper": "max", "comparison": "finite_binary64"}, {"lower": "min_length", "upper": "max_length", "comparison": "unsigned_decimal"}]
+    },
+    "ViewTableColumnCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "aggregate": {"type": "string", "enum": ["count", "count_distinct", "join_unique", "max", "min", "none"]},
+        "label": {"type": "string"},
+        "source": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoredOperationSource"}
+      },
+      "required": ["source"],
+      "additionalProperties": false
+    },
+    "ViewExportCreateSubjectFields": {
+      "type": "object",
+      "properties": {
+        "exporter_profile": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExporterProfileRef"},
+        "fidelity": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportFidelity"},
+        "filename": {"type": "string", "minLength": 1},
+        "format": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportFormat"},
+        "options": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportOptions"},
+        "source_refs": {"type": "boolean"}
+      },
+      "required": ["format", "filename", "fidelity"],
+      "additionalProperties": false
+    },
+    "CreateSubjectFields": {
+      "description": "Closed union of the generated Language 1 subject-specific authored field objects.",
+      "oneOf": [
+        {"$ref": "#/$defs/EntityTypeCreateSubjectFields"},
+        {"$ref": "#/$defs/RelationTypeCreateSubjectFields"},
+        {"$ref": "#/$defs/LayerCreateSubjectFields"},
+        {"$ref": "#/$defs/EntityCreateSubjectFields"},
+        {"$ref": "#/$defs/QueryCreateSubjectFields"},
+        {"$ref": "#/$defs/ViewCreateSubjectFields"},
+        {"$ref": "#/$defs/ReferenceCreateSubjectFields"},
+        {"$ref": "#/$defs/ColumnCreateSubjectFields"},
+        {"$ref": "#/$defs/ConstraintCreateSubjectFields"},
+        {"$ref": "#/$defs/QueryParameterCreateSubjectFields"},
+        {"$ref": "#/$defs/ViewTableColumnCreateSubjectFields"},
+        {"$ref": "#/$defs/ViewExportCreateSubjectFields"}
+      ]
+    },
+    "SemanticOperationKind": {
+      "type": "string",
+      "enum": ["create_relation", "create_subject", "delete_row", "delete_subject", "migrate_project_identity", "move_entity_to_layer", "rename_subject", "update_relation_endpoint", "update_subject_field", "upsert_row"]
+    },
+    "CreateEntityTypeOperation": {
+      "type": "object",
+      "properties": {
+        "fields": {"$ref": "#/$defs/EntityTypeCreateSubjectFields"},
+        "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"},
+        "operation": {"type": "string", "const": "create_subject"},
+        "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"},
+        "placement": {"$ref": "#/$defs/PlacementHint"},
+        "subject_kind": {"type": "string", "const": "entity_type"}
+      },
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateRelationTypeOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/RelationTypeCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "relation_type"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateLayerOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/LayerCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "layer"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateEntityOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/EntityCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "entity"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateQueryOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/QueryCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "query"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateViewOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ViewCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "view"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateReferenceOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ReferenceCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "reference"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateEntityTypeColumnOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ColumnCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityTypeAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "entity_type_column"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateEntityTypeConstraintOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ConstraintCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityTypeAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "entity_type_constraint"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateRelationTypeColumnOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ColumnCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "relation_type_column"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateRelationTypeConstraintOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ConstraintCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "relation_type_constraint"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateQueryParameterOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/QueryParameterCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "query_parameter"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateViewTableColumnOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ViewTableColumnCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "view_table_column"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateViewExportOperation": {
+      "type": "object",
+      "properties": {"fields": {"$ref": "#/$defs/ViewExportCreateSubjectFields"}, "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "operation": {"type": "string", "const": "create_subject"}, "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewAddress"}, "placement": {"$ref": "#/$defs/PlacementHint"}, "subject_kind": {"type": "string", "const": "view_export"}},
+      "required": ["operation", "parent_address", "subject_kind", "id", "fields"], "additionalProperties": false, "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "CreateSubjectOperation": {
+      "oneOf": [
+        {"$ref": "#/$defs/CreateEntityTypeOperation"}, {"$ref": "#/$defs/CreateRelationTypeOperation"}, {"$ref": "#/$defs/CreateLayerOperation"}, {"$ref": "#/$defs/CreateEntityOperation"}, {"$ref": "#/$defs/CreateQueryOperation"}, {"$ref": "#/$defs/CreateViewOperation"}, {"$ref": "#/$defs/CreateReferenceOperation"}, {"$ref": "#/$defs/CreateEntityTypeColumnOperation"}, {"$ref": "#/$defs/CreateEntityTypeConstraintOperation"}, {"$ref": "#/$defs/CreateRelationTypeColumnOperation"}, {"$ref": "#/$defs/CreateRelationTypeConstraintOperation"}, {"$ref": "#/$defs/CreateQueryParameterOperation"}, {"$ref": "#/$defs/CreateViewTableColumnOperation"}, {"$ref": "#/$defs/CreateViewExportOperation"}
+      ]
+    },
+    "RelationCreateFields": {
+      "type": "object",
+      "properties": {
+        "annotations": {"type": "array", "items": {"$ref": "#/$defs/SemanticStringMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "description": {"type": "string"}, "display_name": {"type": "string", "minLength": 1},
+        "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "annotations", "property": "key"}]
+    },
+    "NonCreateSemanticOperationKind": {
+      "type": "string",
+      "enum": ["create_relation", "delete_row", "delete_subject", "migrate_project_identity", "move_entity_to_layer", "rename_subject", "update_relation_endpoint", "update_subject_field", "upsert_row"]
+    },
+    "NonCreateSemanticOperation": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["remove", "set"]}, "endpoint": {"type": "string", "enum": ["from", "to"]},
+        "entity_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
+        "explicit_absent_column_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ColumnAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "fields": {"$ref": "#/$defs/RelationCreateFields"}, "from_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
+        "id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "layer_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LayerAddress"},
+        "new_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "new_project_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"},
+        "operation": {"$ref": "#/$defs/NonCreateSemanticOperationKind"}, "owner_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "parent_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"}, "path": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 2},
+        "placement": {"$ref": "#/$defs/PlacementHint"}, "project_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"},
+        "relation_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "row_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "row_id": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/LocalIdentifier"}, "target_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "to_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "type_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationTypeAddress"},
+        "value": {"$ref": "#/$defs/SemanticOperationValue"}, "values": {"type": "array", "items": {"$ref": "#/$defs/RowCell"}, "x-layerdraw-stable-address-order": "column_address"}
+      },
+      "required": ["operation"], "additionalProperties": false,
+      "x-layerdraw-disjoint-array-keys": [{"array": "values", "property": "column_address", "strings": "explicit_absent_column_addresses"}],
+      "x-layerdraw-tagged-union": {"property": "operation", "variants": {
+        "create_relation": {"required": ["parent_address", "id", "type_address", "from_address", "to_address"], "forbidden": ["action", "endpoint", "entity_address", "explicit_absent_column_addresses", "layer_address", "new_id", "new_project_id", "owner_address", "path", "project_address", "relation_address", "row_address", "row_id", "target_address", "value", "values"]},
+        "delete_row": {"required": ["row_address"], "forbidden": ["action", "endpoint", "entity_address", "explicit_absent_column_addresses", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
+        "delete_subject": {"required": ["target_address"], "forbidden": ["action", "endpoint", "entity_address", "explicit_absent_column_addresses", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "to_address", "type_address", "value", "values"]},
+        "migrate_project_identity": {"required": ["project_address", "new_project_id"], "forbidden": ["action", "endpoint", "entity_address", "explicit_absent_column_addresses", "fields", "from_address", "id", "layer_address", "new_id", "owner_address", "parent_address", "path", "placement", "relation_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
+        "move_entity_to_layer": {"required": ["entity_address", "layer_address"], "forbidden": ["action", "endpoint", "explicit_absent_column_addresses", "fields", "from_address", "id", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
+        "rename_subject": {"required": ["target_address", "new_id"], "forbidden": ["action", "endpoint", "entity_address", "explicit_absent_column_addresses", "fields", "from_address", "id", "layer_address", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "to_address", "type_address", "value", "values"]},
+        "update_relation_endpoint": {"required": ["relation_address", "endpoint", "entity_address"], "forbidden": ["action", "explicit_absent_column_addresses", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "path", "placement", "project_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"]},
+        "update_subject_field": {"required": ["target_address", "path", "action"], "forbidden": ["endpoint", "entity_address", "explicit_absent_column_addresses", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "owner_address", "parent_address", "placement", "project_address", "relation_address", "row_address", "row_id", "to_address", "type_address", "values"]},
+        "upsert_row": {"required": ["owner_address", "row_id", "values"], "forbidden": ["action", "endpoint", "entity_address", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "parent_address", "path", "project_address", "relation_address", "row_address", "target_address", "to_address", "type_address", "value"]}
+      }},
+      "x-layerdraw-operator-value": {"operator": "action", "value": "value", "valueless": ["remove"]},
+      "x-layerdraw-protocol-invariant": "semantic_operation"
+    },
+    "SemanticOperation": {
+      "oneOf": [{"$ref": "#/$defs/CreateSubjectOperation"}, {"$ref": "#/$defs/NonCreateSemanticOperation"}]
+    },
+    "SemanticOperationBatch": {
+      "type": "object",
+      "properties": {
+        "operations": {"type": "array", "items": {"$ref": "#/$defs/SemanticOperation"}, "minItems": 1}
+      },
+      "required": ["operations"],
+      "additionalProperties": false
+    },
+    "FragmentInput": {
+      "type": "object",
+      "properties": {
+        "allowed_kinds": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectKind"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
+        "fragment_blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "insertion_owner": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "intent": {"type": "string", "enum": ["insert", "replace"]},
+        "replacement_target": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "placement": {"$ref": "#/$defs/PlacementHint"}
+      },
+      "required": ["intent", "insertion_owner", "allowed_kinds", "fragment_blob"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "intent", "variants": {"insert": {"forbidden": ["replacement_target"]}, "replace": {"required": ["replacement_target"]}}}
+    },
+    "SourcePatchInput": {
+      "type": "object",
+      "properties": {
+        "expected_source_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "replacement_blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "source_range": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceRange"}
+      },
+      "required": ["source_range", "expected_source_digest", "replacement_blob"],
+      "additionalProperties": false
+    },
+    "SourcePatchBatch": {
+      "type": "object",
+      "description": "A deterministic module-path/start-byte ordered batch. Ranges within one module must not overlap; the Engine rejects overlap before editing.",
+      "properties": {"patches": {"type": "array", "items": {"$ref": "#/$defs/SourcePatchInput"}, "minItems": 1, "x-layerdraw-canonical-collection-order": "source_patch"}},
+      "required": ["patches"],
+      "additionalProperties": false
+    },
+    "SourceEditKind": {
+      "type": "string",
+      "enum": ["create", "delete", "move", "replace"]
+    },
+    "SourceEdit": {
+      "type": "object",
+      "properties": {
+        "after_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "after_module": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ModuleRef"},
+        "before_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "before_module": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ModuleRef"},
+        "kind": {"$ref": "#/$defs/SourceEditKind"},
+        "replacement_blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "source_range": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SourceRange"}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "create": {"required": ["after_module", "after_digest", "replacement_blob"], "forbidden": ["before_module", "before_digest", "source_range"]},
+          "delete": {"required": ["before_module", "before_digest"], "forbidden": ["after_module", "after_digest", "replacement_blob", "source_range"]},
+          "move": {"required": ["before_module", "before_digest", "after_module", "after_digest"], "forbidden": ["replacement_blob", "source_range"]},
+          "replace": {"required": ["before_digest", "after_digest", "source_range", "replacement_blob"], "forbidden": ["before_module", "after_module"]}
+        }
+      },
+      "x-layerdraw-protocol-invariant": "source_edit"
+    },
+    "SourceDiff": {
+      "type": "object",
+      "properties": {
+        "digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "edits": {"type": "array", "items": {"$ref": "#/$defs/SourceEdit"}, "x-layerdraw-canonical-collection-order": "source_diff"}
+      },
+      "required": ["edits", "digest"],
+      "additionalProperties": false
+    },
+    "SemanticConflict": {
+      "type": "object",
+      "properties": {
+        "child_kind": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectKind"},
+        "kind": {"type": "string", "enum": ["stale_revision", "subject_changed", "subtree_changed", "child_set_changed", "same_field_changed", "delete_vs_update", "duplicate_identity", "reference_broken", "schema_row_incompatible", "placement_changed", "project_identity_changed"]},
+        "owner_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"},
+        "path": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "target_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "ResultingHashes": {
+      "type": "object",
+      "description": "The deterministic semantic hashes after a preview or apply. Project results include project_address and graph_hash; Pack results include pack_address and intentionally omit graph_hash.",
+      "properties": {
+        "child_set_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ChildSetHash"}, "x-layerdraw-canonical-collection-order": "child_set"},
+        "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "graph_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "mode": {"$ref": "#/$defs/CompileMode"},
+        "pack_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/PackRootAddress"},
+        "project_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ProjectRootAddress"},
+        "subject_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubjectHash"}, "x-layerdraw-stable-address-order": "address"},
+        "subtree_hashes": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SubtreeHash"}, "x-layerdraw-stable-address-order": "owner_address"}
+      },
+      "required": ["mode", "definition_hash", "subject_hashes", "subtree_hashes", "child_set_hashes"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {"property": "mode", "variants": {"pack": {"required": ["pack_address"], "forbidden": ["graph_hash", "project_address"]}, "project": {"required": ["project_address", "graph_hash"], "forbidden": ["pack_address"]}}}
+    },
+    "WorkbenchPreviewResult": {
+      "type": "object",
+      "properties": {
+        "authoring_impact": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringImpact"},
+        "authoring_impact_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "base_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "changed_source_files": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ModuleRef"}, "x-layerdraw-canonical-collection-order": "source_file"},
+        "conflicts": {"type": "array", "items": {"$ref": "#/$defs/SemanticConflict"}, "x-layerdraw-canonical-collection-order": "conflict"},
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "preview_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "preview_id": {"$ref": "#/$defs/PreviewID"},
+        "proposed_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "resulting_hashes": {"$ref": "#/$defs/ResultingHashes"},
+        "required_authoring_capabilities": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"}, "uniqueItems": true, "x-layerdraw-canonical-enum-order": true},
+        "semantic_diff": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/SemanticDiff"},
+        "source_diff": {"$ref": "#/$defs/SourceDiff"},
+        "status": {"type": "string", "enum": ["invalid", "valid"]}
+      },
+      "required": ["status", "base_generation", "changed_source_files", "semantic_diff", "source_diff", "conflicts", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "status",
+        "variants": {
+          "invalid": {"any_non_empty": ["conflicts", "diagnostics"], "forbidden": ["authoring_impact", "authoring_impact_digest", "preview_digest", "preview_id", "proposed_generation", "required_authoring_capabilities", "resulting_hashes"]},
+          "valid": {"required": ["authoring_impact", "authoring_impact_digest", "preview_digest", "preview_id", "proposed_generation", "required_authoring_capabilities", "resulting_hashes"], "empty": ["conflicts"]}
+        }
+      },
+      "x-layerdraw-protocol-invariant": "preview_result"
+    },
+    "PreviewOperationsInput": {
+      "type": "object",
+      "properties": {"batch": {"$ref": "#/$defs/SemanticOperationBatch"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "preconditions": {"$ref": "#/$defs/EngineEditPreconditions"}},
+      "required": ["preconditions", "batch", "limits"],
+      "additionalProperties": false
+    },
+    "PreviewFragmentInput": {
+      "type": "object",
+      "properties": {"fragment": {"$ref": "#/$defs/FragmentInput"}, "limits": {"$ref": "#/$defs/WorkbenchLimits"}, "preconditions": {"$ref": "#/$defs/EngineEditPreconditions"}},
+      "required": ["preconditions", "fragment", "limits"],
+      "additionalProperties": false
+    },
+    "PreviewSourcePatchInput": {
+      "type": "object",
+      "properties": {"limits": {"$ref": "#/$defs/WorkbenchLimits"}, "patch": {"$ref": "#/$defs/SourcePatchBatch"}, "preconditions": {"$ref": "#/$defs/EngineEditPreconditions"}},
+      "required": ["preconditions", "patch", "limits"],
+      "additionalProperties": false
+    },
+    "FormatScopeInput": {
+      "type": "object",
+      "properties": {"limits": {"$ref": "#/$defs/WorkbenchLimits"}, "preconditions": {"$ref": "#/$defs/EngineEditPreconditions"}, "scope_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "minItems": 1, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}},
+      "required": ["preconditions", "scope_addresses", "limits"],
+      "additionalProperties": false
+    },
+    "OrganizeWorkspaceInput": {
+      "type": "object",
+      "properties": {"limits": {"$ref": "#/$defs/WorkbenchLimits"}, "preconditions": {"$ref": "#/$defs/EngineEditPreconditions"}, "strategy": {"type": "string", "enum": ["standard_layout"]}},
+      "required": ["preconditions", "strategy", "limits"],
+      "additionalProperties": false
+    },
+    "ApplyToHandleInput": {
+      "type": "object",
+      "properties": {
+        "base_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "preview_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "preview_id": {"$ref": "#/$defs/PreviewID"}
+      },
+      "required": ["preview_id", "preview_digest", "base_generation"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "apply_input"
+    },
+    "ApplyToHandleResult": {
+      "type": "object",
+      "properties": {
+        "authoring_impact": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringImpact"},
+        "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "preview_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "resulting_hashes": {"$ref": "#/$defs/ResultingHashes"},
+        "source_diff": {"$ref": "#/$defs/SourceDiff"}
+      },
+      "required": ["document_generation", "preview_digest", "source_diff", "authoring_impact", "resulting_hashes"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "apply_result"
+    },
+    "ClassifyAuthoringImpactInput": {
+      "type": "object",
+      "description": "Two complete source trees. The Engine derives the semantic/source diffs and never trusts a caller-labeled diff as validation authority.",
+      "properties": {
+        "after": {"$ref": "#/$defs/CompileInput"},
+        "before": {"$ref": "#/$defs/CompileInput"},
+        "limits": {"$ref": "#/$defs/WorkbenchLimits"}
+      },
+      "required": ["before", "after", "limits"],
+      "additionalProperties": false
+    },
+    "ClassifyAuthoringImpactResult": {
+      "type": "object",
+      "properties": {"authoring_impact": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringImpact"}},
+      "required": ["authoring_impact"],
+      "additionalProperties": false
+    },
+    "ClassifyAuthoringImpactRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.classify_authoring_impact"},
+        "payload": {"$ref": "#/$defs/ClassifyAuthoringImpactInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ClassifyAuthoringImpactResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ClassifyAuthoringImpactResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "OpenDocumentRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.open_document"},
+        "payload": {"$ref": "#/$defs/OpenDocumentInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "OpenDocumentResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/OpenDocumentResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ReplaceSourceTreeRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.replace_source_tree"},
+        "payload": {"$ref": "#/$defs/ReplaceSourceTreeInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ReplaceSourceTreeResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ReplaceSourceTreeResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "CloseDocumentRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.close_document"},
+        "payload": {"$ref": "#/$defs/CloseDocumentInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "CloseDocumentResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/CloseDocumentResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ListModulesRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.list_modules"},
+        "payload": {"$ref": "#/$defs/ListModulesInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ListModulesResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ListModulesResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "FindSymbolsRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.find_symbols"},
+        "payload": {"$ref": "#/$defs/FindSymbolsInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "FindSymbolsResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/FindSymbolsResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "InspectSubgraphRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.inspect_subgraph"},
+        "payload": {"$ref": "#/$defs/InspectSubgraphInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "InspectSubgraphResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/InspectSubgraphResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ReadDeclarationsRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.read_declarations"},
+        "payload": {"$ref": "#/$defs/ReadDeclarationsInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ReadDeclarationsResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ReadDeclarationsResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ReadRowsRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.read_rows"},
+        "payload": {"$ref": "#/$defs/ReadRowsInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ReadRowsResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ReadRowsResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "GetNeighborsRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.get_neighbors"},
+        "payload": {"$ref": "#/$defs/GetNeighborsInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "GetNeighborsResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/GetNeighborsResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "FindUsagesRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.find_usages"},
+        "payload": {"$ref": "#/$defs/FindUsagesInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "FindUsagesResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/FindUsagesResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ReadScopeRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.read_scope"},
+        "payload": {"$ref": "#/$defs/ReadScopeInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ReadScopeResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ReadScopeResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ListReferencesRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.list_references"},
+        "payload": {"$ref": "#/$defs/ListReferencesInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ListReferencesResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ListReferencesResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ReadReferencesRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.read_references"},
+        "payload": {"$ref": "#/$defs/ReadReferencesInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ReadReferencesResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ReadReferencesResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "PreviewOperationsRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.preview_operations"},
+        "payload": {"$ref": "#/$defs/PreviewOperationsInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "PreviewOperationsResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/WorkbenchPreviewResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "PreviewFragmentRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.preview_fragment"},
+        "payload": {"$ref": "#/$defs/PreviewFragmentInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "PreviewFragmentResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/WorkbenchPreviewResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "PreviewSourcePatchRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.preview_source_patch"},
+        "payload": {"$ref": "#/$defs/PreviewSourcePatchInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "PreviewSourcePatchResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/WorkbenchPreviewResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "FormatScopeRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.format_scope"},
+        "payload": {"$ref": "#/$defs/FormatScopeInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "FormatScopeResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/WorkbenchPreviewResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "OrganizeWorkspaceRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.organize_workspace"},
+        "payload": {"$ref": "#/$defs/OrganizeWorkspaceInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "OrganizeWorkspaceResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/WorkbenchPreviewResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ApplyToHandleRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.apply_to_handle"},
+        "payload": {"$ref": "#/$defs/ApplyToHandleInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ApplyToHandleResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ApplyToHandleResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+
     "CompileResult": {
       "type": "object",
       "description": "The complete transport projection of one successful deterministic compiler generation.",

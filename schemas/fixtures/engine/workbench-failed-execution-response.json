@@ -1,0 +1,1 @@
+{"diagnostics":[],"engine_release":"0.0.0-dev","failure":{"category":"io","code":"workbench.execution.failed","message":"Execution failed.","retryable":true,"workbench_category":"execution_failed"},"outcome":"failed","protocol":{"name":"engine","version":"1.0"},"request_id":"fixture-failed"}

@@ -1,0 +1,17 @@
+{
+  "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "edits": [
+    {
+      "after_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "after_module": {"module_path": "z.ldl", "origin": {"kind": "project"}},
+      "kind": "create",
+      "replacement_blob": {"blob_id": "create-z", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "lifetime": "request", "media_type": "text/plain; charset=utf-8", "size": "1"}
+    },
+    {
+      "after_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "after_module": {"module_path": "a.ldl", "origin": {"kind": "project"}},
+      "kind": "create",
+      "replacement_blob": {"blob_id": "create-a", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "lifetime": "request", "media_type": "text/plain; charset=utf-8", "size": "1"}
+    }
+  ]
+}
