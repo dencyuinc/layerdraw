@@ -17,6 +17,7 @@
       "preview_operations": false,
       "preview_source_patch": false,
       "read_declarations": false,
+      "read_modules": true,
       "read_references": false,
       "read_rows": false,
       "read_scope": false

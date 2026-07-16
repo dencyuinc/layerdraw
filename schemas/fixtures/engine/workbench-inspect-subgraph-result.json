@@ -4,6 +4,7 @@
     "value": "7"
   },
   "items": [{
+    "depth": 1,
     "facts": {
       "from_address": "ldl:project:p:entity:a",
       "kind": "relation",
@@ -16,9 +17,10 @@
       "kind": "relation",
       "own_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "owner_address": "ldl:project:p"
-    }
+    },
+    "traversal_index": "0"
   }],
-  "page": {"returned_bytes": "790", "returned_items": "1", "truncation": "complete"},
+  "page": {"returned_bytes": "822", "returned_items": "1", "truncation": "complete"},
   "relations": [{
     "from_address": "ldl:project:p:entity:a",
     "relation_address": "ldl:project:p:relation:r",

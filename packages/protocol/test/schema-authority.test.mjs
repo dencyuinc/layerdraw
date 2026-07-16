@@ -1230,9 +1230,8 @@ function compareCanonicalCollection(profile, left, right) {
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left.module) && isObject(right.module) ? compareModuleOrder(left.module, right.module) : undefined;
-  if (profile === "neighbor") return chain(() => stable("source_entity_address"),
-    () => typeof left.depth === "number" && typeof right.depth === "number" ? left.depth - right.depth : undefined,
-    () => text("direction"), () => stable("relation_address"), () => stable("entity_address"));
+  if (profile === "neighbor") return typeof left.traversal_index === "string" && typeof right.traversal_index === "string"
+    ? compareCanonicalUnsignedDecimals(left.traversal_index, right.traversal_index) : undefined;
   if (profile === "source_file") return compareModuleOrder(left, right);
   if (profile === "source_patch") {
     if (!isObject(left.source_range) || !isObject(right.source_range)) return undefined;
@@ -1251,9 +1250,8 @@ function compareCanonicalCollection(profile, left, right) {
     const module = compareModuleOrder(left, right);
     return module === 0 ? compareRangePosition(left, right) : module;
   }
-  if (profile === "subgraph") return isObject(left.subject) && isObject(right.subject) &&
-    typeof left.subject.address === "string" && typeof right.subject.address === "string"
-    ? compareStableAddresses(left.subject.address, right.subject.address) : undefined;
+  if (profile === "subgraph") return typeof left.traversal_index === "string" && typeof right.traversal_index === "string"
+    ? compareCanonicalUnsignedDecimals(left.traversal_index, right.traversal_index) : undefined;
   if (profile === "source_asset") return chain(() => stable("subject_address"), () => text("locator"));
   if (profile === "semantic_reference") return chain(() => stable("source_address"), range, () => stable("target_address"), () => kind("target_kind"), () => text("via"));
   if (profile === "source_binding") {
@@ -1650,6 +1648,8 @@ test("Ajv enforces closed Workbench handles, recursive values, ordering, and out
   assert.equal(compile(engine, "OpenDocumentResult")(await readJSON("fixtures/engine/workbench-invalid-open-handle-generation.json")), false);
   assert.equal(compile(engine, "ListModulesResult")(await readJSON("fixtures/engine/workbench-page-empty.json")), true);
   for (const name of ["workbench-invalid-page-count.json", "workbench-invalid-page-bytes.json", "workbench-invalid-page-cursor-generation.json"]) assert.equal(compile(engine, "ListModulesResult")(await readJSON(`fixtures/engine/${name}`)), false, name);
+  assert.equal(compile(engine, "ReadModulesResult")(await readJSON("fixtures/engine/workbench-read-modules-result.json")), true);
+  assert.equal(compile(engine, "ReadModulesResult")(await readJSON("fixtures/engine/workbench-invalid-read-modules-bytes.json")), false);
   assert.equal(compile(engine, "ReadDeclarationsResult")(await readJSON("fixtures/engine/workbench-invalid-page-byte-overflow.json")), false);
   for (const name of ["workbench-invalid-chunk-overflow.json", "workbench-invalid-chunk-media.json"]) assert.equal(compile(engine, "BoundedTextChunk")(await readJSON(`fixtures/engine/${name}`)), false, name);
   assert.equal(compile(engine, "ClassifyAuthoringImpactInput")(await readJSON("fixtures/engine/workbench-classify-authoring-impact-input.json")), true);

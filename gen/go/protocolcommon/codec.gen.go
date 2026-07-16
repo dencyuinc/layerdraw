@@ -3806,21 +3806,12 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 		}
 		return compareModuleOrder(leftModule, rightModule)
 	case "neighbor":
-		depth := func() (int, bool) {
-			l, lOK := a["depth"].(float64)
-			r, rOK := b["depth"].(float64)
-			if !lOK || !rOK {
-				return 0, false
-			}
-			if l < r {
-				return -1, true
-			}
-			if l > r {
-				return 1, true
-			}
-			return 0, true
+		l, lOK := a["traversal_index"].(string)
+		r, rOK := b["traversal_index"].(string)
+		if !lOK || !rOK {
+			return 0, false
 		}
-		return chain(func() (int, bool) { return stable("source_entity_address") }, depth, func() (int, bool) { return text("direction") }, func() (int, bool) { return stable("relation_address") }, func() (int, bool) { return stable("entity_address") })
+		return compareCanonicalUnsignedDecimals(l, r)
 	case "source_file":
 		return compareModuleOrder(a, b)
 	case "source_patch":
@@ -3876,17 +3867,12 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 		}
 		return compareRangePosition(a, b)
 	case "subgraph":
-		l, lOK := a["subject"].(map[string]any)
-		r, rOK := b["subject"].(map[string]any)
+		l, lOK := a["traversal_index"].(string)
+		r, rOK := b["traversal_index"].(string)
 		if !lOK || !rOK {
 			return 0, false
 		}
-		la, laOK := l["address"].(string)
-		ra, raOK := r["address"].(string)
-		if !laOK || !raOK {
-			return 0, false
-		}
-		return compareStableAddressValues(la, ra)
+		return compareCanonicalUnsignedDecimals(l, r)
 	case "source_asset":
 		return chain(func() (int, bool) { return stable("subject_address") }, func() (int, bool) { return text("locator") })
 	case "semantic_reference":

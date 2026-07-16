@@ -180,7 +180,7 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left["module"]) && isObject(right["module"]) ? compareModuleOrder(left["module"],right["module"]) : undefined;
-  if (profile === "neighbor") return chain(() => stable("source_entity_address"),() => typeof left["depth"] === "number" && typeof right["depth"] === "number" ? left["depth"]-right["depth"] : undefined,() => text("direction"),() => stable("relation_address"),() => stable("entity_address"));
+  if (profile === "neighbor") return typeof left["traversal_index"] === "string" && typeof right["traversal_index"] === "string" ? compareCanonicalUnsignedDecimals(left["traversal_index"],right["traversal_index"]) : undefined;
   if (profile === "source_file") return compareModuleOrder(left,right);
   if (profile === "source_asset") return chain(() => stable("subject_address"),() => text("locator"));
   if (profile === "source_patch") {
@@ -198,7 +198,7 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
     return chain(primary,() => text("kind"),optionalSourceRange,after);
   }
   if (profile === "source_range") { const module=compareModuleOrder(left,right); return module === 0 ? compareRangePosition(left,right) : module; }
-  if (profile === "subgraph") return isObject(left["subject"]) && isObject(right["subject"]) && typeof left["subject"]["address"] === "string" && typeof right["subject"]["address"] === "string" ? compareStableAddresses(left["subject"]["address"],right["subject"]["address"]) : undefined;
+  if (profile === "subgraph") return typeof left["traversal_index"] === "string" && typeof right["traversal_index"] === "string" ? compareCanonicalUnsignedDecimals(left["traversal_index"],right["traversal_index"]) : undefined;
   if (profile === "semantic_reference") return chain(() => stable("source_address"),range,() => stable("target_address"),() => kind("target_kind"),() => text("via"));
   if (profile === "source_binding") {
     const owner = (): number | undefined => { const a = left["target_owner_address"] ?? "", b = right["target_owner_address"] ?? ""; if (typeof a !== "string" || typeof b !== "string") return undefined; return a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b); };
