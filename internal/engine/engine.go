@@ -17,14 +17,47 @@ const (
 
 	// CapabilityCompile identifies the transport-neutral closed-input compiler.
 	CapabilityCompile = "engine.compile"
+
+	CapabilityCloseDocument     = "engine.close_document"
+	CapabilityFindSymbols       = "engine.find_symbols"
+	CapabilityFindUsages        = "engine.find_usages"
+	CapabilityGetNeighbors      = "engine.get_neighbors"
+	CapabilityInspectSubgraph   = "engine.inspect_subgraph"
+	CapabilityListModules       = "engine.list_modules"
+	CapabilityListReferences    = "engine.list_references"
+	CapabilityOpenDocument      = "engine.open_document"
+	CapabilityReadDeclarations  = "engine.read_declarations"
+	CapabilityReadModules       = "engine.read_modules"
+	CapabilityReadReferences    = "engine.read_references"
+	CapabilityReadRows          = "engine.read_rows"
+	CapabilityReadScope         = "engine.read_scope"
+	CapabilityReplaceSourceTree = "engine.replace_source_tree"
 )
 
-var bootstrapCapabilities = []string{CapabilityCompile, CapabilityDescribe}
+var bootstrapCapabilities = []string{
+	CapabilityCloseDocument,
+	CapabilityCompile,
+	CapabilityDescribe,
+	CapabilityFindSymbols,
+	CapabilityFindUsages,
+	CapabilityGetNeighbors,
+	CapabilityInspectSubgraph,
+	CapabilityListModules,
+	CapabilityListReferences,
+	CapabilityOpenDocument,
+	CapabilityReadDeclarations,
+	CapabilityReadModules,
+	CapabilityReadReferences,
+	CapabilityReadRows,
+	CapabilityReadScope,
+	CapabilityReplaceSourceTree,
+}
 
 // BuildInfo identifies the source used to build an Engine instance.
 type BuildInfo struct {
 	ReleaseVersion string
 	SourceRevision string
+	Workbench      WorkbenchConfig
 }
 
 // Descriptor reports capabilities linked into this Engine instance.
@@ -38,7 +71,8 @@ type Descriptor struct {
 
 // Engine is the public facade for the canonical Go semantic implementation.
 type Engine struct {
-	build BuildInfo
+	build     BuildInfo
+	workbench *workbenchStore
 }
 
 // New creates an Engine with deterministic development defaults.
@@ -50,7 +84,7 @@ func New(build BuildInfo) Engine {
 		build.SourceRevision = UnknownSourceRevision
 	}
 
-	return Engine{build: build}
+	return Engine{build: build, workbench: newWorkbenchStore(build.Workbench)}
 }
 
 // Describe returns a defensive snapshot of the linked component capabilities.

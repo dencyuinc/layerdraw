@@ -59,6 +59,7 @@ import {
   isInspectSubgraphResult,
   isInspectSubgraphInput,
   isListModulesResult,
+  isReadModulesResult,
   isOpenDocumentResult,
   isOpenDocumentResponseEnvelope,
   isReadDeclarationsResult,
@@ -448,6 +449,8 @@ test("Workbench malformed handles, null contracts, ordering, and outcome payload
   assert.equal(isOpenDocumentResult(await readFixture("workbench-invalid-open-handle-generation.json")), false);
   assert.equal(isListModulesResult(await readFixture("workbench-page-empty.json")), true);
   for (const name of ["workbench-invalid-page-count.json", "workbench-invalid-page-bytes.json", "workbench-invalid-page-cursor-generation.json"]) assert.equal(isListModulesResult(await readFixture(name)), false, name);
+  assert.equal(isReadModulesResult(await readFixture("workbench-read-modules-result.json")), true);
+  assert.equal(isReadModulesResult(await readFixture("workbench-invalid-read-modules-bytes.json")), false);
   for (const name of ["workbench-invalid-chunk-overflow.json", "workbench-invalid-chunk-media.json"]) assert.equal(isBoundedTextChunk(await readFixture(name)), false, name);
   assert.equal(isClassifyAuthoringImpactInput(await readFixture("workbench-classify-authoring-impact-input.json")), true);
   for (const name of ["workbench-rejected-handle-response.json", "workbench-rejected-cursor-response.json", "workbench-rejected-generation-response.json", "workbench-rejected-input-response.json", "workbench-rejected-not_found-response.json", "workbench-rejected-preview-response.json", "workbench-rejected-unsupported-response.json", "workbench-rejected-precondition-response.json", "workbench-failed-execution-response.json", "workbench-cancelled-response.json"]) assert.equal(isCloseDocumentResponseEnvelope(await readFixture(name)), true, name);

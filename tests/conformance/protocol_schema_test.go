@@ -557,6 +557,12 @@ func TestGeneratedWorkbenchPreviewFixtures(t *testing.T) {
 			t.Errorf("invalid self-accounting page %s was accepted", name)
 		}
 	}
+	if _, err := engineprotocol.DecodeReadModulesResult(readProtocolFixture(t, "workbench-read-modules-result.json")); err != nil {
+		t.Errorf("bounded module content page was rejected: %v", err)
+	}
+	if _, err := engineprotocol.DecodeReadModulesResult(readProtocolFixture(t, "workbench-invalid-read-modules-bytes.json")); err == nil {
+		t.Error("incorrect module content logical byte count was accepted")
+	}
 	for _, name := range []string{"workbench-invalid-chunk-overflow.json", "workbench-invalid-chunk-media.json"} {
 		if _, err := engineprotocol.DecodeBoundedTextChunk(readProtocolFixture(t, name)); err == nil {
 			t.Errorf("invalid bounded chunk %s was accepted", name)

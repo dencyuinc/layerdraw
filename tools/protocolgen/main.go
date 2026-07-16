@@ -2875,8 +2875,7 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 	case "module_scope":
 		leftModule, leftOK := a["module"].(map[string]any); rightModule, rightOK := b["module"].(map[string]any); if !leftOK || !rightOK { return 0,false }; return compareModuleOrder(leftModule,rightModule)
 	case "neighbor":
-		depth := func()(int,bool){ l,lOK:=a["depth"].(float64); r,rOK:=b["depth"].(float64); if !lOK || !rOK { return 0,false }; if l<r{return -1,true}; if l>r{return 1,true}; return 0,true }
-		return chain(func()(int,bool){return stable("source_entity_address")},depth,func()(int,bool){return text("direction")},func()(int,bool){return stable("relation_address")},func()(int,bool){return stable("entity_address")})
+		l,lOK:=a["traversal_index"].(string); r,rOK:=b["traversal_index"].(string); if !lOK || !rOK { return 0,false }; return compareCanonicalUnsignedDecimals(l,r)
 	case "source_file": return compareModuleOrder(a,b)
 	case "source_patch":
 		leftRange, leftOK := a["source_range"].(map[string]any); rightRange, rightOK := b["source_range"].(map[string]any); if !leftOK || !rightOK { return 0,false }
@@ -2892,7 +2891,7 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 	case "source_range":
 		if compared,ok:=compareModuleOrder(a,b); !ok || compared!=0 { return compared,ok }; return compareRangePosition(a,b)
 	case "subgraph":
-		l,lOK:=a["subject"].(map[string]any); r,rOK:=b["subject"].(map[string]any); if !lOK || !rOK { return 0,false }; la,laOK:=l["address"].(string); ra,raOK:=r["address"].(string); if !laOK || !raOK { return 0,false }; return compareStableAddressValues(la,ra)
+		l,lOK:=a["traversal_index"].(string); r,rOK:=b["traversal_index"].(string); if !lOK || !rOK { return 0,false }; return compareCanonicalUnsignedDecimals(l,r)
 	case "source_asset": return chain(func()(int,bool){return stable("subject_address")},func()(int,bool){return text("locator")})
 	case "semantic_reference": return chain(func()(int,bool){return stable("source_address")},rangeValue,func()(int,bool){return stable("target_address")},func()(int,bool){return kind("target_kind")},func()(int,bool){return text("via")})
 	case "source_binding":
@@ -4230,7 +4229,7 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left["module"]) && isObject(right["module"]) ? compareModuleOrder(left["module"],right["module"]) : undefined;
-  if (profile === "neighbor") return chain(() => stable("source_entity_address"),() => typeof left["depth"] === "number" && typeof right["depth"] === "number" ? left["depth"]-right["depth"] : undefined,() => text("direction"),() => stable("relation_address"),() => stable("entity_address"));
+  if (profile === "neighbor") return typeof left["traversal_index"] === "string" && typeof right["traversal_index"] === "string" ? compareCanonicalUnsignedDecimals(left["traversal_index"],right["traversal_index"]) : undefined;
   if (profile === "source_file") return compareModuleOrder(left,right);
   if (profile === "source_asset") return chain(() => stable("subject_address"),() => text("locator"));
   if (profile === "source_patch") {
@@ -4248,7 +4247,7 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
     return chain(primary,() => text("kind"),optionalSourceRange,after);
   }
   if (profile === "source_range") { const module=compareModuleOrder(left,right); return module === 0 ? compareRangePosition(left,right) : module; }
-  if (profile === "subgraph") return isObject(left["subject"]) && isObject(right["subject"]) && typeof left["subject"]["address"] === "string" && typeof right["subject"]["address"] === "string" ? compareStableAddresses(left["subject"]["address"],right["subject"]["address"]) : undefined;
+  if (profile === "subgraph") return typeof left["traversal_index"] === "string" && typeof right["traversal_index"] === "string" ? compareCanonicalUnsignedDecimals(left["traversal_index"],right["traversal_index"]) : undefined;
   if (profile === "semantic_reference") return chain(() => stable("source_address"),range,() => stable("target_address"),() => kind("target_kind"),() => text("via"));
   if (profile === "source_binding") {
     const owner = (): number | undefined => { const a = left["target_owner_address"] ?? "", b = right["target_owner_address"] ?? ""; if (typeof a !== "string" || typeof b !== "string") return undefined; return a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b); };
