@@ -906,6 +906,9 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 		`function matchesCanonicalBinary64`,
 		`lifetime: "request";`,
 		`function hasDisjointArrays`,
+		`function hasValidOutcomeEnvelope`,
+		`function hasDisjointArrayKey`,
+		`function hasProtocolInvariant`,
 		`export function collectCompileInputBlobRefs(value: CompileInput): ReadonlyArray<BlobRef>`,
 		`for (const blobItem3 of value["resolved_dependencies"]["installs"])`,
 		`export function collectCompileResultBlobRefs(value: CompileResult): ReadonlyArray<BlobRef>`,
@@ -922,6 +925,15 @@ func TestGeneratedSurfacesPreserveConstAndWireGuards(t *testing.T) {
 	} {
 		if !strings.Contains(commonTypes, expected) {
 			t.Errorf("generated TypeScript bound guard missing %q", expected)
+		}
+	}
+	for _, unused := range []string{
+		`function hasValidOutcomeEnvelope`,
+		`function hasDisjointArrayKey`,
+		`function hasProtocolInvariant`,
+	} {
+		if strings.Contains(commonTypes, unused) {
+			t.Errorf("generated common TypeScript contains unused helper %q", unused)
 		}
 	}
 }

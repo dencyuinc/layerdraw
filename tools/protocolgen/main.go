@@ -3916,6 +3916,43 @@ func appendCanonicalJSON(destination []byte, value any) ([]byte, error) {
 }
 `
 
+func schemaDocumentUses(document *schemaDocument, predicate func(*schemaType) bool) bool {
+	visited := map[*schemaType]bool{}
+	var visit func(*schemaType) bool
+	visit = func(value *schemaType) bool {
+		if value == nil || visited[value] {
+			return false
+		}
+		visited[value] = true
+		if predicate(value) {
+			return true
+		}
+		for _, property := range value.Properties {
+			if visit(property) {
+				return true
+			}
+		}
+		if visit(value.Items) || visit(value.PropertyNames) {
+			return true
+		}
+		for _, variant := range value.OneOf {
+			if visit(variant) {
+				return true
+			}
+		}
+		if additional, ok := value.AdditionalProperties.(*schemaType); ok && visit(additional) {
+			return true
+		}
+		return false
+	}
+	for _, definition := range document.Definitions {
+		if visit(definition) {
+			return true
+		}
+	}
+	return false
+}
+
 func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error) {
 	imports := tsImports(set, document)
 	var body strings.Builder
@@ -4004,7 +4041,9 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function compareProtocolVersions(left: readonly [number, number], right: readonly [number, number]): number { return left[0] === right[0] ? left[1] - right[1] : left[0] - right[0]; }\n\n")
 	body.WriteString("function matchesCanonicalSourcePath(value: string): boolean { return value !== \"\" && !value.startsWith(\"/\") && !value.includes(\"\\\\\") && !value.includes(\"\\0\") && value.split(\"/\").every((segment) => segment !== \"\" && segment !== \".\" && segment !== \"..\"); }\n\n")
 	body.WriteString("function hasOperatorValueRule(value: Record<string, unknown>, operatorProperty: string, valueProperty: string, valueless: ReadonlySet<string>): boolean { const operator = value[operatorProperty]; if (typeof operator !== \"string\") return true; return valueless.has(operator) ? !hasOwn(value, valueProperty) : hasOwn(value, valueProperty); }\n\n")
-	body.WriteString("function hasValidOutcomeEnvelope(value: Record<string, unknown>): boolean { const outcome=value[\"outcome\"]; if (outcome===\"success\") return hasOwn(value,\"payload\")&&!hasOwn(value,\"failure\"); if (outcome===\"rejected\") return !hasOwn(value,\"payload\")&&!hasOwn(value,\"failure\")&&isJSONArray(value[\"diagnostics\"])&&value[\"diagnostics\"].length>0; if (outcome===\"failed\"||outcome===\"cancelled\") { const failure=value[\"failure\"]; if (hasOwn(value,\"payload\")||!isObject(failure)) return false; const category=failure[\"workbench_category\"]; return typeof category!==\"string\"||(outcome===\"cancelled\"?category===\"cancelled\":category!==\"cancelled\"); } return false; }\n\n")
+	if schemaDocumentUses(document, func(value *schemaType) bool { return value.OutcomeEnvelope }) {
+		body.WriteString("function hasValidOutcomeEnvelope(value: Record<string, unknown>): boolean { const outcome=value[\"outcome\"]; if (outcome===\"success\") return hasOwn(value,\"payload\")&&!hasOwn(value,\"failure\"); if (outcome===\"rejected\") return !hasOwn(value,\"payload\")&&!hasOwn(value,\"failure\")&&isJSONArray(value[\"diagnostics\"])&&value[\"diagnostics\"].length>0; if (outcome===\"failed\"||outcome===\"cancelled\") { const failure=value[\"failure\"]; if (hasOwn(value,\"payload\")||!isObject(failure)) return false; const category=failure[\"workbench_category\"]; return typeof category!==\"string\"||(outcome===\"cancelled\"?category===\"cancelled\":category!==\"cancelled\"); } return false; }\n\n")
+	}
 	body.WriteString("function hasValidProtocolOffer(value: Record<string, unknown>): boolean { const range = value[\"supported_range\"]; const bindings = value[\"versions\"]; if (typeof range !== \"string\" || !isJSONArray(bindings)) return false; const parsedRange = parseProtocolVersionRange(range); if (parsedRange === undefined) return false; const seen = new Set<string>(); for (const raw of bindings) { if (!isObject(raw) || typeof raw[\"version\"] !== \"string\") return false; const text = raw[\"version\"]; const version = parseProtocolVersion(text); if (version === undefined || compareProtocolVersions(version, parsedRange[0]) < 0 || compareProtocolVersions(version, parsedRange[1]) > 0 || seen.has(text)) return false; seen.add(text); } return true; }\n\n")
 	body.WriteString("function hasValidLimitCapability(value: Record<string, unknown>): boolean { try { const fallback = BigInt(String(value[\"default_value\"])); const effective = BigInt(String(value[\"effective_maximum\"])); const hard = BigInt(String(value[\"hard_maximum\"])); return fallback <= hard && effective <= hard; } catch { return false; } }\n\n")
 	body.WriteString("function hasUniqueArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string): boolean { if (!hasOwn(value,arrayProperty)) return true; const items = value[arrayProperty]; if (!isJSONArray(items)) return false; const seen = new Set<string>(); for (const raw of items) { if (!isObject(raw) || typeof raw[keyProperty] !== \"string\" || seen.has(raw[keyProperty])) return false; seen.add(raw[keyProperty]); } return true; }\n\n")
@@ -4023,10 +4062,14 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 	body.WriteString("function stableAddressKindRank(kind: string): number { return new Map<string, number>([[\"entity-type\",0],[\"relation-type\",1],[\"layer\",2],[\"entity\",3],[\"relation\",4],[\"query\",5],[\"view\",6],[\"reference\",7],[\"column\",8],[\"constraint\",9],[\"row\",10],[\"parameter\",11],[\"table-column\",12],[\"export\",13]]).get(kind) ?? Number.MAX_SAFE_INTEGER; }\n\n")
 	body.WriteString("function compareASCII(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }\n\n")
 	body.WriteString("function hasDisjointArrays(value: Record<string, unknown>, leftProperty: string, rightProperty: string): boolean { const left = hasOwn(value, leftProperty) ? value[leftProperty] : []; const right = hasOwn(value, rightProperty) ? value[rightProperty] : []; if (!isJSONArray(left) || !isJSONArray(right)) return false; const seen = new Set(left); return right.every((item) => !seen.has(item)); }\n\n")
-	body.WriteString("function hasDisjointArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string, stringsProperty: string): boolean { const items = hasOwn(value,arrayProperty) ? value[arrayProperty] : []; const strings = hasOwn(value,stringsProperty) ? value[stringsProperty] : []; if (!isJSONArray(items) || !isJSONArray(strings) || !strings.every((item) => typeof item === \"string\")) return false; const reserved = new Set(strings); return items.every((item) => isObject(item) && typeof item[keyProperty] === \"string\" && !reserved.has(item[keyProperty])); }\n\n")
+	if schemaDocumentUses(document, func(value *schemaType) bool { return len(value.DisjointArrayKeys) != 0 }) {
+		body.WriteString("function hasDisjointArrayKey(value: Record<string, unknown>, arrayProperty: string, keyProperty: string, stringsProperty: string): boolean { const items = hasOwn(value,arrayProperty) ? value[arrayProperty] : []; const strings = hasOwn(value,stringsProperty) ? value[stringsProperty] : []; if (!isJSONArray(items) || !isJSONArray(strings) || !strings.every((item) => typeof item === \"string\")) return false; const reserved = new Set(strings); return items.every((item) => isObject(item) && typeof item[keyProperty] === \"string\" && !reserved.has(item[keyProperty])); }\n\n")
+	}
 	body.WriteString("function compareCanonicalUnsignedDecimals(left: string, right: string): number | undefined { if (!/^(0|[1-9][0-9]*)$/.test(left) || !/^(0|[1-9][0-9]*)$/.test(right)) return undefined; return left.length === right.length ? (left < right ? -1 : left > right ? 1 : 0) : left.length - right.length; }\n\n")
 	body.WriteString(tsCanonicalCollectionRuntime)
-	body.WriteString(tsProtocolInvariantRuntime)
+	if schemaDocumentUses(document, func(value *schemaType) bool { return value.ProtocolInvariant != "" }) {
+		body.WriteString(tsProtocolInvariantRuntime)
+	}
 	body.WriteString("function hasOrderedPair(value: Record<string, unknown>, lowerProperty: string, upperProperty: string, comparison: string): boolean { if (!hasOwn(value, lowerProperty) || !hasOwn(value, upperProperty)) return true; const lower = value[lowerProperty]; const upper = value[upperProperty]; if (typeof lower !== \"string\" || typeof upper !== \"string\") return false; if (comparison === \"unsigned_decimal\") { const ordered = compareCanonicalUnsignedDecimals(lower, upper); return ordered !== undefined && ordered <= 0; } if (comparison === \"finite_binary64\") { const lowerValue = Number(lower); const upperValue = Number(upper); return Number.isFinite(lowerValue) && Number.isFinite(upperValue) && lowerValue <= upperValue; } return false; }\n\n")
 	body.WriteString("function hasAddressTerminalID(value: Record<string, unknown>, addressProperty: string, idProperty: string): boolean { const address = value[addressProperty]; const id = value[idProperty]; return typeof address === \"string\" && typeof id === \"string\" && address.split(\":\").at(-1) === id; }\n\n")
 	body.WriteString(tsAuthorityRuntime)
