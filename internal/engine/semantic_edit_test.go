@@ -1760,6 +1760,43 @@ func TestSemanticSpecialFieldsRenderCanonicalLDL(t *testing.T) {
 	_, snapshot := semanticEditCompiledFixture(t)
 	module := "document.ldl"
 	entityTypes := SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueAddress, Address: "ldl:project:p:entity-type:service"}}}
+	relationTypes := SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueAddress, Address: "ldl:project:p:relation-type:calls"}}}
+	scalar := func(kind string, key string, value SemanticValue) SemanticValue {
+		return SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+			{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: kind}},
+			{Key: key, Value: value},
+		}}
+	}
+	predicateScalar := func(value SemanticValue) SemanticValue {
+		return SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+			{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "scalar"}},
+			{Key: "scalar_value", Value: scalar("string", "string_value", value)},
+		}}
+	}
+	fieldPredicate := SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "field"}},
+		{Key: "field", Value: SemanticValue{Kind: SemanticValueString, String: "display_name"}},
+		{Key: "operator", Value: SemanticValue{Kind: SemanticValueString, String: "eq"}},
+		{Key: "value", Value: predicateScalar(SemanticValue{Kind: SemanticValueString, String: "A"})},
+	}}
+	queryArgs := SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "enabled", Value: scalar("boolean", "boolean_value", SemanticValue{Kind: SemanticValueBoolean, Boolean: true})},
+		{Key: "limit", Value: scalar("integer", "integer_value", SemanticValue{Kind: SemanticValueInteger, Integer: 10})},
+		{Key: "threshold", Value: scalar("number", "number_value", SemanticValue{Kind: SemanticValueDecimal, Decimal: "1.5"})},
+		{Key: "title", Value: scalar("string", "string_value", SemanticValue{Kind: SemanticValueString, String: "A"})},
+	}}
+	projectionOverride := SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{
+		{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+			{Key: "key", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:relation-type:calls"}},
+			{Key: "value", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+				{Key: "render", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+					{Key: "edge", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+						{Key: "label", Value: SemanticValue{Kind: SemanticValueString, String: "forward_label"}},
+					}}},
+				}}},
+			}}},
+		}},
+	}}
 	tests := []struct {
 		name     string
 		field    string
@@ -1774,10 +1811,27 @@ func TestSemanticSpecialFieldsRenderCanonicalLDL(t *testing.T) {
 		{name: "query source", field: "source", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "query"}}, {Key: "query_address", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:query:q"}}}}, contains: "source query q {}"},
 		{name: "attribute source", field: "source", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "attribute"}}, {Key: "column_addresses", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueAddress, Address: "ldl:project:p:entity-type:service:column:note"}}}}}}, contains: "source attribute note"},
 		{name: "state source", field: "source", value: semanticMapValue("kind", "state", "field_path", "selection.active"), contains: "source state selection.active"},
+		{name: "diff source", field: "source", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "diff"}}, {Key: "before", Value: SemanticValue{Kind: SemanticValueString, String: "as-is"}}, {Key: "after", Value: SemanticValue{Kind: SemanticValueString, String: "to-be"}}, {Key: "arguments", Value: queryArgs}}}, contains: `source diff "as-is" -> "to-be"`},
+		{name: "relation endpoint source", field: "source", value: semanticMapValue("kind", "relation_endpoint", "endpoint", "from", "field", "display_name"), contains: "source relation_endpoint from display_name"},
+		{name: "derived count source", field: "source", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "derived_count"}}, {Key: "direction", Value: SemanticValue{Kind: SemanticValueString, String: "outgoing"}}, {Key: "relation_type_addresses", Value: relationTypes}}}, contains: "source derived_count outgoing relations [calls]"},
 		{name: "cardinality", field: "cardinality", value: semanticCardinalityValue(), contains: "to_per_from 0..*"},
+		{name: "where all predicate", field: "where", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "all"}}, {Key: "children", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{fieldPredicate}}}}}, contains: "field display_name eq"},
+		{name: "where not predicate", field: "where", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "not"}}, {Key: "child", Value: fieldPredicate}}}, contains: "not {"},
+		{name: "where state predicate", field: "where", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "state"}}, {Key: "field_path", Value: SemanticValue{Kind: SemanticValueString, String: "selection.active"}}, {Key: "operator", Value: SemanticValue{Kind: SemanticValueString, String: "exists"}}}}, contains: "state selection.active exists"},
+		{name: "where rows predicate", field: "where", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "rows"}}, {Key: "quantifier", Value: SemanticValue{Kind: SemanticValueString, String: "any"}}, {Key: "type_addresses", Value: entityTypes}, {Key: "predicate", Value: fieldPredicate}}}, contains: "rows any types [service]"},
 		{name: "traversal", field: "traverse", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "direction", Value: SemanticValue{Kind: SemanticValueString, String: "outgoing"}}, {Key: "min_depth", Value: SemanticValue{Kind: SemanticValueInteger}}, {Key: "max_depth", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 3}}, {Key: "cycle_policy", Value: SemanticValue{Kind: SemanticValueString, String: "visit_once"}}, {Key: "relation_type_addresses", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueAddress, Address: "ldl:project:p:relation-type:calls"}}}}}}, contains: "relations [calls]"},
+		{name: "projection primitive", field: "projections", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "diagram", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "edge_label", Value: SemanticValue{Kind: SemanticValueString, String: "forward_label"}}}}}}}, contains: "projection diagram"},
+		{name: "render primitive", field: "render", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "edge", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "label", Value: SemanticValue{Kind: SemanticValueString, String: "forward_label"}}}}}}}, contains: "render edge"},
+		{name: "export nested map", field: "export", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "include_endpoints", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}}}}, contains: "include_endpoints true"},
+		{name: "table shape with nested controls", field: "shape", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "table"}}, {Key: "layout", Value: SemanticValue{Kind: SemanticValueString, String: "compact"}}, {Key: "include", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueString, String: "rows"}, {Kind: SemanticValueString, String: "summary"}}}}, {Key: "sorts", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "column_id", Value: SemanticValue{Kind: SemanticValueString, String: "name"}}, {Key: "direction", Value: SemanticValue{Kind: SemanticValueString, String: "asc"}}, {Key: "absent", Value: SemanticValue{Kind: SemanticValueString, String: "last"}}}}}}}}}, contains: "sort name asc nulls last"},
+		{name: "canvas shape placements", field: "shape", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "canvas"}}, {Key: "placements", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "entity_address", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:entity:a"}}, {Key: "x", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 1}}, {Key: "y", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 2}}, {Key: "width", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 3}}, {Key: "height", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 4}}}}}}}}}, contains: "place a 1 2 3 4"},
+		{name: "projection override", field: "relation_projection_overrides", value: projectionOverride, contains: "relation_projection calls"},
+		{name: "export options", field: "options", value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "pdf"}}, {Key: "bundle", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}}, {Key: "orientation", Value: SemanticValue{Kind: SemanticValueString, String: "landscape"}}, {Key: "scale", Value: SemanticValue{Kind: SemanticValueDecimal, Decimal: "1.25"}}}}, contains: "orientation landscape"},
 		{name: "annotations", field: "annotations", value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "key", Value: SemanticValue{Kind: SemanticValueString, String: "team"}}, {Key: "value", Value: SemanticValue{Kind: SemanticValueString, String: "core"}}}}}}, contains: `team: "core"`},
 		{name: "forward label", field: "forward_label", value: SemanticValue{Kind: SemanticValueString, String: "links"}, contains: `label "links"`},
+		{name: "reverse label", field: "reverse_label", value: SemanticValue{Kind: SemanticValueString, String: "linked by"}, contains: `reverse "linked by"`},
+		{name: "string special", field: "description", value: SemanticValue{Kind: SemanticValueString, String: "body"}, contains: `description "body"`},
+		{name: "disabled flag", field: "diagnostics", value: SemanticValue{Kind: SemanticValueBoolean}, contains: ""},
 		{name: "enabled flag", field: "source_refs", value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}, contains: "source_refs"},
 	}
 	for _, test := range tests {
@@ -1821,6 +1875,115 @@ func TestSemanticSpecialFieldsRejectIncompleteAuthority(t *testing.T) {
 				t.Fatalf("incomplete field rendered=%q handled=%v valid=%v", rendered, handled, valid)
 			}
 		})
+	}
+}
+
+func TestSemanticRenderingHelpersCoverClosedBranches(t *testing.T) {
+	t.Parallel()
+	input, snapshot := semanticEditCompiledFixture(t)
+	module := "nested/document.ldl"
+	input.ProjectSourceTree[module] = []byte(`project p "Project" {}`)
+	input.ReferencedAssets = []AssetInput{{
+		Origin:     SourceOriginProject,
+		Locator:    "assets/logo.png",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		MediaType:  "image/png",
+		ByteLength: 1,
+	}}
+
+	assetRef := SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "digest", Value: SemanticValue{Kind: SemanticValueString, String: input.ReferencedAssets[0].Digest}},
+		{Key: "media_type", Value: SemanticValue{Kind: SemanticValueString, String: input.ReferencedAssets[0].MediaType}},
+	}}
+	resolved, ok := resolveAuthoredAssetValue(input, snapshot, module, assetRef)
+	if !ok || resolved.String != "../assets/logo.png" {
+		t.Fatalf("asset ref=%+v ok=%v", resolved, ok)
+	}
+	if got := portableRelativePath("nested/deeper", "nested/assets/logo.png"); got != "../assets/logo.png" {
+		t.Fatalf("portable relative path=%q", got)
+	}
+	if _, ok := resolveAuthoredAssetValue(input, snapshot, module, SemanticValue{Kind: SemanticValueString, String: "bad"}); ok {
+		t.Fatal("non-map asset ref resolved")
+	}
+
+	scalarValue := SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "scalar"}},
+		{Key: "scalar_value", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+			{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "integer"}},
+			{Key: "integer_value", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 7}},
+		}}},
+	}}
+	addressValue := SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "address"}},
+		{Key: "address_value", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:entity:a"}},
+	}}
+	addressesValue := SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "addresses"}},
+		{Key: "address_values", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueAddress, Address: "ldl:project:p:entity:a"}}}},
+	}}
+	parameterValue := SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "parameter"}},
+		{Key: "parameter_address", Value: SemanticValue{Kind: SemanticValueString, String: "ldl:project:p:query:q:parameter:needle"}},
+	}}
+	scalarsValue := SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "scalars"}},
+		{Key: "scalar_values", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{
+			{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+				{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "string"}},
+				{Key: "string_value", Value: SemanticValue{Kind: SemanticValueString, String: "x"}},
+			}},
+		}}},
+	}}
+	for _, value := range []SemanticValue{scalarValue, addressValue, addressesValue, parameterValue, scalarsValue} {
+		if rendered, ok := renderPredicateValue(snapshot, "document.ldl", value); !ok || rendered == "" {
+			t.Fatalf("predicate value failed: rendered=%q ok=%v value=%+v", rendered, ok, value)
+		}
+	}
+	if rendered, ok := renderPredicateValue(snapshot, "document.ldl", SemanticValue{Kind: SemanticValueMap}); ok || rendered != "" {
+		t.Fatalf("unknown predicate value rendered=%q", rendered)
+	}
+
+	validNested := []SemanticMapEntry{
+		{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "ignored"}},
+		{Key: "incoming", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}},
+		{Key: "outgoing", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}},
+		{Key: "row_source", Value: SemanticValue{Kind: SemanticValueString, String: "entity_rows"}},
+		{Key: "label_field", Value: SemanticValue{Kind: SemanticValueString, String: "display_name"}},
+		{Key: "nested", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+			{Key: "include_layer", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}},
+		}}},
+	}
+	rendered, handled, ok := renderNestedMap(snapshot, "document.ldl", "diagram", validNested, 0, map[string]bool{"incoming": true, "outgoing": true, "include_layer": true})
+	if !handled || !ok || !strings.Contains(rendered, "rows entity_rows") || !strings.Contains(rendered, "layer") {
+		t.Fatalf("nested map rendered=%q handled=%v ok=%v", rendered, handled, ok)
+	}
+	if _, _, ok := renderNestedMap(snapshot, "document.ldl", "diagram", []SemanticMapEntry{{Key: "outgoing", Value: SemanticValue{Kind: SemanticValueBoolean}}}, 0, map[string]bool{"outgoing": true}); ok {
+		t.Fatal("disabled required outgoing flag rendered")
+	}
+
+	override := SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+		{Key: "key", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:relation-type:calls"}},
+		{Key: "value", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+			{Key: "projection", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+				{Key: "diagram", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+					{Key: "edge_label", Value: SemanticValue{Kind: SemanticValueString, String: "forward_label"}},
+				}}},
+			}}},
+		}}},
+	}}}}
+	if rendered, handled, ok := renderViewProjectionOverrides(snapshot, "document.ldl", override, 0); !handled || !ok || !strings.Contains(rendered, "projection") {
+		t.Fatalf("projection override rendered=%q handled=%v ok=%v", rendered, handled, ok)
+	}
+	if _, _, ok := renderViewProjectionOverrides(snapshot, "document.ldl", SemanticValue{Kind: SemanticValueString, String: "bad"}, 0); ok {
+		t.Fatal("non-array projection override rendered")
+	}
+
+	if rendered, handled, ok := renderExportOptions(snapshot, "document.ldl", []SemanticMapEntry{
+		{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "xlsx"}},
+		{Key: "legend", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}},
+		{Key: "page_size", Value: SemanticValue{Kind: SemanticValueString, String: "A4"}},
+	}, 2); !handled || !ok || !strings.Contains(rendered, "page_size A4") {
+		t.Fatalf("export options rendered=%q handled=%v ok=%v", rendered, handled, ok)
 	}
 }
 
@@ -1899,6 +2062,50 @@ func TestSemanticSourceDiffKindsAndLargeFallback(t *testing.T) {
 	largeAfter := bytes.Repeat([]byte("b\n"), 1001)
 	if edits := minimalModuleEdits("large.ldl", largeBefore, largeAfter); len(edits) != 1 {
 		t.Fatalf("large source diff produced %d edits; want one bounded fallback", len(edits))
+	}
+}
+
+func TestSemanticSourceDiffCoversBudgetOrderingAndWireBranches(t *testing.T) {
+	t.Parallel()
+	before := map[string][]byte{
+		"a.ldl": []byte("project p \"P\" {}\n"),
+		"b.ldl": []byte("entity_type a \"A\" {}\n"),
+	}
+	after := map[string][]byte{
+		"b.ldl": []byte("entity_type b \"B\" {}\n"),
+		"c.ldl": []byte("project p \"P\" {}\n"),
+	}
+	diff, err := buildPlannedSourceDiffContext(context.Background(), before, after, SemanticPlanLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[PlannedSourceEditKind]bool{}
+	for _, edit := range diff.Edits {
+		kinds[edit.Kind] = true
+		if sourceEditPrimaryPath(edit) == "" || sourceEditWireValue(edit)["kind"] == "" {
+			t.Fatalf("source edit lacks stable wire value: %+v", edit)
+		}
+	}
+	if !kinds[PlannedSourceMove] || !kinds[PlannedSourceReplace] {
+		t.Fatalf("diff did not cover move and replace branches: %+v", diff.Edits)
+	}
+	if _, err := buildPlannedSourceDiffContext(context.Background(), before, after, SemanticPlanLimits{MaxItems: 1}); err == nil {
+		t.Fatal("source edit item limit was not enforced")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := buildPlannedSourceDiffContext(ctx, before, after, SemanticPlanLimits{}); err == nil {
+		t.Fatal("cancelled source diff was accepted")
+	}
+
+	packModule := PlannedModuleRef{OriginKind: SourceOriginPack, PackAddress: "ldl:pack:registry:aws", ModulePath: "network.ldl"}
+	wire := moduleRefWireValue(packModule)
+	if wire["origin"].(map[string]any)["pack_address"] != packModule.PackAddress {
+		t.Fatalf("pack module wire value lost pack address: %+v", wire)
+	}
+	sourceRange := SourceRange{Origin: resolve.SourceOrigin{Kind: resolve.OriginPack, PackAddress: packModule.PackAddress}, ModulePath: packModule.ModulePath, StartByte: 1, EndByte: 2}
+	if sourceRangeWireValue(sourceRange)["origin"].(map[string]any)["pack_address"] != packModule.PackAddress {
+		t.Fatalf("pack source range wire value lost pack address")
 	}
 }
 
