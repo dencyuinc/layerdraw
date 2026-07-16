@@ -128,6 +128,7 @@ func NewDescriptor(config DescriptorConfig) (*Descriptor, error) {
 		endpointInstanceID:    config.EndpointInstanceID,
 		transports:            transports,
 		operations: []string{
+			OperationApplyToHandle,
 			OperationCloseDocument,
 			OperationCompile,
 			OperationFindSymbols,

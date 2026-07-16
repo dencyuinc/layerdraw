@@ -24,6 +24,7 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/index"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/materialize"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/resolve"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/sourceplanner"
 )
 
 const (
@@ -48,6 +49,18 @@ type workingDocument struct {
 	limits     WorkbenchLimits
 	sequence   uint64
 	snapshot   *workingSnapshot
+	preview    *retainedPreview
+}
+
+type retainedPreview struct {
+	baseGeneration  uint64
+	previewID       sourceplanner.PreviewID
+	previewDigest   sourceplanner.Digest
+	candidate       CompileInput
+	sourceDiff      sourceplanner.SourceDiff
+	authoringImpact sourceplanner.AuthoringImpact
+	resultingHashes sourceplanner.ResultingHashes
+	retained        int64
 }
 
 type workingSnapshot struct {
@@ -211,9 +224,10 @@ func (e Engine) ReplaceSourceTree(ctx context.Context, input ReplaceSourceTreeIn
 		store.mu.Unlock()
 		return ReplaceSourceTreeResult{}, err
 	}
-	store.retainedBytes -= current.snapshot.retained
+	store.retainedBytes -= current.retainedBytes()
 	store.evictToMakeRoomLocked(current.handle.Value, replacement.retained, false)
 	current.snapshot = replacement
+	current.preview = nil
 	current.generation++
 	store.retainedBytes += replacement.retained
 	newGeneration := current.generation
@@ -256,7 +270,7 @@ func (e Engine) CloseDocument(ctx context.Context, input CloseDocumentInput) (Cl
 		return CloseDocumentResult{}, staleGeneration()
 	}
 	delete(store.documents, input.DocumentHandle.Value)
-	store.retainedBytes -= document.snapshot.retained
+	store.retainedBytes -= document.retainedBytes()
 	store.mu.Unlock()
 	return CloseDocumentResult{Closed: true}, nil
 }
@@ -399,6 +413,7 @@ func workingCapabilities(compiled Snapshot) DocumentCapabilityState {
 	available := compiled.DefinitionHash != "" && compiled.SemanticIndex.SchemaVersion != 0 && compiled.SourceMap.SchemaVersion != 0
 	project := available && compiled.NormalizedDocument != nil && compiled.GraphHash != nil
 	return DocumentCapabilityState{
+		ApplyToHandle:      project,
 		FindSymbols:        available,
 		FindUsages:         available,
 		FormatScope:        project,
@@ -648,8 +663,22 @@ func (s *workbenchStore) evictToMakeRoomLocked(protected string, required int64,
 			return
 		}
 		delete(s.documents, candidate.handle.Value)
-		s.retainedBytes -= candidate.snapshot.retained
+		s.retainedBytes -= candidate.retainedBytes()
 	}
+}
+
+func (d *workingDocument) retainedBytes() int64 {
+	if d == nil {
+		return 0
+	}
+	total := int64(0)
+	if d.snapshot != nil {
+		total = saturatingAdd(total, d.snapshot.retained)
+	}
+	if d.preview != nil {
+		total = saturatingAdd(total, d.preview.retained)
+	}
+	return total
 }
 
 func (s *workbenchStore) encodeCursor(prefix string, generation DocumentGeneration, requestDigest [32]byte, position cursorPosition) Cursor {

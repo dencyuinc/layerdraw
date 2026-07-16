@@ -49,6 +49,7 @@ func newTestDescriptor(t *testing.T) *Descriptor {
 
 func expectedOperations() []string {
 	return []string{
+		OperationApplyToHandle,
 		OperationCloseDocument,
 		OperationCompile,
 		OperationFindSymbols,

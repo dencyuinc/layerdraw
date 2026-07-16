@@ -48,6 +48,7 @@ type workbenchDriver interface {
 	PreviewFragment(context.Context, engine.PreviewFragmentInput) (engine.SourcePlannerPlan, error)
 	FormatScope(context.Context, engine.FormatScopeInput) (engine.SourcePlannerPlan, error)
 	OrganizeWorkspace(context.Context, engine.OrganizeWorkspaceInput) (engine.SourcePlannerPlan, error)
+	ApplyToHandle(context.Context, engine.ApplyToHandleInput) (engine.ApplyToHandleResult, error)
 }
 
 type workbenchCapableDriver interface {
@@ -115,6 +116,9 @@ func (driver engineCompileDriver) FormatScope(ctx context.Context, input engine.
 }
 func (driver engineCompileDriver) OrganizeWorkspace(ctx context.Context, input engine.OrganizeWorkspaceInput) (engine.SourcePlannerPlan, error) {
 	return driver.compiler.OrganizeWorkspace(ctx, input)
+}
+func (driver engineCompileDriver) ApplyToHandle(ctx context.Context, input engine.ApplyToHandleInput) (engine.ApplyToHandleResult, error) {
+	return driver.compiler.ApplyToHandle(ctx, input)
 }
 
 // PrepareDispatch validates and prepares any non-handshake Engine operation
@@ -599,6 +603,14 @@ func workbenchPayloadRunner(operation string, control []byte) (any, func(context
 		return request.Payload, runSourcePlan[engine.OrganizeWorkspaceInput](request.Payload, func(ctx context.Context, driver workbenchDriver, input engine.OrganizeWorkspaceInput) (engine.SourcePlannerPlan, error) {
 			return driver.OrganizeWorkspace(ctx, input)
 		}), nil
+	case OperationApplyToHandle:
+		request, err := engineprotocol.DecodeApplyToHandleRequestEnvelope(control)
+		if err != nil {
+			return nil, nil, err
+		}
+		return request.Payload, runMapped[engine.ApplyToHandleInput](request.Payload, func(ctx context.Context, driver workbenchDriver, input engine.ApplyToHandleInput) (any, error) {
+			return driver.ApplyToHandle(ctx, input)
+		}), nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported workbench operation %q", operation)
 	}
@@ -771,6 +783,12 @@ func encodeWorkbenchTerminal(operation string, payload any, diagnostics []semant
 			return nil, err
 		}
 		return engineprotocol.EncodeOrganizeWorkspaceResponseEnvelope(engineprotocol.OrganizeWorkspaceResponseEnvelope{Diagnostics: diagnostics, EngineRelease: release, Failure: optionalFailure(hasFailure, failure), Outcome: outcome, Payload: optionalPayload(outcome, out), Protocol: bootstrapProtocolRef(), RequestID: requestID})
+	case OperationApplyToHandle:
+		var out engineprotocol.ApplyToHandleResult
+		if err := mapPayload(&out); err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeApplyToHandleResponseEnvelope(engineprotocol.ApplyToHandleResponseEnvelope{Diagnostics: diagnostics, EngineRelease: release, Failure: optionalFailure(hasFailure, failure), Outcome: outcome, Payload: optionalPayload(outcome, out), Protocol: bootstrapProtocolRef(), RequestID: requestID})
 	default:
 		return nil, fmt.Errorf("unsupported workbench response %q", operation)
 	}

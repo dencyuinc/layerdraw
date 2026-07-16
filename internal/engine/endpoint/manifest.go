@@ -49,6 +49,7 @@ func (d *Descriptor) capabilityManifest(clientScoped bool, selected protocolBind
 func operationCapabilities(version protocolcommon.ProtocolVersion, compileLimits protocolcommon.CompileResourceLimitConstraints) map[string]protocolcommon.OperationCapability {
 	operations := map[string]protocolcommon.OperationCapability{}
 	for _, operation := range []string{
+		OperationApplyToHandle,
 		OperationCloseDocument,
 		OperationCompile,
 		OperationFindSymbols,

@@ -99,8 +99,8 @@ test("workbench facade routes generated operations without interpreting LDL", as
   const { request } = makePortableRequest();
   const seen = [];
   const { client } = await create({
-    async workbench(request) {
-      seen.push(request.operation);
+    async workbench(request, blobs) {
+      seen.push({ operation: request.operation, blobs: blobs.length });
       return {
         response: {
           diagnostics: [],
@@ -121,16 +121,113 @@ test("workbench facade routes generated operations without interpreting LDL", as
     },
   });
   const limits = { max_items: "10", max_output_bytes: "10000" };
-  const opened = await client.workbench.openDocument(
-    { compile_input: request.input, requested_limits: limits },
-    { requestId: "wb-open" },
-  );
-  assert.equal(opened.origin, "engine");
-  assert.equal(opened.outcome, "failed");
-  assert.equal(opened.response.request_id, "wb-open");
-  assert.equal(opened.response.failure.workbench_category, "execution_failed");
-  assert.deepEqual(opened.blobs, []);
-  assert.deepEqual(seen, ["engine.open_document"]);
+  const generation = {
+    document_handle: {
+      endpoint_instance_id: "fake-endpoint-1",
+      value: "document_abcdefghijklmnop",
+    },
+    value: "1",
+  };
+  const preconditions = {
+    document_generation: generation,
+    expected_child_sets: [],
+    expected_subject_hashes: [],
+    expected_subtree_hashes: [],
+  };
+  const sourceBytes = new TextEncoder().encode("fragment");
+  const sourceBlob = {
+    blob_id: "workbench/source",
+    digest: sha256(sourceBytes),
+    lifetime: "request",
+    media_type: "text/plain; charset=utf-8",
+    size: String(sourceBytes.byteLength),
+  };
+  const sourceRange = {
+    end_byte: "1",
+    module_path: "document.ldl",
+    origin: { kind: "project" },
+    start_byte: "0",
+  };
+  const base = {
+    document_generation: generation,
+    limits,
+  };
+  const calls = [
+    ["openDocument", { compile_input: request.input, requested_limits: limits }, { blobs: request.blobs }],
+    ["listModules", base, {}],
+    ["readModules", { ...base, modules: [{ module_path: "document.ldl", origin: { kind: "project" } }] }, {}],
+    ["findSymbols", { ...base, case_mode: "sensitive", match_mode: "exact", query: "alpha" }, {}],
+    ["inspectSubgraph", { ...base, depth: 1, root_addresses: ["ldl:project:p:entity:alpha"] }, {}],
+    ["readDeclarations", { ...base, addresses: ["ldl:project:p:entity:alpha"] }, {}],
+    ["readRows", { ...base, owner_addresses: ["ldl:project:p:entity:alpha"] }, {}],
+    ["getNeighbors", { ...base, depth: 1, direction: "outgoing", entity_addresses: ["ldl:project:p:entity:alpha"] }, {}],
+    ["findUsages", { ...base, target_addresses: ["ldl:project:p:entity:alpha"] }, {}],
+    ["readScope", { ...base, owner_address: "ldl:project:p:entity:alpha" }, {}],
+    ["listReferences", base, {}],
+    ["readReferences", { ...base, addresses: ["ldl:project:p:reference:guide"] }, {}],
+    ["previewSourcePatch", {
+      limits,
+      patch: {
+        patches: [{
+          expected_source_digest: sha256(new Uint8Array([1])),
+          replacement_blob: sourceBlob,
+          source_range: sourceRange,
+        }],
+      },
+      preconditions,
+    }, { blobs: [{ ref: sourceBlob, bytes: sourceBytes }] }],
+    ["previewFragment", {
+      fragment: {
+        allowed_kinds: ["entity_type"],
+        fragment_blob: sourceBlob,
+        insertion_owner: "ldl:project:p",
+        intent: "insert",
+      },
+      limits,
+      preconditions,
+    }, { blobs: [{ ref: sourceBlob, bytes: sourceBytes }] }],
+    ["formatScope", { limits, preconditions, scope_addresses: ["ldl:project:p:entity:alpha"] }, {}],
+    ["organizeWorkspace", { limits, preconditions, strategy: "standard_layout" }, {}],
+    ["applyToHandle", {
+      base_generation: generation,
+      preview_digest: sha256(new Uint8Array([2])),
+      preview_id: { endpoint_instance_id: "fake-endpoint-1", value: "preview_abcdefghijklmnop" },
+    }, {}],
+    ["closeDocument", { document_generation: generation, document_handle: generation.document_handle }, {}],
+    ["replaceSourceTree", { compile_input: request.input, expected_generation: generation }, { blobs: request.blobs }],
+  ];
+  for (const [method, input, options] of calls) {
+    const outcome = await client.workbench[method](input, {
+      ...options,
+      requestId: `wb-${method}`,
+    });
+    assert.equal(outcome.origin, "engine");
+    assert.equal(outcome.outcome, "failed");
+    assert.equal(outcome.response.request_id, `wb-${method}`);
+    assert.equal(outcome.response.failure.workbench_category, "execution_failed");
+    assert.deepEqual(outcome.blobs, []);
+  }
+  assert.deepEqual(seen, [
+    { operation: "engine.open_document", blobs: 1 },
+    { operation: "engine.list_modules", blobs: 0 },
+    { operation: "engine.read_modules", blobs: 0 },
+    { operation: "engine.find_symbols", blobs: 0 },
+    { operation: "engine.inspect_subgraph", blobs: 0 },
+    { operation: "engine.read_declarations", blobs: 0 },
+    { operation: "engine.read_rows", blobs: 0 },
+    { operation: "engine.get_neighbors", blobs: 0 },
+    { operation: "engine.find_usages", blobs: 0 },
+    { operation: "engine.read_scope", blobs: 0 },
+    { operation: "engine.list_references", blobs: 0 },
+    { operation: "engine.read_references", blobs: 0 },
+    { operation: "engine.preview_source_patch", blobs: 1 },
+    { operation: "engine.preview_fragment", blobs: 1 },
+    { operation: "engine.format_scope", blobs: 0 },
+    { operation: "engine.organize_workspace", blobs: 0 },
+    { operation: "engine.apply_to_handle", blobs: 0 },
+    { operation: "engine.close_document", blobs: 0 },
+    { operation: "engine.replace_source_tree", blobs: 1 },
+  ]);
   await client.dispose();
 });
 

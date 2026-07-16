@@ -30,24 +30,73 @@ import type {
   ReadModulesResponseEnvelope,
 } from "@layerdraw/protocol/engine";
 import {
+  decodeApplyToHandleResponseEnvelope,
   decodeCompileInput,
   decodeCompileResponseEnvelope,
+  decodeCloseDocumentResponseEnvelope,
+  decodeFindSymbolsResponseEnvelope,
+  decodeFindUsagesResponseEnvelope,
+  decodeFormatScopeResponseEnvelope,
+  decodeGetNeighborsResponseEnvelope,
   decodeHandshakeResponseEnvelope,
+  decodeInspectSubgraphResponseEnvelope,
   decodeListModulesResponseEnvelope,
+  decodeListReferencesResponseEnvelope,
   decodeOpenDocumentResponseEnvelope,
+  decodeOrganizeWorkspaceResponseEnvelope,
+  decodePreviewFragmentResponseEnvelope,
+  decodePreviewSourcePatchResponseEnvelope,
+  decodeReadDeclarationsResponseEnvelope,
   decodeReadModulesResponseEnvelope,
+  decodeReadReferencesResponseEnvelope,
+  decodeReadRowsResponseEnvelope,
+  decodeReadScopeResponseEnvelope,
+  decodeReplaceSourceTreeResponseEnvelope,
+  encodeApplyToHandleRequestEnvelope,
   encodeCompileInput,
   encodeCompileRequestEnvelope,
+  encodeCloseDocumentRequestEnvelope,
+  encodeFindSymbolsRequestEnvelope,
+  encodeFindUsagesRequestEnvelope,
+  encodeFormatScopeRequestEnvelope,
+  encodeGetNeighborsRequestEnvelope,
   encodeHandshakeRequestEnvelope,
+  encodeInspectSubgraphRequestEnvelope,
   encodeListModulesRequestEnvelope,
+  encodeListReferencesRequestEnvelope,
   encodeOpenDocumentRequestEnvelope,
+  encodeOrganizeWorkspaceRequestEnvelope,
+  encodePreviewFragmentRequestEnvelope,
+  encodePreviewSourcePatchRequestEnvelope,
+  encodeReadDeclarationsRequestEnvelope,
   encodeReadModulesRequestEnvelope,
+  encodeReadReferencesRequestEnvelope,
+  encodeReadRowsRequestEnvelope,
+  encodeReadScopeRequestEnvelope,
+  encodeReplaceSourceTreeRequestEnvelope,
+  isApplyToHandleInput,
+  isCloseDocumentInput,
   isCompileInput,
+  isFindSymbolsInput,
+  isFindUsagesInput,
+  isFormatScopeInput,
+  isGetNeighborsInput,
+  isInspectSubgraphInput,
   isListModulesInput,
+  isListReferencesInput,
   isOpenDocumentInput,
+  isOrganizeWorkspaceInput,
+  isPreviewFragmentInput,
+  isPreviewSourcePatchInput,
+  isReadDeclarationsInput,
   isReadModulesInput,
+  isReadReferencesInput,
+  isReadRowsInput,
+  isReadScopeInput,
+  isReplaceSourceTreeInput,
   schemaDigest,
 } from "@layerdraw/protocol/engine";
+import type * as EngineProtocol from "@layerdraw/protocol/engine";
 import {
   EngineClientBackpressureError,
   EngineClientDecodeError,
@@ -58,6 +107,7 @@ import {
   type ClientCancellationReason,
   type CompileOptions,
   type CompileOutcome,
+  type CompileRequestBlob,
   type CompileSuccessResponse,
   type EngineAbortSignal,
   type EngineClient,
@@ -67,6 +117,7 @@ import {
   type EngineEndpointSnapshot,
   type OutputBlob,
   type PortableCompileRequest,
+  type WorkbenchOptions,
   type WorkbenchOutcome,
 } from "../index.js";
 import {
@@ -418,9 +469,25 @@ type CompileTerminal =
   | Readonly<{ kind: "rejected"; error: unknown }>;
 
 type WorkbenchEnvelope =
+  | EngineProtocol.ApplyToHandleResponseEnvelope
+  | EngineProtocol.CloseDocumentResponseEnvelope
+  | EngineProtocol.FindSymbolsResponseEnvelope
+  | EngineProtocol.FindUsagesResponseEnvelope
+  | EngineProtocol.FormatScopeResponseEnvelope
+  | EngineProtocol.GetNeighborsResponseEnvelope
+  | EngineProtocol.InspectSubgraphResponseEnvelope
   | OpenDocumentResponseEnvelope
   | ListModulesResponseEnvelope
-  | ReadModulesResponseEnvelope;
+  | EngineProtocol.ListReferencesResponseEnvelope
+  | EngineProtocol.OrganizeWorkspaceResponseEnvelope
+  | EngineProtocol.PreviewFragmentResponseEnvelope
+  | EngineProtocol.PreviewSourcePatchResponseEnvelope
+  | EngineProtocol.ReadDeclarationsResponseEnvelope
+  | ReadModulesResponseEnvelope
+  | EngineProtocol.ReadReferencesResponseEnvelope
+  | EngineProtocol.ReadRowsResponseEnvelope
+  | EngineProtocol.ReadScopeResponseEnvelope
+  | EngineProtocol.ReplaceSourceTreeResponseEnvelope;
 
 type WorkbenchTerminal<T extends WorkbenchEnvelope> =
   | Readonly<{ kind: "valid"; outcome: WorkbenchOutcome<T> }>
@@ -637,21 +704,101 @@ class EngineClientImplementation implements EngineClient {
   >();
   private _state: EngineClientState = "failed";
   readonly workbench = Object.freeze({
-    openDocument: (
-      input: OpenDocumentInput,
-      options?: CompileOptions,
-    ): Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>> =>
-      this.openDocument(input, options),
+    applyToHandle: (
+      input: EngineProtocol.ApplyToHandleInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ApplyToHandleResponseEnvelope>> =>
+      this.applyToHandle(input, options),
+    closeDocument: (
+      input: EngineProtocol.CloseDocumentInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.CloseDocumentResponseEnvelope>> =>
+      this.closeDocument(input, options),
+    findSymbols: (
+      input: EngineProtocol.FindSymbolsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.FindSymbolsResponseEnvelope>> =>
+      this.findSymbols(input, options),
+    findUsages: (
+      input: EngineProtocol.FindUsagesInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.FindUsagesResponseEnvelope>> =>
+      this.findUsages(input, options),
+    formatScope: (
+      input: EngineProtocol.FormatScopeInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.FormatScopeResponseEnvelope>> =>
+      this.formatScope(input, options),
+    getNeighbors: (
+      input: EngineProtocol.GetNeighborsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.GetNeighborsResponseEnvelope>> =>
+      this.getNeighbors(input, options),
+    inspectSubgraph: (
+      input: EngineProtocol.InspectSubgraphInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.InspectSubgraphResponseEnvelope>> =>
+      this.inspectSubgraph(input, options),
     listModules: (
       input: ListModulesInput,
-      options?: CompileOptions,
+      options?: WorkbenchOptions,
     ): Promise<WorkbenchOutcome<ListModulesResponseEnvelope>> =>
       this.listModules(input, options),
+    listReferences: (
+      input: EngineProtocol.ListReferencesInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ListReferencesResponseEnvelope>> =>
+      this.listReferences(input, options),
+    openDocument: (
+      input: OpenDocumentInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>> =>
+      this.openDocument(input, options),
+    organizeWorkspace: (
+      input: EngineProtocol.OrganizeWorkspaceInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.OrganizeWorkspaceResponseEnvelope>> =>
+      this.organizeWorkspace(input, options),
+    previewFragment: (
+      input: EngineProtocol.PreviewFragmentInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.PreviewFragmentResponseEnvelope>> =>
+      this.previewFragment(input, options),
+    previewSourcePatch: (
+      input: EngineProtocol.PreviewSourcePatchInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.PreviewSourcePatchResponseEnvelope>> =>
+      this.previewSourcePatch(input, options),
+    readDeclarations: (
+      input: EngineProtocol.ReadDeclarationsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReadDeclarationsResponseEnvelope>> =>
+      this.readDeclarations(input, options),
     readModules: (
       input: ReadModulesInput,
-      options?: CompileOptions,
+      options?: WorkbenchOptions,
     ): Promise<WorkbenchOutcome<ReadModulesResponseEnvelope>> =>
       this.readModules(input, options),
+    readReferences: (
+      input: EngineProtocol.ReadReferencesInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReadReferencesResponseEnvelope>> =>
+      this.readReferences(input, options),
+    readRows: (
+      input: EngineProtocol.ReadRowsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReadRowsResponseEnvelope>> =>
+      this.readRows(input, options),
+    readScope: (
+      input: EngineProtocol.ReadScopeInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReadScopeResponseEnvelope>> =>
+      this.readScope(input, options),
+    replaceSourceTree: (
+      input: EngineProtocol.ReplaceSourceTreeInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ReplaceSourceTreeResponseEnvelope>> =>
+      this.replaceSourceTree(input, options),
   });
 
   constructor(
@@ -765,7 +912,7 @@ class EngineClientImplementation implements EngineClient {
 
   private openDocument(
     input: OpenDocumentInput,
-    options?: CompileOptions,
+    options?: WorkbenchOptions,
   ): Promise<WorkbenchOutcome<OpenDocumentResponseEnvelope>> {
     if (!isOpenDocumentInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
     return this.executeWorkbenchOperation(
@@ -777,9 +924,79 @@ class EngineClientImplementation implements EngineClient {
     );
   }
 
+  private applyToHandle(
+    input: EngineProtocol.ApplyToHandleInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ApplyToHandleResponseEnvelope>> {
+    if (!isApplyToHandleInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.apply_to_handle", input, options, (envelope) =>
+      encodeApplyToHandleRequestEnvelope(envelope as EngineProtocol.ApplyToHandleRequestEnvelope),
+    decodeApplyToHandleResponseEnvelope);
+  }
+
+  private closeDocument(
+    input: EngineProtocol.CloseDocumentInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.CloseDocumentResponseEnvelope>> {
+    if (!isCloseDocumentInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.close_document", input, options, (envelope) =>
+      encodeCloseDocumentRequestEnvelope(envelope as EngineProtocol.CloseDocumentRequestEnvelope),
+    decodeCloseDocumentResponseEnvelope);
+  }
+
+  private findSymbols(
+    input: EngineProtocol.FindSymbolsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FindSymbolsResponseEnvelope>> {
+    if (!isFindSymbolsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.find_symbols", input, options, (envelope) =>
+      encodeFindSymbolsRequestEnvelope(envelope as EngineProtocol.FindSymbolsRequestEnvelope),
+    decodeFindSymbolsResponseEnvelope);
+  }
+
+  private findUsages(
+    input: EngineProtocol.FindUsagesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FindUsagesResponseEnvelope>> {
+    if (!isFindUsagesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.find_usages", input, options, (envelope) =>
+      encodeFindUsagesRequestEnvelope(envelope as EngineProtocol.FindUsagesRequestEnvelope),
+    decodeFindUsagesResponseEnvelope);
+  }
+
+  private formatScope(
+    input: EngineProtocol.FormatScopeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.FormatScopeResponseEnvelope>> {
+    if (!isFormatScopeInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.format_scope", input, options, (envelope) =>
+      encodeFormatScopeRequestEnvelope(envelope as EngineProtocol.FormatScopeRequestEnvelope),
+    decodeFormatScopeResponseEnvelope);
+  }
+
+  private getNeighbors(
+    input: EngineProtocol.GetNeighborsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.GetNeighborsResponseEnvelope>> {
+    if (!isGetNeighborsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.get_neighbors", input, options, (envelope) =>
+      encodeGetNeighborsRequestEnvelope(envelope as EngineProtocol.GetNeighborsRequestEnvelope),
+    decodeGetNeighborsResponseEnvelope);
+  }
+
+  private inspectSubgraph(
+    input: EngineProtocol.InspectSubgraphInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.InspectSubgraphResponseEnvelope>> {
+    if (!isInspectSubgraphInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.inspect_subgraph", input, options, (envelope) =>
+      encodeInspectSubgraphRequestEnvelope(envelope as EngineProtocol.InspectSubgraphRequestEnvelope),
+    decodeInspectSubgraphResponseEnvelope);
+  }
+
   private listModules(
     input: ListModulesInput,
-    options?: CompileOptions,
+    options?: WorkbenchOptions,
   ): Promise<WorkbenchOutcome<ListModulesResponseEnvelope>> {
     if (!isListModulesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
     return this.executeWorkbenchOperation(
@@ -791,9 +1008,59 @@ class EngineClientImplementation implements EngineClient {
     );
   }
 
+  private listReferences(
+    input: EngineProtocol.ListReferencesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ListReferencesResponseEnvelope>> {
+    if (!isListReferencesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.list_references", input, options, (envelope) =>
+      encodeListReferencesRequestEnvelope(envelope as EngineProtocol.ListReferencesRequestEnvelope),
+    decodeListReferencesResponseEnvelope);
+  }
+
+  private organizeWorkspace(
+    input: EngineProtocol.OrganizeWorkspaceInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.OrganizeWorkspaceResponseEnvelope>> {
+    if (!isOrganizeWorkspaceInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.organize_workspace", input, options, (envelope) =>
+      encodeOrganizeWorkspaceRequestEnvelope(envelope as EngineProtocol.OrganizeWorkspaceRequestEnvelope),
+    decodeOrganizeWorkspaceResponseEnvelope);
+  }
+
+  private previewFragment(
+    input: EngineProtocol.PreviewFragmentInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PreviewFragmentResponseEnvelope>> {
+    if (!isPreviewFragmentInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.preview_fragment", input, options, (envelope) =>
+      encodePreviewFragmentRequestEnvelope(envelope as EngineProtocol.PreviewFragmentRequestEnvelope),
+    decodePreviewFragmentResponseEnvelope);
+  }
+
+  private previewSourcePatch(
+    input: EngineProtocol.PreviewSourcePatchInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PreviewSourcePatchResponseEnvelope>> {
+    if (!isPreviewSourcePatchInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.preview_source_patch", input, options, (envelope) =>
+      encodePreviewSourcePatchRequestEnvelope(envelope as EngineProtocol.PreviewSourcePatchRequestEnvelope),
+    decodePreviewSourcePatchResponseEnvelope);
+  }
+
+  private readDeclarations(
+    input: EngineProtocol.ReadDeclarationsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadDeclarationsResponseEnvelope>> {
+    if (!isReadDeclarationsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.read_declarations", input, options, (envelope) =>
+      encodeReadDeclarationsRequestEnvelope(envelope as EngineProtocol.ReadDeclarationsRequestEnvelope),
+    decodeReadDeclarationsResponseEnvelope);
+  }
+
   private readModules(
     input: ReadModulesInput,
-    options?: CompileOptions,
+    options?: WorkbenchOptions,
   ): Promise<WorkbenchOutcome<ReadModulesResponseEnvelope>> {
     if (!isReadModulesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
     return this.executeWorkbenchOperation(
@@ -803,6 +1070,46 @@ class EngineClientImplementation implements EngineClient {
       (envelope) => encodeReadModulesRequestEnvelope(envelope as ReadModulesRequestEnvelope),
       decodeReadModulesResponseEnvelope,
     );
+  }
+
+  private readReferences(
+    input: EngineProtocol.ReadReferencesInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadReferencesResponseEnvelope>> {
+    if (!isReadReferencesInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.read_references", input, options, (envelope) =>
+      encodeReadReferencesRequestEnvelope(envelope as EngineProtocol.ReadReferencesRequestEnvelope),
+    decodeReadReferencesResponseEnvelope);
+  }
+
+  private readRows(
+    input: EngineProtocol.ReadRowsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadRowsResponseEnvelope>> {
+    if (!isReadRowsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.read_rows", input, options, (envelope) =>
+      encodeReadRowsRequestEnvelope(envelope as EngineProtocol.ReadRowsRequestEnvelope),
+    decodeReadRowsResponseEnvelope);
+  }
+
+  private readScope(
+    input: EngineProtocol.ReadScopeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReadScopeResponseEnvelope>> {
+    if (!isReadScopeInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.read_scope", input, options, (envelope) =>
+      encodeReadScopeRequestEnvelope(envelope as EngineProtocol.ReadScopeRequestEnvelope),
+    decodeReadScopeResponseEnvelope);
+  }
+
+  private replaceSourceTree(
+    input: EngineProtocol.ReplaceSourceTreeInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ReplaceSourceTreeResponseEnvelope>> {
+    if (!isReplaceSourceTreeInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.replace_source_tree", input, options, (envelope) =>
+      encodeReplaceSourceTreeRequestEnvelope(envelope as EngineProtocol.ReplaceSourceTreeRequestEnvelope),
+    decodeReplaceSourceTreeResponseEnvelope);
   }
 
   restart(): Promise<void> {
@@ -1070,6 +1377,150 @@ class EngineClientImplementation implements EngineClient {
     });
   }
 
+  private prepareWorkbenchMetadata(
+    payload: unknown,
+    rawBlobs: readonly CompileRequestBlob[],
+    limits: InternalTransportLimits,
+  ): readonly Readonly<{
+    ref: BlobRef;
+    bytes: Uint8Array | ArrayBuffer;
+    ownership: "copy" | "transfer";
+    byteLength: number;
+  }>[] {
+    let collected: readonly BlobRef[];
+    try {
+      collected = validateCollectedRefs(collectBlobRefsDeep(payload), true);
+    } catch (error) {
+      if (error instanceof EngineClientInputError) throw error;
+      throw new EngineClientInputError("INVALID_BLOB_TABLE");
+    }
+    const expected = uniqueRefs(collected, "input");
+    if (!strictArray(rawBlobs)) {
+      throw new EngineClientInputError("INVALID_BLOB_TABLE");
+    }
+    if (rawBlobs.length !== expected.size) {
+      throw new EngineClientInputError(
+        "INVALID_BLOB_TABLE",
+        safeCountDetails("blobCount", rawBlobs.length, expected.size),
+      );
+    }
+    if (rawBlobs.length > limits.maxBuffers) {
+      throw new EngineClientInputError(
+        "LIMIT_EXCEEDED",
+        safeCountDetails("blobCount", rawBlobs.length, limits.maxBuffers),
+      );
+    }
+    const seen = new Set<string>();
+    const seenBuffers = new Set<ArrayBuffer>();
+    const attachments: Array<Readonly<{
+      ref: BlobRef;
+      bytes: Uint8Array | ArrayBuffer;
+      ownership: "copy" | "transfer";
+      byteLength: number;
+    }>> = [];
+    let totalBytes = 0;
+    for (const raw of rawBlobs) {
+      const blob = dataObject(raw, ["ref", "bytes"], ["ownership"]);
+      if (blob === undefined) {
+        throw new EngineClientInputError("INVALID_BLOB_TABLE");
+      }
+      if (!isBlobRef(blob.ref) || blob.ref.lifetime !== "request") {
+        throw new EngineClientInputError("INVALID_BLOB_TABLE");
+      }
+      const candidateRef = blob.ref;
+      const wanted = expected.get(candidateRef.blob_id);
+      if (
+        wanted === undefined ||
+        seen.has(wanted.blob_id) ||
+        blobRefFingerprint(candidateRef) !== blobRefFingerprint(wanted)
+      ) {
+        throw new EngineClientInputError("INVALID_BLOB_TABLE");
+      }
+      if ((utf8ByteLength(wanted.blob_id) ?? Infinity) > limits.maxBlobIdBytes) {
+        throw new EngineClientInputError("LIMIT_EXCEEDED");
+      }
+      const ownership = blob.ownership ?? "copy";
+      let byteLength: number | undefined;
+      let sourceBuffer: ArrayBuffer | undefined;
+      if (ownership === "copy") {
+        const source = uint8ViewSource(blob.bytes);
+        byteLength = source?.byteLength;
+        sourceBuffer = source?.buffer;
+      } else if (ownership === "transfer") {
+        byteLength = fixedArrayBufferByteLength(blob.bytes);
+        sourceBuffer = blob.bytes as ArrayBuffer;
+      } else {
+        throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
+      }
+      if (
+        byteLength === undefined ||
+        sourceBuffer === undefined ||
+        seenBuffers.has(sourceBuffer)
+      ) {
+        throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
+      }
+      seenBuffers.add(sourceBuffer);
+      if (BigInt(wanted.size) !== BigInt(byteLength)) {
+        throw new EngineClientInputError("BLOB_SIZE_MISMATCH", {
+          blobCount: expected.size,
+        });
+      }
+      if (byteLength > limits.maxInputBlobBytes) {
+        throw new EngineClientInputError("LIMIT_EXCEEDED");
+      }
+      totalBytes += byteLength;
+      if (!Number.isSafeInteger(totalBytes) || totalBytes > limits.maxInputTotalBytes) {
+        throw new EngineClientInputError("LIMIT_EXCEEDED");
+      }
+      seen.add(wanted.blob_id);
+      attachments.push({
+        ref: wanted,
+        bytes: blob.bytes as Uint8Array | ArrayBuffer,
+        ownership,
+        byteLength,
+      });
+    }
+    if (seen.size !== expected.size) {
+      throw new EngineClientInputError("INVALID_BLOB_TABLE");
+    }
+    return Object.freeze(attachments);
+  }
+
+  private takeWorkbenchBytes(
+    attachments: ReturnType<EngineClientImplementation["prepareWorkbenchMetadata"]>,
+    limits: InternalTransportLimits,
+  ): readonly OwnedRequestBlob[] {
+    const blobs: OwnedRequestBlob[] = [];
+    let totalBytes = 0;
+    for (const attachment of attachments) {
+      let bytes: ArrayBuffer;
+      try {
+        if (attachment.ownership === "transfer") {
+          bytes = this.runtime.transferArrayBuffer(attachment.bytes as ArrayBuffer);
+        } else {
+          const source = uint8ViewSource(attachment.bytes);
+          if (source === undefined) {
+            throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
+          }
+          const copy = new Uint8Array(source.byteLength);
+          copy.set(
+            new Uint8Array(source.buffer, source.byteOffset, source.byteLength),
+          );
+          bytes = copy.buffer;
+        }
+      } catch (error) {
+        if (error instanceof EngineClientInputError) throw error;
+        throw new EngineClientInputError("UNSUPPORTED_BYTE_OWNERSHIP");
+      }
+      totalBytes += attachment.byteLength;
+      blobs.push({ ref: attachment.ref, bytes });
+    }
+    if (totalBytes > limits.maxInputTotalBytes) {
+      throw new EngineClientBackpressureError("BYTE_BUDGET_EXCEEDED");
+    }
+    return Object.freeze(blobs);
+  }
+
   private async executeCompile(
     active: ActiveCompile,
     endpoint: EndpointContext,
@@ -1222,9 +1673,9 @@ class EngineClientImplementation implements EngineClient {
   }
 
   private executeWorkbenchOperation<TResponse extends WorkbenchEnvelope>(
-    operation: OpenDocumentRequestEnvelope["operation"] | ListModulesRequestEnvelope["operation"] | ReadModulesRequestEnvelope["operation"],
+    operation: string,
     payload: unknown,
-    options: CompileOptions | undefined,
+    options: WorkbenchOptions | undefined,
     encodeEnvelope: (envelope: {
       deadline_at: string;
       operation: string;
@@ -1239,8 +1690,11 @@ class EngineClientImplementation implements EngineClient {
       throw new EngineClientStateError("NOT_READY", { capability: operation });
     }
     let normalized: NormalizedCompileOptions;
+    let workbenchBlobs: readonly CompileRequestBlob[];
     try {
-      normalized = normalizeCompileOptions(options, this.options);
+      const prepared = normalizeWorkbenchOptions(options, this.options);
+      normalized = prepared.normalized;
+      workbenchBlobs = prepared.blobs;
     } catch (error) {
       throw inputFault(error);
     }
@@ -1272,11 +1726,20 @@ class EngineClientImplementation implements EngineClient {
       joined: deferred<void>(),
     };
     this.active = active;
+    let prepared: readonly OwnedRequestBlob[];
+    try {
+      const metadata = this.prepareWorkbenchMetadata(payload, workbenchBlobs, endpoint.limits);
+      prepared = this.takeWorkbenchBytes(metadata, endpoint.limits);
+    } catch (error) {
+      if (this.active === active) this.active = undefined;
+      throw error;
+    }
     const promise = this.executeWorkbench(
       active,
       endpoint,
       operation,
       payload,
+      prepared,
       normalized,
       encodeEnvelope,
       decodeEnvelope,
@@ -1292,6 +1755,7 @@ class EngineClientImplementation implements EngineClient {
     endpoint: EndpointContext,
     operation: string,
     payload: unknown,
+    requestBlobs: readonly OwnedRequestBlob[],
     options: NormalizedCompileOptions,
     encodeEnvelope: (envelope: {
       deadline_at: string;
@@ -1358,7 +1822,10 @@ class EngineClientImplementation implements EngineClient {
         exchange = admitExchange(endpoint.request({
           exchangeId: this.nextExchangeId(),
           control,
-          blobs: [],
+          blobs: requestBlobs.map((blob) => ({
+            blobId: blob.ref.blob_id,
+            bytes: blob.bytes,
+          })),
         }));
         if (!exchange.valid) throw new TypeError("Invalid exchange");
       } catch {
@@ -2178,6 +2645,38 @@ function normalizeCompileOptions(
       ? {}
       : { signal: value.signal as EngineAbortSignal }),
     timeoutMs: timeoutOption(value.timeoutMs, creation.defaultCompileTimeoutMs),
+  };
+}
+
+function normalizeWorkbenchOptions(
+  input: WorkbenchOptions | undefined,
+  creation: NormalizedCreationOptions,
+): Readonly<{ normalized: NormalizedCompileOptions; blobs: readonly CompileRequestBlob[] }> {
+  if (input === undefined) {
+    return { normalized: { timeoutMs: creation.defaultCompileTimeoutMs }, blobs: [] };
+  }
+  const value = dataObject(input, [], ["requestId", "signal", "timeoutMs", "blobs"]);
+  if (value === undefined) throw new EngineClientInputError("INVALID_ARGUMENT");
+  if (value.requestId !== undefined && !validRequestId(value.requestId)) {
+    throw new EngineClientInputError("INVALID_REQUEST_ID");
+  }
+  if (value.signal !== undefined && !validSignal(value.signal)) {
+    throw new EngineClientInputError("INVALID_ARGUMENT");
+  }
+  if (value.blobs !== undefined && !strictArray(value.blobs)) {
+    throw new EngineClientInputError("INVALID_BLOB_TABLE");
+  }
+  return {
+    normalized: {
+      ...(value.requestId === undefined
+        ? {}
+        : { requestId: value.requestId as string }),
+      ...(value.signal === undefined
+        ? {}
+        : { signal: value.signal as EngineAbortSignal }),
+      timeoutMs: timeoutOption(value.timeoutMs, creation.defaultCompileTimeoutMs),
+    },
+    blobs: value.blobs === undefined ? [] : value.blobs as readonly CompileRequestBlob[],
   };
 }
 

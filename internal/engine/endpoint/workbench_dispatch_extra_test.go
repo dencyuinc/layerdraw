@@ -120,6 +120,18 @@ func (driver *fakeWorkbenchDriver) OrganizeWorkspace(_ context.Context, input en
 	return driver.plan, nil
 }
 
+func (driver *fakeWorkbenchDriver) ApplyToHandle(_ context.Context, input engine.ApplyToHandleInput) (engine.ApplyToHandleResult, error) {
+	driver.generation = input.BaseGeneration
+	preview := driver.plan.Preview
+	return engine.ApplyToHandleResult{
+		AuthoringImpact:    *preview.AuthoringImpact,
+		DocumentGeneration: input.BaseGeneration,
+		PreviewDigest:      input.PreviewDigest,
+		ResultingHashes:    *preview.ResultingHashes,
+		SourceDiff:         preview.SourceDiff,
+	}, driver.err
+}
+
 func TestWorkbenchSourcePlanningDispatchesGeneratedOperations(t *testing.T) {
 	driver := newFakeWorkbenchDriver()
 	dispatcher := newCompileDispatcher(driver)
@@ -243,6 +255,42 @@ func TestWorkbenchSourcePlanningDispatchesGeneratedOperations(t *testing.T) {
 				t.Fatalf("source plan blobs = %+v", sink.blobs)
 			}
 		})
+	}
+}
+
+func TestWorkbenchApplyToHandleDispatchesGeneratedOperation(t *testing.T) {
+	driver := newFakeWorkbenchDriver()
+	dispatcher := newCompileDispatcher(driver)
+	negotiated := compileContext(t)
+	control := encodeApplyToHandleForTest(t, engineprotocol.ApplyToHandleRequestEnvelope{
+		Operation: engineprotocol.ApplyToHandleRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ApplyToHandleInput{
+			BaseGeneration: engineprotocol.DocumentGeneration{
+				DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_1234567890abcdef"},
+				Value:          "7",
+			},
+			PreviewDigest: sourceDigest([]byte("replacement")),
+			PreviewID: engineprotocol.PreviewID{
+				EndpointInstanceID: "engine-test",
+				Value:              "preview_1234567890abcdef",
+			},
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "apply-to-handle",
+	})
+	plan, terminal, err := dispatcher.PrepareDispatch(context.Background(), negotiated, OperationApplyToHandle, control)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	response, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
+	if err != nil || response.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("dispatch = %+v err=%v", response, err)
+	}
+	decoded, err := engineprotocol.DecodeApplyToHandleResponseEnvelope(response.Control)
+	if err != nil || decoded.Payload == nil || decoded.Payload.PreviewDigest != sourceDigest([]byte("replacement")) {
+		t.Fatalf("decoded = %+v err=%v", decoded, err)
+	}
+	if driver.generation.Value != 7 || driver.generation.DocumentHandle.Value != "document_1234567890abcdef" {
+		t.Fatalf("document generation not mapped: %+v", driver.generation)
 	}
 }
 
@@ -503,6 +551,7 @@ func TestWorkbenchTerminalEnvelopeSupportsEveryOperation(t *testing.T) {
 		OperationPreviewFragment,
 		OperationFormatScope,
 		OperationOrganizeWorkspace,
+		OperationApplyToHandle,
 	}
 	for _, operation := range operations {
 		t.Run(operation, func(t *testing.T) {
@@ -696,6 +745,12 @@ func encodeFormatScopeForTest(t *testing.T, value engineprotocol.FormatScopeRequ
 func encodeOrganizeWorkspaceForTest(t *testing.T, value engineprotocol.OrganizeWorkspaceRequestEnvelope) []byte {
 	t.Helper()
 	encoded, err := engineprotocol.EncodeOrganizeWorkspaceRequestEnvelope(value)
+	return mustEncode(t, encoded, err)
+}
+
+func encodeApplyToHandleForTest(t *testing.T, value engineprotocol.ApplyToHandleRequestEnvelope) []byte {
+	t.Helper()
+	encoded, err := engineprotocol.EncodeApplyToHandleRequestEnvelope(value)
 	return mustEncode(t, encoded, err)
 }
 
