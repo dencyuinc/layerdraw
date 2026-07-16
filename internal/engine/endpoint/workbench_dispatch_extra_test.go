@@ -352,6 +352,34 @@ func TestWorkbenchPlanLifecycleAndScalarConversionEdges(t *testing.T) {
 			}
 		})
 	}
+
+	var plannerPreviewID struct {
+		Namespace string `json:"namespace"`
+		Value     string `json:"value"`
+	}
+	if err := convertStruct(engineprotocol.PreviewID{EndpointInstanceID: "engine-test", Value: "preview-123"}, &plannerPreviewID); err != nil {
+		t.Fatal(err)
+	}
+	if plannerPreviewID.Namespace != "engine-test" || plannerPreviewID.Value != "preview-123" {
+		t.Fatalf("preview ID mapping = %+v", plannerPreviewID)
+	}
+
+	var applyInput engine.ApplyToHandleInput
+	if err := convertStruct(engineprotocol.ApplyToHandleInput{
+		BaseGeneration: engineprotocol.DocumentGeneration{
+			DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document-123"},
+			Value:          "7",
+		},
+		PreviewDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PreviewID:     engineprotocol.PreviewID{EndpointInstanceID: "engine-test", Value: "preview-123"},
+	}, &applyInput); err != nil {
+		t.Fatal(err)
+	}
+	if applyInput.BaseGeneration.DocumentHandle.EndpointInstanceID != "engine-test" || applyInput.BaseGeneration.DocumentHandle.Value != "document-123" || applyInput.BaseGeneration.Value != 7 ||
+		applyInput.PreviewDigest != "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+		applyInput.PreviewID.Namespace != "engine-test" || applyInput.PreviewID.Value != "preview-123" {
+		t.Fatalf("apply input mapping = %+v", applyInput)
+	}
 }
 
 func TestWorkbenchDispatchFailureAndHelperEdges(t *testing.T) {

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "corpus": "portable-workbench-editing",
+  "required_transports": [
+    "in_process_go",
+    "packaged_stdio_raw",
+    "engine_client_stdio",
+    "node_wasm_worker",
+    "browser_wasm_worker",
+    "engine_client_browser_wasm"
+  ],
+  "normalization": [
+    "endpoint_instance_id, document_handle.value, and preview_id.value are endpoint-local opaque values",
+    "engine_release differs by linked artifact and is not part of semantic equality",
+    "BlobRef blob_id values are transport-local; referenced bytes are compared by role and digest",
+    "cancelled hard-worker execution is normalized to outcome=cancelled without a partial Workbench payload"
+  ],
+  "scenarios": [
+    {
+      "name": "source_patch_preview_apply",
+      "source": "project p \"Project\" {}\n// keep\n",
+      "patch": {
+        "module_path": "document.ldl",
+        "find": "keep",
+        "replace": "kept"
+      },
+      "expected": {
+        "open_state_kind": "project_available",
+        "open_semantic_state": "available",
+        "initial_generation": "1",
+        "preview_status": "valid",
+        "changed_source_files": ["document.ldl"],
+        "applied_generation": "2",
+        "final_contains": "// kept\n",
+        "stale_apply_outcome": "rejected",
+        "stale_apply_diagnostic_code": "LDL1801",
+        "close_outcome": "success"
+      }
+    }
+  ]
+}

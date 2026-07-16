@@ -8,3 +8,12 @@ TypeScript packages do not implement LDL parsing, validation, query planning, id
 package. It exposes only the `common`, `semantic`, and `engine` schema-group
 subpaths and includes generated structural validators plus canonical codecs for
 untrusted JSON.
+
+`engine-client/` exposes the transport-neutral Engine API, including Workbench
+open, bounded read, preview, apply, and close calls. It forwards generated wire
+values and BlobRef bytes to an Engine transport; it does not parse LDL, retain a
+Working Document, classify AuthoringImpact, or write source.
+
+`engine-wasm/` is the browser Worker transport for the same Engine Protocol
+surface. It is validated by the shared compile and Workbench conformance corpus
+and must not fork Workbench semantics for browser delivery.

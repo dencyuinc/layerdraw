@@ -1,4 +1,4 @@
-# Portable compiler conformance
+# Portable Engine conformance
 
 このディレクトリは、同一のLDL入力が実行形態によって別の意味へ解釈されないことを保証する適合試験の正本である。
 
@@ -6,10 +6,13 @@
 
 - `testdata/engine_compile_parity_v1.json`: Go Engineが生成する入力、期待response、期待blob bytesの共通コーパス
 - `testdata/portable_compile_matrix_v1.json`: コーパスを実行する全経路と、異常系分類を担保する実行可能テストの索引
+- `testdata/workbench_portable_editing_v1.json`: Working Document lifecycle、source patch preview、apply、stale rejection、closeを固定するWorkbench編集コーパス
 - `testdata/engine_wasm_worker_v1.json`: WASM Worker transportの閉じたwire grammarとfailure vocabulary
 - `stdio/v1/`: stdio framingの規範fixture
 
 共通コーパスはsingle/multi-module Project、installed/root Pack、asset、全宣言family、決定論的rejection、resource limit、128 nodeの代表的大規模graph、cancellationを含む。`tools/wasmparity`がin-process Go oracleから生成し、生成差分があればCIを失敗させる。
+
+Workbench編集コーパスはopaqueな`document_handle`、`preview_id`、`engine_release`を正規化し、固定可能なoperation outcome、generation、changed source files、diagnostic code、source bytes、hash presenceを比較する。handleやpreview IDの値そのものをfixture化してはならない。
 
 ## 比較契約
 

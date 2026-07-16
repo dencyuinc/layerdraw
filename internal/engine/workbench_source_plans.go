@@ -66,9 +66,9 @@ type OrganizeWorkspaceInput struct {
 }
 
 type ApplyToHandleInput struct {
-	BaseGeneration DocumentGeneration
-	PreviewDigest  SourcePlannerDigest
-	PreviewID      SourcePlannerPreviewID
+	BaseGeneration DocumentGeneration     `json:"base_generation"`
+	PreviewDigest  SourcePlannerDigest    `json:"preview_digest"`
+	PreviewID      SourcePlannerPreviewID `json:"preview_id"`
 }
 
 type ApplyToHandleResult struct {

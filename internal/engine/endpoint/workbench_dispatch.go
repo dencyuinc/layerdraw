@@ -1137,6 +1137,11 @@ func assignValue(src, dst reflect.Value) error {
 			return nil
 		}
 	}
+	if src.Kind() == reflect.Struct && dst.Kind() == reflect.Struct {
+		if setPlannerPreviewID(src, dst) {
+			return nil
+		}
+	}
 	if dst.Type() == reflect.TypeOf(engineprotocol.SemanticOperationValue{}) && src.Kind() == reflect.Struct {
 		value, err := semanticOperationValueFromScalar(src)
 		if err != nil {
@@ -1157,7 +1162,11 @@ func assignValue(src, dst reflect.Value) error {
 			if name == "" || name == "-" {
 				name = structFieldName(dstType.Field(i).Name)
 			}
-			if source, ok := fields[name]; ok {
+			source, ok := fields[name]
+			if !ok && name == "namespace" {
+				source, ok = fields["endpoint_instance_id"]
+			}
+			if ok {
 				if err := assignValue(source, field); err != nil {
 					return fmt.Errorf("%s: %w", dstType.Field(i).Name, err)
 				}
@@ -1255,6 +1264,26 @@ func setPlannerGeneration(source engineprotocol.DocumentGeneration, target refle
 		return false
 	}
 	value.SetUint(parsed)
+	return true
+}
+
+func setPlannerPreviewID(source, target reflect.Value) bool {
+	srcFields := sourceFields(source)
+	endpoint := srcFields["endpoint_instance_id"]
+	sourceValue := srcFields["value"]
+	targetFields := sourceFields(target)
+	namespace := targetFields["namespace"]
+	value := targetFields["value"]
+	if !namespace.IsValid() || !namespace.CanSet() || !value.IsValid() || !value.CanSet() {
+		return false
+	}
+	endpointValue, hasEndpoint := stringFromField(endpoint)
+	previewValue, hasValue := stringFromField(sourceValue)
+	if !hasEndpoint || !hasValue {
+		return false
+	}
+	namespace.SetString(endpointValue)
+	value.SetString(previewValue)
 	return true
 }
 
