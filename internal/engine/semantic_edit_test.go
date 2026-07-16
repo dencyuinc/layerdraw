@@ -832,6 +832,272 @@ func TestPlanSemanticEditsCanonicalStandardPlacementIsPermutationIndependent(t *
 	}
 }
 
+func TestPlanSemanticEditsInvalidIntermediateOverlayAuthority(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+
+	t.Run("deleted subject cannot resolve through a collapsed stale range", func(t *testing.T) {
+		input, snapshot := semanticEditCompiledFixture(t)
+		original := bytes.Clone(input.ProjectSourceTree["document.ldl"])
+		operations := []SemanticOperation{
+			{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:entity:a"},
+			{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:entity:a"},
+			{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:relation:r"},
+		}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+			BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(snapshot),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Status != "invalid" || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictDeleteVsUpdate || plan.Conflicts[0].TargetAddress != operations[1].TargetAddress {
+			t.Fatalf("second delete did not fail closed against the removed identity: %+v", plan)
+		}
+		if len(plan.SourceTree) != 0 || len(plan.SourceDiff.Edits) != 0 {
+			t.Fatalf("failed atomic batch exposed partially rewritten source: tree=%v edits=%+v", plan.SourceTree, plan.SourceDiff.Edits)
+		}
+		if !bytes.Equal(input.ProjectSourceTree["document.ldl"], original) || !bytes.Contains(original, []byte(`  b "B"`)) {
+			t.Fatal("failed stale-delete batch mutated the caller source or adjacent entity")
+		}
+	})
+
+	t.Run("created required column repairs existing rows later in the batch", func(t *testing.T) {
+		input, snapshot := semanticEditCompiledFixture(t)
+		columnAddress := "ldl:project:p:entity-type:service:column:required_count"
+		operations := []SemanticOperation{
+			{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p:entity-type:service", SubjectKind: materialize.SubjectEntityTypeColumn, ID: "required_count", Fields: []SemanticMapEntry{
+				{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Required Count"}},
+				{Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "integer"}},
+				{Key: "required", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}},
+			}},
+			{Kind: OperationUpsertRow, OwnerAddress: "ldl:project:p:entity:a", ID: "primary", Values: []SemanticRowCell{
+				{ColumnAddress: "ldl:project:p:entity-type:service:column:note", Value: SemanticValue{Kind: SemanticValueString, String: "old"}},
+				{ColumnAddress: columnAddress, Value: SemanticValue{Kind: SemanticValueInteger, Integer: 7}},
+			}},
+		}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+			BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(snapshot),
+		})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("repairable invalid intermediate was rejected: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
+		}
+		source := string(plan.SourceTree["document.ldl"])
+		if !strings.Contains(source, `required_count "Required Count" integer required`) || !strings.Contains(source, `rows service [note, required_count]`) || !strings.Contains(source, `a primary: "old", 7`) {
+			t.Fatalf("complete repair batch lost the planned column or row values:\n%s", source)
+		}
+		recompile := cloneSemanticCompileInput(input)
+		recompile.ProjectSourceTree = plan.SourceTree
+		compiled, compileErr := planner.Compile(context.Background(), recompile)
+		if compileErr != nil || len(compiled.Diagnostics) != 0 || compiled.DefinitionHash != plan.Result.DefinitionHash {
+			t.Fatalf("repair batch did not equal a complete canonical recompile: err=%v diagnostics=%+v", compileErr, compiled.Diagnostics)
+		}
+	})
+
+	t.Run("deleting an owner removes descendant overlay authority", func(t *testing.T) {
+		input, snapshot := semanticEditCompiledFixture(t)
+		original := bytes.Clone(input.ProjectSourceTree["document.ldl"])
+		operations := []SemanticOperation{
+			{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:entity-type:service"},
+			{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:entity-type:service:column:note"},
+		}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+			BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(snapshot),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Status != "invalid" || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictDeleteVsUpdate || plan.Conflicts[0].TargetAddress != operations[1].TargetAddress {
+			t.Fatalf("deleted owner's child remained writable through stale overlay authority: %+v", plan)
+		}
+		if !bytes.Equal(input.ProjectSourceTree["document.ldl"], original) || len(plan.SourceTree) != 0 {
+			t.Fatal("descendant stale-range rejection was not atomic")
+		}
+	})
+
+	t.Run("first named-block child keeps an exact CST range", func(t *testing.T) {
+		const source = `project p "Project" {}
+layers {
+  app "Application" @10
+}
+entity_type service "Service" {
+  representation shape rect
+}
+entities service @app {
+  a "A"
+}
+`
+		input := projectCompileInput(source)
+		compiled, compileErr := planner.Compile(context.Background(), input)
+		if compileErr != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile first-child fixture: err=%v diagnostics=%+v", compileErr, compiled.Diagnostics)
+		}
+		snapshot := compiled.Snapshot()
+		columnAddress := "ldl:project:p:entity-type:service:column:count"
+		changedName := SemanticValue{Kind: SemanticValueString, String: "Changed Count"}
+		operations := []SemanticOperation{
+			{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p:entity-type:service", SubjectKind: materialize.SubjectEntityTypeColumn, ID: "count", Fields: []SemanticMapEntry{
+				{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Count"}},
+				{Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "integer"}},
+				{Key: "required", Value: SemanticValue{Kind: SemanticValueBoolean, Boolean: true}},
+			}},
+			{Kind: OperationUpdateSubjectField, TargetAddress: columnAddress, Path: []string{"display_name"}, Action: "set", Value: &changedName},
+			{Kind: OperationUpsertRow, OwnerAddress: "ldl:project:p:entity:a", ID: "primary", Values: []SemanticRowCell{{ColumnAddress: columnAddress, Value: SemanticValue{Kind: SemanticValueInteger, Integer: 3}}}},
+		}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+			BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(snapshot),
+		})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("first-child repair batch failed: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
+		}
+		got := string(plan.SourceTree["document.ldl"])
+		if strings.Count(got, "columns {") != 1 || !strings.Contains(got, `count "Changed Count" integer required`) || !strings.Contains(got, `a primary: 3`) {
+			t.Fatalf("child update used its wrapper as the declaration range:\n%s", got)
+		}
+	})
+}
+
+func TestPlanSemanticEditsCanonicalOwnerChildPlacement(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		parent   string
+		kind     SemanticSubjectKind
+		address  func(string) string
+		fragment func(string) string
+		fields   func(string) []SemanticMapEntry
+	}{
+		{
+			name: "entity type columns", parent: "ldl:project:p:entity-type:service", kind: materialize.SubjectEntityTypeColumn,
+			address:  func(id string) string { return "ldl:project:p:entity-type:service:column:" + id },
+			fragment: func(id string) string { return id + ` "` + strings.ToUpper(id[:1]) + id[1:] + `" string` },
+			fields: func(id string) []SemanticMapEntry {
+				return []SemanticMapEntry{
+					{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: strings.ToUpper(id[:1]) + id[1:]}},
+					{Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "string"}},
+				}
+			},
+		},
+		{
+			name: "query parameters", parent: "ldl:project:p:query:q", kind: materialize.SubjectQueryParameter,
+			address:  func(id string) string { return "ldl:project:p:query:q:parameter:" + id },
+			fragment: func(id string) string { return id + " string" },
+			fields: func(string) []SemanticMapEntry {
+				return []SemanticMapEntry{{Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "string"}}}
+			},
+		},
+		{
+			name: "view table columns", parent: "ldl:project:p:view:v", kind: materialize.SubjectViewTableColumn,
+			address:  func(id string) string { return "ldl:project:p:view:v:table-column:" + id },
+			fragment: func(id string) string { return "column " + id },
+			fields: func(string) []SemanticMapEntry {
+				return []SemanticMapEntry{{Key: "source", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+					{Key: "field", Value: SemanticValue{Kind: SemanticValueToken, String: "display_name"}},
+					{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "field"}},
+				}}}}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			planner := New(BuildInfo{})
+			input, snapshot := semanticEditCompiledFixture(t)
+			create := func(id string, placement *SemanticPlacementHint) SemanticOperation {
+				return SemanticOperation{Kind: OperationCreateSubject, ParentAddress: test.parent, SubjectKind: test.kind, ID: id, Fields: test.fields(id), Placement: placement}
+			}
+			permutations := [][]SemanticOperation{{create("zeta", nil), create("alpha", nil)}, {create("alpha", nil), create("zeta", nil)}}
+			plans := make([]SemanticEditPlan, 0, len(permutations))
+			for index, operations := range permutations {
+				plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+					BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(snapshot),
+				})
+				if err != nil || plan.Status != "valid" {
+					t.Fatalf("permutation %d failed: status=%s err=%v conflicts=%+v diagnostics=%+v", index, plan.Status, err, plan.Conflicts, plan.Diagnostics)
+				}
+				plans = append(plans, plan)
+			}
+			if !bytes.Equal(plans[0].SourceTree["document.ldl"], plans[1].SourceTree["document.ldl"]) || plans[0].SourceDiff.Digest != plans[1].SourceDiff.Digest || plans[0].Result.DefinitionHash != plans[1].Result.DefinitionHash {
+				t.Fatalf("owner-scoped children retained operation order:\nfirst:\n%s\nsecond:\n%s", plans[0].SourceTree["document.ldl"], plans[1].SourceTree["document.ldl"])
+			}
+			canonical := string(plans[0].SourceTree["document.ldl"])
+			if strings.Index(canonical, test.fragment("alpha")) >= strings.Index(canonical, test.fragment("zeta")) {
+				t.Fatalf("standard owner-child placement was not canonical:\n%s", canonical)
+			}
+
+			seedInput := cloneSemanticCompileInput(input)
+			seedInput.ProjectSourceTree = plans[0].SourceTree
+			end := &SemanticPlacementHint{GroupAnchorAddress: test.address("alpha"), Position: "end"}
+			endPlan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+				BaseInput: seedInput, BaseSnapshot: *plans[0].Result, Batch: SemanticOperationBatch{Operations: []SemanticOperation{create("omega", end)}}, Preconditions: allSemanticPreconditions(*plans[0].Result),
+			})
+			if err != nil || endPlan.Status != "valid" {
+				t.Fatalf("explicit end placement failed: status=%s err=%v conflicts=%+v diagnostics=%+v", endPlan.Status, err, endPlan.Conflicts, endPlan.Diagnostics)
+			}
+			explicit := string(endPlan.SourceTree["document.ldl"])
+			if strings.Index(explicit, test.fragment("zeta")) >= strings.Index(explicit, test.fragment("omega")) {
+				t.Fatalf("explicit end was placed after the anchor instead of the kind-group end:\n%s", explicit)
+			}
+		})
+	}
+}
+
+func TestInsertOwnerChildCanonicalPlacementUsesValidatedID(t *testing.T) {
+	t.Parallel()
+	input, snapshot := semanticEditCompiledFixture(t)
+	_, owner, ok := subjectRecord(snapshot, "ldl:project:p:entity-type:service")
+	if !ok {
+		t.Fatal("fixture owner missing")
+	}
+	mutable := cloneSemanticCompileInput(input)
+	if !insertOwnerChildPlaced(&mutable, snapshot, owner, materialize.SubjectEntityTypeColumn, "alpha", nil, `zeta "Zeta" string`) {
+		t.Fatal("direct owner-child insertion failed")
+	}
+	got := string(mutable.ProjectSourceTree["document.ldl"])
+	if strings.Index(got, `zeta "Zeta" string`) >= strings.Index(got, `note "Note" string`) {
+		t.Fatalf("placement recovered an ID from rendered LDL instead of using validated ID authority:\n%s", got)
+	}
+}
+
+func TestPlanSemanticEditsTopLevelExplicitEndUsesKindGroupEnd(t *testing.T) {
+	t.Parallel()
+	const source = `project p "Project" {}
+entity_type alpha "Alpha" {
+  representation shape rect
+}
+entity_type zeta "Zeta" {
+  representation shape rect
+}
+`
+	planner := New(BuildInfo{})
+	input := projectCompileInput(source)
+	compiled, err := planner.Compile(context.Background(), input)
+	if err != nil || len(compiled.Diagnostics) != 0 {
+		t.Fatalf("compile top-level placement fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+	}
+	snapshot := compiled.Snapshot()
+	operation := SemanticOperation{
+		Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: materialize.SubjectEntityType, ID: "omega",
+		Placement: &SemanticPlacementHint{GroupAnchorAddress: "ldl:project:p:entity-type:alpha", Position: "end"},
+		Fields: []SemanticMapEntry{
+			{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Omega"}},
+			{Key: "representation", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+				{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "shape"}},
+				{Key: "shape", Value: SemanticValue{Kind: SemanticValueToken, String: "rect"}},
+			}}},
+		},
+	}
+	plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
+		BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot),
+	})
+	if err != nil || plan.Status != "valid" {
+		t.Fatalf("top-level explicit end failed: status=%s err=%v conflicts=%+v diagnostics=%+v", plan.Status, err, plan.Conflicts, plan.Diagnostics)
+	}
+	got := string(plan.SourceTree["document.ldl"])
+	alpha, zeta, omega := strings.Index(got, "entity_type alpha"), strings.Index(got, "entity_type zeta"), strings.Index(got, "entity_type omega")
+	if alpha < 0 || zeta < 0 || omega < 0 || !(alpha < zeta && zeta < omega) {
+		t.Fatalf("explicit end followed the anchor instead of the existing kind-group end:\n%s", got)
+	}
+}
+
 func TestCanonicalAuthoringPlanUsesBeforeAndAfterGraphFacts(t *testing.T) {
 	t.Parallel()
 	planner := New(BuildInfo{})
@@ -1677,7 +1943,7 @@ func TestInsertOwnerChildRejectsInvalidSourceAuthority(t *testing.T) {
 			mutable := cloneSemanticCompileInput(input)
 			source := projectSource
 			test.mutate(&mutable, &source)
-			if insertOwnerChild(&mutable, snapshot, source, materialize.SubjectQueryParameter, "limit integer") {
+			if insertOwnerChild(&mutable, snapshot, source, materialize.SubjectQueryParameter, "limit", "limit integer") {
 				t.Fatal("child insertion succeeded without valid owner CST authority")
 			}
 		})

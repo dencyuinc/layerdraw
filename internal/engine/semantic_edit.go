@@ -102,7 +102,7 @@ func (e Engine) PlanSemanticEdits(ctx context.Context, input SemanticEditPlanInp
 			// authoritative semantic index, but rebase all source ranges over the
 			// private overlay so later existing targets remain addressable. Only the
 			// complete final tree is accepted as semantic authority.
-			current = rebaseSnapshotSourceRanges(previous, beforeOperationTree, candidateInput.ProjectSourceTree)
+			current = advanceInvalidSemanticOverlay(previous, beforeOperationTree, candidateInput.ProjectSourceTree, operation)
 			continue
 		}
 		if len(current.Diagnostics) != 0 {
@@ -623,8 +623,19 @@ func rowKindForOwner(subject index.SemanticSubject) SemanticSubjectKind {
 
 func predictedChildAddress(owner string, kind SemanticSubjectKind, id string) string {
 	segment := string(kind)
-	if kind == materialize.SubjectEntityRow || kind == materialize.SubjectRelationRow {
+	switch kind {
+	case materialize.SubjectEntityTypeColumn, materialize.SubjectRelationTypeColumn:
+		segment = "column"
+	case materialize.SubjectEntityTypeConstraint, materialize.SubjectRelationTypeConstraint:
+		segment = "constraint"
+	case materialize.SubjectEntityRow, materialize.SubjectRelationRow:
 		segment = "row"
+	case materialize.SubjectQueryParameter:
+		segment = "parameter"
+	case materialize.SubjectViewTableColumn:
+		segment = "table-column"
+	case materialize.SubjectViewExport:
+		segment = "export"
 	}
 	segment = strings.ReplaceAll(segment, "_", "-")
 	return owner + ":" + segment + ":" + id

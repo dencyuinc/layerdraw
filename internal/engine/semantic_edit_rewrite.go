@@ -424,11 +424,13 @@ func applyUpsertRow(input *CompileInput, snapshot Snapshot, operation SemanticOp
 	}
 	rowKind := rowKindForOwner(owner)
 	address := predictedChildAddress(operation.OwnerAddress, rowKind, operation.ID)
-	if _, existing, ok := subjectRecord(snapshot, address); ok {
+	if _, _, ok := subjectRecord(snapshot, address); ok {
+		beforeDelete := cloneSourceTree(input.ProjectSourceTree)
 		if conflict, diag := applyDeleteWithReservation(input, snapshot, address, false); conflict != nil || diag != nil {
 			return conflict, diag
 		}
-		ownerSource = existing
+		snapshot = rebaseSnapshotSourceRanges(snapshot, beforeDelete, input.ProjectSourceTree)
+		removeOverlaySubject(&snapshot, address)
 	}
 	return appendRowGroupPlaced(input, snapshot, ownerSource.Module.ModulePath, operation.OwnerAddress, operation.ID, operation.Values, operation.ExplicitAbsentColumnAddresses, operation.Placement)
 }
@@ -518,7 +520,7 @@ func applyCreateSubject(input *CompileInput, snapshot Snapshot, operation Semant
 	if !ok || ownerSource.Module.ModulePath != module {
 		return &SemanticConflict{Kind: ConflictPlacementChanged, OwnerAddress: operation.ParentAddress}, nil
 	}
-	if !insertOwnerChildPlaced(input, snapshot, ownerSource, operation.SubjectKind, operation.Placement, declaration) {
+	if !insertOwnerChildPlaced(input, snapshot, ownerSource, operation.SubjectKind, operation.ID, operation.Placement, declaration) {
 		return &SemanticConflict{Kind: ConflictPlacementChanged, OwnerAddress: operation.ParentAddress, ChildKind: operation.SubjectKind}, nil
 	}
 	return nil, nil
@@ -639,36 +641,16 @@ func renderColumn(snapshot Snapshot, module, id string, fields map[string]Semant
 	return strings.Join(parts, " "), true
 }
 
-func insertOwnerChild(input *CompileInput, snapshot Snapshot, owner index.SourceSubjectRecord, kind SemanticSubjectKind, declaration string) bool {
-	return insertOwnerChildPlaced(input, snapshot, owner, kind, nil, declaration)
+func insertOwnerChild(input *CompileInput, snapshot Snapshot, owner index.SourceSubjectRecord, kind SemanticSubjectKind, id, declaration string) bool {
+	return insertOwnerChildPlaced(input, snapshot, owner, kind, id, nil, declaration)
 }
 
-func insertOwnerChildPlaced(input *CompileInput, snapshot Snapshot, owner index.SourceSubjectRecord, kind SemanticSubjectKind, placement *SemanticPlacementHint, declaration string) bool {
+func insertOwnerChildPlaced(input *CompileInput, snapshot Snapshot, owner index.SourceSubjectRecord, kind SemanticSubjectKind, id string, placement *SemanticPlacementHint, declaration string) bool {
 	path := owner.Module.ModulePath
 	source := input.ProjectSourceTree[path]
 	start, end := owner.DeclarationRange.StartByte, owner.DeclarationRange.EndByte
 	if start < 0 || end > len(source) {
 		return false
-	}
-	if placement != nil && placement.GroupAnchorAddress != "" {
-		anchorSemantic, anchor, ok := subjectRecord(snapshot, placement.GroupAnchorAddress)
-		if !ok || anchorSemantic.Kind != kind || anchorSemantic.OwnerAddress == nil || *anchorSemantic.OwnerAddress != owner.Address || anchor.Module.ModulePath != path {
-			return false
-		}
-		position := placement.Position
-		if position == "before" || position == "after" {
-			anchorStart, anchorEnd := extendWholeLine(source, anchor.DeclarationRange.StartByte, anchor.DeclarationRange.EndByte)
-			at := anchorStart
-			if position == "after" {
-				at = anchorEnd
-			}
-			indent := lineIndent(source, anchor.DeclarationRange.StartByte)
-			replaceSourceRange(input, path, at, at, []byte(indent+indentMultiline(declaration, indent)+"\n"))
-			return true
-		}
-		if position != "end" {
-			return false
-		}
 	}
 	blockName := ""
 	switch kind {
@@ -679,11 +661,104 @@ func insertOwnerChildPlaced(input *CompileInput, snapshot Snapshot, owner index.
 	case materialize.SubjectViewTableColumn:
 		blockName = "table"
 	}
+	blockOpen, blockClose, hasBlock := 0, 0, false
 	if blockName != "" {
-		if open, close, ok := findNamedBlock(source, start, end, blockName); ok {
-			indent := lineIndent(source, open) + "  "
-			replaceSourceRange(input, path, close, close, []byte("\n"+indent+indentMultiline(declaration, indent)))
+		blockOpen, blockClose, hasBlock = findNamedBlock(source, start, end, blockName)
+	}
+	type childCandidate struct {
+		address string
+		source  index.SourceSubjectRecord
+	}
+	candidates := make([]childCandidate, 0)
+	for _, semantic := range snapshot.SemanticIndex.Subjects {
+		if semantic.Kind != kind || semantic.OwnerAddress == nil || *semantic.OwnerAddress != owner.Address {
+			continue
+		}
+		_, childSource, ok := subjectRecord(snapshot, semantic.Address)
+		if !ok || childSource.Module.ModulePath != path || childSource.DeclarationRange.StartByte < start || childSource.DeclarationRange.EndByte > end {
+			continue
+		}
+		candidates = append(candidates, childCandidate{address: semantic.Address, source: childSource})
+	}
+	insertAt := func(at int, indent string) bool {
+		replaceSourceRange(input, path, at, at, []byte(indent+indentMultiline(declaration, indent)+"\n"))
+		return true
+	}
+	insertBefore := func(candidate index.SourceSubjectRecord) bool {
+		candidateStart, _ := extendWholeLine(source, candidate.DeclarationRange.StartByte, candidate.DeclarationRange.EndByte)
+		return insertAt(candidateStart, lineIndent(source, candidate.DeclarationRange.StartByte))
+	}
+	insertAtBlockEnd := func() bool {
+		if !hasBlock {
+			return false
+		}
+		blockIndent := lineIndent(source, blockOpen)
+		childIndent := blockIndent + "  "
+		lineStart := blockClose
+		for lineStart > 0 && source[lineStart-1] != '\n' {
+			lineStart--
+		}
+		if len(bytes.TrimSpace(source[lineStart:blockClose])) == 0 {
+			replaceSourceRange(input, path, lineStart, lineStart, []byte(childIndent+indentMultiline(declaration, childIndent)+"\n"))
 			return true
+		}
+		replaceSourceRange(input, path, blockClose, blockClose, []byte("\n"+childIndent+indentMultiline(declaration, childIndent)+"\n"+blockIndent))
+		return true
+	}
+	insertAfterGroup := func() bool {
+		if hasBlock {
+			return insertAtBlockEnd()
+		}
+		if len(candidates) == 0 {
+			return false
+		}
+		last := candidates[0].source
+		for _, candidate := range candidates[1:] {
+			if candidate.source.DeclarationRange.EndByte > last.DeclarationRange.EndByte {
+				last = candidate.source
+			}
+		}
+		_, candidateEnd := extendWholeLine(source, last.DeclarationRange.StartByte, last.DeclarationRange.EndByte)
+		return insertAt(candidateEnd, lineIndent(source, last.DeclarationRange.StartByte))
+	}
+	if placement != nil && placement.GroupAnchorAddress != "" {
+		anchorSemantic, anchor, ok := subjectRecord(snapshot, placement.GroupAnchorAddress)
+		if !ok || anchorSemantic.Kind != kind || anchorSemantic.OwnerAddress == nil || *anchorSemantic.OwnerAddress != owner.Address || anchor.Module.ModulePath != path {
+			return false
+		}
+		position := placement.Position
+		if position == "before" || position == "after" {
+			anchorStart, anchorEnd := extendWholeLine(source, anchor.DeclarationRange.StartByte, anchor.DeclarationRange.EndByte)
+			if position == "after" {
+				return insertAt(anchorEnd, lineIndent(source, anchor.DeclarationRange.StartByte))
+			}
+			return insertAt(anchorStart, lineIndent(source, anchor.DeclarationRange.StartByte))
+		}
+		if position != "end" {
+			return false
+		}
+		// Explicit end means the end of this owner's same-kind group, not
+		// merely after whichever member happened to be supplied as anchor.
+		if insertAfterGroup() {
+			return true
+		}
+	} else if len(candidates) != 0 {
+		// Standard placement is canonical for newly planned children while
+		// retaining the relative byte order of every existing declaration.
+		newAddress := predictedChildAddress(owner.Address, kind, id)
+		sort.Slice(candidates, func(i, j int) bool {
+			return compareStableAddressText(candidates[i].address, candidates[j].address) < 0
+		})
+		for _, candidate := range candidates {
+			if compareStableAddressText(newAddress, candidate.address) < 0 {
+				return insertBefore(candidate.source)
+			}
+		}
+		return insertAfterGroup()
+	}
+	if blockName != "" {
+		if hasBlock {
+			return insertAtBlockEnd()
 		}
 	}
 	close := bytes.LastIndexByte(source[start:end], '}')
@@ -774,8 +849,28 @@ func insertPlacedDeclaration(input *CompileInput, snapshot Snapshot, module stri
 	switch position {
 	case "before":
 		replaceSourceRange(input, module, declarationStart, declarationStart, []byte(declaration+"\n"))
-	case "after", "end":
+	case "after":
 		replaceSourceRange(input, module, declarationEnd, declarationEnd, []byte(declaration+"\n"))
+	case "end":
+		groupEnd := declarationEnd
+		for _, semantic := range snapshot.SemanticIndex.Subjects {
+			if semantic.Kind != kind || ownerForSubject(snapshot, semantic) != owner {
+				continue
+			}
+			_, candidate, present := subjectRecord(snapshot, semantic.Address)
+			if !present || candidate.Module.ModulePath != module {
+				continue
+			}
+			candidateStart, candidateEnd, present := enclosingDeclarationSpan(snapshot, candidate)
+			if !present {
+				continue
+			}
+			_, candidateEnd = extendWholeLine(data, candidateStart, candidateEnd)
+			if candidateEnd > groupEnd {
+				groupEnd = candidateEnd
+			}
+		}
+		replaceSourceRange(input, module, groupEnd, groupEnd, []byte(declaration+"\n"))
 	default:
 		return false
 	}
