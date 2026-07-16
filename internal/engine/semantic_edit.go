@@ -20,6 +20,8 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/syntax"
 )
 
+const maxInt = int(^uint(0) >> 1)
+
 var errSemanticConflict = errors.New("semantic edit conflict")
 
 // PlanSemanticEdits applies one generated-equivalent semantic operation batch
@@ -1508,7 +1510,12 @@ func replaceSourceRange(input *CompileInput, path string, start, end int, replac
 	if start < 0 || start > end || end > len(source) {
 		return
 	}
-	updated := make([]byte, 0, len(source)-(end-start)+len(replacement))
+	removed := end - start
+	preserved := len(source) - removed
+	if len(replacement) > maxInt-preserved {
+		return
+	}
+	updated := make([]byte, 0, preserved+len(replacement))
 	updated = append(updated, source[:start]...)
 	updated = append(updated, replacement...)
 	updated = append(updated, source[end:]...)
