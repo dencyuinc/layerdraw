@@ -1162,10 +1162,26 @@ function compareCanonicalCollection(profile, left, right) {
     const b = right.before_address ?? right.after_address;
     return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a, b) : undefined;
   };
-  const conflictAddress = () => {
-    const a = left.target_address ?? left.owner_address ?? "";
-    const b = right.target_address ?? right.owner_address ?? "";
+  const conflictAddress = (property) => {
+    const a = left[property] ?? "";
+    const b = right[property] ?? "";
     return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a, b) : compareStableAddresses(a, b)) : undefined;
+  };
+  const conflictKind = () => {
+    const order = ["stale_revision", "subject_changed", "subtree_changed", "child_set_changed", "same_field_changed", "delete_vs_update", "duplicate_identity", "reference_broken", "schema_row_incompatible", "placement_changed", "project_identity_changed"];
+    if (typeof left.kind !== "string" || typeof right.kind !== "string") return undefined;
+    const a = order.indexOf(left.kind);
+    const b = order.indexOf(right.kind);
+    return a < 0 || b < 0 ? undefined : a - b;
+  };
+  const conflictChildKind = () => {
+    const a = left.child_kind ?? "";
+    const b = right.child_kind ?? "";
+    if (typeof a !== "string" || typeof b !== "string") return undefined;
+    if (a === "" || b === "") return compareUnicodeScalars(a, b);
+    const leftRank = semanticSubjectKindRank(a);
+    const rightRank = semanticSubjectKindRank(b);
+    return leftRank < 0 || rightRank < 0 ? undefined : leftRank - rightRank;
   };
   const path = () => {
     const a = left.path ?? [];
@@ -1226,7 +1242,7 @@ function compareCanonicalCollection(profile, left, right) {
     return chain(address, offset);
   }
   if (profile === "child_set") return chain(() => stable("owner_address"), () => kind("child_kind"));
-  if (profile === "conflict") return chain(conflictAddress, () => text("kind"), path);
+  if (profile === "conflict") return chain(conflictKind, () => conflictAddress("target_address"), () => conflictAddress("owner_address"), conflictChildKind, path);
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left.module) && isObject(right.module) ? compareModuleOrder(left.module, right.module) : undefined;

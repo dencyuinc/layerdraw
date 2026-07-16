@@ -3672,19 +3672,80 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 		}
 		return compareStableAddressValues(l, r)
 	}
-	conflictAddress := func() (int, bool) {
-		l, _ := a["target_address"].(string)
-		if l == "" {
-			l, _ = a["owner_address"].(string)
+	conflictAddress := func(property string) func() (int, bool) {
+		return func() (int, bool) {
+			l, _ := a[property].(string)
+			r, _ := b[property].(string)
+			if l == "" || r == "" {
+				return compareText(l, r), true
+			}
+			return compareStableAddressValues(l, r)
 		}
-		r, _ := b["target_address"].(string)
-		if r == "" {
-			r, _ = b["owner_address"].(string)
+	}
+	conflictKind := func() (int, bool) {
+		rank := func(value string) int {
+			switch value {
+			case "stale_revision":
+				return 0
+			case "subject_changed":
+				return 1
+			case "subtree_changed":
+				return 2
+			case "child_set_changed":
+				return 3
+			case "same_field_changed":
+				return 4
+			case "delete_vs_update":
+				return 5
+			case "duplicate_identity":
+				return 6
+			case "reference_broken":
+				return 7
+			case "schema_row_incompatible":
+				return 8
+			case "placement_changed":
+				return 9
+			case "project_identity_changed":
+				return 10
+			default:
+				return -1
+			}
 		}
+		l, lOK := a["kind"].(string)
+		r, rOK := b["kind"].(string)
+		if !lOK || !rOK {
+			return 0, false
+		}
+		lr, rr := rank(l), rank(r)
+		if lr < 0 || rr < 0 {
+			return 0, false
+		}
+		if lr < rr {
+			return -1, true
+		}
+		if lr > rr {
+			return 1, true
+		}
+		return 0, true
+	}
+	conflictChildKind := func() (int, bool) {
+		l, _ := a["child_kind"].(string)
+		r, _ := b["child_kind"].(string)
 		if l == "" || r == "" {
 			return compareText(l, r), true
 		}
-		return compareStableAddressValues(l, r)
+		lr, lok := semanticSubjectKindRank(l)
+		rr, rok := semanticSubjectKindRank(r)
+		if !lok || !rok {
+			return 0, false
+		}
+		if lr < rr {
+			return -1, true
+		}
+		if lr > rr {
+			return 1, true
+		}
+		return 0, true
 	}
 	pathProperty := func(property string) func() (int, bool) {
 		return func() (int, bool) {
@@ -3793,7 +3854,7 @@ func compareCanonicalCollection(profile string, left, right any) (int, bool) {
 	case "child_set":
 		return chain(func() (int, bool) { return stable("owner_address") }, func() (int, bool) { return kind("child_kind") })
 	case "conflict":
-		return chain(conflictAddress, func() (int, bool) { return text("kind") }, path)
+		return chain(conflictKind, conflictAddress("target_address"), conflictAddress("owner_address"), conflictChildKind, path)
 	case "reference_id":
 		return text("id")
 	case "subject_kind":

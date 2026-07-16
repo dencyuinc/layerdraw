@@ -53,6 +53,9 @@ func buildPlannedSourceDiffContext(ctx context.Context, before, after map[string
 			edits = append(edits, PlannedSourceEdit{Kind: PlannedSourceDelete, ModulePath: path, BeforeModule: &module, BeforeDigest: semanticDigest(left), StartByte: 0, EndByte: len(left)})
 		case !bytes.Equal(left, right):
 			for _, edit := range minimalModuleEdits(path, left, right) {
+				// The frozen SourceEdit contract carries a reconstructable full
+				// after-module attachment. Replacement retains the minimal private
+				// range payload used to prove/apply the CST rewrite locally.
 				blob := plannedSourceBlob(path, 0, len(right), right)
 				edit.ReplacementBlob = &blob
 				edits = append(edits, edit)
@@ -66,8 +69,23 @@ func buildPlannedSourceDiffContext(ctx context.Context, before, after map[string
 	// subject identity remains exclusively driven by authored lineage.
 	used := make([]bool, len(edits))
 	moves := make([]PlannedSourceEdit, 0)
+	deleteByDigest := map[string][]int{}
+	createByDigest := map[string][]int{}
+	for index, edit := range edits {
+		switch edit.Kind {
+		case PlannedSourceDelete:
+			deleteByDigest[edit.BeforeDigest] = append(deleteByDigest[edit.BeforeDigest], index)
+		case PlannedSourceCreate:
+			createByDigest[edit.AfterDigest] = append(createByDigest[edit.AfterDigest], index)
+		}
+	}
 	for left := range edits {
 		if edits[left].Kind != PlannedSourceDelete || used[left] {
+			continue
+		}
+		// Equal bytes do not carry file identity. Pair a move only when the
+		// before/after state supplies a unique one-to-one candidate.
+		if len(deleteByDigest[edits[left].BeforeDigest]) != 1 || len(createByDigest[edits[left].BeforeDigest]) != 1 {
 			continue
 		}
 		for right := range edits {
@@ -321,21 +339,162 @@ func buildPlannedSemanticDiff(before, after Snapshot) PlannedSemanticDiff {
 
 // BuildCanonicalAuthoringPlan is the single compiler-authoritative derivation
 // of source diff, semantic diff, and authoring impact. Endpoint preview and the
-// commit path consume the same before/after snapshots and authored lineage.
-func BuildCanonicalAuthoringPlan(ctx context.Context, before, after Snapshot, beforeTree, afterTree map[string][]byte, lineage []IdentityLineage, limits SemanticPlanLimits) (PlannedSourceDiff, PlannedSemanticDiff, PlannedAuthoringImpact, error) {
+// commit path consume the same before/after snapshots.
+func BuildCanonicalAuthoringPlan(ctx context.Context, before, after Snapshot, beforeTree, afterTree map[string][]byte, limits SemanticPlanLimits) (PlannedSourceDiff, PlannedSemanticDiff, PlannedAuthoringImpact, error) {
+	changedFiles := changedSourcePaths(beforeTree, afterTree)
 	source, err := buildPlannedSourceDiffContext(ctx, beforeTree, afterTree, limits)
 	if err != nil {
 		return PlannedSourceDiff{}, PlannedSemanticDiff{}, PlannedAuthoringImpact{}, err
 	}
-	semantic, err := buildPlannedSemanticDiffContext(ctx, before, after, lineage, limits)
+	if err := validateCanonicalPlanBudget(limits, changedFiles, after, source, PlannedSemanticDiff{}, nil); err != nil {
+		return PlannedSourceDiff{}, PlannedSemanticDiff{}, PlannedAuthoringImpact{}, err
+	}
+	semantic, err := buildPlannedSemanticDiffContext(ctx, before, after, compilerIdentityLineage(before, after), limits)
 	if err != nil {
+		return PlannedSourceDiff{}, PlannedSemanticDiff{}, PlannedAuthoringImpact{}, err
+	}
+	if err := validateCanonicalPlanBudget(limits, changedFiles, after, source, semantic, nil); err != nil {
 		return PlannedSourceDiff{}, PlannedSemanticDiff{}, PlannedAuthoringImpact{}, err
 	}
 	impact, err := buildPlannedAuthoringImpactContext(ctx, before, after, source, semantic, limits)
 	if err != nil {
 		return PlannedSourceDiff{}, PlannedSemanticDiff{}, PlannedAuthoringImpact{}, err
 	}
+	if err := validateCanonicalPlanBudget(limits, changedFiles, after, source, semantic, &impact); err != nil {
+		return PlannedSourceDiff{}, PlannedSemanticDiff{}, PlannedAuthoringImpact{}, err
+	}
 	return source, semantic, impact, nil
+}
+
+func validateCanonicalPlanBudget(limits SemanticPlanLimits, changedFiles []string, resulting Snapshot, source PlannedSourceDiff, semantic PlannedSemanticDiff, impact *PlannedAuthoringImpact) error {
+	items := int64(len(changedFiles) + len(source.Edits) + len(semantic.Entries))
+	for _, entry := range semantic.Entries {
+		items += int64(len(entry.ChangedFieldPaths))
+		for _, path := range entry.ChangedFieldPaths {
+			items += int64(len(path.Tokens))
+		}
+	}
+	if impact != nil {
+		items += int64(len(impact.Entries) + len(impact.RequiredCapabilities))
+		for _, entry := range impact.Entries {
+			items += int64(len(entry.ChangedFieldPaths) + len(entry.BeforeRefs) + len(entry.AfterRefs) + len(entry.SourceRefs))
+			for _, path := range entry.ChangedFieldPaths {
+				items += int64(len(path.Tokens))
+			}
+			if entry.GraphFacts != nil {
+				items += int64(len(entry.GraphFacts.EntityTypeAddresses) + len(entry.GraphFacts.RelationTypeAddresses) + len(entry.GraphFacts.LayerAddresses) + len(entry.GraphFacts.ColumnAddresses) + len(entry.GraphFacts.EndpointEntityAddresses) + len(entry.GraphFacts.ActionFlags))
+			}
+		}
+		items += int64(len(resulting.SubjectSemanticHashes) + len(resulting.SubtreeHashes) + len(resulting.ChildSetHashes))
+		for _, childSet := range resulting.ChildSetHashes {
+			items += int64(len(childSet.Addresses))
+		}
+	}
+	if limits.MaxItems > 0 && items > limits.MaxItems {
+		return semanticPlanLimitError("logical_response_items", limits.MaxItems, items)
+	}
+	if limits.MaxOutputBytes > 0 {
+		changed := make([]any, 0, len(changedFiles))
+		for _, modulePath := range changedFiles {
+			changed = append(changed, moduleRefWireValue(projectModuleRef(modulePath)))
+		}
+		wire := map[string]any{"changed_source_files": changed, "source_diff": sourceWireValue(source), "semantic_diff": semanticWireValue(semantic)}
+		if impact != nil {
+			wire["authoring_impact"] = authoringImpactWireValue(*impact, true)
+			wire["resulting_hashes"] = resultingHashesWireValue(resulting)
+		}
+		encoded, err := materialize.Canonicalize(wire)
+		if err != nil {
+			return err
+		}
+		logicalBytes := int64(len(encoded))
+		for _, edit := range source.Edits {
+			if edit.ReplacementBlob != nil {
+				logicalBytes += int64(len(edit.ReplacementBlob.Bytes))
+			}
+		}
+		if logicalBytes > limits.MaxOutputBytes {
+			return semanticPlanLimitError("logical_response_bytes", limits.MaxOutputBytes, logicalBytes)
+		}
+	}
+	return nil
+}
+
+func changedSourcePaths(before, after map[string][]byte) []string {
+	paths := map[string]bool{}
+	for path := range before {
+		paths[path] = true
+	}
+	for path := range after {
+		paths[path] = true
+	}
+	changed := make([]string, 0, len(paths))
+	for path := range paths {
+		if !bytes.Equal(before[path], after[path]) {
+			changed = append(changed, path)
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+func sourceWireValue(diff PlannedSourceDiff) map[string]any {
+	edits := make([]any, 0, len(diff.Edits))
+	for _, edit := range diff.Edits {
+		edits = append(edits, sourceEditWireValue(edit))
+	}
+	return map[string]any{"digest": diff.Digest, "edits": edits}
+}
+
+func semanticWireValue(diff PlannedSemanticDiff) map[string]any {
+	entries := make([]any, 0, len(diff.Entries))
+	for _, entry := range diff.Entries {
+		entries = append(entries, semanticDiffEntryWireValue(entry))
+	}
+	return map[string]any{"digest": diff.Digest, "entries": entries}
+}
+
+func resultingHashesWireValue(snapshot Snapshot) map[string]any {
+	subjects := make([]any, 0, len(snapshot.SubjectSemanticHashes))
+	for _, value := range snapshot.SubjectSemanticHashes {
+		subjects = append(subjects, map[string]any{"address": value.Address, "hash": value.Hash, "kind": string(value.Kind)})
+	}
+	subtrees := make([]any, 0, len(snapshot.SubtreeHashes))
+	for _, value := range snapshot.SubtreeHashes {
+		subtrees = append(subtrees, map[string]any{"hash": value.Hash, "owner_address": value.OwnerAddress})
+	}
+	children := make([]any, 0, len(snapshot.ChildSetHashes))
+	for _, value := range snapshot.ChildSetHashes {
+		children = append(children, map[string]any{"child_addresses": stringsToAny(value.Addresses), "child_kind": string(value.ChildKind), "hash": value.Hash, "owner_address": value.OwnerAddress})
+	}
+	return map[string]any{"definition_hash": snapshot.DefinitionHash, "subject_hashes": subjects, "subtree_hashes": subtrees, "child_set_hashes": children}
+}
+
+// compilerIdentityLineage derives rename/migration authority exclusively from
+// the compiled identity move closure. Operations are intent, not identity
+// evidence; only closure edges newly present in the after state may pair
+// before/after subjects.
+func compilerIdentityLineage(before, after Snapshot) []IdentityLineage {
+	if before.NormalizedDocument == nil || after.NormalizedDocument == nil {
+		return nil
+	}
+	prior := map[string]bool{}
+	for _, move := range before.NormalizedDocument.Identity.MoveClosure {
+		prior[string(move.Kind)+"\x00"+move.SourceAddress+"\x00"+move.TerminalAddress] = true
+	}
+	lineage := make([]IdentityLineage, 0)
+	for _, move := range after.NormalizedDocument.Identity.MoveClosure {
+		key := string(move.Kind) + "\x00" + move.SourceAddress + "\x00" + move.TerminalAddress
+		if prior[key] {
+			continue
+		}
+		kind := SemanticRenamed
+		if move.Kind == materialize.SubjectProject {
+			kind = SemanticRenamed
+		}
+		lineage = append(lineage, IdentityLineage{ChangeKind: kind, Kind: move.Kind, BeforeAddress: move.SourceAddress, AfterAddress: move.TerminalAddress})
+	}
+	return lineage
 }
 
 func buildPlannedSemanticDiffContext(ctx context.Context, before, after Snapshot, lineage []IdentityLineage, limits SemanticPlanLimits) (PlannedSemanticDiff, error) {
@@ -469,9 +628,38 @@ func changedPaths(before, after map[string]any) []AuthoredFieldPath {
 	sort.Strings(keys)
 	out := make([]AuthoredFieldPath, 0)
 	for _, key := range keys {
-		if !reflect.DeepEqual(before[key], after[key]) {
-			out = append(out, AuthoredFieldPath{Tokens: []string{key}})
+		if reflect.DeepEqual(before[key], after[key]) {
+			continue
 		}
+		if key == "annotations" || key == "values" {
+			beforeLeaves, beforeOK := before[key].(map[string]any)
+			afterLeaves, afterOK := after[key].(map[string]any)
+			if !beforeOK {
+				beforeLeaves = map[string]any{}
+			}
+			if !afterOK {
+				afterLeaves = map[string]any{}
+			}
+			leaves := map[string]bool{}
+			for leaf := range beforeLeaves {
+				leaves[leaf] = true
+			}
+			for leaf := range afterLeaves {
+				leaves[leaf] = true
+			}
+			ordered := make([]string, 0, len(leaves))
+			for leaf := range leaves {
+				ordered = append(ordered, leaf)
+			}
+			sort.Strings(ordered)
+			for _, leaf := range ordered {
+				if !reflect.DeepEqual(beforeLeaves[leaf], afterLeaves[leaf]) {
+					out = append(out, AuthoredFieldPath{Tokens: []string{key, leaf}})
+				}
+			}
+			continue
+		}
+		out = append(out, AuthoredFieldPath{Tokens: []string{key}})
 	}
 	return out
 }
@@ -493,7 +681,7 @@ func subjectRefs(snapshot Snapshot, address string) []string {
 	for value := range set {
 		out = append(out, value)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return compareStableAddressText(out[i], out[j]) < 0 })
 	return out
 }
 

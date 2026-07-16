@@ -160,7 +160,9 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
   };
   const range = (): number | undefined => isObject(left["range"]) && isObject(right["range"]) ? compareRangePosition(left["range"],right["range"]) : undefined;
   const identity = (): number | undefined => { const a = left["before_address"] ?? left["after_address"], b = right["before_address"] ?? right["after_address"]; return typeof a === "string" && typeof b === "string" ? compareStableAddresses(a,b) : undefined; };
-  const conflictAddress = (): number | undefined => { const a = left["target_address"] ?? left["owner_address"] ?? "", b = right["target_address"] ?? right["owner_address"] ?? ""; return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b)) : undefined; };
+  const conflictAddress = (property: string): number | undefined => { const a=left[property] ?? "", b=right[property] ?? ""; return typeof a === "string" && typeof b === "string" ? (a === "" || b === "" ? compareUnicodeScalars(a,b) : compareStableAddresses(a,b)) : undefined; };
+  const conflictKind = (): number | undefined => { const order = ["stale_revision","subject_changed","subtree_changed","child_set_changed","same_field_changed","delete_vs_update","duplicate_identity","reference_broken","schema_row_incompatible","placement_changed","project_identity_changed"]; if (typeof left["kind"] !== "string" || typeof right["kind"] !== "string") return undefined; const a=order.indexOf(left["kind"]), b=order.indexOf(right["kind"]); return a < 0 || b < 0 ? undefined : a-b; };
+  const conflictChildKind = (): number | undefined => { const a=left["child_kind"] ?? "", b=right["child_kind"] ?? ""; if (typeof a !== "string" || typeof b !== "string") return undefined; if (a === "" || b === "") return compareUnicodeScalars(a,b); const ar=semanticSubjectKindRank(a), br=semanticSubjectKindRank(b); return ar < 0 || br < 0 ? undefined : ar-br; };
   const path = (): number | undefined => { const a = left["path"] ?? [], b = right["path"] ?? []; if (!Array.isArray(a) || !Array.isArray(b)) return undefined; for (let index=0; index<Math.min(a.length,b.length); index++) { if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined; const value=compareUnicodeScalars(a[index],b[index]); if (value !== 0) return value; } return a.length-b.length; };
   const optionalSourceRange = (): number | undefined => { const a=left["source_range"], b=right["source_range"]; if (!isObject(a) || !isObject(b)) return isObject(a) ? 1 : isObject(b) ? -1 : 0; return compareRangePosition(a,b); };
   const stringArray = (property: string): number | undefined => { const a=left[property] ?? [], b=right[property] ?? []; if (!Array.isArray(a) || !Array.isArray(b)) return undefined; for (let index=0; index<Math.min(a.length,b.length); index++) { if (typeof a[index] !== "string" || typeof b[index] !== "string") return undefined; const value=compareUnicodeScalars(a[index],b[index]); if (value !== 0) return value; } return a.length-b.length; };
@@ -176,7 +178,7 @@ function compareCanonicalCollection(profile: string, left: unknown, right: unkno
     return chain(address,offset);
   }
   if (profile === "child_set") return chain(() => stable("owner_address"),() => kind("child_kind"));
-  if (profile === "conflict") return chain(conflictAddress,() => text("kind"),path);
+  if (profile === "conflict") return chain(conflictKind,() => conflictAddress("target_address"),() => conflictAddress("owner_address"),conflictChildKind,path);
   if (profile === "reference_id") return text("id");
   if (profile === "subject_kind") return kind("kind");
   if (profile === "module_scope") return isObject(left["module"]) && isObject(right["module"]) ? compareModuleOrder(left["module"],right["module"]) : undefined;

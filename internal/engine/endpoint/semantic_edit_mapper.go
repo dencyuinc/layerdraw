@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/engine"
 )
 
@@ -17,6 +18,9 @@ import (
 // complete generated Workbench operation contract and the pure Engine
 // planner. Generated validation runs before any planner-domain value exists.
 func MapSemanticEditPlanInput(baseInput engine.CompileInput, base engine.Snapshot, preconditions engineprotocol.EngineEditPreconditions, batch engineprotocol.SemanticOperationBatch) (engine.SemanticEditPlanInput, error) {
+	if _, err := engineprotocol.EncodeEngineEditPreconditions(preconditions); err != nil {
+		return engine.SemanticEditPlanInput{}, fmt.Errorf("map semantic edit preconditions: %w", err)
+	}
 	return mapSemanticEditPlanInput(baseInput, base, preconditions, batch, nil)
 }
 
@@ -58,7 +62,7 @@ func mapSemanticEditPlanInput(baseInput engine.CompileInput, base engine.Snapsho
 	}
 	if preconditions.ExpectedSourceDigests != nil {
 		for _, expected := range *preconditions.ExpectedSourceDigests {
-			pre.ExpectedSourceDigests = append(pre.ExpectedSourceDigests, engine.ExpectedSemanticSourceDigest{ModulePath: expected.Module.ModulePath, Digest: string(expected.Digest)})
+			pre.ExpectedSourceDigests = append(pre.ExpectedSourceDigests, engine.ExpectedSemanticSourceDigest{Module: mapGeneratedModuleRef(expected.Module), Digest: string(expected.Digest)})
 		}
 	}
 	plan := engine.SemanticEditPlanInput{BaseInput: baseInput, BaseSnapshot: base, Batch: engine.SemanticOperationBatch{Operations: operations}, Preconditions: pre, Generation: engine.SemanticDocumentGeneration{EndpointInstanceID: string(preconditions.DocumentGeneration.DocumentHandle.EndpointInstanceID), DocumentHandle: preconditions.DocumentGeneration.DocumentHandle.Value, Value: string(preconditions.DocumentGeneration.Value)}}
@@ -74,6 +78,14 @@ func mapSemanticEditPlanInput(baseInput engine.CompileInput, base engine.Snapsho
 		plan.Limits = engine.SemanticPlanLimits{MaxItems: maxItems, MaxOutputBytes: maxBytes}
 	}
 	return plan, nil
+}
+
+func mapGeneratedModuleRef(module semantic.ModuleRef) engine.PlannedModuleRef {
+	mapped := engine.PlannedModuleRef{OriginKind: engine.SourceOriginKind(module.Origin.Kind), ModulePath: module.ModulePath}
+	if module.Origin.PackAddress != nil {
+		mapped.PackAddress = string(*module.Origin.PackAddress)
+	}
+	return mapped
 }
 
 func mapGeneratedSemanticOperation(generated engineprotocol.SemanticOperation) (engine.SemanticOperation, error) {
@@ -135,6 +147,9 @@ func mapGeneratedSemanticOperation(generated engineprotocol.SemanticOperation) (
 		if value.Placement != nil {
 			op.Placement = mapGeneratedPlacement(value.Placement)
 		}
+		if err := validateMappedOperation(op); err != nil {
+			return op, err
+		}
 		return op, nil
 	}
 	if generated.CreateSubjectOperation == nil {
@@ -151,9 +166,48 @@ func mapGeneratedSemanticOperation(generated engineprotocol.SemanticOperation) (
 		if placement := operation.FieldByName("Placement"); placement.IsValid() && !placement.IsNil() {
 			op.Placement = mapGeneratedPlacement(placement.Interface().(*engineprotocol.PlacementHint))
 		}
+		if err := validateMappedOperation(op); err != nil {
+			return op, err
+		}
 		return op, nil
 	}
 	return engine.SemanticOperation{}, fmt.Errorf("generated create operation has no alternative")
+}
+
+func validateMappedOperation(operation engine.SemanticOperation) error {
+	if operation.Value != nil {
+		if err := validateMappedValue(*operation.Value); err != nil {
+			return err
+		}
+	}
+	for _, field := range operation.Fields {
+		if err := validateMappedValue(field.Value); err != nil {
+			return fmt.Errorf("map create field %q: %w", field.Key, err)
+		}
+	}
+	for _, cell := range operation.Values {
+		if err := validateMappedValue(cell.Value); err != nil {
+			return fmt.Errorf("map row cell %q: %w", cell.ColumnAddress, err)
+		}
+	}
+	return nil
+}
+
+func validateMappedValue(value engine.SemanticValue) error {
+	if value.Kind == "" {
+		return fmt.Errorf("unsupported generated authored value")
+	}
+	for _, item := range value.Array {
+		if err := validateMappedValue(item); err != nil {
+			return err
+		}
+	}
+	for _, item := range value.Map {
+		if err := validateMappedValue(item.Value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func mapGeneratedPlacement(value *engineprotocol.PlacementHint) *engine.SemanticPlacementHint {
@@ -186,7 +240,12 @@ func mapGeneratedTaggedValue(value engineprotocol.SemanticOperationValue) (engin
 	case engineprotocol.SemanticOperationValueKindString:
 		out.String = *value.String
 	case engineprotocol.SemanticOperationValueKindBlob:
+		size, err := strconv.ParseUint(string(value.Blob.Size), 10, 64)
+		if err != nil {
+			return out, fmt.Errorf("map semantic blob size: %w", err)
+		}
 		out.Blob = string(value.Blob.Digest)
+		out.BlobRef = &engine.SemanticBlobRef{BlobID: value.Blob.BlobID, Digest: string(value.Blob.Digest), Lifetime: string(value.Blob.Lifetime), MediaType: value.Blob.MediaType, Size: size}
 	case engineprotocol.SemanticOperationValueKindArray:
 		for _, item := range *value.Array {
 			mapped, err := mapGeneratedTaggedValue(item)
@@ -251,6 +310,9 @@ func mapGeneratedPlainValue(value reflect.Value) engine.SemanticValue {
 		if strings.Contains(packagePath, "/gen/go/semantic") && strings.Contains(name, "FiniteDecimal") {
 			return engine.SemanticValue{Kind: engine.SemanticValueDecimal, Decimal: text}
 		}
+		if strings.Contains(packagePath, "/gen/go/semantic") && name != "Color" && name != "LocalIdentifier" {
+			return engine.SemanticValue{Kind: engine.SemanticValueToken, String: text}
+		}
 		return engine.SemanticValue{Kind: engine.SemanticValueString, String: text}
 	}
 	switch value.Kind() {
@@ -266,7 +328,12 @@ func mapGeneratedPlainValue(value reflect.Value) engine.SemanticValue {
 		return engine.SemanticValue{Kind: engine.SemanticValueArray, Array: items}
 	case reflect.Struct:
 		if typeOf.Name() == "BlobRef" {
-			return engine.SemanticValue{Kind: engine.SemanticValueBlob, Blob: fmt.Sprint(value.FieldByName("Digest").Interface())}
+			size, err := strconv.ParseUint(fmt.Sprint(value.FieldByName("Size").Interface()), 10, 64)
+			if err != nil {
+				return engine.SemanticValue{}
+			}
+			ref := &engine.SemanticBlobRef{BlobID: fmt.Sprint(value.FieldByName("BlobID").Interface()), Digest: fmt.Sprint(value.FieldByName("Digest").Interface()), Lifetime: fmt.Sprint(value.FieldByName("Lifetime").Interface()), MediaType: fmt.Sprint(value.FieldByName("MediaType").Interface()), Size: size}
+			return engine.SemanticValue{Kind: engine.SemanticValueBlob, Blob: ref.Digest, BlobRef: ref}
 		}
 		if alternative, ok := generatedUnionAlternative(value); ok {
 			return mapGeneratedPlainValue(alternative)
@@ -281,7 +348,7 @@ func mapGeneratedPlainValue(value reflect.Value) engine.SemanticValue {
 		}
 		return engine.SemanticValue{Kind: engine.SemanticValueMap, Map: entries}
 	}
-	return engine.SemanticValue{Kind: engine.SemanticValueString, String: fmt.Sprint(value.Interface())}
+	return engine.SemanticValue{}
 }
 
 func generatedUnionAlternative(value reflect.Value) (reflect.Value, bool) {

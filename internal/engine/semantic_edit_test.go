@@ -94,7 +94,7 @@ func TestPlanSemanticEditsOperationMatrixAndFullRecompile(t *testing.T) {
 			return SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:layer:app", Path: []string{"order"}, Action: "set", Value: &value}
 		}, contains: `app "Application" @11`},
 		{name: "update reference text", operation: func(Snapshot) SemanticOperation {
-			value := SemanticValue{Kind: SemanticValueString, String: "Changed reference."}
+			value := SemanticValue{Kind: SemanticValueString, String: "Changed reference.\n"}
 			return SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:reference:guide", Path: []string{"text"}, Action: "set", Value: &value}
 		}, contains: `Changed reference.`},
 		{name: "update annotation", operation: func(Snapshot) SemanticOperation {
@@ -160,7 +160,7 @@ func TestPlanSemanticEditsOperationMatrixAndFullRecompile(t *testing.T) {
 			return SemanticOperation{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: SemanticSubjectKind("view"), ID: "table2", Fields: []SemanticMapEntry{{Key: "category", Value: SemanticValue{Kind: SemanticValueString, String: "inventory"}}, {Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Table 2"}}, {Key: "shape", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "table"}}}}}, {Key: "source", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueString, String: "query"}}, {Key: "query_address", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:query:q"}}}}}}}
 		}, contains: `view table2 "Table 2" inventory`},
 		{name: "create reference", operation: func(Snapshot) SemanticOperation {
-			return SemanticOperation{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: SemanticSubjectKind("reference"), ID: "notes", Fields: []SemanticMapEntry{{Key: "text", Value: SemanticValue{Kind: SemanticValueString, String: "Notes body."}}}}
+			return SemanticOperation{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: SemanticSubjectKind("reference"), ID: "notes", Fields: []SemanticMapEntry{{Key: "text", Value: SemanticValue{Kind: SemanticValueString, String: "Notes body.\n"}}}}
 		}, contains: "reference notes <<-LDL_REFERENCE"},
 		{name: "create entity type column", operation: func(Snapshot) SemanticOperation {
 			return SemanticOperation{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p:entity-type:service", SubjectKind: SemanticSubjectKind("entity_type_column"), ID: "count", Fields: []SemanticMapEntry{{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Count"}}, {Key: "value_type", Value: SemanticValue{Kind: SemanticValueString, String: "integer"}}}}
@@ -334,6 +334,29 @@ func TestPlanSemanticEditsIndependentOperationOrderAndSchemaImpact(t *testing.T)
 	}
 }
 
+func TestPlanSemanticEditsCanonicalizesRenameAndReservationOrder(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	input, snapshot := semanticEditCompiledFixture(t)
+	rename := SemanticOperation{Kind: OperationRenameSubject, TargetAddress: "ldl:project:p:entity:a", NewID: "alpha"}
+	removeReference := SemanticOperation{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:reference:guide"}
+
+	var baseline SemanticEditPlan
+	for index, operations := range [][]SemanticOperation{{rename, removeReference}, {removeReference, rename}} {
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("permutation %d failed: status=%s err=%v diagnostics=%+v", index, plan.Status, err, plan.Diagnostics)
+		}
+		if index == 0 {
+			baseline = plan
+			continue
+		}
+		if !bytes.Equal(plan.SourceTree["document.ldl"], baseline.SourceTree["document.ldl"]) || plan.SourceDiff.Digest != baseline.SourceDiff.Digest || plan.SemanticDiff.Digest != baseline.SemanticDiff.Digest || plan.AuthoringImpact.ImpactDigest != baseline.AuthoringImpact.ImpactDigest {
+			t.Fatalf("rename/delete order changed canonical output\nfirst:\n%s\nsecond:\n%s", baseline.SourceTree["document.ldl"], plan.SourceTree["document.ldl"])
+		}
+	}
+}
+
 func TestPlanSemanticEditsCanonicalizesMultiCapabilityImpact(t *testing.T) {
 	t.Parallel()
 	planner := New(BuildInfo{})
@@ -344,7 +367,7 @@ func TestPlanSemanticEditsCanonicalizesMultiCapabilityImpact(t *testing.T) {
 	operations := []SemanticOperation{
 		{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:view:v", Path: []string{"description"}, Action: "set", Value: text("view docs")},
 		{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"description"}, Action: "set", Value: text("entity docs")},
-		{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:reference:guide", Path: []string{"text"}, Action: "set", Value: text("reference docs")},
+		{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:reference:guide", Path: []string{"text"}, Action: "set", Value: text("reference docs\n")},
 		{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity-type:service", Path: []string{"description"}, Action: "set", Value: text("schema docs")},
 		{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:query:q", Path: []string{"description"}, Action: "set", Value: text("query docs")},
 	}
@@ -455,7 +478,7 @@ func TestPlanSemanticEditsPreservesAuthoredIdentityHistory(t *testing.T) {
 	t.Run("structurally similar delete and create stay distinct", func(t *testing.T) {
 		operations := []SemanticOperation{
 			{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:reference:guide"},
-			{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: materialize.SubjectReference, ID: "notes", Fields: []SemanticMapEntry{{Key: "text", Value: SemanticValue{Kind: SemanticValueString, String: "Keep this reference text unchanged."}}}},
+			{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: materialize.SubjectReference, ID: "notes", Fields: []SemanticMapEntry{{Key: "text", Value: SemanticValue{Kind: SemanticValueString, String: "Keep this reference text unchanged.\n"}}}},
 		}
 		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{
 			BaseInput:     input,
@@ -491,11 +514,17 @@ func TestPlanSemanticEditsRebasesIndependentFieldsAndRejectsSameFieldChanges(t *
 	if err != nil || len(headResult.Diagnostics) != 0 {
 		t.Fatalf("compile current head: err=%v diagnostics=%+v", err, headResult.Diagnostics)
 	}
+	authority := &SemanticRebaseAuthority{
+		AncestorGeneration:     SemanticDocumentGeneration{EndpointInstanceID: "test-endpoint", DocumentHandle: "document_abcdefghijklmnop", Value: "1"},
+		CurrentGeneration:      SemanticDocumentGeneration{EndpointInstanceID: "test-endpoint", DocumentHandle: "document_abcdefghijklmnop", Value: "2"},
+		AncestorDefinitionHash: ancestor.DefinitionHash,
+		CurrentDefinitionHash:  headResult.Snapshot().DefinitionHash,
+	}
 
 	t.Run("independent field merges", func(t *testing.T) {
 		value := SemanticValue{Kind: SemanticValueString, String: "Merged description"}
 		operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"description"}, Action: "set", Value: &value}
-		plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor)})
+		plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor), Generation: authority.CurrentGeneration, RebaseAuthority: authority})
 		if planErr != nil || plan.Status != "valid" {
 			t.Fatalf("independent rebase failed: status=%s err=%v conflicts=%+v", plan.Status, planErr, plan.Conflicts)
 		}
@@ -508,12 +537,139 @@ func TestPlanSemanticEditsRebasesIndependentFieldsAndRejectsSameFieldChanges(t *
 	t.Run("same field conflicts", func(t *testing.T) {
 		value := SemanticValue{Kind: SemanticValueString, String: "Batch name"}
 		operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"display_name"}, Action: "set", Value: &value}
-		plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor)})
+		plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor), Generation: authority.CurrentGeneration, RebaseAuthority: authority})
 		if planErr != nil {
 			t.Fatal(planErr)
 		}
 		if plan.Status != "invalid" || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictSameFieldChanged {
 			t.Fatalf("same-field edit did not fail closed: %+v", plan)
+		}
+	})
+
+	t.Run("independent incoming referencer change merges", func(t *testing.T) {
+		referencerInput := cloneSemanticCompileInput(ancestorInput)
+		referencerInput.ProjectSourceTree["document.ldl"] = bytes.Replace(referencerInput.ProjectSourceTree["document.ldl"], []byte("r: a -> b"), []byte("r: a -> b {\n    description \"concurrent\"\n  }"), 1)
+		referencerResult, compileErr := planner.Compile(context.Background(), referencerInput)
+		if compileErr != nil || len(referencerResult.Diagnostics) != 0 {
+			t.Fatalf("compile referencer head: err=%v diagnostics=%+v", compileErr, referencerResult.Diagnostics)
+		}
+		referencerAuthority := &SemanticRebaseAuthority{AncestorGeneration: authority.AncestorGeneration, CurrentGeneration: authority.CurrentGeneration, AncestorDefinitionHash: ancestor.DefinitionHash, CurrentDefinitionHash: referencerResult.Snapshot().DefinitionHash}
+		value := SemanticValue{Kind: SemanticValueString, String: "Merged description"}
+		operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"description"}, Action: "set", Value: &value}
+		plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: referencerInput, BaseSnapshot: ancestor, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor), Generation: referencerAuthority.CurrentGeneration, RebaseAuthority: referencerAuthority})
+		if planErr != nil || plan.Status != "valid" {
+			t.Fatalf("independent referencer edit was overvalidated: status=%s err=%v conflicts=%+v", plan.Status, planErr, plan.Conflicts)
+		}
+		if source := string(plan.SourceTree["document.ldl"]); !strings.Contains(source, `description "concurrent"`) || !strings.Contains(source, `description "Merged description"`) {
+			t.Fatalf("three-way merge lost an independent edit:\n%s", source)
+		}
+	})
+}
+
+func TestPlanSemanticEditsRebaseExemptsSameBatchCreatedTargets(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	ancestorInput, ancestor := semanticEditCompiledFixture(t)
+	headInput := cloneSemanticCompileInput(ancestorInput)
+	headInput.ProjectSourceTree["document.ldl"] = bytes.Replace(headInput.ProjectSourceTree["document.ldl"], []byte(`query q "Query"`), []byte(`query q "Concurrent Query"`), 1)
+	headResult, err := planner.Compile(context.Background(), headInput)
+	if err != nil || len(headResult.Diagnostics) != 0 {
+		t.Fatalf("compile current head: err=%v diagnostics=%+v", err, headResult.Diagnostics)
+	}
+	authority := &SemanticRebaseAuthority{
+		AncestorGeneration:     SemanticDocumentGeneration{EndpointInstanceID: "test-endpoint", DocumentHandle: "document_abcdefghijklmnop", Value: "1"},
+		CurrentGeneration:      SemanticDocumentGeneration{EndpointInstanceID: "test-endpoint", DocumentHandle: "document_abcdefghijklmnop", Value: "2"},
+		AncestorDefinitionHash: ancestor.DefinitionHash,
+		CurrentDefinitionHash:  headResult.Snapshot().DefinitionHash,
+	}
+	create := SemanticOperation{Kind: OperationCreateSubject, SubjectKind: materialize.SubjectLayer, ParentAddress: "ldl:project:p", ID: "temporary", Fields: []SemanticMapEntry{{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Temporary"}}, {Key: "order", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 30}}}}
+	tests := []struct {
+		name      string
+		operation SemanticOperation
+	}{
+		{name: "rename", operation: SemanticOperation{Kind: OperationRenameSubject, TargetAddress: "ldl:project:p:layer:temporary", NewID: "renamed"}},
+		{name: "delete", operation: SemanticOperation{Kind: OperationDeleteSubject, TargetAddress: "ldl:project:p:layer:temporary"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Batch: SemanticOperationBatch{Operations: []SemanticOperation{create, test.operation}}, Preconditions: allSemanticPreconditions(ancestor), Generation: authority.CurrentGeneration, RebaseAuthority: authority})
+			if planErr != nil || plan.Status != "valid" {
+				t.Fatalf("same-batch create then %s required nonexistent ancestor authority: status=%s err=%v conflicts=%+v diagnostics=%+v", test.name, plan.Status, planErr, plan.Conflicts, plan.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestPlanSemanticEditsRebaseRequiresRetainedAuthorityAndClosedDependencies(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	ancestorInput, ancestor := semanticEditCompiledFixture(t)
+	generationOne := SemanticDocumentGeneration{EndpointInstanceID: "test-endpoint", DocumentHandle: "document_abcdefghijklmnop", Value: "1"}
+	generationTwo := SemanticDocumentGeneration{EndpointInstanceID: "test-endpoint", DocumentHandle: "document_abcdefghijklmnop", Value: "2"}
+
+	compileHead := func(t *testing.T, old, replacement string) (CompileInput, Snapshot, *SemanticRebaseAuthority) {
+		t.Helper()
+		headInput := cloneSemanticCompileInput(ancestorInput)
+		headInput.ProjectSourceTree["document.ldl"] = bytes.Replace(headInput.ProjectSourceTree["document.ldl"], []byte(old), []byte(replacement), 1)
+		compiled, err := planner.Compile(context.Background(), headInput)
+		if err != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile concurrent head: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+		}
+		head := compiled.Snapshot()
+		authority := &SemanticRebaseAuthority{AncestorGeneration: generationOne, CurrentGeneration: generationTwo, AncestorDefinitionHash: ancestor.DefinitionHash, CurrentDefinitionHash: head.DefinitionHash}
+		return headInput, head, authority
+	}
+
+	t.Run("unrelated snapshot without retained generation authority is stale", func(t *testing.T) {
+		headInput, _, _ := compileHead(t, `a "A"`, `a "Concurrent"`)
+		value := SemanticValue{Kind: SemanticValueString, String: "description"}
+		operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"description"}, Action: "set", Value: &value}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Generation: generationTwo, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor)})
+		if err != nil || plan.Status != "invalid" || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictStaleRevision {
+			t.Fatalf("unproven ancestor snapshot was accepted: plan=%+v err=%v", plan, err)
+		}
+	})
+
+	t.Run("requested generation must be the retained current head", func(t *testing.T) {
+		headInput, _, authority := compileHead(t, `a "A"`, `a "Concurrent"`)
+		value := SemanticValue{Kind: SemanticValueString, String: "description"}
+		operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"description"}, Action: "set", Value: &value}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Generation: generationOne, RebaseAuthority: authority, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor)})
+		if err != nil || plan.Status != "invalid" || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictStaleRevision {
+			t.Fatalf("mismatched current generation was accepted: plan=%+v err=%v", plan, err)
+		}
+	})
+
+	t.Run("rename detects concurrent reference source changes", func(t *testing.T) {
+		headInput, _, authority := compileHead(t, `r: a -> b`, `r: b -> a`)
+		operation := SemanticOperation{Kind: OperationRenameSubject, TargetAddress: "ldl:project:p:entity:a", NewID: "alpha"}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Generation: generationTwo, RebaseAuthority: authority, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor)})
+		if err != nil || plan.Status != "invalid" {
+			t.Fatalf("concurrent reference edit was not rejected: plan=%+v err=%v", plan, err)
+		}
+		found := false
+		for _, conflict := range plan.Conflicts {
+			found = found || (conflict.Kind == ConflictSubjectChanged && conflict.TargetAddress == "ldl:project:p:relation:r")
+		}
+		if !found {
+			t.Fatalf("rename conflict omitted changed reference source: %+v", plan.Conflicts)
+		}
+	})
+
+	t.Run("row update detects concurrent owner schema changes", func(t *testing.T) {
+		headInput, _, authority := compileHead(t, `    note "Note" string`, "    note \"Note\" string\n    extra \"Extra\" string")
+		value := SemanticValue{Kind: SemanticValueString, String: "batch"}
+		operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a:row:primary", Path: []string{"values", "ldl:project:p:entity-type:service:column:note"}, Action: "set", Value: &value}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: headInput, BaseSnapshot: ancestor, Generation: generationTwo, RebaseAuthority: authority, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(ancestor)})
+		if err != nil || plan.Status != "invalid" {
+			t.Fatalf("concurrent row schema edit was not rejected: plan=%+v err=%v", plan, err)
+		}
+		found := false
+		for _, conflict := range plan.Conflicts {
+			found = found || (conflict.Kind == ConflictSubtreeChanged && conflict.TargetAddress == "ldl:project:p:entity-type:service")
+		}
+		if !found {
+			t.Fatalf("row conflict omitted changed schema subtree: %+v", plan.Conflicts)
 		}
 	})
 }
@@ -532,6 +688,147 @@ func TestPlanSemanticEditsAllowsChildOfSameBatchCreatedOwner(t *testing.T) {
 	}
 	if !strings.Contains(string(plan.SourceTree["document.ldl"]), `count "Count" integer`) {
 		t.Fatalf("same-batch child was not materialized:\n%s", plan.SourceTree["document.ldl"])
+	}
+}
+
+func TestPlanSemanticEditsPreservesSetValuedColumnBindings(t *testing.T) {
+	t.Parallel()
+	const source = `project p "Project" {}
+layers {
+  app "Application" @10
+}
+entity_type alpha "Alpha" {
+  representation shape rect
+  columns {
+    status "Status" string
+  }
+}
+entity_type beta "Beta" {
+  representation shape rect
+  columns {
+    status "Status" string
+  }
+}
+relation_type link "Link" data_flow {
+  from source types [alpha, beta] layers [app]
+  to target types [alpha, beta] layers [app]
+  label "links"
+  projection flow {
+    source_endpoint from
+    target_endpoint to
+    connector_kind data
+  }
+}
+`
+	input := projectCompileInput(source)
+	planner := New(BuildInfo{})
+	compiled, err := planner.Compile(context.Background(), input)
+	if err != nil || len(compiled.Diagnostics) != 0 {
+		t.Fatalf("compile set fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+	}
+	base := compiled.Snapshot()
+	addresses := SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{
+		{Kind: SemanticValueAddress, Address: "ldl:project:p:entity-type:alpha:column:status"},
+		{Kind: SemanticValueAddress, Address: "ldl:project:p:entity-type:beta:column:status"},
+	}}
+	types := SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{
+		{Kind: SemanticValueAddress, Address: "ldl:project:p:entity-type:alpha"},
+		{Kind: SemanticValueAddress, Address: "ldl:project:p:entity-type:beta"},
+	}}
+	operations := []SemanticOperation{
+		{Kind: OperationCreateSubject, SubjectKind: materialize.SubjectQuery, ParentAddress: "ldl:project:p", ID: "multi", Fields: []SemanticMapEntry{
+			{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Multi"}},
+			{Key: "select", Value: SemanticValue{Kind: SemanticValueMap}},
+			{Key: "where", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+				{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "all"}},
+				{Key: "children", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+					{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "rows"}},
+					{Key: "quantifier", Value: SemanticValue{Kind: SemanticValueToken, String: "any"}},
+					{Key: "type_addresses", Value: types},
+					{Key: "predicate", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+						{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "cell"}},
+						{Key: "column_addresses", Value: addresses},
+						{Key: "operator", Value: SemanticValue{Kind: SemanticValueToken, String: "exists"}},
+					}}},
+				}}}}},
+			}}},
+		}},
+		{Kind: OperationCreateSubject, SubjectKind: materialize.SubjectView, ParentAddress: "ldl:project:p", ID: "table_view", Fields: []SemanticMapEntry{
+			{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Table"}},
+			{Key: "category", Value: SemanticValue{Kind: SemanticValueToken, String: "inventory"}},
+			{Key: "source", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "query"}}, {Key: "query_address", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:query:multi"}}, {Key: "arguments", Value: SemanticValue{Kind: SemanticValueMap}}}}},
+			{Key: "shape", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "table"}}, {Key: "row_source", Value: SemanticValue{Kind: SemanticValueToken, String: "entity_rows"}}}}},
+		}},
+		{Kind: OperationCreateSubject, SubjectKind: materialize.SubjectViewTableColumn, ParentAddress: "ldl:project:p:view:table_view", ID: "status", Fields: []SemanticMapEntry{
+			{Key: "source", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "attribute"}}, {Key: "column_addresses", Value: addresses}}}},
+		}},
+		{Kind: OperationCreateSubject, SubjectKind: materialize.SubjectView, ParentAddress: "ldl:project:p", ID: "flow_view", Fields: []SemanticMapEntry{
+			{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Flow"}},
+			{Key: "category", Value: SemanticValue{Kind: SemanticValueToken, String: "flow"}},
+			{Key: "source", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "query"}}, {Key: "query_address", Value: SemanticValue{Kind: SemanticValueAddress, Address: "ldl:project:p:query:multi"}}, {Key: "arguments", Value: SemanticValue{Kind: SemanticValueMap}}}}},
+			{Key: "shape", Value: SemanticValue{Kind: SemanticValueMap, Map: []SemanticMapEntry{
+				{Key: "kind", Value: SemanticValue{Kind: SemanticValueToken, String: "flow"}},
+				{Key: "relation_type_addresses", Value: SemanticValue{Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueAddress, Address: "ldl:project:p:relation-type:link"}}}},
+				{Key: "lane_by", Value: SemanticValue{Kind: SemanticValueToken, String: "attribute"}},
+				{Key: "lane_column_addresses", Value: addresses},
+				{Key: "cycle_policy", Value: SemanticValue{Kind: SemanticValueToken, String: "error"}},
+			}}},
+		}},
+	}
+	queryPlan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: base, Batch: SemanticOperationBatch{Operations: operations[:1]}, Preconditions: allSemanticPreconditions(base)})
+	if err != nil || queryPlan.Status != "valid" {
+		t.Fatalf("set-valued row predicate plan failed: status=%s err=%v conflicts=%+v diagnostics=%+v", queryPlan.Status, err, queryPlan.Conflicts, queryPlan.Diagnostics)
+	}
+	input.ProjectSourceTree = queryPlan.SourceTree
+	base = *queryPlan.Result
+	operations = operations[1:]
+	plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: base, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(base)})
+	if err != nil || plan.Status != "valid" {
+		t.Fatalf("set-valued plan failed: status=%s err=%v conflicts=%+v diagnostics=%+v\n%s", plan.Status, err, plan.Conflicts, plan.Diagnostics, plan.SourceTree["document.ldl"])
+	}
+	for _, fragment := range []string{"source attribute status entity_types [alpha, beta]", "cell status exists", "lane_by attribute.status"} {
+		if !strings.Contains(string(plan.SourceTree["document.ldl"]), fragment) {
+			t.Fatalf("canonical set rendering omitted %q:\n%s", fragment, plan.SourceTree["document.ldl"])
+		}
+	}
+	canonical := string(plan.Result.CanonicalJSON)
+	for _, address := range []string{"entity-type:alpha:column:status", "entity-type:beta:column:status"} {
+		if strings.Count(canonical, address) < 3 {
+			t.Fatalf("compiled result narrowed set member %q:\n%s", address, canonical)
+		}
+	}
+}
+
+func TestPlanSemanticEditsCanonicalStandardPlacementIsPermutationIndependent(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	input := projectCompileInput("project p \"Project\" {}\nlayers {\n  middle \"Middle\" @20\n}\n")
+	compiled, err := planner.Compile(context.Background(), input)
+	if err != nil || len(compiled.Diagnostics) != 0 {
+		t.Fatalf("compile placement fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+	}
+	base := compiled.Snapshot()
+	create := func(id, name string, order int64) SemanticOperation {
+		return SemanticOperation{Kind: OperationCreateSubject, SubjectKind: materialize.SubjectLayer, ParentAddress: "ldl:project:p", ID: id, Fields: []SemanticMapEntry{{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: name}}, {Key: "order", Value: SemanticValue{Kind: SemanticValueInteger, Integer: order}}}}
+	}
+	permutations := [][]SemanticOperation{{create("zeta", "Zeta", 30), create("alpha", "Alpha", 10)}, {create("alpha", "Alpha", 10), create("zeta", "Zeta", 30)}}
+	var baseline SemanticEditPlan
+	for index, operations := range permutations {
+		plan, planErr := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: base, Batch: SemanticOperationBatch{Operations: operations}, Preconditions: allSemanticPreconditions(base)})
+		if planErr != nil || plan.Status != "valid" {
+			t.Fatalf("permutation %d failed: status=%s err=%v diagnostics=%+v", index, plan.Status, planErr, plan.Diagnostics)
+		}
+		if index == 0 {
+			baseline = plan
+			continue
+		}
+		if !bytes.Equal(plan.SourceTree["document.ldl"], baseline.SourceTree["document.ldl"]) || plan.SourceDiff.Digest != baseline.SourceDiff.Digest || plan.SemanticDiff.Digest != baseline.SemanticDiff.Digest || plan.AuthoringImpact.ImpactDigest != baseline.AuthoringImpact.ImpactDigest {
+			t.Fatalf("independent creates were operation-ordered:\nfirst:\n%s\nsecond:\n%s", baseline.SourceTree["document.ldl"], plan.SourceTree["document.ldl"])
+		}
+	}
+	source := string(baseline.SourceTree["document.ldl"])
+	if strings.Count(source, "layers {") != 1 || !(strings.Index(source, "alpha ") < strings.Index(source, "middle ") && strings.Index(source, "middle ") < strings.Index(source, "zeta ")) {
+		t.Fatalf("standard placement did not extend the canonical group in address order:\n%s", source)
 	}
 }
 
@@ -567,6 +864,22 @@ func TestBuildPlannedSourceDiffRecognizesExactModuleMove(t *testing.T) {
 	}
 }
 
+func TestBuildPlannedSourceDiffDoesNotInventAmbiguousModuleMoves(t *testing.T) {
+	t.Parallel()
+	source := []byte("project p \"P\" {}\n")
+	before := map[string][]byte{"old-a.ldl": source, "old-b.ldl": source}
+	after := map[string][]byte{"new-a.ldl": source, "new-b.ldl": source}
+	diff := buildPlannedSourceDiff(before, after)
+
+	kinds := map[PlannedSourceEditKind]int{}
+	for _, edit := range diff.Edits {
+		kinds[edit.Kind]++
+	}
+	if kinds[PlannedSourceMove] != 0 || kinds[PlannedSourceDelete] != 2 || kinds[PlannedSourceCreate] != 2 {
+		t.Fatalf("ambiguous byte-identical modules were assigned lineage: %+v", diff.Edits)
+	}
+}
+
 func TestPlanSemanticEditsHonorsAuthoredPlacementHints(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -596,6 +909,83 @@ func TestPlanSemanticEditsHonorsAuthoredPlacementHints(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPlanSemanticEditsRejectsPlacementOutsideDeclaredKindAndOwner(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	input, snapshot := semanticEditCompiledFixture(t)
+
+	t.Run("top-level anchor must have the requested child kind", func(t *testing.T) {
+		operation := SemanticOperation{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p", SubjectKind: materialize.SubjectLayer, ID: "extra", Fields: []SemanticMapEntry{{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Extra"}}, {Key: "order", Value: SemanticValue{Kind: SemanticValueInteger, Integer: 30}}}, Placement: &SemanticPlacementHint{GroupAnchorAddress: "ldl:project:p:entity:a", Position: "before"}}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || plan.Status != "invalid" || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictPlacementChanged {
+			t.Fatalf("different-kind anchor was accepted: plan=%+v err=%v", plan, err)
+		}
+	})
+
+	t.Run("row anchor must belong to the declared row owner", func(t *testing.T) {
+		operation := SemanticOperation{Kind: OperationUpsertRow, OwnerAddress: "ldl:project:p:entity:b", ID: "secondary", Values: []SemanticRowCell{{ColumnAddress: "ldl:project:p:entity-type:service:column:note", Value: SemanticValue{Kind: SemanticValueString, String: "new"}}}, Placement: &SemanticPlacementHint{GroupAnchorAddress: "ldl:project:p:entity:a:row:primary", Position: "after"}}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || plan.Status != "invalid" || len(plan.Conflicts) != 1 || plan.Conflicts[0].Kind != ConflictPlacementChanged {
+			t.Fatalf("different-owner row anchor was accepted: plan=%+v err=%v", plan, err)
+		}
+	})
+
+	t.Run("child before placement preserves owner-local order", func(t *testing.T) {
+		operation := SemanticOperation{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p:entity-type:service", SubjectKind: materialize.SubjectEntityTypeColumn, ID: "count", Fields: []SemanticMapEntry{{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Count"}}, {Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "integer"}}}, Placement: &SemanticPlacementHint{GroupAnchorAddress: "ldl:project:p:entity-type:service:column:note", Position: "before"}}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("owner-local child placement failed: status=%s err=%v conflicts=%+v", plan.Status, err, plan.Conflicts)
+		}
+		source := string(plan.SourceTree["document.ldl"])
+		if strings.Index(source, `count "Count" integer`) >= strings.Index(source, `note "Note" string`) {
+			t.Fatalf("child was not inserted before its declared anchor:\n%s", source)
+		}
+	})
+}
+
+func TestPlanSemanticEditsPreservesCommentsAndIgnoresBlockTextInTrivia(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+
+	t.Run("moving an entity keeps its attached comment", func(t *testing.T) {
+		source := strings.Replace(semanticEditFixture, `  b "B"`, "  // attached to b\n  b \"B\"", 1)
+		input := projectCompileInput(source)
+		compiled, err := planner.Compile(context.Background(), input)
+		if err != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile comment fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+		}
+		snapshot := compiled.Snapshot()
+		operation := SemanticOperation{Kind: OperationMoveEntityToLayer, EntityAddress: "ldl:project:p:entity:b", LayerAddress: "ldl:project:p:layer:data"}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("move with comment failed: status=%s err=%v conflicts=%+v", plan.Status, err, plan.Conflicts)
+		}
+		got := string(plan.SourceTree["document.ldl"])
+		if !strings.Contains(got, "entities service @data {\n  // attached to b\n  b \"B\"") || strings.Count(got, "// attached to b") != 1 {
+			t.Fatalf("attached comment was orphaned or duplicated:\n%s", got)
+		}
+	})
+
+	t.Run("child insertion ignores a block name in comments and strings", func(t *testing.T) {
+		source := strings.Replace(semanticEditFixture, `  columns {`, "  description \"columns { decoy }\"\n  // columns { another decoy }\n  columns {", 1)
+		input := projectCompileInput(source)
+		compiled, err := planner.Compile(context.Background(), input)
+		if err != nil || len(compiled.Diagnostics) != 0 {
+			t.Fatalf("compile trivia fixture: err=%v diagnostics=%+v", err, compiled.Diagnostics)
+		}
+		snapshot := compiled.Snapshot()
+		operation := SemanticOperation{Kind: OperationCreateSubject, ParentAddress: "ldl:project:p:entity-type:service", SubjectKind: materialize.SubjectEntityTypeColumn, ID: "count", Fields: []SemanticMapEntry{{Key: "display_name", Value: SemanticValue{Kind: SemanticValueString, String: "Count"}}, {Key: "value_type", Value: SemanticValue{Kind: SemanticValueToken, String: "integer"}}}}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("CST-authoritative insertion failed: status=%s err=%v diagnostics=%+v", plan.Status, err, plan.Diagnostics)
+		}
+		got := string(plan.SourceTree["document.ldl"])
+		if !strings.Contains(got, `description "columns { decoy }"`) || !strings.Contains(got, `// columns { another decoy }`) || !strings.Contains(got, `count "Count" integer`) {
+			t.Fatalf("trivia changed or child missed the real block:\n%s", got)
+		}
+	})
 }
 
 func TestPlanSemanticEditsReplacesCompleteMultilineCSTField(t *testing.T) {
@@ -671,9 +1061,7 @@ func allSemanticPreconditions(snapshot Snapshot) SemanticEditPreconditions {
 		pre.ExpectedChildSets = append(pre.ExpectedChildSets, ExpectedSemanticChildSet{OwnerAddress: child.OwnerAddress, ChildKind: child.ChildKind, Hash: child.Hash})
 	}
 	for _, file := range snapshot.SourceMap.Files {
-		if file.Origin.Kind == "project" {
-			pre.ExpectedSourceDigests = append(pre.ExpectedSourceDigests, ExpectedSemanticSourceDigest{ModulePath: file.ModulePath, Digest: file.Digest})
-		}
+		pre.ExpectedSourceDigests = append(pre.ExpectedSourceDigests, ExpectedSemanticSourceDigest{Module: PlannedModuleRef{OriginKind: SourceOriginKind(file.Origin.Kind), PackAddress: file.Origin.PackAddress, ModulePath: file.ModulePath}, Digest: file.Digest})
 	}
 	return pre
 }
@@ -939,6 +1327,37 @@ func TestSemanticSourceAppendAndReferenceDelimiterAreLossless(t *testing.T) {
 	if !strings.Contains(reference, "<<-LDL_REFERENCE_TEXT") || !strings.HasSuffix(reference, "LDL_REFERENCE_TEXT\n") {
 		t.Fatalf("colliding reference delimiter was not extended:\n%s", reference)
 	}
+	firstLineCollision := renderReference("notes", "LDL_REFERENCE\nbody\n")
+	if !strings.Contains(firstLineCollision, "<<-LDL_REFERENCE_TEXT") {
+		t.Fatalf("first content line collision was not escaped:\n%s", firstLineCollision)
+	}
+}
+
+func TestPlanSemanticReferenceTextIsExactOrRejected(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	input, snapshot := semanticEditCompiledFixture(t)
+
+	t.Run("trailing LF round trips through the normalized result", func(t *testing.T) {
+		value := SemanticValue{Kind: SemanticValueString, String: "exact text\n"}
+		operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:reference:guide", Path: []string{"text"}, Action: "set", Value: &value}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || plan.Status != "valid" {
+			t.Fatalf("reference update failed: status=%s err=%v diagnostics=%+v", plan.Status, err, plan.Diagnostics)
+		}
+		if got, _ := normalizedSubject(*plan.Result, operation.TargetAddress)["text"].(string); got != value.String {
+			t.Fatalf("normalized Reference text=%q want exact %q", got, value.String)
+		}
+	})
+
+	t.Run("nonempty text without LF is rejected", func(t *testing.T) {
+		value := SemanticValue{Kind: SemanticValueString, String: "would change meaning"}
+		operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:reference:guide", Path: []string{"text"}, Action: "set", Value: &value}
+		plan, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot)})
+		if err != nil || plan.Status != "invalid" || len(plan.Diagnostics) != 1 || plan.Diagnostics[0].MessageKey != "unrepresentable_reference_text" {
+			t.Fatalf("non-lossless Reference update was not rejected precisely: plan=%+v err=%v", plan, err)
+		}
+	})
 }
 
 func TestSemanticTemporaryOverlayRebasesAllProjectSourceRoles(t *testing.T) {
@@ -1046,6 +1465,47 @@ func TestSemanticPlannerRejectsInvalidBoundaryInputs(t *testing.T) {
 	}
 }
 
+func TestPlanSemanticEditsEnforcesCumulativeLogicalResponseLimits(t *testing.T) {
+	t.Parallel()
+	planner := New(BuildInfo{})
+	input, snapshot := semanticEditCompiledFixture(t)
+	value := SemanticValue{Kind: SemanticValueString, String: "A response large enough to exercise complete accounting"}
+	operation := SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a", Path: []string{"display_name"}, Action: "set", Value: &value}
+
+	tests := []struct {
+		name     string
+		limits   SemanticPlanLimits
+		resource string
+	}{
+		{name: "nested logical items", limits: SemanticPlanLimits{MaxItems: 10}, resource: "logical_response_items"},
+		{name: "wire bytes plus attachments", limits: SemanticPlanLimits{MaxOutputBytes: 64}, resource: "logical_response_bytes"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := planner.PlanSemanticEdits(context.Background(), SemanticEditPlanInput{BaseInput: input, BaseSnapshot: snapshot, Batch: SemanticOperationBatch{Operations: []SemanticOperation{operation}}, Preconditions: allSemanticPreconditions(snapshot), Limits: test.limits})
+			var compileErr *CompileError
+			if !errors.As(err, &compileErr) || compileErr.Category != ErrorCategoryResource || compileErr.Resource != test.resource {
+				t.Fatalf("limit error=%v want resource %q", err, test.resource)
+			}
+		})
+	}
+}
+
+func TestCanonicalDigestsUseRFC8785BytesForUnicodeAndHTMLText(t *testing.T) {
+	t.Parallel()
+	value := map[string]any{"html": "<entity>", "é": "composed", "𐀀": "supplementary", "\ue000": "private-use"}
+	canonical, err := materialize.Canonicalize(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := digestJSON(value), semanticDigest(canonical); got != want {
+		t.Fatalf("canonical digest=%q want=%q for bytes %s", got, want, canonical)
+	}
+	if bytes.Contains(canonical, []byte(`\u003c`)) {
+		t.Fatalf("canonical digest input used HTML-escaped JSON: %s", canonical)
+	}
+}
+
 func TestSemanticValueConversionsPreserveAuthoredData(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1118,7 +1578,7 @@ func TestCanonicalCreateRenderingIncludesOptionalAuthoredFields(t *testing.T) {
 		})
 	}
 
-	column := renderColumn(snapshot, module, "state", map[string]SemanticValue{
+	column, valid := renderColumn(snapshot, module, "state", map[string]SemanticValue{
 		"display_name": {Kind: SemanticValueString, String: "State"},
 		"value_type":   {Kind: SemanticValueString, String: "enum"},
 		"enum_values":  {Kind: SemanticValueArray, Array: []SemanticValue{{Kind: SemanticValueString, String: "open"}}},
@@ -1127,6 +1587,9 @@ func TestCanonicalCreateRenderingIncludesOptionalAuthoredFields(t *testing.T) {
 		"min_length":   {Kind: SemanticValueInteger, Integer: 1},
 		"max_length":   {Kind: SemanticValueInteger, Integer: 20},
 	}, true)
+	if !valid {
+		t.Fatal("valid generated column fields were rejected")
+	}
 	for _, want := range []string{`enum ["open"]`, "required", `default "open"`, "min_length 1", "max_length 20"} {
 		if !strings.Contains(column, want) {
 			t.Fatalf("column=%q; missing %q", column, want)
@@ -1261,18 +1724,18 @@ func TestSemanticConflictDetailsHaveCanonicalOrder(t *testing.T) {
 	conflicts := []SemanticConflict{
 		{Kind: ConflictPlacementChanged, TargetAddress: "same", OwnerAddress: "z"},
 		{Kind: ConflictSubjectChanged, TargetAddress: "b"},
-		{Kind: ConflictPlacementChanged, TargetAddress: "same", OwnerAddress: "a", ChildKind: "z"},
-		{Kind: ConflictPlacementChanged, TargetAddress: "same", OwnerAddress: "a", ChildKind: "a", Path: []string{"z"}},
-		{Kind: ConflictPlacementChanged, TargetAddress: "same", OwnerAddress: "a", ChildKind: "a", Path: []string{"a"}},
+		{Kind: ConflictPlacementChanged, TargetAddress: "same", OwnerAddress: "a", ChildKind: materialize.SubjectRelation},
+		{Kind: ConflictPlacementChanged, TargetAddress: "same", OwnerAddress: "a", ChildKind: materialize.SubjectEntity, Path: []string{"z"}},
+		{Kind: ConflictPlacementChanged, TargetAddress: "same", OwnerAddress: "a", ChildKind: materialize.SubjectEntity, Path: []string{"a"}},
 		{Kind: ConflictSubjectChanged, TargetAddress: "a"},
 	}
 	sortSemanticConflicts(conflicts)
 	want := []string{
 		"subject_changed:a:::",
 		"subject_changed:b:::",
-		"placement_changed:same:a:a:a",
-		"placement_changed:same:a:a:z",
-		"placement_changed:same:a:z:",
+		"placement_changed:same:a:entity:a",
+		"placement_changed:same:a:entity:z",
+		"placement_changed:same:a:relation:",
 		"placement_changed:same:z::",
 	}
 	for i, conflict := range conflicts {
@@ -1561,6 +2024,36 @@ func TestSemanticEditPreconditionsFailClosedByAuthorityKind(t *testing.T) {
 	}
 }
 
+func TestSemanticSourceDigestPreconditionsUseCompleteModuleIdentity(t *testing.T) {
+	t.Parallel()
+	projectDigest := semanticDigest([]byte("project"))
+	packDigest := semanticDigest([]byte("pack"))
+	snapshot := Snapshot{CompileOutput: CompileOutput{SourceMap: index.SourceMapV1{Files: []index.SourceFileRecord{
+		{Origin: resolve.SourceOrigin{Kind: resolve.OriginPack, PackAddress: "ldl:pack:publisher:shared-pack"}, ModulePath: "same.ldl", Digest: packDigest},
+		{Origin: resolve.SourceOrigin{Kind: resolve.OriginProject}, ModulePath: "same.ldl", Digest: projectDigest},
+	}}}}
+	pack := PlannedModuleRef{OriginKind: SourceOriginPack, PackAddress: "ldl:pack:publisher:shared-pack", ModulePath: "same.ldl"}
+	project := PlannedModuleRef{OriginKind: SourceOriginProject, ModulePath: "same.ldl"}
+	tests := []struct {
+		name      string
+		expected  []ExpectedSemanticSourceDigest
+		conflicts int
+	}{
+		{name: "pack only exact", expected: []ExpectedSemanticSourceDigest{{Module: pack, Digest: packDigest}}},
+		{name: "same path both origins exact", expected: []ExpectedSemanticSourceDigest{{Module: pack, Digest: packDigest}, {Module: project, Digest: projectDigest}}},
+		{name: "project digest cannot satisfy pack", expected: []ExpectedSemanticSourceDigest{{Module: pack, Digest: projectDigest}}, conflicts: 1},
+		{name: "pack address is part of identity", expected: []ExpectedSemanticSourceDigest{{Module: PlannedModuleRef{OriginKind: SourceOriginPack, PackAddress: "ldl:pack:publisher:other-pack", ModulePath: "same.ldl"}, Digest: packDigest}}, conflicts: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			conflicts := validateSemanticPreconditions(snapshot, SemanticEditPreconditions{ExpectedSourceDigests: test.expected}, SemanticOperationBatch{})
+			if len(conflicts) != test.conflicts {
+				t.Fatalf("conflicts=%+v want count=%d", conflicts, test.conflicts)
+			}
+		})
+	}
+}
+
 func TestSemanticEditPreconditionsRequireRelevantAuthority(t *testing.T) {
 	t.Parallel()
 	_, snapshot := semanticEditCompiledFixture(t)
@@ -1585,6 +2078,14 @@ func TestSemanticEditPreconditionsRequireRelevantAuthority(t *testing.T) {
 				pre.ExpectedSubtreeHashes = removeExpectedHash(pre.ExpectedSubtreeHashes, "ldl:project:p:entity:a")
 			},
 			kind: ConflictSubtreeChanged,
+		},
+		{
+			name:      "rename requires every reference source hash",
+			operation: SemanticOperation{Kind: OperationRenameSubject, TargetAddress: "ldl:project:p:entity:a", NewID: "alpha"},
+			remove: func(pre *SemanticEditPreconditions) {
+				pre.ExpectedSubjectHashes = removeExpectedHash(pre.ExpectedSubjectHashes, "ldl:project:p:relation:r")
+			},
+			kind: ConflictSubjectChanged,
 		},
 		{
 			name:      "project migration requires root subtree hash",
@@ -1617,6 +2118,14 @@ func TestSemanticEditPreconditionsRequireRelevantAuthority(t *testing.T) {
 				pre.ExpectedSubjectHashes = removeExpectedHash(pre.ExpectedSubjectHashes, "ldl:project:p:entity:a:row:primary")
 			},
 			kind: ConflictSubjectChanged,
+		},
+		{
+			name:      "row cell update requires owner schema subtree",
+			operation: SemanticOperation{Kind: OperationUpdateSubjectField, TargetAddress: "ldl:project:p:entity:a:row:primary", Path: []string{"values", "ldl:project:p:entity-type:service:column:note"}},
+			remove: func(pre *SemanticEditPreconditions) {
+				pre.ExpectedSubtreeHashes = removeExpectedHash(pre.ExpectedSubtreeHashes, "ldl:project:p:entity-type:service")
+			},
+			kind: ConflictSubtreeChanged,
 		},
 	}
 	for _, test := range tests {

@@ -17,15 +17,25 @@ const (
 	SemanticValueInteger SemanticValueKind = "integer"
 	SemanticValueMap     SemanticValueKind = "map"
 	SemanticValueString  SemanticValueKind = "string"
+	SemanticValueToken   SemanticValueKind = "token"
 )
 
-// SemanticValue is a closed recursive value. Blob values retain only their
-// already-verified digest; the pure planner never fetches or stages bytes.
+type SemanticBlobRef struct {
+	BlobID    string
+	Digest    string
+	Lifetime  string
+	MediaType string
+	Size      uint64
+}
+
+// SemanticValue is a closed recursive value. Blob values retain their complete
+// verified reference metadata; the pure planner never fetches or stages bytes.
 type SemanticValue struct {
 	Kind    SemanticValueKind
 	Address string
 	Array   []SemanticValue
 	Blob    string
+	BlobRef *SemanticBlobRef
 	Boolean bool
 	Decimal string
 	Integer int64
@@ -115,8 +125,8 @@ type ExpectedSemanticChildSet struct {
 }
 
 type ExpectedSemanticSourceDigest struct {
-	ModulePath string
-	Digest     string
+	Module PlannedModuleRef
+	Digest string
 }
 
 // SemanticEditPreconditions protect one immutable compile generation. The
@@ -289,17 +299,29 @@ type SemanticDocumentGeneration struct {
 	Value              string
 }
 
+// SemanticRebaseAuthority is supplied only by a facade that retained both
+// immutable generations for the same endpoint-bound document. The pure
+// planner validates this closed provenance before attempting a three-way
+// semantic rebase; an arbitrary snapshot pair is never treated as ancestry.
+type SemanticRebaseAuthority struct {
+	AncestorGeneration     SemanticDocumentGeneration
+	CurrentGeneration      SemanticDocumentGeneration
+	AncestorDefinitionHash string
+	CurrentDefinitionHash  string
+}
+
 // SemanticEditPlanInput binds operations to the exact immutable source and
 // compile generation from which every precondition and diff is derived.
 type SemanticEditPlanInput struct {
 	BaseInput CompileInput
 	// BaseSnapshot is the ancestor generation named by Preconditions. BaseInput
 	// is the current head to which the batch is rebased.
-	BaseSnapshot  Snapshot
-	Batch         SemanticOperationBatch
-	Preconditions SemanticEditPreconditions
-	Generation    SemanticDocumentGeneration
-	Limits        SemanticPlanLimits
+	BaseSnapshot    Snapshot
+	Batch           SemanticOperationBatch
+	Preconditions   SemanticEditPreconditions
+	Generation      SemanticDocumentGeneration
+	RebaseAuthority *SemanticRebaseAuthority
+	Limits          SemanticPlanLimits
 }
 
 type SemanticEditPlan struct {

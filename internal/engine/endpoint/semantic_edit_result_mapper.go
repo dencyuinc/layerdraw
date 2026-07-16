@@ -3,6 +3,7 @@
 package endpoint
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -30,6 +31,7 @@ func MapSemanticEditPlanResult(plan engine.SemanticEditPlan, identity SemanticPr
 	}
 	result.SourceDiff = engineprotocol.SourceDiff{Digest: protocolcommon.Digest(plan.SourceDiff.Digest), Edits: make([]engineprotocol.SourceEdit, 0, len(plan.SourceDiff.Edits))}
 	blobs := make([]OutputBlob, 0)
+	blobByID := map[string]OutputBlob{}
 	for _, edit := range plan.SourceDiff.Edits {
 		mapped := engineprotocol.SourceEdit{Kind: engineprotocol.SourceEditKind(edit.Kind)}
 		if edit.BeforeModule != nil {
@@ -58,7 +60,15 @@ func MapSemanticEditPlanResult(plan engine.SemanticEditPlan, identity SemanticPr
 		if edit.ReplacementBlob != nil {
 			ref := protocolcommon.BlobRef{BlobID: edit.ReplacementBlob.BlobID, Digest: protocolcommon.Digest(edit.ReplacementBlob.Digest), Lifetime: protocolcommon.BlobLifetime(edit.ReplacementBlob.Lifetime), MediaType: edit.ReplacementBlob.MediaType, Size: protocolcommon.CanonicalUint64(strconv.FormatUint(edit.ReplacementBlob.Size, 10))}
 			mapped.ReplacementBlob = &ref
-			blobs = append(blobs, OutputBlob{Ref: ref, Bytes: append([]byte(nil), edit.ReplacementBlob.Bytes...)})
+			blob := OutputBlob{Ref: ref, Bytes: append([]byte(nil), edit.ReplacementBlob.Bytes...)}
+			if existing, ok := blobByID[ref.BlobID]; ok {
+				if existing.Ref != blob.Ref || !bytes.Equal(existing.Bytes, blob.Bytes) {
+					return result, nil, fmt.Errorf("replacement blob ID %q has conflicting definitions", ref.BlobID)
+				}
+			} else {
+				blobByID[ref.BlobID] = blob
+				blobs = append(blobs, blob)
+			}
 		}
 		result.SourceDiff.Edits = append(result.SourceDiff.Edits, mapped)
 	}
@@ -130,10 +140,10 @@ func MapSemanticEditPlanResult(plan engine.SemanticEditPlan, identity SemanticPr
 	if err != nil {
 		return result, nil, fmt.Errorf("encode semantic preview result: %w", err)
 	}
-	items := len(result.ChangedSourceFiles) + len(result.SourceDiff.Edits) + len(result.SemanticDiff.Entries) + len(result.Conflicts) + len(result.Diagnostics)
-	if result.AuthoringImpact != nil {
-		items += len(result.AuthoringImpact.Entries) + len(result.AuthoringImpact.RequiredCapabilities)
+	if err := validateUniqueOutputBlobs(blobs); err != nil {
+		return result, nil, fmt.Errorf("validate semantic preview output blobs: %w", err)
 	}
+	items := semanticPreviewLogicalItems(result)
 	if limits.MaxItems > 0 && int64(items) > limits.MaxItems {
 		return result, nil, fmt.Errorf("semantic preview item limit exceeded: limit=%d observed=%d", limits.MaxItems, items)
 	}
@@ -145,6 +155,43 @@ func MapSemanticEditPlanResult(plan engine.SemanticEditPlan, identity SemanticPr
 		return result, nil, fmt.Errorf("semantic preview output limit exceeded: limit=%d observed=%d", limits.MaxOutputBytes, logicalBytes)
 	}
 	return result, blobs, nil
+}
+
+func semanticPreviewLogicalItems(result engineprotocol.WorkbenchPreviewResult) int {
+	items := len(result.ChangedSourceFiles) + len(result.SourceDiff.Edits) + len(result.SemanticDiff.Entries) + len(result.Conflicts) + len(result.Diagnostics)
+	for _, entry := range result.SemanticDiff.Entries {
+		items += len(entry.ChangedFieldPaths)
+		for _, path := range entry.ChangedFieldPaths {
+			items += len(path.Tokens)
+		}
+	}
+	for _, conflict := range result.Conflicts {
+		if conflict.Path != nil {
+			items += len(*conflict.Path)
+		}
+	}
+	for _, diagnostic := range result.Diagnostics {
+		items += len(diagnostic.Arguments) + len(diagnostic.Related)
+	}
+	if result.AuthoringImpact != nil {
+		items += len(result.AuthoringImpact.Entries) + len(result.AuthoringImpact.RequiredCapabilities)
+		for _, entry := range result.AuthoringImpact.Entries {
+			items += len(entry.BeforeRefs) + len(entry.AfterRefs) + len(entry.SourceRefs) + len(entry.ChangedFieldPaths)
+			for _, path := range entry.ChangedFieldPaths {
+				items += len(path.Tokens)
+			}
+			if entry.GraphFacts != nil {
+				items += len(entry.GraphFacts.ActionFlags) + len(entry.GraphFacts.ColumnAddresses) + len(entry.GraphFacts.EndpointEntityAddresses) + len(entry.GraphFacts.EntityTypeAddresses) + len(entry.GraphFacts.LayerAddresses) + len(entry.GraphFacts.RelationTypeAddresses)
+			}
+		}
+	}
+	if result.ResultingHashes != nil {
+		items += len(result.ResultingHashes.SubjectHashes) + len(result.ResultingHashes.SubtreeHashes) + len(result.ResultingHashes.ChildSetHashes)
+		for _, childSet := range result.ResultingHashes.ChildSetHashes {
+			items += len(childSet.ChildAddresses)
+		}
+	}
+	return items
 }
 
 func generatedModuleRef(value engine.PlannedModuleRef) semantic.ModuleRef {
