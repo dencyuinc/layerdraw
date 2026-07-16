@@ -18,6 +18,10 @@
       "minimum": 95
     },
     {
+      "prefix": "github.com/dencyuinc/layerdraw/internal/engine/internal/sourceplanner",
+      "minimum": 90
+    },
+    {
       "prefix": "github.com/dencyuinc/layerdraw/internal/runtime",
       "minimum": 95
     },
