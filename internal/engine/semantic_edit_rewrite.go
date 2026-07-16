@@ -1795,10 +1795,6 @@ func quoteLDLString(value string) string {
 	return string(encoded)
 }
 
-func terminalID(address string) string {
-	return address[strings.LastIndex(address, ":")+1:]
-}
-
 func rootProjectAddress(snapshot Snapshot) string {
 	if snapshot.NormalizedDocument != nil {
 		return snapshot.NormalizedDocument.Project.Address

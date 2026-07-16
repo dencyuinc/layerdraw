@@ -307,14 +307,6 @@ func validateRebaseRowSchema(conflicts *[]SemanticConflict, ancestor, head Snaps
 	}
 }
 
-func semanticSubjectsByAddress(snapshot Snapshot) map[string]index.SemanticSubject {
-	out := make(map[string]index.SemanticSubject, len(snapshot.SemanticIndex.Subjects))
-	for _, subject := range snapshot.SemanticIndex.Subjects {
-		out[subject.Address] = subject
-	}
-	return out
-}
-
 func validateRebaseSubject(conflicts *[]SemanticConflict, ancestor, head map[string]index.SemanticSubject, address string) {
 	prior, existed := ancestor[address]
 	current, present := head[address]
