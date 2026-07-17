@@ -40,9 +40,11 @@ func (e Engine) MaterializeView(ctx context.Context, input ViewMaterializationIn
 		result.Diagram = m.diagram(base)
 	case view.ShapeTable:
 		result.Table = m.table(base)
+	case view.ShapeMatrix:
+		result.Matrix = m.matrix(base)
 	case view.ShapeContext:
 		result.Context = m.contextView(base)
-	case view.ShapeMatrix, view.ShapeTree, view.ShapeFlow, view.ShapeDiff:
+	case view.ShapeTree, view.ShapeFlow, view.ShapeDiff:
 		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape materialization is not implemented", input.Recipe.Address, "")
 		return rejectedView(m.diagnostics...)
 	default:
@@ -83,6 +85,10 @@ type viewMaterializer struct {
 	incoming         map[string][]string
 	diagnostics      []Diagnostic
 	directStateReads map[StateReadRef]bool
+	validatedState   *validatedStateQuerySnapshot
+	staleState       map[string]bool
+	deniedStateReads map[StateReadRef]bool
+	missingStateWarn bool
 }
 
 func newViewMaterializer(ctx context.Context, input ViewMaterializationInput) *viewMaterializer {
@@ -90,7 +96,7 @@ func newViewMaterializer(ctx context.Context, input ViewMaterializationInput) *v
 		ctx: ctx, input: input, entities: map[string]graph.Entity{}, relations: map[string]graph.Relation{},
 		entityTypes: map[string]definition.EntityType{}, relationTypes: map[string]definition.RelationType{},
 		layers: map[string]definition.Layer{}, outgoing: map[string][]string{}, incoming: map[string][]string{},
-		directStateReads: map[StateReadRef]bool{},
+		directStateReads: map[StateReadRef]bool{}, staleState: map[string]bool{}, deniedStateReads: map[StateReadRef]bool{},
 	}
 }
 
@@ -178,7 +184,7 @@ func (m *viewMaterializer) validateQueryState(input QueryViewMaterializationInpu
 		m.stateInput = QueryStateInputRef{Kind: "none"}
 		return
 	}
-	ref, diagnostics, err := validateStateQuerySnapshotForDefinition(m.ctx, input.Snapshot.QueryDefinitionIdentity(), *input.Snapshot.TypedAST.Graph, *input.StateSnapshot)
+	validated, diagnostics, err := validateStateQuerySnapshotForDefinition(m.ctx, input.Snapshot.QueryDefinitionIdentity(), *input.Snapshot.TypedAST.Graph, *input.StateSnapshot)
 	if err != nil {
 		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", err.Error(), m.input.Recipe.Address, "")
 		return
@@ -187,11 +193,12 @@ func (m *viewMaterializer) validateQueryState(input QueryViewMaterializationInpu
 		m.diagnostics = append(m.diagnostics, diagnostics...)
 		return
 	}
-	if queryPolicy != query.StateNone && input.QueryResult.StateInput != ref {
+	if queryPolicy != query.StateNone && input.QueryResult.StateInput != validated.input {
 		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult and View do not reference the same StateQuerySnapshot", m.input.Recipe.Address, "")
 		return
 	}
-	m.stateInput = ref
+	m.stateInput = validated.input
+	m.validatedState = &validated
 }
 
 func (m *viewMaterializer) validateDiffInput(input DiffViewMaterializationInput) {

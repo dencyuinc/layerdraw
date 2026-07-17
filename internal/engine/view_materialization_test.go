@@ -50,7 +50,7 @@ func TestMaterializeViewBuildsTypedTableRowsAndCompleteCellSources(t *testing.T)
 	if result.Table == nil || len(result.Table.Rows) != 2 {
 		t.Fatalf("table = %+v", result.Table)
 	}
-	if got := tableColumnIDs(result.Table.Columns); !reflect.DeepEqual(got, []string{"entity_id", "type", "layer", "environment", "outgoing"}) {
+	if got := tableColumnIDs(result.Table.Columns); !reflect.DeepEqual(got, []string{"entity_id", "entity_type", "entity_layer", "environment", "outgoing"}) {
 		t.Fatalf("columns = %v", got)
 	}
 	first := result.Table.Rows[0]
@@ -76,7 +76,7 @@ func TestMaterializeViewTracksOptionalDirectStateReadsWithoutInventingValues(t *
 	snapshot, queryResult := compileAndExecuteViewFixture(t, relationTableViewSource())
 	result := materializeQueryView(t, snapshot, queryResult, nil)
 	base, _ := result.Base()
-	want := StateReadRef{SubjectAddress: "ldl:project:p:relation:alpha_beta", FieldPath: "system.updated_at"}
+	want := StateReadRef{SubjectAddress: "ldl:project:p:relation:alpha_beta:row:primary", FieldPath: "system.updated_at"}
 	if base.StatePolicy != "optional" || base.StateInput.Kind != "none" || !reflect.DeepEqual(base.Source.State.Reads, []StateReadRef{want}) {
 		t.Fatalf("state base = %+v", base)
 	}
@@ -158,7 +158,7 @@ func TestMaterializeViewFailsClosedForSourceRevisionAndStateMismatches(t *testin
 
 	requiredSnapshot, requiredResult := compileAndExecuteViewFixture(t, strings.Replace(relationTableViewSource(), "state_input optional", "state_input required", 1))
 	state := validStateQuerySnapshot(t, requiredSnapshot, []StateQuerySubject{stateSubject(
-		"ldl:project:p:relation:alpha_beta", stateFields("system.updated_at", datetimeScalar("2026-01-04T00:00:00Z")),
+		"ldl:project:p:relation:alpha_beta:row:primary", stateFields("system.updated_at", datetimeScalar("2026-01-04T00:00:00Z")),
 	)})
 	ok := materializeQueryView(t, requiredSnapshot, requiredResult, &state)
 	base, _ := ok.Base()
