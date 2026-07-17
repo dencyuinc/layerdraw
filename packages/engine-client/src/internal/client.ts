@@ -34,6 +34,7 @@ import {
   decodeCompileInput,
   decodeCompileResponseEnvelope,
   decodeCloseDocumentResponseEnvelope,
+  decodeExecuteQueryResponseEnvelope,
   decodeFindSymbolsResponseEnvelope,
   decodeFindUsagesResponseEnvelope,
   decodeFormatScopeResponseEnvelope,
@@ -56,6 +57,7 @@ import {
   encodeCompileInput,
   encodeCompileRequestEnvelope,
   encodeCloseDocumentRequestEnvelope,
+  encodeExecuteQueryRequestEnvelope,
   encodeFindSymbolsRequestEnvelope,
   encodeFindUsagesRequestEnvelope,
   encodeFormatScopeRequestEnvelope,
@@ -77,6 +79,7 @@ import {
   isApplyToHandleInput,
   isCloseDocumentInput,
   isCompileInput,
+  isExecuteQueryInput,
   isFindSymbolsInput,
   isFindUsagesInput,
   isFormatScopeInput,
@@ -471,6 +474,7 @@ type CompileTerminal =
 type WorkbenchEnvelope =
   | EngineProtocol.ApplyToHandleResponseEnvelope
   | EngineProtocol.CloseDocumentResponseEnvelope
+  | EngineProtocol.ExecuteQueryResponseEnvelope
   | EngineProtocol.FindSymbolsResponseEnvelope
   | EngineProtocol.FindUsagesResponseEnvelope
   | EngineProtocol.FormatScopeResponseEnvelope
@@ -714,6 +718,11 @@ class EngineClientImplementation implements EngineClient {
       options?: WorkbenchOptions,
     ): Promise<WorkbenchOutcome<EngineProtocol.CloseDocumentResponseEnvelope>> =>
       this.closeDocument(input, options),
+    executeQuery: (
+      input: EngineProtocol.ExecuteQueryInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.ExecuteQueryResponseEnvelope>> =>
+      this.executeQuery(input, options),
     findSymbols: (
       input: EngineProtocol.FindSymbolsInput,
       options?: WorkbenchOptions,
@@ -942,6 +951,16 @@ class EngineClientImplementation implements EngineClient {
     return this.executeWorkbenchOperation("engine.close_document", input, options, (envelope) =>
       encodeCloseDocumentRequestEnvelope(envelope as EngineProtocol.CloseDocumentRequestEnvelope),
     decodeCloseDocumentResponseEnvelope);
+  }
+
+  private executeQuery(
+    input: EngineProtocol.ExecuteQueryInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ExecuteQueryResponseEnvelope>> {
+    if (!isExecuteQueryInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.execute_query", input, options, (envelope) =>
+      encodeExecuteQueryRequestEnvelope(envelope as EngineProtocol.ExecuteQueryRequestEnvelope),
+    decodeExecuteQueryResponseEnvelope);
   }
 
   private findSymbols(

@@ -460,6 +460,63 @@ func TestPrepareDispatchWorkbenchOpenListAndReadModules(t *testing.T) {
 		t.Fatalf("read references response = %+v blobs=%+v err=%v", referenceResponse, referenceSink.blobs, err)
 	}
 
+	environment := "prod"
+	queryControl, err := engineprotocol.EncodeExecuteQueryRequestEnvelope(engineprotocol.ExecuteQueryRequestEnvelope{
+		Operation: engineprotocol.ExecuteQueryRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ExecuteQueryInput{
+			Arguments: map[string]semantic.RecipeScalar{
+				"ldl:project:p:query:scope:parameter:environment": {Kind: "enum", StringValue: &environment},
+			},
+			DocumentGeneration: generation,
+			Limits:             limits,
+			QueryAddress:       "ldl:project:p:query:scope",
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "execute-query-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryResponse, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(dispatch(OperationExecuteQuery, queryControl).Control)
+	if err != nil || queryResponse.Payload == nil || len(queryResponse.Diagnostics) != 0 {
+		t.Fatalf("execute query response = %+v err=%v", queryResponse, err)
+	}
+	if queryResponse.Payload.Result.QueryAddress != "ldl:project:p:query:scope" ||
+		!slices.Equal(queryResponse.Payload.Result.SeedEntityAddresses, []semantic.EntityAddress{"ldl:project:p:entity:alpha"}) ||
+		!slices.Equal(queryResponse.Payload.Result.PrimaryEntityAddresses, []semantic.EntityAddress{"ldl:project:p:entity:alpha"}) {
+		t.Fatalf("execute query payload = %+v", queryResponse.Payload.Result)
+	}
+	if queryResponse.Payload.ReturnedItems == "0" || queryResponse.Payload.ReturnedBytes == "0" {
+		t.Fatalf("execute query result was not measured: %+v", queryResponse.Payload)
+	}
+
+	queryRejectedControl, err := engineprotocol.EncodeExecuteQueryRequestEnvelope(engineprotocol.ExecuteQueryRequestEnvelope{
+		Operation: engineprotocol.ExecuteQueryRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ExecuteQueryInput{
+			Arguments: map[string]semantic.RecipeScalar{
+				"ldl:project:p:query:scope:parameter:unknown": {Kind: "enum", StringValue: &environment},
+			},
+			DocumentGeneration: generation,
+			Limits:             limits,
+			QueryAddress:       "ldl:project:p:query:scope",
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "execute-query-rejected",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err = dispatcher.PrepareDispatch(context.Background(), negotiated, OperationExecuteQuery, queryRejectedControl)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("execute query rejected prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	queryRejectedDispatch, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
+	if err != nil || queryRejectedDispatch.Outcome != protocolcommon.OutcomeRejected {
+		t.Fatalf("execute query rejected dispatch = %+v err=%v", queryRejectedDispatch, err)
+	}
+	queryRejectedResponse, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(queryRejectedDispatch.Control)
+	if err != nil || queryRejectedResponse.Payload != nil || len(queryRejectedResponse.Diagnostics) == 0 || queryRejectedResponse.Failure != nil {
+		t.Fatalf("execute query rejected response = %+v err=%v", queryRejectedResponse, err)
+	}
+
 	replacementBytes := []byte("project p \"Project Updated\" {}\n")
 	replacementCompile := compileRequest(replacementBytes)
 	replaceControl, err := engineprotocol.EncodeReplaceSourceTreeRequestEnvelope(engineprotocol.ReplaceSourceTreeRequestEnvelope{

@@ -52,6 +52,7 @@ func operationCapabilities(version protocolcommon.ProtocolVersion, compileLimits
 		OperationApplyToHandle,
 		OperationCloseDocument,
 		OperationCompile,
+		OperationExecuteQuery,
 		OperationFindSymbols,
 		OperationFindUsages,
 		OperationFormatScope,

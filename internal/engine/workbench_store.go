@@ -414,6 +414,7 @@ func workingCapabilities(compiled Snapshot) DocumentCapabilityState {
 	project := available && compiled.NormalizedDocument != nil && compiled.GraphHash != nil
 	return DocumentCapabilityState{
 		ApplyToHandle:      project,
+		ExecuteQuery:       project && compiled.TypedAST.Graph != nil,
 		FindSymbols:        available,
 		FindUsages:         available,
 		FormatScope:        project,

@@ -28,6 +28,7 @@ const (
 	OperationCompile            = "engine.compile"
 	OperationApplyToHandle      = "engine.apply_to_handle"
 	OperationCloseDocument      = "engine.close_document"
+	OperationExecuteQuery       = "engine.execute_query"
 	OperationFindSymbols        = "engine.find_symbols"
 	OperationFindUsages         = "engine.find_usages"
 	OperationFormatScope        = "engine.format_scope"
@@ -131,6 +132,7 @@ func NewDescriptor(config DescriptorConfig) (*Descriptor, error) {
 			OperationApplyToHandle,
 			OperationCloseDocument,
 			OperationCompile,
+			OperationExecuteQuery,
 			OperationFindSymbols,
 			OperationFindUsages,
 			OperationFormatScope,

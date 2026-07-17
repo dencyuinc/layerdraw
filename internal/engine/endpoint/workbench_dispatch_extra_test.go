@@ -80,6 +80,23 @@ func (driver *fakeWorkbenchDriver) ReadRows(context.Context, engine.ReadRowsInpu
 	return engine.ReadRowsResult{}, nil
 }
 
+func (driver *fakeWorkbenchDriver) ExecuteDocumentQuery(_ context.Context, input engine.ExecuteDocumentQueryInput) (engine.ExecuteDocumentQueryResult, error) {
+	if driver.err != nil {
+		return engine.ExecuteDocumentQueryResult{}, driver.err
+	}
+	return engine.ExecuteDocumentQueryResult{
+		DocumentGeneration: input.DocumentGeneration,
+		Result: engine.QueryResult{
+			Arguments:    input.Arguments,
+			QueryAddress: input.QueryAddress,
+			StateInput:   engine.QueryStateInputRef{Kind: "none"},
+			StatePolicy:  "forbid",
+		},
+		ReturnedItems: 0,
+		ReturnedBytes: 1,
+	}, nil
+}
+
 func (driver *fakeWorkbenchDriver) GetNeighbors(context.Context, engine.GetNeighborsInput) (engine.GetNeighborsResult, error) {
 	return engine.GetNeighborsResult{}, nil
 }
@@ -558,6 +575,82 @@ func TestWorkbenchExecutionErrorsBecomeRejectedDiagnostics(t *testing.T) {
 	}
 }
 
+func TestExecuteQueryMappingCoversScalarsCyclesAndErrors(t *testing.T) {
+	text := "value"
+	integer := protocolcommon.CanonicalSafeInteger("42")
+	number := semantic.CanonicalFiniteDecimal("1.5")
+	boolean := true
+	for _, test := range []struct {
+		name string
+		in   semantic.RecipeScalar
+		want engine.TypedScalar
+	}{
+		{name: "string", in: semantic.RecipeScalar{Kind: "string", StringValue: &text}, want: engine.TypedScalar{Type: "string", String: "value"}},
+		{name: "enum", in: semantic.RecipeScalar{Kind: "enum", StringValue: &text}, want: engine.TypedScalar{Type: "enum", String: "value"}},
+		{name: "integer", in: semantic.RecipeScalar{Kind: "integer", IntegerValue: &integer}, want: engine.TypedScalar{Type: "integer", Int: 42}},
+		{name: "number", in: semantic.RecipeScalar{Kind: "number", NumberValue: &number}, want: engine.TypedScalar{Type: "number", Float: 1.5}},
+		{name: "boolean", in: semantic.RecipeScalar{Kind: "boolean", BooleanValue: &boolean}, want: engine.TypedScalar{Type: "boolean", Bool: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := engineScalarFromRecipeScalar(test.in)
+			if err != nil || got != test.want {
+				t.Fatalf("scalar = %+v err=%v", got, err)
+			}
+		})
+	}
+	for _, bad := range []semantic.RecipeScalar{
+		{Kind: "string"},
+		{Kind: "integer"},
+		{Kind: "number"},
+		{Kind: "boolean"},
+		{Kind: "unknown"},
+		{Kind: "integer", IntegerValue: pointer(protocolcommon.CanonicalSafeInteger("not-int"))},
+		{Kind: "number", NumberValue: pointer(semantic.CanonicalFiniteDecimal("not-number"))},
+	} {
+		if _, err := engineScalarFromRecipeScalar(bad); err == nil {
+			t.Fatalf("bad scalar accepted: %+v", bad)
+		}
+	}
+
+	mapped, err := mapExecuteQueryResult(engine.ExecuteDocumentQueryResult{
+		DocumentGeneration: engine.DocumentGeneration{DocumentHandle: engine.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_1234567890abcdef"}, Value: 7},
+		Result: engine.QueryResult{
+			Arguments: map[string]engine.TypedScalar{"arg": {Type: "boolean", Bool: true}},
+			CycleRefs: []engine.QueryCycleRef{{
+				FromEntityAddress: "entity:a", Kind: "cycle", Orientation: "outgoing", RelationAddress: "relation:r",
+				RetainedPath:    engine.QueryPath{EntityAddresses: []string{"entity:a", "entity:b"}, RelationAddresses: []string{"relation:r"}},
+				ToEntityAddress: "entity:b",
+			}},
+			Diagnostics:              []engine.Diagnostic{{Code: "LDL1605", Severity: "warning", Message: "state missing"}},
+			Paths:                    []engine.QueryPath{{EntityAddresses: []string{"entity:a"}, RelationAddresses: []string{}}},
+			QueryAddress:             "query:q",
+			StateInput:               engine.QueryStateInputRef{Kind: "optional"},
+			StatePolicy:              "optional",
+			StateReads:               []engine.StateReadRef{{SubjectAddress: "entity:a", FieldPath: "system.updated_at"}},
+			SupportEntityAddresses:   []string{"entity:a"},
+			TraversedEntityAddresses: []string{"entity:b"},
+		},
+		ReturnedBytes: 100,
+		ReturnedItems: 6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mapped.DocumentGeneration.Value != "7" || mapped.ReturnedBytes != "100" || mapped.ReturnedItems != "6" ||
+		len(mapped.Result.CycleRefs) != 1 || len(mapped.Result.StateReads) != 1 || len(mapped.Result.Diagnostics) != 1 {
+		t.Fatalf("mapped query result = %+v", mapped)
+	}
+	if _, err := mapExecuteQueryResult(engine.ExecuteDocumentQueryResult{ReturnedItems: -1}); err == nil {
+		t.Fatal("negative returned items accepted")
+	}
+	if _, err := mapExecuteQueryResult(engine.ExecuteDocumentQueryResult{ReturnedBytes: -1}); err == nil {
+		t.Fatal("negative returned bytes accepted")
+	}
+	if _, err := mapExecuteQueryInput(engineprotocol.ExecuteQueryInput{Arguments: map[string]semantic.RecipeScalar{"bad": {Kind: "unknown"}}}); err == nil {
+		t.Fatal("bad execute query input scalar accepted")
+	}
+}
+
 func TestWorkbenchTerminalEnvelopeSupportsEveryOperation(t *testing.T) {
 	failure := workbenchFailure(protocolcommon.ProtocolFailureCategoryInvariant, FailureWorkbenchInvalid, "execution_failed", "failed", false, nil)
 	operations := []string{
@@ -570,6 +663,7 @@ func TestWorkbenchTerminalEnvelopeSupportsEveryOperation(t *testing.T) {
 		OperationInspectSubgraph,
 		OperationReadDeclarations,
 		OperationReadRows,
+		OperationExecuteQuery,
 		OperationGetNeighbors,
 		OperationFindUsages,
 		OperationReadScope,

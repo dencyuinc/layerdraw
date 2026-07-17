@@ -114,6 +114,80 @@ func TestExecuteQueryRejectsInvalidArgumentsBeforeGraphEvaluation(t *testing.T) 
 	}
 }
 
+func TestExecuteDocumentQueryUsesRetainedWorkbenchGeneration(t *testing.T) {
+	t.Parallel()
+	instance := New(BuildInfo{})
+	opened, err := instance.OpenDocument(context.Background(), OpenDocumentInput{
+		CompileInput:    projectCompileInput(structuralQuerySource()),
+		RequestedLimits: generousWorkbenchLimits,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := instance.ExecuteDocumentQuery(context.Background(), ExecuteDocumentQueryInput{
+		Arguments: map[string]TypedScalar{
+			"ldl:project:p:query:prod_scope:parameter:environment": {Type: definition.ScalarEnum, String: "prod"},
+		},
+		DocumentGeneration: opened.DocumentGeneration,
+		Limits:             generousWorkbenchLimits,
+		QueryAddress:       "ldl:project:p:query:prod_scope",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DocumentGeneration != opened.DocumentGeneration {
+		t.Fatalf("generation = %+v want %+v", result.DocumentGeneration, opened.DocumentGeneration)
+	}
+	if result.ReturnedItems == 0 || result.ReturnedBytes == 0 {
+		t.Fatalf("result limits were not measured: %+v", result)
+	}
+	if !reflect.DeepEqual(result.Result.ReachedEntityAddresses, []string{"ldl:project:p:entity:beta"}) {
+		t.Fatalf("reached entities = %v", result.Result.ReachedEntityAddresses)
+	}
+	if result.Result.Arguments["ldl:project:p:query:prod_scope:parameter:environment"].String != "prod" {
+		t.Fatalf("arguments = %+v", result.Result.Arguments)
+	}
+}
+
+func TestExecuteDocumentQueryRejectsInvalidLookupAndLimits(t *testing.T) {
+	t.Parallel()
+	instance := New(BuildInfo{})
+	opened, err := instance.OpenDocument(context.Background(), OpenDocumentInput{
+		CompileInput:    projectCompileInput(structuralQuerySource()),
+		RequestedLimits: generousWorkbenchLimits,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ExecuteDocumentQueryInput{
+		DocumentGeneration: opened.DocumentGeneration,
+		Limits:             generousWorkbenchLimits,
+		QueryAddress:       "ldl:project:p:query:prod_scope",
+	}
+	if _, err := instance.ExecuteDocumentQuery(context.Background(), ExecuteDocumentQueryInput{DocumentGeneration: opened.DocumentGeneration, Limits: generousWorkbenchLimits}); !IsWorkbenchError(err, WorkbenchErrorInputInvalid) {
+		t.Fatalf("empty query address error = %v", err)
+	}
+	missing := base
+	missing.QueryAddress = "ldl:project:p:query:missing"
+	if _, err := instance.ExecuteDocumentQuery(context.Background(), missing); !IsWorkbenchError(err, WorkbenchErrorNotFound) {
+		t.Fatalf("missing query error = %v", err)
+	}
+	limited := base
+	limited.Limits = WorkbenchLimits{MaxItems: 1, MaxOutputBytes: generousWorkbenchLimits.MaxOutputBytes}
+	if _, err := instance.ExecuteDocumentQuery(context.Background(), limited); !IsWorkbenchError(err, WorkbenchErrorLimitExceeded) {
+		t.Fatalf("item limit error = %v", err)
+	}
+	invalidArguments := base
+	invalidArguments.Arguments = map[string]TypedScalar{
+		"ldl:project:p:query:prod_scope:parameter:unknown": {Type: definition.ScalarEnum, String: "prod"},
+	}
+	if _, err := instance.ExecuteDocumentQuery(context.Background(), invalidArguments); err == nil {
+		t.Fatal("invalid query arguments were accepted")
+	} else if rejection, ok := err.(*QueryExecutionRejection); !ok || len(rejection.Diagnostics) == 0 {
+		t.Fatalf("invalid query arguments error = %#v", err)
+	}
+}
+
 func TestExecuteQueryTraversesIncomingAndReportsCycles(t *testing.T) {
 	t.Parallel()
 	engine := New(BuildInfo{})

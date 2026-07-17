@@ -183,6 +183,10 @@ export interface EngineWorkbenchClient {
     input: EngineProtocol.CloseDocumentInput,
     options?: WorkbenchOptions,
   ): Promise<WorkbenchOutcome<EngineProtocol.CloseDocumentResponseEnvelope>>;
+  executeQuery(
+    input: EngineProtocol.ExecuteQueryInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.ExecuteQueryResponseEnvelope>>;
   findSymbols(
     input: EngineProtocol.FindSymbolsInput,
     options?: WorkbenchOptions,
