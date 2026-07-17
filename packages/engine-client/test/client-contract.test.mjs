@@ -154,6 +154,12 @@ test("workbench facade routes generated operations without interpreting LDL", as
   };
   const calls = [
     ["openDocument", { compile_input: request.input, requested_limits: limits }, { blobs: request.blobs }],
+    ["executeQuery", {
+      arguments: {},
+      document_generation: generation,
+      limits,
+      query_address: "ldl:project:p:query:scope",
+    }, {}],
     ["listModules", base, {}],
     ["readModules", { ...base, modules: [{ module_path: "document.ldl", origin: { kind: "project" } }] }, {}],
     ["findSymbols", { ...base, case_mode: "sensitive", match_mode: "exact", query: "alpha" }, {}],
@@ -209,6 +215,7 @@ test("workbench facade routes generated operations without interpreting LDL", as
   }
   assert.deepEqual(seen, [
     { operation: "engine.open_document", blobs: 1 },
+    { operation: "engine.execute_query", blobs: 0 },
     { operation: "engine.list_modules", blobs: 0 },
     { operation: "engine.read_modules", blobs: 0 },
     { operation: "engine.find_symbols", blobs: 0 },

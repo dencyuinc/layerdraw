@@ -7,6 +7,7 @@ import {
   decodeApplyToHandleRequestEnvelope,
   decodeCompileRequestEnvelope,
   decodeCloseDocumentRequestEnvelope,
+  decodeExecuteQueryRequestEnvelope,
   decodeFindSymbolsRequestEnvelope,
   decodeFindUsagesRequestEnvelope,
   decodeFormatScopeRequestEnvelope,
@@ -28,6 +29,7 @@ import {
   encodeApplyToHandleResponseEnvelope,
   encodeCompileResponseEnvelope,
   encodeCloseDocumentResponseEnvelope,
+  encodeExecuteQueryResponseEnvelope,
   encodeFindSymbolsResponseEnvelope,
   encodeFindUsagesResponseEnvelope,
   encodeFormatScopeResponseEnvelope,
@@ -402,6 +404,8 @@ function decodeRequestEnvelope(operation, controlText) {
       return decodeApplyToHandleRequestEnvelope(controlText);
     case "engine.close_document":
       return decodeCloseDocumentRequestEnvelope(controlText);
+    case "engine.execute_query":
+      return decodeExecuteQueryRequestEnvelope(controlText);
     case "engine.find_symbols":
       return decodeFindSymbolsRequestEnvelope(controlText);
     case "engine.find_usages":
@@ -447,6 +451,8 @@ function encodeWorkbenchResponse(operation, response) {
       return encodeApplyToHandleResponseEnvelope(response);
     case "engine.close_document":
       return encodeCloseDocumentResponseEnvelope(response);
+    case "engine.execute_query":
+      return encodeExecuteQueryResponseEnvelope(response);
     case "engine.find_symbols":
       return encodeFindSymbolsResponseEnvelope(response);
     case "engine.find_usages":

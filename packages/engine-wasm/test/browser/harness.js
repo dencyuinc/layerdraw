@@ -6,6 +6,7 @@ import {createEngineWorkerTransportWithFactory} from "../../dist/host.js";
 import {
   assertPortableCompileParityOutcome,
   encode,
+  executePortableQueryClientWorkflow,
   handshakeAndCompileCorpus,
   portableParityInput,
   releaseManifestDigest,
@@ -131,6 +132,7 @@ globalThis.runLayerDrawEngineClientCorpus = async () => {
   if (cancelled.origin !== "client" || cancelled.outcome !== "cancelled") {
     throw new Error("portable client cancellation did not normalize to cancelled");
   }
+  await executePortableQueryClientWorkflow(client, "browser-query");
   await client.restart();
   const replacement = client.getEndpoint();
   if (

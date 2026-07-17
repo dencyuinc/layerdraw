@@ -15,10 +15,13 @@ import (
 func TestExecuteQueryEvaluatesStructuralRecipe(t *testing.T) {
 	t.Parallel()
 	snapshot := compileQueryExecutionFixture(t, structuralQuerySource())
-	response := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
+	response, err := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
 		Recipe: snapshot.TypedAST.Queries[0],
 		Graph:  *snapshot.TypedAST.Graph,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.Status != "ok" || response.Result == nil {
 		t.Fatalf("ExecuteQuery() = %+v", response)
 	}
@@ -59,10 +62,13 @@ func TestExecuteQueryEvaluatesStructuralRecipe(t *testing.T) {
 func TestExecuteQueryRejectsRequiredStateWithoutSnapshot(t *testing.T) {
 	t.Parallel()
 	snapshot := compileQueryExecutionFixture(t, requiredStateQuerySource())
-	response := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
+	response, err := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
 		Recipe: snapshot.TypedAST.Queries[0],
 		Graph:  *snapshot.TypedAST.Graph,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.Status != "rejected" || response.Result != nil {
 		t.Fatalf("ExecuteQuery() = %+v", response)
 	}
@@ -74,10 +80,13 @@ func TestExecuteQueryRejectsRequiredStateWithoutSnapshot(t *testing.T) {
 func TestExecuteQueryOptionalStateEvaluatesAsMissingWithReadRefs(t *testing.T) {
 	t.Parallel()
 	snapshot := compileQueryExecutionFixture(t, optionalStateQuerySource())
-	response := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
+	response, err := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
 		Recipe: snapshot.TypedAST.Queries[0],
 		Graph:  *snapshot.TypedAST.Graph,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.Status != "ok" || response.Result == nil {
 		t.Fatalf("ExecuteQuery() = %+v", response)
 	}
@@ -88,7 +97,7 @@ func TestExecuteQueryOptionalStateEvaluatesAsMissingWithReadRefs(t *testing.T) {
 	if !reflect.DeepEqual(response.Result.StateReads, []StateReadRef{wantRead}) {
 		t.Fatalf("state reads = %+v", response.Result.StateReads)
 	}
-	if len(response.Result.Diagnostics) != 1 || response.Result.Diagnostics[0].Code != "LDL1605" {
+	if len(response.Result.Diagnostics) != 2 || response.Result.Diagnostics[0].Code != "LDL1605" || response.Result.Diagnostics[1].Code != "LDL1602" {
 		t.Fatalf("diagnostics = %+v", response.Result.Diagnostics)
 	}
 }
@@ -96,7 +105,7 @@ func TestExecuteQueryOptionalStateEvaluatesAsMissingWithReadRefs(t *testing.T) {
 func TestExecuteQueryRejectsInvalidArgumentsBeforeGraphEvaluation(t *testing.T) {
 	t.Parallel()
 	snapshot := compileQueryExecutionFixture(t, structuralQuerySource())
-	response := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
+	response, err := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
 		Recipe: snapshot.TypedAST.Queries[0],
 		Graph:  *snapshot.TypedAST.Graph,
 		Arguments: map[string]TypedScalar{
@@ -104,6 +113,9 @@ func TestExecuteQueryRejectsInvalidArgumentsBeforeGraphEvaluation(t *testing.T) 
 			"ldl:project:p:query:prod_scope:parameter:unknown":     {Type: definition.ScalarEnum, String: "prod"},
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.Status != "rejected" || len(response.Diagnostics) != 2 {
 		t.Fatalf("ExecuteQuery() = %+v", response)
 	}
@@ -177,6 +189,11 @@ func TestExecuteDocumentQueryRejectsInvalidLookupAndLimits(t *testing.T) {
 	if _, err := instance.ExecuteDocumentQuery(context.Background(), limited); !IsWorkbenchError(err, WorkbenchErrorLimitExceeded) {
 		t.Fatalf("item limit error = %v", err)
 	}
+	byteLimited := base
+	byteLimited.Limits = WorkbenchLimits{MaxItems: generousWorkbenchLimits.MaxItems, MaxOutputBytes: 1}
+	if _, err := instance.ExecuteDocumentQuery(context.Background(), byteLimited); !IsWorkbenchError(err, WorkbenchErrorLimitExceeded) {
+		t.Fatalf("output byte limit error = %v", err)
+	}
 	invalidArguments := base
 	invalidArguments.Arguments = map[string]TypedScalar{
 		"ldl:project:p:query:prod_scope:parameter:unknown": {Type: definition.ScalarEnum, String: "prod"},
@@ -213,7 +230,10 @@ func TestExecuteQueryTraversesIncomingAndReportsCycles(t *testing.T) {
 		Traversal:     &query.Traversal{Direction: definition.TraversalBoth, MinDepth: 1, MaxDepth: 2, CyclePolicy: query.CycleIncludeCycleRef, RelationTypeAddresses: &relationTypes},
 		Result:        []query.ResultMember{query.ResultSeedEntities, query.ResultTraversedEntities, query.ResultPathRelations},
 	}
-	response := engine.ExecuteQuery(context.Background(), QueryExecutionInput{Recipe: recipe, Graph: graphValue})
+	response, err := engine.ExecuteQuery(context.Background(), QueryExecutionInput{Recipe: recipe, Graph: graphValue})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.Status != "ok" || response.Result == nil {
 		t.Fatalf("ExecuteQuery() = %+v", response)
 	}
@@ -225,14 +245,18 @@ func TestExecuteQueryTraversesIncomingAndReportsCycles(t *testing.T) {
 	}
 
 	recipe.Traversal.CyclePolicy = query.CycleError
-	rejected := engine.ExecuteQuery(context.Background(), QueryExecutionInput{Recipe: recipe, Graph: graphValue})
-	if rejected.Status != "rejected" || len(rejected.Diagnostics) == 0 || rejected.Diagnostics[0].Code != "LDL1601" {
+	rejected, err := engine.ExecuteQuery(context.Background(), QueryExecutionInput{Recipe: recipe, Graph: graphValue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected.Status != "rejected" || len(rejected.Diagnostics) == 0 || rejected.Diagnostics[0].Code != "LDL1603" {
 		t.Fatalf("cycle error response = %+v", rejected)
 	}
 }
 
 func TestQueryPredicatePrimitiveComparisons(t *testing.T) {
 	t.Parallel()
+	executor := &queryExecutor{ctx: context.Background(), limits: DefaultQueryExecutionLimits()}
 	entity := graph.Entity{
 		ID: "alpha", Address: "entity:alpha", DisplayName: "Alpha", TypeAddress: "service", LayerAddress: "app",
 		Common: definition.Common{Description: stringPointer("Primary API"), Tags: []string{"critical", "api"}},
@@ -242,28 +266,28 @@ func TestQueryPredicatePrimitiveComparisons(t *testing.T) {
 		ID: "calls", Address: "relation:calls", DisplayName: &relationName, TypeAddress: "calls",
 		FromAddress: "entity:alpha", ToAddress: "entity:beta", Common: definition.Common{Tags: []string{"sync"}},
 	}
-	if !compareAddress("entity:alpha", query.OperatorEqual, &query.PredicateValue{Kind: query.ValueLiteral, Address: stringPointer("entity:alpha")}) {
+	if !executor.compareAddress("entity:alpha", query.OperatorEqual, &query.PredicateValue{Kind: query.ValueLiteral, Address: stringPointer("entity:alpha")}) {
 		t.Fatal("address equality failed")
 	}
-	if !compareAddress("entity:alpha", query.OperatorIn, &query.PredicateValue{Kind: query.ValueLiteral, Addresses: []string{"entity:alpha", "entity:beta"}}) {
+	if !executor.compareAddress("entity:alpha", query.OperatorIn, &query.PredicateValue{Kind: query.ValueLiteral, Addresses: []string{"entity:alpha", "entity:beta"}}) {
 		t.Fatal("address membership failed")
 	}
-	if !compareStringSet(entity.Tags, query.OperatorContains, &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarString, String: "critical"}}) {
+	if !executor.compareStringSet(entity.Tags, query.OperatorContains, &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarString, String: "critical"}}) {
 		t.Fatal("tag contains failed")
 	}
-	if !compareStringSet(entity.Tags, query.OperatorEqual, &query.PredicateValue{Kind: query.ValueLiteral, Scalars: []definition.Scalar{{Type: definition.ScalarString, String: "api"}, {Type: definition.ScalarString, String: "critical"}}}) {
+	if !executor.compareStringSet(entity.Tags, query.OperatorEqual, &query.PredicateValue{Kind: query.ValueLiteral, Scalars: []definition.Scalar{{Type: definition.ScalarString, String: "api"}, {Type: definition.ScalarString, String: "critical"}}}) {
 		t.Fatal("tag equality failed")
 	}
-	if !compareScalar(definition.Scalar{Type: definition.ScalarString, String: "Alpha"}, query.OperatorStartsWith, &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarString, String: "Al"}}) {
+	if !executor.compareScalar(definition.Scalar{Type: definition.ScalarString, String: "Alpha"}, query.OperatorStartsWith, &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarString, String: "Al"}}) {
 		t.Fatal("string prefix failed")
 	}
-	if !compareScalar(definition.Scalar{Type: definition.ScalarInteger, Int: 7}, query.OperatorGreaterEq, &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarInteger, Int: 7}}) {
+	if !executor.compareScalar(definition.Scalar{Type: definition.ScalarInteger, Int: 7}, query.OperatorGreaterEq, &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarInteger, Int: 7}}) {
 		t.Fatal("integer comparison failed")
 	}
-	if !compareScalar(definition.Scalar{Type: definition.ScalarNumber, Float: 1.5}, query.OperatorLess, &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarNumber, Float: 2.5}}) {
+	if !executor.compareScalar(definition.Scalar{Type: definition.ScalarNumber, Float: 1.5}, query.OperatorLess, &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarNumber, Float: 2.5}}) {
 		t.Fatal("number comparison failed")
 	}
-	if !compareScalar(definition.Scalar{Type: definition.ScalarEnum, String: "prod"}, query.OperatorIn, &query.PredicateValue{Kind: query.ValueLiteral, Scalars: []definition.Scalar{{Type: definition.ScalarEnum, String: "prod"}}}) {
+	if !executor.compareScalar(definition.Scalar{Type: definition.ScalarEnum, String: "prod"}, query.OperatorIn, &query.PredicateValue{Kind: query.ValueLiteral, Scalars: []definition.Scalar{{Type: definition.ScalarEnum, String: "prod"}}}) {
 		t.Fatal("scalar membership failed")
 	}
 	if !entityFieldValue(entity, "description").present || !entityFieldValue(entity, "address").present || !entityFieldValue(entity, "tags").present {
@@ -272,7 +296,7 @@ func TestQueryPredicatePrimitiveComparisons(t *testing.T) {
 	if !relationFieldValue(relation, "display_name").present || !relationFieldValue(relation, "from").present || !relationFieldValue(relation, "tags").present {
 		t.Fatal("relation fields should be present")
 	}
-	if compareAddress("entity:alpha", query.OperatorEqual, &query.PredicateValue{Kind: query.ValueLiteral, Address: stringPointer("entity:beta")}) {
+	if executor.compareAddress("entity:alpha", query.OperatorEqual, &query.PredicateValue{Kind: query.ValueLiteral, Address: stringPointer("entity:beta")}) {
 		t.Fatal("address mismatch was accepted")
 	}
 }
@@ -285,7 +309,7 @@ func TestQueryEvaluatorPredicateBranches(t *testing.T) {
 		Rows: []graph.AttributeRow{row}, Common: definition.Common{Tags: []string{"critical"}},
 	}
 	relation := graph.Relation{ID: "r", Address: "relation:r", TypeAddress: "calls", FromAddress: "entity:alpha", ToAddress: "entity:beta", Rows: []graph.AttributeRow{row}}
-	executor := newQueryExecutor(QueryExecutionInput{Recipe: CompiledQueryRecipe{Address: "query:test", StateInput: query.StateNone}, Graph: graph.MasterGraph{Entities: []graph.Entity{entity}, Relations: []graph.Relation{relation}}})
+	executor := newQueryExecutor(context.Background(), QueryExecutionInput{Recipe: CompiledQueryRecipe{Address: "query:test", StateInput: query.StateNone}, Graph: graph.MasterGraph{Entities: []graph.Entity{entity}, Relations: []graph.Relation{relation}}}, DefaultQueryExecutionLimits())
 
 	fieldTrue := query.Predicate{Kind: query.PredicateField, Field: "display_name", Operator: query.OperatorEqual, Value: &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarString, String: "Alpha"}}}
 	fieldFalse := query.Predicate{Kind: query.PredicateField, Field: "tags", Operator: query.OperatorContains, Value: &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &definition.Scalar{Type: definition.ScalarString, String: "missing"}}}

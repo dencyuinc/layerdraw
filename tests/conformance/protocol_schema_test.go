@@ -82,6 +82,51 @@ func TestProtocolFixturesRoundTripInGeneratedGoTypes(t *testing.T) {
 			},
 		},
 		{
+			name: "execute query request", fixture: "execute-query-request.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeExecuteQueryRequestEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeExecuteQueryRequestEnvelope(raw.(engineprotocol.ExecuteQueryRequestEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.ExecuteQueryRequestEnvelope)
+				if value.Operation != engineprotocol.ExecuteQueryRequestEnvelopeOperationValue || value.Payload.QueryAddress != "ldl:project:p:query:scope" {
+					t.Fatalf("invalid execute query request: %+v", value)
+				}
+			},
+		},
+		{
+			name: "execute query success", fixture: "execute-query-success.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeExecuteQueryResponseEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeExecuteQueryResponseEnvelope(raw.(engineprotocol.ExecuteQueryResponseEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.ExecuteQueryResponseEnvelope)
+				if value.Outcome != protocolcommon.OutcomeSuccess || value.Payload == nil || value.Payload.ReturnedItems != "3" {
+					t.Fatalf("invalid execute query success: %+v", value)
+				}
+				logical := *value.Payload
+				logical.ReturnedBytes = "0"
+				encoded := canonicalProtocolJSONForTest(t, logical)
+				if value.Payload.ReturnedBytes != engineprotocol.LogicalResponseByteCount(fmt.Sprint(len(encoded))) {
+					t.Fatalf("invalid execute query logical byte count: payload=%+v encoded=%d", value.Payload, len(encoded))
+				}
+			},
+		},
+		{
+			name: "execute query rejected", fixture: "execute-query-rejected.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeExecuteQueryResponseEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeExecuteQueryResponseEnvelope(raw.(engineprotocol.ExecuteQueryResponseEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.ExecuteQueryResponseEnvelope)
+				if value.Outcome != protocolcommon.OutcomeRejected || value.Payload != nil || len(value.Diagnostics) != 1 {
+					t.Fatalf("invalid execute query rejection: %+v", value)
+				}
+			},
+		},
+		{
 			name: "handshake request", fixture: "handshake-request.json",
 			decode: func(data []byte) (any, error) { return engineprotocol.DecodeHandshakeRequestEnvelope(data) },
 			encode: func(raw any) ([]byte, error) {
@@ -159,6 +204,46 @@ func TestProtocolFixturesRoundTripInGeneratedGoTypes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExecuteQueryResultRejectsInconsistentLogicalCounts(t *testing.T) {
+	t.Parallel()
+	var fixture map[string]any
+	if err := json.Unmarshal(readProtocolFixture(t, "execute-query-success.json"), &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fixture["payload"].(map[string]any); !ok {
+		t.Fatal("execute query fixture payload is not an object")
+	}
+	for _, test := range []struct {
+		field string
+		value string
+	}{{"returned_items", "999"}, {"returned_bytes", "1"}} {
+		t.Run(test.field, func(t *testing.T) {
+			copyValue := mapsCloneJSON(t, fixture)
+			copyValue["payload"].(map[string]any)[test.field] = test.value
+			encoded, err := json.Marshal(copyValue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(encoded); err == nil {
+				t.Fatalf("inconsistent %s was accepted", test.field)
+			}
+		})
+	}
+}
+
+func mapsCloneJSON(t *testing.T, value map[string]any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(encoded, &cloned); err != nil {
+		t.Fatal(err)
+	}
+	return cloned
 }
 
 func TestGeneratedCompileInputBlobRefCollector(t *testing.T) {
@@ -640,6 +725,27 @@ func TestGeneratedGoMatchesSharedCanonicalEngineEnvelopes(t *testing.T) {
 				return nil, err
 			}
 			return engineprotocol.EncodeCompileResponseEnvelope(value)
+		}},
+		{"execute-query-request.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeExecuteQueryRequestEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeExecuteQueryRequestEnvelope(value)
+		}},
+		{"execute-query-success.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeExecuteQueryResponseEnvelope(value)
+		}},
+		{"execute-query-rejected.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeExecuteQueryResponseEnvelope(value)
 		}},
 		{"handshake-request.json", func(data []byte) ([]byte, error) {
 			value, err := engineprotocol.DecodeHandshakeRequestEnvelope(data)
@@ -2362,6 +2468,17 @@ func readProtocolFixture(t *testing.T, name string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func canonicalProtocolJSONForTest(t *testing.T, value any) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		t.Fatal(err)
+	}
+	return bytes.TrimSuffix(output.Bytes(), []byte{'\n'})
 }
 
 func protocolRepositoryRoot(t *testing.T) string {

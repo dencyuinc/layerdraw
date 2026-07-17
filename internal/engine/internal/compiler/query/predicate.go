@@ -4,6 +4,7 @@ package query
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/resolve"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
@@ -585,6 +586,27 @@ func CanonicalStateReads(reads []StateReadDependency) []StateReadDependency {
 	out := append([]StateReadDependency{}, reads...)
 	sortStateReads(out)
 	return dedupeStateReads(out)
+}
+
+// CompareStateFieldPaths compares two paths by the closed Language 1 registry
+// order. Runtime QueryResult state reads use this same ordering authority.
+func CompareStateFieldPaths(left, right StateFieldPath) int {
+	leftRank, rightRank := len(stateFieldRegistry), len(stateFieldRegistry)
+	for index, field := range stateFieldRegistry {
+		if field.path == left {
+			leftRank = index
+		}
+		if field.path == right {
+			rightRank = index
+		}
+	}
+	if leftRank < rightRank {
+		return -1
+	}
+	if leftRank > rightRank {
+		return 1
+	}
+	return strings.Compare(string(left), string(right))
 }
 
 func dedupeStateReads(reads []StateReadDependency) []StateReadDependency {

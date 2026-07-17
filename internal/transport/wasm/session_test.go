@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -112,6 +113,34 @@ func compileBytes(t *testing.T, source []byte) []byte {
 	return value
 }
 
+func handshakeBytesWithDeadline(t *testing.T, deadline protocolcommon.Rfc3339Time) []byte {
+	t.Helper()
+	request, err := engineprotocol.DecodeHandshakeRequestEnvelope(handshakeBytes(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.DeadlineAt = &deadline
+	value, err := engineprotocol.EncodeHandshakeRequestEnvelope(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func compileBytesWithDeadline(t *testing.T, source []byte, deadline protocolcommon.Rfc3339Time) []byte {
+	t.Helper()
+	request, err := engineprotocol.DecodeCompileRequestEnvelope(compileBytes(t, source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.DeadlineAt = &deadline
+	value, err := engineprotocol.EncodeCompileRequestEnvelope(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
 type memoryRequestBlobs struct {
 	definitions []endpoint.BlobDefinition
 	binds       int
@@ -188,6 +217,36 @@ func TestSessionGeneratedHandshakeCompileAndRelease(t *testing.T) {
 	response.Release()
 	if response.Control != nil || response.Blobs != nil {
 		t.Fatal("response bytes were retained after release")
+	}
+}
+
+func TestSessionHonorsGeneratedRequestDeadlines(t *testing.T) {
+	t.Parallel()
+	past := protocolcommon.Rfc3339Time(time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano))
+
+	handshakeSession := newTestSession(t)
+	handshakeResponse, failure := handshakeSession.Dispatch(context.Background(), "generation-1", handshakeBytesWithDeadline(t, past), EmptyRequestBlobs{})
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	defer handshakeResponse.Release()
+	handshake, err := engineprotocol.DecodeHandshakeResponseEnvelope(handshakeResponse.Control)
+	if err != nil || handshake.Outcome != protocolcommon.OutcomeCancelled {
+		t.Fatalf("expired handshake response=%+v err=%v", handshake, err)
+	}
+
+	operationSession := newTestSession(t)
+	negotiateSession(t, operationSession)
+	source := []byte("project p \"Project\" {}")
+	blobs := sourceBlobs(source)
+	compileResponse, failure := operationSession.Dispatch(context.Background(), "generation-1", compileBytesWithDeadline(t, source, past), blobs)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	defer compileResponse.Release()
+	compile, err := engineprotocol.DecodeCompileResponseEnvelope(compileResponse.Control)
+	if err != nil || compile.Outcome != protocolcommon.OutcomeCancelled || blobs.binds != 0 || blobs.releases != 1 {
+		t.Fatalf("expired compile response=%+v binds=%d releases=%d err=%v", compile, blobs.binds, blobs.releases, err)
 	}
 }
 

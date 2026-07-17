@@ -208,7 +208,12 @@ func (session *Session) Dispatch(ctx context.Context, generation string, control
 		if blobs.Count() != 0 {
 			return Response{}, localFailure(FailureMalformedMessage)
 		}
-		return session.dispatchHandshake(ctx, generation, request)
+		requestContext, cancel, contextErr := endpoint.RequestContext(ctx, request.DeadlineAt)
+		if contextErr != nil {
+			return Response{}, localFailure(FailureMalformedMessage)
+		}
+		defer cancel()
+		return session.dispatchHandshake(requestContext, generation, request)
 	}
 	var route struct {
 		Operation string `json:"operation"`
@@ -216,7 +221,12 @@ func (session *Session) Dispatch(ctx context.Context, generation string, control
 	if err := json.Unmarshal(control, &route); err != nil || route.Operation == "" {
 		return Response{}, localFailure(FailureMalformedMessage)
 	}
-	return session.dispatchOperation(ctx, generation, route.Operation, control, blobs)
+	requestContext, cancel, err := endpoint.RequestContextFromControl(ctx, control)
+	if err != nil {
+		return Response{}, localFailure(FailureMalformedMessage)
+	}
+	defer cancel()
+	return session.dispatchOperation(requestContext, generation, route.Operation, control, blobs)
 }
 
 func (session *Session) dispatchHandshake(ctx context.Context, generation string, request engineprotocol.HandshakeRequestEnvelope) (Response, *LocalFailure) {

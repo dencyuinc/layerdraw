@@ -12,6 +12,8 @@ import {
   decodeCompileResponseEnvelope,
   decodeCanonicalSourcePath,
   decodeEffectiveResourceLimits,
+  decodeExecuteQueryRequestEnvelope,
+  decodeExecuteQueryResponseEnvelope,
   decodeExportRecipeBlobRef,
   decodeHandshakeRequestEnvelope,
   decodeNormalizedPackArtifactBlobRef,
@@ -27,6 +29,8 @@ import {
   encodeNormalizedProjectArtifact,
   encodeCanonicalSourcePath,
   encodeEffectiveResourceLimits,
+  encodeExecuteQueryRequestEnvelope,
+  encodeExecuteQueryResponseEnvelope,
   encodeExportRecipeBlobRef,
   encodeHandshakeRequestEnvelope,
   encodeNormalizedPackArtifactBlobRef,
@@ -56,6 +60,8 @@ import {
   isFindUsagesResult,
   isFindSymbolsInput,
   isEngineEditPreconditions,
+  isExecuteQueryRequestEnvelope,
+  isExecuteQueryResponseEnvelope,
   isInspectSubgraphResult,
   isInspectSubgraphInput,
   isListModulesResult,
@@ -262,6 +268,9 @@ for (const [name, validate, decode, encode] of [
   ["compile-success.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
   ["compile-success-pack.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
   ["compile-rejected.json", isCompileResponseEnvelope, decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
+  ["execute-query-request.json", isExecuteQueryRequestEnvelope, decodeExecuteQueryRequestEnvelope, encodeExecuteQueryRequestEnvelope],
+  ["execute-query-success.json", isExecuteQueryResponseEnvelope, decodeExecuteQueryResponseEnvelope, encodeExecuteQueryResponseEnvelope],
+  ["execute-query-rejected.json", isExecuteQueryResponseEnvelope, decodeExecuteQueryResponseEnvelope, encodeExecuteQueryResponseEnvelope],
   ["handshake-request.json", isHandshakeRequestEnvelope, decodeHandshakeRequestEnvelope, encodeHandshakeRequestEnvelope],
   ["handshake-success.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
   ["handshake-rejected.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
@@ -275,6 +284,17 @@ for (const [name, validate, decode, encode] of [
     assert.equal(encode(decode(canonical)), canonical);
   });
 }
+
+test("execute query result rejects inconsistent logical counts", async () => {
+  const fixture = await readFixture("execute-query-success.json");
+  for (const [field, invalid] of [["returned_items", "999"], ["returned_bytes", "1"]]) {
+    const mutated = structuredClone(fixture);
+    mutated.payload[field] = invalid;
+    assert.equal(isExecuteQueryResponseEnvelope(mutated), false, field);
+    assert.throws(() => decodeExecuteQueryResponseEnvelope(JSON.stringify(mutated)), {name: "TypeError"}, field);
+    assert.throws(() => encodeExecuteQueryResponseEnvelope(mutated), {name: "TypeError"}, field);
+  }
+});
 
 test("review-repair handshake fixtures validate and byte-identically round-trip", async (context) => {
   for (const name of [
@@ -540,6 +560,9 @@ test("TypeScript matches shared canonical Go/TypeScript engine-envelope bytes", 
     ["compile-request.json", decodeCompileRequestEnvelope, encodeCompileRequestEnvelope],
     ["compile-rejected.json", decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
     ["compile-success-pack.json", decodeCompileResponseEnvelope, encodeCompileResponseEnvelope],
+    ["execute-query-request.json", decodeExecuteQueryRequestEnvelope, encodeExecuteQueryRequestEnvelope],
+    ["execute-query-success.json", decodeExecuteQueryResponseEnvelope, encodeExecuteQueryResponseEnvelope],
+    ["execute-query-rejected.json", decodeExecuteQueryResponseEnvelope, encodeExecuteQueryResponseEnvelope],
     ["handshake-request.json", decodeHandshakeRequestEnvelope, encodeHandshakeRequestEnvelope],
     ["handshake-success.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
     ["handshake-rejected.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],

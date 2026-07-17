@@ -139,6 +139,135 @@ function blobRef(blobID, bytes, mediaType) {
   }));
 }
 
+const queryWorkflowSource = `project p "Project" {}
+layers {
+  app "Application" @10
+}
+entity_type service "Service" {
+  representation shape rect
+}
+relation_type link "Link" dependency {
+  duplicate_policy allow
+  from source types [service] layers [app]
+  to target types [service] layers [app]
+  label "links"
+}
+entities service @app {
+  alpha "Alpha"
+  beta "Beta"
+}
+relations link {
+  alpha_beta: alpha -> beta
+}
+query scope "Scope" {
+  parameters {
+    environment enum [prod, dev] default prod
+  }
+  select {
+    entity_types [service]
+    relation_types [link]
+    roots [alpha]
+  }
+  result [seed_entities, induced_relations]
+}
+`;
+
+const queryLimits = Object.freeze({max_items: "128", max_output_bytes: "65536"});
+const queryAddress = "ldl:project:p:query:scope";
+const queryParameterAddress = `${queryAddress}:parameter:environment`;
+
+async function queryWorkflowCompileInput() {
+  const bytes = new TextEncoder().encode(queryWorkflowSource);
+  const ref = await blobRef("query-workflow-source", bytes, "text/plain; charset=utf-8");
+  return {
+    input: {
+      entry_path: "main.ldl",
+      installed_pack_tree: [],
+      mode: "project",
+      project_source_tree: [{path: "main.ldl", blob: ref}],
+      referenced_assets: [],
+      resolved_dependencies: {format: "layerdraw-resolved", format_version: 1, installs: [], language: 1},
+      resource_limits: {},
+    },
+    blob: {ref, bytes},
+  };
+}
+
+function assertQueryPayload(payload, generation, label) {
+  if (payload === undefined) throw new Error(`${label} omitted its payload`);
+  requireEqual(payload.document_generation, generation, `${label} document generation`);
+  requireEqual(payload.result, {
+    arguments: {[queryParameterAddress]: {kind: "enum", string_value: "prod"}},
+    cycle_refs: [],
+    diagnostics: [],
+    induced_relation_addresses: [],
+    path_relation_addresses: [],
+    paths: [{entity_addresses: ["ldl:project:p:entity:alpha"], relation_addresses: []}],
+    primary_entity_addresses: ["ldl:project:p:entity:alpha"],
+    query_address: queryAddress,
+    reached_entity_addresses: [],
+    seed_entity_addresses: ["ldl:project:p:entity:alpha"],
+    selected_relation_addresses: [],
+    state_input: {kind: "none"},
+    state_policy: "none",
+    state_reads: [],
+    support_entity_addresses: [],
+    traversed_entity_addresses: [],
+  }, `${label} result`);
+  if (payload.returned_items !== "3") throw new Error(`${label} returned_items is not exact`);
+  const logical = structuredClone(payload);
+  logical.returned_bytes = "0";
+  const expectedBytes = new TextEncoder().encode(canonicalSemantic(logical)).byteLength;
+  if (payload.returned_bytes !== String(expectedBytes)) throw new Error(`${label} returned_bytes is not exact`);
+}
+
+export async function executePortableQueryClientWorkflow(client, suffix) {
+  const source = await queryWorkflowCompileInput();
+  const open = await client.workbench.openDocument({
+    compile_input: source.input,
+    requested_limits: queryLimits,
+  }, {
+    blobs: [source.blob],
+    requestId: `${suffix}-open`,
+  });
+  if (open.origin !== "engine" || open.outcome !== "success" || open.response.payload === undefined) {
+    throw new Error(`${suffix} query workflow could not open its document`);
+  }
+  const opened = open.response.payload;
+  if (opened.capabilities.execute_query !== true) throw new Error(`${suffix} document did not advertise execute_query`);
+
+  const executed = await client.workbench.executeQuery({
+    arguments: {[queryParameterAddress]: {kind: "enum", string_value: "prod"}},
+    document_generation: opened.document_generation,
+    limits: queryLimits,
+    query_address: queryAddress,
+  }, {requestId: `${suffix}-execute`});
+  if (executed.origin !== "engine" || executed.outcome !== "success") {
+    throw new Error(`${suffix} query workflow did not succeed`);
+  }
+  assertQueryPayload(executed.response.payload, opened.document_generation, `${suffix} query`);
+
+  const rejected = await client.workbench.executeQuery({
+    arguments: {[`${queryAddress}:parameter:unknown`]: {kind: "enum", string_value: "prod"}},
+    document_generation: opened.document_generation,
+    limits: queryLimits,
+    query_address: queryAddress,
+  }, {requestId: `${suffix}-rejected`});
+  if (rejected.origin !== "engine" || rejected.outcome !== "rejected" ||
+      rejected.response.payload !== undefined || rejected.response.failure !== undefined ||
+      rejected.response.diagnostics.length !== 1 || rejected.response.diagnostics[0].code !== "LDL1601") {
+    throw new Error(`${suffix} query rejection contract drifted`);
+  }
+
+  const closed = await client.workbench.closeDocument({
+    document_generation: opened.document_generation,
+    document_handle: opened.document_handle,
+  }, {requestId: `${suffix}-close`});
+  if (closed.origin !== "engine" || closed.outcome !== "success") {
+    throw new Error(`${suffix} query workflow could not close its document`);
+  }
+}
+
 export function handshakeControl(schemaDigest, requestID) {
   return encode({
     operation: "engine.handshake",
