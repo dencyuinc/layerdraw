@@ -13,10 +13,19 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
 )
 
+// validatedStateQuerySnapshot is the immutable projection needed by direct
+// View state reads after the Query evaluator has validated the wire snapshot.
+type validatedStateQuerySnapshot struct {
+	input         QueryStateInputRef
+	subjects      map[string]validatedStateSubject
+	inaccessible  map[query.StateFieldPath]bool
+	currentHashes map[string]string
+}
+
 // validateStateQuerySnapshotForDefinition reuses the Query evaluator's closed
 // snapshot validation for direct View state reads. It performs no Query
-// traversal and returns the canonical StateInputRef only after full validation.
-func validateStateQuerySnapshotForDefinition(ctx context.Context, identity QueryDefinitionIdentity, graphValue TypedMasterGraph, snapshot StateQuerySnapshot) (QueryStateInputRef, []Diagnostic, error) {
+// traversal and exposes only validated, normalized state records.
+func validateStateQuerySnapshotForDefinition(ctx context.Context, identity QueryDefinitionIdentity, graphValue TypedMasterGraph, snapshot StateQuerySnapshot) (validatedStateQuerySnapshot, []Diagnostic, error) {
 	limits := DefaultQueryExecutionLimits()
 	validator := &queryExecutor{
 		ctx: ctx, limits: limits, graph: graphValue, definition: identity,
@@ -25,9 +34,12 @@ func validateStateQuerySnapshotForDefinition(ctx context.Context, identity Query
 		currentStateHashes: map[string]string{}, staleStateSubjects: map[string]bool{},
 	}
 	if !validator.validateStateSnapshot(snapshot) {
-		return QueryStateInputRef{}, sortedDiagnostics(validator.diagnostics), validator.err
+		return validatedStateQuerySnapshot{}, sortedDiagnostics(validator.diagnostics), validator.err
 	}
-	return validator.stateInput, nil, validator.err
+	return validatedStateQuerySnapshot{
+		input: validator.stateInput, subjects: validator.stateSubjects,
+		inaccessible: validator.stateInaccessible, currentHashes: validator.currentStateHashes,
+	}, nil, validator.err
 }
 
 const (

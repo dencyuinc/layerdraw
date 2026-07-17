@@ -3,40 +3,190 @@
 package engine
 
 import (
+	"sort"
+
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/query"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/graph"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/view"
 )
 
+type tableSourceRow struct {
+	identity   []string
+	entity     *graph.Entity
+	relation   *graph.Relation
+	row        *graph.AttributeRow
+	projection *definition.TableProjection
+}
+
+type materializedTableRow struct {
+	value      TableRow
+	identities [][]string
+	groupKey   []any
+}
+
 func (m *viewMaterializer) table(base ViewDataBase) *TableViewData {
 	shape := m.input.Recipe.Shape.Table
 	if shape == nil {
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "Table View shape is missing", m.input.Recipe.Address, "")
+		m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "Table View shape is missing", m.input.Recipe.Address, "")
 		return &TableViewData{ViewDataBase: base, Columns: []TableColumn{}, Rows: []TableRow{}}
 	}
-	columns := m.tableColumns(shape)
-	rows := m.tableRows(shape, columns)
+	sources := m.tableSourceRows(shape)
+	columns := m.tableColumns(shape, sources)
+	rows := m.materializeTableRows(shape, columns, sources)
 	return &TableViewData{ViewDataBase: base, Columns: columns, Rows: rows}
 }
 
-func (m *viewMaterializer) tableColumns(shape *view.TableShape) []TableColumn {
+func (m *viewMaterializer) tableSourceRows(shape *view.TableShape) []tableSourceRow {
+	switch shape.RowSource {
+	case view.RowsEntity, view.RowsEntityRows:
+		return m.entityTableSourceRows(shape)
+	case view.RowsRelation, view.RowsRelationRows:
+		return m.relationTableSourceRows(shape)
+	case view.RowsAutomaticRelations:
+		return m.automaticRelationTableSourceRows()
+	default:
+		m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "Table row source is invalid", m.input.Recipe.Address, "")
+		return []tableSourceRow{}
+	}
+}
+
+func (m *viewMaterializer) entityTableSourceRows(shape *view.TableShape) []tableSourceRow {
+	addresses := m.primaryEntityAddresses()
+	if shape.EntityTypeAddresses != nil {
+		allowed := viewStringSet(*shape.EntityTypeAddresses)
+		filtered := make([]string, 0, len(addresses))
+		for _, address := range addresses {
+			entity, ok := m.entities[address]
+			if !ok {
+				m.addDiag("LDL1702", "view_materialization_conflict", "Table Entity is absent from the immutable graph", address, m.input.Recipe.Address)
+				continue
+			}
+			if allowed[entity.TypeAddress] {
+				filtered = append(filtered, address)
+			}
+		}
+		addresses = filtered
+	}
+	rows := []tableSourceRow{}
+	for _, address := range addresses {
+		entity, ok := m.entities[address]
+		if !ok {
+			m.addDiag("LDL1702", "view_materialization_conflict", "Table Entity is absent from the immutable graph", address, m.input.Recipe.Address)
+			continue
+		}
+		entityCopy := entity
+		if shape.RowSource == view.RowsEntity {
+			rows = append(rows, tableSourceRow{identity: []string{entity.Address}, entity: &entityCopy})
+			continue
+		}
+		for index := range entity.Rows {
+			rowCopy := entity.Rows[index]
+			rows = append(rows, tableSourceRow{identity: []string{entity.Address, rowCopy.Address}, entity: &entityCopy, row: &rowCopy})
+		}
+	}
+	return rows
+}
+
+func (m *viewMaterializer) relationTableSourceRows(shape *view.TableShape) []tableSourceRow {
+	rows := []tableSourceRow{}
+	for _, address := range m.relationAddresses() {
+		relation, ok := m.relations[address]
+		if !ok {
+			m.addDiag("LDL1702", "view_materialization_conflict", "Table Relation is absent from the immutable graph", address, m.input.Recipe.Address)
+			continue
+		}
+		relationCopy := relation
+		if shape.RowSource == view.RowsRelation {
+			rows = append(rows, tableSourceRow{identity: []string{relation.Address}, relation: &relationCopy})
+			continue
+		}
+		for index := range relation.Rows {
+			rowCopy := relation.Rows[index]
+			rows = append(rows, tableSourceRow{identity: []string{relation.Address, rowCopy.Address}, relation: &relationCopy, row: &rowCopy})
+		}
+	}
+	return rows
+}
+
+func (m *viewMaterializer) automaticRelationTableSourceRows() []tableSourceRow {
+	rows := []tableSourceRow{}
+	for _, address := range m.relationAddresses() {
+		relation, ok := m.relations[address]
+		if !ok {
+			m.addDiag("LDL1702", "view_materialization_conflict", "automatic Table Relation is absent from the immutable graph", address, m.input.Recipe.Address)
+			continue
+		}
+		projection, valid := m.effectiveTableProjection(relation.TypeAddress)
+		if !valid {
+			continue
+		}
+		relationCopy := relation
+		projectionCopy := projection
+		appendRelation := func() {
+			rows = append(rows, tableSourceRow{identity: []string{relation.Address}, relation: &relationCopy, projection: &projectionCopy})
+		}
+		appendRows := func() {
+			for index := range relation.Rows {
+				rowCopy := relation.Rows[index]
+				rows = append(rows, tableSourceRow{identity: []string{relation.Address, rowCopy.Address}, relation: &relationCopy, row: &rowCopy, projection: &projectionCopy})
+			}
+		}
+		switch projection.RowMode {
+		case definition.TableRowsRelation:
+			appendRelation()
+		case definition.TableRowsRelationRows:
+			appendRows()
+		case definition.TableRowsAutomatic:
+			if len(relation.Rows) == 0 {
+				appendRelation()
+			} else {
+				appendRows()
+			}
+		default:
+			m.addDiag("LDL1504", "invalid_projection_contract", "effective Table row mode is invalid", relation.TypeAddress, m.input.Recipe.Address)
+		}
+	}
+	return rows
+}
+
+func (m *viewMaterializer) tableColumns(shape *view.TableShape, sources []tableSourceRow) []TableColumn {
 	columns := []TableColumn{}
-	appendFixed := func(id, label string) {
+	seen := map[string]bool{}
+	appendFixed := func(id, label, valueType string) {
+		if seen[id] {
+			m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "Table contains a duplicate fixed Column", id, m.input.Recipe.Address)
+			return
+		}
+		seen[id] = true
 		columns = append(columns, TableColumn{
 			Key: viewItemKey(m, "table-column", []any{m.input.Recipe.Address, id}),
-			ID:  id, Label: label, ValueType: string(view.TableValueStableAddress), SourceColumnAddresses: []string{},
+			ID:  id, Label: label, ValueType: valueType, EnumValues: []string{}, SourceColumnAddresses: []string{},
 		})
 	}
 	if shape.IncludeEntityID {
-		appendFixed("entity_id", "Entity ID")
+		appendFixed("entity_id", "id", string(definition.ScalarString))
 	}
 	if shape.IncludeType {
-		appendFixed("type", "Type")
+		appendFixed("entity_type", "type", string(view.TableValueStableAddress))
 	}
 	if shape.IncludeLayer {
-		appendFixed("layer", "Layer")
+		appendFixed("entity_layer", "layer", string(view.TableValueStableAddress))
+	}
+	if shape.RowSource == view.RowsAutomaticRelations {
+		automatic := viewStringSet(shape.AutomaticRelationColumns)
+		for _, fixed := range []struct{ id, label string }{{"from", "from"}, {"to", "to"}, {"relation_type", "relation_type"}} {
+			if automatic[fixed.id] {
+				appendFixed(fixed.id, fixed.label, string(view.TableValueStableAddress))
+			}
+		}
 	}
 	for _, source := range shape.Columns {
+		if source.ID == "" || source.Address == "" || seen[source.ID] {
+			m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "Table contains an invalid or duplicate named Column", source.Address, m.input.Recipe.Address)
+			continue
+		}
+		seen[source.ID] = true
 		label := source.ID
 		if source.Label != nil {
 			label = *source.Label
@@ -45,7 +195,7 @@ func (m *viewMaterializer) tableColumns(shape *view.TableShape) []TableColumn {
 		column := TableColumn{
 			Key: viewItemKey(m, "table-column", []any{m.input.Recipe.Address, source.Address}),
 			ID:  source.ID, Address: &address, Label: label, ValueType: tableValueTypeName(source.ValueType),
-			SourceColumnAddresses: []string{},
+			EnumValues: []string{}, SourceColumnAddresses: []string{},
 		}
 		if source.ValueType.ScalarType == definition.ScalarEnum {
 			column.EnumValues = append([]string{}, source.ValueType.EnumValues...)
@@ -56,6 +206,45 @@ func (m *viewMaterializer) tableColumns(shape *view.TableShape) []TableColumn {
 		if source.Source.Kind == view.ColumnState {
 			path := string(source.Source.StateFieldPath)
 			column.StateFieldPath = &path
+		}
+		columns = append(columns, column)
+	}
+	if shape.RowSource != view.RowsAutomaticRelations {
+		return columns
+	}
+	dynamic := map[string]definition.Column{}
+	for _, source := range sources {
+		if source.row == nil {
+			continue
+		}
+		for _, cell := range source.row.Values {
+			column, ok := m.relationColumn(cell.ColumnAddress)
+			if !ok {
+				m.addDiag("LDL1702", "view_materialization_conflict", "automatic Table cell references an unknown RelationType Column", cell.ColumnAddress, m.input.Recipe.Address)
+				continue
+			}
+			dynamic[column.Address] = column
+		}
+	}
+	addresses := make([]string, 0, len(dynamic))
+	for address := range dynamic {
+		addresses = append(addresses, address)
+	}
+	sort.Slice(addresses, func(i, j int) bool { return compareStableAddressText(addresses[i], addresses[j]) < 0 })
+	for _, address := range addresses {
+		if seen[address] {
+			m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "dynamic Table Column identity conflicts with another Column", address, m.input.Recipe.Address)
+			continue
+		}
+		seen[address] = true
+		definitionColumn := dynamic[address]
+		column := TableColumn{
+			Key: viewItemKey(m, "table-column", []any{m.input.Recipe.Address, address}),
+			ID:  address, Label: definitionColumn.DisplayName, ValueType: string(definitionColumn.ValueType),
+			EnumValues: []string{}, SourceColumnAddresses: []string{address},
+		}
+		if definitionColumn.ValueType == definition.ScalarEnum {
+			column.EnumValues = append([]string{}, definitionColumn.EnumValues...)
 		}
 		columns = append(columns, column)
 	}
@@ -75,182 +264,152 @@ func tableValueTypeName(value view.TableValueType) string {
 	}
 }
 
-func (m *viewMaterializer) tableRows(shape *view.TableShape, columns []TableColumn) []TableRow {
-	switch shape.RowSource {
-	case view.RowsEntity:
-		return m.entityTableRows(shape, columns, false)
-	case view.RowsEntityRows:
-		return m.entityTableRows(shape, columns, true)
-	case view.RowsRelation:
-		return m.relationTableRows(shape, columns, false)
-	case view.RowsRelationRows, view.RowsAutomaticRelations:
-		return m.relationTableRows(shape, columns, true)
-	default:
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "Table row source is invalid", m.input.Recipe.Address, "")
-		return []TableRow{}
+func (m *viewMaterializer) materializeTableRows(shape *view.TableShape, columns []TableColumn, sources []tableSourceRow) []TableRow {
+	raw := make([]materializedTableRow, 0, len(sources))
+	for _, source := range sources {
+		value := TableRow{Cells: make(map[string]TableCell, len(columns)), Source: m.tableSourceRowSource(source)}
+		for _, column := range columns {
+			cell := m.tableSourceCell(shape, column, source)
+			value.Cells[column.Key] = cell
+			value.Source = mergeViewDataSourceRefs(value.Source, cell.Source)
+		}
+		raw = append(raw, materializedTableRow{value: value, identities: [][]string{append([]string{}, source.identity...)}})
 	}
+	rows := m.finalizeTableRows(shape, columns, raw)
+	result := make([]TableRow, len(rows))
+	for index := range rows {
+		result[index] = rows[index].value
+	}
+	return result
 }
 
-func (m *viewMaterializer) entityTableRows(shape *view.TableShape, columns []TableColumn, rowGrain bool) []TableRow {
-	addresses := m.materializationEntityAddresses()
-	if shape.EntityTypeAddresses != nil {
-		allowed := viewStringSet(*shape.EntityTypeAddresses)
-		filtered := make([]string, 0, len(addresses))
-		for _, address := range addresses {
-			if allowed[m.entities[address].TypeAddress] {
-				filtered = append(filtered, address)
+func (m *viewMaterializer) tableSourceCell(shape *view.TableShape, column TableColumn, source tableSourceRow) TableCell {
+	baseSource := m.tableSourceIdentitySource(source)
+	if source.entity != nil {
+		switch column.ID {
+		case "entity_id":
+			return presentTableCell(scalarViewValue(definition.Scalar{Type: definition.ScalarString, String: source.entity.ID}), baseSource)
+		case "entity_type":
+			return presentTableCell(addressViewValue(source.entity.TypeAddress), baseSource)
+		case "entity_layer":
+			return presentTableCell(addressViewValue(source.entity.LayerAddress), baseSource)
+		}
+	}
+	if shape.RowSource == view.RowsAutomaticRelations && source.relation != nil && source.projection != nil {
+		switch column.ID {
+		case "from":
+			if source.projection.IncludeFrom {
+				return presentTableCell(addressViewValue(source.relation.FromAddress), baseSource)
 			}
+			return absentTableCell(baseSource)
+		case "to":
+			if source.projection.IncludeTo {
+				return presentTableCell(addressViewValue(source.relation.ToAddress), baseSource)
+			}
+			return absentTableCell(baseSource)
+		case "relation_type":
+			if source.projection.IncludeRelationType {
+				return presentTableCell(addressViewValue(source.relation.TypeAddress), baseSource)
+			}
+			return absentTableCell(baseSource)
 		}
-		addresses = filtered
-	}
-	rows := []TableRow{}
-	for _, address := range addresses {
-		entity := m.entities[address]
-		if !rowGrain {
-			rows = append(rows, m.entityTableRow(shape, columns, entity, nil))
-			continue
+		if len(column.SourceColumnAddresses) == 1 && column.ID == column.SourceColumnAddresses[0] {
+			return m.dynamicRelationAttributeCell(column.SourceColumnAddresses[0], source)
 		}
-		for index := range entity.Rows {
-			rows = append(rows, m.entityTableRow(shape, columns, entity, &entity.Rows[index]))
-		}
-	}
-	return rows
-}
-
-func (m *viewMaterializer) entityTableRow(shape *view.TableShape, columns []TableColumn, entity graph.Entity, row *graph.AttributeRow) TableRow {
-	identity := [][]string{{entity.Address}}
-	baseSource := m.entitySource(entity)
-	if row != nil {
-		identity = [][]string{{entity.Address, row.Address}}
-		baseSource = m.rowSource(entity.Address, true, *row)
-	}
-	result := TableRow{
-		Key:   viewItemKey(m, "table-row", []any{m.input.Recipe.Address, string(shape.RowSource), identity, []any{}}),
-		Cells: make(map[string]TableCell, len(columns)), Source: baseSource,
-	}
-	for _, column := range columns {
-		cell := m.entityTableCell(shape, column, entity, row)
-		result.Cells[column.Key] = cell
-		result.Source = mergeViewDataSourceRefs(result.Source, cell.Source)
-	}
-	return result
-}
-
-func (m *viewMaterializer) entityTableCell(shape *view.TableShape, column TableColumn, entity graph.Entity, row *graph.AttributeRow) TableCell {
-	source := m.entitySource(entity)
-	switch column.ID {
-	case "entity_id":
-		return presentTableCell(addressViewValue(entity.Address), source)
-	case "type":
-		return presentTableCell(addressViewValue(entity.TypeAddress), source)
-	case "layer":
-		return presentTableCell(addressViewValue(entity.LayerAddress), source)
 	}
 	definitionColumn := findTableColumn(shape.Columns, column.ID)
 	if definitionColumn == nil {
-		return absentTableCell(source)
+		return absentTableCell(baseSource)
 	}
-	switch definitionColumn.Source.Kind {
+	return m.namedTableCell(*definitionColumn, source, baseSource)
+}
+
+func (m *viewMaterializer) namedTableCell(column view.TableColumn, source tableSourceRow, baseSource ViewDataSourceRefs) TableCell {
+	switch column.Source.Kind {
 	case view.ColumnField:
-		return optionalTableCell(entityFieldValue(entity, definitionColumn.Source.Field), source)
+		if source.entity != nil {
+			return optionalTableCell(entityFieldValue(*source.entity, column.Source.Field), baseSource)
+		}
+		if source.relation != nil {
+			return optionalTableCell(relationFieldValue(*source.relation, column.Source.Field), baseSource)
+		}
 	case view.ColumnAttribute:
-		return m.attributeTableCell(entity.Address, true, entity.Rows, row, definitionColumn.Source.ColumnAddresses)
-	case view.ColumnDerivedCount:
-		count, contributing := m.derivedCount(entity.Address, definitionColumn.Source.Direction, definitionColumn.Source.RelationTypeAddresses)
-		for _, relation := range contributing {
-			source = mergeViewDataSourceRefs(source, m.relationSource(relation))
+		if source.row == nil {
+			m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "attribute Table Column requires row-grain input", column.Address, m.input.Recipe.Address)
+			return absentTableCell(baseSource)
 		}
-		return presentTableCell(scalarViewValue(definition.Scalar{Type: definition.ScalarInteger, Int: int64(count)}), source)
-	case view.ColumnState:
-		read := StateReadRef{SubjectAddress: entity.Address, FieldPath: string(definitionColumn.Source.StateFieldPath)}
-		m.directStateReads[read] = true
-		source.State.Reads = canonicalStateReads(append(source.State.Reads, read))
-		return absentTableCell(canonicalViewDataSourceRefs(source))
-	default:
-		return absentTableCell(source)
-	}
-}
-
-func (m *viewMaterializer) relationTableRows(shape *view.TableShape, columns []TableColumn, rowGrain bool) []TableRow {
-	rows := []TableRow{}
-	for _, address := range m.relationAddresses() {
-		relation := m.relations[address]
-		if !rowGrain {
-			rows = append(rows, m.relationTableRow(shape, columns, relation, nil))
-			continue
-		}
-		for index := range relation.Rows {
-			rows = append(rows, m.relationTableRow(shape, columns, relation, &relation.Rows[index]))
-		}
-	}
-	return rows
-}
-
-func (m *viewMaterializer) relationTableRow(shape *view.TableShape, columns []TableColumn, relation graph.Relation, row *graph.AttributeRow) TableRow {
-	identity := [][]string{{relation.Address}}
-	baseSource := m.relationSource(relation)
-	if row != nil {
-		identity = [][]string{{relation.Address, row.Address}}
-		baseSource = m.rowSource(relation.Address, false, *row)
-	}
-	result := TableRow{
-		Key:   viewItemKey(m, "table-row", []any{m.input.Recipe.Address, string(shape.RowSource), identity, []any{}}),
-		Cells: make(map[string]TableCell, len(columns)), Source: baseSource,
-	}
-	for _, column := range columns {
-		cell := m.relationTableCell(shape, column, relation, row)
-		result.Cells[column.Key] = cell
-		result.Source = mergeViewDataSourceRefs(result.Source, cell.Source)
-	}
-	return result
-}
-
-func (m *viewMaterializer) relationTableCell(shape *view.TableShape, column TableColumn, relation graph.Relation, row *graph.AttributeRow) TableCell {
-	source := m.relationSource(relation)
-	definitionColumn := findTableColumn(shape.Columns, column.ID)
-	if definitionColumn == nil {
-		return absentTableCell(source)
-	}
-	switch definitionColumn.Source.Kind {
-	case view.ColumnField:
-		return optionalTableCell(relationFieldValue(relation, definitionColumn.Source.Field), source)
+		return m.attributeTableCell(source, column.Source.ColumnAddresses)
 	case view.ColumnRelationEndpoint:
-		if definitionColumn.Source.Endpoint == definition.ProjectionEndpointFrom {
-			return presentTableCell(addressViewValue(relation.FromAddress), source)
+		if source.relation == nil {
+			m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "relation endpoint Table Column requires Relation input", column.Address, m.input.Recipe.Address)
+			return absentTableCell(baseSource)
 		}
-		return presentTableCell(addressViewValue(relation.ToAddress), source)
-	case view.ColumnAttribute:
-		return m.attributeTableCell(relation.Address, false, relation.Rows, row, definitionColumn.Source.ColumnAddresses)
+		return m.relationEndpointTableCell(*source.relation, column.Source.Endpoint, column.Source.Field, baseSource)
+	case view.ColumnDerivedCount:
+		if source.entity == nil {
+			m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "derived count Table Column requires Entity input", column.Address, m.input.Recipe.Address)
+			return absentTableCell(baseSource)
+		}
+		count, contributing := m.derivedCount(source.entity.Address, column.Source.Direction, column.Source.RelationTypeAddresses)
+		for _, relation := range contributing {
+			baseSource = mergeViewDataSourceRefs(baseSource, m.relationSource(relation))
+		}
+		return presentTableCell(scalarViewValue(definition.Scalar{Type: definition.ScalarInteger, Int: int64(count)}), baseSource)
 	case view.ColumnState:
-		read := StateReadRef{SubjectAddress: relation.Address, FieldPath: string(definitionColumn.Source.StateFieldPath)}
-		m.directStateReads[read] = true
-		source.State.Reads = canonicalStateReads(append(source.State.Reads, read))
-		return absentTableCell(canonicalViewDataSourceRefs(source))
+		if !tableStateFieldKnown(column.Source.StateFieldPath) {
+			m.addDiag("LDL1601", "invalid_query_or_arguments", "Table state Column uses an unknown field path", column.Address, m.input.Recipe.Address)
+			return absentTableCell(baseSource)
+		}
+		subject := source.ownerAddress()
+		if source.row != nil {
+			subject = source.row.Address
+		}
+		read := StateReadRef{SubjectAddress: subject, FieldPath: string(column.Source.StateFieldPath)}
+		return stateTableCell(m.readViewState(subject, column.Source.StateFieldPath), baseSource, read)
 	default:
-		return absentTableCell(source)
+		m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "Table Column source kind is invalid", column.Address, m.input.Recipe.Address)
 	}
+	return absentTableCell(baseSource)
 }
 
-func (m *viewMaterializer) attributeTableCell(owner string, entity bool, rows []graph.AttributeRow, selected *graph.AttributeRow, columns []string) TableCell {
-	if selected != nil {
-		if value, cell, ok := rowCellValue(*selected, columns); ok {
-			source := m.rowSource(owner, entity, *selected)
-			source.CellRefs = []ViewDataCellRef{cell}
-			return presentTableCell(value, canonicalViewDataSourceRefs(source))
-		}
-		return absentTableCell(m.rowSource(owner, entity, *selected))
+func (m *viewMaterializer) relationEndpointTableCell(relation graph.Relation, endpoint definition.ProjectionEndpoint, field string, source ViewDataSourceRefs) TableCell {
+	address := relation.ToAddress
+	if endpoint == definition.ProjectionEndpointFrom {
+		address = relation.FromAddress
+	} else if endpoint != definition.ProjectionEndpointTo {
+		m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "Table relation endpoint is invalid", relation.Address, m.input.Recipe.Address)
+		return absentTableCell(source)
 	}
-	for _, row := range rows {
-		if value, cell, ok := rowCellValue(row, columns); ok {
-			source := m.rowSource(owner, entity, row)
-			source.CellRefs = []ViewDataCellRef{cell}
-			return presentTableCell(value, canonicalViewDataSourceRefs(source))
-		}
+	entity, ok := m.entities[address]
+	if !ok {
+		m.addDiag("LDL1702", "view_materialization_conflict", "Table relation endpoint Entity is absent", address, m.input.Recipe.Address)
+		return absentTableCell(source)
 	}
-	if entity {
-		return absentTableCell(m.entitySource(m.entities[owner]))
+	return optionalTableCell(entityFieldValue(entity, field), mergeViewDataSourceRefs(source, m.entitySource(entity)))
+}
+
+func (m *viewMaterializer) attributeTableCell(source tableSourceRow, columns []string) TableCell {
+	if source.row == nil {
+		return absentTableCell(m.tableSourceIdentitySource(source))
 	}
-	return absentTableCell(m.relationSource(m.relations[owner]))
+	if value, cell, ok := rowCellValue(*source.row, columns); ok {
+		refs := m.tableSourceIdentitySource(source)
+		refs.CellRefs = []ViewDataCellRef{cell}
+		return presentTableCell(value, canonicalViewDataSourceRefs(refs))
+	}
+	return absentTableCell(m.tableSourceIdentitySource(source))
+}
+
+func (m *viewMaterializer) dynamicRelationAttributeCell(columnAddress string, source tableSourceRow) TableCell {
+	if source.row == nil {
+		return absentTableCell(m.tableSourceIdentitySource(source))
+	}
+	if value, cell, ok := rowCellValue(*source.row, []string{columnAddress}); ok {
+		refs := m.tableSourceIdentitySource(source)
+		refs.CellRefs = []ViewDataCellRef{cell}
+		return presentTableCell(value, canonicalViewDataSourceRefs(refs))
+	}
+	return absentTableCell(m.tableSourceIdentitySource(source))
 }
 
 func rowCellValue(row graph.AttributeRow, columnAddresses []string) (ViewDataValue, ViewDataCellRef, bool) {
@@ -263,17 +422,91 @@ func rowCellValue(row graph.AttributeRow, columnAddresses []string) (ViewDataVal
 	return ViewDataValue{}, ViewDataCellRef{}, false
 }
 
-func (m *viewMaterializer) derivedCount(entityAddress string, direction definition.TraversalDirection, relationTypes *[]string) (int, []graph.Relation) {
-	allowed := map[string]bool{}
-	if relationTypes != nil {
-		allowed = viewStringSet(*relationTypes)
+func (m *viewMaterializer) tableSourceRowSource(source tableSourceRow) ViewDataSourceRefs {
+	if source.row == nil {
+		return m.tableSourceIdentitySource(source)
 	}
+	if source.entity != nil {
+		return m.rowSource(source.entity.Address, true, *source.row)
+	}
+	return m.rowSource(source.relation.Address, false, *source.row)
+}
+
+func (m *viewMaterializer) tableSourceIdentitySource(source tableSourceRow) ViewDataSourceRefs {
+	var refs ViewDataSourceRefs
+	if source.entity != nil {
+		refs = m.entitySource(*source.entity)
+	} else if source.relation != nil {
+		refs = m.relationSource(*source.relation)
+	} else {
+		return emptyViewDataSourceRefs()
+	}
+	if source.row != nil {
+		refs.RowAddresses = []string{source.row.Address}
+		refs.State.Reads = canonicalStateReads(append(refs.State.Reads, m.stateReadsForSubjects(source.row.Address)...))
+	}
+	return canonicalViewDataSourceRefs(refs)
+}
+
+func (source tableSourceRow) ownerAddress() string {
+	if source.entity != nil {
+		return source.entity.Address
+	}
+	if source.relation != nil {
+		return source.relation.Address
+	}
+	return ""
+}
+
+func (m *viewMaterializer) effectiveTableProjection(relationTypeAddress string) (definition.TableProjection, bool) {
+	relationType, ok := m.relationTypes[relationTypeAddress]
+	if !ok {
+		m.addDiag("LDL1702", "view_materialization_conflict", "Table RelationType is absent from the immutable definition", relationTypeAddress, m.input.Recipe.Address)
+		return definition.TableProjection{}, false
+	}
+	projection := relationType.Projections.Table
+	found := false
+	for _, override := range m.input.Recipe.RelationProjections {
+		if override.RelationTypeAddress != relationTypeAddress {
+			continue
+		}
+		if found {
+			m.addDiag("LDL1504", "invalid_projection_contract", "View contains duplicate effective RelationType projection overrides", relationTypeAddress, m.input.Recipe.Address)
+			return definition.TableProjection{}, false
+		}
+		found = true
+		projection = override.Projections.Table
+	}
+	if projection.RowMode != definition.TableRowsRelation && projection.RowMode != definition.TableRowsRelationRows && projection.RowMode != definition.TableRowsAutomatic {
+		m.addDiag("LDL1504", "invalid_projection_contract", "effective Table projection is invalid", relationTypeAddress, m.input.Recipe.Address)
+		return definition.TableProjection{}, false
+	}
+	return projection, true
+}
+
+func (m *viewMaterializer) relationColumn(address string) (definition.Column, bool) {
+	for _, relationType := range m.relationTypes {
+		for _, column := range relationType.Columns {
+			if column.Address == address {
+				return column, true
+			}
+		}
+	}
+	return definition.Column{}, false
+}
+
+func (m *viewMaterializer) derivedCount(entityAddress string, direction definition.TraversalDirection, relationTypes *[]string) (int, []graph.Relation) {
+	allowedTypes := map[string]bool{}
+	if relationTypes != nil {
+		allowedTypes = viewStringSet(*relationTypes)
+	}
+	selected := viewStringSet(m.relationAddresses())
 	seen := map[string]bool{}
 	values := []graph.Relation{}
 	visit := func(addresses []string) {
 		for _, relationAddress := range addresses {
-			relation := m.relations[relationAddress]
-			if seen[relationAddress] || (len(allowed) != 0 && !allowed[relation.TypeAddress]) {
+			relation, ok := m.relations[relationAddress]
+			if !ok || !selected[relationAddress] || seen[relationAddress] || len(allowedTypes) != 0 && !allowedTypes[relation.TypeAddress] {
 				continue
 			}
 			seen[relationAddress] = true
@@ -286,7 +519,7 @@ func (m *viewMaterializer) derivedCount(entityAddress string, direction definiti
 	if direction == definition.TraversalIncoming || direction == definition.TraversalBoth {
 		visit(m.incoming[entityAddress])
 	}
-	sortRelationsByAddress(values)
+	sort.Slice(values, func(i, j int) bool { return compareRelationTuple(values[i], values[j]) < 0 })
 	return len(values), values
 }
 
@@ -329,4 +562,9 @@ func scalarViewValue(value definition.Scalar) ViewDataValue {
 func addressViewValue(value string) ViewDataValue {
 	copied := value
 	return ViewDataValue{Kind: "stable_address", Address: &copied, StringSet: []string{}}
+}
+
+func tableStateFieldKnown(path query.StateFieldPath) bool {
+	_, ok := query.LookupStateFieldSchema(path)
+	return ok
 }
