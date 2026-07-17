@@ -12,6 +12,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -19,6 +20,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/engine"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/view"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/sourceplanner"
 )
 
@@ -115,14 +117,20 @@ func (driver *fakeWorkbenchDriver) MaterializeDocumentView(_ context.Context, in
 	if driver.err != nil {
 		return engine.MaterializeDocumentViewResult{}, driver.err
 	}
+	queryAddress := input.QueryResult.QueryAddress
+	base := engine.ViewDataBase{
+		Kind: engine.ViewDataContext, Category: "context", ProjectAddress: "ldl:project:p", ViewAddress: input.ViewAddress,
+		QueryAddress: &queryAddress, Revision: engine.ViewRevision{Single: &engine.SingleRevision{Kind: "single", RevisionID: "revision-1", DefinitionHash: "sha256:" + strings.Repeat("a", 64)}},
+		StatePolicy: "none", StateInput: engine.QueryStateInputRef{Kind: "none"},
+		Source: engine.ViewDataSourceRefs{
+			SubjectAddresses: []string{"ldl:project:p", input.ViewAddress, queryAddress}, EntityAddresses: []string{}, RelationAddresses: []string{},
+			LayerAddresses: []string{}, RowAddresses: []string{}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{},
+			State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}},
+		}, Diagnostics: []engine.Diagnostic{},
+	}
 	return engine.MaterializeDocumentViewResult{
 		DocumentGeneration: input.DocumentGeneration,
-		ViewData: engine.ViewData{
-			ViewAddress: input.ViewAddress, Category: "context", Shape: "context", StatePolicy: "none",
-			StateInput: engine.QueryStateInputRef{Kind: "none"},
-			Source:     engine.ViewDataSourceRefs{QueryAddress: input.QueryResult.QueryAddress},
-			Context:    &engine.ContextViewData{Groups: []engine.ContextGroup{}, Facts: []engine.ContextFact{}},
-		},
+		ViewData:           engine.ViewData{Context: &engine.ContextViewData{ViewDataBase: base, Groups: []engine.ContextGroup{}}},
 	}, nil
 }
 
@@ -825,107 +833,141 @@ func TestMaterializeViewMappingCoversShapesProvenanceAndLimits(t *testing.T) {
 		Value:          1,
 	}
 	limits := engine.WorkbenchLimits{MaxItems: 1_000, MaxOutputBytes: 1 << 20}
-	label := "calls"
-	base := engine.ViewData{
-		ViewAddress: "ldl:project:p:view:v", Category: "topology", Shape: "diagram", StatePolicy: "none",
-		StateInput: engine.QueryStateInputRef{Kind: "none"},
-		Diagnostics: []engine.Diagnostic{{
-			Code: "LDL0001", Severity: "warning", MessageKey: "view_notice",
-			Arguments: map[string]string{"view": "v"}, Related: []engine.DiagnosticRelated{},
-		}},
-		Source: engine.ViewDataSourceRefs{
-			QueryAddress:      "ldl:project:p:query:q",
-			EntityAddresses:   []string{"ldl:project:p:entity:alpha", "ldl:project:p:entity:beta"},
-			RelationAddresses: []string{"ldl:project:p:relation:alpha_beta"},
-			LayerAddresses:    []string{"ldl:project:p:layer:app"},
-			RowAddresses:      []string{"ldl:project:p:entity:alpha:row:primary"},
-			StateReads:        []engine.StateReadRef{{SubjectAddress: "ldl:project:p:entity:alpha", FieldPath: "system.updated_at"}},
-		},
-		Diagram: &engine.DiagramViewData{
-			Nodes: []engine.DiagramNode{
-				{Key: "alpha", EntityAddress: "ldl:project:p:entity:alpha", DisplayName: "Alpha", EntityType: "ldl:project:p:entity-type:service", LayerAddress: "ldl:project:p:layer:app", SourceEntities: []string{"ldl:project:p:entity:alpha"}},
-				{Key: "beta", EntityAddress: "ldl:project:p:entity:beta", DisplayName: "Beta", EntityType: "ldl:project:p:entity-type:service", LayerAddress: "ldl:project:p:layer:app", SourceEntities: []string{"ldl:project:p:entity:beta"}},
-			},
-			Edges:      []engine.DiagramEdge{{Key: "alpha_beta", RelationAddress: "ldl:project:p:relation:alpha_beta", FromAddress: "ldl:project:p:entity:alpha", ToAddress: "ldl:project:p:entity:beta", RelationType: "ldl:project:p:relation-type:calls", DisplayName: &label, SourceRelations: []string{"ldl:project:p:relation:alpha_beta"}}},
-			Placements: []engine.DiagramPlacement{{EntityAddress: "ldl:project:p:entity:alpha", X: -1.5, Y: 2, Width: 200, Height: 100}},
-		},
+	queryAddress := "ldl:project:p:query:q"
+	address := "ldl:project:p:entity:alpha"
+	betaAddress := "ldl:project:p:entity:beta"
+	typeAddress := "ldl:project:p:entity-type:service"
+	layerAddress := "ldl:project:p:layer:app"
+	relationAddress := "ldl:project:p:relation:alpha_beta"
+	baseSource := engine.ViewDataSourceRefs{
+		SubjectAddresses: []string{"ldl:project:p", typeAddress, queryAddress, "ldl:project:p:relation-type:calls", "ldl:project:p:view:v"},
+		EntityAddresses:  []string{address, betaAddress}, RelationAddresses: []string{relationAddress}, LayerAddresses: []string{layerAddress},
+		RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{},
+		State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{{SubjectAddress: address, FieldPath: "system.updated_at"}}},
 	}
-	diagram, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: base}, limits)
-	if err != nil || diagram.ViewData.Diagram == nil || diagram.ReturnedItems == "0" || diagram.ReturnedBytes == "0" {
+	diagramBase := engine.ViewDataBase{
+		Kind: engine.ViewDataDiagram, Category: "topology", ProjectAddress: "ldl:project:p", ViewAddress: "ldl:project:p:view:v", QueryAddress: &queryAddress,
+		Shape:       view.Shape{Kind: view.ShapeDiagram, Diagram: &view.DiagramShape{Placements: []view.Placement{{EntityAddress: address, X: -1.5, Y: 2, Width: 200, Height: 100}}}},
+		Revision:    engine.ViewRevision{Single: &engine.SingleRevision{Kind: "single", RevisionID: "revision-1", DefinitionHash: "sha256:" + strings.Repeat("a", 64)}},
+		StatePolicy: "none", StateInput: engine.QueryStateInputRef{Kind: "none"}, Source: baseSource,
+		Diagnostics: []engine.Diagnostic{{Code: "LDL0001", Severity: "warning", MessageKey: "view_notice", Arguments: map[string]string{"view": "v"}, Related: []engine.DiagnosticRelated{}}},
+	}
+	alphaSource := engine.ViewDataSourceRefs{SubjectAddresses: []string{typeAddress}, EntityAddresses: []string{address}, RelationAddresses: []string{}, LayerAddresses: []string{layerAddress}, RowAddresses: []string{}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}}
+	betaSource := alphaSource
+	betaSource.EntityAddresses = []string{betaAddress}
+	relationSource := engine.ViewDataSourceRefs{SubjectAddresses: []string{"ldl:project:p:relation-type:calls"}, EntityAddresses: []string{}, RelationAddresses: []string{relationAddress}, LayerAddresses: []string{}, RowAddresses: []string{}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}}
+	diagramData := engine.ViewData{Diagram: &engine.DiagramViewData{
+		ViewDataBase: diagramBase,
+		Occurrences: []engine.DiagramOccurrence{
+			{Key: "alpha", EntityAddress: address, LayerAddress: layerAddress, Role: engine.DiagramRoleNode, Source: alphaSource},
+			{Key: "beta", EntityAddress: betaAddress, LayerAddress: layerAddress, Role: engine.DiagramRoleNode, Source: betaSource},
+		},
+		Edges:      []engine.DiagramEdge{{Key: "alpha_beta", FromOccurrenceKey: "alpha", ToOccurrenceKey: "beta", RelationAddress: relationAddress, RelationTypeAddress: "ldl:project:p:relation-type:calls", Source: relationSource}},
+		Containers: []engine.DiagramContainer{}, Overlays: []engine.DiagramOverlay{}, Badges: []engine.DiagramBadge{}, SupportItems: []engine.DiagramSupportItem{},
+	}}
+	diagram, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: diagramData}, limits)
+	if err != nil || diagram.ViewData.Diagram == nil || len(diagram.ViewData.Diagram.Placements) != 1 || diagram.ReturnedItems == "0" || diagram.ReturnedBytes == "0" {
 		t.Fatalf("diagram mapping = %+v err=%v", diagram, err)
 	}
 
-	address := "ldl:project:p:entity:alpha"
 	scalar := engine.TypedScalar{Type: definition.ScalarString, String: "api"}
-	tableData := base
-	tableData.Category = "inventory"
-	tableData.Shape = "table"
-	tableData.Diagram = nil
-	tableData.Table = &engine.TableViewData{
-		Columns: []engine.TableViewColumn{
-			{ID: "name", Address: "ldl:project:p:view:v:table-column:name", Label: "Name", Source: "field"},
-			{ID: "owner", Label: "Owner", Source: "address"},
-			{ID: "tags", Label: "Tags", Source: "set"},
-			{ID: "empty", Label: "Empty", Source: "null"},
+	nameAddress := "ldl:project:p:view:v:table-column:name"
+	tableBase := diagramBase
+	tableBase.Kind = engine.ViewDataTable
+	tableBase.Category = "inventory"
+	tableBase.Shape = view.Shape{Kind: view.ShapeTable, Table: &view.TableShape{Sorts: []view.TableSort{{ColumnID: "name", Direction: view.SortAscending, Absent: view.AbsentLast}}}}
+	tableData := engine.ViewData{Table: &engine.TableViewData{
+		ViewDataBase: tableBase,
+		Columns: []engine.TableColumn{
+			{Key: "name-key", ID: "name", Address: &nameAddress, Label: "Name", ValueType: "string", EnumValues: []string{}, SourceColumnAddresses: []string{"ldl:project:p:entity-type:service:column:name"}},
+			{Key: "owner-key", ID: "owner", Label: "Owner", ValueType: "stable_address", EnumValues: []string{}, SourceColumnAddresses: []string{}},
+			{Key: "tags-key", ID: "tags", Label: "Tags", ValueType: "string_set", EnumValues: []string{}, SourceColumnAddresses: []string{}},
+			{Key: "empty-key", ID: "empty", Label: "Empty", ValueType: "string", EnumValues: []string{}, SourceColumnAddresses: []string{}},
 		},
-		Rows: []engine.TableViewRow{{
-			Key: "alpha", SubjectAddress: address, OwnerAddress: address,
-			SourceRows: []string{"ldl:project:p:entity:alpha:row:primary"}, SourceEntities: []string{address}, SourceRelations: []string{},
-			Cells: []engine.TableViewCell{
-				{ColumnID: "name", Value: engine.ViewDataValue{Kind: "scalar", Scalar: &scalar}, SourceRows: []string{}, SourceCells: []engine.ViewDataCellRef{{RowAddress: "ldl:project:p:entity:alpha:row:primary", ColumnAddress: "ldl:project:p:entity-type:service:column:name"}}, SourceEntities: []string{address}, SourceRelations: []string{}, StateReads: []engine.StateReadRef{}},
-				{ColumnID: "owner", Value: engine.ViewDataValue{Kind: "stable_address", Address: &address}, SourceRows: []string{}, SourceCells: []engine.ViewDataCellRef{}, SourceEntities: []string{address}, SourceRelations: []string{}, StateReads: []engine.StateReadRef{}},
-				{ColumnID: "tags", Value: engine.ViewDataValue{Kind: "string_set", StringSet: []string{"api", "prod"}}, SourceRows: []string{}, SourceCells: []engine.ViewDataCellRef{}, SourceEntities: []string{address}, SourceRelations: []string{}, StateReads: []engine.StateReadRef{}},
-				{ColumnID: "empty", Value: engine.ViewDataValue{Kind: "null", Null: true}, SourceRows: []string{}, SourceCells: []engine.ViewDataCellRef{}, SourceEntities: []string{}, SourceRelations: []string{}, StateReads: []engine.StateReadRef{}},
+		Rows: []engine.TableRow{{
+			Key: "alpha", Source: engine.ViewDataSourceRefs{SubjectAddresses: []string{typeAddress}, EntityAddresses: []string{address}, RelationAddresses: []string{}, LayerAddresses: []string{layerAddress}, RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}},
+			Cells: map[string]engine.TableCell{
+				"name-key":  {Present: true, Value: &engine.ViewDataValue{Kind: "scalar", Scalar: &scalar}, Source: engine.ViewDataSourceRefs{SubjectAddresses: []string{typeAddress}, EntityAddresses: []string{address}, RelationAddresses: []string{}, LayerAddresses: []string{layerAddress}, RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, CellRefs: []engine.ViewDataCellRef{{RowAddress: "ldl:project:p:entity:alpha:row:primary", ColumnAddress: "ldl:project:p:entity-type:service:column:name"}}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}}},
+				"owner-key": {Present: true, Value: &engine.ViewDataValue{Kind: "stable_address", Address: &address}, Source: alphaSource},
+				"tags-key":  {Present: true, Value: &engine.ViewDataValue{Kind: "string_set", StringSet: []string{"api", "prod"}}, Source: alphaSource},
+				"empty-key": {Present: false, Source: alphaSource},
 			},
 		}},
-		Sorts: []engine.TableViewSort{{ColumnID: "name", Direction: "ascending", Absent: "last"}},
-	}
+	}}
 	table, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: tableData}, limits)
-	if err != nil || table.ViewData.Table == nil || len(table.ViewData.Table.Rows) != 1 || len(table.ViewData.Table.Rows[0].Cells) != 4 {
+	if err != nil || table.ViewData.Table == nil || len(table.ViewData.Table.Rows) != 1 || len(table.ViewData.Table.Rows[0].Cells) != 4 || len(table.ViewData.Table.Sorts) != 1 {
 		t.Fatalf("table mapping = %+v err=%v", table, err)
 	}
 
-	contextData := base
-	contextData.Category = "context"
-	contextData.Shape = "context"
-	contextData.Diagram = nil
-	contextData.Context = &engine.ContextViewData{
-		Groups: []engine.ContextGroup{{Key: "all", Label: "All", Addresses: []string{address}}},
-		Facts:  []engine.ContextFact{{Key: "entity:alpha", SubjectAddress: address, Kind: "entity", Text: "Alpha", SourceEntities: []string{address}, SourceRelations: []string{}, SourceRows: []string{}}},
-	}
+	contextBase := diagramBase
+	contextBase.Kind = engine.ViewDataContext
+	contextBase.Category = "context"
+	contextData := engine.ViewData{Context: &engine.ContextViewData{
+		ViewDataBase: contextBase,
+		Groups: []engine.ContextGroup{{
+			Key: "all", Label: "All", Source: alphaSource, Attributes: []engine.ContextAttribute{},
+			Facts: []engine.ContextFact{{
+				Key: "entity:alpha", Direction: engine.ContextFactOutgoing, Text: "Alpha", EntityAddress: address,
+				RelationAddress: relationAddress, RowAddresses: []string{}, Source: relationSource,
+			}},
+		}},
+	}}
 	contextResult, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: contextData}, limits)
 	if err != nil || contextResult.ViewData.Context == nil || len(contextResult.ViewData.Context.Facts) != 1 {
 		t.Fatalf("context mapping = %+v err=%v", contextResult, err)
 	}
 
-	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: base}, engine.WorkbenchLimits{MaxItems: 1, MaxOutputBytes: limits.MaxOutputBytes}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
+	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: diagramData}, engine.WorkbenchLimits{MaxItems: 1, MaxOutputBytes: limits.MaxOutputBytes}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
 		t.Fatalf("item limit error = %v", err)
 	}
-	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: base}, engine.WorkbenchLimits{MaxItems: limits.MaxItems, MaxOutputBytes: 1}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
+	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: diagramData}, engine.WorkbenchLimits{MaxItems: limits.MaxItems, MaxOutputBytes: 1}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
 		t.Fatalf("byte limit error = %v", err)
 	}
-	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{ViewData: base}, limits); err == nil {
+	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{ViewData: diagramData}, limits); err == nil {
 		t.Fatal("invalid document generation was accepted")
 	}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := mapMaterializeViewResult(cancelled, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: base}, limits); !errors.Is(err, context.Canceled) {
+	if _, err := mapMaterializeViewResult(cancelled, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: diagramData}, limits); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled mapping error = %v", err)
 	}
-	for name, placement := range map[string]engine.DiagramPlacement{
+	for name, placement := range map[string]view.Placement{
 		"x":      {EntityAddress: address, X: math.NaN(), Width: 1, Height: 1},
 		"y":      {EntityAddress: address, Y: math.Inf(1), Width: 1, Height: 1},
 		"width":  {EntityAddress: address, Width: 0, Height: 1},
 		"height": {EntityAddress: address, Width: 1, Height: 0},
 	} {
-		invalidPlacement := base
-		invalidPlacement.Diagnostics = []engine.Diagnostic{}
-		invalidPlacement.Diagram = &engine.DiagramViewData{Nodes: []engine.DiagramNode{}, Edges: []engine.DiagramEdge{}, Placements: []engine.DiagramPlacement{placement}}
-		if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: invalidPlacement}, limits); err == nil {
+		invalid := *diagramData.Diagram
+		invalid.Shape = view.Shape{Kind: view.ShapeDiagram, Diagram: &view.DiagramShape{Placements: []view.Placement{placement}}}
+		if _, err := mapDiagramViewData(ctx, invalid); err == nil {
 			t.Fatalf("invalid diagram %s placement was accepted", name)
 		}
 	}
-	if _, err := mapDiagramViewData(cancelled, *base.Diagram); !errors.Is(err, context.Canceled) {
+	missingType := *diagramData.Diagram
+	missingType.Occurrences = append([]engine.DiagramOccurrence{}, diagramData.Diagram.Occurrences...)
+	missingType.Occurrences[0].Source.SubjectAddresses = []string{}
+	if _, err := mapDiagramViewData(ctx, missingType); err == nil {
+		t.Fatal("Diagram occurrence without an EntityType source was accepted")
+	}
+	unknownOccurrence := *diagramData.Diagram
+	unknownOccurrence.Edges = append([]engine.DiagramEdge{}, diagramData.Diagram.Edges...)
+	unknownOccurrence.Edges[0].FromOccurrenceKey = "missing"
+	if _, err := mapDiagramViewData(ctx, unknownOccurrence); err == nil {
+		t.Fatal("Diagram edge with an unknown occurrence was accepted")
+	}
+	missingOwner := *tableData.Table
+	missingOwner.Rows = append([]engine.TableRow{}, tableData.Table.Rows...)
+	missingOwner.Rows[0].Source.EntityAddresses = []string{}
+	if _, err := mapTableViewData(ctx, missingOwner); err == nil {
+		t.Fatal("Table row without an owner was accepted")
+	}
+	missingCell := *tableData.Table
+	missingCell.Rows = append([]engine.TableRow{}, tableData.Table.Rows...)
+	missingCell.Rows[0].Cells = map[string]engine.TableCell{}
+	if _, err := mapTableViewData(ctx, missingCell); err == nil {
+		t.Fatal("Table row without required cells was accepted")
+	}
+	if _, err := mapDiagramViewData(cancelled, *diagramData.Diagram); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled diagram mapping error = %v", err)
 	}
 	if _, err := mapTableViewData(cancelled, *tableData.Table); !errors.Is(err, context.Canceled) {
@@ -945,7 +987,7 @@ func TestMaterializeViewMappingCoversShapesProvenanceAndLimits(t *testing.T) {
 		t.Fatal("over-depth ViewData was accepted")
 	}
 	for _, value := range []engine.ViewDataValue{
-		{Kind: "null"}, {Kind: "scalar"}, {Kind: "stable_address"}, {Kind: "unknown"},
+		{Kind: "scalar"}, {Kind: "stable_address"}, {Kind: "unknown"},
 	} {
 		if _, err := mapViewDataValue(value); err == nil {
 			t.Fatalf("invalid ViewData value accepted: %+v", value)

@@ -4,6 +4,8 @@ package engine
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/query"
@@ -12,149 +14,9 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/view"
 )
 
-type ViewMaterializationInput struct {
-	Recipe      CompiledViewRecipe
-	Graph       TypedMasterGraph
-	QueryResult QueryResult
-}
-
-type ViewMaterializationResponse struct {
-	Status      string
-	Result      *ViewData
-	Diagnostics []Diagnostic
-}
-
-type ViewData struct {
-	ViewAddress string
-	Category    string
-	Shape       string
-	StatePolicy string
-	StateInput  QueryStateInputRef
-	Source      ViewDataSourceRefs
-	Diagnostics []Diagnostic
-	Diagram     *DiagramViewData
-	Table       *TableViewData
-	Context     *ContextViewData
-}
-
-type ViewDataSourceRefs struct {
-	QueryAddress      string
-	EntityAddresses   []string
-	RelationAddresses []string
-	LayerAddresses    []string
-	RowAddresses      []string
-	StateReads        []StateReadRef
-}
-
-type DiagramViewData struct {
-	Nodes      []DiagramNode
-	Edges      []DiagramEdge
-	Placements []DiagramPlacement
-}
-
-type DiagramNode struct {
-	Key            string
-	EntityAddress  string
-	DisplayName    string
-	EntityType     string
-	LayerAddress   string
-	SourceEntities []string
-}
-
-type DiagramEdge struct {
-	Key             string
-	RelationAddress string
-	FromAddress     string
-	ToAddress       string
-	RelationType    string
-	DisplayName     *string
-	SourceRelations []string
-}
-
-type DiagramPlacement struct {
-	EntityAddress string
-	X             float64
-	Y             float64
-	Width         float64
-	Height        float64
-}
-
-type TableViewData struct {
-	Columns []TableViewColumn
-	Rows    []TableViewRow
-	Sorts   []TableViewSort
-}
-
-type TableViewColumn struct {
-	ID      string
-	Address string
-	Label   string
-	Source  string
-}
-
-type TableViewRow struct {
-	Key             string
-	SubjectAddress  string
-	OwnerAddress    string
-	SourceRows      []string
-	SourceEntities  []string
-	SourceRelations []string
-	Cells           []TableViewCell
-}
-
-type TableViewCell struct {
-	ColumnID        string
-	Value           ViewDataValue
-	SourceRows      []string
-	SourceCells     []ViewDataCellRef
-	SourceEntities  []string
-	SourceRelations []string
-	StateReads      []StateReadRef
-}
-
-type ViewDataValue struct {
-	Kind      string
-	Scalar    *TypedScalar
-	Address   *string
-	StringSet []string
-	Null      bool
-}
-
-type ViewDataCellRef struct {
-	RowAddress    string
-	ColumnAddress string
-}
-
-type TableViewSort struct {
-	ColumnID  string
-	Direction string
-	Absent    string
-}
-
-type ContextViewData struct {
-	Groups []ContextGroup
-	Facts  []ContextFact
-}
-
-type ContextGroup struct {
-	Key       string
-	Label     string
-	Addresses []string
-}
-
-type ContextFact struct {
-	Key             string
-	SubjectAddress  string
-	Kind            string
-	Text            string
-	SourceEntities  []string
-	SourceRelations []string
-	SourceRows      []string
-}
-
-// MaterializeView converts one compiled View recipe and one QueryResult into
-// semantic ViewData. It performs no layout, rendering, export planning, state
-// backend access, storage access, clock reads, or network I/O.
+// MaterializeView converts one immutable Query or Diff source into semantic
+// ViewData. It performs no layout, rendering, export planning, storage access,
+// clock reads, or network I/O.
 func (e Engine) MaterializeView(ctx context.Context, input ViewMaterializationInput) ViewMaterializationResponse {
 	if ctx == nil {
 		return rejectedView(diagnostic("LDL1801", "stale_revision_or_semantic_hash", "ViewData materialization requires a context", input.Recipe.Address, ""))
@@ -162,24 +24,41 @@ func (e Engine) MaterializeView(ctx context.Context, input ViewMaterializationIn
 	if err := pollContext(ctx, "view"); err != nil {
 		return rejectedView(diagnostic("LDL1801", "stale_revision_or_semantic_hash", err.Error(), input.Recipe.Address, ""))
 	}
-	m := newViewMaterializer(input)
+	m := newViewMaterializer(ctx, input)
 	if !m.validate() {
 		return rejectedView(m.diagnostics...)
 	}
-	result := m.base()
-	switch input.Recipe.Shape.Kind {
-	case view.ShapeDiagram:
-		result.Diagram = m.diagram()
-	case view.ShapeTable:
-		result.Table = m.table()
-	case view.ShapeContext:
-		result.Context = m.context()
-	default:
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape materialization is not implemented", input.Recipe.Address, "")
+	if input.Diff != nil {
+		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "Diff View materialization is not implemented", input.Recipe.Address, "")
 		return rejectedView(m.diagnostics...)
 	}
-	result.Diagnostics = sortedDiagnostics(append(result.Diagnostics, m.diagnostics...))
-	result.Source = m.sourceRefs()
+
+	base := m.base()
+	var result ViewData
+	switch input.Recipe.Shape.Kind {
+	case view.ShapeDiagram:
+		result.Diagram = m.diagram(base)
+	case view.ShapeTable:
+		result.Table = m.table(base)
+	case view.ShapeContext:
+		result.Context = m.contextView(base)
+	case view.ShapeMatrix, view.ShapeTree, view.ShapeFlow, view.ShapeDiff:
+		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape materialization is not implemented", input.Recipe.Address, "")
+		return rejectedView(m.diagnostics...)
+	default:
+		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape is invalid", input.Recipe.Address, "")
+		return rejectedView(m.diagnostics...)
+	}
+	if len(m.diagnostics) != 0 {
+		return rejectedView(m.diagnostics...)
+	}
+	base, ok := result.Base()
+	if !ok || base.Kind != ViewDataKind(input.Recipe.Shape.Kind) {
+		return rejectedView(diagnostic("LDL1801", "stale_revision_or_semantic_hash", "materialized ViewData union is invalid", input.Recipe.Address, ""))
+	}
+	base.Source = m.sourceRefs()
+	base.Diagnostics = sortedDiagnostics(append(base.Diagnostics, m.diagnostics...))
+	setViewDataBase(&result, base)
 	if err := pollContext(ctx, "view"); err != nil {
 		return rejectedView(diagnostic("LDL1801", "stale_revision_or_semantic_hash", err.Error(), input.Recipe.Address, ""))
 	}
@@ -187,433 +66,360 @@ func (e Engine) MaterializeView(ctx context.Context, input ViewMaterializationIn
 }
 
 type viewMaterializer struct {
-	input       ViewMaterializationInput
-	entities    map[string]graph.Entity
-	relations   map[string]graph.Relation
-	outgoing    map[string][]string
-	incoming    map[string][]string
-	diagnostics []Diagnostic
-	stateReads  map[StateReadRef]bool
+	ctx              context.Context
+	input            ViewMaterializationInput
+	snapshot         Snapshot
+	graph            graph.MasterGraph
+	queryResult      QueryResult
+	project          string
+	revision         ViewRevision
+	stateInput       QueryStateInputRef
+	entities         map[string]graph.Entity
+	relations        map[string]graph.Relation
+	entityTypes      map[string]definition.EntityType
+	relationTypes    map[string]definition.RelationType
+	layers           map[string]definition.Layer
+	outgoing         map[string][]string
+	incoming         map[string][]string
+	diagnostics      []Diagnostic
+	directStateReads map[StateReadRef]bool
 }
 
-func newViewMaterializer(input ViewMaterializationInput) *viewMaterializer {
-	m := &viewMaterializer{
-		input: input, entities: map[string]graph.Entity{}, relations: map[string]graph.Relation{},
-		outgoing: map[string][]string{}, incoming: map[string][]string{}, stateReads: map[StateReadRef]bool{},
+func newViewMaterializer(ctx context.Context, input ViewMaterializationInput) *viewMaterializer {
+	return &viewMaterializer{
+		ctx: ctx, input: input, entities: map[string]graph.Entity{}, relations: map[string]graph.Relation{},
+		entityTypes: map[string]definition.EntityType{}, relationTypes: map[string]definition.RelationType{},
+		layers: map[string]definition.Layer{}, outgoing: map[string][]string{}, incoming: map[string][]string{},
+		directStateReads: map[StateReadRef]bool{},
 	}
-	for _, entity := range input.Graph.Entities {
-		m.entities[entity.Address] = entity
-	}
-	for _, relation := range input.Graph.Relations {
-		m.relations[relation.Address] = relation
-	}
-	for _, adjacency := range input.Graph.Outgoing {
-		m.outgoing[adjacency.EntityAddress] = append([]string{}, adjacency.RelationAddresses...)
-	}
-	for _, adjacency := range input.Graph.Incoming {
-		m.incoming[adjacency.EntityAddress] = append([]string{}, adjacency.RelationAddresses...)
-	}
-	return m
 }
 
 func (m *viewMaterializer) validate() bool {
 	if m.input.Recipe.Address == "" {
 		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View recipe address is required", "", "")
 	}
-	if m.input.Recipe.Source.Kind != view.SourceQuery || m.input.Recipe.Source.Query == nil {
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "only Query-backed ViewData materialization is supported", m.input.Recipe.Address, "")
-	} else if m.input.Recipe.Source.Query.QueryAddress != m.input.QueryResult.QueryAddress {
-		m.addDiag("LDL1601", "invalid_query_or_arguments", "View source Query does not match QueryResult", m.input.QueryResult.QueryAddress, m.input.Recipe.Address)
+	if (m.input.Query == nil) == (m.input.Diff == nil) {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "exactly one View materialization source is required", m.input.Recipe.Address, "")
+		return false
 	}
-	if m.input.Recipe.StateRequirement == query.StateRequired {
-		m.addDiag("LDL1604", "required_state_snapshot_missing", "required StateQuerySnapshot is absent", m.input.Recipe.Address, "")
+	if m.input.Query != nil {
+		m.validateQueryInput(*m.input.Query)
+	} else {
+		m.validateDiffInput(*m.input.Diff)
 	}
-	for _, address := range m.allEntityAddresses() {
-		if _, ok := m.entities[address]; !ok {
-			m.addDiag("LDL1601", "invalid_query_or_arguments", "QueryResult references an unknown entity", address, m.input.Recipe.Address)
-		}
+	if len(m.diagnostics) != 0 {
+		return false
 	}
-	for _, address := range m.allRelationAddresses() {
-		if _, ok := m.relations[address]; !ok {
-			m.addDiag("LDL1601", "invalid_query_or_arguments", "QueryResult references an unknown relation", address, m.input.Recipe.Address)
-		}
+	m.indexSnapshot()
+	if m.input.Query != nil {
+		m.validateQueryResultSubjects()
 	}
 	return len(m.diagnostics) == 0
 }
 
-func (m *viewMaterializer) base() ViewData {
-	return ViewData{
-		ViewAddress: m.input.Recipe.Address,
-		Category:    string(m.input.Recipe.Category),
-		Shape:       string(m.input.Recipe.Shape.Kind),
-		StatePolicy: string(m.input.Recipe.StateRequirement),
-		StateInput:  m.input.QueryResult.StateInput,
-		Diagnostics: sortedDiagnostics(m.input.QueryResult.Diagnostics),
+func (m *viewMaterializer) validateQueryInput(input QueryViewMaterializationInput) {
+	if m.input.Recipe.Source.Kind != view.SourceQuery || m.input.Recipe.Source.Query == nil {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Query input does not match the View source", m.input.Recipe.Address, "")
+		return
 	}
+	if !validRevisionID(input.RevisionID) || !validQueryViewSnapshot(input.Snapshot) {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Query View revision binding is incomplete", m.input.Recipe.Address, "")
+		return
+	}
+	compiled, ok := viewRecipeInSnapshot(input.Snapshot, m.input.Recipe.Address)
+	if !ok || !reflect.DeepEqual(compiled, m.input.Recipe) {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "View recipe does not belong to the supplied revision", m.input.Recipe.Address, "")
+		return
+	}
+	queryRecipe, ok := queryRecipeInSnapshot(input.Snapshot, m.input.Recipe.Source.Query.QueryAddress)
+	if !ok || input.QueryResult.QueryAddress != queryRecipe.Address {
+		m.addDiag("LDL1601", "invalid_query_or_arguments", "View source Query does not match QueryResult", input.QueryResult.QueryAddress, m.input.Recipe.Address)
+		return
+	}
+	if input.QueryResult.StatePolicy != string(queryRecipe.StateInput) || !viewArgumentsMatch(m.input.Recipe.Source.Query.Arguments, input.QueryResult.Arguments) {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult does not match the compiled View source", input.QueryResult.QueryAddress, m.input.Recipe.Address)
+		return
+	}
+	m.snapshot = input.Snapshot
+	m.graph = *input.Snapshot.TypedAST.Graph
+	m.queryResult = deepClone(input.QueryResult)
+	m.project = input.Snapshot.TypedAST.Project.Address
+	m.revision = ViewRevision{Single: &SingleRevision{Kind: "single", RevisionID: input.RevisionID, DefinitionHash: input.Snapshot.DefinitionHash}}
+	m.validateQueryState(input, queryRecipe.StateInput)
 }
 
-func (m *viewMaterializer) diagram() *DiagramViewData {
-	entityAddresses := m.visibleEntityAddresses()
-	relationAddresses := m.visibleRelationAddresses()
-	nodes := make([]DiagramNode, 0, len(entityAddresses))
-	for _, address := range entityAddresses {
-		entity := m.entities[address]
-		nodes = append(nodes, DiagramNode{Key: "entity:" + address, EntityAddress: address, DisplayName: entity.DisplayName, EntityType: entity.TypeAddress, LayerAddress: entity.LayerAddress, SourceEntities: []string{address}})
+func (m *viewMaterializer) validateQueryState(input QueryViewMaterializationInput, queryPolicy query.StatePolicy) {
+	effective := m.input.Recipe.StateRequirement
+	if effective != query.StateNone && effective != query.StateOptional && effective != query.StateRequired {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "View state policy is invalid", m.input.Recipe.Address, "")
+		return
 	}
-	edges := make([]DiagramEdge, 0, len(relationAddresses))
-	for _, address := range relationAddresses {
-		relation := m.relations[address]
-		edges = append(edges, DiagramEdge{
-			Key: "relation:" + address, RelationAddress: address, FromAddress: relation.FromAddress, ToAddress: relation.ToAddress,
-			RelationType: relation.TypeAddress, DisplayName: cloneViewStringPointer(relation.DisplayName), SourceRelations: []string{address},
-		})
+	if queryPolicy == query.StateNone && (len(input.QueryResult.StateReads) != 0 || input.QueryResult.StateInput.Kind != "none") {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "state-independent QueryResult contains state data", input.QueryResult.QueryAddress, m.input.Recipe.Address)
+		return
 	}
-	placements := []DiagramPlacement{}
-	if shape := m.input.Recipe.Shape.Diagram; shape != nil {
-		visible := viewStringSet(entityAddresses)
-		for _, placement := range shape.Placements {
-			if visible[placement.EntityAddress] {
-				placements = append(placements, DiagramPlacement{EntityAddress: placement.EntityAddress, X: placement.X, Y: placement.Y, Width: placement.Width, Height: placement.Height})
-			}
+	if effective == query.StateNone {
+		if input.StateSnapshot != nil || input.QueryResult.StateInput.Kind != "none" {
+			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "state-independent View must use StateInputRef.none", m.input.Recipe.Address, "")
+			return
 		}
-		sort.Slice(placements, func(i, j int) bool { return placements[i].EntityAddress < placements[j].EntityAddress })
+		m.stateInput = QueryStateInputRef{Kind: "none"}
+		return
 	}
-	return &DiagramViewData{Nodes: nodes, Edges: edges, Placements: placements}
-}
-
-func (m *viewMaterializer) table() *TableViewData {
-	shape := m.input.Recipe.Shape.Table
-	if shape == nil {
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "Table View shape is missing", m.input.Recipe.Address, "")
-		return &TableViewData{Columns: []TableViewColumn{}, Rows: []TableViewRow{}, Sorts: []TableViewSort{}}
-	}
-	columns := m.tableColumns(shape)
-	rows := m.tableRows(shape, columns)
-	sorts := make([]TableViewSort, len(shape.Sorts))
-	for i, sortValue := range shape.Sorts {
-		sorts[i] = TableViewSort{ColumnID: sortValue.ColumnID, Direction: string(sortValue.Direction), Absent: string(sortValue.Absent)}
-	}
-	return &TableViewData{Columns: columns, Rows: rows, Sorts: sorts}
-}
-
-func (m *viewMaterializer) tableColumns(shape *view.TableShape) []TableViewColumn {
-	columns := []TableViewColumn{}
-	if shape.IncludeEntityID {
-		columns = append(columns, TableViewColumn{ID: "entity_id", Label: "Entity ID", Source: "field:id"})
-	}
-	if shape.IncludeType {
-		columns = append(columns, TableViewColumn{ID: "type", Label: "Type", Source: "field:type"})
-	}
-	if shape.IncludeLayer {
-		columns = append(columns, TableViewColumn{ID: "layer", Label: "Layer", Source: "field:layer"})
-	}
-	for _, column := range shape.Columns {
-		label := column.ID
-		if column.Label != nil {
-			label = *column.Label
+	if input.StateSnapshot == nil {
+		if effective == query.StateRequired {
+			m.addDiag("LDL1604", "required_state_snapshot_missing", "required StateQuerySnapshot is absent", m.input.Recipe.Address, "")
+			return
 		}
-		columns = append(columns, TableViewColumn{ID: column.ID, Address: column.Address, Label: label, Source: string(column.Source.Kind)})
+		if input.QueryResult.StateInput.Kind != "none" {
+			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult references an absent StateQuerySnapshot", m.input.Recipe.Address, "")
+			return
+		}
+		m.stateInput = QueryStateInputRef{Kind: "none"}
+		return
 	}
-	return columns
+	ref, diagnostics, err := validateStateQuerySnapshotForDefinition(m.ctx, input.Snapshot.QueryDefinitionIdentity(), *input.Snapshot.TypedAST.Graph, *input.StateSnapshot)
+	if err != nil {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", err.Error(), m.input.Recipe.Address, "")
+		return
+	}
+	if len(diagnostics) != 0 {
+		m.diagnostics = append(m.diagnostics, diagnostics...)
+		return
+	}
+	if queryPolicy != query.StateNone && input.QueryResult.StateInput != ref {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult and View do not reference the same StateQuerySnapshot", m.input.Recipe.Address, "")
+		return
+	}
+	m.stateInput = ref
 }
 
-func (m *viewMaterializer) tableRows(shape *view.TableShape, columns []TableViewColumn) []TableViewRow {
-	switch shape.RowSource {
-	case view.RowsEntity:
-		return m.entityTableRows(shape, columns, false)
-	case view.RowsEntityRows:
-		return m.entityTableRows(shape, columns, true)
-	case view.RowsRelation:
-		return m.relationTableRows(shape, columns, false)
-	case view.RowsRelationRows, view.RowsAutomaticRelations:
-		return m.relationTableRows(shape, columns, true)
-	default:
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "unsupported Table row source", m.input.Recipe.Address, "")
-		return []TableViewRow{}
+func (m *viewMaterializer) validateDiffInput(input DiffViewMaterializationInput) {
+	if m.input.Recipe.Source.Kind != view.SourceDiff || m.input.Recipe.Source.Diff == nil || m.input.Recipe.Shape.Kind != view.ShapeDiff {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff input does not match the View source", m.input.Recipe.Address, "")
+		return
+	}
+	if m.input.Recipe.StateRequirement != query.StateNone || m.input.Recipe.StateInput != query.StateNone {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff View must be state-independent", m.input.Recipe.Address, "")
+		return
+	}
+	if !validRevisionID(input.RecipeRevisionID) || !validRevisionID(input.BeforeRevisionID) || !validRevisionID(input.AfterRevisionID) ||
+		!validDefinitionSnapshot(input.RecipeSnapshot) || !validDefinitionSnapshot(input.BeforeSnapshot) || !validDefinitionSnapshot(input.AfterSnapshot) {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff revision binding is incomplete", m.input.Recipe.Address, "")
+		return
+	}
+	compiled, ok := viewRecipeInSnapshot(input.RecipeSnapshot, m.input.Recipe.Address)
+	if !ok || !reflect.DeepEqual(compiled, m.input.Recipe) {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff recipe does not belong to the recipe revision", m.input.Recipe.Address, "")
+		return
+	}
+	if input.BeforeSnapshot.TypedAST.Project.Address != input.AfterSnapshot.TypedAST.Project.Address {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff revisions belong to different Projects", m.input.Recipe.Address, "")
+		return
+	}
+	hasQuery := m.input.Recipe.Source.Diff.QueryAddress != nil
+	if hasQuery != (input.BeforeQueryResult != nil && input.AfterQueryResult != nil) {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff Query results do not match the View source", m.input.Recipe.Address, "")
+		return
+	}
+	if !hasQuery && (input.BeforeQueryResult != nil || input.AfterQueryResult != nil) {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Query-free Diff input contains Query results", m.input.Recipe.Address, "")
+		return
+	}
+	m.snapshot = input.AfterSnapshot
+	m.graph = graph.MasterGraph{}
+	if input.AfterSnapshot.TypedAST.Graph != nil {
+		m.graph = *input.AfterSnapshot.TypedAST.Graph
+	}
+	m.project = input.AfterSnapshot.TypedAST.Project.Address
+	m.revision = ViewRevision{Diff: &DiffRevision{
+		Kind: "diff", RecipeRevisionID: input.RecipeRevisionID, RecipeDefinitionHash: input.RecipeSnapshot.DefinitionHash,
+		BeforeRevisionID: input.BeforeRevisionID, BeforeDefinitionHash: input.BeforeSnapshot.DefinitionHash,
+		AfterRevisionID: input.AfterRevisionID, AfterDefinitionHash: input.AfterSnapshot.DefinitionHash,
+	}}
+	m.stateInput = QueryStateInputRef{Kind: "none"}
+}
+
+func (m *viewMaterializer) indexSnapshot() {
+	for _, entity := range m.graph.Entities {
+		m.entities[entity.Address] = entity
+	}
+	for _, relation := range m.graph.Relations {
+		m.relations[relation.Address] = relation
+	}
+	for _, value := range m.snapshot.TypedAST.EntityTypes {
+		m.entityTypes[value.Address] = value
+	}
+	for _, value := range m.snapshot.TypedAST.RelationTypes {
+		m.relationTypes[value.Address] = value
+	}
+	for _, value := range m.snapshot.TypedAST.Layers {
+		m.layers[value.Address] = value
+	}
+	for _, adjacency := range m.graph.Outgoing {
+		m.outgoing[adjacency.EntityAddress] = append([]string{}, adjacency.RelationAddresses...)
+	}
+	for _, adjacency := range m.graph.Incoming {
+		m.incoming[adjacency.EntityAddress] = append([]string{}, adjacency.RelationAddresses...)
 	}
 }
 
-func (m *viewMaterializer) entityTableRows(shape *view.TableShape, columns []TableViewColumn, rowGrain bool) []TableViewRow {
-	addresses := m.visibleEntityAddresses()
-	if shape.EntityTypeAddresses != nil {
-		allowed := viewStringSet(*shape.EntityTypeAddresses)
-		addresses = filterStrings(addresses, func(address string) bool { return allowed[m.entities[address].TypeAddress] })
-	}
-	rows := []TableViewRow{}
-	for _, address := range addresses {
-		entity := m.entities[address]
-		if !rowGrain {
-			rows = append(rows, m.entityTableRow(shape, columns, entity, nil))
-			continue
+func (m *viewMaterializer) validateQueryResultSubjects() {
+	for _, values := range [][]string{
+		m.queryResult.SeedEntityAddresses, m.queryResult.ReachedEntityAddresses, m.queryResult.TraversedEntityAddresses,
+		m.queryResult.PrimaryEntityAddresses, m.queryResult.SupportEntityAddresses,
+	} {
+		if !canonicalStableAddressSlice(values) {
+			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult Entity collection is not canonical", m.queryResult.QueryAddress, m.input.Recipe.Address)
+			return
 		}
-		for _, row := range entity.Rows {
-			rowCopy := row
-			rows = append(rows, m.entityTableRow(shape, columns, entity, &rowCopy))
-		}
-	}
-	return rows
-}
-
-func (m *viewMaterializer) entityTableRow(shape *view.TableShape, columns []TableViewColumn, entity graph.Entity, row *graph.AttributeRow) TableViewRow {
-	key := "entity:" + entity.Address
-	sourceRows := []string{}
-	if row != nil {
-		key = "entity-row:" + row.Address
-		sourceRows = []string{row.Address}
-	}
-	out := TableViewRow{Key: key, SubjectAddress: entity.Address, OwnerAddress: entity.Address, SourceRows: sourceRows, SourceEntities: []string{entity.Address}, Cells: []TableViewCell{}}
-	for _, column := range columns {
-		out.Cells = append(out.Cells, m.entityCell(shape, column, entity, row))
-	}
-	return out
-}
-
-func (m *viewMaterializer) entityCell(shape *view.TableShape, column TableViewColumn, entity graph.Entity, row *graph.AttributeRow) TableViewCell {
-	cell := TableViewCell{ColumnID: column.ID, SourceEntities: []string{entity.Address}}
-	switch column.ID {
-	case "entity_id":
-		cell.Value = addressViewValue(entity.Address)
-		return cell
-	case "type":
-		cell.Value = addressViewValue(entity.TypeAddress)
-		return cell
-	case "layer":
-		cell.Value = addressViewValue(entity.LayerAddress)
-		return cell
-	}
-	source := findTableColumn(shape.Columns, column.ID)
-	if source == nil {
-		cell.Value = nullViewValue()
-		return cell
-	}
-	switch source.Source.Kind {
-	case view.ColumnField:
-		cell.Value = optionalViewValue(entityFieldValue(entity, source.Source.Field))
-	case view.ColumnAttribute:
-		if row != nil {
-			cell.Value, cell.SourceCells = rowCellViewValue(*row, source.Source.ColumnAddresses)
-			cell.SourceRows = []string{row.Address}
-		} else {
-			cell.Value, cell.SourceCells, cell.SourceRows = firstRowCellViewValue(entity.Rows, source.Source.ColumnAddresses)
-		}
-	case view.ColumnDerivedCount:
-		cell.Value = scalarViewValue(definition.Scalar{Type: definition.ScalarInteger, Int: int64(m.derivedCount(entity.Address, source.Source.Direction, source.Source.RelationTypeAddresses))})
-	case view.ColumnState:
-		read := StateReadRef{SubjectAddress: entity.Address, FieldPath: string(source.Source.StateFieldPath)}
-		m.stateReads[read] = true
-		cell.StateReads = []StateReadRef{read}
-		cell.Value = nullViewValue()
-	default:
-		cell.Value = nullViewValue()
-	}
-	return cell
-}
-
-func (m *viewMaterializer) relationTableRows(shape *view.TableShape, columns []TableViewColumn, rowGrain bool) []TableViewRow {
-	addresses := m.visibleRelationAddresses()
-	rows := []TableViewRow{}
-	for _, address := range addresses {
-		relation := m.relations[address]
-		if !rowGrain {
-			rows = append(rows, m.relationTableRow(shape, columns, relation, nil))
-			continue
-		}
-		for _, row := range relation.Rows {
-			rowCopy := row
-			rows = append(rows, m.relationTableRow(shape, columns, relation, &rowCopy))
-		}
-	}
-	return rows
-}
-
-func (m *viewMaterializer) relationTableRow(shape *view.TableShape, columns []TableViewColumn, relation graph.Relation, row *graph.AttributeRow) TableViewRow {
-	key := "relation:" + relation.Address
-	sourceRows := []string{}
-	if row != nil {
-		key = "relation-row:" + row.Address
-		sourceRows = []string{row.Address}
-	}
-	out := TableViewRow{Key: key, SubjectAddress: relation.Address, OwnerAddress: relation.Address, SourceRows: sourceRows, SourceRelations: []string{relation.Address}, Cells: []TableViewCell{}}
-	for _, column := range columns {
-		out.Cells = append(out.Cells, m.relationCell(shape, column, relation, row))
-	}
-	return out
-}
-
-func (m *viewMaterializer) relationCell(shape *view.TableShape, column TableViewColumn, relation graph.Relation, row *graph.AttributeRow) TableViewCell {
-	cell := TableViewCell{ColumnID: column.ID, SourceRelations: []string{relation.Address}}
-	source := findTableColumn(shape.Columns, column.ID)
-	if source == nil {
-		cell.Value = nullViewValue()
-		return cell
-	}
-	switch source.Source.Kind {
-	case view.ColumnField:
-		cell.Value = optionalViewValue(relationFieldValue(relation, source.Source.Field))
-	case view.ColumnRelationEndpoint:
-		if source.Source.Endpoint == definition.ProjectionEndpointFrom {
-			cell.Value = addressViewValue(relation.FromAddress)
-		} else {
-			cell.Value = addressViewValue(relation.ToAddress)
-		}
-	case view.ColumnAttribute:
-		if row != nil {
-			cell.Value, cell.SourceCells = rowCellViewValue(*row, source.Source.ColumnAddresses)
-			cell.SourceRows = []string{row.Address}
-		} else {
-			cell.Value, cell.SourceCells, cell.SourceRows = firstRowCellViewValue(relation.Rows, source.Source.ColumnAddresses)
-		}
-	case view.ColumnState:
-		read := StateReadRef{SubjectAddress: relation.Address, FieldPath: string(source.Source.StateFieldPath)}
-		m.stateReads[read] = true
-		cell.StateReads = []StateReadRef{read}
-		cell.Value = nullViewValue()
-	default:
-		cell.Value = nullViewValue()
-	}
-	return cell
-}
-
-func (m *viewMaterializer) context() *ContextViewData {
-	shape := m.input.Recipe.Shape.Context
-	if shape == nil {
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "Context View shape is missing", m.input.Recipe.Address, "")
-		return &ContextViewData{Groups: []ContextGroup{}, Facts: []ContextFact{}}
-	}
-	groups := map[string]ContextGroup{}
-	facts := []ContextFact{}
-	for _, address := range m.visibleEntityAddresses() {
-		entity := m.entities[address]
-		group := contextGroupForEntity(entity, shape.GroupBy)
-		if existing, ok := groups[group.Key]; ok {
-			existing.Addresses = append(existing.Addresses, group.Addresses...)
-			groups[group.Key] = existing
-		} else {
-			groups[group.Key] = group
-		}
-		facts = append(facts, ContextFact{Key: "entity:" + address, SubjectAddress: address, Kind: "entity", Text: entity.DisplayName, SourceEntities: []string{address}})
-		if shape.IncludeEntityRows {
-			for _, row := range entity.Rows {
-				facts = append(facts, ContextFact{Key: "entity-row:" + row.Address, SubjectAddress: row.Address, Kind: "entity_row", Text: row.ID, SourceEntities: []string{address}, SourceRows: []string{row.Address}})
+		for _, address := range values {
+			if _, ok := m.entities[address]; !ok {
+				m.addDiag("LDL1601", "invalid_query_or_arguments", "QueryResult references an unknown Entity", address, m.input.Recipe.Address)
 			}
 		}
 	}
-	for _, address := range m.visibleRelationAddresses() {
-		relation := m.relations[address]
-		text := relation.ID
-		if relation.DisplayName != nil {
-			text = *relation.DisplayName
+	for _, values := range [][]string{m.queryResult.PathRelationAddresses, m.queryResult.InducedRelationAddresses, m.queryResult.SelectedRelationAddresses} {
+		if !canonicalStableAddressSlice(values) {
+			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult Relation collection is not canonical", m.queryResult.QueryAddress, m.input.Recipe.Address)
+			return
 		}
-		facts = append(facts, ContextFact{Key: "relation:" + address, SubjectAddress: address, Kind: "relation", Text: text, SourceRelations: []string{address}})
-		if shape.IncludeRelationRows {
-			for _, row := range relation.Rows {
-				facts = append(facts, ContextFact{Key: "relation-row:" + row.Address, SubjectAddress: row.Address, Kind: "relation_row", Text: row.ID, SourceRelations: []string{address}, SourceRows: []string{row.Address}})
+		for _, address := range values {
+			if _, ok := m.relations[address]; !ok {
+				m.addDiag("LDL1601", "invalid_query_or_arguments", "QueryResult references an unknown Relation", address, m.input.Recipe.Address)
 			}
 		}
 	}
-	groupList := make([]ContextGroup, 0, len(groups))
-	for _, group := range groups {
-		group.Addresses = sortedUniqueStrings(group.Addresses)
-		groupList = append(groupList, group)
+	visible := viewStringSet(m.materializationEntityAddresses())
+	for _, address := range m.relationAddresses() {
+		relation := m.relations[address]
+		if !visible[relation.FromAddress] || !visible[relation.ToAddress] {
+			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult does not close selected Relation endpoints", address, m.input.Recipe.Address)
+		}
 	}
-	sort.Slice(groupList, func(i, j int) bool { return groupList[i].Key < groupList[j].Key })
-	return &ContextViewData{Groups: groupList, Facts: facts}
+}
+
+func (m *viewMaterializer) base() ViewDataBase {
+	queryAddress := m.queryResult.QueryAddress
+	return ViewDataBase{
+		Kind: ViewDataKind(m.input.Recipe.Shape.Kind), Category: string(m.input.Recipe.Category), Shape: deepClone(m.input.Recipe.Shape),
+		ProjectAddress: m.project, ViewAddress: m.input.Recipe.Address, QueryAddress: &queryAddress,
+		Revision: deepClone(m.revision), StatePolicy: string(m.input.Recipe.StateRequirement), StateInput: m.stateInput,
+		Source: emptyViewDataSourceRefs(), Diagnostics: sortedDiagnostics(m.queryResult.Diagnostics),
+	}
 }
 
 func (m *viewMaterializer) sourceRefs() ViewDataSourceRefs {
-	entitySet := map[string]bool{}
-	layerSet := map[string]bool{}
-	for _, address := range m.allEntityAddresses() {
-		if entity, ok := m.entities[address]; ok {
-			entitySet[address] = true
-			layerSet[entity.LayerAddress] = true
-		}
+	refs := emptyViewDataSourceRefs()
+	refs.SubjectAddresses = append(refs.SubjectAddresses, m.project, m.input.Recipe.Address)
+	if m.queryResult.QueryAddress != "" {
+		refs.SubjectAddresses = append(refs.SubjectAddresses, m.queryResult.QueryAddress)
 	}
-	relationSet := map[string]bool{}
-	for _, address := range m.allRelationAddresses() {
-		if relation, ok := m.relations[address]; ok {
-			relationSet[address] = true
-			entitySet[relation.FromAddress] = true
-			entitySet[relation.ToAddress] = true
-		}
-	}
-	rowSet := map[string]bool{}
-	for _, address := range sortedSet(entitySet) {
-		for _, row := range m.entities[address].Rows {
-			rowSet[row.Address] = true
-		}
-	}
-	for _, address := range sortedSet(relationSet) {
-		for _, row := range m.relations[address].Rows {
-			rowSet[row.Address] = true
-		}
-	}
-	return ViewDataSourceRefs{
-		QueryAddress:      m.input.QueryResult.QueryAddress,
-		EntityAddresses:   sortedSet(entitySet),
-		RelationAddresses: sortedSet(relationSet),
-		LayerAddresses:    sortedSet(layerSet),
-		RowAddresses:      sortedSet(rowSet),
-		StateReads:        mergeStateReads(m.input.QueryResult.StateReads, m.sortedStateReads()),
-	}
-}
-
-func (m *viewMaterializer) visibleEntityAddresses() []string {
-	addresses := sortedUniqueStrings(append(append([]string{}, m.input.QueryResult.PrimaryEntityAddresses...), m.input.QueryResult.SupportEntityAddresses...))
-	if len(addresses) != 0 {
-		return addresses
-	}
-	return sortedUniqueStrings(append(append(append([]string{}, m.input.QueryResult.SeedEntityAddresses...), m.input.QueryResult.ReachedEntityAddresses...), m.input.QueryResult.TraversedEntityAddresses...))
-}
-
-func (m *viewMaterializer) visibleRelationAddresses() []string {
-	return sortedUniqueStrings(append(append([]string{}, m.input.QueryResult.SelectedRelationAddresses...), append(m.input.QueryResult.PathRelationAddresses, m.input.QueryResult.InducedRelationAddresses...)...))
-}
-
-func (m *viewMaterializer) allEntityAddresses() []string {
-	return sortedUniqueStrings(append(append(append(append([]string{}, m.input.QueryResult.SeedEntityAddresses...), m.input.QueryResult.ReachedEntityAddresses...), m.input.QueryResult.TraversedEntityAddresses...), append(m.input.QueryResult.PrimaryEntityAddresses, m.input.QueryResult.SupportEntityAddresses...)...))
-}
-
-func (m *viewMaterializer) allRelationAddresses() []string {
-	return sortedUniqueStrings(append(append(append([]string{}, m.input.QueryResult.PathRelationAddresses...), m.input.QueryResult.InducedRelationAddresses...), m.input.QueryResult.SelectedRelationAddresses...))
-}
-
-func (m *viewMaterializer) derivedCount(entityAddress string, direction definition.TraversalDirection, relationTypes *[]string) int {
-	allowed := map[string]bool{}
-	if relationTypes != nil {
-		allowed = viewStringSet(*relationTypes)
-	}
-	count := 0
-	visit := func(addresses []string) {
-		for _, relationAddress := range addresses {
-			relation := m.relations[relationAddress]
-			if len(allowed) != 0 && !allowed[relation.TypeAddress] {
-				continue
+	refs.SubjectAddresses = append(refs.SubjectAddresses, m.input.Recipe.Dependencies.EntityTypeAddresses...)
+	refs.SubjectAddresses = append(refs.SubjectAddresses, m.input.Recipe.Dependencies.RelationTypeAddresses...)
+	refs.SubjectAddresses = append(refs.SubjectAddresses, m.input.Recipe.Dependencies.ColumnAddresses...)
+	refs.EntityAddresses = append(refs.EntityAddresses, m.materializationEntityAddresses()...)
+	refs.RelationAddresses = append(refs.RelationAddresses, m.relationAddresses()...)
+	refs.State.Reads = append(refs.State.Reads, m.queryResult.StateReads...)
+	refs.State.Reads = append(refs.State.Reads, m.sortedDirectStateReads()...)
+	for _, address := range refs.EntityAddresses {
+		entity := m.entities[address]
+		refs.SubjectAddresses = append(refs.SubjectAddresses, entity.TypeAddress)
+		refs.LayerAddresses = append(refs.LayerAddresses, entity.LayerAddress)
+		for _, row := range entity.Rows {
+			refs.RowAddresses = append(refs.RowAddresses, row.Address)
+			for _, cell := range row.Values {
+				refs.CellRefs = append(refs.CellRefs, ViewDataCellRef{RowAddress: row.Address, ColumnAddress: cell.ColumnAddress})
 			}
-			count++
 		}
 	}
-	if direction == definition.TraversalOutgoing || direction == definition.TraversalBoth {
-		visit(m.outgoing[entityAddress])
+	for _, address := range refs.RelationAddresses {
+		relation := m.relations[address]
+		refs.SubjectAddresses = append(refs.SubjectAddresses, relation.TypeAddress)
+		for _, row := range relation.Rows {
+			refs.RowAddresses = append(refs.RowAddresses, row.Address)
+			for _, cell := range row.Values {
+				refs.CellRefs = append(refs.CellRefs, ViewDataCellRef{RowAddress: row.Address, ColumnAddress: cell.ColumnAddress})
+			}
+		}
 	}
-	if direction == definition.TraversalIncoming || direction == definition.TraversalBoth {
-		visit(m.incoming[entityAddress])
+	if m.input.Recipe.StateRequirement == query.StateNone {
+		refs.State.Reads = []StateReadRef{}
 	}
-	return count
+	return canonicalViewDataSourceRefs(refs)
 }
 
-func (m *viewMaterializer) sortedStateReads() []StateReadRef {
-	reads := make([]StateReadRef, 0, len(m.stateReads))
-	for read := range m.stateReads {
-		reads = append(reads, read)
+func (m *viewMaterializer) entitySource(entity graph.Entity) ViewDataSourceRefs {
+	refs := emptyViewDataSourceRefs()
+	refs.SubjectAddresses = []string{entity.TypeAddress}
+	refs.EntityAddresses = []string{entity.Address}
+	refs.LayerAddresses = []string{entity.LayerAddress}
+	refs.State.Reads = m.stateReadsForSubjects(entity.Address)
+	return canonicalViewDataSourceRefs(refs)
+}
+
+func (m *viewMaterializer) relationSource(relation graph.Relation) ViewDataSourceRefs {
+	refs := emptyViewDataSourceRefs()
+	refs.SubjectAddresses = []string{relation.TypeAddress}
+	refs.RelationAddresses = []string{relation.Address}
+	refs.State.Reads = m.stateReadsForSubjects(relation.Address)
+	return canonicalViewDataSourceRefs(refs)
+}
+
+func (m *viewMaterializer) rowSource(ownerAddress string, entity bool, row graph.AttributeRow) ViewDataSourceRefs {
+	refs := emptyViewDataSourceRefs()
+	if entity {
+		refs = m.entitySource(m.entities[ownerAddress])
+	} else {
+		refs = m.relationSource(m.relations[ownerAddress])
 	}
-	sort.Slice(reads, func(i, j int) bool {
-		if reads[i].SubjectAddress != reads[j].SubjectAddress {
-			return reads[i].SubjectAddress < reads[j].SubjectAddress
-		}
-		return reads[i].FieldPath < reads[j].FieldPath
-	})
-	return reads
+	refs.RowAddresses = []string{row.Address}
+	for _, cell := range row.Values {
+		refs.CellRefs = append(refs.CellRefs, ViewDataCellRef{RowAddress: row.Address, ColumnAddress: cell.ColumnAddress})
+	}
+	refs.State.Reads = append(refs.State.Reads, m.stateReadsForSubjects(row.Address)...)
+	return canonicalViewDataSourceRefs(refs)
+}
+
+func (m *viewMaterializer) stateReadsForSubjects(addresses ...string) []StateReadRef {
+	allowed := viewStringSet(addresses)
+	reads := append([]StateReadRef{}, m.queryResult.StateReads...)
+	reads = append(reads, m.sortedDirectStateReads()...)
+	return filterStateReads(canonicalStateReads(reads), func(read StateReadRef) bool { return allowed[read.SubjectAddress] })
+}
+
+func (m *viewMaterializer) materializationEntityAddresses() []string {
+	values := append(append([]string{}, m.queryResult.PrimaryEntityAddresses...), m.queryResult.SupportEntityAddresses...)
+	if len(values) == 0 {
+		values = append(values, m.queryResult.SeedEntityAddresses...)
+		values = append(values, m.queryResult.TraversedEntityAddresses...)
+	}
+	return sortedUniqueStableAddresses(values)
+}
+
+func (m *viewMaterializer) primaryEntityAddresses() []string {
+	values := append([]string{}, m.queryResult.PrimaryEntityAddresses...)
+	if len(values) == 0 {
+		values = append(values, m.queryResult.SeedEntityAddresses...)
+	}
+	return sortedUniqueStableAddresses(values)
+}
+
+func (m *viewMaterializer) relationAddresses() []string {
+	values := append([]string{}, m.queryResult.SelectedRelationAddresses...)
+	if len(values) == 0 {
+		values = append(values, m.queryResult.PathRelationAddresses...)
+		values = append(values, m.queryResult.InducedRelationAddresses...)
+	}
+	return sortedUniqueStableAddresses(values)
+}
+
+func (m *viewMaterializer) sortedDirectStateReads() []StateReadRef {
+	values := make([]StateReadRef, 0, len(m.directStateReads))
+	for value := range m.directStateReads {
+		values = append(values, value)
+	}
+	return canonicalStateReads(values)
 }
 
 func (m *viewMaterializer) addDiag(code, key, message, subject, owner string) {
@@ -624,123 +430,86 @@ func rejectedView(diagnostics ...Diagnostic) ViewMaterializationResponse {
 	return ViewMaterializationResponse{Status: "rejected", Diagnostics: sortedDiagnostics(diagnostics)}
 }
 
-func findTableColumn(columns []view.TableColumn, id string) *view.TableColumn {
-	for i := range columns {
-		if columns[i].ID == id {
-			return &columns[i]
+func validQueryViewSnapshot(snapshot Snapshot) bool {
+	return validDefinitionSnapshot(snapshot) && snapshot.TypedAST.Graph != nil
+}
+
+func validDefinitionSnapshot(snapshot Snapshot) bool {
+	return snapshot.TypedAST.Project != nil && snapshot.TypedAST.Project.Address != "" && validSemanticHash(snapshot.DefinitionHash)
+}
+
+func validRevisionID(value string) bool {
+	return value != "" && definition.NormalizeText(value) == value
+}
+
+func viewRecipeInSnapshot(snapshot Snapshot, address string) (CompiledViewRecipe, bool) {
+	for _, recipe := range snapshot.TypedAST.Views {
+		if recipe.Address == address {
+			return recipe, true
 		}
 	}
-	return nil
+	return CompiledViewRecipe{}, false
 }
 
-func optionalViewValue(value optionalScalar) ViewDataValue {
-	if !value.present {
-		return nullViewValue()
-	}
-	if value.address != nil {
-		return addressViewValue(*value.address)
-	}
-	if len(value.strings) != 0 {
-		return ViewDataValue{Kind: "string_set", StringSet: sortedUniqueStrings(value.strings)}
-	}
-	return scalarViewValue(value.value)
-}
-
-func scalarViewValue(value definition.Scalar) ViewDataValue {
-	copied := value
-	return ViewDataValue{Kind: "scalar", Scalar: &copied}
-}
-
-func addressViewValue(value string) ViewDataValue {
-	copied := value
-	return ViewDataValue{Kind: "stable_address", Address: &copied}
-}
-
-func nullViewValue() ViewDataValue {
-	return ViewDataValue{Kind: "null", Null: true}
-}
-
-func rowCellViewValue(row graph.AttributeRow, columnAddresses []string) (ViewDataValue, []ViewDataCellRef) {
-	allowed := viewStringSet(columnAddresses)
-	for _, cell := range row.Values {
-		if allowed[cell.ColumnAddress] {
-			return scalarViewValue(cell.Value), []ViewDataCellRef{{RowAddress: row.Address, ColumnAddress: cell.ColumnAddress}}
+func queryRecipeInSnapshot(snapshot Snapshot, address string) (CompiledQueryRecipe, bool) {
+	for _, recipe := range snapshot.TypedAST.Queries {
+		if recipe.Address == address {
+			return recipe, true
 		}
 	}
-	return nullViewValue(), nil
+	return CompiledQueryRecipe{}, false
 }
 
-func firstRowCellViewValue(rows []graph.AttributeRow, columnAddresses []string) (ViewDataValue, []ViewDataCellRef, []string) {
-	for _, row := range rows {
-		value, cells := rowCellViewValue(row, columnAddresses)
-		if !value.Null {
-			return value, cells, []string{row.Address}
+func viewArgumentsMatch(expected []view.Argument, actual map[string]TypedScalar) bool {
+	if len(expected) != len(actual) {
+		return false
+	}
+	for _, argument := range expected {
+		if value, ok := actual[argument.ParameterAddress]; !ok || value != argument.Value {
+			return false
 		}
 	}
-	return nullViewValue(), nil, nil
+	return true
 }
 
-func contextGroupForEntity(entity graph.Entity, groupBy view.ContextGroupBy) ContextGroup {
-	switch groupBy {
-	case view.ContextGroupLayer:
-		return ContextGroup{Key: "layer:" + entity.LayerAddress, Label: entity.LayerAddress, Addresses: []string{entity.Address}}
-	case view.ContextGroupEntityType:
-		return ContextGroup{Key: "entity_type:" + entity.TypeAddress, Label: entity.TypeAddress, Addresses: []string{entity.Address}}
-	default:
-		return ContextGroup{Key: "all", Label: "All", Addresses: []string{entity.Address}}
-	}
-}
-
-func mergeStateReads(left, right []StateReadRef) []StateReadRef {
-	seen := map[StateReadRef]bool{}
-	for _, read := range left {
-		seen[read] = true
-	}
-	for _, read := range right {
-		seen[read] = true
-	}
-	reads := make([]StateReadRef, 0, len(seen))
-	for read := range seen {
-		reads = append(reads, read)
-	}
-	sort.Slice(reads, func(i, j int) bool {
-		if reads[i].SubjectAddress != reads[j].SubjectAddress {
-			return reads[i].SubjectAddress < reads[j].SubjectAddress
-		}
-		return reads[i].FieldPath < reads[j].FieldPath
-	})
-	return reads
-}
-
-func sortedUniqueStrings(values []string) []string {
-	seen := map[string]bool{}
-	for _, value := range values {
-		if value != "" {
-			seen[value] = true
+func canonicalStableAddressSlice(values []string) bool {
+	for index := 1; index < len(values); index++ {
+		if compareStableAddressText(values[index-1], values[index]) >= 0 {
+			return false
 		}
 	}
-	return sortedSet(seen)
+	return values != nil
+}
+
+func setViewDataBase(value *ViewData, base ViewDataBase) {
+	switch {
+	case value.Diagram != nil:
+		value.Diagram.ViewDataBase = base
+	case value.Table != nil:
+		value.Table.ViewDataBase = base
+	case value.Matrix != nil:
+		value.Matrix.ViewDataBase = base
+	case value.Tree != nil:
+		value.Tree.ViewDataBase = base
+	case value.Flow != nil:
+		value.Flow.ViewDataBase = base
+	case value.Context != nil:
+		value.Context.ViewDataBase = base
+	case value.Diff != nil:
+		value.Diff.ViewDataBase = base
+	}
 }
 
 func viewStringSet(values []string) map[string]bool {
-	out := map[string]bool{}
+	out := make(map[string]bool, len(values))
 	for _, value := range values {
 		out[value] = true
 	}
 	return out
 }
 
-func sortedSet(values map[string]bool) []string {
-	out := make([]string, 0, len(values))
-	for value := range values {
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func filterStrings(values []string, keep func(string) bool) []string {
-	out := []string{}
+func filterStateReads(values []StateReadRef, keep func(StateReadRef) bool) []StateReadRef {
+	out := make([]StateReadRef, 0, len(values))
 	for _, value := range values {
 		if keep(value) {
 			out = append(out, value)
@@ -749,10 +518,14 @@ func filterStrings(values []string, keep func(string) bool) []string {
 	return out
 }
 
-func cloneViewStringPointer(value *string) *string {
-	if value == nil {
-		return nil
+func viewItemKey(m *viewMaterializer, kind string, tuple any) string {
+	key, err := newViewDataItemKey(kind, tuple)
+	if err != nil {
+		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", fmt.Sprintf("cannot derive ViewData item key: %v", err), m.input.Recipe.Address, "")
 	}
-	copied := *value
-	return &copied
+	return key
+}
+
+func sortRelationsByAddress(values []graph.Relation) {
+	sort.Slice(values, func(i, j int) bool { return compareStableAddressText(values[i].Address, values[j].Address) < 0 })
 }

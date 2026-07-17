@@ -36,7 +36,8 @@ func TestMaterializeDocumentViewUsesRetainedWorkbenchGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.DocumentGeneration != opened.DocumentGeneration || result.ViewData.Diagram == nil || result.ViewData.Shape != "diagram" {
+	base, valid := result.ViewData.Base()
+	if result.DocumentGeneration != opened.DocumentGeneration || result.ViewData.Diagram == nil || !valid || base.Kind != ViewDataDiagram {
 		t.Fatalf("materialized view = %+v", result)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -251,8 +252,12 @@ func mapMaterializeViewResult(ctx context.Context, input engine.MaterializeDocum
 }
 
 func mapViewData(ctx context.Context, input engine.ViewData) (semantic.ViewData, error) {
-	diagnostics := make([]semantic.Diagnostic, len(input.Diagnostics))
-	for index, value := range input.Diagnostics {
+	base, ok := input.Base()
+	if !ok {
+		return semantic.ViewData{}, fmt.Errorf("invalid ViewData union")
+	}
+	diagnostics := make([]semantic.Diagnostic, len(base.Diagnostics))
+	for index, value := range base.Diagnostics {
 		if err := queryMappingContext(ctx); err != nil {
 			return semantic.ViewData{}, err
 		}
@@ -262,19 +267,23 @@ func mapViewData(ctx context.Context, input engine.ViewData) (semantic.ViewData,
 		}
 		diagnostics[index] = mapped
 	}
-	stateReads := make([]semantic.ViewDataStateReadRef, len(input.Source.StateReads))
-	for index, value := range input.Source.StateReads {
+	stateReads := make([]semantic.ViewDataStateReadRef, len(base.Source.State.Reads))
+	for index, value := range base.Source.State.Reads {
 		stateReads[index] = semantic.ViewDataStateReadRef{SubjectAddress: semantic.StableAddress(value.SubjectAddress), FieldPath: semantic.StateFieldPath(value.FieldPath)}
 	}
+	queryAddress := ""
+	if base.QueryAddress != nil {
+		queryAddress = *base.QueryAddress
+	}
 	result := semantic.ViewData{
-		ViewAddress: semantic.ViewAddress(input.ViewAddress), Category: input.Category, Shape: input.Shape,
-		StatePolicy: input.StatePolicy, StateInput: semantic.ViewDataStateInputRef{Kind: input.StateInput.Kind}, Diagnostics: diagnostics,
+		ViewAddress: semantic.ViewAddress(base.ViewAddress), Category: base.Category, Shape: string(base.Kind),
+		StatePolicy: base.StatePolicy, StateInput: semantic.ViewDataStateInputRef{Kind: base.StateInput.Kind}, Diagnostics: diagnostics,
 		Source: semantic.ViewDataSourceRefs{
-			QueryAddress:      semantic.QueryAddress(input.Source.QueryAddress),
-			EntityAddresses:   protocolSlice[semantic.EntityAddress](input.Source.EntityAddresses),
-			RelationAddresses: protocolSlice[semantic.RelationAddress](input.Source.RelationAddresses),
-			LayerAddresses:    protocolSlice[semantic.LayerAddress](input.Source.LayerAddresses),
-			RowAddresses:      protocolSlice[semantic.StableAddress](input.Source.RowAddresses), StateReads: stateReads,
+			QueryAddress:      semantic.QueryAddress(queryAddress),
+			EntityAddresses:   protocolSlice[semantic.EntityAddress](base.Source.EntityAddresses),
+			RelationAddresses: protocolSlice[semantic.RelationAddress](base.Source.RelationAddresses),
+			LayerAddresses:    protocolSlice[semantic.LayerAddress](base.Source.LayerAddresses),
+			RowAddresses:      protocolSlice[semantic.StableAddress](base.Source.RowAddresses), StateReads: stateReads,
 		},
 	}
 	if input.Diagram != nil {
@@ -311,96 +320,147 @@ func protocolSlice[T ~string](input []string) []T {
 
 func mapDiagramViewData(ctx context.Context, input engine.DiagramViewData) (semantic.DiagramViewData, error) {
 	result := semantic.DiagramViewData{
-		Nodes: make([]semantic.DiagramViewNode, len(input.Nodes)), Edges: make([]semantic.DiagramViewEdge, len(input.Edges)),
-		Placements: make([]semantic.DiagramViewPlacement, len(input.Placements)),
+		Nodes: make([]semantic.DiagramViewNode, len(input.Occurrences)), Edges: make([]semantic.DiagramViewEdge, len(input.Edges)),
+		Placements: []semantic.DiagramViewPlacement{},
 	}
-	for index, value := range input.Nodes {
+	entityByOccurrence := make(map[string]string, len(input.Occurrences))
+	for index, value := range input.Occurrences {
 		if err := queryMappingContext(ctx); err != nil {
 			return semantic.DiagramViewData{}, err
 		}
-		result.Nodes[index] = semantic.DiagramViewNode{
-			Key: value.Key, EntityAddress: semantic.EntityAddress(value.EntityAddress), DisplayName: value.DisplayName,
-			EntityTypeAddress: semantic.EntityTypeAddress(value.EntityType), LayerAddress: semantic.LayerAddress(value.LayerAddress),
-			SourceEntities: protocolSlice[semantic.EntityAddress](value.SourceEntities),
+		entityType := sourceSubjectAddress(value.Source.SubjectAddresses, ":entity-type:")
+		if entityType == "" {
+			return semantic.DiagramViewData{}, fmt.Errorf("Diagram occurrence source lacks EntityType")
 		}
+		result.Nodes[index] = semantic.DiagramViewNode{
+			Key: value.Key, EntityAddress: semantic.EntityAddress(value.EntityAddress), DisplayName: value.EntityAddress,
+			EntityTypeAddress: semantic.EntityTypeAddress(entityType), LayerAddress: semantic.LayerAddress(value.LayerAddress),
+			SourceEntities: protocolSlice[semantic.EntityAddress](value.Source.EntityAddresses),
+		}
+		entityByOccurrence[value.Key] = value.EntityAddress
 	}
 	for index, value := range input.Edges {
 		if err := queryMappingContext(ctx); err != nil {
 			return semantic.DiagramViewData{}, err
 		}
+		fromAddress, fromOK := entityByOccurrence[value.FromOccurrenceKey]
+		toAddress, toOK := entityByOccurrence[value.ToOccurrenceKey]
+		if !fromOK || !toOK {
+			return semantic.DiagramViewData{}, fmt.Errorf("Diagram edge references an unknown occurrence")
+		}
 		result.Edges[index] = semantic.DiagramViewEdge{
-			Key: value.Key, RelationAddress: semantic.RelationAddress(value.RelationAddress), FromAddress: semantic.EntityAddress(value.FromAddress),
-			ToAddress: semantic.EntityAddress(value.ToAddress), RelationTypeAddress: semantic.RelationTypeAddress(value.RelationType),
-			DisplayName: value.DisplayName, SourceRelations: protocolSlice[semantic.RelationAddress](value.SourceRelations),
+			Key: value.Key, RelationAddress: semantic.RelationAddress(value.RelationAddress), FromAddress: semantic.EntityAddress(fromAddress),
+			ToAddress: semantic.EntityAddress(toAddress), RelationTypeAddress: semantic.RelationTypeAddress(value.RelationTypeAddress),
+			SourceRelations: protocolSlice[semantic.RelationAddress](value.Source.RelationAddresses),
 		}
 	}
-	for index, value := range input.Placements {
-		x, err := finiteDecimal(value.X, false)
-		if err != nil {
-			return semantic.DiagramViewData{}, err
-		}
-		y, err := finiteDecimal(value.Y, false)
-		if err != nil {
-			return semantic.DiagramViewData{}, err
-		}
-		width, err := finiteDecimal(value.Width, true)
-		if err != nil {
-			return semantic.DiagramViewData{}, err
-		}
-		height, err := finiteDecimal(value.Height, true)
-		if err != nil {
-			return semantic.DiagramViewData{}, err
-		}
-		result.Placements[index] = semantic.DiagramViewPlacement{
-			EntityAddress: semantic.EntityAddress(value.EntityAddress), X: x, Y: y,
-			Width: semantic.CanonicalPositiveFiniteDecimal(width), Height: semantic.CanonicalPositiveFiniteDecimal(height),
+	if input.Shape.Diagram != nil {
+		result.Placements = make([]semantic.DiagramViewPlacement, len(input.Shape.Diagram.Placements))
+		for index, value := range input.Shape.Diagram.Placements {
+			x, err := finiteDecimal(value.X, false)
+			if err != nil {
+				return semantic.DiagramViewData{}, err
+			}
+			y, err := finiteDecimal(value.Y, false)
+			if err != nil {
+				return semantic.DiagramViewData{}, err
+			}
+			width, err := finiteDecimal(value.Width, true)
+			if err != nil {
+				return semantic.DiagramViewData{}, err
+			}
+			height, err := finiteDecimal(value.Height, true)
+			if err != nil {
+				return semantic.DiagramViewData{}, err
+			}
+			result.Placements[index] = semantic.DiagramViewPlacement{
+				EntityAddress: semantic.EntityAddress(value.EntityAddress), X: x, Y: y,
+				Width: semantic.CanonicalPositiveFiniteDecimal(width), Height: semantic.CanonicalPositiveFiniteDecimal(height),
+			}
 		}
 	}
 	return result, nil
 }
 
+func sourceSubjectAddress(values []string, token string) string {
+	for _, value := range values {
+		if strings.Contains(value, token) {
+			return value
+		}
+	}
+	return ""
+}
+
 func mapTableViewData(ctx context.Context, input engine.TableViewData) (semantic.TableViewData, error) {
 	result := semantic.TableViewData{
 		Columns: make([]semantic.TableViewColumnData, len(input.Columns)), Rows: make([]semantic.TableViewRowData, len(input.Rows)),
-		Sorts: make([]semantic.ViewTableSort, len(input.Sorts)),
+		Sorts: []semantic.ViewTableSort{},
+	}
+	if input.Shape.Table != nil {
+		result.Sorts = make([]semantic.ViewTableSort, len(input.Shape.Table.Sorts))
+		for index, value := range input.Shape.Table.Sorts {
+			result.Sorts[index] = semantic.ViewTableSort{ColumnID: value.ColumnID, Direction: string(value.Direction), Absent: string(value.Absent)}
+		}
 	}
 	for index, value := range input.Columns {
-		column := semantic.TableViewColumnData{ID: semantic.LocalIdentifier(value.ID), Label: value.Label, Source: value.Source}
-		if value.Address != "" {
-			address := semantic.TableColumnAddress(value.Address)
+		column := semantic.TableViewColumnData{ID: semantic.LocalIdentifier(value.ID), Label: value.Label, Source: "semantic"}
+		if value.Address != nil {
+			address := semantic.TableColumnAddress(*value.Address)
 			column.Address = &address
 		}
 		result.Columns[index] = column
-	}
-	for index, value := range input.Sorts {
-		result.Sorts[index] = semantic.ViewTableSort{ColumnID: value.ColumnID, Direction: value.Direction, Absent: value.Absent}
 	}
 	for index, value := range input.Rows {
 		if err := queryMappingContext(ctx); err != nil {
 			return semantic.TableViewData{}, err
 		}
-		row := semantic.TableViewRowData{
-			Key: value.Key, SubjectAddress: semantic.StableAddress(value.SubjectAddress), OwnerAddress: semantic.StableAddress(value.OwnerAddress),
-			SourceRows: protocolSlice[semantic.StableAddress](value.SourceRows), SourceEntities: protocolSlice[semantic.EntityAddress](value.SourceEntities),
-			SourceRelations: protocolSlice[semantic.RelationAddress](value.SourceRelations), Cells: make([]semantic.TableViewCellData, len(value.Cells)),
+		subjectAddress := ""
+		ownerAddress := ""
+		if len(value.Source.EntityAddresses) != 0 {
+			subjectAddress = value.Source.EntityAddresses[0]
+			ownerAddress = subjectAddress
+		} else if len(value.Source.RelationAddresses) != 0 {
+			subjectAddress = value.Source.RelationAddresses[0]
+			ownerAddress = subjectAddress
 		}
-		for cellIndex, cellValue := range value.Cells {
-			mappedValue, err := mapViewDataValue(cellValue.Value)
+		if subjectAddress == "" {
+			return semantic.TableViewData{}, fmt.Errorf("Table row source lacks an owner")
+		}
+		row := semantic.TableViewRowData{
+			Key: value.Key, SubjectAddress: semantic.StableAddress(subjectAddress), OwnerAddress: semantic.StableAddress(ownerAddress),
+			SourceRows: protocolSlice[semantic.StableAddress](value.Source.RowAddresses), SourceEntities: protocolSlice[semantic.EntityAddress](value.Source.EntityAddresses),
+			SourceRelations: protocolSlice[semantic.RelationAddress](value.Source.RelationAddresses), Cells: make([]semantic.TableViewCellData, len(input.Columns)),
+		}
+		for cellIndex, column := range input.Columns {
+			cellValue, exists := value.Cells[column.Key]
+			if !exists {
+				return semantic.TableViewData{}, fmt.Errorf("Table row lacks column cell")
+			}
+			mappedValue := semantic.ViewDataValue{Kind: "null"}
+			nullValue := true
+			mappedValue.Null = &nullValue
+			var err error
+			if cellValue.Present {
+				if cellValue.Value == nil {
+					return semantic.TableViewData{}, fmt.Errorf("present Table cell lacks a value")
+				}
+				mappedValue, err = mapViewDataValue(*cellValue.Value)
+			}
 			if err != nil {
 				return semantic.TableViewData{}, err
 			}
-			stateReads := make([]semantic.ViewDataStateReadRef, len(cellValue.StateReads))
-			for readIndex, read := range cellValue.StateReads {
+			stateReads := make([]semantic.ViewDataStateReadRef, len(cellValue.Source.State.Reads))
+			for readIndex, read := range cellValue.Source.State.Reads {
 				stateReads[readIndex] = semantic.ViewDataStateReadRef{SubjectAddress: semantic.StableAddress(read.SubjectAddress), FieldPath: semantic.StateFieldPath(read.FieldPath)}
 			}
-			cellRefs := make([]semantic.ViewDataCellRef, len(cellValue.SourceCells))
-			for refIndex, ref := range cellValue.SourceCells {
+			cellRefs := make([]semantic.ViewDataCellRef, len(cellValue.Source.CellRefs))
+			for refIndex, ref := range cellValue.Source.CellRefs {
 				cellRefs[refIndex] = semantic.ViewDataCellRef{RowAddress: semantic.StableAddress(ref.RowAddress), ColumnAddress: semantic.ColumnAddress(ref.ColumnAddress)}
 			}
 			row.Cells[cellIndex] = semantic.TableViewCellData{
-				ColumnID: semantic.LocalIdentifier(cellValue.ColumnID), Value: mappedValue,
-				SourceRows: protocolSlice[semantic.StableAddress](cellValue.SourceRows), SourceCells: cellRefs,
-				SourceEntities: protocolSlice[semantic.EntityAddress](cellValue.SourceEntities), SourceRelations: protocolSlice[semantic.RelationAddress](cellValue.SourceRelations),
+				ColumnID: semantic.LocalIdentifier(column.ID), Value: mappedValue,
+				SourceRows: protocolSlice[semantic.StableAddress](cellValue.Source.RowAddresses), SourceCells: cellRefs,
+				SourceEntities: protocolSlice[semantic.EntityAddress](cellValue.Source.EntityAddresses), SourceRelations: protocolSlice[semantic.RelationAddress](cellValue.Source.RelationAddresses),
 				StateReads: stateReads,
 			}
 		}
@@ -412,12 +472,6 @@ func mapTableViewData(ctx context.Context, input engine.TableViewData) (semantic
 func mapViewDataValue(input engine.ViewDataValue) (semantic.ViewDataValue, error) {
 	result := semantic.ViewDataValue{Kind: input.Kind}
 	switch input.Kind {
-	case "null":
-		if !input.Null {
-			return semantic.ViewDataValue{}, fmt.Errorf("null ViewData value is not marked null")
-		}
-		value := true
-		result.Null = &value
 	case "scalar":
 		if input.Scalar == nil {
 			return semantic.ViewDataValue{}, fmt.Errorf("scalar ViewData value is absent")
@@ -446,21 +500,18 @@ func mapViewDataValue(input engine.ViewDataValue) (semantic.ViewDataValue, error
 }
 
 func mapContextViewData(ctx context.Context, input engine.ContextViewData) (semantic.ContextViewData, error) {
-	result := semantic.ContextViewData{Groups: make([]semantic.ContextViewGroup, len(input.Groups)), Facts: make([]semantic.ContextViewFact, len(input.Facts))}
+	result := semantic.ContextViewData{Groups: make([]semantic.ContextViewGroup, len(input.Groups)), Facts: []semantic.ContextViewFact{}}
 	for index, value := range input.Groups {
 		if err := queryMappingContext(ctx); err != nil {
 			return semantic.ContextViewData{}, err
 		}
-		result.Groups[index] = semantic.ContextViewGroup{Key: value.Key, Label: value.Label, Addresses: protocolSlice[semantic.StableAddress](value.Addresses)}
-	}
-	for index, value := range input.Facts {
-		if err := queryMappingContext(ctx); err != nil {
-			return semantic.ContextViewData{}, err
-		}
-		result.Facts[index] = semantic.ContextViewFact{
-			Key: value.Key, SubjectAddress: semantic.StableAddress(value.SubjectAddress), Kind: value.Kind, Text: value.Text,
-			SourceEntities: protocolSlice[semantic.EntityAddress](value.SourceEntities), SourceRelations: protocolSlice[semantic.RelationAddress](value.SourceRelations),
-			SourceRows: protocolSlice[semantic.StableAddress](value.SourceRows),
+		result.Groups[index] = semantic.ContextViewGroup{Key: value.Key, Label: value.Label, Addresses: protocolSlice[semantic.StableAddress](value.Source.EntityAddresses)}
+		for _, fact := range value.Facts {
+			result.Facts = append(result.Facts, semantic.ContextViewFact{
+				Key: fact.Key, SubjectAddress: semantic.StableAddress(fact.RelationAddress), Kind: "relation", Text: fact.Text,
+				SourceEntities: protocolSlice[semantic.EntityAddress](fact.Source.EntityAddresses), SourceRelations: protocolSlice[semantic.RelationAddress](fact.Source.RelationAddresses),
+				SourceRows: protocolSlice[semantic.StableAddress](fact.Source.RowAddresses),
+			})
 		}
 	}
 	return result, nil

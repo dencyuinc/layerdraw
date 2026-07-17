@@ -25,21 +25,23 @@ import (
 type HashDomain string
 
 const (
-	DomainDefinition HashDomain = "definition"
-	DomainGraph      HashDomain = "graph"
-	DomainSubject    HashDomain = "subject"
-	DomainSubtree    HashDomain = "subtree"
-	DomainChildSet   HashDomain = "child-set"
-	DomainStateQuery HashDomain = "state-query-snapshot"
+	DomainDefinition   HashDomain = "definition"
+	DomainGraph        HashDomain = "graph"
+	DomainSubject      HashDomain = "subject"
+	DomainSubtree      HashDomain = "subtree"
+	DomainChildSet     HashDomain = "child-set"
+	DomainStateQuery   HashDomain = "state-query-snapshot"
+	DomainViewDataItem HashDomain = "viewdata-item"
 )
 
 var semanticDomains = map[HashDomain]bool{
-	DomainDefinition: true,
-	DomainGraph:      true,
-	DomainSubject:    true,
-	DomainSubtree:    true,
-	DomainChildSet:   true,
-	DomainStateQuery: true,
+	DomainDefinition:   true,
+	DomainGraph:        true,
+	DomainSubject:      true,
+	DomainSubtree:      true,
+	DomainChildSet:     true,
+	DomainStateQuery:   true,
+	DomainViewDataItem: true,
 }
 
 // Canonicalize applies LDL string normalization and emits RFC 8785 JSON. It
