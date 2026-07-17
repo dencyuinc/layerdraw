@@ -171,7 +171,7 @@ func TestMaterializeViewFailsClosedForSourceRevisionAndStateMismatches(t *testin
 	}
 }
 
-func TestMaterializeViewValidatesDiffInputBeforeUnimplementedProjection(t *testing.T) {
+func TestMaterializeViewValidatesAndMaterializesEmptyDiff(t *testing.T) {
 	t.Parallel()
 	snapshot := compileViewFixture(t, `project p "Project" {}
 view changes "Changes" diff {
@@ -186,8 +186,12 @@ view changes "Changes" diff {
 		AfterRevisionID: "after-1", AfterSnapshot: snapshot,
 	}}
 	response := New(BuildInfo{}).MaterializeView(context.Background(), valid)
-	if response.Status != "rejected" || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != "LDL1701" {
-		t.Fatalf("valid but unimplemented Diff = %+v", response)
+	if response.Status != "ok" || response.Result == nil || response.Result.Diff == nil || len(response.Result.Diff.Changes) != 0 {
+		t.Fatalf("empty Diff = %+v", response)
+	}
+	base, ok := response.Result.Base()
+	if !ok || base.Kind != ViewDataDiff || base.QueryAddress != nil || base.Revision.Diff == nil || base.Revision.Single != nil {
+		t.Fatalf("Diff base = %+v ok=%v", base, ok)
 	}
 	invalid := valid
 	invalid.Diff.AfterRevisionID = ""

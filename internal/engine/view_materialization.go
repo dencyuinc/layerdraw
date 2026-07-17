@@ -28,28 +28,31 @@ func (e Engine) MaterializeView(ctx context.Context, input ViewMaterializationIn
 	if !m.validate() {
 		return rejectedView(m.diagnostics...)
 	}
-	if input.Diff != nil {
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "Diff View materialization is not implemented", input.Recipe.Address, "")
-		return rejectedView(m.diagnostics...)
-	}
 
 	base := m.base()
 	var result ViewData
-	switch input.Recipe.Shape.Kind {
-	case view.ShapeDiagram:
-		result.Diagram = m.diagram(base)
-	case view.ShapeTable:
-		result.Table = m.table(base)
-	case view.ShapeMatrix:
-		result.Matrix = m.matrix(base)
-	case view.ShapeContext:
-		result.Context = m.contextView(base)
-	case view.ShapeTree, view.ShapeFlow, view.ShapeDiff:
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape materialization is not implemented", input.Recipe.Address, "")
-		return rejectedView(m.diagnostics...)
-	default:
-		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape is invalid", input.Recipe.Address, "")
-		return rejectedView(m.diagnostics...)
+	if input.Diff != nil {
+		result.Diff = m.diffView(base)
+	} else {
+		switch input.Recipe.Shape.Kind {
+		case view.ShapeDiagram:
+			result.Diagram = m.diagram(base)
+		case view.ShapeTable:
+			result.Table = m.table(base)
+		case view.ShapeMatrix:
+			result.Matrix = m.matrix(base)
+		case view.ShapeContext:
+			result.Context = m.contextView(base)
+		case view.ShapeTree, view.ShapeFlow:
+			m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape materialization is not implemented", input.Recipe.Address, "")
+			return rejectedView(m.diagnostics...)
+		case view.ShapeDiff:
+			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff View requires a Diff materialization source", input.Recipe.Address, "")
+			return rejectedView(m.diagnostics...)
+		default:
+			m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape is invalid", input.Recipe.Address, "")
+			return rejectedView(m.diagnostics...)
+		}
 	}
 	if hasViewErrorDiagnostics(m.diagnostics) {
 		return rejectedView(m.diagnostics...)
@@ -89,6 +92,10 @@ type viewMaterializer struct {
 	staleState       map[string]bool
 	deniedStateReads map[StateReadRef]bool
 	missingStateWarn bool
+	diffBefore       *diffSnapshotProjection
+	diffAfter        *diffSnapshotProjection
+	diffMoves        map[string]string
+	diffSource       ViewDataSourceRefs
 }
 
 func newViewMaterializer(ctx context.Context, input ViewMaterializationInput) *viewMaterializer {
@@ -220,10 +227,6 @@ func (m *viewMaterializer) validateDiffInput(input DiffViewMaterializationInput)
 		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff recipe does not belong to the recipe revision", m.input.Recipe.Address, "")
 		return
 	}
-	if input.BeforeSnapshot.TypedAST.Project.Address != input.AfterSnapshot.TypedAST.Project.Address {
-		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff revisions belong to different Projects", m.input.Recipe.Address, "")
-		return
-	}
 	hasQuery := m.input.Recipe.Source.Diff.QueryAddress != nil
 	if hasQuery != (input.BeforeQueryResult != nil && input.AfterQueryResult != nil) {
 		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff Query results do not match the View source", m.input.Recipe.Address, "")
@@ -233,6 +236,12 @@ func (m *viewMaterializer) validateDiffInput(input DiffViewMaterializationInput)
 		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Query-free Diff input contains Query results", m.input.Recipe.Address, "")
 		return
 	}
+	before, after, moves, diagnostics := prepareDiffMaterialization(m.ctx, m.input.Recipe, input)
+	if len(diagnostics) != 0 {
+		m.diagnostics = append(m.diagnostics, diagnostics...)
+		return
+	}
+	m.diffBefore, m.diffAfter, m.diffMoves = &before, &after, moves
 	m.snapshot = input.AfterSnapshot
 	m.graph = graph.MasterGraph{}
 	if input.AfterSnapshot.TypedAST.Graph != nil {
@@ -309,16 +318,32 @@ func (m *viewMaterializer) validateQueryResultSubjects() {
 }
 
 func (m *viewMaterializer) base() ViewDataBase {
-	queryAddress := m.queryResult.QueryAddress
+	var queryAddress *string
+	diagnostics := append([]Diagnostic{}, m.queryResult.Diagnostics...)
+	if m.input.Diff != nil {
+		queryAddress = m.input.Recipe.Source.Diff.QueryAddress
+		if m.input.Diff.BeforeQueryResult != nil {
+			diagnostics = append(diagnostics, m.input.Diff.BeforeQueryResult.Diagnostics...)
+		}
+		if m.input.Diff.AfterQueryResult != nil {
+			diagnostics = append(diagnostics, m.input.Diff.AfterQueryResult.Diagnostics...)
+		}
+	} else {
+		value := m.queryResult.QueryAddress
+		queryAddress = &value
+	}
 	return ViewDataBase{
 		Kind: ViewDataKind(m.input.Recipe.Shape.Kind), Category: string(m.input.Recipe.Category), Shape: deepClone(m.input.Recipe.Shape),
-		ProjectAddress: m.project, ViewAddress: m.input.Recipe.Address, QueryAddress: &queryAddress,
+		ProjectAddress: m.project, ViewAddress: m.input.Recipe.Address, QueryAddress: queryAddress,
 		Revision: deepClone(m.revision), StatePolicy: string(m.input.Recipe.StateRequirement), StateInput: m.stateInput,
-		Source: emptyViewDataSourceRefs(), Diagnostics: sortedDiagnostics(m.queryResult.Diagnostics),
+		Source: emptyViewDataSourceRefs(), Diagnostics: sortedDiagnostics(diagnostics),
 	}
 }
 
 func (m *viewMaterializer) sourceRefs() ViewDataSourceRefs {
+	if m.input.Diff != nil {
+		return canonicalViewDataSourceRefs(m.diffSource)
+	}
 	refs := emptyViewDataSourceRefs()
 	refs.SubjectAddresses = append(refs.SubjectAddresses, m.project, m.input.Recipe.Address)
 	if m.queryResult.QueryAddress != "" {
