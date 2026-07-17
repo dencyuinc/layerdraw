@@ -367,7 +367,7 @@ func (m *viewMaterializer) relationSource(relation graph.Relation) ViewDataSourc
 }
 
 func (m *viewMaterializer) rowSource(ownerAddress string, entity bool, row graph.AttributeRow) ViewDataSourceRefs {
-	refs := emptyViewDataSourceRefs()
+	var refs ViewDataSourceRefs
 	if entity {
 		refs = m.entitySource(m.entities[ownerAddress])
 	} else {
