@@ -17,10 +17,12 @@ import (
 )
 
 type QueryExecutionInput struct {
-	Recipe    CompiledQueryRecipe
-	Graph     TypedMasterGraph
-	Arguments map[string]TypedScalar
-	Limits    QueryExecutionLimits
+	Recipe        CompiledQueryRecipe
+	Graph         TypedMasterGraph
+	Definition    QueryDefinitionIdentity
+	StateSnapshot *StateQuerySnapshot
+	Arguments     map[string]TypedScalar
+	Limits        QueryExecutionLimits
 }
 
 // QueryExecutionLimits bound the pure evaluator independently from any host
@@ -101,7 +103,11 @@ type QueryResult struct {
 }
 
 type QueryStateInputRef struct {
-	Kind string
+	Kind           string
+	SnapshotHash   string
+	StateVersion   string
+	CapturedAt     string
+	DefinitionHash string
 }
 
 type StateReadRef struct {
@@ -181,33 +187,46 @@ func effectiveQueryExecutionLimits(input QueryExecutionLimits) (QueryExecutionLi
 }
 
 type queryExecutor struct {
-	ctx         context.Context
-	limits      QueryExecutionLimits
-	work        int64
-	err         error
-	recipe      query.Recipe
-	graph       graph.MasterGraph
-	arguments   map[string]definition.Scalar
-	entities    map[string]graph.Entity
-	relations   map[string]graph.Relation
-	outgoing    map[string][]string
-	incoming    map[string][]string
-	diagnostics []Diagnostic
-	stateReads  map[StateReadRef]bool
+	ctx                context.Context
+	limits             QueryExecutionLimits
+	work               int64
+	err                error
+	recipe             query.Recipe
+	graph              graph.MasterGraph
+	definition         QueryDefinitionIdentity
+	stateSource        *StateQuerySnapshot
+	stateInput         QueryStateInputRef
+	arguments          map[string]definition.Scalar
+	entities           map[string]graph.Entity
+	relations          map[string]graph.Relation
+	outgoing           map[string][]string
+	incoming           map[string][]string
+	diagnostics        []Diagnostic
+	stateReads         map[StateReadRef]bool
+	stateSubjects      map[string]validatedStateSubject
+	stateInaccessible  map[query.StateFieldPath]bool
+	currentStateHashes map[string]string
+	staleStateSubjects map[string]bool
+	deniedStateReads   map[StateReadRef]bool
 }
 
 func newQueryExecutor(ctx context.Context, input QueryExecutionInput, limits QueryExecutionLimits) *queryExecutor {
 	e := &queryExecutor{
-		ctx:        ctx,
-		limits:     limits,
-		recipe:     input.Recipe,
-		graph:      input.Graph,
-		arguments:  map[string]definition.Scalar{},
-		entities:   map[string]graph.Entity{},
-		relations:  map[string]graph.Relation{},
-		outgoing:   map[string][]string{},
-		incoming:   map[string][]string{},
-		stateReads: map[StateReadRef]bool{},
+		ctx:                ctx,
+		limits:             limits,
+		recipe:             input.Recipe,
+		graph:              input.Graph,
+		definition:         input.Definition,
+		stateSource:        input.StateSnapshot,
+		stateInput:         QueryStateInputRef{Kind: "none"},
+		arguments:          map[string]definition.Scalar{},
+		entities:           map[string]graph.Entity{},
+		relations:          map[string]graph.Relation{},
+		outgoing:           map[string][]string{},
+		incoming:           map[string][]string{},
+		stateReads:         map[StateReadRef]bool{},
+		staleStateSubjects: map[string]bool{},
+		deniedStateReads:   map[StateReadRef]bool{},
 	}
 	e.arguments = e.cloneScalars(input.Arguments)
 	if e.err != nil {
@@ -358,13 +377,21 @@ func normalizeQueryArgumentObserved(value definition.Scalar, parameter query.Par
 func (e *queryExecutor) validateStateInput() bool {
 	switch e.recipe.StateInput {
 	case query.StateNone:
+		e.stateInput = QueryStateInputRef{Kind: "none"}
 		return true
 	case query.StateOptional:
-		e.addWarning("LDL1605", "optional_query_state_missing_or_stale", "optional Query state is unavailable or stale; state predicates evaluate as missing", e.recipe.Address, "")
-		return true
+		if e.stateSource == nil {
+			e.addWarning("LDL1605", "optional_query_state_missing_or_stale", "optional Query state is unavailable; state predicates evaluate as missing", e.recipe.Address, "")
+			e.stateInput = QueryStateInputRef{Kind: "none"}
+			return true
+		}
+		return e.validateStateSnapshot(*e.stateSource)
 	case query.StateRequired:
-		e.addDiag("LDL1604", "required_query_state_unavailable_or_stale", "required Query state is unavailable or stale", e.recipe.Address, "")
-		return false
+		if e.stateSource == nil {
+			e.addDiag("LDL1604", "required_query_state_unavailable_or_stale", "required Query state is unavailable", e.recipe.Address, "")
+			return false
+		}
+		return e.validateStateSnapshot(*e.stateSource)
 	default:
 		e.addDiag("LDL1601", "invalid_query_or_arguments", "invalid query state policy", e.recipe.Address, "")
 		return false
@@ -393,7 +420,7 @@ func (e *queryExecutor) execute() QueryResult {
 			QueryAddress: e.recipe.Address,
 			Arguments:    e.cloneScalars(e.arguments),
 			StatePolicy:  string(e.recipe.StateInput),
-			StateInput:   QueryStateInputRef{Kind: "none"},
+			StateInput:   e.stateInput,
 			StateReads:   e.sortedStateReads(),
 			Diagnostics:  e.sortedDiagnostics(e.diagnostics),
 		}
@@ -441,7 +468,7 @@ func (e *queryExecutor) execute() QueryResult {
 		QueryAddress:              e.recipe.Address,
 		Arguments:                 e.cloneScalars(e.arguments),
 		StatePolicy:               string(e.recipe.StateInput),
-		StateInput:                QueryStateInputRef{Kind: "none"},
+		StateInput:                e.stateInput,
 		StateReads:                e.sortedStateReads(),
 		SeedEntityAddresses:       seeds,
 		ReachedEntityAddresses:    e.sortStableAddresses(reached),
@@ -885,8 +912,52 @@ func (e *queryExecutor) evalRowPredicate(predicate query.RowPredicate, row graph
 }
 
 func (e *queryExecutor) evalStatePredicate(subjectAddress string, fieldPath query.StateFieldPath, operator query.Operator, value *query.PredicateValue) bool {
-	e.stateReads[StateReadRef{SubjectAddress: subjectAddress, FieldPath: string(fieldPath)}] = true
-	return e.evalPredicateValue(optionalScalar{}, operator, value)
+	read := StateReadRef{SubjectAddress: subjectAddress, FieldPath: string(fieldPath)}
+	e.stateReads[read] = true
+	if e.stateInput.Kind == "none" {
+		return e.evalPredicateValue(optionalScalar{}, operator, value)
+	}
+	if e.stateInaccessible[fieldPath] {
+		e.denyStateRead(read, "state field is inaccessible")
+		return e.evalPredicateValue(optionalScalar{}, operator, value)
+	}
+	subject, exists := e.stateSubjects[subjectAddress]
+	if !exists {
+		return e.evalPredicateValue(optionalScalar{}, operator, value)
+	}
+	if subject.ownSubjectHash != e.currentStateHashes[subjectAddress] {
+		e.markStaleStateSubject(subjectAddress)
+		return e.evalPredicateValue(optionalScalar{}, operator, value)
+	}
+	if subject.redacted[fieldPath] {
+		e.denyStateRead(read, "state field is redacted")
+		return e.evalPredicateValue(optionalScalar{}, operator, value)
+	}
+	field, present := subject.fields[fieldPath]
+	if !present {
+		return e.evalPredicateValue(optionalScalar{}, operator, value)
+	}
+	return e.evalPredicateValue(optionalScalar{value: field, present: true}, operator, value)
+}
+
+func (e *queryExecutor) markStaleStateSubject(subjectAddress string) {
+	if e.staleStateSubjects[subjectAddress] {
+		return
+	}
+	e.staleStateSubjects[subjectAddress] = true
+	if e.recipe.StateInput == query.StateRequired {
+		e.addDiag("LDL1604", "required_query_state_unavailable_or_stale", "required Query state record is stale", subjectAddress, e.recipe.Address)
+		return
+	}
+	e.addWarning("LDL1605", "optional_query_state_missing_or_stale", "optional Query state record is stale; its fields evaluate as missing", subjectAddress, e.recipe.Address)
+}
+
+func (e *queryExecutor) denyStateRead(read StateReadRef, message string) {
+	if e.deniedStateReads[read] {
+		return
+	}
+	e.deniedStateReads[read] = true
+	e.addDiag("LDL1904", "state_field_access_denied", message, read.SubjectAddress, e.recipe.Address)
 }
 
 type optionalScalar struct {

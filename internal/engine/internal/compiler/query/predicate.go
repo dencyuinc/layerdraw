@@ -566,6 +566,17 @@ func LookupStateFieldSchema(path StateFieldPath) (StateFieldSchema, bool) {
 	}, true
 }
 
+// NormalizeStateFieldValue applies the complete closed state-field schema,
+// including enum membership and numeric bounds. Runtime snapshots therefore
+// cannot loosen the schema used to compile state predicates.
+func NormalizeStateFieldValue(path StateFieldPath, value definition.Scalar, observe definition.ScalarWorkObserver) (definition.Scalar, bool) {
+	field, ok := stateField(path)
+	if !ok {
+		return definition.Scalar{}, false
+	}
+	return definition.NormalizeScalarValue(value, field.column, observe)
+}
+
 func sortStateReads(reads []StateReadDependency) {
 	subjectRank := map[StateSubjectKind]int{StateSubjectEntity: 0, StateSubjectRelation: 1, StateSubjectEntityRow: 2, StateSubjectRelationRow: 3}
 	fieldRank := map[StateFieldPath]int{}

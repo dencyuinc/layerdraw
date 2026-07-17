@@ -169,14 +169,32 @@ func (s *queryLogicalSizer) result(value QueryResult) error {
 	if err := s.field("state_input"); err != nil {
 		return err
 	}
-	if err := s.object(1); err != nil {
+	stateInputFields := 1
+	if value.StateInput.Kind == "snapshot" {
+		stateInputFields = 5
+	}
+	if err := s.object(stateInputFields); err != nil {
 		return err
 	}
-	if err := s.field("kind"); err != nil {
-		return err
-	}
-	if err := s.counter.String(value.StateInput.Kind); err != nil {
-		return err
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"kind", value.StateInput.Kind},
+		{"snapshot_hash", value.StateInput.SnapshotHash},
+		{"state_version", value.StateInput.StateVersion},
+		{"captured_at", value.StateInput.CapturedAt},
+		{"definition_hash", value.StateInput.DefinitionHash},
+	} {
+		if field.name != "kind" && value.StateInput.Kind != "snapshot" {
+			continue
+		}
+		if err := s.field(field.name); err != nil {
+			return err
+		}
+		if err := s.counter.String(field.value); err != nil {
+			return err
+		}
 	}
 	if err := s.field("state_policy"); err != nil {
 		return err

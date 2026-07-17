@@ -30,6 +30,7 @@ const (
 	DomainSubject    HashDomain = "subject"
 	DomainSubtree    HashDomain = "subtree"
 	DomainChildSet   HashDomain = "child-set"
+	DomainStateQuery HashDomain = "state-query-snapshot"
 )
 
 var semanticDomains = map[HashDomain]bool{
@@ -38,6 +39,7 @@ var semanticDomains = map[HashDomain]bool{
 	DomainSubject:    true,
 	DomainSubtree:    true,
 	DomainChildSet:   true,
+	DomainStateQuery: true,
 }
 
 // Canonicalize applies LDL string normalization and emits RFC 8785 JSON. It
