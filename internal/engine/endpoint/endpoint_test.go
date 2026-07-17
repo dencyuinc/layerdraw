@@ -52,6 +52,7 @@ func expectedOperations() []string {
 		OperationApplyToHandle,
 		OperationCloseDocument,
 		OperationCompile,
+		OperationExecuteQuery,
 		OperationFindSymbols,
 		OperationFindUsages,
 		OperationFormatScope,

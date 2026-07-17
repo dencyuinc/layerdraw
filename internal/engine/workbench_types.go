@@ -63,6 +63,7 @@ type Cursor struct {
 
 type DocumentCapabilityState struct {
 	ApplyToHandle      bool `json:"apply_to_handle"`
+	ExecuteQuery       bool `json:"execute_query"`
 	FindSymbols        bool `json:"find_symbols"`
 	FindUsages         bool `json:"find_usages"`
 	FormatScope        bool `json:"format_scope"`
@@ -330,6 +331,20 @@ type ReadRowsResult struct {
 	DocumentGeneration DocumentGeneration `json:"document_generation"`
 	Items              []RowReadItem      `json:"items"`
 	Page               PageInfo           `json:"page"`
+}
+
+type ExecuteDocumentQueryInput struct {
+	Arguments          map[string]TypedScalar `json:"arguments"`
+	DocumentGeneration DocumentGeneration     `json:"document_generation"`
+	Limits             WorkbenchLimits        `json:"limits"`
+	QueryAddress       string                 `json:"query_address"`
+}
+
+type ExecuteDocumentQueryResult struct {
+	DocumentGeneration DocumentGeneration `json:"document_generation"`
+	Result             QueryResult        `json:"result"`
+	ReturnedBytes      int64              `json:"returned_bytes"`
+	ReturnedItems      int64              `json:"returned_items"`
 }
 
 type UsageReadItem struct {

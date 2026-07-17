@@ -690,6 +690,86 @@
       "additionalProperties": false,
       "x-layerdraw-protocol-invariant": "paged_result"
     },
+    "QueryStateInputRef": {
+      "type": "object",
+      "properties": {"kind": {"type": "string", "enum": ["none"]}},
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "QueryStateReadRef": {
+      "type": "object",
+      "properties": {"field_path": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StateFieldPath"}, "subject_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}},
+      "required": ["subject_address", "field_path"],
+      "additionalProperties": false
+    },
+    "QueryPath": {
+      "type": "object",
+      "properties": {
+        "entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "minItems": 1},
+        "relation_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}}
+      },
+      "required": ["entity_addresses", "relation_addresses"],
+      "additionalProperties": false
+    },
+    "QueryCycleRef": {
+      "type": "object",
+      "properties": {
+        "from_entity_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"},
+        "kind": {"type": "string", "enum": ["cycle", "merge"]},
+        "orientation": {"type": "string", "enum": ["incoming", "outgoing"]},
+        "relation_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"},
+        "retained_path": {"$ref": "#/$defs/QueryPath"},
+        "to_entity_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}
+      },
+      "required": ["kind", "from_entity_address", "to_entity_address", "relation_address", "orientation", "retained_path"],
+      "additionalProperties": false
+    },
+    "QueryExecutionResultData": {
+      "type": "object",
+      "properties": {
+        "arguments": {"type": "object", "propertyNames": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ParameterAddress"}, "additionalProperties": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"}},
+        "cycle_refs": {"type": "array", "items": {"$ref": "#/$defs/QueryCycleRef"}},
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "induced_relation_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "path_relation_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "paths": {"type": "array", "items": {"$ref": "#/$defs/QueryPath"}},
+        "primary_entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "query_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryAddress"},
+        "reached_entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "seed_entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "selected_relation_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "state_input": {"$ref": "#/$defs/QueryStateInputRef"},
+        "state_policy": {"type": "string", "enum": ["none", "optional", "required"]},
+        "state_reads": {"type": "array", "items": {"$ref": "#/$defs/QueryStateReadRef"}},
+        "support_entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "traversed_entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}
+      },
+      "required": ["query_address", "arguments", "state_policy", "state_input", "state_reads", "seed_entity_addresses", "reached_entity_addresses", "traversed_entity_addresses", "path_relation_addresses", "induced_relation_addresses", "primary_entity_addresses", "selected_relation_addresses", "support_entity_addresses", "paths", "cycle_refs", "diagnostics"],
+      "additionalProperties": false
+    },
+    "ExecuteQueryInput": {
+      "type": "object",
+      "properties": {
+        "arguments": {"type": "object", "propertyNames": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ParameterAddress"}, "additionalProperties": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"}},
+        "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "limits": {"$ref": "#/$defs/WorkbenchLimits"},
+        "query_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryAddress"}
+      },
+      "required": ["document_generation", "limits", "query_address", "arguments"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "ExecuteQueryResult": {
+      "type": "object",
+      "properties": {
+        "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "result": {"$ref": "#/$defs/QueryExecutionResultData"},
+        "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"},
+        "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["document_generation", "result", "returned_items", "returned_bytes"],
+      "additionalProperties": false
+    },
     "NeighborCursor": {
       "type": "object",
       "properties": {"document_generation": {"$ref": "#/$defs/DocumentGeneration"}, "value": {"type": "string", "pattern": "^get_neighbors_cursor_[A-Za-z0-9_-]{16,128}$"}},
@@ -1795,6 +1875,36 @@
         "failure": {"$ref": "#/$defs/WorkbenchFailure"},
         "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
         "payload": {"$ref": "#/$defs/ReadRowsResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ExecuteQueryRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.execute_query"},
+        "payload": {"$ref": "#/$defs/ExecuteQueryInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ExecuteQueryResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/ExecuteQueryResult"},
         "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
         "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
       },

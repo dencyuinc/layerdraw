@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "generator_version": "layerdraw-protocolgen/1",
-  "aggregate_digest": "sha256:8c627cf75985fe70ad486eea390ed1e61cfa5f250c02390710d99422979f6387",
+  "aggregate_digest": "sha256:65ddf0786fd883057659e1491ce93b504ab7814c9d1cf68ee2b6ac158f9a4fec",
   "group_digests": {
     "common": "sha256:88221f8f32f0474d397498809ffc5d48debcd7918c3ac50be82cfb705cae2e97",
-    "engine": "sha256:8c627cf75985fe70ad486eea390ed1e61cfa5f250c02390710d99422979f6387",
+    "engine": "sha256:65ddf0786fd883057659e1491ce93b504ab7814c9d1cf68ee2b6ac158f9a4fec",
     "semantic": "sha256:dec9360a8383e7f394a4a946e65881c70a89526d654d2d6e02468cc50e701c78"
   },
   "file_digests": {
-    "schemas/engine-protocol/v1.schema.json": "sha256:35c93f5e5b335dcafb923aa5da287f37c8b1e7012fc4f6ae5021783fc1133cdd",
+    "schemas/engine-protocol/v1.schema.json": "sha256:ba56a38d96e9242ea9019d70bec09aaca29360bfd64f4b81c08112d862afa82c",
     "schemas/meta/layerdraw-protocol-schema-v1.json": "sha256:a1c06f22bd8eb8e45b72527eacf8e845e55db25036e980340865f636c517aa2f",
     "schemas/protocol-common/v1.schema.json": "sha256:b2571803a10bcf1228eaf0804636d322cbe58c7917a76167dfee978c89c1e1c6",
     "schemas/semantic/v1.schema.json": "sha256:d8cf9f452e0299b2ba0011e7ce72f20885bdb52449afefccf66f586cdc82f2f3"
