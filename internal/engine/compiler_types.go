@@ -230,6 +230,7 @@ type (
 	SyntaxNode             = syntax.Node
 	SyntaxToken            = syntax.Token
 	Diagnostic             = resolve.Diagnostic
+	DiagnosticRelated      = resolve.DiagnosticRelated
 	SourceRange            = resolve.SourceRange
 	SourceOrigin           = resolve.SourceOrigin
 	TypedRoot              = definition.Root

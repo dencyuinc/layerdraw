@@ -170,10 +170,18 @@ query scope "Scope" {
   }
   result [seed_entities, induced_relations]
 }
+view context "Context" context {
+  source query scope { environment: prod }
+  context {
+    group_by none
+    outgoing
+  }
+}
 `;
 
 const queryLimits = Object.freeze({max_items: "128", max_output_bytes: "65536"});
 const queryAddress = "ldl:project:p:query:scope";
+const viewAddress = "ldl:project:p:view:context";
 const queryParameterAddress = `${queryAddress}:parameter:environment`;
 
 async function queryWorkflowCompileInput() {
@@ -246,6 +254,19 @@ export async function executePortableQueryClientWorkflow(client, suffix) {
     throw new Error(`${suffix} query workflow did not succeed`);
   }
   assertQueryPayload(executed.response.payload, opened.document_generation, `${suffix} query`);
+
+  if (opened.capabilities.materialize_view !== true) throw new Error(`${suffix} document did not advertise materialize_view`);
+  const materialized = await client.workbench.materializeView({
+    document_generation: opened.document_generation,
+    limits: queryLimits,
+    query_result: executed.response.payload.result,
+    view_address: viewAddress,
+  }, {requestId: `${suffix}-materialize`});
+  if (materialized.origin !== "engine" || materialized.outcome !== "success" ||
+      materialized.response.payload?.view_data?.shape !== "context" ||
+      materialized.response.payload.view_data.context === undefined) {
+    throw new Error(`${suffix} ViewData materialization did not succeed`);
+  }
 
   const rejected = await client.workbench.executeQuery({
     arguments: {[`${queryAddress}:parameter:unknown`]: {kind: "enum", string_value: "prod"}},

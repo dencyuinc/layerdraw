@@ -61,6 +61,7 @@ func expectedOperations() []string {
 		OperationInspectSubgraph,
 		OperationListModules,
 		OperationListReferences,
+		OperationMaterializeView,
 		OperationOpenDocument,
 		OperationOrganizeWorkspace,
 		OperationPreviewFragment,

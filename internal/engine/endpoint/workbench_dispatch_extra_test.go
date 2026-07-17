@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"strconv"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/engine"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/sourceplanner"
 )
 
@@ -107,6 +109,21 @@ func (driver *fakeWorkbenchDriver) ExecuteDocumentQuery(ctx context.Context, inp
 	}
 	result.ReturnedBytes = returnedBytes
 	return result, nil
+}
+
+func (driver *fakeWorkbenchDriver) MaterializeDocumentView(_ context.Context, input engine.MaterializeDocumentViewInput) (engine.MaterializeDocumentViewResult, error) {
+	if driver.err != nil {
+		return engine.MaterializeDocumentViewResult{}, driver.err
+	}
+	return engine.MaterializeDocumentViewResult{
+		DocumentGeneration: input.DocumentGeneration,
+		ViewData: engine.ViewData{
+			ViewAddress: input.ViewAddress, Category: "context", Shape: "context", StatePolicy: "none",
+			StateInput: engine.QueryStateInputRef{Kind: "none"},
+			Source:     engine.ViewDataSourceRefs{QueryAddress: input.QueryResult.QueryAddress},
+			Context:    &engine.ContextViewData{Groups: []engine.ContextGroup{}, Facts: []engine.ContextFact{}},
+		},
+	}, nil
 }
 
 func (driver *fakeWorkbenchDriver) GetNeighbors(context.Context, engine.GetNeighborsInput) (engine.GetNeighborsResult, error) {
@@ -800,6 +817,254 @@ func TestExecuteQueryMappingCoversScalarsCyclesAndErrors(t *testing.T) {
 	}
 }
 
+func TestMaterializeViewMappingCoversShapesProvenanceAndLimits(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	generation := engine.DocumentGeneration{
+		DocumentHandle: engine.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_abcdefghijklmnop"},
+		Value:          1,
+	}
+	limits := engine.WorkbenchLimits{MaxItems: 1_000, MaxOutputBytes: 1 << 20}
+	label := "calls"
+	base := engine.ViewData{
+		ViewAddress: "ldl:project:p:view:v", Category: "topology", Shape: "diagram", StatePolicy: "none",
+		StateInput: engine.QueryStateInputRef{Kind: "none"},
+		Diagnostics: []engine.Diagnostic{{
+			Code: "LDL0001", Severity: "warning", MessageKey: "view_notice",
+			Arguments: map[string]string{"view": "v"}, Related: []engine.DiagnosticRelated{},
+		}},
+		Source: engine.ViewDataSourceRefs{
+			QueryAddress:      "ldl:project:p:query:q",
+			EntityAddresses:   []string{"ldl:project:p:entity:alpha", "ldl:project:p:entity:beta"},
+			RelationAddresses: []string{"ldl:project:p:relation:alpha_beta"},
+			LayerAddresses:    []string{"ldl:project:p:layer:app"},
+			RowAddresses:      []string{"ldl:project:p:entity:alpha:row:primary"},
+			StateReads:        []engine.StateReadRef{{SubjectAddress: "ldl:project:p:entity:alpha", FieldPath: "system.updated_at"}},
+		},
+		Diagram: &engine.DiagramViewData{
+			Nodes: []engine.DiagramNode{
+				{Key: "alpha", EntityAddress: "ldl:project:p:entity:alpha", DisplayName: "Alpha", EntityType: "ldl:project:p:entity-type:service", LayerAddress: "ldl:project:p:layer:app", SourceEntities: []string{"ldl:project:p:entity:alpha"}},
+				{Key: "beta", EntityAddress: "ldl:project:p:entity:beta", DisplayName: "Beta", EntityType: "ldl:project:p:entity-type:service", LayerAddress: "ldl:project:p:layer:app", SourceEntities: []string{"ldl:project:p:entity:beta"}},
+			},
+			Edges:      []engine.DiagramEdge{{Key: "alpha_beta", RelationAddress: "ldl:project:p:relation:alpha_beta", FromAddress: "ldl:project:p:entity:alpha", ToAddress: "ldl:project:p:entity:beta", RelationType: "ldl:project:p:relation-type:calls", DisplayName: &label, SourceRelations: []string{"ldl:project:p:relation:alpha_beta"}}},
+			Placements: []engine.DiagramPlacement{{EntityAddress: "ldl:project:p:entity:alpha", X: -1.5, Y: 2, Width: 200, Height: 100}},
+		},
+	}
+	diagram, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: base}, limits)
+	if err != nil || diagram.ViewData.Diagram == nil || diagram.ReturnedItems == "0" || diagram.ReturnedBytes == "0" {
+		t.Fatalf("diagram mapping = %+v err=%v", diagram, err)
+	}
+
+	address := "ldl:project:p:entity:alpha"
+	scalar := engine.TypedScalar{Type: definition.ScalarString, String: "api"}
+	tableData := base
+	tableData.Category = "inventory"
+	tableData.Shape = "table"
+	tableData.Diagram = nil
+	tableData.Table = &engine.TableViewData{
+		Columns: []engine.TableViewColumn{
+			{ID: "name", Address: "ldl:project:p:view:v:table-column:name", Label: "Name", Source: "field"},
+			{ID: "owner", Label: "Owner", Source: "address"},
+			{ID: "tags", Label: "Tags", Source: "set"},
+			{ID: "empty", Label: "Empty", Source: "null"},
+		},
+		Rows: []engine.TableViewRow{{
+			Key: "alpha", SubjectAddress: address, OwnerAddress: address,
+			SourceRows: []string{"ldl:project:p:entity:alpha:row:primary"}, SourceEntities: []string{address}, SourceRelations: []string{},
+			Cells: []engine.TableViewCell{
+				{ColumnID: "name", Value: engine.ViewDataValue{Kind: "scalar", Scalar: &scalar}, SourceRows: []string{}, SourceCells: []engine.ViewDataCellRef{{RowAddress: "ldl:project:p:entity:alpha:row:primary", ColumnAddress: "ldl:project:p:entity-type:service:column:name"}}, SourceEntities: []string{address}, SourceRelations: []string{}, StateReads: []engine.StateReadRef{}},
+				{ColumnID: "owner", Value: engine.ViewDataValue{Kind: "stable_address", Address: &address}, SourceRows: []string{}, SourceCells: []engine.ViewDataCellRef{}, SourceEntities: []string{address}, SourceRelations: []string{}, StateReads: []engine.StateReadRef{}},
+				{ColumnID: "tags", Value: engine.ViewDataValue{Kind: "string_set", StringSet: []string{"api", "prod"}}, SourceRows: []string{}, SourceCells: []engine.ViewDataCellRef{}, SourceEntities: []string{address}, SourceRelations: []string{}, StateReads: []engine.StateReadRef{}},
+				{ColumnID: "empty", Value: engine.ViewDataValue{Kind: "null", Null: true}, SourceRows: []string{}, SourceCells: []engine.ViewDataCellRef{}, SourceEntities: []string{}, SourceRelations: []string{}, StateReads: []engine.StateReadRef{}},
+			},
+		}},
+		Sorts: []engine.TableViewSort{{ColumnID: "name", Direction: "ascending", Absent: "last"}},
+	}
+	table, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: tableData}, limits)
+	if err != nil || table.ViewData.Table == nil || len(table.ViewData.Table.Rows) != 1 || len(table.ViewData.Table.Rows[0].Cells) != 4 {
+		t.Fatalf("table mapping = %+v err=%v", table, err)
+	}
+
+	contextData := base
+	contextData.Category = "context"
+	contextData.Shape = "context"
+	contextData.Diagram = nil
+	contextData.Context = &engine.ContextViewData{
+		Groups: []engine.ContextGroup{{Key: "all", Label: "All", Addresses: []string{address}}},
+		Facts:  []engine.ContextFact{{Key: "entity:alpha", SubjectAddress: address, Kind: "entity", Text: "Alpha", SourceEntities: []string{address}, SourceRelations: []string{}, SourceRows: []string{}}},
+	}
+	contextResult, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: contextData}, limits)
+	if err != nil || contextResult.ViewData.Context == nil || len(contextResult.ViewData.Context.Facts) != 1 {
+		t.Fatalf("context mapping = %+v err=%v", contextResult, err)
+	}
+
+	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: base}, engine.WorkbenchLimits{MaxItems: 1, MaxOutputBytes: limits.MaxOutputBytes}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
+		t.Fatalf("item limit error = %v", err)
+	}
+	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: base}, engine.WorkbenchLimits{MaxItems: limits.MaxItems, MaxOutputBytes: 1}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
+		t.Fatalf("byte limit error = %v", err)
+	}
+	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{ViewData: base}, limits); err == nil {
+		t.Fatal("invalid document generation was accepted")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := mapMaterializeViewResult(cancelled, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: base}, limits); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled mapping error = %v", err)
+	}
+	for name, placement := range map[string]engine.DiagramPlacement{
+		"x":      {EntityAddress: address, X: math.NaN(), Width: 1, Height: 1},
+		"y":      {EntityAddress: address, Y: math.Inf(1), Width: 1, Height: 1},
+		"width":  {EntityAddress: address, Width: 0, Height: 1},
+		"height": {EntityAddress: address, Width: 1, Height: 0},
+	} {
+		invalidPlacement := base
+		invalidPlacement.Diagnostics = []engine.Diagnostic{}
+		invalidPlacement.Diagram = &engine.DiagramViewData{Nodes: []engine.DiagramNode{}, Edges: []engine.DiagramEdge{}, Placements: []engine.DiagramPlacement{placement}}
+		if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: invalidPlacement}, limits); err == nil {
+			t.Fatalf("invalid diagram %s placement was accepted", name)
+		}
+	}
+	if _, err := mapDiagramViewData(cancelled, *base.Diagram); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled diagram mapping error = %v", err)
+	}
+	if _, err := mapTableViewData(cancelled, *tableData.Table); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled table mapping error = %v", err)
+	}
+	if _, err := mapContextViewData(cancelled, *contextData.Context); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context mapping error = %v", err)
+	}
+	if _, err := countProtocolArrayItems(nil, []any{}, limits.MaxItems); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInvariant) {
+		t.Fatalf("nil count context error = %v", err)
+	}
+	var nested any = []any{}
+	for range 130 {
+		nested = []any{nested}
+	}
+	if _, err := countProtocolArrayItems(ctx, nested, limits.MaxItems); err == nil {
+		t.Fatal("over-depth ViewData was accepted")
+	}
+	for _, value := range []engine.ViewDataValue{
+		{Kind: "null"}, {Kind: "scalar"}, {Kind: "stable_address"}, {Kind: "unknown"},
+	} {
+		if _, err := mapViewDataValue(value); err == nil {
+			t.Fatalf("invalid ViewData value accepted: %+v", value)
+		}
+	}
+}
+
+func TestMaterializeViewInputMappingPreservesDiagnosticProvenance(t *testing.T) {
+	t.Parallel()
+	message := "invalid selection"
+	argument := "scope"
+	subject := semantic.StableAddress("ldl:project:p:entity:alpha")
+	owner := semantic.StableAddress("ldl:project:p")
+	relatedMessage := "previous declaration"
+	sourceRange := semantic.SourceRange{
+		Origin: semantic.SourceOrigin{Kind: semantic.OriginKindProject}, ModulePath: "document.ldl",
+		StartByte: "1", EndByte: "2",
+	}
+	diagnostic := semantic.Diagnostic{
+		Arguments: map[string]semantic.DiagnosticArgumentValue{"name": {Kind: semantic.DiagnosticArgumentKindString, StringValue: &argument}},
+		Code:      "LDL1601", Message: &message, MessageKey: "invalid_query", OwnerAddress: &owner, ProtocolVersion: 1,
+		Range: &sourceRange, Related: []semantic.DiagnosticRelated{{Message: &relatedMessage, OwnerAddress: &owner, Range: &sourceRange, Relation: semantic.DiagnosticRelationPrevious, SubjectAddress: &subject}},
+		Severity: semantic.DiagnosticSeverityError, SubjectAddress: &subject,
+	}
+	input := engineprotocol.QueryExecutionResultData{
+		Arguments: map[string]semantic.RecipeScalar{"ldl:project:p:query:q:parameter:scope": {Kind: "string", StringValue: &argument}},
+		CycleRefs: []engineprotocol.QueryCycleRef{{
+			FromEntityAddress: "ldl:project:p:entity:alpha", Kind: "entity", Orientation: "forward",
+			RelationAddress: "ldl:project:p:relation:alpha_beta", RetainedPath: engineprotocol.QueryPath{EntityAddresses: []semantic.EntityAddress{"ldl:project:p:entity:alpha"}, RelationAddresses: []semantic.RelationAddress{}},
+			ToEntityAddress: "ldl:project:p:entity:alpha",
+		}},
+		Diagnostics: []semantic.Diagnostic{diagnostic}, InducedRelationAddresses: []semantic.RelationAddress{}, PathRelationAddresses: []semantic.RelationAddress{},
+		Paths:                  []engineprotocol.QueryPath{{EntityAddresses: []semantic.EntityAddress{"ldl:project:p:entity:alpha"}, RelationAddresses: []semantic.RelationAddress{}}},
+		PrimaryEntityAddresses: []semantic.EntityAddress{}, QueryAddress: "ldl:project:p:query:q", ReachedEntityAddresses: []semantic.EntityAddress{},
+		SeedEntityAddresses: []semantic.EntityAddress{}, SelectedRelationAddresses: []semantic.RelationAddress{}, StateInput: engineprotocol.QueryStateInputRef{Kind: "none"},
+		StatePolicy: "none", StateReads: []engineprotocol.QueryStateReadRef{{SubjectAddress: subject, FieldPath: "system.updated_at"}},
+		SupportEntityAddresses: []semantic.EntityAddress{}, TraversedEntityAddresses: []semantic.EntityAddress{},
+	}
+	mapped, err := queryResultFromProtocol(input)
+	if err != nil || len(mapped.Diagnostics) != 1 || mapped.Diagnostics[0].Message != message || mapped.Diagnostics[0].Range == nil || len(mapped.Diagnostics[0].Related) != 1 {
+		t.Fatalf("diagnostic mapping = %+v err=%v", mapped.Diagnostics, err)
+	}
+	invalid := input
+	boolean := true
+	invalid.Diagnostics = []semantic.Diagnostic{diagnostic}
+	invalid.Diagnostics[0].Arguments = map[string]semantic.DiagnosticArgumentValue{"bad": {Kind: semantic.DiagnosticArgumentKindBoolean, BooleanValue: &boolean}}
+	if _, err := queryResultFromProtocol(invalid); err == nil {
+		t.Fatal("non-string diagnostic argument was accepted")
+	}
+	if _, err := mapMaterializeViewInput(engineprotocol.MaterializeViewInput{
+		DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_abcdefghijklmnop"}, Value: "1"},
+		Limits:             engineprotocol.WorkbenchLimits{MaxItems: "1", MaxOutputBytes: "1"}, QueryResult: invalid, ViewAddress: "ldl:project:p:view:v",
+	}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInputInvalid) {
+		t.Fatalf("invalid materialize input error = %v", err)
+	}
+	packAddress := semantic.PackRootAddress("ldl:pack:publisher:schema")
+	if _, err := sourceRangeFromProtocol(semantic.SourceRange{
+		Origin: semantic.SourceOrigin{Kind: semantic.OriginKindPack, PackAddress: &packAddress}, ModulePath: "module.ldl", StartByte: "0", EndByte: "1",
+	}); err != nil {
+		t.Fatalf("pack source range mapping error = %v", err)
+	}
+	if got, err := protocolByteOffset(protocolcommon.CanonicalUint64("2147483647")); err != nil || got != math.MaxInt32 {
+		t.Fatalf("portable source offset = %d err=%v", got, err)
+	}
+	if _, err := protocolByteOffset(protocolcommon.CanonicalUint64("2147483648")); err == nil {
+		t.Fatal("unrepresentable source offset was accepted")
+	}
+	if got := materializeViewMappingError(nil); got != nil {
+		t.Fatalf("nil mapping error = %v", got)
+	}
+	if got := materializeViewMappingError(context.Canceled); !errors.Is(got, context.Canceled) {
+		t.Fatalf("cancellation mapping = %v", got)
+	}
+	workbenchErr := &engine.WorkbenchError{Code: "test", Category: engine.WorkbenchErrorInputInvalid}
+	if got := materializeViewMappingError(workbenchErr); got != workbenchErr {
+		t.Fatalf("workbench mapping changed error = %v", got)
+	}
+	if got := materializeViewMappingError(errors.New("unsafe")); !engine.IsWorkbenchError(got, engine.WorkbenchErrorInvariant) {
+		t.Fatalf("unsafe mapping error = %v", got)
+	}
+}
+
+func TestRunMaterializeViewRoutesMappedResultsAndErrors(t *testing.T) {
+	t.Parallel()
+	payload := engineprotocol.MaterializeViewInput{
+		DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_abcdefghijklmnop"}, Value: "1"},
+		Limits:             engineprotocol.WorkbenchLimits{MaxItems: "128", MaxOutputBytes: "65536"},
+		QueryResult: engineprotocol.QueryExecutionResultData{
+			Arguments: map[string]semantic.RecipeScalar{}, CycleRefs: []engineprotocol.QueryCycleRef{}, Diagnostics: []semantic.Diagnostic{},
+			InducedRelationAddresses: []semantic.RelationAddress{}, PathRelationAddresses: []semantic.RelationAddress{}, Paths: []engineprotocol.QueryPath{},
+			PrimaryEntityAddresses: []semantic.EntityAddress{}, QueryAddress: "ldl:project:p:query:q", ReachedEntityAddresses: []semantic.EntityAddress{},
+			SeedEntityAddresses: []semantic.EntityAddress{}, SelectedRelationAddresses: []semantic.RelationAddress{}, StateInput: engineprotocol.QueryStateInputRef{Kind: "none"},
+			StatePolicy: "none", StateReads: []engineprotocol.QueryStateReadRef{}, SupportEntityAddresses: []semantic.EntityAddress{}, TraversedEntityAddresses: []semantic.EntityAddress{},
+		},
+		ViewAddress: "ldl:project:p:view:v",
+	}
+	driver := newFakeWorkbenchDriver()
+	result, blobs, err := runMaterializeView(payload)(context.Background(), driver, nil)
+	if err != nil || blobs != nil {
+		t.Fatalf("materialize runner result = %+v blobs=%v err=%v", result, blobs, err)
+	}
+	if mapped, ok := result.(engineprotocol.MaterializeViewResult); !ok || mapped.ViewData.Context == nil {
+		t.Fatalf("materialize runner payload = %#v", result)
+	}
+	driver.err = context.DeadlineExceeded
+	if _, _, err := runMaterializeView(payload)(context.Background(), driver, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("driver error = %v", err)
+	}
+	invalid := payload
+	boolean := true
+	invalid.QueryResult.Diagnostics = []semantic.Diagnostic{{
+		Arguments: map[string]semantic.DiagnosticArgumentValue{"bad": {Kind: semantic.DiagnosticArgumentKindBoolean, BooleanValue: &boolean}},
+		Code:      "LDL1601", MessageKey: "invalid_query", ProtocolVersion: 1, Related: []semantic.DiagnosticRelated{}, Severity: semantic.DiagnosticSeverityError,
+	}}
+	if _, _, err := runMaterializeView(invalid)(context.Background(), driver, nil); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInputInvalid) {
+		t.Fatalf("invalid input error = %v", err)
+	}
+}
+
 func TestWorkbenchTerminalEnvelopeSupportsEveryOperation(t *testing.T) {
 	failure := workbenchFailure(protocolcommon.ProtocolFailureCategoryInvariant, FailureWorkbenchInvalid, "execution_failed", "failed", false, nil)
 	operations := []string{
@@ -813,6 +1078,7 @@ func TestWorkbenchTerminalEnvelopeSupportsEveryOperation(t *testing.T) {
 		OperationReadDeclarations,
 		OperationReadRows,
 		OperationExecuteQuery,
+		OperationMaterializeView,
 		OperationGetNeighbors,
 		OperationFindUsages,
 		OperationReadScope,

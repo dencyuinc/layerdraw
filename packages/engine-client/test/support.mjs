@@ -16,6 +16,7 @@ import {
   decodeInspectSubgraphRequestEnvelope,
   decodeListModulesRequestEnvelope,
   decodeListReferencesRequestEnvelope,
+  decodeMaterializeViewRequestEnvelope,
   decodeOpenDocumentRequestEnvelope,
   decodeOrganizeWorkspaceRequestEnvelope,
   decodePreviewFragmentRequestEnvelope,
@@ -38,6 +39,7 @@ import {
   encodeInspectSubgraphResponseEnvelope,
   encodeListModulesResponseEnvelope,
   encodeListReferencesResponseEnvelope,
+  encodeMaterializeViewResponseEnvelope,
   encodeOpenDocumentResponseEnvelope,
   encodeOrganizeWorkspaceResponseEnvelope,
   encodePreviewFragmentResponseEnvelope,
@@ -406,6 +408,8 @@ function decodeRequestEnvelope(operation, controlText) {
       return decodeCloseDocumentRequestEnvelope(controlText);
     case "engine.execute_query":
       return decodeExecuteQueryRequestEnvelope(controlText);
+    case "engine.materialize_view":
+      return decodeMaterializeViewRequestEnvelope(controlText);
     case "engine.find_symbols":
       return decodeFindSymbolsRequestEnvelope(controlText);
     case "engine.find_usages":
@@ -453,6 +457,8 @@ function encodeWorkbenchResponse(operation, response) {
       return encodeCloseDocumentResponseEnvelope(response);
     case "engine.execute_query":
       return encodeExecuteQueryResponseEnvelope(response);
+    case "engine.materialize_view":
+      return encodeMaterializeViewResponseEnvelope(response);
     case "engine.find_symbols":
       return encodeFindSymbolsResponseEnvelope(response);
     case "engine.find_usages":

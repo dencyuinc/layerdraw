@@ -83,7 +83,7 @@ var (
 		"x-layerdraw-stable-address-roles": {"type": "array", "items": {"$ref": "#/$defs/stableAddressRoleRule"}, "minItems": 1, "uniqueItems": true},
 		"x-layerdraw-stable-address-order": {"type": "string", "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."},
 		"x-layerdraw-state-read-order": {"type": "boolean", "const": true},
-		"x-layerdraw-protocol-invariant": {"type": "string", "enum": ["apply_input", "apply_result", "authoring_impact", "authoring_impact_entry", "bounded_text_chunk", "document_bound_input", "open_document_result", "paged_result", "preview_result", "query_result", "semantic_operation", "source_edit"]},
+		"x-layerdraw-protocol-invariant": {"type": "string", "enum": ["apply_input", "apply_result", "authoring_impact", "authoring_impact_entry", "bounded_text_chunk", "document_bound_input", "open_document_result", "paged_result", "preview_result", "query_result", "semantic_operation", "source_edit", "view_data_result"]},
 		"x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
 		"x-layerdraw-state-read": {"type": "boolean", "const": true},
 		"x-layerdraw-ts-module": {"type": "string", "minLength": 1},
@@ -834,7 +834,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 	}
 	if typeValue == "object" {
 		if value.ProtocolInvariant != "" {
-			allowed := map[string]bool{"apply_input": true, "apply_result": true, "authoring_impact": true, "authoring_impact_entry": true, "bounded_text_chunk": true, "document_bound_input": true, "open_document_result": true, "paged_result": true, "preview_result": true, "query_result": true, "semantic_operation": true, "source_edit": true}
+			allowed := map[string]bool{"apply_input": true, "apply_result": true, "authoring_impact": true, "authoring_impact_entry": true, "bounded_text_chunk": true, "document_bound_input": true, "open_document_result": true, "paged_result": true, "preview_result": true, "query_result": true, "semantic_operation": true, "source_edit": true, "view_data_result": true}
 			if !allowed[value.ProtocolInvariant] {
 				return fmt.Errorf("%s has unknown protocol invariant %q", context, value.ProtocolInvariant)
 			}
@@ -3805,6 +3805,33 @@ func protocolBlobSize(value any) (uint64, error) {
 	}
 }
 
+func protocolArrayItemCount(value any) (uint64, error) {
+	switch typed := value.(type) {
+	case []any:
+		total := uint64(len(typed))
+		for _, item := range typed {
+			count, err := protocolArrayItemCount(item)
+			if err != nil || math.MaxUint64-total < count {
+				return 0, errors.New("array item count overflows uint64")
+			}
+			total += count
+		}
+		return total, nil
+	case map[string]any:
+		var total uint64
+		for _, item := range typed {
+			count, err := protocolArrayItemCount(item)
+			if err != nil || math.MaxUint64-total < count {
+				return 0, errors.New("array item count overflows uint64")
+			}
+			total += count
+		}
+		return total, nil
+	default:
+		return 0, nil
+	}
+}
+
 func validatePagedResult(path string, object map[string]any) error {
 	items, itemsOK := object["items"].([]any); page, pageOK := protocolObject(object["page"]); if !itemsOK || !pageOK { return fmt.Errorf("%s must contain items and page", path) }
 	returnedItems, ok := page["returned_items"].(string); if !ok || returnedItems != strconv.Itoa(len(items)) { return fmt.Errorf("%s.page.returned_items must equal the item count", path) }
@@ -3830,6 +3857,39 @@ func validateQueryResult(path string, object map[string]any) error {
 	object["returned_bytes"] = "0"; canonical, err := appendCanonicalJSON(nil,object); object["returned_bytes"] = want; if err != nil { return err }
 	blobs, err := protocolBlobSize(object); if err != nil || uint64(len(canonical)) > math.MaxUint64-blobs { return fmt.Errorf("%s logical response byte count overflows", path) }
 	if want != strconv.FormatUint(uint64(len(canonical))+blobs,10) { return fmt.Errorf("%s.returned_bytes is not the exact logical response byte count", path) }
+	return nil
+}
+
+func validateViewDataResult(path string, object map[string]any) error {
+	viewData, ok := protocolObject(object["view_data"])
+	if !ok {
+		return fmt.Errorf("%s.view_data must be an object", path)
+	}
+	itemCount, err := protocolArrayItemCount(viewData)
+	if err != nil {
+		return fmt.Errorf("%s view data item count overflows", path)
+	}
+	returnedItems, ok := object["returned_items"].(string)
+	if !ok || returnedItems != strconv.FormatUint(itemCount, 10) {
+		return fmt.Errorf("%s.returned_items must equal the recursive ViewData array item count", path)
+	}
+	want, ok := object["returned_bytes"].(string)
+	if !ok {
+		return fmt.Errorf("%s.returned_bytes is invalid", path)
+	}
+	object["returned_bytes"] = "0"
+	canonical, err := appendCanonicalJSON(nil, object)
+	object["returned_bytes"] = want
+	if err != nil {
+		return err
+	}
+	blobs, err := protocolBlobSize(object)
+	if err != nil || uint64(len(canonical)) > math.MaxUint64-blobs {
+		return fmt.Errorf("%s logical response byte count overflows", path)
+	}
+	if want != strconv.FormatUint(uint64(len(canonical))+blobs, 10) {
+		return fmt.Errorf("%s.returned_bytes is not the exact logical response byte count", path)
+	}
 	return nil
 }
 
@@ -3867,6 +3927,7 @@ func validateProtocolInvariant(path string, object map[string]any, profile strin
 		if cursor, present := object["cursor"]; present { cursorObject, ok := protocolObject(cursor); if !ok || !sameProtocolGeneration(object["document_generation"], cursorObject["document_generation"]) { return fmt.Errorf("%s.cursor is bound to another document generation", path) } }
 	case "paged_result": return validatePagedResult(path, object)
 	case "query_result": return validateQueryResult(path, object)
+	case "view_data_result": return validateViewDataResult(path, object)
 	case "bounded_text_chunk":
 		blob, _ := protocolObject(object["blob"]); offset, e1 := strconv.ParseUint(protocolString(object,"offset"),10,64); total, e2 := strconv.ParseUint(protocolString(object,"total_bytes"),10,64); size, e3 := strconv.ParseUint(protocolString(blob,"size"),10,64); if e1 != nil || e2 != nil || e3 != nil || offset > total || size > total-offset || blob["media_type"] != "text/plain; charset=utf-8" || blob["lifetime"] != "request" { return fmt.Errorf("%s has an invalid bounded UTF-8 chunk range", path) }; if offset == 0 && size == total && blob["digest"] != object["full_digest"] { return fmt.Errorf("%s complete chunk digest must equal full_digest", path) }
 	case "source_edit":
@@ -4318,6 +4379,7 @@ function sameProtocolGeneration(left: unknown,right: unknown): boolean { const a
 function nextProtocolGeneration(base: unknown,proposed: unknown): boolean { const a=protocolGenerationKey(base), b=protocolGenerationKey(proposed); return a !== undefined && b !== undefined && a[0]===b[0] && a[1]===b[1] && b[2]===a[2]+1n; }
 function protocolHasErrorDiagnostic(raw: unknown): boolean { return isJSONArray(raw) && raw.some((item)=>isObject(item) && item["severity"]==="error"); }
 function protocolBlobBytes(raw: unknown): bigint | undefined { if (isJSONArray(raw)) { let total=0n; for (const item of raw) { const size=protocolBlobBytes(item); if (size===undefined) return undefined; total+=size; } return total; } if (!isObject(raw)) return 0n; let total=0n; if (typeof raw["blob_id"]==="string" && typeof raw["digest"]==="string" && typeof raw["size"]==="string") { try { total=BigInt(raw["size"]); } catch { return undefined; } } for (const item of Object.values(raw)) { const size=protocolBlobBytes(item); if (size===undefined) return undefined; total+=size; } return total; }
+function protocolArrayItemCount(raw: unknown): bigint | undefined { if (isJSONArray(raw)) { let total=BigInt(raw.length); for (const item of raw) { const count=protocolArrayItemCount(item); if (count===undefined) return undefined; total+=count; } return total; } if (!isObject(raw)) return 0n; let total=0n; for (const item of Object.values(raw)) { const count=protocolArrayItemCount(item); if (count===undefined) return undefined; total+=count; } return total; }
 function protocolPagedResult(value: Record<string,unknown>): boolean {
   const items=value["items"], page=value["page"]; if (!isJSONArray(items)||!isObject(page)||page["returned_items"]!==String(items.length)) return false;
   if (hasOwn(page,"next_cursor") && (!isObject(page["next_cursor"]) || !sameProtocolGeneration(value["document_generation"],page["next_cursor"]["document_generation"]))) return false;
@@ -4329,6 +4391,11 @@ function protocolQueryResult(value: Record<string,unknown>): boolean {
   let count=0n; for (const field of fields) { const items=result[field]; if (!isJSONArray(items)) return false; count+=BigInt(items.length); }
   if (value["returned_items"]!==String(count)) return false;
   const returned=value["returned_bytes"]; if (typeof returned!=="string") return false; const copy=JSON.parse(canonicalJSONStringify(value)) as Record<string,unknown>; copy["returned_bytes"]="0"; const blobs=protocolBlobBytes(value); try { return blobs!==undefined && BigInt(new TextEncoder().encode(canonicalJSONStringify(copy)).length)+blobs===BigInt(returned); } catch { return false; }
+}
+function protocolViewDataResult(value: Record<string,unknown>): boolean {
+  const viewData=value["view_data"], returned=value["returned_bytes"]; if (!isObject(viewData)||typeof returned!=="string") return false;
+  const count=protocolArrayItemCount(viewData); if (count===undefined||value["returned_items"]!==String(count)) return false;
+  const copy=JSON.parse(canonicalJSONStringify(value)) as Record<string,unknown>; copy["returned_bytes"]="0"; const blobs=protocolBlobBytes(value); try { return blobs!==undefined&&BigInt(new TextEncoder().encode(canonicalJSONStringify(copy)).length)+blobs===BigInt(returned); } catch { return false; }
 }
 function protocolCreateSubjectExport(fields: Record<string,unknown>): boolean {
   const format=fields["format"], filename=fields["filename"]; if (typeof format!=="string"||typeof filename!=="string") return false;
@@ -4351,6 +4418,7 @@ function hasProtocolInvariant(value: Record<string,unknown>,profile: string): bo
   if (profile==="document_bound_input") { if (hasOwn(value,"document_handle")&&(!isObject(value["document_generation"])||!sameProtocolGeneration(value["document_generation"],{document_handle:value["document_handle"],value:value["document_generation"]["value"]}))) return false; return !hasOwn(value,"cursor") || isObject(value["cursor"])&&sameProtocolGeneration(value["document_generation"],value["cursor"]["document_generation"]); }
   if (profile==="paged_result") return protocolPagedResult(value);
   if (profile==="query_result") return protocolQueryResult(value);
+  if (profile==="view_data_result") return protocolViewDataResult(value);
   if (profile==="bounded_text_chunk") { const blob=value["blob"]; if (!isObject(blob)||typeof value["offset"]!=="string"||typeof value["total_bytes"]!=="string"||typeof blob["size"]!=="string") return false; try { const offset=BigInt(value["offset"]), total=BigInt(value["total_bytes"]), size=BigInt(blob["size"]); return offset<=total&&size<=total-offset&&blob["media_type"]==="text/plain; charset=utf-8"&&blob["lifetime"]==="request"&&(offset!==0n||size!==total||blob["digest"]===value["full_digest"]); } catch { return false; } }
   if (profile==="source_edit") { const blob=value["replacement_blob"]; if (isObject(blob)&&(blob["digest"]!==value["after_digest"]||blob["media_type"]!=="text/plain; charset=utf-8"||blob["lifetime"]!=="request")) return false; return value["kind"]!=="move" || value["before_digest"]===value["after_digest"]&&canonicalJSONStringify(value["before_module"])!==canonicalJSONStringify(value["after_module"]); }
   if (profile==="preview_result") { if (value["status"]!=="valid") return isJSONArray(value["conflicts"])&&value["conflicts"].length>0||protocolHasErrorDiagnostic(value["diagnostics"]); const impact=value["authoring_impact"], semantic=value["semantic_diff"], source=value["source_diff"], hashes=value["resulting_hashes"], preview=value["preview_id"], base=protocolGenerationKey(value["base_generation"]); return isObject(impact)&&isObject(semantic)&&isObject(source)&&isObject(hashes)&&isObject(preview)&&base!==undefined&&!protocolHasErrorDiagnostic(value["diagnostics"])&&value["authoring_impact_digest"]===impact["impact_digest"]&&canonicalJSONStringify(value["required_authoring_capabilities"])===canonicalJSONStringify(impact["required_capabilities"])&&impact["semantic_diff_hash"]===semantic["digest"]&&impact["source_diff_hash"]===source["digest"]&&impact["resulting_definition_hash"]===hashes["definition_hash"]&&preview["endpoint_instance_id"]===base[0]&&nextProtocolGeneration(value["base_generation"],value["proposed_generation"]); }

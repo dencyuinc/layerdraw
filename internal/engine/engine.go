@@ -26,6 +26,7 @@ const (
 	CapabilityInspectSubgraph   = "engine.inspect_subgraph"
 	CapabilityListModules       = "engine.list_modules"
 	CapabilityListReferences    = "engine.list_references"
+	CapabilityMaterializeView   = "engine.materialize_view"
 	CapabilityOpenDocument      = "engine.open_document"
 	CapabilityReadDeclarations  = "engine.read_declarations"
 	CapabilityReadModules       = "engine.read_modules"
@@ -46,6 +47,7 @@ var bootstrapCapabilities = []string{
 	CapabilityInspectSubgraph,
 	CapabilityListModules,
 	CapabilityListReferences,
+	CapabilityMaterializeView,
 	CapabilityOpenDocument,
 	CapabilityReadDeclarations,
 	CapabilityReadModules,
