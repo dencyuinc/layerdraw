@@ -2,7 +2,10 @@
 
 package engine
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // MaterializeDocumentView resolves a compiled View recipe from one retained
 // Working Document generation and converts a caller-supplied QueryResult into
@@ -34,7 +37,11 @@ func (e Engine) MaterializeDocumentView(ctx context.Context, input MaterializeDo
 		return MaterializeDocumentViewResult{}, &WorkbenchError{Code: "engine.workbench.view_not_found", Category: WorkbenchErrorNotFound}
 	}
 	response := e.MaterializeView(ctx, ViewMaterializationInput{
-		Recipe: recipe, Graph: *snapshot.compiled.TypedAST.Graph, QueryResult: input.QueryResult,
+		Recipe: recipe,
+		Query: &QueryViewMaterializationInput{
+			RevisionID: fmt.Sprintf("workbench:%s:%d", input.DocumentGeneration.DocumentHandle.Value, input.DocumentGeneration.Value),
+			Snapshot:   snapshot.compiled, QueryResult: input.QueryResult,
+		},
 	})
 	if response.Status == "rejected" {
 		return MaterializeDocumentViewResult{}, &ViewMaterializationRejection{Diagnostics: response.Diagnostics}

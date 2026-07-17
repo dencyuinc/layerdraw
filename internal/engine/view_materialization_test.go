@@ -5,243 +5,211 @@ package engine
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
-	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/graph"
-	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/view"
 )
 
-func TestMaterializeViewBuildsDiagramViewDataFromQueryResult(t *testing.T) {
+func TestMaterializeViewBuildsCommonDiagramDomainDeterministically(t *testing.T) {
 	t.Parallel()
 	snapshot, queryResult := compileAndExecuteViewFixture(t, diagramViewSource())
-	response := New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{
-		Recipe:      snapshot.TypedAST.Views[0],
-		Graph:       *snapshot.TypedAST.Graph,
-		QueryResult: queryResult,
-	})
-	if response.Status != "ok" || response.Result == nil {
-		t.Fatalf("MaterializeView() = %+v", response)
+	first := materializeQueryView(t, snapshot, queryResult, nil)
+	second := materializeQueryView(t, snapshot, queryResult, nil)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatal("repeated View materialization is not deterministic")
 	}
-	result := response.Result
-	if result.Shape != "diagram" || result.Diagram == nil {
-		t.Fatalf("shape/result = %+v", result)
+	base, ok := first.Base()
+	if !ok || base.Kind != ViewDataDiagram || base.Shape.Diagram == nil || base.ProjectAddress != "ldl:project:p" || base.ViewAddress != "ldl:project:p:view:topology" {
+		t.Fatalf("base = %+v ok=%v", base, ok)
 	}
-	if got := nodeAddresses(result.Diagram.Nodes); !reflect.DeepEqual(got, []string{"ldl:project:p:entity:alpha", "ldl:project:p:entity:beta"}) {
-		t.Fatalf("nodes = %v", got)
+	if base.Revision.Single == nil || base.Revision.Diff != nil || base.Revision.Single.RevisionID != "revision-1" || base.Revision.Single.DefinitionHash != snapshot.DefinitionHash {
+		t.Fatalf("revision = %+v", base.Revision)
 	}
-	if got := edgeAddresses(result.Diagram.Edges); !reflect.DeepEqual(got, []string{"ldl:project:p:relation:alpha_beta"}) {
-		t.Fatalf("edges = %v", got)
+	if first.Diagram == nil || len(first.Diagram.Occurrences) != 2 || len(first.Diagram.Edges) != 1 {
+		t.Fatalf("diagram = %+v", first.Diagram)
 	}
-	if len(result.Diagram.Placements) != 1 || result.Diagram.Placements[0].EntityAddress != "ldl:project:p:entity:alpha" {
-		t.Fatalf("placements = %+v", result.Diagram.Placements)
+	if got := occurrenceAddresses(first.Diagram.Occurrences); !reflect.DeepEqual(got, []string{"ldl:project:p:entity:alpha", "ldl:project:p:entity:beta"}) {
+		t.Fatalf("occurrences = %v", got)
 	}
-	if !reflect.DeepEqual(result.Source.EntityAddresses, []string{"ldl:project:p:entity:alpha", "ldl:project:p:entity:beta"}) {
-		t.Fatalf("source entities = %v", result.Source.EntityAddresses)
+	for _, occurrence := range first.Diagram.Occurrences {
+		if !strings.HasPrefix(occurrence.Key, "vdi:diagram-occurrence:") || len(occurrence.Source.SubjectAddresses) == 0 {
+			t.Fatalf("occurrence identity/source = %+v", occurrence)
+		}
 	}
-	if !reflect.DeepEqual(result.Source.RelationAddresses, []string{"ldl:project:p:relation:alpha_beta"}) {
-		t.Fatalf("source relations = %v", result.Source.RelationAddresses)
+	if len(base.Source.EntityAddresses) != 2 || len(base.Source.RelationAddresses) != 1 || len(base.Source.CellRefs) != 5 {
+		t.Fatalf("complete source = %+v", base.Source)
 	}
+	assertRequiredSourceCollections(t, base.Source)
 }
 
-func TestMaterializeViewBuildsTableRowsAndSourceCells(t *testing.T) {
+func TestMaterializeViewBuildsTypedTableRowsAndCompleteCellSources(t *testing.T) {
 	t.Parallel()
 	snapshot, queryResult := compileAndExecuteViewFixture(t, tableViewSource())
-	response := New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{
-		Recipe:      snapshot.TypedAST.Views[0],
-		Graph:       *snapshot.TypedAST.Graph,
-		QueryResult: queryResult,
-	})
-	if response.Status != "ok" || response.Result == nil || response.Result.Table == nil {
-		t.Fatalf("MaterializeView() = %+v", response)
+	result := materializeQueryView(t, snapshot, queryResult, nil)
+	if result.Table == nil || len(result.Table.Rows) != 2 {
+		t.Fatalf("table = %+v", result.Table)
 	}
-	table := response.Result.Table
-	if got := columnIDs(table.Columns); !reflect.DeepEqual(got, []string{"entity_id", "type", "layer", "environment", "outgoing"}) {
+	if got := tableColumnIDs(result.Table.Columns); !reflect.DeepEqual(got, []string{"entity_id", "type", "layer", "environment", "outgoing"}) {
 		t.Fatalf("columns = %v", got)
 	}
-	if len(table.Rows) != 2 {
-		t.Fatalf("rows = %+v", table.Rows)
-	}
-	first := table.Rows[0]
-	if first.Key != "entity-row:ldl:project:p:entity:alpha:row:primary" || first.SubjectAddress != "ldl:project:p:entity:alpha" {
+	first := result.Table.Rows[0]
+	if !strings.HasPrefix(first.Key, "vdi:table-row:") || len(first.Cells) != len(result.Table.Columns) {
 		t.Fatalf("first row = %+v", first)
 	}
-	if first.Cells[3].Value.Scalar == nil || first.Cells[3].Value.Scalar.String != "prod" {
-		t.Fatalf("environment cell = %+v", first.Cells[3])
+	environment := tableCellByID(t, *result.Table, first, "environment")
+	if !environment.Present || environment.Value == nil || environment.Value.Scalar == nil || environment.Value.Scalar.String != "prod" {
+		t.Fatalf("environment cell = %+v", environment)
 	}
-	if !reflect.DeepEqual(first.Cells[3].SourceCells, []ViewDataCellRef{{RowAddress: "ldl:project:p:entity:alpha:row:primary", ColumnAddress: "ldl:project:p:entity-type:service:column:environment"}}) {
-		t.Fatalf("source cells = %+v", first.Cells[3].SourceCells)
+	wantCell := ViewDataCellRef{RowAddress: "ldl:project:p:entity:alpha:row:primary", ColumnAddress: "ldl:project:p:entity-type:service:column:environment"}
+	if !reflect.DeepEqual(environment.Source.CellRefs, []ViewDataCellRef{wantCell}) {
+		t.Fatalf("environment source = %+v", environment.Source)
 	}
-	if first.Cells[4].Value.Scalar == nil || first.Cells[4].Value.Scalar.Int != 1 {
-		t.Fatalf("derived count = %+v", first.Cells[4])
-	}
-	if !reflect.DeepEqual(response.Result.Source.RowAddresses, []string{"ldl:project:p:entity:alpha:row:primary", "ldl:project:p:entity:beta:row:primary", "ldl:project:p:relation:alpha_beta:row:primary"}) {
-		t.Fatalf("source rows = %+v", response.Result.Source.RowAddresses)
+	outgoing := tableCellByID(t, *result.Table, first, "outgoing")
+	if outgoing.Value == nil || outgoing.Value.Scalar == nil || outgoing.Value.Scalar.Int != 1 || len(outgoing.Source.RelationAddresses) != 1 {
+		t.Fatalf("derived cell = %+v", outgoing)
 	}
 }
 
-func TestMaterializeViewBuildsEntitySummaryTableAndStringSets(t *testing.T) {
-	t.Parallel()
-	snapshot, queryResult := compileAndExecuteViewFixture(t, entitySummaryTableViewSource())
-	response := New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{
-		Recipe:      snapshot.TypedAST.Views[0],
-		Graph:       *snapshot.TypedAST.Graph,
-		QueryResult: queryResult,
-	})
-	if response.Status != "ok" || response.Result == nil || response.Result.Table == nil {
-		t.Fatalf("MaterializeView() = %+v", response)
-	}
-	if len(response.Result.Table.Rows) != 2 {
-		t.Fatalf("rows = %+v", response.Result.Table.Rows)
-	}
-	first := response.Result.Table.Rows[0]
-	if first.Key != "entity:ldl:project:p:entity:alpha" {
-		t.Fatalf("first row = %+v", first)
-	}
-	if first.Cells[0].Value.Scalar == nil || first.Cells[0].Value.Scalar.String != "Alpha" {
-		t.Fatalf("display cell = %+v", first.Cells[0])
-	}
-	if !reflect.DeepEqual(first.Cells[1].Value.StringSet, []string{"critical"}) {
-		t.Fatalf("tags cell = %+v", first.Cells[1])
-	}
-}
-
-func TestMaterializeViewBuildsRelationTableAndStateReads(t *testing.T) {
+func TestMaterializeViewTracksOptionalDirectStateReadsWithoutInventingValues(t *testing.T) {
 	t.Parallel()
 	snapshot, queryResult := compileAndExecuteViewFixture(t, relationTableViewSource())
-	response := New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{
-		Recipe:      snapshot.TypedAST.Views[0],
-		Graph:       *snapshot.TypedAST.Graph,
-		QueryResult: queryResult,
-	})
-	if response.Status != "ok" || response.Result == nil || response.Result.Table == nil {
-		t.Fatalf("MaterializeView() = %+v", response)
+	result := materializeQueryView(t, snapshot, queryResult, nil)
+	base, _ := result.Base()
+	want := StateReadRef{SubjectAddress: "ldl:project:p:relation:alpha_beta", FieldPath: "system.updated_at"}
+	if base.StatePolicy != "optional" || base.StateInput.Kind != "none" || !reflect.DeepEqual(base.Source.State.Reads, []StateReadRef{want}) {
+		t.Fatalf("state base = %+v", base)
 	}
-	table := response.Result.Table
-	if got := columnIDs(table.Columns); !reflect.DeepEqual(got, []string{"relation_id", "from", "protocol", "updated_at"}) {
-		t.Fatalf("columns = %v", got)
-	}
-	if len(table.Rows) != 1 {
-		t.Fatalf("rows = %+v", table.Rows)
-	}
-	row := table.Rows[0]
-	if row.Key != "relation-row:ldl:project:p:relation:alpha_beta:row:primary" || row.SubjectAddress != "ldl:project:p:relation:alpha_beta" {
-		t.Fatalf("row = %+v", row)
-	}
-	if row.Cells[0].Value.Scalar == nil || row.Cells[0].Value.Scalar.String != "alpha_beta" {
-		t.Fatalf("relation id cell = %+v", row.Cells[0])
-	}
-	if row.Cells[1].Value.Address == nil || *row.Cells[1].Value.Address != "ldl:project:p:entity:alpha" {
-		t.Fatalf("from endpoint cell = %+v", row.Cells[1])
-	}
-	if row.Cells[2].Value.Scalar == nil || row.Cells[2].Value.Scalar.String != "http" {
-		t.Fatalf("protocol cell = %+v", row.Cells[2])
-	}
-	wantRead := StateReadRef{SubjectAddress: "ldl:project:p:relation:alpha_beta", FieldPath: "system.updated_at"}
-	if !reflect.DeepEqual(row.Cells[3].StateReads, []StateReadRef{wantRead}) {
-		t.Fatalf("cell state reads = %+v", row.Cells[3].StateReads)
-	}
-	if !reflect.DeepEqual(response.Result.Source.StateReads, []StateReadRef{wantRead}) {
-		t.Fatalf("source state reads = %+v", response.Result.Source.StateReads)
+	cell := tableCellByID(t, *result.Table, result.Table.Rows[0], "updated_at")
+	if cell.Present || cell.Value != nil || !reflect.DeepEqual(cell.Source.State.Reads, []StateReadRef{want}) {
+		t.Fatalf("state cell = %+v", cell)
 	}
 }
 
-func TestMaterializeViewBuildsContextFacts(t *testing.T) {
+func TestMaterializeViewBuildsNestedContextGroups(t *testing.T) {
 	t.Parallel()
 	snapshot, queryResult := compileAndExecuteViewFixture(t, contextViewSource())
-	response := New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{
-		Recipe:      snapshot.TypedAST.Views[0],
-		Graph:       *snapshot.TypedAST.Graph,
-		QueryResult: queryResult,
-	})
-	if response.Status != "ok" || response.Result == nil || response.Result.Context == nil {
-		t.Fatalf("MaterializeView() = %+v", response)
+	result := materializeQueryView(t, snapshot, queryResult, nil)
+	if result.Context == nil || len(result.Context.Groups) != 1 {
+		t.Fatalf("context = %+v", result.Context)
 	}
-	if got := contextFactKeys(response.Result.Context.Facts); !reflect.DeepEqual(got, []string{
-		"entity:ldl:project:p:entity:alpha",
-		"entity-row:ldl:project:p:entity:alpha:row:primary",
-		"entity:ldl:project:p:entity:beta",
-		"entity-row:ldl:project:p:entity:beta:row:primary",
-		"relation:ldl:project:p:relation:alpha_beta",
-		"relation-row:ldl:project:p:relation:alpha_beta:row:primary",
-	}) {
-		t.Fatalf("facts = %v", got)
+	group := result.Context.Groups[0]
+	if group.Label != "Application" || len(group.Facts) != 2 || len(group.Attributes) != 2 {
+		t.Fatalf("group = %+v", group)
 	}
-	if got := len(response.Result.Context.Groups); got != 1 {
-		t.Fatalf("groups = %+v", response.Result.Context.Groups)
+	fact := group.Facts[0]
+	if fact.Direction != ContextFactOutgoing || fact.EntityAddress != "ldl:project:p:entity:alpha" || fact.RelationAddress != "ldl:project:p:relation:alpha_beta" {
+		t.Fatalf("fact = %+v", fact)
+	}
+	if !strings.HasPrefix(fact.Key, "vdi:context-fact:") || len(fact.Source.RelationAddresses) != 1 {
+		t.Fatalf("fact identity/source = %+v", fact)
 	}
 }
 
-func TestMaterializeViewRejectsMismatchedQueryAndUnsupportedShape(t *testing.T) {
+func TestViewDataUnionDefinesEveryClosedShape(t *testing.T) {
+	t.Parallel()
+	base := ViewDataBase{Kind: ViewDataMatrix}
+	values := []ViewData{
+		{Diagram: &DiagramViewData{ViewDataBase: ViewDataBase{Kind: ViewDataDiagram}}},
+		{Table: &TableViewData{ViewDataBase: ViewDataBase{Kind: ViewDataTable}}},
+		{Matrix: &MatrixViewData{ViewDataBase: base}},
+		{Tree: &TreeViewData{ViewDataBase: ViewDataBase{Kind: ViewDataTree}}},
+		{Flow: &FlowViewData{ViewDataBase: ViewDataBase{Kind: ViewDataFlow}}},
+		{Context: &ContextViewData{ViewDataBase: ViewDataBase{Kind: ViewDataContext}}},
+		{Diff: &DiffViewData{ViewDataBase: ViewDataBase{Kind: ViewDataDiff}}},
+	}
+	for index, value := range values {
+		if _, ok := value.Base(); !ok {
+			t.Fatalf("variant %d is not closed", index)
+		}
+	}
+	values[0].Table = &TableViewData{}
+	if _, ok := values[0].Base(); ok {
+		t.Fatal("multi-variant ViewData was accepted")
+	}
+	if _, ok := (ViewData{Diagram: &DiagramViewData{ViewDataBase: ViewDataBase{Kind: ViewDataTable}}}).Base(); ok {
+		t.Fatal("variant with mismatched embedded kind was accepted")
+	}
+}
+
+func TestMaterializeViewFailsClosedForSourceRevisionAndStateMismatches(t *testing.T) {
 	t.Parallel()
 	snapshot, queryResult := compileAndExecuteViewFixture(t, diagramViewSource())
 	recipe := snapshot.TypedAST.Views[0]
-	recipe.Source.Query.QueryAddress = "ldl:project:p:query:other"
-	rejected := New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{Recipe: recipe, Graph: *snapshot.TypedAST.Graph, QueryResult: queryResult})
-	if rejected.Status != "rejected" || len(rejected.Diagnostics) == 0 || rejected.Diagnostics[0].Code != "LDL1601" {
-		t.Fatalf("mismatched query response = %+v", rejected)
+	engine := New(BuildInfo{})
+	cases := []ViewMaterializationInput{
+		{Recipe: recipe},
+		{Recipe: recipe, Query: &QueryViewMaterializationInput{RevisionID: "", Snapshot: snapshot, QueryResult: queryResult}},
+		{Recipe: recipe, Query: &QueryViewMaterializationInput{RevisionID: "revision-1", Snapshot: snapshot, QueryResult: queryResult}, Diff: &DiffViewMaterializationInput{}},
 	}
-	snapshot, queryResult = compileAndExecuteViewFixture(t, diagramViewSource())
-	unsupported := snapshot.TypedAST.Views[0]
-	unsupported.Shape = view.Shape{Kind: view.ShapeMatrix}
-	rejected = New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{Recipe: unsupported, Graph: *snapshot.TypedAST.Graph, QueryResult: queryResult})
-	if rejected.Status != "rejected" || len(rejected.Diagnostics) == 0 || rejected.Diagnostics[0].Code != "LDL1701" {
-		t.Fatalf("unsupported shape response = %+v", rejected)
+	for index, input := range cases {
+		response := engine.MaterializeView(context.Background(), input)
+		if response.Status != "rejected" || len(response.Diagnostics) == 0 {
+			t.Fatalf("case %d = %+v", index, response)
+		}
 	}
-	required := snapshot.TypedAST.Views[0]
-	required.StateRequirement = "required"
-	rejected = New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{Recipe: required, Graph: *snapshot.TypedAST.Graph, QueryResult: queryResult})
-	if rejected.Status != "rejected" || len(rejected.Diagnostics) == 0 || rejected.Diagnostics[0].Code != "LDL1604" {
-		t.Fatalf("required state response = %+v", rejected)
+	foreign := compileViewFixture(t, strings.Replace(diagramViewSource(), `"Topology"`, `"Foreign topology"`, 1))
+	response := engine.MaterializeView(context.Background(), ViewMaterializationInput{
+		Recipe: recipe, Query: &QueryViewMaterializationInput{RevisionID: "revision-1", Snapshot: foreign, QueryResult: queryResult},
+	})
+	if response.Status != "rejected" || response.Diagnostics[0].Code != "LDL1801" {
+		t.Fatalf("foreign revision = %+v", response)
+	}
+
+	requiredSnapshot, requiredResult := compileAndExecuteViewFixture(t, strings.Replace(relationTableViewSource(), "state_input optional", "state_input required", 1))
+	state := validStateQuerySnapshot(t, requiredSnapshot, []StateQuerySubject{stateSubject(
+		"ldl:project:p:relation:alpha_beta", stateFields("system.updated_at", datetimeScalar("2026-01-04T00:00:00Z")),
+	)})
+	ok := materializeQueryView(t, requiredSnapshot, requiredResult, &state)
+	base, _ := ok.Base()
+	if base.StateInput.Kind != "snapshot" || base.StateInput.SnapshotHash == "" {
+		t.Fatalf("required state = %+v", base.StateInput)
+	}
+	missing := New(BuildInfo{}).MaterializeView(context.Background(), queryViewInput(requiredSnapshot, requiredResult, nil))
+	if missing.Status != "rejected" || missing.Diagnostics[0].Code != "LDL1604" {
+		t.Fatalf("missing required state = %+v", missing)
 	}
 }
 
-func TestMaterializeViewRejectsInvalidInputAndFallsBackToSeedSelection(t *testing.T) {
+func TestMaterializeViewValidatesDiffInputBeforeUnimplementedProjection(t *testing.T) {
 	t.Parallel()
-	graphValue := TypedMasterGraph{
-		Entities: []graph.Entity{{ID: "alpha", Address: "entity:alpha", DisplayName: "Alpha", TypeAddress: "type:service", LayerAddress: "layer:app"}},
+	snapshot := compileViewFixture(t, `project p "Project" {}
+view changes "Changes" diff {
+  source diff "before" -> "after" {}
+  diff {}
+}
+`)
+	recipe := snapshot.TypedAST.Views[0]
+	valid := ViewMaterializationInput{Recipe: recipe, Diff: &DiffViewMaterializationInput{
+		RecipeRevisionID: "recipe-1", RecipeSnapshot: snapshot,
+		BeforeRevisionID: "before-1", BeforeSnapshot: snapshot,
+		AfterRevisionID: "after-1", AfterSnapshot: snapshot,
+	}}
+	response := New(BuildInfo{}).MaterializeView(context.Background(), valid)
+	if response.Status != "rejected" || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != "LDL1701" {
+		t.Fatalf("valid but unimplemented Diff = %+v", response)
 	}
-	recipe := CompiledViewRecipe{
-		Address: "view:v", Category: "topology",
-		Source: CompiledViewRecipe{}.Source,
-		Shape:  view.Shape{Kind: view.ShapeDiagram, Diagram: &view.DiagramShape{}},
+	invalid := valid
+	invalid.Diff.AfterRevisionID = ""
+	response = New(BuildInfo{}).MaterializeView(context.Background(), invalid)
+	if response.Status != "rejected" || response.Diagnostics[0].Code != "LDL1801" {
+		t.Fatalf("invalid Diff = %+v", response)
 	}
-	recipe.Source.Kind = view.SourceQuery
-	recipe.Source.Query = &view.QuerySource{QueryAddress: "query:q"}
-	queryResult := QueryResult{QueryAddress: "query:q", SeedEntityAddresses: []string{"entity:alpha"}, StateInput: QueryStateInputRef{Kind: "none"}}
-	response := New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{Recipe: recipe, Graph: graphValue, QueryResult: queryResult})
-	if response.Status != "ok" || response.Result == nil || len(response.Result.Diagram.Nodes) != 1 {
-		t.Fatalf("fallback response = %+v", response)
+}
+
+func materializeQueryView(t *testing.T, snapshot Snapshot, result QueryResult, state *StateQuerySnapshot) ViewData {
+	t.Helper()
+	response := New(BuildInfo{}).MaterializeView(context.Background(), queryViewInput(snapshot, result, state))
+	if response.Status != "ok" || response.Result == nil {
+		t.Fatalf("MaterializeView() = %+v", response)
 	}
-	if response.Result.Diagram.Nodes[0].EntityAddress != "entity:alpha" {
-		t.Fatalf("fallback node = %+v", response.Result.Diagram.Nodes)
-	}
-	if rejected := New(BuildInfo{}).MaterializeView(nil, ViewMaterializationInput{Recipe: recipe, Graph: graphValue, QueryResult: queryResult}); rejected.Status != "rejected" || rejected.Diagnostics[0].Code != "LDL1801" {
-		t.Fatalf("nil context response = %+v", rejected)
-	}
-	invalid := recipe
-	invalid.Address = ""
-	rejected := New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{Recipe: invalid, Graph: graphValue, QueryResult: queryResult})
-	if rejected.Status != "rejected" || rejected.Diagnostics[0].Code != "LDL1701" {
-		t.Fatalf("empty address response = %+v", rejected)
-	}
-	invalid = recipe
-	invalid.Source.Kind = view.SourceDiff
-	invalid.Source.Query = nil
-	rejected = New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{Recipe: invalid, Graph: graphValue, QueryResult: queryResult})
-	if rejected.Status != "rejected" || rejected.Diagnostics[0].Code != "LDL1701" {
-		t.Fatalf("diff source response = %+v", rejected)
-	}
-	invalid = recipe
-	queryResult.SeedEntityAddresses = []string{"entity:missing"}
-	rejected = New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{Recipe: invalid, Graph: graphValue, QueryResult: queryResult})
-	if rejected.Status != "rejected" || rejected.Diagnostics[0].Code != "LDL1601" {
-		t.Fatalf("missing entity response = %+v", rejected)
-	}
-	queryResult = QueryResult{QueryAddress: "query:q", SelectedRelationAddresses: []string{"relation:missing"}, StateInput: QueryStateInputRef{Kind: "none"}}
-	rejected = New(BuildInfo{}).MaterializeView(context.Background(), ViewMaterializationInput{Recipe: invalid, Graph: graphValue, QueryResult: queryResult})
-	if rejected.Status != "rejected" || rejected.Diagnostics[0].Code != "LDL1601" {
-		t.Fatalf("missing relation response = %+v", rejected)
+	return *response.Result
+}
+
+func queryViewInput(snapshot Snapshot, result QueryResult, state *StateQuerySnapshot) ViewMaterializationInput {
+	return ViewMaterializationInput{
+		Recipe: snapshot.TypedAST.Views[0],
+		Query:  &QueryViewMaterializationInput{RevisionID: "revision-1", Snapshot: snapshot, QueryResult: result, StateSnapshot: state},
 	}
 }
 
@@ -252,8 +220,7 @@ func compileAndExecuteViewFixture(t *testing.T, source string) (Snapshot, QueryR
 		t.Fatalf("views = %+v", snapshot.TypedAST.Views)
 	}
 	queryResponse, err := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
-		Recipe: snapshot.TypedAST.Queries[0],
-		Graph:  *snapshot.TypedAST.Graph,
+		Recipe: snapshot.TypedAST.Queries[0], Graph: *snapshot.TypedAST.Graph, Definition: snapshot.QueryDefinitionIdentity(),
 		Arguments: map[string]TypedScalar{
 			"ldl:project:p:query:prod_scope:parameter:environment": {Type: definition.ScalarEnum, String: "prod"},
 		},
@@ -267,6 +234,22 @@ func compileAndExecuteViewFixture(t *testing.T, source string) (Snapshot, QueryR
 	return snapshot, *queryResponse.Result
 }
 
+func compileViewFixture(t *testing.T, source string) Snapshot {
+	t.Helper()
+	result, err := New(BuildInfo{}).Compile(context.Background(), CompileInput{
+		Mode: CompileProject, EntryPath: "document.ldl", ProjectSourceTree: map[string][]byte{"document.ldl": []byte(source)},
+		ResolvedDependencies: ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := result.Snapshot()
+	if len(snapshot.Diagnostics) != 0 || len(snapshot.TypedAST.Views) != 1 {
+		t.Fatalf("compile = %+v", snapshot.Diagnostics)
+	}
+	return snapshot
+}
+
 func diagramViewSource() string {
 	return structuralQuerySource() + `
 view topology "Topology" topology {
@@ -276,7 +259,6 @@ view topology "Topology" topology {
     direction left_to_right
     abstraction normal
     place alpha 10 20 200 100
-    place gamma 30 40 200 100
   }
 }
 `
@@ -297,24 +279,6 @@ view inventory "Inventory" inventory {
     }
     column outgoing {
       source derived_count outgoing relations [calls]
-    }
-  }
-}
-`
-}
-
-func entitySummaryTableViewSource() string {
-	return structuralQuerySource() + `
-view inventory "Inventory" inventory {
-  source query prod_scope { environment: prod }
-  table {
-    rows entity
-    entity_types [service]
-    column display_name {
-      source field display_name
-    }
-    column tags {
-      source field tags
     }
   }
 }
@@ -359,34 +323,41 @@ view context "Context" context {
 `
 }
 
-func nodeAddresses(nodes []DiagramNode) []string {
-	values := make([]string, len(nodes))
-	for i, node := range nodes {
-		values[i] = node.EntityAddress
+func occurrenceAddresses(values []DiagramOccurrence) []string {
+	out := make([]string, len(values))
+	for index, value := range values {
+		out[index] = value.EntityAddress
 	}
-	return values
+	return out
 }
 
-func edgeAddresses(edges []DiagramEdge) []string {
-	values := make([]string, len(edges))
-	for i, edge := range edges {
-		values[i] = edge.RelationAddress
+func tableColumnIDs(values []TableColumn) []string {
+	out := make([]string, len(values))
+	for index, value := range values {
+		out[index] = value.ID
 	}
-	return values
+	return out
 }
 
-func columnIDs(columns []TableViewColumn) []string {
-	values := make([]string, len(columns))
-	for i, column := range columns {
-		values[i] = column.ID
+func tableCellByID(t *testing.T, table TableViewData, row TableRow, id string) TableCell {
+	t.Helper()
+	for _, column := range table.Columns {
+		if column.ID == id {
+			cell, ok := row.Cells[column.Key]
+			if !ok {
+				t.Fatalf("row lacks cell %s", id)
+			}
+			return cell
+		}
 	}
-	return values
+	t.Fatalf("column %s not found", id)
+	return TableCell{}
 }
 
-func contextFactKeys(facts []ContextFact) []string {
-	values := make([]string, len(facts))
-	for i, fact := range facts {
-		values[i] = fact.Key
+func assertRequiredSourceCollections(t *testing.T, source ViewDataSourceRefs) {
+	t.Helper()
+	if source.SubjectAddresses == nil || source.EntityAddresses == nil || source.RelationAddresses == nil || source.LayerAddresses == nil ||
+		source.RowAddresses == nil || source.CellRefs == nil || source.AssetDigests == nil || source.State.Reads == nil {
+		t.Fatalf("required source collection is nil: %+v", source)
 	}
-	return values
 }

@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,23 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/query"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
 )
+
+// validateStateQuerySnapshotForDefinition reuses the Query evaluator's closed
+// snapshot validation for direct View state reads. It performs no Query
+// traversal and returns the canonical StateInputRef only after full validation.
+func validateStateQuerySnapshotForDefinition(ctx context.Context, identity QueryDefinitionIdentity, graphValue TypedMasterGraph, snapshot StateQuerySnapshot) (QueryStateInputRef, []Diagnostic, error) {
+	limits := DefaultQueryExecutionLimits()
+	validator := &queryExecutor{
+		ctx: ctx, limits: limits, graph: graphValue, definition: identity,
+		stateReads: map[StateReadRef]bool{}, deniedStateReads: map[StateReadRef]bool{},
+		stateSubjects: map[string]validatedStateSubject{}, stateInaccessible: map[query.StateFieldPath]bool{},
+		currentStateHashes: map[string]string{}, staleStateSubjects: map[string]bool{},
+	}
+	if !validator.validateStateSnapshot(snapshot) {
+		return QueryStateInputRef{}, sortedDiagnostics(validator.diagnostics), validator.err
+	}
+	return validator.stateInput, nil, validator.err
+}
 
 const (
 	StateQuerySnapshotFormat        = "layerdraw-query-state"
