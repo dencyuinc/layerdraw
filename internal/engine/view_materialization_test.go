@@ -251,13 +251,16 @@ func compileAndExecuteViewFixture(t *testing.T, source string) (Snapshot, QueryR
 	if len(snapshot.TypedAST.Views) != 1 {
 		t.Fatalf("views = %+v", snapshot.TypedAST.Views)
 	}
-	queryResponse := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
+	queryResponse, err := New(BuildInfo{}).ExecuteQuery(context.Background(), QueryExecutionInput{
 		Recipe: snapshot.TypedAST.Queries[0],
 		Graph:  *snapshot.TypedAST.Graph,
 		Arguments: map[string]TypedScalar{
 			"ldl:project:p:query:prod_scope:parameter:environment": {Type: definition.ScalarEnum, String: "prod"},
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if queryResponse.Status != "ok" || queryResponse.Result == nil {
 		t.Fatalf("ExecuteQuery() = %+v", queryResponse)
 	}

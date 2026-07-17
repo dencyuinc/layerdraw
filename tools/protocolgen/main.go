@@ -83,7 +83,7 @@ var (
 		"x-layerdraw-stable-address-roles": {"type": "array", "items": {"$ref": "#/$defs/stableAddressRoleRule"}, "minItems": 1, "uniqueItems": true},
 		"x-layerdraw-stable-address-order": {"type": "string", "description": "For an array, require strict Language 1 StableSymbol order using either $item or the named string property of each item."},
 		"x-layerdraw-state-read-order": {"type": "boolean", "const": true},
-		"x-layerdraw-protocol-invariant": {"type": "string", "enum": ["apply_input", "apply_result", "authoring_impact", "authoring_impact_entry", "bounded_text_chunk", "document_bound_input", "open_document_result", "paged_result", "preview_result", "semantic_operation", "source_edit"]},
+		"x-layerdraw-protocol-invariant": {"type": "string", "enum": ["apply_input", "apply_result", "authoring_impact", "authoring_impact_entry", "bounded_text_chunk", "document_bound_input", "open_document_result", "paged_result", "preview_result", "query_result", "semantic_operation", "source_edit"]},
 		"x-layerdraw-tagged-union": {"$ref": "#/$defs/taggedUnion"},
 		"x-layerdraw-state-read": {"type": "boolean", "const": true},
 		"x-layerdraw-ts-module": {"type": "string", "minLength": 1},
@@ -834,7 +834,7 @@ func validateType(set schemaSet, document *schemaDocument, context string, value
 	}
 	if typeValue == "object" {
 		if value.ProtocolInvariant != "" {
-			allowed := map[string]bool{"apply_input": true, "apply_result": true, "authoring_impact": true, "authoring_impact_entry": true, "bounded_text_chunk": true, "document_bound_input": true, "open_document_result": true, "paged_result": true, "preview_result": true, "semantic_operation": true, "source_edit": true}
+			allowed := map[string]bool{"apply_input": true, "apply_result": true, "authoring_impact": true, "authoring_impact_entry": true, "bounded_text_chunk": true, "document_bound_input": true, "open_document_result": true, "paged_result": true, "preview_result": true, "query_result": true, "semantic_operation": true, "source_edit": true}
 			if !allowed[value.ProtocolInvariant] {
 				return fmt.Errorf("%s has unknown protocol invariant %q", context, value.ProtocolInvariant)
 			}
@@ -3816,6 +3816,23 @@ func validatePagedResult(path string, object map[string]any) error {
 	return nil
 }
 
+func validateQueryResult(path string, object map[string]any) error {
+	result, ok := protocolObject(object["result"]); if !ok { return fmt.Errorf("%s.result must be an object", path) }
+	fields := [...]string{"seed_entity_addresses","reached_entity_addresses","traversed_entity_addresses","path_relation_addresses","induced_relation_addresses","primary_entity_addresses","selected_relation_addresses","support_entity_addresses","paths","cycle_refs","state_reads","diagnostics"}
+	var itemCount uint64
+	for _, field := range fields {
+		items, ok := result[field].([]any); if !ok { return fmt.Errorf("%s.result.%s must be an array", path, field) }
+		if uint64(len(items)) > math.MaxUint64-itemCount { return fmt.Errorf("%s query result item count overflows", path) }
+		itemCount += uint64(len(items))
+	}
+	returnedItems, ok := object["returned_items"].(string); if !ok || returnedItems != strconv.FormatUint(itemCount,10) { return fmt.Errorf("%s.returned_items must equal the query result item count", path) }
+	want, ok := object["returned_bytes"].(string); if !ok { return fmt.Errorf("%s.returned_bytes is invalid", path) }
+	object["returned_bytes"] = "0"; canonical, err := appendCanonicalJSON(nil,object); object["returned_bytes"] = want; if err != nil { return err }
+	blobs, err := protocolBlobSize(object); if err != nil || uint64(len(canonical)) > math.MaxUint64-blobs { return fmt.Errorf("%s logical response byte count overflows", path) }
+	if want != strconv.FormatUint(uint64(len(canonical))+blobs,10) { return fmt.Errorf("%s.returned_bytes is not the exact logical response byte count", path) }
+	return nil
+}
+
 func validateSemanticOperationInvariant(path string, object map[string]any) error {
 	operation := protocolString(object, "operation")
 	if operation == "create_subject" {
@@ -3849,6 +3866,7 @@ func validateProtocolInvariant(path string, object map[string]any, profile strin
 		if handle, present := object["document_handle"]; present && !sameProtocolGeneration(object["document_generation"], map[string]any{"document_handle":handle,"value":protocolString(object["document_generation"].(map[string]any),"value")}) { return fmt.Errorf("%s outer handle does not match document generation", path) }
 		if cursor, present := object["cursor"]; present { cursorObject, ok := protocolObject(cursor); if !ok || !sameProtocolGeneration(object["document_generation"], cursorObject["document_generation"]) { return fmt.Errorf("%s.cursor is bound to another document generation", path) } }
 	case "paged_result": return validatePagedResult(path, object)
+	case "query_result": return validateQueryResult(path, object)
 	case "bounded_text_chunk":
 		blob, _ := protocolObject(object["blob"]); offset, e1 := strconv.ParseUint(protocolString(object,"offset"),10,64); total, e2 := strconv.ParseUint(protocolString(object,"total_bytes"),10,64); size, e3 := strconv.ParseUint(protocolString(blob,"size"),10,64); if e1 != nil || e2 != nil || e3 != nil || offset > total || size > total-offset || blob["media_type"] != "text/plain; charset=utf-8" || blob["lifetime"] != "request" { return fmt.Errorf("%s has an invalid bounded UTF-8 chunk range", path) }; if offset == 0 && size == total && blob["digest"] != object["full_digest"] { return fmt.Errorf("%s complete chunk digest must equal full_digest", path) }
 	case "source_edit":
@@ -4305,6 +4323,13 @@ function protocolPagedResult(value: Record<string,unknown>): boolean {
   if (hasOwn(page,"next_cursor") && (!isObject(page["next_cursor"]) || !sameProtocolGeneration(value["document_generation"],page["next_cursor"]["document_generation"]))) return false;
   const returned=page["returned_bytes"]; if (typeof returned!=="string") return false; const copy=JSON.parse(canonicalJSONStringify(value)) as Record<string,unknown>; if (!isObject(copy["page"])) return false; copy["page"]["returned_bytes"]="0"; const blobs=protocolBlobBytes(value); return blobs!==undefined && BigInt(new TextEncoder().encode(canonicalJSONStringify(copy)).length)+blobs===BigInt(returned);
 }
+function protocolQueryResult(value: Record<string,unknown>): boolean {
+  const result=value["result"]; if (!isObject(result)) return false;
+  const fields=["seed_entity_addresses","reached_entity_addresses","traversed_entity_addresses","path_relation_addresses","induced_relation_addresses","primary_entity_addresses","selected_relation_addresses","support_entity_addresses","paths","cycle_refs","state_reads","diagnostics"] as const;
+  let count=0n; for (const field of fields) { const items=result[field]; if (!isJSONArray(items)) return false; count+=BigInt(items.length); }
+  if (value["returned_items"]!==String(count)) return false;
+  const returned=value["returned_bytes"]; if (typeof returned!=="string") return false; const copy=JSON.parse(canonicalJSONStringify(value)) as Record<string,unknown>; copy["returned_bytes"]="0"; const blobs=protocolBlobBytes(value); try { return blobs!==undefined && BigInt(new TextEncoder().encode(canonicalJSONStringify(copy)).length)+blobs===BigInt(returned); } catch { return false; }
+}
 function protocolCreateSubjectExport(fields: Record<string,unknown>): boolean {
   const format=fields["format"], filename=fields["filename"]; if (typeof format!=="string"||typeof filename!=="string") return false;
   const extension=new Map<string,string>([["json",".json"],["yaml",".yaml"],["svg",".svg"],["png",".png"],["pdf",".pdf"],["html",".html"],["csv",".csv"],["tsv",".tsv"],["xlsx",".xlsx"],["markdown",".md"],["pptx",".pptx"],["docx",".docx"],["mermaid",".mmd"],["bpmn",".bpmn"],["drawio",".drawio"]]).get(format);
@@ -4325,6 +4350,7 @@ function hasProtocolInvariant(value: Record<string,unknown>,profile: string): bo
   if (profile==="open_document_result") { return isObject(value["document_generation"])&&sameProtocolGeneration(value["document_generation"],{document_handle:value["document_handle"],value:value["document_generation"]["value"]}); }
   if (profile==="document_bound_input") { if (hasOwn(value,"document_handle")&&(!isObject(value["document_generation"])||!sameProtocolGeneration(value["document_generation"],{document_handle:value["document_handle"],value:value["document_generation"]["value"]}))) return false; return !hasOwn(value,"cursor") || isObject(value["cursor"])&&sameProtocolGeneration(value["document_generation"],value["cursor"]["document_generation"]); }
   if (profile==="paged_result") return protocolPagedResult(value);
+  if (profile==="query_result") return protocolQueryResult(value);
   if (profile==="bounded_text_chunk") { const blob=value["blob"]; if (!isObject(blob)||typeof value["offset"]!=="string"||typeof value["total_bytes"]!=="string"||typeof blob["size"]!=="string") return false; try { const offset=BigInt(value["offset"]), total=BigInt(value["total_bytes"]), size=BigInt(blob["size"]); return offset<=total&&size<=total-offset&&blob["media_type"]==="text/plain; charset=utf-8"&&blob["lifetime"]==="request"&&(offset!==0n||size!==total||blob["digest"]===value["full_digest"]); } catch { return false; } }
   if (profile==="source_edit") { const blob=value["replacement_blob"]; if (isObject(blob)&&(blob["digest"]!==value["after_digest"]||blob["media_type"]!=="text/plain; charset=utf-8"||blob["lifetime"]!=="request")) return false; return value["kind"]!=="move" || value["before_digest"]===value["after_digest"]&&canonicalJSONStringify(value["before_module"])!==canonicalJSONStringify(value["after_module"]); }
   if (profile==="preview_result") { if (value["status"]!=="valid") return isJSONArray(value["conflicts"])&&value["conflicts"].length>0||protocolHasErrorDiagnostic(value["diagnostics"]); const impact=value["authoring_impact"], semantic=value["semantic_diff"], source=value["source_diff"], hashes=value["resulting_hashes"], preview=value["preview_id"], base=protocolGenerationKey(value["base_generation"]); return isObject(impact)&&isObject(semantic)&&isObject(source)&&isObject(hashes)&&isObject(preview)&&base!==undefined&&!protocolHasErrorDiagnostic(value["diagnostics"])&&value["authoring_impact_digest"]===impact["impact_digest"]&&canonicalJSONStringify(value["required_authoring_capabilities"])===canonicalJSONStringify(impact["required_capabilities"])&&impact["semantic_diff_hash"]===semantic["digest"]&&impact["source_diff_hash"]===source["digest"]&&impact["resulting_definition_hash"]===hashes["definition_hash"]&&preview["endpoint_instance_id"]===base[0]&&nextProtocolGeneration(value["base_generation"],value["proposed_generation"]); }

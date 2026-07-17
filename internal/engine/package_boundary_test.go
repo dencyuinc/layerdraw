@@ -63,6 +63,7 @@ func TestEngineCompilerPackageBoundary(t *testing.T) {
 			}
 			allowedLocalImport := strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/internal/compiler") ||
 				strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/internal/engine/internal/sourceplanner") ||
+				importPath == "github.com/dencyuinc/layerdraw/internal/engine/internal/canonicaljson" ||
 				strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/gen/go/") ||
 				(strings.HasPrefix(path, "endpoint/") && importPath == "github.com/dencyuinc/layerdraw/internal/engine")
 			if strings.HasPrefix(importPath, "github.com/dencyuinc/layerdraw/") && !allowedLocalImport {

@@ -3,11 +3,14 @@
 package endpoint
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -21,6 +24,7 @@ type fakeWorkbenchDriver struct {
 	descriptor engine.Descriptor
 	plan       sourceplanner.SourcePlan
 	generation engine.DocumentGeneration
+	queryState string
 	err        error
 }
 
@@ -80,21 +84,29 @@ func (driver *fakeWorkbenchDriver) ReadRows(context.Context, engine.ReadRowsInpu
 	return engine.ReadRowsResult{}, nil
 }
 
-func (driver *fakeWorkbenchDriver) ExecuteDocumentQuery(_ context.Context, input engine.ExecuteDocumentQueryInput) (engine.ExecuteDocumentQueryResult, error) {
+func (driver *fakeWorkbenchDriver) ExecuteDocumentQuery(ctx context.Context, input engine.ExecuteDocumentQueryInput) (engine.ExecuteDocumentQueryResult, error) {
 	if driver.err != nil {
 		return engine.ExecuteDocumentQueryResult{}, driver.err
 	}
-	return engine.ExecuteDocumentQueryResult{
+	result := engine.ExecuteDocumentQueryResult{
 		DocumentGeneration: input.DocumentGeneration,
 		Result: engine.QueryResult{
 			Arguments:    input.Arguments,
 			QueryAddress: input.QueryAddress,
 			StateInput:   engine.QueryStateInputRef{Kind: "none"},
-			StatePolicy:  "forbid",
+			StatePolicy:  "none",
 		},
 		ReturnedItems: 0,
-		ReturnedBytes: 1,
-	}, nil
+	}
+	if driver.queryState != "" {
+		result.Result.StatePolicy = driver.queryState
+	}
+	returnedBytes, err := engine.MeasureDocumentQueryLogicalBytes(ctx, result, input.Limits.MaxOutputBytes)
+	if err != nil {
+		return engine.ExecuteDocumentQueryResult{}, err
+	}
+	result.ReturnedBytes = returnedBytes
+	return result, nil
 }
 
 func (driver *fakeWorkbenchDriver) GetNeighbors(context.Context, engine.GetNeighborsInput) (engine.GetNeighborsResult, error) {
@@ -545,7 +557,7 @@ func TestWorkbenchPlanTerminalAndExecutionFailureEdges(t *testing.T) {
 	}
 }
 
-func TestWorkbenchExecutionErrorsBecomeRejectedDiagnostics(t *testing.T) {
+func TestWorkbenchOperationalLimitsBecomeFailedResources(t *testing.T) {
 	driver := newFakeWorkbenchDriver()
 	driver.err = &engine.WorkbenchError{Code: "engine.workbench.limit", Category: engine.WorkbenchErrorLimitExceeded, Resource: "items", Limit: 1, Observed: 2}
 	dispatcher := newCompileDispatcher(driver)
@@ -566,12 +578,108 @@ func TestWorkbenchExecutionErrorsBecomeRejectedDiagnostics(t *testing.T) {
 		t.Fatalf("prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
 	}
 	response, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
-	if err != nil || response.Outcome != protocolcommon.OutcomeRejected {
+	if err != nil || response.Outcome != protocolcommon.OutcomeFailed {
 		t.Fatalf("dispatch = %+v err=%v", response, err)
 	}
 	decoded, err := engineprotocol.DecodeListModulesResponseEnvelope(response.Control)
-	if err != nil || decoded.Payload != nil || len(decoded.Diagnostics) != 1 || decoded.Failure != nil {
+	if err != nil || decoded.Payload != nil || len(decoded.Diagnostics) != 0 || decoded.Failure == nil ||
+		decoded.Failure.Category != protocolcommon.ProtocolFailureCategoryResource || decoded.Failure.WorkbenchCategory != engineprotocol.WorkbenchFailureCategory("limit_exceeded") ||
+		decoded.Failure.SafeDetails == nil || !reflect.DeepEqual((*decoded.Failure.SafeDetails)["resource"], stringJSON("items")) {
 		t.Fatalf("decoded = %+v err=%v", decoded, err)
+	}
+}
+
+func TestExecuteQueryResourceFailureUsesFailedEnvelope(t *testing.T) {
+	driver := newFakeWorkbenchDriver()
+	driver.err = &engine.WorkbenchError{
+		Code:     "engine.workbench.limit",
+		Category: engine.WorkbenchErrorLimitExceeded,
+		Resource: "query_work",
+		Limit:    100,
+		Observed: 101,
+	}
+	dispatcher := newCompileDispatcher(driver)
+	negotiated := compileContext(t)
+	control, err := engineprotocol.EncodeExecuteQueryRequestEnvelope(engineprotocol.ExecuteQueryRequestEnvelope{
+		Operation: engineprotocol.ExecuteQueryRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ExecuteQueryInput{
+			Arguments: map[string]semantic.RecipeScalar{},
+			DocumentGeneration: engineprotocol.DocumentGeneration{
+				DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_1234567890abcdef"},
+				Value:          "1",
+			},
+			Limits:       engineprotocol.WorkbenchLimits{MaxItems: "100", MaxOutputBytes: "1000"},
+			QueryAddress: "ldl:project:p:query:q",
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "execute-query-resource-failure",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err := dispatcher.PrepareDispatch(context.Background(), negotiated, OperationExecuteQuery, control)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	response, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
+	if err != nil || response.Outcome != protocolcommon.OutcomeFailed {
+		t.Fatalf("dispatch = %+v err=%v", response, err)
+	}
+	decoded, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(response.Control)
+	if err != nil || decoded.Payload != nil || len(decoded.Diagnostics) != 0 || decoded.Failure == nil {
+		t.Fatalf("decoded = %+v err=%v", decoded, err)
+	}
+	if decoded.Failure.Category != protocolcommon.ProtocolFailureCategoryResource ||
+		decoded.Failure.WorkbenchCategory != engineprotocol.WorkbenchFailureCategoryLimitExceeded ||
+		decoded.Failure.Code != "engine.workbench.limit" || decoded.Failure.SafeDetails == nil {
+		t.Fatalf("failure = %+v", decoded.Failure)
+	}
+	wantDetails := protocolcommon.JsonObject{
+		"limit":    stringJSON("100"),
+		"observed": stringJSON("101"),
+		"resource": stringJSON("query_work"),
+	}
+	if !reflect.DeepEqual(*decoded.Failure.SafeDetails, wantDetails) {
+		t.Fatalf("safe details = %+v, want %+v", *decoded.Failure.SafeDetails, wantDetails)
+	}
+}
+
+func TestExecuteQueryInvalidDriverResultUsesInvariantFailureEnvelope(t *testing.T) {
+	driver := newFakeWorkbenchDriver()
+	driver.queryState = "invalid"
+	dispatcher := newCompileDispatcher(driver)
+	negotiated := compileContext(t)
+	control, err := engineprotocol.EncodeExecuteQueryRequestEnvelope(engineprotocol.ExecuteQueryRequestEnvelope{
+		Operation: engineprotocol.ExecuteQueryRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ExecuteQueryInput{
+			Arguments: map[string]semantic.RecipeScalar{},
+			DocumentGeneration: engineprotocol.DocumentGeneration{
+				DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_1234567890abcdef"},
+				Value:          "1",
+			},
+			Limits:       engineprotocol.WorkbenchLimits{MaxItems: "100", MaxOutputBytes: "1000"},
+			QueryAddress: "ldl:project:p:query:q",
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "execute-query-invalid-result",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, terminal, err := dispatcher.PrepareDispatch(context.Background(), negotiated, OperationExecuteQuery, control)
+	if err != nil || terminal != nil || plan == nil {
+		t.Fatalf("prepare plan=%v terminal=%+v err=%v", plan, terminal, err)
+	}
+	response, err := plan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
+	if err != nil || response.Outcome != protocolcommon.OutcomeFailed {
+		t.Fatalf("dispatch = %+v err=%v", response, err)
+	}
+	decoded, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(response.Control)
+	if err != nil || decoded.Payload != nil || len(decoded.Diagnostics) != 0 || decoded.Failure == nil {
+		t.Fatalf("decoded = %+v err=%v", decoded, err)
+	}
+	if decoded.Failure.Category != protocolcommon.ProtocolFailureCategoryInvariant ||
+		decoded.Failure.WorkbenchCategory != engineprotocol.WorkbenchFailureCategoryExecutionFailed ||
+		decoded.Failure.Code != "engine.workbench.result_invariant" || decoded.Failure.Retryable {
+		t.Fatalf("failure = %+v", decoded.Failure)
 	}
 }
 
@@ -612,42 +720,83 @@ func TestExecuteQueryMappingCoversScalarsCyclesAndErrors(t *testing.T) {
 		}
 	}
 
-	mapped, err := mapExecuteQueryResult(engine.ExecuteDocumentQueryResult{
+	queryResultInput := engine.ExecuteDocumentQueryResult{
 		DocumentGeneration: engine.DocumentGeneration{DocumentHandle: engine.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_1234567890abcdef"}, Value: 7},
 		Result: engine.QueryResult{
-			Arguments: map[string]engine.TypedScalar{"arg": {Type: "boolean", Bool: true}},
+			Arguments: map[string]engine.TypedScalar{
+				"ldl:project:p:query:q:parameter:boolean":  {Type: "boolean", Bool: true},
+				"ldl:project:p:query:q:parameter:date":     {Type: "date", String: "2026-07-17"},
+				"ldl:project:p:query:q:parameter:datetime": {Type: "datetime", String: "2026-07-17T12:00:00Z"},
+				"ldl:project:p:query:q:parameter:enum":     {Type: "enum", String: "prod"},
+				"ldl:project:p:query:q:parameter:integer":  {Type: "integer", Int: 42},
+				"ldl:project:p:query:q:parameter:number":   {Type: "number", Float: 1.5},
+				"ldl:project:p:query:q:parameter:string":   {Type: "string", String: "<quoted>\n\"\\\u2028😀"},
+			},
 			CycleRefs: []engine.QueryCycleRef{{
-				FromEntityAddress: "entity:a", Kind: "cycle", Orientation: "outgoing", RelationAddress: "relation:r",
-				RetainedPath:    engine.QueryPath{EntityAddresses: []string{"entity:a", "entity:b"}, RelationAddresses: []string{"relation:r"}},
-				ToEntityAddress: "entity:b",
+				FromEntityAddress: "ldl:project:p:entity:a", Kind: "cycle", Orientation: "outgoing", RelationAddress: "ldl:project:p:relation:r",
+				RetainedPath:    engine.QueryPath{EntityAddresses: []string{"ldl:project:p:entity:a", "ldl:project:p:entity:b"}, RelationAddresses: []string{"ldl:project:p:relation:r"}},
+				ToEntityAddress: "ldl:project:p:entity:b",
 			}},
-			Diagnostics:              []engine.Diagnostic{{Code: "LDL1605", Severity: "warning", Message: "state missing"}},
-			Paths:                    []engine.QueryPath{{EntityAddresses: []string{"entity:a"}, RelationAddresses: []string{}}},
-			QueryAddress:             "query:q",
-			StateInput:               engine.QueryStateInputRef{Kind: "optional"},
+			Diagnostics: []engine.Diagnostic{{
+				Code: "LDL1605", Severity: "warning", MessageKey: "optional_query_state_missing_or_stale", Message: "state missing",
+				Arguments: map[string]string{"detail": "<missing>"}, OwnerAddress: "ldl:project:p:query:q", SubjectAddress: "ldl:project:p:entity:a",
+				Range: &engine.SourceRange{Origin: engine.SourceOrigin{Kind: "pack", PackAddress: "ldl:pack:aws:core"}, ModulePath: "main.ldl", StartByte: 1, EndByte: 2},
+			}},
+			Paths:                    []engine.QueryPath{{EntityAddresses: []string{"ldl:project:p:entity:a"}, RelationAddresses: []string{}}},
+			QueryAddress:             "ldl:project:p:query:q",
+			StateInput:               engine.QueryStateInputRef{Kind: "none"},
 			StatePolicy:              "optional",
-			StateReads:               []engine.StateReadRef{{SubjectAddress: "entity:a", FieldPath: "system.updated_at"}},
-			SupportEntityAddresses:   []string{"entity:a"},
-			TraversedEntityAddresses: []string{"entity:b"},
+			StateReads:               []engine.StateReadRef{{SubjectAddress: "ldl:project:p:entity:a", FieldPath: "system.updated_at"}},
+			SupportEntityAddresses:   []string{"ldl:project:p:entity:a"},
+			TraversedEntityAddresses: []string{"ldl:project:p:entity:b"},
 		},
-		ReturnedBytes: 100,
 		ReturnedItems: 6,
-	})
+	}
+	returnedBytes, err := engine.MeasureDocumentQueryLogicalBytes(context.Background(), queryResultInput, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mapped.DocumentGeneration.Value != "7" || mapped.ReturnedBytes != "100" || mapped.ReturnedItems != "6" ||
+	queryResultInput.ReturnedBytes = returnedBytes
+	mapped, err := mapExecuteQueryResult(context.Background(), queryResultInput, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mapped.DocumentGeneration.Value != "7" || mapped.ReturnedBytes == "0" || mapped.ReturnedItems != "6" ||
 		len(mapped.Result.CycleRefs) != 1 || len(mapped.Result.StateReads) != 1 || len(mapped.Result.Diagnostics) != 1 {
 		t.Fatalf("mapped query result = %+v", mapped)
 	}
-	if _, err := mapExecuteQueryResult(engine.ExecuteDocumentQueryResult{ReturnedItems: -1}); err == nil {
+	logical := mapped
+	logical.ReturnedBytes = "0"
+	encoded := canonicalJSONForTest(t, logical)
+	if mapped.ReturnedBytes != engineprotocol.LogicalResponseByteCount(strconv.Itoa(len(encoded))) {
+		t.Fatalf("returned bytes = %q encoded=%d", mapped.ReturnedBytes, len(encoded))
+	}
+	if _, err := mapExecuteQueryResult(context.Background(), engine.ExecuteDocumentQueryResult{ReturnedItems: -1}, 1<<20); err == nil {
 		t.Fatal("negative returned items accepted")
 	}
-	if _, err := mapExecuteQueryResult(engine.ExecuteDocumentQueryResult{ReturnedBytes: -1}); err == nil {
-		t.Fatal("negative returned bytes accepted")
+	if _, err := mapExecuteQueryResult(context.Background(), queryResultInput, 1); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
+		t.Fatalf("output byte limit error = %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := mapExecuteQueryResult(cancelled, queryResultInput, 1<<20); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled query result mapping error = %v", err)
+	}
+	if err := queryMappingContext(nil); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInvariant) {
+		t.Fatalf("nil query mapping context error = %v", err)
 	}
 	if _, err := mapExecuteQueryInput(engineprotocol.ExecuteQueryInput{Arguments: map[string]semantic.RecipeScalar{"bad": {Kind: "unknown"}}}); err == nil {
 		t.Fatal("bad execute query input scalar accepted")
+	}
+	if mapped := queryResultMappingError(errors.New("invalid driver result")); !engine.IsWorkbenchError(mapped, engine.WorkbenchErrorInvariant) {
+		t.Fatalf("plain mapping error = %v", mapped)
+	}
+	if mapped := queryResultMappingError(context.Canceled); !errors.Is(mapped, context.Canceled) {
+		t.Fatalf("cancelled mapping error = %v", mapped)
+	}
+	limitError := &engine.WorkbenchError{Code: "limit", Category: engine.WorkbenchErrorLimitExceeded}
+	if mapped := queryResultMappingError(limitError); mapped != limitError {
+		t.Fatalf("typed mapping error = %v, want identity", mapped)
 	}
 }
 
@@ -761,6 +910,17 @@ func TestWorkbenchConversionCoversPrimitiveContainersAndErrors(t *testing.T) {
 
 func reflectZero() reflect.Value {
 	return reflect.Value{}
+}
+
+func canonicalJSONForTest(t *testing.T, value any) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		t.Fatal(err)
+	}
+	return bytes.TrimSuffix(output.Bytes(), []byte{'\n'})
 }
 
 func TestEngineCompileDriverWorkbenchForwardersAreReachable(t *testing.T) {

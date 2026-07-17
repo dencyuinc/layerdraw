@@ -1,6 +1,7 @@
 {
   "capabilities": {
     "apply_to_handle": false,
+    "execute_query": false,
     "find_symbols": false,
     "find_usages": false,
     "format_scope": false,

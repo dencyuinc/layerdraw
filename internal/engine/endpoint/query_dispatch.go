@@ -4,6 +4,7 @@ package endpoint
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -25,8 +26,25 @@ func runExecuteQuery(payload engineprotocol.ExecuteQueryInput) func(context.Cont
 		if err != nil {
 			return nil, nil, err
 		}
-		mapped, err := mapExecuteQueryResult(result)
-		return mapped, nil, err
+		mapped, err := mapExecuteQueryResult(ctx, result, input.Limits.MaxOutputBytes)
+		if err != nil {
+			return nil, nil, queryResultMappingError(err)
+		}
+		return mapped, nil, nil
+	}
+}
+
+func queryResultMappingError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var workbenchError *engine.WorkbenchError
+	if errors.As(err, &workbenchError) {
+		return err
+	}
+	return &engine.WorkbenchError{
+		Code:     "engine.workbench.query_result_invariant",
+		Category: engine.WorkbenchErrorInvariant,
 	}
 }
 
@@ -51,7 +69,14 @@ func mapExecuteQueryInput(input engineprotocol.ExecuteQueryInput) (engine.Execut
 	return result, nil
 }
 
-func mapExecuteQueryResult(input engine.ExecuteDocumentQueryResult) (engineprotocol.ExecuteQueryResult, error) {
+func mapExecuteQueryResult(ctx context.Context, input engine.ExecuteDocumentQueryResult, maxOutputBytes int64) (engineprotocol.ExecuteQueryResult, error) {
+	returnedBytes, err := engine.MeasureDocumentQueryLogicalBytes(ctx, input, maxOutputBytes)
+	if err != nil {
+		return engineprotocol.ExecuteQueryResult{}, err
+	}
+	if input.ReturnedBytes != returnedBytes {
+		return engineprotocol.ExecuteQueryResult{}, &engine.WorkbenchError{Code: "engine.workbench.query_result_byte_invariant", Category: engine.WorkbenchErrorInvariant}
+	}
 	var generation engineprotocol.DocumentGeneration
 	if err := convertStruct(input.DocumentGeneration, &generation); err != nil {
 		return engineprotocol.ExecuteQueryResult{}, err
@@ -60,52 +85,105 @@ func mapExecuteQueryResult(input engine.ExecuteDocumentQueryResult) (engineproto
 	if err != nil {
 		return engineprotocol.ExecuteQueryResult{}, err
 	}
-	returnedBytes, err := canonicalUint64FromInt64(input.ReturnedBytes)
-	if err != nil {
-		return engineprotocol.ExecuteQueryResult{}, err
-	}
-	result, err := mapQueryExecutionResultData(input.Result)
+	result, err := mapQueryExecutionResultData(ctx, input.Result)
 	if err != nil {
 		return engineprotocol.ExecuteQueryResult{}, err
 	}
 	return engineprotocol.ExecuteQueryResult{
 		DocumentGeneration: generation,
 		Result:             result,
-		ReturnedBytes:      engineprotocol.LogicalResponseByteCount(returnedBytes),
+		ReturnedBytes:      engineprotocol.LogicalResponseByteCount(strconv.FormatInt(returnedBytes, 10)),
 		ReturnedItems:      protocolcommon.CanonicalUint64(returnedItems),
 	}, nil
 }
 
-func mapQueryExecutionResultData(input engine.QueryResult) (engineprotocol.QueryExecutionResultData, error) {
+func mapQueryExecutionResultData(ctx context.Context, input engine.QueryResult) (engineprotocol.QueryExecutionResultData, error) {
+	if err := queryMappingContext(ctx); err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
 	arguments := make(map[string]semantic.RecipeScalar, len(input.Arguments))
 	for address, value := range input.Arguments {
+		if err := queryMappingContext(ctx); err != nil {
+			return engineprotocol.QueryExecutionResultData{}, err
+		}
 		mapped, err := mapRecipeScalar(materialize.Scalar{Type: value.Type, String: value.String, Int: value.Int, Float: value.Float, Bool: value.Bool})
 		if err != nil {
 			return engineprotocol.QueryExecutionResultData{}, err
 		}
 		arguments[address] = mapped
 	}
-	diagnostics, err := mapDiagnostics(input.Diagnostics)
+	diagnostics := make([]semantic.Diagnostic, 0, len(input.Diagnostics))
+	for _, value := range input.Diagnostics {
+		if err := queryMappingContext(ctx); err != nil {
+			return engineprotocol.QueryExecutionResultData{}, err
+		}
+		mapped, err := mapDiagnostic(value)
+		if err != nil {
+			return engineprotocol.QueryExecutionResultData{}, err
+		}
+		diagnostics = append(diagnostics, mapped)
+	}
+	cycleRefs, err := mapQueryCycleRefs(ctx, input.CycleRefs)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	induced, err := mapQueryStrings[semantic.RelationAddress](ctx, input.InducedRelationAddresses)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	pathRelations, err := mapQueryStrings[semantic.RelationAddress](ctx, input.PathRelationAddresses)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	paths, err := mapQueryPaths(ctx, input.Paths)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	primary, err := mapQueryStrings[semantic.EntityAddress](ctx, input.PrimaryEntityAddresses)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	reached, err := mapQueryStrings[semantic.EntityAddress](ctx, input.ReachedEntityAddresses)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	seeds, err := mapQueryStrings[semantic.EntityAddress](ctx, input.SeedEntityAddresses)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	selected, err := mapQueryStrings[semantic.RelationAddress](ctx, input.SelectedRelationAddresses)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	stateReads, err := mapQueryStateReadRefs(ctx, input.StateReads)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	support, err := mapQueryStrings[semantic.EntityAddress](ctx, input.SupportEntityAddresses)
+	if err != nil {
+		return engineprotocol.QueryExecutionResultData{}, err
+	}
+	traversed, err := mapQueryStrings[semantic.EntityAddress](ctx, input.TraversedEntityAddresses)
 	if err != nil {
 		return engineprotocol.QueryExecutionResultData{}, err
 	}
 	return engineprotocol.QueryExecutionResultData{
 		Arguments:                 arguments,
-		CycleRefs:                 mapQueryCycleRefs(input.CycleRefs),
+		CycleRefs:                 cycleRefs,
 		Diagnostics:               diagnostics,
-		InducedRelationAddresses:  typedStrings[semantic.RelationAddress](input.InducedRelationAddresses),
-		PathRelationAddresses:     typedStrings[semantic.RelationAddress](input.PathRelationAddresses),
-		Paths:                     mapQueryPaths(input.Paths),
-		PrimaryEntityAddresses:    typedStrings[semantic.EntityAddress](input.PrimaryEntityAddresses),
+		InducedRelationAddresses:  induced,
+		PathRelationAddresses:     pathRelations,
+		Paths:                     paths,
+		PrimaryEntityAddresses:    primary,
 		QueryAddress:              semantic.QueryAddress(input.QueryAddress),
-		ReachedEntityAddresses:    typedStrings[semantic.EntityAddress](input.ReachedEntityAddresses),
-		SeedEntityAddresses:       typedStrings[semantic.EntityAddress](input.SeedEntityAddresses),
-		SelectedRelationAddresses: typedStrings[semantic.RelationAddress](input.SelectedRelationAddresses),
+		ReachedEntityAddresses:    reached,
+		SeedEntityAddresses:       seeds,
+		SelectedRelationAddresses: selected,
 		StateInput:                engineprotocol.QueryStateInputRef{Kind: input.StateInput.Kind},
 		StatePolicy:               input.StatePolicy,
-		StateReads:                mapQueryStateReadRefs(input.StateReads),
-		SupportEntityAddresses:    typedStrings[semantic.EntityAddress](input.SupportEntityAddresses),
-		TraversedEntityAddresses:  typedStrings[semantic.EntityAddress](input.TraversedEntityAddresses),
+		StateReads:                stateReads,
+		SupportEntityAddresses:    support,
+		TraversedEntityAddresses:  traversed,
 	}, nil
 }
 
@@ -144,46 +222,80 @@ func engineScalarFromRecipeScalar(input semantic.RecipeScalar) (engine.TypedScal
 	}
 }
 
-func mapQueryStateReadRefs(input []engine.StateReadRef) []engineprotocol.QueryStateReadRef {
+func mapQueryStateReadRefs(ctx context.Context, input []engine.StateReadRef) ([]engineprotocol.QueryStateReadRef, error) {
 	result := make([]engineprotocol.QueryStateReadRef, len(input))
 	for index, item := range input {
+		if err := queryMappingContext(ctx); err != nil {
+			return nil, err
+		}
 		result[index] = engineprotocol.QueryStateReadRef{
 			FieldPath:      semantic.StateFieldPath(item.FieldPath),
 			SubjectAddress: semantic.StableAddress(item.SubjectAddress),
 		}
 	}
-	return result
+	return result, nil
 }
 
-func mapQueryPaths(input []engine.QueryPath) []engineprotocol.QueryPath {
+func mapQueryPaths(ctx context.Context, input []engine.QueryPath) ([]engineprotocol.QueryPath, error) {
 	result := make([]engineprotocol.QueryPath, len(input))
 	for index, item := range input {
-		result[index] = engineprotocol.QueryPath{
-			EntityAddresses:   typedStrings[semantic.EntityAddress](item.EntityAddresses),
-			RelationAddresses: typedStrings[semantic.RelationAddress](item.RelationAddresses),
+		mapped, err := mapQueryPath(ctx, item)
+		if err != nil {
+			return nil, err
 		}
+		result[index] = mapped
 	}
-	return result
+	return result, nil
 }
 
-func mapQueryCycleRefs(input []engine.QueryCycleRef) []engineprotocol.QueryCycleRef {
+func mapQueryCycleRefs(ctx context.Context, input []engine.QueryCycleRef) ([]engineprotocol.QueryCycleRef, error) {
 	result := make([]engineprotocol.QueryCycleRef, len(input))
 	for index, item := range input {
+		if err := queryMappingContext(ctx); err != nil {
+			return nil, err
+		}
+		path, err := mapQueryPath(ctx, item.RetainedPath)
+		if err != nil {
+			return nil, err
+		}
 		result[index] = engineprotocol.QueryCycleRef{
 			FromEntityAddress: semantic.EntityAddress(item.FromEntityAddress),
 			Kind:              item.Kind,
 			Orientation:       item.Orientation,
 			RelationAddress:   semantic.RelationAddress(item.RelationAddress),
-			RetainedPath:      mapQueryPath(item.RetainedPath),
+			RetainedPath:      path,
 			ToEntityAddress:   semantic.EntityAddress(item.ToEntityAddress),
 		}
 	}
-	return result
+	return result, nil
 }
 
-func mapQueryPath(input engine.QueryPath) engineprotocol.QueryPath {
-	return engineprotocol.QueryPath{
-		EntityAddresses:   typedStrings[semantic.EntityAddress](input.EntityAddresses),
-		RelationAddresses: typedStrings[semantic.RelationAddress](input.RelationAddresses),
+func mapQueryPath(ctx context.Context, input engine.QueryPath) (engineprotocol.QueryPath, error) {
+	entities, err := mapQueryStrings[semantic.EntityAddress](ctx, input.EntityAddresses)
+	if err != nil {
+		return engineprotocol.QueryPath{}, err
 	}
+	relations, err := mapQueryStrings[semantic.RelationAddress](ctx, input.RelationAddresses)
+	if err != nil {
+		return engineprotocol.QueryPath{}, err
+	}
+	return engineprotocol.QueryPath{EntityAddresses: entities, RelationAddresses: relations}, nil
+}
+
+func mapQueryStrings[T ~string](ctx context.Context, input []string) ([]T, error) {
+	result := make([]T, len(input))
+	for index, value := range input {
+		if err := queryMappingContext(ctx); err != nil {
+			return nil, err
+		}
+		result[index] = T(value)
+	}
+	return result, nil
+}
+
+func queryMappingContext(ctx context.Context) error {
+	if ctx == nil {
+		return &engine.WorkbenchError{Code: "engine.workbench.nil_context", Category: engine.WorkbenchErrorInvariant}
+	}
+	return ctx.Err()
 }

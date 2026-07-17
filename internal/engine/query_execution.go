@@ -4,8 +4,11 @@ package engine
 
 import (
 	"context"
-	"sort"
+	"errors"
+	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/query"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/resolve"
@@ -17,6 +20,59 @@ type QueryExecutionInput struct {
 	Recipe    CompiledQueryRecipe
 	Graph     TypedMasterGraph
 	Arguments map[string]TypedScalar
+	Limits    QueryExecutionLimits
+}
+
+// QueryExecutionLimits bound the pure evaluator independently from any host
+// transport. Zero fields select deterministic Engine defaults.
+type QueryExecutionLimits struct {
+	MaxItems int64
+	MaxWork  int64
+}
+
+func DefaultQueryExecutionLimits() QueryExecutionLimits {
+	return QueryExecutionLimits{MaxItems: 1_000_000, MaxWork: 10_000_000}
+}
+
+type QueryExecutionErrorCategory string
+
+const (
+	QueryExecutionErrorCancelled QueryExecutionErrorCategory = "cancelled"
+	QueryExecutionErrorInvariant QueryExecutionErrorCategory = "invariant"
+	QueryExecutionErrorResource  QueryExecutionErrorCategory = "resource"
+)
+
+// QueryExecutionError represents an operational failure. Invalid recipes or
+// arguments remain deterministic QueryExecutionResponse rejections.
+type QueryExecutionError struct {
+	Code     string
+	Category QueryExecutionErrorCategory
+	Resource string
+	Limit    int64
+	Observed int64
+	cause    error
+}
+
+func (e *QueryExecutionError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Resource != "" {
+		return fmt.Sprintf("%s: %s observed %d exceeds limit %d", e.Code, e.Resource, e.Observed, e.Limit)
+	}
+	return e.Code
+}
+
+func (e *QueryExecutionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func IsQueryExecutionError(err error, category QueryExecutionErrorCategory) bool {
+	var target *QueryExecutionError
+	return errors.As(err, &target) && target.Category == category
 }
 
 type QueryExecutionResponse struct {
@@ -70,31 +126,65 @@ type QueryCycleRef struct {
 // ExecuteQuery evaluates one compiled Query recipe against one typed graph.
 // It is a pure in-process semantic operation: it never reads storage, clock,
 // network, access policy, or state backend data.
-func (e Engine) ExecuteQuery(ctx context.Context, input QueryExecutionInput) QueryExecutionResponse {
+func (e Engine) ExecuteQuery(ctx context.Context, input QueryExecutionInput) (QueryExecutionResponse, error) {
 	if ctx == nil {
-		return rejectedQuery(diagnostic("LDL1801", "stale_revision_or_semantic_hash", "query execution requires a context", input.Recipe.Address, ""))
+		return QueryExecutionResponse{}, &QueryExecutionError{Code: "engine.query.nil_context", Category: QueryExecutionErrorInvariant}
 	}
-	if err := pollContext(ctx, "query"); err != nil {
-		return rejectedQuery(diagnostic("LDL1801", "stale_revision_or_semantic_hash", err.Error(), input.Recipe.Address, ""))
+	limits, err := effectiveQueryExecutionLimits(input.Limits)
+	if err != nil {
+		return QueryExecutionResponse{}, err
 	}
-	executor := newQueryExecutor(input)
+	executor := newQueryExecutor(ctx, input, limits)
+	if executor.err != nil {
+		return QueryExecutionResponse{}, executor.err
+	}
 	if !executor.validateArguments() {
-		return rejectedQuery(executor.diagnostics...)
+		if executor.err != nil {
+			return QueryExecutionResponse{}, executor.err
+		}
+		response := executor.rejected(executor.diagnostics...)
+		return response, executor.err
 	}
 	if !executor.validateStateInput() {
-		return rejectedQuery(executor.diagnostics...)
+		if executor.err != nil {
+			return QueryExecutionResponse{}, executor.err
+		}
+		response := executor.rejected(executor.diagnostics...)
+		return response, executor.err
 	}
 	result := executor.execute()
-	if err := pollContext(ctx, "query"); err != nil {
-		return rejectedQuery(diagnostic("LDL1801", "stale_revision_or_semantic_hash", err.Error(), input.Recipe.Address, ""))
+	if executor.err != nil {
+		return QueryExecutionResponse{}, executor.err
 	}
 	if hasQueryError(result.Diagnostics) {
-		return rejectedQuery(result.Diagnostics...)
+		response := executor.rejected(result.Diagnostics...)
+		return response, executor.err
 	}
-	return QueryExecutionResponse{Status: "ok", Result: &result}
+	if !executor.ensureResultItems(queryResultItemCount(result)) {
+		return QueryExecutionResponse{}, executor.err
+	}
+	return QueryExecutionResponse{Status: "ok", Result: &result}, nil
+}
+
+func effectiveQueryExecutionLimits(input QueryExecutionLimits) (QueryExecutionLimits, error) {
+	defaults := DefaultQueryExecutionLimits()
+	if input.MaxItems < 0 || input.MaxWork < 0 {
+		return QueryExecutionLimits{}, &QueryExecutionError{Code: "engine.query.invalid_limits", Category: QueryExecutionErrorInvariant}
+	}
+	if input.MaxItems == 0 {
+		input.MaxItems = defaults.MaxItems
+	}
+	if input.MaxWork == 0 {
+		input.MaxWork = defaults.MaxWork
+	}
+	return input, nil
 }
 
 type queryExecutor struct {
+	ctx         context.Context
+	limits      QueryExecutionLimits
+	work        int64
+	err         error
 	recipe      query.Recipe
 	graph       graph.MasterGraph
 	arguments   map[string]definition.Scalar
@@ -106,46 +196,116 @@ type queryExecutor struct {
 	stateReads  map[StateReadRef]bool
 }
 
-func newQueryExecutor(input QueryExecutionInput) *queryExecutor {
+func newQueryExecutor(ctx context.Context, input QueryExecutionInput, limits QueryExecutionLimits) *queryExecutor {
 	e := &queryExecutor{
+		ctx:        ctx,
+		limits:     limits,
 		recipe:     input.Recipe,
 		graph:      input.Graph,
-		arguments:  cloneScalars(input.Arguments),
+		arguments:  map[string]definition.Scalar{},
 		entities:   map[string]graph.Entity{},
 		relations:  map[string]graph.Relation{},
 		outgoing:   map[string][]string{},
 		incoming:   map[string][]string{},
 		stateReads: map[StateReadRef]bool{},
 	}
+	e.arguments = e.cloneScalars(input.Arguments)
+	if e.err != nil {
+		return e
+	}
+	if !e.step() {
+		return e
+	}
 	for _, entity := range input.Graph.Entities {
+		if !e.step() {
+			return e
+		}
 		e.entities[entity.Address] = entity
 	}
 	for _, relation := range input.Graph.Relations {
+		if !e.step() {
+			return e
+		}
 		e.relations[relation.Address] = relation
 	}
 	for _, adjacency := range input.Graph.Outgoing {
+		if !e.step() {
+			return e
+		}
+		if !e.charge(int64(len(adjacency.RelationAddresses))) {
+			return e
+		}
 		e.outgoing[adjacency.EntityAddress] = append([]string{}, adjacency.RelationAddresses...)
 	}
 	for _, adjacency := range input.Graph.Incoming {
+		if !e.step() {
+			return e
+		}
+		if !e.charge(int64(len(adjacency.RelationAddresses))) {
+			return e
+		}
 		e.incoming[adjacency.EntityAddress] = append([]string{}, adjacency.RelationAddresses...)
 	}
 	return e
 }
 
+func (e *queryExecutor) step() bool {
+	return e.charge(1)
+}
+
+func (e *queryExecutor) charge(amount int64) bool {
+	if e.err != nil {
+		return false
+	}
+	if err := e.ctx.Err(); err != nil {
+		e.err = &QueryExecutionError{Code: "engine.query.cancelled", Category: QueryExecutionErrorCancelled, cause: err}
+		return false
+	}
+	if amount < 0 {
+		e.err = &QueryExecutionError{Code: "engine.query.invalid_work_charge", Category: QueryExecutionErrorInvariant}
+		return false
+	}
+	if amount > math.MaxInt64-e.work || e.work+amount > e.limits.MaxWork {
+		e.err = &QueryExecutionError{Code: "engine.query.limit_exceeded", Category: QueryExecutionErrorResource, Resource: "query_work", Limit: e.limits.MaxWork, Observed: saturatingAdd(e.work, amount)}
+		return false
+	}
+	e.work += amount
+	return true
+}
+
+func (e *queryExecutor) ensureResultItems(observed int64) bool {
+	if e.err != nil {
+		return false
+	}
+	if observed > e.limits.MaxItems {
+		e.err = &QueryExecutionError{Code: "engine.query.limit_exceeded", Category: QueryExecutionErrorResource, Resource: "query_result_items", Limit: e.limits.MaxItems, Observed: observed}
+		return false
+	}
+	return true
+}
+
 func (e *queryExecutor) validateArguments() bool {
 	known := map[string]query.Parameter{}
 	for _, parameter := range e.recipe.Parameters {
+		if !e.step() {
+			return false
+		}
 		known[parameter.Address] = parameter
 	}
 	for address := range e.arguments {
+		if !e.step() {
+			return false
+		}
 		if _, ok := known[address]; !ok {
 			e.addDiag("LDL1601", "invalid_query_or_arguments", "unknown query argument", address, e.recipe.Address)
 		}
 	}
 	for _, parameter := range e.recipe.Parameters {
+		if !e.step() {
+			return false
+		}
 		value, ok := e.arguments[parameter.Address]
 		if !ok && parameter.Default != nil {
-			e.arguments[parameter.Address] = *parameter.Default
 			ok = true
 			value = *parameter.Default
 		}
@@ -155,43 +315,44 @@ func (e *queryExecutor) validateArguments() bool {
 			}
 			continue
 		}
-		if !argumentMatchesParameter(value, parameter) {
+		normalized, valid := e.normalizeQueryArgument(value, parameter)
+		if !valid {
+			if e.err != nil {
+				return false
+			}
 			e.addDiag("LDL1601", "invalid_query_or_arguments", "query argument does not satisfy its parameter schema", parameter.Address, e.recipe.Address)
+			continue
 		}
+		e.arguments[parameter.Address] = normalized
 	}
 	return len(e.diagnostics) == 0
 }
 
 func argumentMatchesParameter(value definition.Scalar, parameter query.Parameter) bool {
-	if value.Type != parameter.ValueType {
-		return false
-	}
-	if value.Type == definition.ScalarEnum && len(parameter.EnumValues) != 0 && !stringIn(value.String, parameter.EnumValues) {
-		return false
-	}
-	if parameter.Min != nil {
-		if value.Type == definition.ScalarInteger && float64(value.Int) < *parameter.Min {
-			return false
-		}
-		if value.Type == definition.ScalarNumber && value.Float < *parameter.Min {
-			return false
-		}
-	}
-	if parameter.Max != nil {
-		if value.Type == definition.ScalarInteger && float64(value.Int) > *parameter.Max {
-			return false
-		}
-		if value.Type == definition.ScalarNumber && value.Float > *parameter.Max {
-			return false
-		}
-	}
-	if parameter.MinLength != nil && int64(len([]rune(value.String))) < *parameter.MinLength {
-		return false
-	}
-	if parameter.MaxLength != nil && int64(len([]rune(value.String))) > *parameter.MaxLength {
-		return false
-	}
-	return true
+	_, valid := normalizeQueryArgument(value, parameter)
+	return valid
+}
+
+func normalizeQueryArgument(value definition.Scalar, parameter query.Parameter) (definition.Scalar, bool) {
+	return normalizeQueryArgumentObserved(value, parameter, nil)
+}
+
+func (e *queryExecutor) normalizeQueryArgument(value definition.Scalar, parameter query.Parameter) (definition.Scalar, bool) {
+	return normalizeQueryArgumentObserved(value, parameter, e.charge)
+}
+
+func normalizeQueryArgumentObserved(value definition.Scalar, parameter query.Parameter, observe definition.ScalarWorkObserver) (definition.Scalar, bool) {
+	return definition.NormalizeScalarValue(value, definition.Column{
+		Address:            parameter.Address,
+		ValueType:          parameter.ValueType,
+		EnumValues:         parameter.EnumValues,
+		ReservedEnumValues: parameter.ReservedEnumValues,
+		Format:             parameter.Format,
+		Min:                parameter.Min,
+		Max:                parameter.Max,
+		MinLength:          parameter.MinLength,
+		MaxLength:          parameter.MaxLength,
+	}, observe)
 }
 
 func (e *queryExecutor) validateStateInput() bool {
@@ -199,10 +360,10 @@ func (e *queryExecutor) validateStateInput() bool {
 	case query.StateNone:
 		return true
 	case query.StateOptional:
-		e.addWarning("LDL1605", "optional_state_snapshot_missing", "optional StateQuerySnapshot is absent; state predicates evaluate as missing", e.recipe.Address, "")
+		e.addWarning("LDL1605", "optional_query_state_missing_or_stale", "optional Query state is unavailable or stale; state predicates evaluate as missing", e.recipe.Address, "")
 		return true
 	case query.StateRequired:
-		e.addDiag("LDL1604", "required_state_snapshot_missing", "required StateQuerySnapshot is absent", e.recipe.Address, "")
+		e.addDiag("LDL1604", "required_query_state_unavailable_or_stale", "required Query state is unavailable or stale", e.recipe.Address, "")
 		return false
 	default:
 		e.addDiag("LDL1601", "invalid_query_or_arguments", "invalid query state policy", e.recipe.Address, "")
@@ -212,66 +373,96 @@ func (e *queryExecutor) validateStateInput() bool {
 
 func (e *queryExecutor) execute() QueryResult {
 	eligibleEntities := e.eligibleEntities()
+	if e.err != nil {
+		return QueryResult{}
+	}
 	eligibleRelations := e.eligibleRelations(eligibleEntities)
+	if e.err != nil {
+		return QueryResult{}
+	}
 	seeds := e.seedEntities(eligibleEntities)
+	if e.err != nil {
+		return QueryResult{}
+	}
 	paths, reached, traversed, pathRelations, cycleRefs, traversalOK := e.traverse(seeds, eligibleEntities, eligibleRelations)
+	if e.err != nil {
+		return QueryResult{}
+	}
 	if !traversalOK {
 		return QueryResult{
 			QueryAddress: e.recipe.Address,
-			Arguments:    cloneScalars(e.arguments),
+			Arguments:    e.cloneScalars(e.arguments),
 			StatePolicy:  string(e.recipe.StateInput),
 			StateInput:   QueryStateInputRef{Kind: "none"},
 			StateReads:   e.sortedStateReads(),
-			Diagnostics:  sortedDiagnostics(e.diagnostics),
+			Diagnostics:  e.sortedDiagnostics(e.diagnostics),
 		}
 	}
 	induced := e.inducedRelations(seeds, traversed, pathRelations, eligibleRelations)
+	if e.err != nil {
+		return QueryResult{}
+	}
 	primary := map[string]bool{}
 	if resultIncludes(e.recipe.Result, query.ResultSeedEntities) {
 		for _, address := range seeds {
+			if !e.step() {
+				return QueryResult{}
+			}
 			primary[address] = true
 		}
 	}
 	if resultIncludes(e.recipe.Result, query.ResultTraversedEntities) {
 		for _, address := range traversed {
+			if !e.step() {
+				return QueryResult{}
+			}
 			primary[address] = true
 		}
 	}
 	selectedRelations := map[string]bool{}
 	if resultIncludes(e.recipe.Result, query.ResultPathRelations) {
 		for _, address := range pathRelations {
+			if !e.step() {
+				return QueryResult{}
+			}
 			selectedRelations[address] = true
 		}
 	}
 	if resultIncludes(e.recipe.Result, query.ResultInducedRelations) {
 		for _, address := range induced {
+			if !e.step() {
+				return QueryResult{}
+			}
 			selectedRelations[address] = true
 		}
 	}
 	support := e.supportEntities(primary, selectedRelations, paths)
 	return QueryResult{
 		QueryAddress:              e.recipe.Address,
-		Arguments:                 cloneScalars(e.arguments),
+		Arguments:                 e.cloneScalars(e.arguments),
 		StatePolicy:               string(e.recipe.StateInput),
 		StateInput:                QueryStateInputRef{Kind: "none"},
 		StateReads:                e.sortedStateReads(),
 		SeedEntityAddresses:       seeds,
-		ReachedEntityAddresses:    sortStrings(reached),
-		TraversedEntityAddresses:  sortStrings(traversed),
+		ReachedEntityAddresses:    e.sortStableAddresses(reached),
+		TraversedEntityAddresses:  e.sortStableAddresses(traversed),
 		PathRelationAddresses:     e.sortRelationAddresses(pathRelations),
 		InducedRelationAddresses:  e.sortRelationAddresses(induced),
-		PrimaryEntityAddresses:    sortSet(primary),
-		SelectedRelationAddresses: e.sortRelationAddresses(setKeys(selectedRelations)),
-		SupportEntityAddresses:    sortSet(support),
-		Paths:                     sortPaths(paths),
-		CycleRefs:                 sortCycleRefs(cycleRefs),
-		Diagnostics:               sortedDiagnostics(e.diagnostics),
+		PrimaryEntityAddresses:    e.sortSet(primary),
+		SelectedRelationAddresses: e.sortRelationAddresses(e.mapKeys(selectedRelations)),
+		SupportEntityAddresses:    e.sortSet(support),
+		Paths:                     e.sortPaths(paths),
+		CycleRefs:                 e.sortCycleRefs(cycleRefs),
+		Diagnostics:               e.sortedDiagnostics(e.diagnostics),
 	}
 }
 
 func (e *queryExecutor) eligibleEntities() map[string]bool {
 	out := map[string]bool{}
 	for _, entity := range e.graph.Entities {
+		if !e.step() {
+			return out
+		}
 		if e.selects(e.recipe.Select.LayerAddresses, entity.LayerAddress) &&
 			e.selects(e.recipe.Select.EntityTypeAddresses, entity.TypeAddress) &&
 			e.evalEntityPredicate(e.recipe.Where, entity) {
@@ -284,10 +475,17 @@ func (e *queryExecutor) eligibleEntities() map[string]bool {
 func (e *queryExecutor) eligibleRelations(eligibleEntities map[string]bool) map[string]bool {
 	out := map[string]bool{}
 	for _, relation := range e.graph.Relations {
-		if !eligibleEntities[relation.FromAddress] || !eligibleEntities[relation.ToAddress] {
+		if !e.step() {
+			return out
+		}
+		if !e.selects(e.recipe.Select.RelationTypeAddresses, relation.TypeAddress) {
 			continue
 		}
-		if e.selects(e.recipe.Select.RelationTypeAddresses, relation.TypeAddress) && e.evalRelationPredicate(e.recipe.RelationWhere, relation) {
+		predicateMatches := e.evalRelationPredicate(e.recipe.RelationWhere, relation)
+		if e.err != nil {
+			return out
+		}
+		if predicateMatches && eligibleEntities[relation.FromAddress] && eligibleEntities[relation.ToAddress] {
 			out[relation.Address] = true
 		}
 	}
@@ -298,18 +496,26 @@ func (e *queryExecutor) seedEntities(eligible map[string]bool) []string {
 	var seeds []string
 	if e.recipe.Select.RootAddresses != nil {
 		for _, address := range *e.recipe.Select.RootAddresses {
+			if !e.step() {
+				return nil
+			}
 			if eligible[address] {
 				seeds = append(seeds, address)
+			} else {
+				e.addInfo("LDL1602", "query_root_ineligible", "query root is not eligible for the current arguments and predicates", address, e.recipe.Address)
 			}
 		}
-		return sortStrings(seeds)
+		return e.sortStableAddresses(seeds)
 	}
 	for _, entity := range e.graph.Entities {
+		if !e.step() {
+			return nil
+		}
 		if eligible[entity.Address] {
 			seeds = append(seeds, entity.Address)
 		}
 	}
-	return sortStrings(seeds)
+	return e.sortStableAddresses(seeds)
 }
 
 func (e *queryExecutor) traverse(seeds []string, eligibleEntities, eligibleRelations map[string]bool) ([]QueryPath, []string, []string, []string, []QueryCycleRef, bool) {
@@ -317,10 +523,16 @@ func (e *queryExecutor) traverse(seeds []string, eligibleEntities, eligibleRelat
 	visited := map[string]QueryPath{}
 	var frontier []QueryPath
 	for _, seed := range seeds {
+		if !e.step() {
+			return nil, nil, nil, nil, nil, false
+		}
 		path := QueryPath{EntityAddresses: []string{seed}, RelationAddresses: []string{}}
 		paths = append(paths, path)
 		visited[seed] = path
 		frontier = append(frontier, path)
+	}
+	if !e.ensureTraversalItems(seeds, nil, nil, nil, paths, nil) {
+		return nil, nil, nil, nil, nil, false
 	}
 	if e.recipe.Traversal == nil {
 		return paths, nil, nil, nil, nil, true
@@ -331,32 +543,43 @@ func (e *queryExecutor) traverse(seeds []string, eligibleEntities, eligibleRelat
 	pathRelations := map[string]bool{}
 	var cycleRefs []QueryCycleRef
 	for depth := int64(0); depth < traversal.MaxDepth && len(frontier) != 0; depth++ {
+		if !e.step() {
+			return nil, nil, nil, nil, nil, false
+		}
 		var nextFrontier []QueryPath
 		for _, path := range frontier {
+			if !e.step() {
+				return nil, nil, nil, nil, nil, false
+			}
 			current := path.EntityAddresses[len(path.EntityAddresses)-1]
 			for _, candidate := range e.candidateRelations(current, traversal, eligibleRelations, eligibleEntities) {
+				if !e.step() {
+					return nil, nil, nil, nil, nil, false
+				}
 				nextAddress := candidate.next
-				nextPath := appendPath(path, candidate.relation, nextAddress)
+				nextPath := e.appendPath(path, candidate.relation, nextAddress)
+				if e.err != nil {
+					return nil, nil, nil, nil, nil, false
+				}
 				kind := ""
-				if pathContains(path.EntityAddresses, nextAddress) {
+				if e.pathContains(path.EntityAddresses, nextAddress) {
 					kind = "cycle"
 				} else if _, seen := visited[nextAddress]; seen {
 					kind = "merge"
 				}
 				if kind != "" {
 					if traversal.CyclePolicy == query.CycleError && kind == "cycle" {
-						e.addDiag("LDL1601", "invalid_query_or_arguments", "query traversal encountered a cycle", e.recipe.Address, "")
-						return paths, setKeys(reached), setKeys(traversed), setKeys(pathRelations), cycleRefs, false
+						e.addDiag("LDL1603", "query_cycle_policy_violation", "query traversal encountered a cycle forbidden by its cycle policy", e.recipe.Address, "")
+						return paths, e.mapKeys(reached), e.mapKeys(traversed), e.mapKeys(pathRelations), cycleRefs, false
 					}
 					if traversal.CyclePolicy == query.CycleIncludeCycleRef {
-						retained := visited[nextAddress]
-						if kind == "cycle" {
-							retained = path
-						}
 						cycleRefs = append(cycleRefs, QueryCycleRef{
 							Kind: kind, FromEntityAddress: current, ToEntityAddress: nextAddress,
-							RelationAddress: candidate.relation, Orientation: candidate.orientation, RetainedPath: retained,
+							RelationAddress: candidate.relation, Orientation: candidate.orientation, RetainedPath: path,
 						})
+						if !e.ensureTraversalItems(seeds, reached, traversed, pathRelations, paths, cycleRefs) {
+							return nil, nil, nil, nil, nil, false
+						}
 					}
 					continue
 				}
@@ -367,15 +590,26 @@ func (e *queryExecutor) traverse(seeds []string, eligibleEntities, eligibleRelat
 				if nextDepth >= traversal.MinDepth {
 					traversed[nextAddress] = true
 					for _, relationAddress := range nextPath.RelationAddresses {
+						if !e.step() {
+							return nil, nil, nil, nil, nil, false
+						}
 						pathRelations[relationAddress] = true
 					}
 				}
 				nextFrontier = append(nextFrontier, nextPath)
+				if !e.ensureTraversalItems(seeds, reached, traversed, pathRelations, paths, cycleRefs) {
+					return nil, nil, nil, nil, nil, false
+				}
 			}
 		}
-		frontier = sortPaths(nextFrontier)
+		frontier = e.sortPaths(nextFrontier)
 	}
-	return paths, setKeys(reached), setKeys(traversed), setKeys(pathRelations), cycleRefs, true
+	return paths, e.mapKeys(reached), e.mapKeys(traversed), e.mapKeys(pathRelations), cycleRefs, true
+}
+
+func (e *queryExecutor) ensureTraversalItems(seeds []string, reached, traversed, pathRelations map[string]bool, paths []QueryPath, cycleRefs []QueryCycleRef) bool {
+	observed := int64(len(seeds) + len(reached) + len(traversed) + len(pathRelations) + len(paths) + len(cycleRefs))
+	return e.ensureResultItems(observed)
 }
 
 type relationCandidate struct {
@@ -388,12 +622,19 @@ func (e *queryExecutor) candidateRelations(entityAddress string, traversal query
 	relationTypes := map[string]bool{}
 	if traversal.RelationTypeAddresses != nil {
 		for _, address := range *traversal.RelationTypeAddresses {
+			if !e.step() {
+				return nil
+			}
 			relationTypes[address] = true
 		}
 	}
 	var out []relationCandidate
+	seen := map[string]bool{}
 	add := func(addresses []string, orientation string) {
 		for _, relationAddress := range addresses {
+			if !e.step() {
+				return
+			}
 			relation, ok := e.relations[relationAddress]
 			if !ok || !eligibleRelations[relationAddress] {
 				continue
@@ -408,6 +649,10 @@ func (e *queryExecutor) candidateRelations(entityAddress string, traversal query
 			if !eligibleEntities[next] {
 				continue
 			}
+			if seen[relationAddress] {
+				continue
+			}
+			seen[relationAddress] = true
 			out = append(out, relationCandidate{relation: relationAddress, next: next, orientation: orientation})
 		}
 	}
@@ -420,16 +665,12 @@ func (e *queryExecutor) candidateRelations(entityAddress string, traversal query
 		add(e.outgoing[entityAddress], "outgoing")
 		add(e.incoming[entityAddress], "incoming")
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := e.relations[out[i].relation], e.relations[out[j].relation]
-		ak := []string{a.TypeAddress, a.Address, a.FromAddress, a.ToAddress, out[i].orientation}
-		bk := []string{b.TypeAddress, b.Address, b.FromAddress, b.ToAddress, out[j].orientation}
-		for index := range ak {
-			if ak[index] != bk[index] {
-				return ak[index] < bk[index]
-			}
+	out = queryStableSort(e, out, func(left, right relationCandidate) int {
+		a, b := e.relations[left.relation], e.relations[right.relation]
+		if compared := compareRelationTuple(a, b); compared != 0 {
+			return compared
 		}
-		return false
+		return compareInt(int64(orientationRank(left.orientation)), int64(orientationRank(right.orientation)))
 	})
 	return out
 }
@@ -437,14 +678,23 @@ func (e *queryExecutor) candidateRelations(entityAddress string, traversal query
 func (e *queryExecutor) inducedRelations(seeds, traversed, pathRelations []string, eligibleRelations map[string]bool) []string {
 	entities := map[string]bool{}
 	for _, address := range seeds {
+		if !e.step() {
+			return nil
+		}
 		entities[address] = true
 	}
 	for _, address := range traversed {
+		if !e.step() {
+			return nil
+		}
 		entities[address] = true
 	}
-	paths := queryStringSet(pathRelations)
+	paths := e.stringSet(pathRelations)
 	var induced []string
 	for _, relation := range e.graph.Relations {
+		if !e.step() {
+			return nil
+		}
 		if eligibleRelations[relation.Address] && !paths[relation.Address] && entities[relation.FromAddress] && entities[relation.ToAddress] {
 			induced = append(induced, relation.Address)
 		}
@@ -455,13 +705,22 @@ func (e *queryExecutor) inducedRelations(seeds, traversed, pathRelations []strin
 func (e *queryExecutor) supportEntities(primary, selectedRelations map[string]bool, paths []QueryPath) map[string]bool {
 	support := map[string]bool{}
 	for address := range selectedRelations {
+		if !e.step() {
+			return nil
+		}
 		relation := e.relations[address]
 		support[relation.FromAddress] = true
 		support[relation.ToAddress] = true
 	}
 	for _, path := range paths {
+		if !e.step() {
+			return nil
+		}
 		containsSelected := false
 		for _, relationAddress := range path.RelationAddresses {
+			if !e.step() {
+				return nil
+			}
 			if selectedRelations[relationAddress] {
 				containsSelected = true
 				break
@@ -469,32 +728,47 @@ func (e *queryExecutor) supportEntities(primary, selectedRelations map[string]bo
 		}
 		if containsSelected {
 			for _, entityAddress := range path.EntityAddresses {
+				if !e.step() {
+					return nil
+				}
 				support[entityAddress] = true
 			}
 		}
 	}
 	for address := range primary {
+		if !e.step() {
+			return nil
+		}
 		delete(support, address)
 	}
 	return support
 }
 
 func (e *queryExecutor) evalEntityPredicate(predicate query.Predicate, entity graph.Entity) bool {
+	if !e.step() {
+		return false
+	}
 	switch predicate.Kind {
 	case query.PredicateAll:
+		result := true
 		for _, child := range predicate.Children {
-			if !e.evalEntityPredicate(child, entity) {
+			matched := e.evalEntityPredicate(child, entity)
+			if e.err != nil {
 				return false
 			}
+			result = matched && result
 		}
-		return true
+		return result
 	case query.PredicateAny:
+		result := false
 		for _, child := range predicate.Children {
-			if e.evalEntityPredicate(child, entity) {
-				return true
+			matched := e.evalEntityPredicate(child, entity)
+			if e.err != nil {
+				return false
 			}
+			result = matched || result
 		}
-		return false
+		return result
 	case query.PredicateNot:
 		return predicate.Child != nil && !e.evalEntityPredicate(*predicate.Child, entity)
 	case query.PredicateField:
@@ -509,21 +783,30 @@ func (e *queryExecutor) evalEntityPredicate(predicate query.Predicate, entity gr
 }
 
 func (e *queryExecutor) evalRelationPredicate(predicate query.Predicate, relation graph.Relation) bool {
+	if !e.step() {
+		return false
+	}
 	switch predicate.Kind {
 	case query.PredicateAll:
+		result := true
 		for _, child := range predicate.Children {
-			if !e.evalRelationPredicate(child, relation) {
+			matched := e.evalRelationPredicate(child, relation)
+			if e.err != nil {
 				return false
 			}
+			result = matched && result
 		}
-		return true
+		return result
 	case query.PredicateAny:
+		result := false
 		for _, child := range predicate.Children {
-			if e.evalRelationPredicate(child, relation) {
-				return true
+			matched := e.evalRelationPredicate(child, relation)
+			if e.err != nil {
+				return false
 			}
+			result = matched || result
 		}
-		return false
+		return result
 	case query.PredicateNot:
 		return predicate.Child != nil && !e.evalRelationPredicate(*predicate.Child, relation)
 	case query.PredicateField:
@@ -538,11 +821,17 @@ func (e *queryExecutor) evalRelationPredicate(predicate query.Predicate, relatio
 }
 
 func (e *queryExecutor) evalRowsPredicate(predicate query.Predicate, ownerTypeAddress string, rows []graph.AttributeRow) bool {
-	if !stringIn(ownerTypeAddress, predicate.TypeAddresses) || predicate.Row == nil {
+	if !e.step() {
+		return false
+	}
+	if !e.stringIn(ownerTypeAddress, predicate.TypeAddresses) || predicate.Row == nil {
 		return predicate.Quantifier == query.RowsNone
 	}
 	matches := 0
 	for _, row := range rows {
+		if !e.step() {
+			return false
+		}
 		if e.evalRowPredicate(*predicate.Row, row) {
 			matches++
 		}
@@ -560,25 +849,34 @@ func (e *queryExecutor) evalRowsPredicate(predicate query.Predicate, ownerTypeAd
 }
 
 func (e *queryExecutor) evalRowPredicate(predicate query.RowPredicate, row graph.AttributeRow) bool {
+	if !e.step() {
+		return false
+	}
 	switch predicate.Kind {
 	case query.PredicateAll:
+		result := true
 		for _, child := range predicate.Children {
-			if !e.evalRowPredicate(child, row) {
+			matched := e.evalRowPredicate(child, row)
+			if e.err != nil {
 				return false
 			}
+			result = matched && result
 		}
-		return true
+		return result
 	case query.PredicateAny:
+		result := false
 		for _, child := range predicate.Children {
-			if e.evalRowPredicate(child, row) {
-				return true
+			matched := e.evalRowPredicate(child, row)
+			if e.err != nil {
+				return false
 			}
+			result = matched || result
 		}
-		return false
+		return result
 	case query.PredicateNot:
 		return predicate.Child != nil && !e.evalRowPredicate(*predicate.Child, row)
 	case query.PredicateCell:
-		return e.evalPredicateValue(rowCellValue(row, predicate.ColumnAddresses), predicate.Operator, predicate.Value)
+		return e.evalPredicateValue(e.rowCellValue(row, predicate.ColumnAddresses), predicate.Operator, predicate.Value)
 	case query.PredicateState:
 		return e.evalStatePredicate(row.Address, predicate.FieldPath, predicate.Operator, predicate.Value)
 	default:
@@ -616,7 +914,7 @@ func entityFieldValue(entity graph.Entity, field string) optionalScalar {
 	case "layer":
 		return addressValue(entity.LayerAddress)
 	case "tags":
-		return optionalScalar{present: true, strings: append([]string{}, entity.Tags...)}
+		return optionalScalar{present: true, strings: entity.Tags}
 	default:
 		return optionalScalar{}
 	}
@@ -645,15 +943,18 @@ func relationFieldValue(relation graph.Relation, field string) optionalScalar {
 	case "to":
 		return addressValue(relation.ToAddress)
 	case "tags":
-		return optionalScalar{present: true, strings: append([]string{}, relation.Tags...)}
+		return optionalScalar{present: true, strings: relation.Tags}
 	default:
 		return optionalScalar{}
 	}
 }
 
-func rowCellValue(row graph.AttributeRow, columnAddresses []string) optionalScalar {
-	allowed := queryStringSet(columnAddresses)
+func (e *queryExecutor) rowCellValue(row graph.AttributeRow, columnAddresses []string) optionalScalar {
+	allowed := e.stringSet(columnAddresses)
 	for _, cell := range row.Values {
+		if !e.step() {
+			return optionalScalar{}
+		}
 		if allowed[cell.ColumnAddress] {
 			return optionalScalar{value: cell.Value, present: true}
 		}
@@ -685,12 +986,12 @@ func (e *queryExecutor) evalPredicateValue(left optionalScalar, operator query.O
 	}
 	right = e.resolveParameter(right)
 	if left.address != nil {
-		return compareAddress(*left.address, operator, right)
+		return e.compareAddress(*left.address, operator, right)
 	}
 	if left.strings != nil {
-		return compareStringSet(left.strings, operator, right)
+		return e.compareStringSet(left.strings, operator, right)
 	}
-	return compareScalar(left.value, operator, right)
+	return e.compareScalar(left.value, operator, right)
 }
 
 func (e *queryExecutor) resolveParameter(value *query.PredicateValue) *query.PredicateValue {
@@ -704,46 +1005,48 @@ func (e *queryExecutor) resolveParameter(value *query.PredicateValue) *query.Pre
 	return &query.PredicateValue{Kind: query.ValueLiteral, Scalar: &scalar}
 }
 
-func compareAddress(left string, operator query.Operator, right *query.PredicateValue) bool {
+func (e *queryExecutor) compareAddress(left string, operator query.Operator, right *query.PredicateValue) bool {
 	switch operator {
 	case query.OperatorEqual:
 		return right.Address != nil && left == *right.Address
 	case query.OperatorNotEqual:
 		return right.Address != nil && left != *right.Address
 	case query.OperatorIn:
-		return stringIn(left, right.Addresses)
+		return e.stringIn(left, right.Addresses)
 	case query.OperatorNotIn:
-		return !stringIn(left, right.Addresses)
+		return !e.stringIn(left, right.Addresses)
 	default:
 		return false
 	}
 }
 
-func compareStringSet(left []string, operator query.Operator, right *query.PredicateValue) bool {
-	values := append([]string{}, left...)
-	sort.Strings(values)
+func (e *queryExecutor) compareStringSet(left []string, operator query.Operator, right *query.PredicateValue) bool {
+	values := queryStableSort(e, left, strings.Compare)
+	if e.err != nil {
+		return false
+	}
 	switch operator {
 	case query.OperatorEqual:
-		return scalarStringsEqual(values, right.Scalars)
+		return e.scalarStringsEqual(values, right.Scalars)
 	case query.OperatorNotEqual:
-		return !scalarStringsEqual(values, right.Scalars)
+		return !e.scalarStringsEqual(values, right.Scalars)
 	case query.OperatorContains:
-		return right.Scalar != nil && stringIn(right.Scalar.String, values)
+		return right.Scalar != nil && e.stringIn(right.Scalar.String, values)
 	default:
 		return false
 	}
 }
 
-func compareScalar(left definition.Scalar, operator query.Operator, right *query.PredicateValue) bool {
+func (e *queryExecutor) compareScalar(left definition.Scalar, operator query.Operator, right *query.PredicateValue) bool {
 	switch operator {
 	case query.OperatorEqual:
-		return right.Scalar != nil && left == *right.Scalar
+		return right.Scalar != nil && scalarsEqual(left, *right.Scalar)
 	case query.OperatorNotEqual:
-		return right.Scalar != nil && left != *right.Scalar
+		return right.Scalar != nil && !scalarsEqual(left, *right.Scalar)
 	case query.OperatorIn:
-		return scalarIn(left, right.Scalars)
+		return e.scalarIn(left, right.Scalars)
 	case query.OperatorNotIn:
-		return !scalarIn(left, right.Scalars)
+		return !e.scalarIn(left, right.Scalars)
 	case query.OperatorContains:
 		return right.Scalar != nil && left.Type == definition.ScalarString && strings.Contains(left.String, right.Scalar.String)
 	case query.OperatorStartsWith:
@@ -772,9 +1075,25 @@ func scalarCompare(left, right definition.Scalar) (int, bool) {
 	case definition.ScalarInteger:
 		return compareInt(left.Int, right.Int), true
 	case definition.ScalarNumber:
+		if math.IsNaN(left.Float) || math.IsNaN(right.Float) || math.IsInf(left.Float, 0) || math.IsInf(right.Float, 0) {
+			return 0, false
+		}
 		return compareFloat(left.Float, right.Float), true
-	case definition.ScalarDate, definition.ScalarDatetime:
+	case definition.ScalarDate:
 		return strings.Compare(left.String, right.String), true
+	case definition.ScalarDatetime:
+		leftTime, leftErr := time.Parse(time.RFC3339Nano, left.String)
+		rightTime, rightErr := time.Parse(time.RFC3339Nano, right.String)
+		if leftErr != nil || rightErr != nil {
+			return 0, false
+		}
+		if leftTime.Before(rightTime) {
+			return -1, true
+		}
+		if leftTime.After(rightTime) {
+			return 1, true
+		}
+		return 0, true
 	default:
 		return 0, false
 	}
@@ -796,55 +1115,78 @@ func operatorCompare(cmp int, operator query.Operator) bool {
 }
 
 func (e *queryExecutor) selects(selector *[]string, address string) bool {
-	return selector == nil || stringIn(address, *selector)
+	return selector == nil || e.stringIn(address, *selector)
 }
 
 func (e *queryExecutor) sortRelationAddresses(addresses []string) []string {
-	out := append([]string{}, addresses...)
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := e.relations[out[i]], e.relations[out[j]]
-		ak := []string{a.TypeAddress, a.Address, a.FromAddress, a.ToAddress}
-		bk := []string{b.TypeAddress, b.Address, b.FromAddress, b.ToAddress}
-		for index := range ak {
-			if ak[index] != bk[index] {
-				return ak[index] < bk[index]
-			}
-		}
-		return false
+	out := queryStableSort(e, addresses, func(left, right string) int {
+		return compareRelationTuple(e.relations[left], e.relations[right])
 	})
-	return dedupeStrings(out)
+	return e.dedupeStrings(out)
 }
 
 func (e *queryExecutor) sortedStateReads() []StateReadRef {
 	out := make([]StateReadRef, 0, len(e.stateReads))
 	for read := range e.stateReads {
+		if !e.step() {
+			return nil
+		}
 		out = append(out, read)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].SubjectAddress != out[j].SubjectAddress {
-			return out[i].SubjectAddress < out[j].SubjectAddress
+	return queryStableSort(e, out, func(left, right StateReadRef) int {
+		if compared := compareStableAddressText(left.SubjectAddress, right.SubjectAddress); compared != 0 {
+			return compared
 		}
-		return out[i].FieldPath < out[j].FieldPath
+		return query.CompareStateFieldPaths(query.StateFieldPath(left.FieldPath), query.StateFieldPath(right.FieldPath))
 	})
-	return out
 }
 
 func (e *queryExecutor) addDiag(code, key, message, subject, owner string) {
-	e.diagnostics = append(e.diagnostics, diagnostic(code, key, message, subject, owner))
+	e.appendDiagnostic(diagnostic(code, key, message, subject, owner))
 }
 
 func (e *queryExecutor) addWarning(code, key, message, subject, owner string) {
 	d := diagnostic(code, key, message, subject, owner)
 	d.Severity = "warning"
-	e.diagnostics = append(e.diagnostics, d)
+	e.appendDiagnostic(d)
+}
+
+func (e *queryExecutor) addInfo(code, key, message, subject, owner string) {
+	d := diagnostic(code, key, message, subject, owner)
+	d.Severity = "info"
+	e.appendDiagnostic(d)
+}
+
+func (e *queryExecutor) appendDiagnostic(value Diagnostic) {
+	if !e.ensureResultItems(int64(len(e.diagnostics) + 1)) {
+		return
+	}
+	e.diagnostics = append(e.diagnostics, value)
 }
 
 func diagnostic(code, key, message, subject, owner string) Diagnostic {
 	return Diagnostic{Code: code, Severity: "error", MessageKey: key, Message: message, SubjectAddress: subject, OwnerAddress: owner, Arguments: map[string]string{}}
 }
 
-func rejectedQuery(diagnostics ...Diagnostic) QueryExecutionResponse {
-	return QueryExecutionResponse{Status: "rejected", Diagnostics: sortedDiagnostics(diagnostics)}
+func (e *queryExecutor) rejected(diagnostics ...Diagnostic) QueryExecutionResponse {
+	return QueryExecutionResponse{Status: "rejected", Diagnostics: e.sortedDiagnostics(diagnostics)}
+}
+
+func (e *queryExecutor) sortedDiagnostics(diagnostics []Diagnostic) []Diagnostic {
+	out := make([]Diagnostic, len(diagnostics))
+	for index, value := range diagnostics {
+		if !e.step() {
+			return nil
+		}
+		if value.Range != nil || len(value.Related) != 0 || len(value.Arguments) != 0 {
+			e.err = &QueryExecutionError{Code: "engine.query.diagnostic_invariant", Category: QueryExecutionErrorInvariant}
+			return nil
+		}
+		out[index] = value
+		out[index].Arguments = map[string]string{}
+		out[index].Related = []resolve.DiagnosticRelated{}
+	}
+	return queryStableSort(e, out, compareQueryDiagnostics)
 }
 
 func sortedDiagnostics(diagnostics []Diagnostic) []Diagnostic {
@@ -862,9 +1204,42 @@ func hasQueryError(diagnostics []Diagnostic) bool {
 	return false
 }
 
-func cloneScalars(values map[string]definition.Scalar) map[string]definition.Scalar {
-	out := map[string]definition.Scalar{}
+func compareQueryDiagnostics(left, right Diagnostic) int {
+	if queryDiagnosticSeverityRank(left.Severity) != queryDiagnosticSeverityRank(right.Severity) {
+		return compareInt(int64(queryDiagnosticSeverityRank(left.Severity)), int64(queryDiagnosticSeverityRank(right.Severity)))
+	}
+	for _, pair := range [][2]string{
+		{left.Code, right.Code},
+		{left.SubjectAddress, right.SubjectAddress},
+		{left.OwnerAddress, right.OwnerAddress},
+		{left.MessageKey, right.MessageKey},
+	} {
+		if compared := strings.Compare(pair[0], pair[1]); compared != 0 {
+			return compared
+		}
+	}
+	return 0
+}
+
+func queryDiagnosticSeverityRank(value string) int {
+	switch value {
+	case "error":
+		return 0
+	case "warning":
+		return 1
+	case "info":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func (e *queryExecutor) cloneScalars(values map[string]definition.Scalar) map[string]definition.Scalar {
+	out := make(map[string]definition.Scalar, len(values))
 	for key, value := range values {
+		if !e.step() {
+			return nil
+		}
 		out[key] = value
 	}
 	return out
@@ -879,15 +1254,21 @@ func resultIncludes(members []query.ResultMember, target query.ResultMember) boo
 	return false
 }
 
-func appendPath(path QueryPath, relationAddress, entityAddress string) QueryPath {
+func (e *queryExecutor) appendPath(path QueryPath, relationAddress, entityAddress string) QueryPath {
+	if !e.charge(int64(len(path.EntityAddresses) + len(path.RelationAddresses) + 2)) {
+		return QueryPath{}
+	}
 	return QueryPath{
 		EntityAddresses:   append(append([]string{}, path.EntityAddresses...), entityAddress),
 		RelationAddresses: append(append([]string{}, path.RelationAddresses...), relationAddress),
 	}
 }
 
-func pathContains(values []string, value string) bool {
+func (e *queryExecutor) pathContains(values []string, value string) bool {
 	for _, item := range values {
+		if !e.step() {
+			return false
+		}
 		if item == value {
 			return true
 		}
@@ -895,10 +1276,8 @@ func pathContains(values []string, value string) bool {
 	return false
 }
 
-func sortPaths(paths []QueryPath) []QueryPath {
-	out := append([]QueryPath{}, paths...)
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i], out[j]
+func (e *queryExecutor) sortPaths(paths []QueryPath) []QueryPath {
+	return queryStableSort(e, paths, func(a, b QueryPath) int {
 		aEnd, bEnd := "", ""
 		if len(a.EntityAddresses) != 0 {
 			aEnd = a.EntityAddresses[len(a.EntityAddresses)-1]
@@ -906,67 +1285,68 @@ func sortPaths(paths []QueryPath) []QueryPath {
 		if len(b.EntityAddresses) != 0 {
 			bEnd = b.EntityAddresses[len(b.EntityAddresses)-1]
 		}
-		if aEnd != bEnd {
-			return aEnd < bEnd
+		if compared := compareStableAddressText(aEnd, bEnd); compared != 0 {
+			return compared
 		}
-		return pathKey(a) < pathKey(b)
+		return e.compareQueryPaths(a, b)
 	})
-	return out
 }
 
-func sortCycleRefs(refs []QueryCycleRef) []QueryCycleRef {
-	out := append([]QueryCycleRef{}, refs...)
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		ak := []string{a.Kind, a.FromEntityAddress, a.ToEntityAddress, a.RelationAddress, a.Orientation, pathKey(a.RetainedPath)}
-		bk := []string{b.Kind, b.FromEntityAddress, b.ToEntityAddress, b.RelationAddress, b.Orientation, pathKey(b.RetainedPath)}
-		for index := range ak {
-			if ak[index] != bk[index] {
-				return ak[index] < bk[index]
+func (e *queryExecutor) sortCycleRefs(refs []QueryCycleRef) []QueryCycleRef {
+	return queryStableSort(e, refs, func(a, b QueryCycleRef) int {
+		if a.Kind != b.Kind {
+			return strings.Compare(a.Kind, b.Kind)
+		}
+		for _, pair := range [][2]string{{a.FromEntityAddress, b.FromEntityAddress}, {a.ToEntityAddress, b.ToEntityAddress}, {a.RelationAddress, b.RelationAddress}} {
+			if compared := compareStableAddressText(pair[0], pair[1]); compared != 0 {
+				return compared
 			}
 		}
-		return false
+		if orientationRank(a.Orientation) != orientationRank(b.Orientation) {
+			return compareInt(int64(orientationRank(a.Orientation)), int64(orientationRank(b.Orientation)))
+		}
+		return e.compareQueryPaths(a.RetainedPath, b.RetainedPath)
 	})
-	return out
 }
 
-func pathKey(path QueryPath) string {
-	return strings.Join(path.EntityAddresses, "\x00") + "\x01" + strings.Join(path.RelationAddresses, "\x00")
-}
-
-func queryStringSet(values []string) map[string]bool {
+func (e *queryExecutor) stringSet(values []string) map[string]bool {
 	out := map[string]bool{}
 	for _, value := range values {
+		if !e.step() {
+			return nil
+		}
 		out[value] = true
 	}
 	return out
 }
 
-func setKeys(values map[string]bool) []string {
+func (e *queryExecutor) mapKeys(values map[string]bool) []string {
 	out := make([]string, 0, len(values))
 	for value := range values {
+		if !e.step() {
+			return nil
+		}
 		out = append(out, value)
 	}
-	return sortStrings(out)
+	return out
 }
 
-func sortSet(values map[string]bool) []string {
-	return sortStrings(setKeys(values))
+func (e *queryExecutor) sortSet(values map[string]bool) []string {
+	return e.sortStableAddresses(e.mapKeys(values))
 }
 
-func sortStrings(values []string) []string {
-	out := append([]string{}, values...)
-	sort.Strings(out)
-	return dedupeStrings(out)
+func (e *queryExecutor) sortStableAddresses(values []string) []string {
+	out := queryStableSort(e, values, compareStableAddressText)
+	return e.dedupeStrings(out)
 }
 
-func dedupeStrings(values []string) []string {
-	if len(values) < 2 {
-		return values
-	}
+func (e *queryExecutor) dedupeStrings(values []string) []string {
 	out := values[:0]
 	var previous string
 	for _, value := range values {
+		if !e.step() {
+			return nil
+		}
 		if len(out) != 0 && value == previous {
 			continue
 		}
@@ -976,8 +1356,11 @@ func dedupeStrings(values []string) []string {
 	return out
 }
 
-func stringIn(value string, values []string) bool {
+func (e *queryExecutor) stringIn(value string, values []string) bool {
 	for _, item := range values {
+		if !e.step() {
+			return false
+		}
 		if item == value {
 			return true
 		}
@@ -985,30 +1368,159 @@ func stringIn(value string, values []string) bool {
 	return false
 }
 
-func scalarIn(value definition.Scalar, values []definition.Scalar) bool {
+func (e *queryExecutor) scalarIn(value definition.Scalar, values []definition.Scalar) bool {
 	for _, item := range values {
-		if item == value {
+		if !e.step() {
+			return false
+		}
+		if scalarsEqual(item, value) {
 			return true
 		}
 	}
 	return false
 }
 
-func scalarStringsEqual(left []string, right []definition.Scalar) bool {
+func scalarsEqual(left, right definition.Scalar) bool {
+	if left.Type != right.Type {
+		return false
+	}
+	switch left.Type {
+	case definition.ScalarString, definition.ScalarEnum, definition.ScalarDate, definition.ScalarDatetime:
+		return left.String == right.String
+	case definition.ScalarInteger:
+		return left.Int == right.Int
+	case definition.ScalarNumber:
+		return !math.IsNaN(left.Float) && !math.IsNaN(right.Float) && left.Float == right.Float
+	case definition.ScalarBoolean:
+		return left.Bool == right.Bool
+	default:
+		return false
+	}
+}
+
+func compareRelationTuple(left, right graph.Relation) int {
+	for _, pair := range [][2]string{{left.TypeAddress, right.TypeAddress}, {left.Address, right.Address}, {left.FromAddress, right.FromAddress}, {left.ToAddress, right.ToAddress}} {
+		if compared := compareStableAddressText(pair[0], pair[1]); compared != 0 {
+			return compared
+		}
+	}
+	return 0
+}
+
+func orientationRank(value string) int {
+	if value == "outgoing" {
+		return 0
+	}
+	return 1
+}
+
+func (e *queryExecutor) compareQueryPaths(left, right QueryPath) int {
+	maximum := max(len(left.EntityAddresses), len(right.EntityAddresses))
+	for index := 0; index < maximum; index++ {
+		if !e.step() {
+			return 0
+		}
+		if index >= len(left.EntityAddresses) {
+			return -1
+		}
+		if index >= len(right.EntityAddresses) {
+			return 1
+		}
+		if compared := compareStableAddressText(left.EntityAddresses[index], right.EntityAddresses[index]); compared != 0 {
+			return compared
+		}
+		if index < len(left.RelationAddresses) && index < len(right.RelationAddresses) {
+			if !e.step() {
+				return 0
+			}
+			if compared := compareStableAddressText(left.RelationAddresses[index], right.RelationAddresses[index]); compared != 0 {
+				return compared
+			}
+		}
+	}
+	return compareInt(int64(len(left.RelationAddresses)), int64(len(right.RelationAddresses)))
+}
+
+func (e *queryExecutor) scalarStringsEqual(left []string, right []definition.Scalar) bool {
 	if len(left) != len(right) {
 		return false
 	}
 	values := make([]string, len(right))
 	for index, scalar := range right {
+		if !e.step() {
+			return false
+		}
 		values[index] = scalar.String
 	}
-	sort.Strings(values)
+	values = queryStableSort(e, values, strings.Compare)
+	if e.err != nil {
+		return false
+	}
 	for index := range left {
+		if !e.step() {
+			return false
+		}
 		if left[index] != values[index] {
 			return false
 		}
 	}
 	return true
+}
+
+func queryStableSort[T any](executor *queryExecutor, values []T, compare func(T, T) int) []T {
+	if !executor.charge(int64(len(values))) {
+		return nil
+	}
+	out := append([]T{}, values...)
+	if len(out) < 2 {
+		return out
+	}
+	scratch := make([]T, len(out))
+	source, target := out, scratch
+	inScratch := false
+	for width := 1; width < len(out); {
+		for left := 0; left < len(out); left += 2 * width {
+			middle := min(left+width, len(out))
+			right := min(middle+width, len(out))
+			i, j, destination := left, middle, left
+			for i < middle && j < right {
+				if !executor.step() {
+					return nil
+				}
+				compared := compare(source[i], source[j])
+				if executor.err != nil {
+					return nil
+				}
+				if compared <= 0 {
+					target[destination] = source[i]
+					i++
+				} else {
+					target[destination] = source[j]
+					j++
+				}
+				destination++
+			}
+			remaining := (middle - i) + (right - j)
+			if !executor.charge(int64(remaining)) {
+				return nil
+			}
+			destination += copy(target[destination:], source[i:middle])
+			copy(target[destination:], source[j:right])
+		}
+		source, target = target, source
+		inScratch = !inScratch
+		if width > len(out)/2 {
+			break
+		}
+		width *= 2
+	}
+	if inScratch {
+		if !executor.charge(int64(len(out))) {
+			return nil
+		}
+		copy(out, source)
+	}
+	return out
 }
 
 func compareInt(left, right int64) int {

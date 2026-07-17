@@ -304,12 +304,15 @@ func (p *workbenchPlan) ExecuteDispatch(ctx context.Context, source BlobSource, 
 	if err != nil {
 		return p.errorResponse(err)
 	}
-	if err := sink.Publish(executeContext, cloneOutputBlobs(blobs)); err != nil {
-		return p.failed(FailureWorkbenchBlobSink, protocolcommon.ProtocolFailureCategoryIo)
-	}
 	control, err := p.encode(payload, []semantic.Diagnostic{}, nil, protocolcommon.OutcomeSuccess, p.release, p.requestID)
 	if err != nil {
-		return DispatchResponse{}, err
+		return p.errorResponse(&engine.WorkbenchError{
+			Code:     "engine.workbench.result_invariant",
+			Category: engine.WorkbenchErrorInvariant,
+		})
+	}
+	if err := sink.Publish(executeContext, cloneOutputBlobs(blobs)); err != nil {
+		return p.failed(FailureWorkbenchBlobSink, protocolcommon.ProtocolFailureCategoryIo)
 	}
 	p.mu.Lock()
 	p.state = workbenchPlanFinished
@@ -338,20 +341,37 @@ func (p *workbenchPlan) errorResponse(err error) (DispatchResponse, error) {
 	}
 	var wb *engine.WorkbenchError
 	if errors.As(err, &wb) {
+		switch wb.Category {
+		case engine.WorkbenchErrorCursorInvalid,
+			engine.WorkbenchErrorGenerationStale,
+			engine.WorkbenchErrorHandleInvalid,
+			engine.WorkbenchErrorInputInvalid,
+			engine.WorkbenchErrorNotFound,
+			engine.WorkbenchErrorOperationDisabled:
+			control, encodeErr := p.encode(nil, workbenchDiagnostic(wb), nil, protocolcommon.OutcomeRejected, p.release, p.requestID)
+			if encodeErr != nil {
+				return DispatchResponse{}, encodeErr
+			}
+			return DispatchResponse{Operation: p.operation, RequestID: p.requestID, Control: control, Outcome: protocolcommon.OutcomeRejected}, nil
+		}
 		category, workbenchCategory := mapWorkbenchFailureCategory(wb)
-		details := protocolcommon.JsonObject{}
+		var details protocolcommon.JsonObject
 		if wb.Resource != "" {
+			details = protocolcommon.JsonObject{}
 			details["resource"] = stringJSON(wb.Resource)
 			details["limit"] = stringJSON(strconv.FormatInt(wb.Limit, 10))
 			details["observed"] = stringJSON(strconv.FormatInt(wb.Observed, 10))
 		}
-		_, _ = category, workbenchCategory
-		_ = details
-		control, encodeErr := p.encode(nil, workbenchDiagnostic(wb), nil, protocolcommon.OutcomeRejected, p.release, p.requestID)
+		outcome := protocolcommon.OutcomeFailed
+		if wb.Category == engine.WorkbenchErrorCancelled {
+			outcome = protocolcommon.OutcomeCancelled
+		}
+		failure := workbenchFailure(category, wb.Code, workbenchCategory, "Workbench operation failed.", false, details)
+		control, encodeErr := p.encode(nil, []semantic.Diagnostic{}, &failure, outcome, p.release, p.requestID)
 		if encodeErr != nil {
 			return DispatchResponse{}, encodeErr
 		}
-		return DispatchResponse{Operation: p.operation, RequestID: p.requestID, Control: control, Outcome: protocolcommon.OutcomeRejected}, nil
+		return DispatchResponse{Operation: p.operation, RequestID: p.requestID, Control: control, Outcome: outcome}, nil
 	}
 	var queryRejected *engine.QueryExecutionRejection
 	if errors.As(err, &queryRejected) {
@@ -858,6 +878,8 @@ func mapWorkbenchFailureCategory(err *engine.WorkbenchError) (protocolcommon.Pro
 	case engine.WorkbenchErrorHandleInvalid:
 		return protocolcommon.ProtocolFailureCategoryInvariant, "execution_failed"
 	case engine.WorkbenchErrorInputInvalid:
+		return protocolcommon.ProtocolFailureCategoryInvariant, "execution_failed"
+	case engine.WorkbenchErrorInvariant:
 		return protocolcommon.ProtocolFailureCategoryInvariant, "execution_failed"
 	case engine.WorkbenchErrorLimitExceeded:
 		return protocolcommon.ProtocolFailureCategoryResource, "limit_exceeded"

@@ -284,7 +284,7 @@
     },
     "WorkbenchLimits": {
       "type": "object",
-      "description": "Explicit positive caller bounds; every read and edit carries both item and complete logical response-payload byte ceilings. Logical bytes exclude the outer Engine response envelope, include the canonical JSON UTF-8 bytes of the complete operation result with page.returned_bytes replaced by the string 0 to avoid self-reference, and add every referenced BlobRef attachment's declared size once per occurrence.",
+      "description": "Explicit positive caller bounds; every read and edit carries both item and complete logical response-payload byte ceilings. Logical bytes exclude the outer Engine response envelope, include the canonical JSON UTF-8 bytes of the complete operation result with its operation-defined LogicalResponseByteCount field encoded as the string 0 to avoid self-reference (for example page.returned_bytes or ExecuteQueryResult.returned_bytes), and add every referenced BlobRef attachment's declared size once per occurrence.",
       "properties": {
         "max_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
         "max_output_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64", "description": "Maximum logical response-payload bytes measured by the WorkbenchLimits rule, including referenced attachment bytes."}
@@ -335,6 +335,7 @@
       "description": "Exact availability of every operation for this document generation. These values refine, and never broaden, endpoint handshake capabilities.",
       "properties": {
         "apply_to_handle": {"type": "boolean"},
+        "execute_query": {"type": "boolean"},
         "find_symbols": {"type": "boolean"},
         "find_usages": {"type": "boolean"},
         "format_scope": {"type": "boolean"},
@@ -353,7 +354,7 @@
         "read_scope": {"type": "boolean"},
         "replace_source_tree": {"type": "boolean"}
       },
-      "required": ["apply_to_handle", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "organize_workspace", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_modules", "read_references", "read_rows", "read_scope", "replace_source_tree"],
+      "required": ["apply_to_handle", "execute_query", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "organize_workspace", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_modules", "read_references", "read_rows", "read_scope", "replace_source_tree"],
       "additionalProperties": false
     },
     "WorkingDocumentState": {
@@ -730,14 +731,14 @@
         "arguments": {"type": "object", "propertyNames": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ParameterAddress"}, "additionalProperties": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"}},
         "cycle_refs": {"type": "array", "items": {"$ref": "#/$defs/QueryCycleRef"}},
         "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
-        "induced_relation_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "path_relation_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "induced_relation_addresses": {"type": "array", "description": "Canonical relation-candidate tuple order defined by LDL Language 1 Query semantics.", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true},
+        "path_relation_addresses": {"type": "array", "description": "Canonical relation-candidate tuple order defined by LDL Language 1 Query semantics.", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true},
         "paths": {"type": "array", "items": {"$ref": "#/$defs/QueryPath"}},
         "primary_entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "query_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryAddress"},
         "reached_entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "seed_entity_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "selected_relation_addresses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "selected_relation_addresses": {"type": "array", "description": "Canonical relation-candidate tuple order defined by LDL Language 1 Query semantics.", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RelationAddress"}, "uniqueItems": true},
         "state_input": {"$ref": "#/$defs/QueryStateInputRef"},
         "state_policy": {"type": "string", "enum": ["none", "optional", "required"]},
         "state_reads": {"type": "array", "items": {"$ref": "#/$defs/QueryStateReadRef"}},
@@ -768,7 +769,8 @@
         "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
       },
       "required": ["document_generation", "result", "returned_items", "returned_bytes"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "query_result"
     },
     "NeighborCursor": {
       "type": "object",

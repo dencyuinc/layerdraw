@@ -19,6 +19,7 @@ const (
 	CapabilityCompile = "engine.compile"
 
 	CapabilityCloseDocument     = "engine.close_document"
+	CapabilityExecuteQuery      = "engine.execute_query"
 	CapabilityFindSymbols       = "engine.find_symbols"
 	CapabilityFindUsages        = "engine.find_usages"
 	CapabilityGetNeighbors      = "engine.get_neighbors"
@@ -38,6 +39,7 @@ var bootstrapCapabilities = []string{
 	CapabilityCloseDocument,
 	CapabilityCompile,
 	CapabilityDescribe,
+	CapabilityExecuteQuery,
 	CapabilityFindSymbols,
 	CapabilityFindUsages,
 	CapabilityGetNeighbors,

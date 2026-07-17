@@ -2,7 +2,10 @@
 
 package engine
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // ExecuteDocumentQuery evaluates one compiled Query against a retained Working
 // Document generation. The Working Document supplies the authoritative compiled
@@ -33,7 +36,13 @@ func (e Engine) ExecuteDocumentQuery(ctx context.Context, input ExecuteDocumentQ
 	if !found {
 		return ExecuteDocumentQueryResult{}, &WorkbenchError{Code: "engine.workbench.query_not_found", Category: WorkbenchErrorNotFound}
 	}
-	response := e.ExecuteQuery(ctx, QueryExecutionInput{Recipe: recipe, Graph: *snapshot.compiled.TypedAST.Graph, Arguments: input.Arguments})
+	response, err := e.ExecuteQuery(ctx, QueryExecutionInput{
+		Recipe: recipe, Graph: *snapshot.compiled.TypedAST.Graph, Arguments: input.Arguments,
+		Limits: QueryExecutionLimits{MaxItems: input.Limits.MaxItems},
+	})
+	if err != nil {
+		return ExecuteDocumentQueryResult{}, mapQueryExecutionWorkbenchError(err)
+	}
 	if response.Status == "rejected" {
 		return ExecuteDocumentQueryResult{}, &QueryExecutionRejection{Diagnostics: response.Diagnostics}
 	}
@@ -45,15 +54,27 @@ func (e Engine) ExecuteDocumentQuery(ctx context.Context, input ExecuteDocumentQ
 	if result.ReturnedItems > input.Limits.MaxItems {
 		return ExecuteDocumentQueryResult{}, workbenchLimit("query_result_items", input.Limits.MaxItems, result.ReturnedItems)
 	}
-	returnedBytes, err := measureExecuteDocumentQueryResult(result)
+	returnedBytes, err := MeasureDocumentQueryLogicalBytes(ctx, result, input.Limits.MaxOutputBytes)
 	if err != nil {
 		return ExecuteDocumentQueryResult{}, err
 	}
 	result.ReturnedBytes = returnedBytes
-	if returnedBytes > input.Limits.MaxOutputBytes {
-		return ExecuteDocumentQueryResult{}, workbenchLimit("max_output_bytes", input.Limits.MaxOutputBytes, returnedBytes)
-	}
 	return result, nil
+}
+
+func mapQueryExecutionWorkbenchError(err error) error {
+	var executionError *QueryExecutionError
+	if !errors.As(err, &executionError) {
+		return &WorkbenchError{Code: "engine.workbench.query_execution_invariant", Category: WorkbenchErrorInvariant, cause: err}
+	}
+	switch executionError.Category {
+	case QueryExecutionErrorCancelled:
+		return &WorkbenchError{Code: "engine.workbench.cancelled", Category: WorkbenchErrorCancelled, cause: err}
+	case QueryExecutionErrorResource:
+		return &WorkbenchError{Code: "engine.workbench.limit_exceeded", Category: WorkbenchErrorLimitExceeded, Resource: executionError.Resource, Limit: executionError.Limit, Observed: executionError.Observed, cause: err}
+	default:
+		return &WorkbenchError{Code: "engine.workbench.query_execution_invariant", Category: WorkbenchErrorInvariant, cause: err}
+	}
 }
 
 type QueryExecutionRejection struct {
@@ -62,20 +83,6 @@ type QueryExecutionRejection struct {
 
 func (e *QueryExecutionRejection) Error() string {
 	return "engine.workbench.query_rejected"
-}
-
-func measureExecuteDocumentQueryResult(result ExecuteDocumentQueryResult) (int64, error) {
-	for range 4 {
-		measured, err := measureLogicalResult(result, 0)
-		if err != nil {
-			return 0, err
-		}
-		if measured == result.ReturnedBytes {
-			return measured, nil
-		}
-		result.ReturnedBytes = measured
-	}
-	return measureLogicalResult(result, 0)
 }
 
 func queryResultItemCount(result QueryResult) int64 {

@@ -15,6 +15,7 @@ import {
 import { createStdioEngineClient } from "../dist/stdio.js";
 import {
   assertPortableCompileParityOutcome,
+  executePortableQueryClientWorkflow,
   portableParityInput,
 } from "../../engine-wasm/test/shared/real-engine.mjs";
 
@@ -87,6 +88,8 @@ test("stdio client executes the portable corpus through the real Go sidecar", as
   const cancelled = await pendingCancellation;
   assert.equal(cancelled.origin, "client");
   assert.equal(cancelled.outcome, "cancelled");
+
+  await executePortableQueryClientWorkflow(client, "stdio-query");
 
   await client.restart();
   assert.equal(client.getEndpoint().generation, firstEndpoint.generation + 1);
