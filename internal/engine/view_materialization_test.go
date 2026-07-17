@@ -259,6 +259,7 @@ view topology "Topology" topology {
     direction left_to_right
     abstraction normal
     place alpha 10 20 200 100
+    place beta 250 20 200 100
   }
 }
 `
