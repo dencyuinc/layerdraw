@@ -40,6 +40,7 @@ type workbenchDriver interface {
 	ReadDeclarations(context.Context, engine.ReadDeclarationsInput) (engine.ReadDeclarationsResult, error)
 	ReadRows(context.Context, engine.ReadRowsInput) (engine.ReadRowsResult, error)
 	ExecuteDocumentQuery(context.Context, engine.ExecuteDocumentQueryInput) (engine.ExecuteDocumentQueryResult, error)
+	MaterializeDocumentView(context.Context, engine.MaterializeDocumentViewInput) (engine.MaterializeDocumentViewResult, error)
 	GetNeighbors(context.Context, engine.GetNeighborsInput) (engine.GetNeighborsResult, error)
 	FindUsages(context.Context, engine.FindUsagesInput) (engine.FindUsagesResult, error)
 	ReadScope(context.Context, engine.ReadScopeInput) (engine.ReadScopeResult, error)
@@ -93,6 +94,9 @@ func (driver engineCompileDriver) ReadRows(ctx context.Context, input engine.Rea
 }
 func (driver engineCompileDriver) ExecuteDocumentQuery(ctx context.Context, input engine.ExecuteDocumentQueryInput) (engine.ExecuteDocumentQueryResult, error) {
 	return driver.compiler.ExecuteDocumentQuery(ctx, input)
+}
+func (driver engineCompileDriver) MaterializeDocumentView(ctx context.Context, input engine.MaterializeDocumentViewInput) (engine.MaterializeDocumentViewResult, error) {
+	return driver.compiler.MaterializeDocumentView(ctx, input)
 }
 func (driver engineCompileDriver) GetNeighbors(ctx context.Context, input engine.GetNeighborsInput) (engine.GetNeighborsResult, error) {
 	return driver.compiler.GetNeighbors(ctx, input)
@@ -385,6 +389,18 @@ func (p *workbenchPlan) errorResponse(err error) (DispatchResponse, error) {
 		}
 		return DispatchResponse{Operation: p.operation, RequestID: p.requestID, Control: control, Outcome: protocolcommon.OutcomeRejected}, nil
 	}
+	var viewRejected *engine.ViewMaterializationRejection
+	if errors.As(err, &viewRejected) {
+		diagnostics, mapErr := mapDiagnostics(viewRejected.Diagnostics)
+		if mapErr != nil {
+			return DispatchResponse{}, mapErr
+		}
+		control, encodeErr := p.encode(nil, diagnostics, nil, protocolcommon.OutcomeRejected, p.release, p.requestID)
+		if encodeErr != nil {
+			return DispatchResponse{}, encodeErr
+		}
+		return DispatchResponse{Operation: p.operation, RequestID: p.requestID, Control: control, Outcome: protocolcommon.OutcomeRejected}, nil
+	}
 	return p.failed(FailureWorkbenchExecution, protocolcommon.ProtocolFailureCategoryIo)
 }
 
@@ -573,6 +589,12 @@ func workbenchPayloadRunner(operation string, control []byte) (any, func(context
 			return nil, nil, err
 		}
 		return request.Payload, runExecuteQuery(request.Payload), nil
+	case OperationMaterializeView:
+		request, err := engineprotocol.DecodeMaterializeViewRequestEnvelope(control)
+		if err != nil {
+			return nil, nil, err
+		}
+		return request.Payload, runMaterializeView(request.Payload), nil
 	case OperationGetNeighbors:
 		request, err := engineprotocol.DecodeGetNeighborsRequestEnvelope(control)
 		if err != nil {
@@ -777,6 +799,12 @@ func encodeWorkbenchTerminal(operation string, payload any, diagnostics []semant
 			return nil, err
 		}
 		return engineprotocol.EncodeExecuteQueryResponseEnvelope(engineprotocol.ExecuteQueryResponseEnvelope{Diagnostics: diagnostics, EngineRelease: release, Failure: optionalFailure(hasFailure, failure), Outcome: outcome, Payload: optionalPayload(outcome, out), Protocol: bootstrapProtocolRef(), RequestID: requestID})
+	case OperationMaterializeView:
+		var out engineprotocol.MaterializeViewResult
+		if err := mapPayload(&out); err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodeMaterializeViewResponseEnvelope(engineprotocol.MaterializeViewResponseEnvelope{Diagnostics: diagnostics, EngineRelease: release, Failure: optionalFailure(hasFailure, failure), Outcome: outcome, Payload: optionalPayload(outcome, out), Protocol: bootstrapProtocolRef(), RequestID: requestID})
 	case OperationGetNeighbors:
 		var out engineprotocol.GetNeighborsResult
 		if err := mapPayload(&out); err != nil {

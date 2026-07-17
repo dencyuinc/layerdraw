@@ -16,6 +16,8 @@ import {
   decodeExecuteQueryResponseEnvelope,
   decodeExportRecipeBlobRef,
   decodeHandshakeRequestEnvelope,
+  decodeMaterializeViewRequestEnvelope,
+  decodeMaterializeViewResponseEnvelope,
   decodeNormalizedPackArtifactBlobRef,
   decodeNormalizedPackCanonicalBlobRef,
   decodeNormalizedProjectArtifactBlobRef,
@@ -33,6 +35,8 @@ import {
   encodeExecuteQueryResponseEnvelope,
   encodeExportRecipeBlobRef,
   encodeHandshakeRequestEnvelope,
+  encodeMaterializeViewRequestEnvelope,
+  encodeMaterializeViewResponseEnvelope,
   encodeNormalizedPackArtifactBlobRef,
   encodeNormalizedPackCanonicalBlobRef,
   encodeNormalizedProjectArtifactBlobRef,
@@ -51,6 +55,8 @@ import {
   isCreateSubjectFields,
   isHandshakeRequestEnvelope,
   isHandshakeResponseEnvelope,
+  isMaterializeViewRequestEnvelope,
+  isMaterializeViewResponseEnvelope,
   decodePreviewOperationsRequestEnvelope,
   decodePreviewOperationsResponseEnvelope,
   encodePreviewOperationsRequestEnvelope,
@@ -271,6 +277,9 @@ for (const [name, validate, decode, encode] of [
   ["execute-query-request.json", isExecuteQueryRequestEnvelope, decodeExecuteQueryRequestEnvelope, encodeExecuteQueryRequestEnvelope],
   ["execute-query-success.json", isExecuteQueryResponseEnvelope, decodeExecuteQueryResponseEnvelope, encodeExecuteQueryResponseEnvelope],
   ["execute-query-rejected.json", isExecuteQueryResponseEnvelope, decodeExecuteQueryResponseEnvelope, encodeExecuteQueryResponseEnvelope],
+  ["materialize-view-request.json", isMaterializeViewRequestEnvelope, decodeMaterializeViewRequestEnvelope, encodeMaterializeViewRequestEnvelope],
+  ["materialize-view-success.json", isMaterializeViewResponseEnvelope, decodeMaterializeViewResponseEnvelope, encodeMaterializeViewResponseEnvelope],
+  ["materialize-view-rejected.json", isMaterializeViewResponseEnvelope, decodeMaterializeViewResponseEnvelope, encodeMaterializeViewResponseEnvelope],
   ["handshake-request.json", isHandshakeRequestEnvelope, decodeHandshakeRequestEnvelope, encodeHandshakeRequestEnvelope],
   ["handshake-success.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
   ["handshake-rejected.json", isHandshakeResponseEnvelope, decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
@@ -293,6 +302,17 @@ test("execute query result rejects inconsistent logical counts", async () => {
     assert.equal(isExecuteQueryResponseEnvelope(mutated), false, field);
     assert.throws(() => decodeExecuteQueryResponseEnvelope(JSON.stringify(mutated)), {name: "TypeError"}, field);
     assert.throws(() => encodeExecuteQueryResponseEnvelope(mutated), {name: "TypeError"}, field);
+  }
+});
+
+test("materialized ViewData rejects inconsistent logical counts", async () => {
+  const fixture = await readFixture("materialize-view-success.json");
+  for (const [field, invalid] of [["returned_items", "999"], ["returned_bytes", "1"]]) {
+    const mutated = structuredClone(fixture);
+    mutated.payload[field] = invalid;
+    assert.equal(isMaterializeViewResponseEnvelope(mutated), false, field);
+    assert.throws(() => decodeMaterializeViewResponseEnvelope(JSON.stringify(mutated)), {name: "TypeError"}, field);
+    assert.throws(() => encodeMaterializeViewResponseEnvelope(mutated), {name: "TypeError"}, field);
   }
 });
 
@@ -563,6 +583,9 @@ test("TypeScript matches shared canonical Go/TypeScript engine-envelope bytes", 
     ["execute-query-request.json", decodeExecuteQueryRequestEnvelope, encodeExecuteQueryRequestEnvelope],
     ["execute-query-success.json", decodeExecuteQueryResponseEnvelope, encodeExecuteQueryResponseEnvelope],
     ["execute-query-rejected.json", decodeExecuteQueryResponseEnvelope, encodeExecuteQueryResponseEnvelope],
+    ["materialize-view-request.json", decodeMaterializeViewRequestEnvelope, encodeMaterializeViewRequestEnvelope],
+    ["materialize-view-success.json", decodeMaterializeViewResponseEnvelope, encodeMaterializeViewResponseEnvelope],
+    ["materialize-view-rejected.json", decodeMaterializeViewResponseEnvelope, encodeMaterializeViewResponseEnvelope],
     ["handshake-request.json", decodeHandshakeRequestEnvelope, encodeHandshakeRequestEnvelope],
     ["handshake-success.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],
     ["handshake-rejected.json", decodeHandshakeResponseEnvelope, encodeHandshakeResponseEnvelope],

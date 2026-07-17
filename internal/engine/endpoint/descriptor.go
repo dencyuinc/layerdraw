@@ -36,6 +36,7 @@ const (
 	OperationInspectSubgraph    = "engine.inspect_subgraph"
 	OperationListModules        = "engine.list_modules"
 	OperationListReferences     = "engine.list_references"
+	OperationMaterializeView    = "engine.materialize_view"
 	OperationOpenDocument       = "engine.open_document"
 	OperationOrganizeWorkspace  = "engine.organize_workspace"
 	OperationPreviewFragment    = "engine.preview_fragment"
@@ -141,6 +142,7 @@ func NewDescriptor(config DescriptorConfig) (*Descriptor, error) {
 			OperationInspectSubgraph,
 			OperationListModules,
 			OperationListReferences,
+			OperationMaterializeView,
 			OperationOpenDocument,
 			OperationOrganizeWorkspace,
 			OperationPreviewFragment,

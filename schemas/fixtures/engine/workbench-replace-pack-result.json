@@ -9,6 +9,7 @@
     "inspect_subgraph": false,
     "list_modules": true,
     "list_references": false,
+    "materialize_view": false,
     "organize_workspace": false,
     "preview_fragment": false,
     "preview_operations": false,

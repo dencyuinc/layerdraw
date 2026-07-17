@@ -43,6 +43,7 @@ import {
   decodeInspectSubgraphResponseEnvelope,
   decodeListModulesResponseEnvelope,
   decodeListReferencesResponseEnvelope,
+  decodeMaterializeViewResponseEnvelope,
   decodeOpenDocumentResponseEnvelope,
   decodeOrganizeWorkspaceResponseEnvelope,
   decodePreviewFragmentResponseEnvelope,
@@ -66,6 +67,7 @@ import {
   encodeInspectSubgraphRequestEnvelope,
   encodeListModulesRequestEnvelope,
   encodeListReferencesRequestEnvelope,
+  encodeMaterializeViewRequestEnvelope,
   encodeOpenDocumentRequestEnvelope,
   encodeOrganizeWorkspaceRequestEnvelope,
   encodePreviewFragmentRequestEnvelope,
@@ -87,6 +89,7 @@ import {
   isInspectSubgraphInput,
   isListModulesInput,
   isListReferencesInput,
+  isMaterializeViewInput,
   isOpenDocumentInput,
   isOrganizeWorkspaceInput,
   isPreviewFragmentInput,
@@ -483,6 +486,7 @@ type WorkbenchEnvelope =
   | OpenDocumentResponseEnvelope
   | ListModulesResponseEnvelope
   | EngineProtocol.ListReferencesResponseEnvelope
+  | EngineProtocol.MaterializeViewResponseEnvelope
   | EngineProtocol.OrganizeWorkspaceResponseEnvelope
   | EngineProtocol.PreviewFragmentResponseEnvelope
   | EngineProtocol.PreviewSourcePatchResponseEnvelope
@@ -758,6 +762,11 @@ class EngineClientImplementation implements EngineClient {
       options?: WorkbenchOptions,
     ): Promise<WorkbenchOutcome<EngineProtocol.ListReferencesResponseEnvelope>> =>
       this.listReferences(input, options),
+    materializeView: (
+      input: EngineProtocol.MaterializeViewInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.MaterializeViewResponseEnvelope>> =>
+      this.materializeView(input, options),
     openDocument: (
       input: OpenDocumentInput,
       options?: WorkbenchOptions,
@@ -1035,6 +1044,16 @@ class EngineClientImplementation implements EngineClient {
     return this.executeWorkbenchOperation("engine.list_references", input, options, (envelope) =>
       encodeListReferencesRequestEnvelope(envelope as EngineProtocol.ListReferencesRequestEnvelope),
     decodeListReferencesResponseEnvelope);
+  }
+
+  private materializeView(
+    input: EngineProtocol.MaterializeViewInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.MaterializeViewResponseEnvelope>> {
+    if (!isMaterializeViewInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.materialize_view", input, options, (envelope) =>
+      encodeMaterializeViewRequestEnvelope(envelope as EngineProtocol.MaterializeViewRequestEnvelope),
+    decodeMaterializeViewResponseEnvelope);
   }
 
   private organizeWorkspace(

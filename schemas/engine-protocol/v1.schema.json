@@ -343,6 +343,7 @@
         "inspect_subgraph": {"type": "boolean"},
         "list_modules": {"type": "boolean"},
         "list_references": {"type": "boolean"},
+        "materialize_view": {"type": "boolean"},
         "organize_workspace": {"type": "boolean"},
         "preview_fragment": {"type": "boolean"},
         "preview_operations": {"type": "boolean"},
@@ -354,7 +355,7 @@
         "read_scope": {"type": "boolean"},
         "replace_source_tree": {"type": "boolean"}
       },
-      "required": ["apply_to_handle", "execute_query", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "organize_workspace", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_modules", "read_references", "read_rows", "read_scope", "replace_source_tree"],
+      "required": ["apply_to_handle", "execute_query", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "materialize_view", "organize_workspace", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_modules", "read_references", "read_rows", "read_scope", "replace_source_tree"],
       "additionalProperties": false
     },
     "WorkingDocumentState": {
@@ -771,6 +772,31 @@
       "required": ["document_generation", "result", "returned_items", "returned_bytes"],
       "additionalProperties": false,
       "x-layerdraw-protocol-invariant": "query_result"
+    },
+    "MaterializeViewInput": {
+      "type": "object",
+      "properties": {
+        "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "limits": {"$ref": "#/$defs/WorkbenchLimits"},
+        "query_result": {"$ref": "#/$defs/QueryExecutionResultData"},
+        "view_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewAddress"}
+      },
+      "required": ["document_generation", "limits", "view_address", "query_result"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "document_bound_input"
+    },
+    "MaterializeViewResult": {
+      "type": "object",
+      "description": "One deterministic semantic ViewData result. returned_items counts every array item recursively within view_data; returned_bytes follows LogicalResponseByteCount with this field encoded as the string 0.",
+      "properties": {
+        "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "returned_bytes": {"$ref": "#/$defs/LogicalResponseByteCount"},
+        "returned_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "view_data": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewData"}
+      },
+      "required": ["document_generation", "view_data", "returned_items", "returned_bytes"],
+      "additionalProperties": false,
+      "x-layerdraw-protocol-invariant": "view_data_result"
     },
     "NeighborCursor": {
       "type": "object",
@@ -1907,6 +1933,36 @@
         "failure": {"$ref": "#/$defs/WorkbenchFailure"},
         "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
         "payload": {"$ref": "#/$defs/ExecuteQueryResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "MaterializeViewRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.materialize_view"},
+        "payload": {"$ref": "#/$defs/MaterializeViewInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "MaterializeViewResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/MaterializeViewResult"},
         "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
         "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
       },

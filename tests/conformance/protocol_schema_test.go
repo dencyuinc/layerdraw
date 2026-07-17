@@ -127,6 +127,45 @@ func TestProtocolFixturesRoundTripInGeneratedGoTypes(t *testing.T) {
 			},
 		},
 		{
+			name: "materialize view request", fixture: "materialize-view-request.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeMaterializeViewRequestEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeMaterializeViewRequestEnvelope(raw.(engineprotocol.MaterializeViewRequestEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.MaterializeViewRequestEnvelope)
+				if value.Operation != engineprotocol.MaterializeViewRequestEnvelopeOperationValue || value.Payload.ViewAddress != "ldl:project:p:view:context" {
+					t.Fatalf("invalid materialize view request: %+v", value)
+				}
+			},
+		},
+		{
+			name: "materialize view success", fixture: "materialize-view-success.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeMaterializeViewResponseEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeMaterializeViewResponseEnvelope(raw.(engineprotocol.MaterializeViewResponseEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.MaterializeViewResponseEnvelope)
+				if value.Outcome != protocolcommon.OutcomeSuccess || value.Payload == nil || value.Payload.ReturnedItems != "6" || value.Payload.ViewData.Context == nil {
+					t.Fatalf("invalid materialize view success: %+v", value)
+				}
+			},
+		},
+		{
+			name: "materialize view rejected", fixture: "materialize-view-rejected.json",
+			decode: func(data []byte) (any, error) { return engineprotocol.DecodeMaterializeViewResponseEnvelope(data) },
+			encode: func(raw any) ([]byte, error) {
+				return engineprotocol.EncodeMaterializeViewResponseEnvelope(raw.(engineprotocol.MaterializeViewResponseEnvelope))
+			},
+			check: func(t *testing.T, raw any) {
+				value := raw.(engineprotocol.MaterializeViewResponseEnvelope)
+				if value.Outcome != protocolcommon.OutcomeRejected || value.Payload != nil || len(value.Diagnostics) != 1 {
+					t.Fatalf("invalid materialize view rejection: %+v", value)
+				}
+			},
+		},
+		{
 			name: "handshake request", fixture: "handshake-request.json",
 			decode: func(data []byte) (any, error) { return engineprotocol.DecodeHandshakeRequestEnvelope(data) },
 			encode: func(raw any) ([]byte, error) {
@@ -227,6 +266,30 @@ func TestExecuteQueryResultRejectsInconsistentLogicalCounts(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(encoded); err == nil {
+				t.Fatalf("inconsistent %s was accepted", test.field)
+			}
+		})
+	}
+}
+
+func TestMaterializeViewResultRejectsInconsistentLogicalCounts(t *testing.T) {
+	t.Parallel()
+	var fixture map[string]any
+	if err := json.Unmarshal(readProtocolFixture(t, "materialize-view-success.json"), &fixture); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		field string
+		value string
+	}{{"returned_items", "999"}, {"returned_bytes", "1"}} {
+		t.Run(test.field, func(t *testing.T) {
+			copyValue := mapsCloneJSON(t, fixture)
+			copyValue["payload"].(map[string]any)[test.field] = test.value
+			encoded, err := json.Marshal(copyValue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := engineprotocol.DecodeMaterializeViewResponseEnvelope(encoded); err == nil {
 				t.Fatalf("inconsistent %s was accepted", test.field)
 			}
 		})
@@ -746,6 +809,27 @@ func TestGeneratedGoMatchesSharedCanonicalEngineEnvelopes(t *testing.T) {
 				return nil, err
 			}
 			return engineprotocol.EncodeExecuteQueryResponseEnvelope(value)
+		}},
+		{"materialize-view-request.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeMaterializeViewRequestEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeMaterializeViewRequestEnvelope(value)
+		}},
+		{"materialize-view-success.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeMaterializeViewResponseEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeMaterializeViewResponseEnvelope(value)
+		}},
+		{"materialize-view-rejected.json", func(data []byte) ([]byte, error) {
+			value, err := engineprotocol.DecodeMaterializeViewResponseEnvelope(data)
+			if err != nil {
+				return nil, err
+			}
+			return engineprotocol.EncodeMaterializeViewResponseEnvelope(value)
 		}},
 		{"handshake-request.json", func(data []byte) ([]byte, error) {
 			value, err := engineprotocol.DecodeHandshakeRequestEnvelope(data)

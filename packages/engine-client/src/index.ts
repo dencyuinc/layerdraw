@@ -187,6 +187,10 @@ export interface EngineWorkbenchClient {
     input: EngineProtocol.ExecuteQueryInput,
     options?: WorkbenchOptions,
   ): Promise<WorkbenchOutcome<EngineProtocol.ExecuteQueryResponseEnvelope>>;
+  materializeView(
+    input: EngineProtocol.MaterializeViewInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.MaterializeViewResponseEnvelope>>;
   findSymbols(
     input: EngineProtocol.FindSymbolsInput,
     options?: WorkbenchOptions,

@@ -71,6 +71,7 @@ type DocumentCapabilityState struct {
 	InspectSubgraph    bool `json:"inspect_subgraph"`
 	ListModules        bool `json:"list_modules"`
 	ListReferences     bool `json:"list_references"`
+	MaterializeView    bool `json:"materialize_view"`
 	OrganizeWorkspace  bool `json:"organize_workspace"`
 	PreviewFragment    bool `json:"preview_fragment"`
 	PreviewOperations  bool `json:"preview_operations"`
@@ -345,6 +346,18 @@ type ExecuteDocumentQueryResult struct {
 	Result             QueryResult        `json:"result"`
 	ReturnedBytes      int64              `json:"returned_bytes"`
 	ReturnedItems      int64              `json:"returned_items"`
+}
+
+type MaterializeDocumentViewInput struct {
+	DocumentGeneration DocumentGeneration `json:"document_generation"`
+	Limits             WorkbenchLimits    `json:"limits"`
+	QueryResult        QueryResult        `json:"query_result"`
+	ViewAddress        string             `json:"view_address"`
+}
+
+type MaterializeDocumentViewResult struct {
+	DocumentGeneration DocumentGeneration `json:"document_generation"`
+	ViewData           ViewData           `json:"view_data"`
 }
 
 type UsageReadItem struct {

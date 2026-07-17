@@ -489,6 +489,60 @@ func TestPrepareDispatchWorkbenchOpenListAndReadModules(t *testing.T) {
 		t.Fatalf("execute query result was not measured: %+v", queryResponse.Payload)
 	}
 
+	materializeControl, err := engineprotocol.EncodeMaterializeViewRequestEnvelope(engineprotocol.MaterializeViewRequestEnvelope{
+		Operation: engineprotocol.MaterializeViewRequestEnvelopeOperationValue,
+		Payload: engineprotocol.MaterializeViewInput{
+			DocumentGeneration: generation,
+			Limits:             limits,
+			QueryResult:        queryResponse.Payload.Result,
+			ViewAddress:        "ldl:project:p:view:inventory",
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "materialize-view-dispatch",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materializeResponse, err := engineprotocol.DecodeMaterializeViewResponseEnvelope(dispatch(OperationMaterializeView, materializeControl).Control)
+	if err != nil || materializeResponse.Payload == nil || len(materializeResponse.Diagnostics) != 0 {
+		t.Fatalf("materialize view response = %+v err=%v", materializeResponse, err)
+	}
+	if materializeResponse.Payload.ViewData.ViewAddress != "ldl:project:p:view:inventory" ||
+		materializeResponse.Payload.ViewData.Shape != "table" || materializeResponse.Payload.ViewData.Table == nil ||
+		len(materializeResponse.Payload.ViewData.Table.Rows) != 1 {
+		t.Fatalf("materialize view payload = %+v", materializeResponse.Payload.ViewData)
+	}
+	if materializeResponse.Payload.ReturnedItems == "0" || materializeResponse.Payload.ReturnedBytes == "0" {
+		t.Fatalf("materialize view result was not measured: %+v", materializeResponse.Payload)
+	}
+
+	mismatchedResult := queryResponse.Payload.Result
+	mismatchedResult.QueryAddress = "ldl:project:p:query:other"
+	materializeRejectedControl, err := engineprotocol.EncodeMaterializeViewRequestEnvelope(engineprotocol.MaterializeViewRequestEnvelope{
+		Operation: engineprotocol.MaterializeViewRequestEnvelopeOperationValue,
+		Payload: engineprotocol.MaterializeViewInput{
+			DocumentGeneration: generation,
+			Limits:             limits,
+			QueryResult:        mismatchedResult,
+			ViewAddress:        "ldl:project:p:view:inventory",
+		},
+		Protocol: bootstrapProtocolRef(), RequestID: "materialize-view-rejected",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	materializePlan, terminal, err := dispatcher.PrepareDispatch(context.Background(), negotiated, OperationMaterializeView, materializeRejectedControl)
+	if err != nil || terminal != nil || materializePlan == nil {
+		t.Fatalf("materialize view rejected prepare plan=%v terminal=%+v err=%v", materializePlan, terminal, err)
+	}
+	materializeRejectedDispatch, err := materializePlan.ExecuteDispatch(context.Background(), &memoryBlobSource{}, &memoryBlobSink{})
+	if err != nil || materializeRejectedDispatch.Outcome != protocolcommon.OutcomeRejected {
+		t.Fatalf("materialize view rejected dispatch = %+v err=%v", materializeRejectedDispatch, err)
+	}
+	materializeRejectedResponse, err := engineprotocol.DecodeMaterializeViewResponseEnvelope(materializeRejectedDispatch.Control)
+	if err != nil || materializeRejectedResponse.Payload != nil || len(materializeRejectedResponse.Diagnostics) == 0 || materializeRejectedResponse.Failure != nil {
+		t.Fatalf("materialize view rejected response = %+v err=%v", materializeRejectedResponse, err)
+	}
+
 	queryRejectedControl, err := engineprotocol.EncodeExecuteQueryRequestEnvelope(engineprotocol.ExecuteQueryRequestEnvelope{
 		Operation: engineprotocol.ExecuteQueryRequestEnvelopeOperationValue,
 		Payload: engineprotocol.ExecuteQueryInput{
