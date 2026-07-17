@@ -49,7 +49,7 @@ func (e Engine) MaterializeView(ctx context.Context, input ViewMaterializationIn
 		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape is invalid", input.Recipe.Address, "")
 		return rejectedView(m.diagnostics...)
 	}
-	if len(m.diagnostics) != 0 {
+	if hasViewErrorDiagnostics(m.diagnostics) {
 		return rejectedView(m.diagnostics...)
 	}
 	base, ok := result.Base()
@@ -280,14 +280,16 @@ func (m *viewMaterializer) validateQueryResultSubjects() {
 		}
 	}
 	for _, values := range [][]string{m.queryResult.PathRelationAddresses, m.queryResult.InducedRelationAddresses, m.queryResult.SelectedRelationAddresses} {
-		if !canonicalStableAddressSlice(values) {
-			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult Relation collection is not canonical", m.queryResult.QueryAddress, m.input.Recipe.Address)
-			return
-		}
+		known := true
 		for _, address := range values {
 			if _, ok := m.relations[address]; !ok {
 				m.addDiag("LDL1601", "invalid_query_or_arguments", "QueryResult references an unknown Relation", address, m.input.Recipe.Address)
+				known = false
 			}
+		}
+		if known && !m.canonicalQueryRelationSlice(values) {
+			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "QueryResult Relation collection is not canonical", m.queryResult.QueryAddress, m.input.Recipe.Address)
+			return
 		}
 	}
 	visible := viewStringSet(m.materializationEntityAddresses())
@@ -426,6 +428,21 @@ func (m *viewMaterializer) addDiag(code, key, message, subject, owner string) {
 	m.diagnostics = append(m.diagnostics, diagnostic(code, key, message, subject, owner))
 }
 
+func (m *viewMaterializer) addWarning(code, key, message, subject, owner string) {
+	value := diagnostic(code, key, message, subject, owner)
+	value.Severity = "warning"
+	m.diagnostics = append(m.diagnostics, value)
+}
+
+func hasViewErrorDiagnostics(values []Diagnostic) bool {
+	for _, value := range values {
+		if value.Severity != "warning" && value.Severity != "info" {
+			return true
+		}
+	}
+	return false
+}
+
 func rejectedView(diagnostics ...Diagnostic) ViewMaterializationResponse {
 	return ViewMaterializationResponse{Status: "rejected", Diagnostics: sortedDiagnostics(diagnostics)}
 }
@@ -479,6 +496,18 @@ func canonicalStableAddressSlice(values []string) bool {
 		}
 	}
 	return values != nil
+}
+
+func (m *viewMaterializer) canonicalQueryRelationSlice(values []string) bool {
+	if values == nil {
+		return false
+	}
+	for index := 1; index < len(values); index++ {
+		if compareRelationTuple(m.relations[values[index-1]], m.relations[values[index]]) >= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func setViewDataBase(value *ViewData, base ViewDataBase) {
