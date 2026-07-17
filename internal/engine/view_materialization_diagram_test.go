@@ -207,6 +207,25 @@ func TestDiagramProjectionEndpointPairPreservesSelfRelations(t *testing.T) {
 	}
 }
 
+func TestDiagramSupportAccumulatorMergesDuplicateSourcesDeterministically(t *testing.T) {
+	t.Parallel()
+	m := &viewMaterializer{input: ViewMaterializationInput{Recipe: CompiledViewRecipe{Address: "ldl:project:p:view:v"}}}
+	accumulator := newDiagramSupportAccumulator(m)
+	entityAddress := "ldl:project:p:entity:hidden"
+	relationAddress := "ldl:project:p:relation:hidden"
+	accumulator.add(10, DiagramSupportHiddenEntity, &entityAddress, nil, ViewDataSourceRefs{EntityAddresses: []string{entityAddress}})
+	accumulator.add(0, DiagramSupportHiddenRelation, nil, &relationAddress, ViewDataSourceRefs{RelationAddresses: []string{relationAddress}})
+	accumulator.add(-1, DiagramSupportHiddenEntity, &entityAddress, nil, ViewDataSourceRefs{RowAddresses: []string{"ldl:project:p:entity:hidden:row:primary"}})
+
+	items := accumulator.sortedItems()
+	if len(items) != 2 || items[0].EntityAddress == nil || *items[0].EntityAddress != entityAddress {
+		t.Fatalf("support items = %+v", items)
+	}
+	if len(items[0].Source.EntityAddresses) != 1 || len(items[0].Source.RowAddresses) != 1 {
+		t.Fatalf("merged support source = %+v", items[0].Source)
+	}
+}
+
 func compileAndExecuteDiagramFixture(t *testing.T, source string) (Snapshot, QueryResult) {
 	t.Helper()
 	snapshot := compileViewFixture(t, source)
