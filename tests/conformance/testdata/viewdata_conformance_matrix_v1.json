@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "corpus": "tests/conformance/testdata/viewdata_conformance_v1.json",
+  "required_paths": [
+    "in_process_go",
+    "packaged_stdio_raw",
+    "engine_client_stdio",
+    "node_wasm_worker",
+    "browser_wasm_worker",
+    "engine_client_browser_wasm"
+  ],
+  "assertions": [
+    "canonical_view_data",
+    "diagnostics",
+    "failure_category",
+    "item_identities",
+    "no_partial_publication",
+    "outcome",
+    "source_refs",
+    "state_refs",
+    "transport_determinism"
+  ],
+  "paths": [
+    {
+      "id": "in_process_go",
+      "case_scope": "all",
+      "authority": {"path": "tools/wasmparity/main_test.go", "test": "TestGeneratedViewDataCorpusIsCurrentAndDeterministic"}
+    },
+    {
+      "id": "packaged_stdio_raw",
+      "case_scope": "materialize_and_malformed",
+      "authority": {"path": "tests/packaged/viewdata_corpus_test.go", "test": "TestPackagedStdioExecutesViewDataCorpus"}
+    },
+    {
+      "id": "engine_client_stdio",
+      "case_scope": "all",
+      "authority": {"path": "packages/engine-client/test/stdio-adapter.test.mjs", "test": "stdio client executes the portable corpus through the real Go sidecar"}
+    },
+    {
+      "id": "node_wasm_worker",
+      "case_scope": "materialize_malformed_and_hard_cancel",
+      "authority": {"path": "packages/engine-wasm/test/node-harness.test.mjs", "test": "real Node worker_threads owns the packaged Go/WASM lifecycle"}
+    },
+    {
+      "id": "browser_wasm_worker",
+      "case_scope": "materialize_malformed_and_hard_cancel",
+      "authority": {"path": "packages/engine-wasm/test/browser/engine-worker.spec.ts", "test": "packaged module Worker executes the parity corpus through real Go/WASM"}
+    },
+    {
+      "id": "engine_client_browser_wasm",
+      "case_scope": "all",
+      "authority": {"path": "packages/engine-wasm/test/browser/engine-worker.spec.ts", "test": "public Engine client compiles the parity corpus through a real Go/WASM Worker"}
+    }
+  ],
+  "failure_classes": [
+    {
+      "id": "invalid_input",
+      "authorities": [
+        {"path": "tools/wasmparity/main_test.go", "test": "TestGeneratedViewDataCorpusIsCurrentAndDeterministic"},
+        {"path": "tests/packaged/viewdata_corpus_test.go", "test": "TestPackagedStdioExecutesViewDataCorpus"}
+      ]
+    },
+    {
+      "id": "limit_exceeded",
+      "authorities": [
+        {"path": "internal/engine/endpoint/workbench_dispatch_extra_test.go", "test": "TestMaterializeViewMappingCoversShapesProvenanceAndLimits"},
+        {"path": "packages/engine-client/test/stdio-adapter.test.mjs", "test": "stdio client executes the portable corpus through the real Go sidecar"}
+      ]
+    },
+    {
+      "id": "cancelled",
+      "authorities": [
+        {"path": "internal/transport/stdio/session_test.go", "test": "TestSessionCancelAfterSealJoinsExecuteBeforePublication"},
+        {"path": "packages/engine-wasm/test/node-harness.test.mjs", "test": "real Node worker_threads owns the packaged Go/WASM lifecycle"},
+        {"path": "packages/engine-client/test/stdio-adapter.test.mjs", "test": "stdio client executes the portable corpus through the real Go sidecar"}
+      ]
+    },
+    {
+      "id": "malformed_wire",
+      "authorities": [
+        {"path": "internal/engine/endpoint/workbench_dispatch_extra_test.go", "test": "TestViewDataMappersRejectMalformedClosedUnionValues"},
+        {"path": "tests/packaged/viewdata_corpus_test.go", "test": "TestPackagedStdioExecutesViewDataCorpus"},
+        {"path": "packages/engine-wasm/test/node-harness.test.mjs", "test": "real Node worker_threads owns the packaged Go/WASM lifecycle"}
+      ]
+    }
+  ]
+}

@@ -54,14 +54,14 @@ func TestMaterializeTableSupportsEntityRelationAndAutomaticGrains(t *testing.T) 
 		snapshot, queryResult := compileAndExecuteViewFixture(t, automaticRelationTableViewSource())
 		table := materializeQueryView(t, snapshot, queryResult, nil).Table
 		protocol := "ldl:project:p:relation-type:calls:column:protocol"
-		if table == nil || len(table.Rows) != 1 || !reflect.DeepEqual(tableColumnIDs(table.Columns), []string{"from", "relation_type", protocol}) {
+		if table == nil || len(table.Rows) != 1 || !reflect.DeepEqual(tableColumnIDs(table.Columns), []string{"from", "relation_type", "calls_protocol"}) {
 			t.Fatalf("table = %+v", table)
 		}
 		row := table.Rows[0]
 		if got := tableCellByID(t, *table, row, "from"); !got.Present || got.Value == nil || got.Value.Address == nil || *got.Value.Address != "ldl:project:p:entity:alpha" {
 			t.Fatalf("from = %+v", got)
 		}
-		if got := tableCellByID(t, *table, row, protocol); !got.Present || got.Value == nil || got.Value.Scalar == nil || got.Value.Scalar.String != "http" || !reflect.DeepEqual(got.Source.CellRefs, []ViewDataCellRef{{RowAddress: "ldl:project:p:relation:alpha_beta:row:primary", ColumnAddress: protocol}}) {
+		if got := tableCellByID(t, *table, row, "calls_protocol"); !got.Present || got.Value == nil || got.Value.Scalar == nil || got.Value.Scalar.String != "http" || !reflect.DeepEqual(got.Source.CellRefs, []ViewDataCellRef{{RowAddress: "ldl:project:p:relation:alpha_beta:row:primary", ColumnAddress: protocol}}) {
 			t.Fatalf("dynamic protocol = %+v", got)
 		}
 	})
@@ -85,6 +85,21 @@ func TestMaterializeTableSupportsEntityRelationAndAutomaticGrains(t *testing.T) 
 			t.Fatalf("relation-row automatic Table = %+v", table)
 		}
 	})
+}
+
+func TestDynamicTableColumnIDIsPortableAndCollisionStable(t *testing.T) {
+	t.Parallel()
+	column := definition.Column{Address: "ldl:project:p:relation-type:calls:column:protocol", ID: "protocol"}
+	if got := dynamicTableColumnID(column, map[string]bool{}); got != "calls_protocol" {
+		t.Fatalf("dynamic ID = %q", got)
+	}
+	fallback := dynamicTableColumnID(column, map[string]bool{"calls_protocol": true})
+	if !strings.HasPrefix(fallback, "dynamic_") || len(fallback) != len("dynamic_")+64 {
+		t.Fatalf("collision fallback = %q", fallback)
+	}
+	if got := dynamicTableColumnID(column, map[string]bool{"calls_protocol": true, fallback: true}); got != "" {
+		t.Fatalf("exhausted collision ID = %q", got)
+	}
 }
 
 func TestMaterializeTableAggregatesSortsAndPreservesContributors(t *testing.T) {

@@ -7,6 +7,8 @@ import {
   assertPortableCompileParityOutcome,
   encode,
   executePortableQueryClientWorkflow,
+  executeViewDataClientCorpus,
+  executeViewDataTransportCorpus,
   handshakeAndCompileCorpus,
   portableParityInput,
   releaseManifestDigest,
@@ -21,6 +23,9 @@ const artifactManifest = JSON.parse(new TextDecoder().decode(manifestBytes));
 const parityResponse = await fetch("/__layerdraw/engine-compile-parity-v1.json", {cache: "no-store"});
 if (!parityResponse.ok) throw new Error("Go-produced parity corpus was not served");
 const parityCorpus = await parityResponse.json();
+const viewDataResponse = await fetch("/__layerdraw/viewdata-conformance-v1.json", {cache: "no-store"});
+if (!viewDataResponse.ok) throw new Error("Go-produced ViewData corpus was not served");
+const viewDataCorpus = await viewDataResponse.json();
 
 function createTransport(endpointGeneration) {
   return createEngineWorkerTransport({
@@ -59,6 +64,7 @@ globalThis.runLayerDrawRealArtifactCorpus = async () => {
   const first = createTransport("browser-real-generation-1");
   const limits = await first.ready;
   const endpointID = await handshakeAndCompileCorpus(first, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "browser-first");
+  const viewDataCases = await executeViewDataTransportCorpus(first, artifactManifest.protocol.schema_digest, viewDataCorpus, artifactManifest.build.release_version, "browser-first", true);
   const dispose = first.dispose();
   if (dispose !== first.dispose()) throw new Error("dispose was not idempotent");
   await dispose;
@@ -91,7 +97,7 @@ globalThis.runLayerDrawRealArtifactCorpus = async () => {
   );
   if (replacementID === endpointID) throw new Error("replacement reused the Go/WASM endpoint identity");
   await replacement.dispose();
-  return {limitKeys: Object.keys(limits).sort(), parityCases: parityCorpus.cases.map((testCase) => testCase.name), endpointID, replacementID};
+  return {limitKeys: Object.keys(limits).sort(), parityCases: parityCorpus.cases.map((testCase) => testCase.name), viewDataCases, endpointID, replacementID};
 };
 
 globalThis.runLayerDrawEngineClientCorpus = async () => {
@@ -133,6 +139,7 @@ globalThis.runLayerDrawEngineClientCorpus = async () => {
     throw new Error("portable client cancellation did not normalize to cancelled");
   }
   await executePortableQueryClientWorkflow(client, "browser-query");
+  const viewDataCases = await executeViewDataClientCorpus(client, viewDataCorpus, "browser-viewdata");
   await client.restart();
   const replacement = client.getEndpoint();
   if (
@@ -144,6 +151,7 @@ globalThis.runLayerDrawEngineClientCorpus = async () => {
   await client.dispose();
   return {
     cases: parityCorpus.cases.map((testCase) => testCase.name),
+    viewDataCases,
     firstGeneration: first.generation,
     replacementGeneration: replacement.generation,
     state: client.state,

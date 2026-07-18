@@ -16,6 +16,7 @@ import { createStdioEngineClient } from "../dist/stdio.js";
 import {
   assertPortableCompileParityOutcome,
   executePortableQueryClientWorkflow,
+  executeViewDataClientCorpus,
   portableParityInput,
 } from "../../engine-wasm/test/shared/real-engine.mjs";
 
@@ -27,6 +28,10 @@ const manifestBytes = await readFile(
 );
 const parityCorpus = JSON.parse(await readFile(
   join(repositoryRoot, "tests/conformance/testdata/engine_compile_parity_v1.json"),
+  "utf8",
+));
+const viewDataCorpus = JSON.parse(await readFile(
+  join(repositoryRoot, "tests/conformance/testdata/viewdata_conformance_v1.json"),
   "utf8",
 ));
 const releaseManifestDigest = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
@@ -90,6 +95,7 @@ test("stdio client executes the portable corpus through the real Go sidecar", as
   assert.equal(cancelled.outcome, "cancelled");
 
   await executePortableQueryClientWorkflow(client, "stdio-query");
+  assert.equal((await executeViewDataClientCorpus(client, viewDataCorpus, "stdio-viewdata")).length, 20);
 
   await client.restart();
   assert.equal(client.getEndpoint().generation, firstEndpoint.generation + 1);

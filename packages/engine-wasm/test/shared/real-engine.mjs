@@ -302,7 +302,9 @@ export function handshakeControl(schemaDigest, requestID) {
         supported_range: "1.0..1.0",
         versions: [{version: "1.0", schema_digest: schemaDigest}],
       }],
-      required_capabilities: ["engine.compile"],
+      required_capabilities: [
+        "engine.compile", "engine.open_document", "engine.execute_query", "engine.materialize_view", "engine.close_document",
+      ],
       optional_capabilities: [],
     },
     protocol: {name: "engine", version: "1.0"},
@@ -439,4 +441,232 @@ export async function handshakeAndCompileCorpus(
     await assertCompileParityResponse(await exchange.response, testCase, engineRelease);
   }
   return handshakeEnvelope.payload.endpoint_instance_id;
+}
+
+function validateViewDataCorpus(corpus) {
+  if (corpus.schema_version !== 1 || corpus.engine_release_variable !== "$engine_release" ||
+      corpus.documents.length !== 6 || corpus.cases.length !== 20 ||
+      corpus.required_shapes.length !== 7 || corpus.required_projection_modes.length !== 14 ||
+      corpus.required_source_kinds.length !== 2 || corpus.required_state_policies.length !== 3 ||
+      corpus.required_failure_classes.length !== 4) {
+    throw new Error("ViewData conformance corpus is incompatible");
+  }
+}
+
+function viewDataDocument(corpus, id) {
+  const document = corpus.documents.find((candidate) => candidate.id === id);
+  if (document === undefined) throw new Error(`ViewData document ${id} is absent`);
+  return document;
+}
+
+function viewDataClientBlobs(document) {
+  const refs = collectBlobRefs(document.input);
+  return document.blobs.map((blob) => {
+    const ref = refs.find((candidate) => candidate.blob_id === blob.blob_id);
+    if (ref === undefined) throw new Error(`${document.id} BlobRef ${blob.blob_id} is absent`);
+    return {ref, bytes: new Uint8Array(decodeBase64(blob.bytes_base64))};
+  });
+}
+
+function normalizeViewDataResponse(value, handles) {
+  if (Array.isArray(value)) return value.map((item) => normalizeViewDataResponse(item, handles));
+  if (value !== null && typeof value === "object") {
+    const result = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "engine_release") result[key] = "$engine_release";
+      else if (key === "returned_bytes") result[key] = "$returned_bytes";
+      else if (key === "endpoint_instance_id") result[key] = "$endpoint";
+      else result[key] = normalizeViewDataResponse(child, handles);
+    }
+    return result;
+  }
+  if (typeof value === "string") {
+    for (const [handle, id] of handles) {
+      if (value === handle) return `$document:${id}`;
+      if (value.startsWith(`workbench:${handle}:`)) return `$revision:${id}`;
+    }
+  }
+  return value;
+}
+
+function assertViewDataCase(outcome, testCase, handles, label) {
+  const normalized = normalizeViewDataResponse(structuredClone(outcome), handles);
+  requireEqual(normalized, testCase.expected.normalized_response, `${label} ${testCase.name}`);
+  const publishes = normalized.outcome === "success" && normalized.payload?.view_data !== undefined;
+  if (normalized.outcome !== testCase.expected.outcome || publishes !== testCase.expected.publishes_view_data) {
+    throw new Error(`${label} ${testCase.name} terminality differs from the Go oracle`);
+  }
+  if (normalized.outcome !== "success" && normalized.payload?.view_data !== undefined) {
+    throw new Error(`${label} ${testCase.name} published partial ViewData`);
+  }
+}
+
+function queryMaterializeInput(testCase, generation, queryResult) {
+  const result = structuredClone(queryResult);
+  if (testCase.mutation === "mismatched_query") result.query_address = "ldl:project:p:query:missing";
+  const query = {document_generation: generation, query_result: result};
+  if (testCase.source.state_snapshot !== undefined) query.state_snapshot = testCase.source.state_snapshot;
+  return {kind: "query", limits: testCase.limits, query, view_address: testCase.view_address};
+}
+
+async function executeViewDataMaterializeCases(driver, corpus, label) {
+  for (const testCase of corpus.cases) {
+    if (testCase.execution !== "materialize") continue;
+    const opened = new Map();
+    const handles = new Map();
+    const open = async (id) => {
+      if (opened.has(id)) return opened.get(id);
+      const payload = await driver.open(viewDataDocument(corpus, id), corpus.operation_limits, `${testCase.name}-${id}`);
+      opened.set(id, payload);
+      handles.set(payload.document_handle.value, id);
+      return payload;
+    };
+    let input;
+    if (testCase.source.kind === "query") {
+      const document = await open(testCase.source.document);
+      const executed = await driver.query({
+        arguments: testCase.source.arguments ?? {},
+        document_generation: document.document_generation,
+        limits: corpus.operation_limits,
+        query_address: testCase.source.query_address,
+      }, `viewdata-${testCase.name}-query`);
+      input = queryMaterializeInput(testCase, document.document_generation, executed.result);
+    } else if (testCase.source.kind === "diff") {
+      const recipe = await open(testCase.source.recipe_document);
+      const before = await open(testCase.source.before_document);
+      const after = await open(testCase.source.after_document);
+      input = {
+        kind: "diff",
+        limits: testCase.limits,
+        diff: {
+          recipe_generation: recipe.document_generation,
+          before_generation: before.document_generation,
+          after_generation: after.document_generation,
+        },
+        view_address: testCase.view_address,
+      };
+    } else {
+      throw new Error(`${testCase.name} has unsupported source kind`);
+    }
+    const outcome = await driver.materialize(input, `viewdata-${testCase.name}-materialize`);
+    assertViewDataCase(outcome, testCase, handles, label);
+    for (const [id, document] of opened) {
+      await driver.close({
+        document_generation: document.document_generation,
+        document_handle: document.document_handle,
+      }, `viewdata-${testCase.name}-close-${id}`);
+    }
+  }
+}
+
+export async function executeViewDataTransportCorpus(transport, schemaDigest, corpus, engineRelease, suffix, alreadyNegotiated = false) {
+  validateViewDataCorpus(corpus);
+  if (!alreadyNegotiated) {
+    const handshake = await performRequest(transport, `${suffix}-viewdata-handshake-exchange`, {
+      control: encode({
+        operation: "engine.handshake",
+        payload: {
+          client_release: "0.0.0-dev",
+          protocols: [{name: "engine", supported_range: "1.0..1.0", versions: [{version: "1.0", schema_digest: schemaDigest}]}],
+          required_capabilities: ["engine.open_document", "engine.execute_query", "engine.materialize_view", "engine.close_document"],
+          optional_capabilities: [],
+        },
+        protocol: {name: "engine", version: "1.0"},
+        request_id: `${suffix}-viewdata-handshake`,
+      }),
+      blobs: [],
+    });
+    const handshakeEnvelope = decode(handshake.control);
+    if (handshakeEnvelope.outcome !== "success" || handshakeEnvelope.engine_release !== engineRelease) {
+      throw new Error(`${suffix} ViewData handshake failed`);
+    }
+  }
+  const request = async (operation, payload, requestID, blobs = []) => {
+    const response = await performRequest(transport, `${suffix}-${requestID}-exchange`, {
+      control: encode({operation, payload, protocol: {name: "engine", version: "1.0"}, request_id: requestID}),
+      blobs,
+    });
+    return decode(response.control);
+  };
+  const driver = {
+    async open(document, limits, id) {
+      const response = await request("engine.open_document", {compile_input: document.input, requested_limits: limits}, `viewdata-${id}-open`,
+        document.blobs.map((blob) => ({blob_id: blob.blob_id, bytes: decodeBase64(blob.bytes_base64)})));
+      if (response.outcome !== "success" || response.payload === undefined) throw new Error(`${id} open failed`);
+      return response.payload;
+    },
+    async query(input, id) {
+      const response = await request("engine.execute_query", input, id);
+      if (response.outcome !== "success" || response.payload === undefined) throw new Error(`${id} query failed`);
+      return response.payload;
+    },
+    materialize: (input, id) => request("engine.materialize_view", input, id),
+    async close(input, id) {
+      const response = await request("engine.close_document", input, id);
+      if (response.outcome !== "success") throw new Error(`${id} close failed`);
+    },
+  };
+  await executeViewDataMaterializeCases(driver, corpus, suffix);
+  const malformed = corpus.cases.find((testCase) => testCase.execution === "malformed_wire");
+  const malformedResponse = await request("engine.materialize_view", {}, `viewdata-${malformed.name}-materialize`);
+  if (malformedResponse.outcome === "success" || malformedResponse.payload?.view_data !== undefined) {
+    throw new Error(`${suffix} malformed wire published ViewData`);
+  }
+  return corpus.cases.filter((testCase) => testCase.execution === "materialize").map((testCase) => testCase.name);
+}
+
+export async function executeViewDataClientCorpus(client, corpus, suffix) {
+  validateViewDataCorpus(corpus);
+  const driver = {
+    async open(document, limits, id) {
+      const outcome = await client.workbench.openDocument({compile_input: structuredClone(document.input), requested_limits: limits}, {
+        blobs: viewDataClientBlobs(document), requestId: `viewdata-${id}-open`,
+      });
+      if (outcome.origin !== "engine" || outcome.outcome !== "success" || outcome.response.payload === undefined) throw new Error(`${id} open failed`);
+      return outcome.response.payload;
+    },
+    async query(input, id) {
+      const outcome = await client.workbench.executeQuery(input, {requestId: id});
+      if (outcome.origin !== "engine" || outcome.outcome !== "success" || outcome.response.payload === undefined) throw new Error(`${id} query failed`);
+      return outcome.response.payload;
+    },
+    async materialize(input, id) {
+      const outcome = await client.workbench.materializeView(input, {requestId: id});
+      if (outcome.origin !== "engine") throw new Error(`${id} did not reach the Engine`);
+      return outcome.response;
+    },
+    async close(input, id) {
+      const outcome = await client.workbench.closeDocument(input, {requestId: id});
+      if (outcome.origin !== "engine" || outcome.outcome !== "success") throw new Error(`${id} close failed`);
+    },
+  };
+  await executeViewDataMaterializeCases(driver, corpus, suffix);
+
+  const malformed = corpus.cases.find((testCase) => testCase.execution === "malformed_wire");
+  let malformedRejected = false;
+  try {
+    await client.workbench.materializeView({}, {requestId: `viewdata-${malformed.name}-materialize`});
+  } catch (error) {
+    malformedRejected = error?.code === "INVALID_ARGUMENT";
+  }
+  if (!malformedRejected) throw new Error(`${suffix} typed client accepted malformed ViewData input`);
+
+  const cancelledCase = corpus.cases.find((testCase) => testCase.execution === "cancel");
+  const sourceCase = corpus.cases.find((testCase) => testCase.name === "context");
+  const document = viewDataDocument(corpus, sourceCase.source.document);
+  const opened = await driver.open(document, corpus.operation_limits, `${cancelledCase.name}-cancel`);
+  const executed = await driver.query({
+    arguments: sourceCase.source.arguments ?? {}, document_generation: opened.document_generation,
+    limits: corpus.operation_limits, query_address: sourceCase.source.query_address,
+  }, `viewdata-${cancelledCase.name}-query`);
+  const controller = new AbortController();
+  controller.abort();
+  const cancelled = await client.workbench.materializeView(
+    queryMaterializeInput(cancelledCase, opened.document_generation, executed.result),
+    {requestId: `viewdata-${cancelledCase.name}-materialize`, signal: controller.signal},
+  );
+  if (cancelled.origin !== "client" || cancelled.outcome !== "cancelled" || cancelled.response !== undefined) {
+    throw new Error(`${suffix} cancellation published partial ViewData`);
+  }
+  return corpus.cases.map((testCase) => testCase.name);
 }

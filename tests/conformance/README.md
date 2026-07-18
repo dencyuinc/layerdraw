@@ -6,11 +6,15 @@
 
 - `testdata/engine_compile_parity_v1.json`: Go Engineが生成する入力、期待response、期待blob bytesの共通コーパス
 - `testdata/portable_compile_matrix_v1.json`: コーパスを実行する全経路と、異常系分類を担保する実行可能テストの索引
+- `testdata/viewdata_conformance_v1.json`: 全ViewData形状、RelationType投影、Query/Diff、State方針と閉じた失敗分類の共通コーパス
+- `testdata/viewdata_conformance_matrix_v1.json`: ViewDataコーパスを実行するin-process、stdio、WASM、TypeScript client経路の索引
 - `testdata/workbench_portable_editing_v1.json`: Working Document lifecycle、source patch preview、apply、stale rejection、closeを固定するWorkbench編集コーパス
 - `testdata/engine_wasm_worker_v1.json`: WASM Worker transportの閉じたwire grammarとfailure vocabulary
 - `stdio/v1/`: stdio framingの規範fixture
 
 共通コーパスはsingle/multi-module Project、installed/root Pack、asset、全宣言family、決定論的rejection、resource limit、128 nodeの代表的大規模graph、cancellationを含む。`tools/wasmparity`がin-process Go oracleから生成し、生成差分があればCIを失敗させる。
+
+ViewDataコーパスはdiagram、table、matrix、tree、flow、context、diffの全形状、全RelationType投影モード、Query/Diff source、Stateのnone/optional/required、source/map順序とlocale非依存入力を含む。成功ケースはViewData全体を比較し、invalid input、limit、cancellation、malformed wireはViewDataを一部も公開しない閉じた分類として比較する。
 
 Workbench編集コーパスはopaqueな`document_handle`、`preview_id`、`engine_release`を正規化し、固定可能なoperation outcome、generation、changed source files、diagnostic code、source bytes、hash presenceを比較する。handleやpreview IDの値そのものをfixture化してはならない。
 
@@ -25,6 +29,8 @@ Workbench編集コーパスはopaqueな`document_handle`、`preview_id`、`engin
 3. public clientはtransport publication順ではなくresponse reference順でblobを公開するため、blob bytesを`blob_id`で対応付ける。
 
 上記以外のtransport固有semantic実装、field除外、ordering例外、暗黙fallbackは禁止する。例外を追加する場合はコーパス、matrix、本書、全consumerを同じ変更で更新する。
+
+ViewDataでは追加で、endpoint生成のdocument handleとrevision IDをdocument単位の変数へ、論理response byte数を`$returned_bytes`へ正規化する。これらはopaqueな実行所有値であり、ViewData、diagnostics、SourceRefs、StateRefs、item identityの意味値は一切除外・置換しない。
 
 ## 実行経路
 
