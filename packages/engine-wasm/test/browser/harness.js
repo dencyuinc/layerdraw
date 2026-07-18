@@ -62,41 +62,54 @@ async function nextWorkerMessage(worker, predicate) {
 
 globalThis.runLayerDrawRealArtifactCorpus = async () => {
   const first = createTransport("browser-real-generation-1");
-  const limits = await first.ready;
-  const endpointID = await handshakeAndCompileCorpus(first, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "browser-first");
-  const viewDataCases = await executeViewDataTransportCorpus(first, artifactManifest.protocol.schema_digest, viewDataCorpus, artifactManifest.build.release_version, "browser-first", true);
-  const dispose = first.dispose();
-  if (dispose !== first.dispose()) throw new Error("dispose was not idempotent");
-  await dispose;
+  let endpointID;
+  let limits;
+  let viewDataCases;
+  try {
+    limits = await first.ready;
+    endpointID = await handshakeAndCompileCorpus(first, artifactManifest.protocol.schema_digest, parityCorpus, artifactManifest.build.release_version, "browser-first");
+    viewDataCases = await executeViewDataTransportCorpus(first, artifactManifest.protocol.schema_digest, viewDataCorpus, artifactManifest.build.release_version, "browser-first", true);
+  } finally {
+    const dispose = first.dispose();
+    if (dispose !== first.dispose()) throw new Error("dispose was not idempotent");
+    await dispose;
+  }
 
   const cancelled = createTransport("browser-real-generation-cancelled");
-  await cancelled.ready;
-  const slowControl = new ArrayBuffer(8_388_608);
-  new Uint8Array(slowControl).fill(0x20);
-  const slow = cancelled.request({exchangeID: "browser-cancelled-exchange", control: slowControl, blobs: []});
-  if (slowControl.byteLength !== 0) throw new Error("cancelled request did not transfer ownership");
-  await slow.accepted;
-  cancelled.terminate();
   try {
-    await slow.response;
-    throw new Error("terminated request unexpectedly published");
-  } catch (error) {
-    if (!isFailure(error, "engine.worker.terminated_by_caller")) throw error;
+    await cancelled.ready;
+    const slowControl = new ArrayBuffer(8_388_608);
+    new Uint8Array(slowControl).fill(0x20);
+    const slow = cancelled.request({exchangeID: "browser-cancelled-exchange", control: slowControl, blobs: []});
+    if (slowControl.byteLength !== 0) throw new Error("cancelled request did not transfer ownership");
+    await slow.accepted;
+    cancelled.terminate();
+    try {
+      await slow.response;
+      throw new Error("terminated request unexpectedly published");
+    } catch (error) {
+      if (!isFailure(error, "engine.worker.terminated_by_caller")) throw error;
+    }
+  } finally {
+    await cancelled.dispose();
   }
-  await cancelled.dispose();
 
   const replacement = createTransport("browser-real-generation-replacement");
-  await replacement.ready;
-  const replacementID = await handshakeAndCompileCorpus(
-    replacement,
-    artifactManifest.protocol.schema_digest,
-    parityCorpus,
-    artifactManifest.build.release_version,
-    "browser-replacement",
-    ["single_module_project"],
-  );
-  if (replacementID === endpointID) throw new Error("replacement reused the Go/WASM endpoint identity");
-  await replacement.dispose();
+  let replacementID;
+  try {
+    await replacement.ready;
+    replacementID = await handshakeAndCompileCorpus(
+      replacement,
+      artifactManifest.protocol.schema_digest,
+      parityCorpus,
+      artifactManifest.build.release_version,
+      "browser-replacement",
+      ["single_module_project"],
+    );
+    if (replacementID === endpointID) throw new Error("replacement reused the Go/WASM endpoint identity");
+  } finally {
+    await replacement.dispose();
+  }
   return {limitKeys: Object.keys(limits).sort(), parityCases: parityCorpus.cases.map((testCase) => testCase.name), viewDataCases, endpointID, replacementID};
 };
 
@@ -111,44 +124,50 @@ globalThis.runLayerDrawEngineClientCorpus = async () => {
     expectedArtifactManifestDigest: artifactManifestDigest,
     workerDisposeTimeoutMs: 2_000,
   });
-  const first = client.getEndpoint();
-  if (client.state !== "ready" || !client.hasCapability("engine.compile")) {
-    throw new Error("portable WASM client did not negotiate compile");
-  }
-  for (const testCase of parityCorpus.cases) {
-    if (testCase.execution === "cancel") continue;
-    const outcome = await client.compile(portableParityInput(testCase), {
-      requestId: testCase.expected.response.request_id,
+  let first;
+  let replacement;
+  let viewDataCases;
+  try {
+    first = client.getEndpoint();
+    if (client.state !== "ready" || !client.hasCapability("engine.compile")) {
+      throw new Error("portable WASM client did not negotiate compile");
+    }
+    for (const testCase of parityCorpus.cases) {
+      if (testCase.execution === "cancel") continue;
+      const outcome = await client.compile(portableParityInput(testCase), {
+        requestId: testCase.expected.response.request_id,
+      });
+      await assertPortableCompileParityOutcome(
+        outcome,
+        testCase,
+        artifactManifest.build.release_version,
+      );
+    }
+    const cancellation = parityCorpus.cases.find((testCase) => testCase.execution === "cancel");
+    if (cancellation === undefined) throw new Error("portable corpus has no cancellation case");
+    const controller = new AbortController();
+    const pendingCancellation = client.compile(portableParityInput(cancellation), {
+      requestId: cancellation.expected.response.request_id,
+      signal: controller.signal,
     });
-    await assertPortableCompileParityOutcome(
-      outcome,
-      testCase,
-      artifactManifest.build.release_version,
-    );
+    controller.abort();
+    const cancelled = await pendingCancellation;
+    if (cancelled.origin !== "client" || cancelled.outcome !== "cancelled") {
+      throw new Error("portable client cancellation did not normalize to cancelled");
+    }
+    await executePortableQueryClientWorkflow(client, "browser-query");
+    viewDataCases = await executeViewDataClientCorpus(client, viewDataCorpus, "browser-viewdata");
+    await client.restart();
+    replacement = client.getEndpoint();
+    if (
+      replacement.generation !== first.generation + 1 ||
+      replacement.handshake.endpoint_instance_id === first.handshake.endpoint_instance_id
+    ) {
+      throw new Error("portable WASM client did not publish a fresh endpoint");
+    }
+  } finally {
+    await client.dispose();
   }
-  const cancellation = parityCorpus.cases.find((testCase) => testCase.execution === "cancel");
-  if (cancellation === undefined) throw new Error("portable corpus has no cancellation case");
-  const controller = new AbortController();
-  const pendingCancellation = client.compile(portableParityInput(cancellation), {
-    requestId: cancellation.expected.response.request_id,
-    signal: controller.signal,
-  });
-  controller.abort();
-  const cancelled = await pendingCancellation;
-  if (cancelled.origin !== "client" || cancelled.outcome !== "cancelled") {
-    throw new Error("portable client cancellation did not normalize to cancelled");
-  }
-  await executePortableQueryClientWorkflow(client, "browser-query");
-  const viewDataCases = await executeViewDataClientCorpus(client, viewDataCorpus, "browser-viewdata");
-  await client.restart();
-  const replacement = client.getEndpoint();
-  if (
-    replacement.generation !== first.generation + 1 ||
-    replacement.handshake.endpoint_instance_id === first.handshake.endpoint_instance_id
-  ) {
-    throw new Error("portable WASM client did not publish a fresh endpoint");
-  }
-  await client.dispose();
   return {
     cases: parityCorpus.cases.map((testCase) => testCase.name),
     viewDataCases,

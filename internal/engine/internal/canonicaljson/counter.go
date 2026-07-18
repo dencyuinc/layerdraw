@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-// Package canonicaljson provides allocation-free canonical JSON byte counting
-// primitives for Engine-owned logical response limits.
+// Package canonicaljson provides Engine-owned canonical JSON boundary helpers
+// and allocation-free byte counting for logical response limits.
 package canonicaljson
 
 import (

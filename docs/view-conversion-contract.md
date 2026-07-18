@@ -67,7 +67,7 @@ Step 2a: Presentation generation
     -> RenderData
 
 Step 2b: Export planning and serialization
-  ViewData + ExportRecipe
+  ViewData + ExportRecipe + host-resolved ExportProfileRequirements
     -> ExportPlan
       -> ExportArtifact + Source Manifest
 ```
@@ -75,7 +75,7 @@ Step 2b: Export planning and serialization
 Step 1はrenderer非依存であり、Go EngineのView Materializerだけが規範実装する。
 Web、desktop、VSCode、SDK、MCP Server、MCP Apps、batch export が同じ ViewData を得られなければならない。
 
-Step 2aは出力先依存でありTS Renderが実装する。Step 2bではGo Export Plannerがsemantic mappingとsource bindingを持つExportPlanを生成し、versioned exporterがformat固有artifactへserializeする。
+Step 2aは出力先依存でありTS Renderが実装する。Step 2bではhostが選択profileのidentity/specificationとexact asset/font requirementsを検証してclosed inputとして渡し、Go Export Plannerがrecipeとの完全一致を検証してsemantic mappingとsource bindingを持つExportPlanを生成し、versioned exporterがformat固有artifactへserializeする。Engineはこの境界でregistry解決を行わない。
 SVG、PNG、PDF、CSV、XLSX、JSON、Markdown、HTML、PPTX などは ViewData から生成する。
 正本グラフから直接 exporter に飛ばしてはいけない。
 
@@ -971,7 +971,7 @@ ViewCategory / ViewShape を追加する前に、必ず以下を満たす。
 5. Plain export capability matrix に形式を追加する。
 6. DSL recipe で必要条件を保存できるようにする。
 7. Go Engine conformance testで`Master Graph -> ViewData`を検証する。
-8. Render testで`ViewData -> RenderData`、Export conformance testで`ViewData + ExportRecipe -> ExportPlan -> Artifact + Source Manifest`を検証する。
+8. Render testで`ViewData -> RenderData`、Export conformance testで`ViewData + ExportRecipe + ExportProfileRequirements -> ExportPlan -> Artifact + Source Manifest`を検証する。
 
 UI はこの後で作る。
 UI が先に ViewCategory / ViewShape を作ってはいけない。

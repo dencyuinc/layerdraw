@@ -423,6 +423,7 @@ func workingCapabilities(compiled Snapshot) DocumentCapabilityState {
 		ListModules:        true,
 		ListReferences:     available,
 		MaterializeView:    project && compiled.TypedAST.Graph != nil && len(compiled.TypedAST.Views) != 0,
+		PlanExport:         project && compiled.TypedAST.Graph != nil && len(compiled.TypedAST.Views) != 0,
 		OrganizeWorkspace:  project,
 		PreviewFragment:    project,
 		PreviewSourcePatch: project,

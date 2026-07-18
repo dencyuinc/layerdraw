@@ -41,6 +41,7 @@ type workbenchDriver interface {
 	ReadRows(context.Context, engine.ReadRowsInput) (engine.ReadRowsResult, error)
 	ExecuteDocumentQuery(context.Context, engine.ExecuteDocumentQueryInput) (engine.ExecuteDocumentQueryResult, error)
 	MaterializeDocumentView(context.Context, engine.MaterializeDocumentViewInput) (engine.MaterializeDocumentViewResult, error)
+	PlanExport(context.Context, engine.ExportPlanInput) (engine.ExportPlan, error)
 	GetNeighbors(context.Context, engine.GetNeighborsInput) (engine.GetNeighborsResult, error)
 	FindUsages(context.Context, engine.FindUsagesInput) (engine.FindUsagesResult, error)
 	ReadScope(context.Context, engine.ReadScopeInput) (engine.ReadScopeResult, error)
@@ -97,6 +98,9 @@ func (driver engineCompileDriver) ExecuteDocumentQuery(ctx context.Context, inpu
 }
 func (driver engineCompileDriver) MaterializeDocumentView(ctx context.Context, input engine.MaterializeDocumentViewInput) (engine.MaterializeDocumentViewResult, error) {
 	return driver.compiler.MaterializeDocumentView(ctx, input)
+}
+func (driver engineCompileDriver) PlanExport(ctx context.Context, input engine.ExportPlanInput) (engine.ExportPlan, error) {
+	return driver.compiler.PlanExport(ctx, input)
 }
 func (driver engineCompileDriver) GetNeighbors(ctx context.Context, input engine.GetNeighborsInput) (engine.GetNeighborsResult, error) {
 	return driver.compiler.GetNeighbors(ctx, input)
@@ -595,6 +599,12 @@ func workbenchPayloadRunner(operation string, control []byte) (any, func(context
 			return nil, nil, err
 		}
 		return request.Payload, runMaterializeView(request.Payload), nil
+	case OperationPlanExport:
+		request, err := engineprotocol.DecodePlanExportRequestEnvelope(control)
+		if err != nil {
+			return nil, nil, err
+		}
+		return request.Payload, runPlanExport(request.Payload), nil
 	case OperationGetNeighbors:
 		request, err := engineprotocol.DecodeGetNeighborsRequestEnvelope(control)
 		if err != nil {
@@ -805,6 +815,14 @@ func encodeWorkbenchTerminal(operation string, payload any, diagnostics []semant
 			return nil, err
 		}
 		return engineprotocol.EncodeMaterializeViewResponseEnvelope(engineprotocol.MaterializeViewResponseEnvelope{Diagnostics: diagnostics, EngineRelease: release, Failure: optionalFailure(hasFailure, failure), Outcome: outcome, Payload: optionalPayload(outcome, out), Protocol: bootstrapProtocolRef(), RequestID: requestID})
+	case OperationPlanExport:
+		var out engineprotocol.PlanExportResult
+		if typed, ok := payload.(engineprotocol.PlanExportResult); ok && outcome == protocolcommon.OutcomeSuccess {
+			out = typed
+		} else if err := mapPayload(&out); err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodePlanExportResponseEnvelope(engineprotocol.PlanExportResponseEnvelope{Diagnostics: diagnostics, EngineRelease: release, Failure: optionalFailure(hasFailure, failure), Outcome: outcome, Payload: optionalPayload(outcome, out), Protocol: bootstrapProtocolRef(), RequestID: requestID})
 	case OperationGetNeighbors:
 		var out engineprotocol.GetNeighborsResult
 		if err := mapPayload(&out); err != nil {

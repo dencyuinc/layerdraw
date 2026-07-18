@@ -17,3 +17,7 @@ Working Document, classify AuthoringImpact, or write source.
 `engine-wasm/` is the browser Worker transport for the same Engine Protocol
 surface. It is validated by the shared compile and Workbench conformance corpus
 and must not fork Workbench semantics for browser delivery.
+
+`render/` owns the presentation-only, versioned `RenderRecipe` and closed
+`RenderData` contracts. It consumes semantic `ViewData` values but neither
+defines Go semantics nor performs layout or visual rendering.

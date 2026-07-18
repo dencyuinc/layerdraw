@@ -37,6 +37,7 @@ const (
 	OperationListModules        = "engine.list_modules"
 	OperationListReferences     = "engine.list_references"
 	OperationMaterializeView    = "engine.materialize_view"
+	OperationPlanExport         = "engine.plan_export"
 	OperationOpenDocument       = "engine.open_document"
 	OperationOrganizeWorkspace  = "engine.organize_workspace"
 	OperationPreviewFragment    = "engine.preview_fragment"
@@ -145,6 +146,7 @@ func NewDescriptor(config DescriptorConfig) (*Descriptor, error) {
 			OperationMaterializeView,
 			OperationOpenDocument,
 			OperationOrganizeWorkspace,
+			OperationPlanExport,
 			OperationPreviewFragment,
 			OperationPreviewSourcePatch,
 			OperationReadDeclarations,

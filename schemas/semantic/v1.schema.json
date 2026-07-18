@@ -572,6 +572,175 @@
       "x-layerdraw-operator-value": {"operator": "operator", "value": "value", "valueless": ["exists", "missing"]},
       "x-layerdraw-recipe-predicate": "row"
     },
+    "ExternalStateSummary": {
+      "type": "object",
+      "properties": {
+        "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "format": {"type": "string", "const": "layerdraw-state-summary"},
+        "payload": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonValue"},
+        "payload_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "schema_version": {"type": "integer", "minimum": 1, "maximum": 1},
+        "state_version": {"type": "string", "minLength": 1}
+      },
+      "required": ["format", "schema_version", "definition_hash", "state_version", "payload_hash", "payload"],
+      "additionalProperties": false
+    },
+    "ExportArtifactEntry": {
+      "type": "object",
+      "properties": {
+        "logical_path": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$"},
+        "media_type": {"type": "string", "minLength": 1},
+        "primary": {"type": "boolean"},
+        "role": {"type": "string", "minLength": 1}
+      },
+      "required": ["logical_path", "role", "media_type", "primary"],
+      "additionalProperties": false
+    },
+    "CompletedExportArtifactEntry": {
+      "type": "object",
+      "properties": {
+        "content_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "logical_path": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$"},
+        "media_type": {"type": "string", "minLength": 1},
+        "primary": {"type": "boolean"},
+        "role": {"type": "string", "minLength": 1}
+      },
+      "required": ["logical_path", "role", "media_type", "primary", "content_digest"],
+      "additionalProperties": false
+    },
+    "ExportRepresentation": {
+      "type": "object",
+      "properties": {
+        "artifact_role": {"type": "string", "minLength": 1},
+        "disposition": {"type": "string", "enum": ["embedded", "omitted", "rendered", "tabular"]},
+        "locator": {"type": "string", "minLength": 1},
+        "omission_reason": {"type": "string", "enum": ["lossy_format", "support_only", "unsupported_visual_detail"]},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "unit_id": {"type": "string", "pattern": "^unit:[a-z][a-z0-9_-]*$"},
+        "viewdata_key": {"type": "string", "pattern": "^(?:viewdata-root|vdi:[a-z][a-z0-9_-]*:[A-Za-z0-9_-]{43})$"}
+      },
+      "required": ["viewdata_key", "disposition", "source"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "disposition",
+        "variants": {
+          "embedded": {"required": ["artifact_role", "unit_id", "locator"], "forbidden": ["omission_reason"]},
+          "omitted": {"required": ["omission_reason"], "forbidden": ["artifact_role", "unit_id", "locator"]},
+          "rendered": {"required": ["artifact_role", "unit_id", "locator"], "forbidden": ["omission_reason"]},
+          "tabular": {"required": ["artifact_role", "unit_id", "locator"], "forbidden": ["omission_reason"]}
+        }
+      }
+    },
+    "ExportPlanUnit": {
+      "type": "object",
+      "properties": {
+        "artifact_role": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "enum": ["page", "section", "sheet", "slide"]},
+        "order": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "role": {"type": "string", "minLength": 1},
+        "unit_id": {"type": "string", "pattern": "^unit:[a-z][a-z0-9_-]*$"},
+        "viewdata_keys": {"type": "array", "items": {"type": "string", "pattern": "^(?:viewdata-root|vdi:[a-z][a-z0-9_-]*:[A-Za-z0-9_-]{43})$"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "required": ["unit_id", "kind", "order", "role", "artifact_role", "viewdata_keys"],
+      "additionalProperties": false
+    },
+    "ExportPagination": {
+      "type": "object",
+      "properties": {
+        "kind": {"type": "string", "enum": ["none", "pages", "sheets", "slides"]},
+        "orientation": {"type": "string", "enum": ["landscape", "portrait"]},
+        "page_size": {"type": "string", "enum": ["a3", "a4", "ledger", "legal", "letter"]}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "none": {"forbidden": ["orientation", "page_size"]},
+          "pages": {"required": ["orientation", "page_size"]},
+          "sheets": {"forbidden": ["orientation", "page_size"]},
+          "slides": {"required": ["orientation", "page_size"]}
+        }
+      }
+    },
+    "ResolvedExportProfileRequirements": {
+      "type": "object",
+      "description": "Host-resolved exporter and serializer requirements supplied to deterministic planning after the host has verified the selected profile identity, specification, and exact required digests; the Engine validates their binding to the recipe but does not perform registry resolution at this boundary.",
+      "properties": {
+        "exporter_profile": {"$ref": "#/$defs/ExporterProfileRef"},
+        "required_asset_digests": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "required_font_digests": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "schema_version": {"type": "integer", "minimum": 1, "maximum": 1},
+        "serializer_profile": {"$ref": "#/$defs/ExporterProfileRef"}
+      },
+      "required": ["schema_version", "exporter_profile", "serializer_profile", "required_asset_digests", "required_font_digests"],
+      "additionalProperties": false
+    },
+    "ExportPlan": {
+      "type": "object",
+      "properties": {
+        "artifacts": {"type": "array", "items": {"$ref": "#/$defs/ExportArtifactEntry"}, "minItems": 1},
+        "effective_maximum_fidelity": {"$ref": "#/$defs/ExportFidelity"},
+        "exporter_profile": {"$ref": "#/$defs/ExporterProfileRef"},
+        "fidelity_basis": {"type": "string", "enum": ["embedded_viewdata", "native"]},
+        "format": {"$ref": "#/$defs/ExportFormat"},
+        "invocation_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "layout_requirement": {"type": "string", "enum": ["none", "presentation_geometry"]},
+        "native_maximum_fidelity": {"$ref": "#/$defs/ExportFidelity"},
+        "pagination": {"$ref": "#/$defs/ExportPagination"},
+        "profile_ref_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "profile_requirements_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "recipe_address": {"$ref": "#/$defs/ViewExportAddress"},
+        "recipe_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "representations": {"type": "array", "items": {"$ref": "#/$defs/ExportRepresentation"}, "minItems": 1},
+        "requested_fidelity": {"$ref": "#/$defs/ExportFidelity"},
+        "required_asset_digests": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "required_font_digests": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "requires_renderer": {"type": "boolean"},
+        "schema_version": {"type": "integer", "minimum": 1, "maximum": 1},
+        "serializer_options": {"$ref": "#/$defs/ExportOptions"},
+        "serializer_profile": {"$ref": "#/$defs/ExporterProfileRef"},
+        "source_manifest_path": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\]+\\.sources\\.json$"},
+        "source_manifest_required": {"type": "boolean"},
+        "state_input": {"$ref": "#/$defs/ViewDataStateInputRef"},
+        "state_policy": {"type": "string", "enum": ["none", "optional", "required"]},
+        "state_summary_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "units": {"type": "array", "items": {"$ref": "#/$defs/ExportPlanUnit"}, "minItems": 1},
+        "view_data_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["schema_version", "invocation_hash", "view_data_hash", "state_policy", "state_input", "recipe_hash", "profile_ref_hash", "profile_requirements_hash", "recipe_address", "requested_fidelity", "native_maximum_fidelity", "effective_maximum_fidelity", "fidelity_basis", "format", "exporter_profile", "serializer_profile", "serializer_options", "artifacts", "representations", "units", "requires_renderer", "layout_requirement", "pagination", "required_asset_digests", "required_font_digests", "source_manifest_required"],
+      "additionalProperties": false
+    },
+    "ExportSourceManifest": {
+      "type": "object",
+      "properties": {
+        "artifacts": {"type": "array", "items": {"$ref": "#/$defs/CompletedExportArtifactEntry"}, "minItems": 1},
+        "asset_digests": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "effective_maximum_fidelity": {"$ref": "#/$defs/ExportFidelity"},
+        "exporter_profile": {"$ref": "#/$defs/ExporterProfileRef"},
+        "fidelity_basis": {"type": "string", "enum": ["embedded_viewdata", "native"]},
+        "font_digests": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "format": {"type": "string", "const": "layerdraw-export-sources"},
+        "invocation_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "native_maximum_fidelity": {"$ref": "#/$defs/ExportFidelity"},
+        "primary_artifact": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$"},
+        "profile_ref_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "profile_requirements_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "recipe_address": {"$ref": "#/$defs/ViewExportAddress"},
+        "recipe_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "representations": {"type": "array", "items": {"$ref": "#/$defs/ExportRepresentation"}, "minItems": 1},
+        "requested_fidelity": {"$ref": "#/$defs/ExportFidelity"},
+        "revision": {"$ref": "#/$defs/ViewRevision"},
+        "schema_version": {"type": "integer", "minimum": 1, "maximum": 1},
+        "serializer_profile": {"$ref": "#/$defs/ExporterProfileRef"},
+        "state_input": {"$ref": "#/$defs/ViewDataStateInputRef"},
+        "state_policy": {"type": "string", "enum": ["none", "optional", "required"]},
+        "state_summary_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "view_data_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["format", "schema_version", "invocation_hash", "view_data_hash", "state_policy", "state_input", "recipe_hash", "profile_ref_hash", "profile_requirements_hash", "recipe_address", "revision", "requested_fidelity", "native_maximum_fidelity", "effective_maximum_fidelity", "fidelity_basis", "exporter_profile", "serializer_profile", "primary_artifact", "artifacts", "representations", "asset_digests", "font_digests"],
+      "additionalProperties": false
+    },
     "ExportRecipe": {
       "type": "object",
       "properties": {

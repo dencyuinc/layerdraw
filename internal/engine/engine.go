@@ -27,6 +27,7 @@ const (
 	CapabilityListModules       = "engine.list_modules"
 	CapabilityListReferences    = "engine.list_references"
 	CapabilityMaterializeView   = "engine.materialize_view"
+	CapabilityPlanExport        = "engine.plan_export"
 	CapabilityOpenDocument      = "engine.open_document"
 	CapabilityReadDeclarations  = "engine.read_declarations"
 	CapabilityReadModules       = "engine.read_modules"
@@ -49,6 +50,7 @@ var bootstrapCapabilities = []string{
 	CapabilityListReferences,
 	CapabilityMaterializeView,
 	CapabilityOpenDocument,
+	CapabilityPlanExport,
 	CapabilityReadDeclarations,
 	CapabilityReadModules,
 	CapabilityReadReferences,

@@ -176,6 +176,10 @@ view context "Context" context {
     group_by none
     outgoing
   }
+  export json json "context.json" {
+    fidelity lossless
+    source_refs
+  }
 }
 `;
 
@@ -271,6 +275,45 @@ export async function executePortableQueryClientWorkflow(client, suffix) {
     throw new Error(`${suffix} ViewData materialization did not succeed`);
   }
 
+  if (opened.capabilities.plan_export !== true || client.getCapabilities().operations["engine.plan_export"]?.enabled !== true) {
+    throw new Error(`${suffix} endpoint did not advertise plan_export`);
+  }
+  const exportRecipe = {
+    address: `${viewAddress}:export:json`, effective_maximum_fidelity: "lossless",
+    exporter_profile: {
+      format: "json", id: "layerdraw/json@1",
+      registry_digest: "sha256:064941009d55baaa542dd72819107d60f47782f7fec9cc7735260f512cba0c9f",
+      registry_schema_version: 1,
+      specification_digest: "sha256:9140bcd68dd8172a6520b4d6ad468cd1a52006e487e2276997768f06f14375b7",
+    },
+    extension: ".json", fidelity: "lossless", fidelity_basis: "native", filename: "context.json", format: "json", id: "json",
+    native_maximum_fidelity: "lossless", options: { diagnostics: false, kind: "json", state_summary: false },
+    requires_source_manifest: false, source_refs: true, view_address: viewAddress,
+  };
+  const planViewData = structuredClone(materialized.response.payload.view_data);
+  planViewData.revision.revision_id = "export-plan-parity-revision";
+  const planInput = {
+    recipe: exportRecipe,
+    resolved_requirements: {
+      schema_version: 1,
+      exporter_profile: exportRecipe.exporter_profile,
+      serializer_profile: exportRecipe.exporter_profile,
+      required_asset_digests: [],
+      required_font_digests: [`sha256:${"b".repeat(64)}`],
+    },
+    view_data: planViewData,
+  };
+  const planned = await client.workbench.planExport(planInput, {requestId: `${suffix}-plan-export`});
+  const repeated = await client.workbench.planExport(structuredClone(planInput), {requestId: `${suffix}-plan-export-repeat`});
+  if (planned.origin !== "engine" || planned.outcome !== "success" || repeated.origin !== "engine" || repeated.outcome !== "success" ||
+      canonicalSemantic(planned.response.payload?.export_plan) !== canonicalSemantic(repeated.response.payload?.export_plan) ||
+      planned.response.payload?.export_plan?.view_data_hash === undefined || planned.response.payload.export_plan.representations.length === 0) {
+    throw new Error(`${suffix} deterministic ExportPlan generation did not succeed`);
+  }
+  if (typeof process !== "undefined" && process.env.LAYERDRAW_CAPTURE_EXPORT_PLAN === "1") {
+    console.log(`LAYERDRAW_EXPORT_PLAN_GOLDEN=${JSON.stringify({schema_version: 1, input: planInput, export_plan: planned.response.payload.export_plan})}`);
+  }
+
   const rejected = await client.workbench.executeQuery({
     arguments: {[`${queryAddress}:parameter:unknown`]: {kind: "enum", string_value: "prod"}},
     document_generation: opened.document_generation,
@@ -290,6 +333,7 @@ export async function executePortableQueryClientWorkflow(client, suffix) {
   if (closed.origin !== "engine" || closed.outcome !== "success") {
     throw new Error(`${suffix} query workflow could not close its document`);
   }
+  return {input: planInput, export_plan: planned.response.payload.export_plan};
 }
 
 export function handshakeControl(schemaDigest, requestID) {
@@ -391,6 +435,26 @@ export async function performRequest(transport, exchangeID, input) {
   const exchange = transport.request({exchangeID, ...input});
   await exchange.accepted;
   return exchange.response;
+}
+
+export async function assertExportPlanTransportGolden(transport, golden, engineRelease, suffix) {
+  if (golden.schema_version !== 1 || golden.input === undefined || golden.export_plan === undefined) {
+    throw new Error("ExportPlan transport golden is incompatible");
+  }
+  const response = await performRequest(transport, `${suffix}-plan-export-exchange`, {
+    control: encode({
+      operation: "engine.plan_export",
+      payload: golden.input,
+      protocol: {name: "engine", version: "1.0"},
+      request_id: `${suffix}-plan-export-request`,
+    }),
+    blobs: [],
+  });
+  const envelope = decode(response.control);
+  if (envelope.outcome !== "success" || envelope.engine_release !== engineRelease || response.blobs.length !== 0) {
+    throw new Error(`${suffix} ExportPlan request did not succeed through the real transport`);
+  }
+  requireEqual(envelope.payload?.export_plan, golden.export_plan, `${suffix} ExportPlan transport golden`);
 }
 
 export async function handshakeAndCompileCorpus(
@@ -521,40 +585,43 @@ async function executeViewDataMaterializeCases(driver, corpus, label) {
       handles.set(payload.document_handle.value, id);
       return payload;
     };
-    let input;
-    if (testCase.source.kind === "query") {
-      const document = await open(testCase.source.document);
-      const executed = await driver.query({
-        arguments: testCase.source.arguments ?? {},
-        document_generation: document.document_generation,
-        limits: corpus.operation_limits,
-        query_address: testCase.source.query_address,
-      }, `viewdata-${testCase.name}-query`);
-      input = queryMaterializeInput(testCase, document.document_generation, executed.result);
-    } else if (testCase.source.kind === "diff") {
-      const recipe = await open(testCase.source.recipe_document);
-      const before = await open(testCase.source.before_document);
-      const after = await open(testCase.source.after_document);
-      input = {
-        kind: "diff",
-        limits: testCase.limits,
-        diff: {
-          recipe_generation: recipe.document_generation,
-          before_generation: before.document_generation,
-          after_generation: after.document_generation,
-        },
-        view_address: testCase.view_address,
-      };
-    } else {
-      throw new Error(`${testCase.name} has unsupported source kind`);
-    }
-    const outcome = await driver.materialize(input, `viewdata-${testCase.name}-materialize`);
-    assertViewDataCase(outcome, testCase, handles, label);
-    for (const [id, document] of opened) {
-      await driver.close({
-        document_generation: document.document_generation,
-        document_handle: document.document_handle,
-      }, `viewdata-${testCase.name}-close-${id}`);
+    try {
+      let input;
+      if (testCase.source.kind === "query") {
+        const document = await open(testCase.source.document);
+        const executed = await driver.query({
+          arguments: testCase.source.arguments ?? {},
+          document_generation: document.document_generation,
+          limits: corpus.operation_limits,
+          query_address: testCase.source.query_address,
+        }, `viewdata-${testCase.name}-query`);
+        input = queryMaterializeInput(testCase, document.document_generation, executed.result);
+      } else if (testCase.source.kind === "diff") {
+        const recipe = await open(testCase.source.recipe_document);
+        const before = await open(testCase.source.before_document);
+        const after = await open(testCase.source.after_document);
+        input = {
+          kind: "diff",
+          limits: testCase.limits,
+          diff: {
+            recipe_generation: recipe.document_generation,
+            before_generation: before.document_generation,
+            after_generation: after.document_generation,
+          },
+          view_address: testCase.view_address,
+        };
+      } else {
+        throw new Error(`${testCase.name} has unsupported source kind`);
+      }
+      const outcome = await driver.materialize(input, `viewdata-${testCase.name}-materialize`);
+      assertViewDataCase(outcome, testCase, handles, label);
+    } finally {
+      for (const [id, document] of opened) {
+        await driver.close({
+          document_generation: document.document_generation,
+          document_handle: document.document_handle,
+        }, `viewdata-${testCase.name}-close-${id}`);
+      }
     }
   }
 }
@@ -655,18 +722,25 @@ export async function executeViewDataClientCorpus(client, corpus, suffix) {
   const sourceCase = corpus.cases.find((testCase) => testCase.name === "context");
   const document = viewDataDocument(corpus, sourceCase.source.document);
   const opened = await driver.open(document, corpus.operation_limits, `${cancelledCase.name}-cancel`);
-  const executed = await driver.query({
-    arguments: sourceCase.source.arguments ?? {}, document_generation: opened.document_generation,
-    limits: corpus.operation_limits, query_address: sourceCase.source.query_address,
-  }, `viewdata-${cancelledCase.name}-query`);
-  const controller = new AbortController();
-  controller.abort();
-  const cancelled = await client.workbench.materializeView(
-    queryMaterializeInput(cancelledCase, opened.document_generation, executed.result),
-    {requestId: `viewdata-${cancelledCase.name}-materialize`, signal: controller.signal},
-  );
-  if (cancelled.origin !== "client" || cancelled.outcome !== "cancelled" || cancelled.response !== undefined) {
-    throw new Error(`${suffix} cancellation published partial ViewData`);
+  try {
+    const executed = await driver.query({
+      arguments: sourceCase.source.arguments ?? {}, document_generation: opened.document_generation,
+      limits: corpus.operation_limits, query_address: sourceCase.source.query_address,
+    }, `viewdata-${cancelledCase.name}-query`);
+    const controller = new AbortController();
+    controller.abort();
+    const cancelled = await client.workbench.materializeView(
+      queryMaterializeInput(cancelledCase, opened.document_generation, executed.result),
+      {requestId: `viewdata-${cancelledCase.name}-materialize`, signal: controller.signal},
+    );
+    if (cancelled.origin !== "client" || cancelled.outcome !== "cancelled" || cancelled.response !== undefined) {
+      throw new Error(`${suffix} cancellation published partial ViewData`);
+    }
+  } finally {
+    await driver.close({
+      document_generation: opened.document_generation,
+      document_handle: opened.document_handle,
+    }, `viewdata-${cancelledCase.name}-close`);
   }
   return corpus.cases.map((testCase) => testCase.name);
 }
