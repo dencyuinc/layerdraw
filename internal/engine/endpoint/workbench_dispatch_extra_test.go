@@ -117,19 +117,23 @@ func (driver *fakeWorkbenchDriver) MaterializeDocumentView(_ context.Context, in
 	if driver.err != nil {
 		return engine.MaterializeDocumentViewResult{}, driver.err
 	}
-	queryAddress := input.QueryResult.QueryAddress
+	if input.Query == nil {
+		return engine.MaterializeDocumentViewResult{}, errors.New("fake driver requires query View input")
+	}
+	queryAddress := input.Query.QueryResult.QueryAddress
 	base := engine.ViewDataBase{
 		Kind: engine.ViewDataContext, Category: "context", ProjectAddress: "ldl:project:p", ViewAddress: input.ViewAddress,
+		Shape:        view.Shape{Kind: view.ShapeContext, Context: &view.ContextShape{GroupBy: view.ContextGroupNone, Incoming: true, Outgoing: true}},
 		QueryAddress: &queryAddress, Revision: engine.ViewRevision{Single: &engine.SingleRevision{Kind: "single", RevisionID: "revision-1", DefinitionHash: "sha256:" + strings.Repeat("a", 64)}},
 		StatePolicy: "none", StateInput: engine.QueryStateInputRef{Kind: "none"},
 		Source: engine.ViewDataSourceRefs{
-			SubjectAddresses: []string{"ldl:project:p", input.ViewAddress, queryAddress}, EntityAddresses: []string{}, RelationAddresses: []string{},
+			SubjectAddresses: []string{"ldl:project:p", queryAddress, input.ViewAddress}, EntityAddresses: []string{}, RelationAddresses: []string{},
 			LayerAddresses: []string{}, RowAddresses: []string{}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{},
 			State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}},
 		}, Diagnostics: []engine.Diagnostic{},
 	}
 	return engine.MaterializeDocumentViewResult{
-		DocumentGeneration: input.DocumentGeneration,
+		DocumentGeneration: input.Query.DocumentGeneration,
 		ViewData:           engine.ViewData{Context: &engine.ContextViewData{ViewDataBase: base, Groups: []engine.ContextGroup{}}},
 	}, nil
 }
@@ -840,14 +844,17 @@ func TestMaterializeViewMappingCoversShapesProvenanceAndLimits(t *testing.T) {
 	layerAddress := "ldl:project:p:layer:app"
 	relationAddress := "ldl:project:p:relation:alpha_beta"
 	baseSource := engine.ViewDataSourceRefs{
-		SubjectAddresses: []string{"ldl:project:p", typeAddress, queryAddress, "ldl:project:p:relation-type:calls", "ldl:project:p:view:v"},
+		SubjectAddresses: []string{"ldl:project:p", typeAddress, "ldl:project:p:relation-type:calls", queryAddress, "ldl:project:p:view:v"},
 		EntityAddresses:  []string{address, betaAddress}, RelationAddresses: []string{relationAddress}, LayerAddresses: []string{layerAddress},
 		RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{},
 		State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{{SubjectAddress: address, FieldPath: "system.updated_at"}}},
 	}
 	diagramBase := engine.ViewDataBase{
 		Kind: engine.ViewDataDiagram, Category: "topology", ProjectAddress: "ldl:project:p", ViewAddress: "ldl:project:p:view:v", QueryAddress: &queryAddress,
-		Shape:       view.Shape{Kind: view.ShapeDiagram, Diagram: &view.DiagramShape{Placements: []view.Placement{{EntityAddress: address, X: -1.5, Y: 2, Width: 200, Height: 100}}}},
+		Shape: view.Shape{Kind: view.ShapeDiagram, Diagram: &view.DiagramShape{
+			Layout: view.LayoutManual, Direction: view.DirectionLeftToRight, Abstraction: view.AbstractionNormal,
+			Placements: []view.Placement{{EntityAddress: address, X: -1.5, Y: 2, Width: 200, Height: 100}},
+		}},
 		Revision:    engine.ViewRevision{Single: &engine.SingleRevision{Kind: "single", RevisionID: "revision-1", DefinitionHash: "sha256:" + strings.Repeat("a", 64)}},
 		StatePolicy: "none", StateInput: engine.QueryStateInputRef{Kind: "none"}, Source: baseSource,
 		Diagnostics: []engine.Diagnostic{{Code: "LDL0001", Severity: "warning", MessageKey: "view_notice", Arguments: map[string]string{"view": "v"}, Related: []engine.DiagnosticRelated{}}},
@@ -856,17 +863,39 @@ func TestMaterializeViewMappingCoversShapesProvenanceAndLimits(t *testing.T) {
 	betaSource := alphaSource
 	betaSource.EntityAddresses = []string{betaAddress}
 	relationSource := engine.ViewDataSourceRefs{SubjectAddresses: []string{"ldl:project:p:relation-type:calls"}, EntityAddresses: []string{}, RelationAddresses: []string{relationAddress}, LayerAddresses: []string{}, RowAddresses: []string{}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}}
+	alphaOccurrenceKey := viewDataTestKey("diagram-occurrence", "A")
+	betaOccurrenceKey := viewDataTestKey("diagram-occurrence", "B")
+	containerKey := viewDataTestKey("diagram-container", "W")
+	badgeLabel := "critical"
 	diagramData := engine.ViewData{Diagram: &engine.DiagramViewData{
 		ViewDataBase: diagramBase,
 		Occurrences: []engine.DiagramOccurrence{
-			{Key: "alpha", EntityAddress: address, LayerAddress: layerAddress, Role: engine.DiagramRoleNode, Source: alphaSource},
-			{Key: "beta", EntityAddress: betaAddress, LayerAddress: layerAddress, Role: engine.DiagramRoleNode, Source: betaSource},
+			{Key: alphaOccurrenceKey, EntityAddress: address, LayerAddress: layerAddress, Role: engine.DiagramRoleNode, Source: alphaSource},
+			{Key: betaOccurrenceKey, EntityAddress: betaAddress, LayerAddress: layerAddress, ParentKey: &alphaOccurrenceKey, ViaRelationAddress: &relationAddress, Role: engine.DiagramRoleNode, Source: betaSource},
 		},
-		Edges:      []engine.DiagramEdge{{Key: "alpha_beta", FromOccurrenceKey: "alpha", ToOccurrenceKey: "beta", RelationAddress: relationAddress, RelationTypeAddress: "ldl:project:p:relation-type:calls", Source: relationSource}},
-		Containers: []engine.DiagramContainer{}, Overlays: []engine.DiagramOverlay{}, Badges: []engine.DiagramBadge{}, SupportItems: []engine.DiagramSupportItem{},
+		Edges: []engine.DiagramEdge{{Key: viewDataTestKey("diagram-edge", "C"), FromOccurrenceKey: alphaOccurrenceKey, ToOccurrenceKey: betaOccurrenceKey, RelationAddress: relationAddress, RelationTypeAddress: "ldl:project:p:relation-type:calls", Source: relationSource}},
+		Containers: []engine.DiagramContainer{{
+			Key: containerKey, OccurrenceKey: alphaOccurrenceKey, ChildKeys: []string{betaOccurrenceKey}, Source: alphaSource,
+		}},
+		Overlays: []engine.DiagramOverlay{{
+			Key: viewDataTestKey("diagram-overlay", "X"), TargetOccurrenceKey: betaOccurrenceKey, OverlayEntityAddress: address,
+			RelationAddress: relationAddress, RelationTypeAddress: "ldl:project:p:relation-type:calls", Source: relationSource,
+		}},
+		Badges: []engine.DiagramBadge{{
+			Key: viewDataTestKey("diagram-badge", "Y"), TargetOccurrenceKey: betaOccurrenceKey, RelationAddress: relationAddress,
+			RelationTypeAddress: "ldl:project:p:relation-type:calls", Label: &badgeLabel, Source: relationSource,
+		}},
+		SupportItems: []engine.DiagramSupportItem{{
+			Key: viewDataTestKey("diagram-support", "Z"), SupportKind: engine.DiagramSupportHiddenRelation,
+			EntityAddress: &address, RelationAddress: &relationAddress, Source: relationSource,
+		}},
 	}}
 	diagram, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: diagramData}, limits)
-	if err != nil || diagram.ViewData.Diagram == nil || len(diagram.ViewData.Diagram.Placements) != 1 || diagram.ReturnedItems == "0" || diagram.ReturnedBytes == "0" {
+	if err != nil || diagram.ViewData.Diagram == nil || diagram.ViewData.Shape.Diagram == nil || len(diagram.ViewData.Shape.Diagram.Placements) != 1 ||
+		len(diagram.ViewData.Diagram.Containers) != 1 || len(diagram.ViewData.Diagram.Overlays) != 1 ||
+		len(diagram.ViewData.Diagram.Badges) != 1 || len(diagram.ViewData.Diagram.SupportItems) != 1 ||
+		diagram.ViewData.Diagram.Badges[0].Label == nil || *diagram.ViewData.Diagram.Badges[0].Label != badgeLabel ||
+		diagram.ReturnedItems == "0" || diagram.ReturnedBytes == "0" {
 		t.Fatalf("diagram mapping = %+v err=%v", diagram, err)
 	}
 
@@ -875,46 +904,230 @@ func TestMaterializeViewMappingCoversShapesProvenanceAndLimits(t *testing.T) {
 	tableBase := diagramBase
 	tableBase.Kind = engine.ViewDataTable
 	tableBase.Category = "inventory"
-	tableBase.Shape = view.Shape{Kind: view.ShapeTable, Table: &view.TableShape{Sorts: []view.TableSort{{ColumnID: "name", Direction: view.SortAscending, Absent: view.AbsentLast}}}}
+	tableBase.Shape = view.Shape{Kind: view.ShapeTable, Table: &view.TableShape{
+		RowSource: view.RowsEntity, AutomaticRelationColumns: []string{},
+		Sorts: []view.TableSort{{ColumnID: "name", Direction: view.SortAscending, Absent: view.AbsentLast}},
+	}}
+	nameKey := viewDataTestKey("table-column", "D")
+	ownerKey := viewDataTestKey("table-column", "E")
+	tagsKey := viewDataTestKey("table-column", "F")
+	emptyKey := viewDataTestKey("table-column", "G")
 	tableData := engine.ViewData{Table: &engine.TableViewData{
 		ViewDataBase: tableBase,
 		Columns: []engine.TableColumn{
-			{Key: "name-key", ID: "name", Address: &nameAddress, Label: "Name", ValueType: "string", EnumValues: []string{}, SourceColumnAddresses: []string{"ldl:project:p:entity-type:service:column:name"}},
-			{Key: "owner-key", ID: "owner", Label: "Owner", ValueType: "stable_address", EnumValues: []string{}, SourceColumnAddresses: []string{}},
-			{Key: "tags-key", ID: "tags", Label: "Tags", ValueType: "string_set", EnumValues: []string{}, SourceColumnAddresses: []string{}},
-			{Key: "empty-key", ID: "empty", Label: "Empty", ValueType: "string", EnumValues: []string{}, SourceColumnAddresses: []string{}},
+			{Key: nameKey, ID: "name", Address: &nameAddress, Label: "Name", ValueType: "string", SourceColumnAddresses: []string{"ldl:project:p:entity-type:service:column:name"}},
+			{Key: ownerKey, ID: "owner", Label: "Owner", ValueType: "stable_address", SourceColumnAddresses: []string{}},
+			{Key: tagsKey, ID: "tags", Label: "Tags", ValueType: "string_set", SourceColumnAddresses: []string{}},
+			{Key: emptyKey, ID: "empty", Label: "Empty", ValueType: "string", SourceColumnAddresses: []string{}},
 		},
 		Rows: []engine.TableRow{{
-			Key: "alpha", Source: engine.ViewDataSourceRefs{SubjectAddresses: []string{typeAddress}, EntityAddresses: []string{address}, RelationAddresses: []string{}, LayerAddresses: []string{layerAddress}, RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}},
+			Key: viewDataTestKey("table-row", "H"), Source: engine.ViewDataSourceRefs{SubjectAddresses: []string{typeAddress}, EntityAddresses: []string{address}, RelationAddresses: []string{}, LayerAddresses: []string{layerAddress}, RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, CellRefs: []engine.ViewDataCellRef{}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}},
 			Cells: map[string]engine.TableCell{
-				"name-key":  {Present: true, Value: &engine.ViewDataValue{Kind: "scalar", Scalar: &scalar}, Source: engine.ViewDataSourceRefs{SubjectAddresses: []string{typeAddress}, EntityAddresses: []string{address}, RelationAddresses: []string{}, LayerAddresses: []string{layerAddress}, RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, CellRefs: []engine.ViewDataCellRef{{RowAddress: "ldl:project:p:entity:alpha:row:primary", ColumnAddress: "ldl:project:p:entity-type:service:column:name"}}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}}},
-				"owner-key": {Present: true, Value: &engine.ViewDataValue{Kind: "stable_address", Address: &address}, Source: alphaSource},
-				"tags-key":  {Present: true, Value: &engine.ViewDataValue{Kind: "string_set", StringSet: []string{"api", "prod"}}, Source: alphaSource},
-				"empty-key": {Present: false, Source: alphaSource},
+				nameKey:  {Present: true, Value: &engine.ViewDataValue{Kind: "scalar", Scalar: &scalar}, Source: engine.ViewDataSourceRefs{SubjectAddresses: []string{typeAddress}, EntityAddresses: []string{address}, RelationAddresses: []string{}, LayerAddresses: []string{layerAddress}, RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, CellRefs: []engine.ViewDataCellRef{{RowAddress: "ldl:project:p:entity:alpha:row:primary", ColumnAddress: "ldl:project:p:entity-type:service:column:name"}}, AssetDigests: []string{}, State: engine.ViewDataStateRefs{Reads: []engine.StateReadRef{}}}},
+				ownerKey: {Present: true, Value: &engine.ViewDataValue{Kind: "stable_address", Address: &address}, Source: alphaSource},
+				tagsKey:  {Present: true, Value: &engine.ViewDataValue{Kind: "string_set", StringSet: []string{"api", "prod"}}, Source: alphaSource},
+				emptyKey: {Present: false, Source: alphaSource},
 			},
 		}},
 	}}
 	table, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: tableData}, limits)
-	if err != nil || table.ViewData.Table == nil || len(table.ViewData.Table.Rows) != 1 || len(table.ViewData.Table.Rows[0].Cells) != 4 || len(table.ViewData.Table.Sorts) != 1 {
+	if err != nil || table.ViewData.Table == nil || table.ViewData.Shape.Table == nil || len(table.ViewData.Table.Rows) != 1 || len(table.ViewData.Table.Rows[0].Cells) != 4 || len(table.ViewData.Shape.Table.Sorts) != 1 {
 		t.Fatalf("table mapping = %+v err=%v", table, err)
+	}
+	emptyStringSet, err := mapViewDataValue(engine.ViewDataValue{Kind: "string_set", StringSet: []string{}})
+	if err != nil || emptyStringSet.StringSet == nil || *emptyStringSet.StringSet == nil || len(*emptyStringSet.StringSet) != 0 {
+		t.Fatalf("empty string-set mapping = %+v err=%v", emptyStringSet, err)
 	}
 
 	contextBase := diagramBase
 	contextBase.Kind = engine.ViewDataContext
 	contextBase.Category = "context"
+	contextBase.Shape = view.Shape{Kind: view.ShapeContext, Context: &view.ContextShape{GroupBy: view.ContextGroupNone, Incoming: true, Outgoing: true}}
 	contextData := engine.ViewData{Context: &engine.ContextViewData{
 		ViewDataBase: contextBase,
 		Groups: []engine.ContextGroup{{
-			Key: "all", Label: "All", Source: alphaSource, Attributes: []engine.ContextAttribute{},
+			Key: viewDataTestKey("context-group", "I"), Label: "All", Source: alphaSource,
 			Facts: []engine.ContextFact{{
-				Key: "entity:alpha", Direction: engine.ContextFactOutgoing, Text: "Alpha", EntityAddress: address,
-				RelationAddress: relationAddress, RowAddresses: []string{}, Source: relationSource,
+				Key: viewDataTestKey("context-fact", "J"), Direction: engine.ContextFactOutgoing, Text: "Alpha", EntityAddress: address,
+				RelationAddress: relationAddress, RowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, Source: relationSource,
+			}},
+			Attributes: []engine.ContextAttribute{{
+				Key: viewDataTestKey("context-attribute", "a"), GroupKey: viewDataTestKey("context-group", "I"),
+				OwnerAddress: address, RowAddress: "ldl:project:p:entity:alpha:row:primary",
+				Values: map[string]engine.TypedScalar{"ldl:project:p:entity-type:service:column:name": {Type: definition.ScalarString, String: "Alpha"}},
+				Source: alphaSource,
 			}},
 		}},
 	}}
 	contextResult, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: contextData}, limits)
-	if err != nil || contextResult.ViewData.Context == nil || len(contextResult.ViewData.Context.Facts) != 1 {
+	if err != nil || contextResult.ViewData.Context == nil || len(contextResult.ViewData.Context.Groups) != 1 ||
+		len(contextResult.ViewData.Context.Groups[0].Facts) != 1 || len(contextResult.ViewData.Context.Groups[0].Attributes) != 1 ||
+		len(contextResult.ViewData.Context.Groups[0].Attributes[0].Values) != 1 {
 		t.Fatalf("context mapping = %+v err=%v", contextResult, err)
+	}
+	matrixBase := diagramBase
+	matrixBase.Kind = engine.ViewDataMatrix
+	matrixBase.Category = "dependency"
+	matrixBase.Shape = view.Shape{Kind: view.ShapeMatrix, Matrix: &view.MatrixShape{
+		RowAxis:    view.MatrixAxis{LabelField: view.AxisLabelDisplayName},
+		ColumnAxis: view.MatrixAxis{LabelField: view.AxisLabelDisplayName},
+		Cell:       view.MatrixCell{Direction: definition.TraversalBoth, Semantic: view.MatrixRelationRefs, Display: view.MatrixExists},
+	}}
+	rowAxisKey := viewDataTestKey("matrix-row", "K")
+	columnAxisKey := viewDataTestKey("matrix-column", "L")
+	matrixPath := engine.QueryPath{EntityAddresses: []string{address, betaAddress}, RelationAddresses: []string{relationAddress}}
+	matrixData := engine.ViewData{Matrix: &engine.MatrixViewData{
+		ViewDataBase: matrixBase,
+		RowAxis:      []engine.MatrixAxisItem{{Key: rowAxisKey, EntityAddress: address, Label: "Alpha", Source: alphaSource}},
+		ColumnAxis:   []engine.MatrixAxisItem{{Key: columnAxisKey, EntityAddress: betaAddress, Label: "Beta", Source: betaSource}},
+		Cells: []engine.MatrixCell{
+			{
+				Key: viewDataTestKey("matrix-cell", "M"), RowKey: rowAxisKey, ColumnKey: columnAxisKey,
+				SemanticRefs: []engine.MatrixSemanticRef{{RelationAddress: &relationAddress}, {Path: &matrixPath}},
+				DisplayValue: engine.MatrixDisplayValue{Kind: "boolean", Boolean: true}, Source: relationSource,
+			},
+			{
+				Key: viewDataTestKey("matrix-cell", "b"), RowKey: rowAxisKey, ColumnKey: columnAxisKey,
+				SemanticRefs: []engine.MatrixSemanticRef{}, DisplayValue: engine.MatrixDisplayValue{Kind: "integer", Integer: -2}, Source: relationSource,
+			},
+			{
+				Key: viewDataTestKey("matrix-cell", "c"), RowKey: rowAxisKey, ColumnKey: columnAxisKey,
+				SemanticRefs: []engine.MatrixSemanticRef{}, DisplayValue: engine.MatrixDisplayValue{Kind: "string_set", StringSet: []string{"api", "prod"}}, Source: relationSource,
+			},
+			{
+				Key: viewDataTestKey("matrix-cell", "d"), RowKey: rowAxisKey, ColumnKey: columnAxisKey,
+				SemanticRefs: []engine.MatrixSemanticRef{}, DisplayValue: engine.MatrixDisplayValue{Kind: "attributes", Attributes: []engine.MatrixAttributeItem{{
+					RelationAddress: relationAddress, RowAddress: "ldl:project:p:relation:alpha_beta:row:primary",
+					ColumnAddress: "ldl:project:p:relation-type:calls:column:protocol", Value: engine.TypedScalar{Type: definition.ScalarString, String: "https"},
+				}}}, Source: relationSource,
+			},
+		},
+	}}
+	matrixResult, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: matrixData}, limits)
+	if err != nil || matrixResult.ViewData.Matrix == nil || len(matrixResult.ViewData.Matrix.Cells) != 4 ||
+		len(matrixResult.ViewData.Matrix.Cells[0].SemanticRefs) != 2 || matrixResult.ViewData.Matrix.Cells[0].SemanticRefs[1].Path == nil ||
+		matrixResult.ViewData.Matrix.Cells[0].DisplayValue.Boolean == nil || matrixResult.ViewData.Matrix.Cells[1].DisplayValue.Integer == nil ||
+		matrixResult.ViewData.Matrix.Cells[2].DisplayValue.StringSet == nil || matrixResult.ViewData.Matrix.Cells[3].DisplayValue.Attributes == nil {
+		t.Fatalf("matrix mapping = %+v err=%v", matrixResult, err)
+	}
+
+	treeBase := diagramBase
+	treeBase.Kind = engine.ViewDataTree
+	treeBase.Category = "hierarchy"
+	treeBase.Shape = view.Shape{Kind: view.ShapeTree, Tree: &view.TreeShape{
+		RelationTypeAddresses: []string{"ldl:project:p:relation-type:calls"},
+		CyclePolicy:           view.TreeCycleTruncate,
+		SharedChildPolicy:     view.SharedChildLink,
+	}}
+	treeRootKey := viewDataTestKey("tree-occurrence", "N")
+	treeChildKey := viewDataTestKey("tree-occurrence", "O")
+	treeData := engine.ViewData{Tree: &engine.TreeViewData{
+		ViewDataBase: treeBase,
+		Roots: []engine.TreeOccurrence{{
+			Key: treeRootKey, EntityAddress: address, Source: alphaSource,
+			Children: []engine.TreeOccurrence{{Key: treeChildKey, EntityAddress: betaAddress, ViaRelationAddress: &relationAddress, Children: []engine.TreeOccurrence{}, Source: betaSource}},
+		}},
+		CycleRefs: []engine.TreeRef{{Key: viewDataTestKey("tree-cycle", "e"), FromOccurrenceKey: treeChildKey, ToEntityAddress: address, RelationAddress: relationAddress, Source: relationSource}},
+		LinkRefs:  []engine.TreeRef{{Key: viewDataTestKey("tree-link", "P"), FromOccurrenceKey: treeRootKey, ToEntityAddress: betaAddress, RelationAddress: relationAddress, Source: relationSource}},
+	}}
+	treeResult, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: treeData}, limits)
+	if err != nil || treeResult.ViewData.Tree == nil || len(treeResult.ViewData.Tree.Roots) != 1 || len(treeResult.ViewData.Tree.Roots[0].Children) != 1 || len(treeResult.ViewData.Tree.CycleRefs) != 1 {
+		t.Fatalf("tree mapping = %+v err=%v", treeResult, err)
+	}
+
+	flowBase := diagramBase
+	flowBase.Kind = engine.ViewDataFlow
+	flowBase.Category = "flow"
+	flowBase.Shape = view.Shape{Kind: view.ShapeFlow, Flow: &view.FlowShape{
+		RelationTypeAddresses: []string{"ldl:project:p:relation-type:calls"}, LaneBy: view.LaneLayer,
+		CyclePolicy: view.FlowCycleIncludeCycleRef, PreserveParallel: true,
+	}}
+	laneKey := viewDataTestKey("flow-lane", "Q")
+	alphaStepKey := viewDataTestKey("flow-step", "R")
+	betaStepKey := viewDataTestKey("flow-step", "S")
+	connectorKey := viewDataTestKey("flow-connector", "T")
+	branchValue := engine.TypedScalar{Type: definition.ScalarString, String: "approved"}
+	flowData := engine.ViewData{Flow: &engine.FlowViewData{
+		ViewDataBase: flowBase,
+		Lanes:        []engine.FlowLane{{Key: laneKey, Label: "App", StepKeys: []string{alphaStepKey, betaStepKey}, Source: alphaSource}},
+		Steps: []engine.FlowStep{
+			{Key: alphaStepKey, EntityAddress: address, LaneKey: laneKey, Branch: true, Source: alphaSource},
+			{Key: betaStepKey, EntityAddress: betaAddress, LaneKey: laneKey, Join: true, Source: betaSource},
+		},
+		Connectors: []engine.FlowConnector{{
+			Key: connectorKey, FromStepKey: alphaStepKey, ToStepKey: betaStepKey, Kind: engine.FlowConnectorSequence,
+			BranchValue: &branchValue, BranchRowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, RelationAddresses: []string{relationAddress}, Source: relationSource,
+		}},
+		CycleRefs: []engine.FlowCycleRef{{
+			Key: viewDataTestKey("flow-cycle", "f"), ConnectorKey: connectorKey, FromStepKey: betaStepKey, ToStepKey: alphaStepKey,
+			Kind: engine.FlowConnectorControl, BranchValue: &branchValue,
+			BranchRowAddresses: []string{"ldl:project:p:entity:alpha:row:primary"}, RelationAddresses: []string{relationAddress}, Source: relationSource,
+		}},
+	}}
+	flowResult, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: flowData}, limits)
+	if err != nil || flowResult.ViewData.Flow == nil || len(flowResult.ViewData.Flow.Connectors) != 1 || len(flowResult.ViewData.Flow.CycleRefs) != 1 ||
+		flowResult.ViewData.Flow.Connectors[0].Kind != semantic.FlowConnectorKindSequence || flowResult.ViewData.Flow.Connectors[0].BranchValue == nil ||
+		flowResult.ViewData.Flow.CycleRefs[0].BranchValue == nil {
+		t.Fatalf("flow mapping = %+v err=%v", flowResult, err)
+	}
+
+	diffBase := diagramBase
+	diffBase.Kind = engine.ViewDataDiff
+	diffBase.Category = "diff"
+	diffBase.QueryAddress = nil
+	diffBase.Shape = view.Shape{Kind: view.ShapeDiff, Diff: &view.DiffShape{Include: []view.DiffSubjectKind{view.DiffEntity}, DetectMoves: true}}
+	diffBase.Revision = engine.ViewRevision{Diff: &engine.DiffRevision{
+		Kind: "diff", RecipeRevisionID: "recipe-1", RecipeDefinitionHash: "sha256:" + strings.Repeat("a", 64),
+		BeforeRevisionID: "before-1", BeforeDefinitionHash: "sha256:" + strings.Repeat("b", 64),
+		AfterRevisionID: "after-1", AfterDefinitionHash: "sha256:" + strings.Repeat("c", 64),
+	}}
+	beforeValue := engine.SemanticValue{Kind: engine.SemanticValueString, String: "old"}
+	afterValue := engine.SemanticValue{Kind: engine.SemanticValueString, String: "new"}
+	compositeValue := engine.SemanticValue{Kind: engine.SemanticValueMap, Map: []engine.SemanticMapEntry{
+		{Key: "absent", Value: engine.SemanticValue{Kind: engine.SemanticValueAbsent}},
+		{Key: "address", Value: engine.SemanticValue{Kind: engine.SemanticValueAddress, Address: address}},
+		{Key: "array", Value: engine.SemanticValue{Kind: engine.SemanticValueArray, Array: []engine.SemanticValue{
+			{Kind: engine.SemanticValueBlob, BlobRef: &engine.SemanticBlobRef{
+				BlobID: "blob-1", Digest: "sha256:" + strings.Repeat("d", 64), Lifetime: "request", MediaType: "application/octet-stream", Size: 3,
+			}},
+			{Kind: engine.SemanticValueBoolean, Boolean: true},
+		}}},
+		{Key: "decimal", Value: engine.SemanticValue{Kind: engine.SemanticValueDecimal, Decimal: "1.25"}},
+		{Key: "integer", Value: engine.SemanticValue{Kind: engine.SemanticValueInteger, Integer: -7}},
+		{Key: "string", Value: engine.SemanticValue{Kind: engine.SemanticValueString, String: "value"}},
+		{Key: "token", Value: engine.SemanticValue{Kind: engine.SemanticValueToken, String: "token"}},
+	}}
+	diffData := engine.ViewData{Diff: &engine.DiffViewData{
+		ViewDataBase: diffBase,
+		Changes: []engine.DiffChange{{
+			Key: viewDataTestKey("diff-change", "U"), Kind: engine.DiffChangeUpdated, SubjectKind: "entity",
+			BeforeAddress: &address, AfterAddress: &address, Source: alphaSource, BeforeSource: &alphaSource, AfterSource: &alphaSource,
+			Fields: []engine.FieldDiff{
+				{
+					Key: viewDataTestKey("diff-field", "V"), Path: []string{"display_name"},
+					BeforePresent: true, Before: &beforeValue, AfterPresent: true, After: &afterValue,
+				},
+				{
+					Key: viewDataTestKey("diff-field", "g"), Path: []string{"representation"},
+					BeforePresent: true, Before: &compositeValue, AfterPresent: false,
+				},
+			},
+		}},
+	}}
+	diffResult, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: diffData}, limits)
+	if err != nil || diffResult.ViewData.Diff == nil || len(diffResult.ViewData.Diff.Changes) != 1 || len(diffResult.ViewData.Diff.Changes[0].Fields) != 2 ||
+		diffResult.ViewData.Diff.Changes[0].Fields[1].Before == nil || diffResult.ViewData.Diff.Changes[0].Fields[1].Before.Map == nil ||
+		diffResult.ViewData.Revision.Kind != "diff" {
+		t.Fatalf("diff mapping = %+v err=%v", diffResult, err)
+	}
+	logicalDiff := diffResult
+	logicalDiff.ReturnedBytes = "0"
+	wantDiffBytes := len(canonicalJSONForTest(t, logicalDiff)) + 3
+	if diffResult.ReturnedBytes != engineprotocol.LogicalResponseByteCount(strconv.Itoa(wantDiffBytes)) {
+		t.Fatalf("diff returned bytes = %q, want %d", diffResult.ReturnedBytes, wantDiffBytes)
+	}
+	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: diffData}, engine.WorkbenchLimits{MaxItems: limits.MaxItems, MaxOutputBytes: int64(wantDiffBytes - 1)}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
+		t.Fatalf("diff attachment byte limit error = %v", err)
 	}
 
 	if _, err := mapMaterializeViewResult(ctx, engine.MaterializeDocumentViewResult{DocumentGeneration: generation, ViewData: diagramData}, engine.WorkbenchLimits{MaxItems: 1, MaxOutputBytes: limits.MaxOutputBytes}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorLimitExceeded) {
@@ -937,35 +1150,13 @@ func TestMaterializeViewMappingCoversShapesProvenanceAndLimits(t *testing.T) {
 		"width":  {EntityAddress: address, Width: 0, Height: 1},
 		"height": {EntityAddress: address, Width: 1, Height: 0},
 	} {
-		invalid := *diagramData.Diagram
-		invalid.Shape = view.Shape{Kind: view.ShapeDiagram, Diagram: &view.DiagramShape{Placements: []view.Placement{placement}}}
-		if _, err := mapDiagramViewData(ctx, invalid); err == nil {
+		invalid := view.Shape{Kind: view.ShapeDiagram, Diagram: &view.DiagramShape{
+			Layout: view.LayoutManual, Direction: view.DirectionLeftToRight, Abstraction: view.AbstractionNormal,
+			Placements: []view.Placement{placement},
+		}}
+		if _, err := mapCompiledViewShape(invalid); err == nil {
 			t.Fatalf("invalid diagram %s placement was accepted", name)
 		}
-	}
-	missingType := *diagramData.Diagram
-	missingType.Occurrences = append([]engine.DiagramOccurrence{}, diagramData.Diagram.Occurrences...)
-	missingType.Occurrences[0].Source.SubjectAddresses = []string{}
-	if _, err := mapDiagramViewData(ctx, missingType); err == nil {
-		t.Fatal("Diagram occurrence without an EntityType source was accepted")
-	}
-	unknownOccurrence := *diagramData.Diagram
-	unknownOccurrence.Edges = append([]engine.DiagramEdge{}, diagramData.Diagram.Edges...)
-	unknownOccurrence.Edges[0].FromOccurrenceKey = "missing"
-	if _, err := mapDiagramViewData(ctx, unknownOccurrence); err == nil {
-		t.Fatal("Diagram edge with an unknown occurrence was accepted")
-	}
-	missingOwner := *tableData.Table
-	missingOwner.Rows = append([]engine.TableRow{}, tableData.Table.Rows...)
-	missingOwner.Rows[0].Source.EntityAddresses = []string{}
-	if _, err := mapTableViewData(ctx, missingOwner); err == nil {
-		t.Fatal("Table row without an owner was accepted")
-	}
-	missingCell := *tableData.Table
-	missingCell.Rows = append([]engine.TableRow{}, tableData.Table.Rows...)
-	missingCell.Rows[0].Cells = map[string]engine.TableCell{}
-	if _, err := mapTableViewData(ctx, missingCell); err == nil {
-		t.Fatal("Table row without required cells was accepted")
 	}
 	if _, err := mapDiagramViewData(cancelled, *diagramData.Diagram); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled diagram mapping error = %v", err)
@@ -995,6 +1186,121 @@ func TestMaterializeViewMappingCoversShapesProvenanceAndLimits(t *testing.T) {
 	}
 }
 
+func viewDataTestKey(kind, fill string) string {
+	return "vdi:" + kind + ":" + strings.Repeat(fill, 43)
+}
+
+func TestViewDataMappersRejectMalformedClosedUnionValues(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	relationAddress := "ldl:project:p:relation:alpha_beta"
+	path := engine.QueryPath{EntityAddresses: []string{"ldl:project:p:entity:alpha"}, RelationAddresses: []string{relationAddress}}
+	for name, input := range map[string]engine.MatrixSemanticRef{
+		"empty": {},
+		"both":  {RelationAddress: &relationAddress, Path: &path},
+	} {
+		if _, err := mapMatrixSemanticRef(input); err == nil {
+			t.Fatalf("invalid Matrix semantic ref %s was accepted", name)
+		}
+	}
+	invalidScalar := engine.TypedScalar{Type: "unsupported"}
+	for name, input := range map[string]engine.MatrixDisplayValue{
+		"unknown kind": {Kind: "unknown"},
+		"invalid attribute scalar": {Kind: "attributes", Attributes: []engine.MatrixAttributeItem{{
+			RelationAddress: relationAddress, RowAddress: "ldl:project:p:relation:alpha_beta:row:primary",
+			ColumnAddress: "ldl:project:p:relation-type:calls:column:protocol", Value: invalidScalar,
+		}}},
+	} {
+		if _, err := mapMatrixDisplayValue(input); err == nil {
+			t.Fatalf("invalid Matrix display %s was accepted", name)
+		}
+	}
+	emptySource := engine.ViewDataSourceRefs{}
+	if _, err := mapFlowConnector(ctx, engine.FlowConnector{BranchValue: &invalidScalar, Source: emptySource}); err == nil {
+		t.Fatal("invalid Flow connector branch value was accepted")
+	}
+	if _, err := mapFlowCycleRef(ctx, engine.FlowCycleRef{BranchValue: &invalidScalar, Source: emptySource}); err == nil {
+		t.Fatal("invalid Flow cycle branch value was accepted")
+	}
+	for name, input := range map[string]engine.SemanticValue{
+		"blob without ref": {Kind: engine.SemanticValueBlob},
+		"unknown kind":     {Kind: "unknown"},
+		"invalid array child": {Kind: engine.SemanticValueArray, Array: []engine.SemanticValue{{
+			Kind: "unknown",
+		}}},
+		"invalid map child": {Kind: engine.SemanticValueMap, Map: []engine.SemanticMapEntry{{
+			Key: "invalid", Value: engine.SemanticValue{Kind: "unknown"},
+		}}},
+	} {
+		if _, err := mapViewDataSemanticValue(input, 0); err == nil {
+			t.Fatalf("invalid Diff semantic value %s was accepted", name)
+		}
+	}
+	if _, err := mapViewDataSemanticValue(engine.SemanticValue{Kind: engine.SemanticValueAbsent}, protocolcommon.MaxWireJSONDepth+1); err == nil {
+		t.Fatal("over-depth Diff semantic value was accepted")
+	}
+	for name, input := range map[string]engine.ViewRevision{
+		"empty":               {},
+		"both":                {Single: &engine.SingleRevision{Kind: "single"}, Diff: &engine.DiffRevision{Kind: "diff"}},
+		"invalid single kind": {Single: &engine.SingleRevision{Kind: "invalid"}},
+		"invalid diff kind":   {Diff: &engine.DiffRevision{Kind: "invalid"}},
+	} {
+		if _, err := mapViewRevision(input); err == nil {
+			t.Fatalf("invalid View revision %s was accepted", name)
+		}
+	}
+	if _, err := mapViewData(ctx, engine.ViewData{}); err == nil {
+		t.Fatal("empty ViewData union was accepted")
+	}
+	if _, err := measureViewDataBlobBytes(nil, engine.ViewData{}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInvariant) {
+		t.Fatalf("nil blob measurement context error = %v", err)
+	}
+	missingBlob := engine.SemanticValue{Kind: engine.SemanticValueBlob}
+	invalidBlobData := engine.ViewData{Diff: &engine.DiffViewData{Changes: []engine.DiffChange{{Fields: []engine.FieldDiff{{Before: &missingBlob}}}}}}
+	if _, err := measureViewDataBlobBytes(ctx, invalidBlobData); err == nil {
+		t.Fatal("missing Diff BlobRef was accepted by logical byte measurement")
+	}
+	maxBlob := engine.SemanticValue{Kind: engine.SemanticValueBlob, BlobRef: &engine.SemanticBlobRef{Size: math.MaxUint64}}
+	oneBlob := engine.SemanticValue{Kind: engine.SemanticValueBlob, BlobRef: &engine.SemanticBlobRef{Size: 1}}
+	overflowData := engine.ViewData{Diff: &engine.DiffViewData{Changes: []engine.DiffChange{{Fields: []engine.FieldDiff{{Before: &maxBlob, After: &oneBlob}}}}}}
+	if _, err := measureViewDataBlobBytes(ctx, overflowData); err == nil {
+		t.Fatal("overflowing Diff BlobRef sizes were accepted")
+	}
+	root := engine.TreeOccurrence{Source: emptySource, Children: []engine.TreeOccurrence{}}
+	cursor := &root
+	for range protocolcommon.MaxWireJSONDepth + 1 {
+		cursor.Children = []engine.TreeOccurrence{{Source: emptySource, Children: []engine.TreeOccurrence{}}}
+		cursor = &cursor.Children[0]
+	}
+	if _, err := mapTreeOccurrences(ctx, []engine.TreeOccurrence{root}); err == nil {
+		t.Fatal("over-depth Tree ViewData was accepted")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	for name, run := range map[string]func() error{
+		"matrix": func() error {
+			_, err := mapMatrixAxisItems(cancelled, []engine.MatrixAxisItem{{Source: emptySource}})
+			return err
+		},
+		"tree": func() error {
+			_, err := mapTreeRefs(cancelled, []engine.TreeRef{{Source: emptySource}})
+			return err
+		},
+		"flow": func() error {
+			_, err := mapFlowCycleRef(cancelled, engine.FlowCycleRef{Source: emptySource})
+			return err
+		},
+		"diff": func() error {
+			_, err := mapDiffViewData(cancelled, engine.DiffViewData{Changes: []engine.DiffChange{{Source: emptySource}}})
+			return err
+		},
+	} {
+		if err := run(); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled %s mapping error = %v", name, err)
+		}
+	}
+}
+
 func TestMaterializeViewInputMappingPreservesDiagnosticProvenance(t *testing.T) {
 	t.Parallel()
 	message := "invalid selection"
@@ -1012,6 +1318,11 @@ func TestMaterializeViewInputMappingPreservesDiagnosticProvenance(t *testing.T) 
 		Range: &sourceRange, Related: []semantic.DiagnosticRelated{{Message: &relatedMessage, OwnerAddress: &owner, Range: &sourceRange, Relation: semantic.DiagnosticRelationPrevious, SubjectAddress: &subject}},
 		Severity: semantic.DiagnosticSeverityError, SubjectAddress: &subject,
 	}
+	snapshotHash := protocolcommon.Digest("sha256:" + strings.Repeat("d", 64))
+	definitionHash := protocolcommon.Digest("sha256:" + strings.Repeat("e", 64))
+	graphHash := protocolcommon.Digest("sha256:" + strings.Repeat("f", 64))
+	stateVersion := "state-1"
+	capturedAt := protocolcommon.Rfc3339Time("2026-07-18T00:00:00Z")
 	input := engineprotocol.QueryExecutionResultData{
 		Arguments: map[string]semantic.RecipeScalar{"ldl:project:p:query:q:parameter:scope": {Kind: "string", StringValue: &argument}},
 		CycleRefs: []engineprotocol.QueryCycleRef{{
@@ -1022,13 +1333,115 @@ func TestMaterializeViewInputMappingPreservesDiagnosticProvenance(t *testing.T) 
 		Diagnostics: []semantic.Diagnostic{diagnostic}, InducedRelationAddresses: []semantic.RelationAddress{}, PathRelationAddresses: []semantic.RelationAddress{},
 		Paths:                  []engineprotocol.QueryPath{{EntityAddresses: []semantic.EntityAddress{"ldl:project:p:entity:alpha"}, RelationAddresses: []semantic.RelationAddress{}}},
 		PrimaryEntityAddresses: []semantic.EntityAddress{}, QueryAddress: "ldl:project:p:query:q", ReachedEntityAddresses: []semantic.EntityAddress{},
-		SeedEntityAddresses: []semantic.EntityAddress{}, SelectedRelationAddresses: []semantic.RelationAddress{}, StateInput: engineprotocol.QueryStateInputRef{Kind: "none"},
+		SeedEntityAddresses: []semantic.EntityAddress{}, SelectedRelationAddresses: []semantic.RelationAddress{}, StateInput: engineprotocol.QueryStateInputRef{
+			Kind: "snapshot", SnapshotHash: &snapshotHash, DefinitionHash: &definitionHash, StateVersion: &stateVersion, CapturedAt: &capturedAt,
+		},
 		StatePolicy: "none", StateReads: []engineprotocol.QueryStateReadRef{{SubjectAddress: subject, FieldPath: "system.updated_at"}},
 		SupportEntityAddresses: []semantic.EntityAddress{}, TraversedEntityAddresses: []semantic.EntityAddress{},
 	}
 	mapped, err := queryResultFromProtocol(input)
-	if err != nil || len(mapped.Diagnostics) != 1 || mapped.Diagnostics[0].Message != message || mapped.Diagnostics[0].Range == nil || len(mapped.Diagnostics[0].Related) != 1 {
+	if err != nil || len(mapped.Diagnostics) != 1 || mapped.Diagnostics[0].Message != message || mapped.Diagnostics[0].Range == nil || len(mapped.Diagnostics[0].Related) != 1 || mapped.StateInput.SnapshotHash != string(snapshotHash) {
 		t.Fatalf("diagnostic mapping = %+v err=%v", mapped.Diagnostics, err)
+	}
+	roundTripInput := mapped
+	roundTripInput.Diagnostics = []engine.Diagnostic{}
+	roundTrip, err := mapQueryExecutionResultData(context.Background(), roundTripInput)
+	if err != nil || roundTrip.StateInput.SnapshotHash == nil || *roundTrip.StateInput.SnapshotHash != snapshotHash || roundTrip.StateInput.CapturedAt == nil || *roundTrip.StateInput.CapturedAt != capturedAt {
+		t.Fatalf("state input round trip = %+v err=%v", roundTrip.StateInput, err)
+	}
+	updatedAt := "2026-07-17T00:00:00Z"
+	materializeInput := engineprotocol.MaterializeViewInput{
+		Kind: "query", Limits: engineprotocol.WorkbenchLimits{MaxItems: "128", MaxOutputBytes: "65536"},
+		Query: &engineprotocol.MaterializeQueryViewInput{
+			DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_abcdefghijklmnop"}, Value: "1"},
+			QueryResult:        input,
+			StateSnapshot: &semantic.StateQuerySnapshot{
+				Format: semantic.StateQuerySnapshotFormatValue, SchemaVersion: 1,
+				DefinitionProjectAddress: "ldl:project:p", DefinitionHash: definitionHash, GraphHash: graphHash,
+				StateVersion: stateVersion, CapturedAt: capturedAt, InaccessibleFieldPaths: []semantic.StateFieldPath{},
+				Subjects: []semantic.StateQuerySubject{{
+					SubjectAddress: subject, OwnSubjectHash: snapshotHash,
+					Fields:             map[string]semantic.RecipeScalar{"system.updated_at": {Kind: "datetime", StringValue: &updatedAt}},
+					RedactedFieldPaths: []semantic.StateFieldPath{},
+				}},
+			},
+		},
+		ViewAddress: "ldl:project:p:view:v",
+	}
+	mappedInput, err := mapMaterializeViewInput(materializeInput)
+	if err != nil || mappedInput.Query == nil || mappedInput.Query.StateSnapshot == nil || mappedInput.Query.StateSnapshot.Subjects[0].Fields["system.updated_at"].String != updatedAt {
+		t.Fatalf("state snapshot mapping = %+v err=%v", mappedInput, err)
+	}
+	diffInput := engineprotocol.MaterializeViewInput{
+		Kind: "diff", Limits: materializeInput.Limits, ViewAddress: materializeInput.ViewAddress,
+		Diff: &engineprotocol.MaterializeDiffViewInput{
+			RecipeGeneration:  materializeInput.Query.DocumentGeneration,
+			BeforeGeneration:  materializeInput.Query.DocumentGeneration,
+			AfterGeneration:   materializeInput.Query.DocumentGeneration,
+			BeforeQueryResult: &input,
+			AfterQueryResult:  &input,
+		},
+	}
+	mappedDiff, err := mapMaterializeViewInput(diffInput)
+	if err != nil || mappedDiff.Diff == nil || mappedDiff.Query != nil || mappedDiff.Diff.BeforeQueryResult == nil || mappedDiff.Diff.AfterQueryResult == nil {
+		t.Fatalf("diff source mapping = %+v err=%v", mappedDiff, err)
+	}
+	for name, candidate := range map[string]engineprotocol.MaterializeViewInput{
+		"query missing member": {Kind: "query", Limits: materializeInput.Limits, ViewAddress: materializeInput.ViewAddress},
+		"query with diff":      {Kind: "query", Limits: materializeInput.Limits, ViewAddress: materializeInput.ViewAddress, Query: materializeInput.Query, Diff: diffInput.Diff},
+		"diff missing member":  {Kind: "diff", Limits: materializeInput.Limits, ViewAddress: materializeInput.ViewAddress},
+		"diff with query":      {Kind: "diff", Limits: materializeInput.Limits, ViewAddress: materializeInput.ViewAddress, Query: materializeInput.Query, Diff: diffInput.Diff},
+		"unknown kind":         {Kind: "unknown", Limits: materializeInput.Limits, ViewAddress: materializeInput.ViewAddress},
+	} {
+		if _, err := mapMaterializeViewInput(candidate); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInputInvalid) {
+			t.Fatalf("%s error = %v", name, err)
+		}
+	}
+	badGeneration := materializeInput
+	badGenerationQuery := *materializeInput.Query
+	badGeneration.Query = &badGenerationQuery
+	badGeneration.Query.DocumentGeneration.Value = "not-a-generation"
+	if _, err := mapMaterializeViewInput(badGeneration); err == nil {
+		t.Fatal("malformed query generation was accepted")
+	}
+	badSnapshot := materializeInput
+	badSnapshotQuery := *materializeInput.Query
+	badSnapshot.Query = &badSnapshotQuery
+	badSnapshotValue := "invalid"
+	badSnapshot.Query.StateSnapshot = &semantic.StateQuerySnapshot{
+		Format: semantic.StateQuerySnapshotFormatValue, SchemaVersion: 1,
+		DefinitionProjectAddress: "ldl:project:p", DefinitionHash: definitionHash, GraphHash: graphHash,
+		StateVersion: stateVersion, CapturedAt: capturedAt, InaccessibleFieldPaths: []semantic.StateFieldPath{},
+		Subjects: []semantic.StateQuerySubject{{
+			SubjectAddress: subject, OwnSubjectHash: snapshotHash, RedactedFieldPaths: []semantic.StateFieldPath{},
+			Fields: map[string]semantic.RecipeScalar{"invalid": {Kind: "unsupported", StringValue: &badSnapshotValue}},
+		}},
+	}
+	if _, err := mapMaterializeViewInput(badSnapshot); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInputInvalid) {
+		t.Fatalf("malformed state snapshot error = %v", err)
+	}
+	for name, mutate := range map[string]func(*engineprotocol.MaterializeDiffViewInput){
+		"recipe generation": func(value *engineprotocol.MaterializeDiffViewInput) { value.RecipeGeneration.Value = "invalid" },
+		"before generation": func(value *engineprotocol.MaterializeDiffViewInput) { value.BeforeGeneration.Value = "invalid" },
+		"after generation":  func(value *engineprotocol.MaterializeDiffViewInput) { value.AfterGeneration.Value = "invalid" },
+	} {
+		candidate := *diffInput.Diff
+		mutate(&candidate)
+		if _, err := mapMaterializeDiffViewInput(candidate); err == nil {
+			t.Fatalf("malformed %s was accepted", name)
+		}
+	}
+	invalidQueryResult := input
+	invalidQueryResult.Arguments = map[string]semantic.RecipeScalar{"invalid": {Kind: "unsupported"}}
+	for name, mutate := range map[string]func(*engineprotocol.MaterializeDiffViewInput){
+		"before query": func(value *engineprotocol.MaterializeDiffViewInput) { value.BeforeQueryResult = &invalidQueryResult },
+		"after query":  func(value *engineprotocol.MaterializeDiffViewInput) { value.AfterQueryResult = &invalidQueryResult },
+	} {
+		candidate := *diffInput.Diff
+		mutate(&candidate)
+		if _, err := mapMaterializeDiffViewInput(candidate); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInputInvalid) {
+			t.Fatalf("malformed %s error = %v", name, err)
+		}
 	}
 	invalid := input
 	boolean := true
@@ -1038,8 +1451,12 @@ func TestMaterializeViewInputMappingPreservesDiagnosticProvenance(t *testing.T) 
 		t.Fatal("non-string diagnostic argument was accepted")
 	}
 	if _, err := mapMaterializeViewInput(engineprotocol.MaterializeViewInput{
-		DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_abcdefghijklmnop"}, Value: "1"},
-		Limits:             engineprotocol.WorkbenchLimits{MaxItems: "1", MaxOutputBytes: "1"}, QueryResult: invalid, ViewAddress: "ldl:project:p:view:v",
+		Kind: "query", Limits: engineprotocol.WorkbenchLimits{MaxItems: "1", MaxOutputBytes: "1"},
+		Query: &engineprotocol.MaterializeQueryViewInput{
+			DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_abcdefghijklmnop"}, Value: "1"},
+			QueryResult:        invalid,
+		},
+		ViewAddress: "ldl:project:p:view:v",
 	}); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInputInvalid) {
 		t.Fatalf("invalid materialize input error = %v", err)
 	}
@@ -1073,14 +1490,17 @@ func TestMaterializeViewInputMappingPreservesDiagnosticProvenance(t *testing.T) 
 func TestRunMaterializeViewRoutesMappedResultsAndErrors(t *testing.T) {
 	t.Parallel()
 	payload := engineprotocol.MaterializeViewInput{
-		DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_abcdefghijklmnop"}, Value: "1"},
-		Limits:             engineprotocol.WorkbenchLimits{MaxItems: "128", MaxOutputBytes: "65536"},
-		QueryResult: engineprotocol.QueryExecutionResultData{
-			Arguments: map[string]semantic.RecipeScalar{}, CycleRefs: []engineprotocol.QueryCycleRef{}, Diagnostics: []semantic.Diagnostic{},
-			InducedRelationAddresses: []semantic.RelationAddress{}, PathRelationAddresses: []semantic.RelationAddress{}, Paths: []engineprotocol.QueryPath{},
-			PrimaryEntityAddresses: []semantic.EntityAddress{}, QueryAddress: "ldl:project:p:query:q", ReachedEntityAddresses: []semantic.EntityAddress{},
-			SeedEntityAddresses: []semantic.EntityAddress{}, SelectedRelationAddresses: []semantic.RelationAddress{}, StateInput: engineprotocol.QueryStateInputRef{Kind: "none"},
-			StatePolicy: "none", StateReads: []engineprotocol.QueryStateReadRef{}, SupportEntityAddresses: []semantic.EntityAddress{}, TraversedEntityAddresses: []semantic.EntityAddress{},
+		Kind:   "query",
+		Limits: engineprotocol.WorkbenchLimits{MaxItems: "128", MaxOutputBytes: "65536"},
+		Query: &engineprotocol.MaterializeQueryViewInput{
+			DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "engine-test", Value: "document_abcdefghijklmnop"}, Value: "1"},
+			QueryResult: engineprotocol.QueryExecutionResultData{
+				Arguments: map[string]semantic.RecipeScalar{}, CycleRefs: []engineprotocol.QueryCycleRef{}, Diagnostics: []semantic.Diagnostic{},
+				InducedRelationAddresses: []semantic.RelationAddress{}, PathRelationAddresses: []semantic.RelationAddress{}, Paths: []engineprotocol.QueryPath{},
+				PrimaryEntityAddresses: []semantic.EntityAddress{}, QueryAddress: "ldl:project:p:query:q", ReachedEntityAddresses: []semantic.EntityAddress{},
+				SeedEntityAddresses: []semantic.EntityAddress{}, SelectedRelationAddresses: []semantic.RelationAddress{}, StateInput: engineprotocol.QueryStateInputRef{Kind: "none"},
+				StatePolicy: "none", StateReads: []engineprotocol.QueryStateReadRef{}, SupportEntityAddresses: []semantic.EntityAddress{}, TraversedEntityAddresses: []semantic.EntityAddress{},
+			},
 		},
 		ViewAddress: "ldl:project:p:view:v",
 	}
@@ -1098,7 +1518,9 @@ func TestRunMaterializeViewRoutesMappedResultsAndErrors(t *testing.T) {
 	}
 	invalid := payload
 	boolean := true
-	invalid.QueryResult.Diagnostics = []semantic.Diagnostic{{
+	invalidQuery := *payload.Query
+	invalid.Query = &invalidQuery
+	invalid.Query.QueryResult.Diagnostics = []semantic.Diagnostic{{
 		Arguments: map[string]semantic.DiagnosticArgumentValue{"bad": {Kind: semantic.DiagnosticArgumentKindBoolean, BooleanValue: &boolean}},
 		Code:      "LDL1601", MessageKey: "invalid_query", ProtocolVersion: 1, Related: []semantic.DiagnosticRelated{}, Severity: semantic.DiagnosticSeverityError,
 	}}

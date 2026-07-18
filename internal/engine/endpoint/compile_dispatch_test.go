@@ -492,10 +492,10 @@ func TestPrepareDispatchWorkbenchOpenListAndReadModules(t *testing.T) {
 	materializeControl, err := engineprotocol.EncodeMaterializeViewRequestEnvelope(engineprotocol.MaterializeViewRequestEnvelope{
 		Operation: engineprotocol.MaterializeViewRequestEnvelopeOperationValue,
 		Payload: engineprotocol.MaterializeViewInput{
-			DocumentGeneration: generation,
-			Limits:             limits,
-			QueryResult:        queryResponse.Payload.Result,
-			ViewAddress:        "ldl:project:p:view:inventory",
+			Kind:        "query",
+			Limits:      limits,
+			Query:       &engineprotocol.MaterializeQueryViewInput{DocumentGeneration: generation, QueryResult: queryResponse.Payload.Result},
+			ViewAddress: "ldl:project:p:view:inventory",
 		},
 		Protocol: bootstrapProtocolRef(), RequestID: "materialize-view-dispatch",
 	})
@@ -507,7 +507,7 @@ func TestPrepareDispatchWorkbenchOpenListAndReadModules(t *testing.T) {
 		t.Fatalf("materialize view response = %+v err=%v", materializeResponse, err)
 	}
 	if materializeResponse.Payload.ViewData.ViewAddress != "ldl:project:p:view:inventory" ||
-		materializeResponse.Payload.ViewData.Shape != "table" || materializeResponse.Payload.ViewData.Table == nil ||
+		materializeResponse.Payload.ViewData.Shape.Kind != "table" || materializeResponse.Payload.ViewData.Table == nil ||
 		len(materializeResponse.Payload.ViewData.Table.Rows) != 1 {
 		t.Fatalf("materialize view payload = %+v", materializeResponse.Payload.ViewData)
 	}
@@ -520,10 +520,10 @@ func TestPrepareDispatchWorkbenchOpenListAndReadModules(t *testing.T) {
 	materializeRejectedControl, err := engineprotocol.EncodeMaterializeViewRequestEnvelope(engineprotocol.MaterializeViewRequestEnvelope{
 		Operation: engineprotocol.MaterializeViewRequestEnvelopeOperationValue,
 		Payload: engineprotocol.MaterializeViewInput{
-			DocumentGeneration: generation,
-			Limits:             limits,
-			QueryResult:        mismatchedResult,
-			ViewAddress:        "ldl:project:p:view:inventory",
+			Kind:        "query",
+			Limits:      limits,
+			Query:       &engineprotocol.MaterializeQueryViewInput{DocumentGeneration: generation, QueryResult: mismatchedResult},
+			ViewAddress: "ldl:project:p:view:inventory",
 		},
 		Protocol: bootstrapProtocolRef(), RequestID: "materialize-view-rejected",
 	})

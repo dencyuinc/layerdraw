@@ -147,7 +147,7 @@ func TestProtocolFixturesRoundTripInGeneratedGoTypes(t *testing.T) {
 			},
 			check: func(t *testing.T, raw any) {
 				value := raw.(engineprotocol.MaterializeViewResponseEnvelope)
-				if value.Outcome != protocolcommon.OutcomeSuccess || value.Payload == nil || value.Payload.ReturnedItems != "6" || value.Payload.ViewData.Context == nil {
+				if value.Outcome != protocolcommon.OutcomeSuccess || value.Payload == nil || value.Payload.ReturnedItems != "19" || value.Payload.ViewData.Context == nil {
 					t.Fatalf("invalid materialize view success: %+v", value)
 				}
 			},

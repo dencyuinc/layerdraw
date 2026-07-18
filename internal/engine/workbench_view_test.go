@@ -28,10 +28,9 @@ func TestMaterializeDocumentViewUsesRetainedWorkbenchGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := instance.MaterializeDocumentView(context.Background(), MaterializeDocumentViewInput{
-		DocumentGeneration: opened.DocumentGeneration,
-		Limits:             generousWorkbenchLimits,
-		QueryResult:        queryResult.Result,
-		ViewAddress:        "ldl:project:p:view:topology",
+		Limits:      generousWorkbenchLimits,
+		Query:       &MaterializeDocumentQueryViewInput{DocumentGeneration: opened.DocumentGeneration, QueryResult: queryResult.Result},
+		ViewAddress: "ldl:project:p:view:topology",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,10 +46,12 @@ func TestMaterializeDocumentViewRejectsInvalidLookupGenerationAndQuery(t *testin
 	instance := New(BuildInfo{})
 	opened := openWorkbench(t, instance, projectCompileInput(diagramViewSource()))
 	base := MaterializeDocumentViewInput{
-		DocumentGeneration: opened.DocumentGeneration,
-		Limits:             generousWorkbenchLimits,
-		QueryResult:        QueryResult{QueryAddress: "ldl:project:p:query:prod_scope", StatePolicy: "none", StateInput: QueryStateInputRef{Kind: "none"}},
-		ViewAddress:        "ldl:project:p:view:topology",
+		Limits: generousWorkbenchLimits,
+		Query: &MaterializeDocumentQueryViewInput{
+			DocumentGeneration: opened.DocumentGeneration,
+			QueryResult:        QueryResult{QueryAddress: "ldl:project:p:query:prod_scope", StatePolicy: "none", StateInput: QueryStateInputRef{Kind: "none"}},
+		},
+		ViewAddress: "ldl:project:p:view:topology",
 	}
 
 	empty := base
@@ -64,7 +65,9 @@ func TestMaterializeDocumentViewRejectsInvalidLookupGenerationAndQuery(t *testin
 		t.Fatalf("missing view error = %v", err)
 	}
 	stale := base
-	stale.DocumentGeneration.Value++
+	staleQuery := *base.Query
+	stale.Query = &staleQuery
+	stale.Query.DocumentGeneration.Value++
 	if _, err := instance.MaterializeDocumentView(context.Background(), stale); !IsWorkbenchError(err, WorkbenchErrorGenerationStale) {
 		t.Fatalf("stale generation error = %v", err)
 	}
@@ -74,10 +77,64 @@ func TestMaterializeDocumentViewRejectsInvalidLookupGenerationAndQuery(t *testin
 		t.Fatalf("invalid limits error = %v", err)
 	}
 	mismatched := base
-	mismatched.QueryResult.QueryAddress = "ldl:project:p:query:other"
+	mismatchedQuery := *base.Query
+	mismatched.Query = &mismatchedQuery
+	mismatched.Query.QueryResult.QueryAddress = "ldl:project:p:query:other"
 	if _, err := instance.MaterializeDocumentView(context.Background(), mismatched); err == nil {
 		t.Fatal("mismatched QueryResult was accepted")
 	} else if rejection, ok := err.(*ViewMaterializationRejection); !ok || len(rejection.Diagnostics) == 0 || rejection.Error() != "engine.workbench.view_materialization_rejected" {
 		t.Fatalf("mismatched QueryResult error = %#v", err)
+	}
+}
+
+func TestMaterializeDocumentViewResolvesRetainedDiffGenerations(t *testing.T) {
+	t.Parallel()
+	instance := New(BuildInfo{})
+	source := `project p "Project" {}
+	view changes "Changes" diff {
+  source diff "before" -> "after" {}
+  diff {}
+}
+`
+	before := openWorkbench(t, instance, projectCompileInput(source))
+	after := openWorkbench(t, instance, projectCompileInput(source+"\n"))
+	result, err := instance.MaterializeDocumentView(context.Background(), MaterializeDocumentViewInput{
+		Diff: &MaterializeDocumentDiffViewInput{
+			RecipeGeneration: after.DocumentGeneration,
+			BeforeGeneration: before.DocumentGeneration,
+			AfterGeneration:  after.DocumentGeneration,
+		},
+		Limits:      generousWorkbenchLimits,
+		ViewAddress: "ldl:project:p:view:changes",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, valid := result.ViewData.Base()
+	if result.DocumentGeneration != after.DocumentGeneration || result.ViewData.Diff == nil || !valid || base.Revision.Diff == nil {
+		t.Fatalf("materialized diff = %+v", result)
+	}
+}
+
+func TestMaterializeDocumentViewRejectsInvalidSourceUnion(t *testing.T) {
+	t.Parallel()
+	instance := New(BuildInfo{})
+	opened := openWorkbench(t, instance, projectCompileInput(diagramViewSource()))
+	query := &MaterializeDocumentQueryViewInput{
+		DocumentGeneration: opened.DocumentGeneration,
+		QueryResult:        QueryResult{QueryAddress: "ldl:project:p:query:prod_scope", StatePolicy: "none", StateInput: QueryStateInputRef{Kind: "none"}},
+	}
+	diff := &MaterializeDocumentDiffViewInput{
+		RecipeGeneration: opened.DocumentGeneration,
+		BeforeGeneration: opened.DocumentGeneration,
+		AfterGeneration:  opened.DocumentGeneration,
+	}
+	for name, input := range map[string]MaterializeDocumentViewInput{
+		"absent": {Limits: generousWorkbenchLimits, ViewAddress: "ldl:project:p:view:topology"},
+		"both":   {Query: query, Diff: diff, Limits: generousWorkbenchLimits, ViewAddress: "ldl:project:p:view:topology"},
+	} {
+		if _, err := instance.MaterializeDocumentView(context.Background(), input); !IsWorkbenchError(err, WorkbenchErrorInputInvalid) {
+			t.Fatalf("%s source union error = %v", name, err)
+		}
 	}
 }

@@ -257,13 +257,16 @@ export async function executePortableQueryClientWorkflow(client, suffix) {
 
   if (opened.capabilities.materialize_view !== true) throw new Error(`${suffix} document did not advertise materialize_view`);
   const materialized = await client.workbench.materializeView({
-    document_generation: opened.document_generation,
+    kind: "query",
     limits: queryLimits,
-    query_result: executed.response.payload.result,
+    query: {
+      document_generation: opened.document_generation,
+      query_result: executed.response.payload.result,
+    },
     view_address: viewAddress,
   }, {requestId: `${suffix}-materialize`});
   if (materialized.origin !== "engine" || materialized.outcome !== "success" ||
-      materialized.response.payload?.view_data?.shape !== "context" ||
+      materialized.response.payload?.view_data?.shape?.kind !== "context" ||
       materialized.response.payload.view_data.context === undefined) {
     throw new Error(`${suffix} ViewData materialization did not succeed`);
   }

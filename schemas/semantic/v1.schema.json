@@ -706,13 +706,52 @@
         }
       }
     },
+    "StateQuerySubject": {
+      "type": "object",
+      "properties": {
+        "fields": {"type": "object", "propertyNames": {"$ref": "#/$defs/StateFieldPath"}, "additionalProperties": {"$ref": "#/$defs/RecipeScalar"}},
+        "own_subject_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "redacted_field_paths": {"type": "array", "items": {"$ref": "#/$defs/StateFieldPath"}, "uniqueItems": true},
+        "subject_address": {"$ref": "#/$defs/StableAddress"}
+      },
+      "required": ["subject_address", "own_subject_hash", "fields", "redacted_field_paths"],
+      "additionalProperties": false
+    },
+    "StateQuerySnapshot": {
+      "type": "object",
+      "properties": {
+        "captured_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "definition_project_address": {"$ref": "#/$defs/ProjectRootAddress"},
+        "format": {"type": "string", "const": "layerdraw-query-state"},
+        "graph_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "inaccessible_field_paths": {"type": "array", "items": {"$ref": "#/$defs/StateFieldPath"}, "uniqueItems": true},
+        "schema_version": {"type": "integer", "const": 1, "minimum": 1, "maximum": 1},
+        "state_version": {"type": "string", "minLength": 1},
+        "subjects": {"type": "array", "items": {"$ref": "#/$defs/StateQuerySubject"}, "x-layerdraw-stable-address-order": "subject_address"}
+      },
+      "required": ["format", "schema_version", "definition_project_address", "definition_hash", "graph_hash", "state_version", "captured_at", "inaccessible_field_paths", "subjects"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "subjects", "property": "subject_address"}]
+    },
     "ViewDataStateInputRef": {
       "type": "object",
       "properties": {
-        "kind": {"type": "string", "enum": ["none"]}
+        "captured_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "kind": {"type": "string", "enum": ["none", "snapshot"]},
+        "snapshot_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "state_version": {"type": "string", "minLength": 1}
       },
       "required": ["kind"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "none": {"forbidden": ["captured_at", "definition_hash", "snapshot_hash", "state_version"]},
+          "snapshot": {"required": ["captured_at", "definition_hash", "snapshot_hash", "state_version"]}
+        }
+      }
     },
     "ViewDataStateReadRef": {
       "type": "object",
@@ -732,24 +771,37 @@
       "required": ["row_address", "column_address"],
       "additionalProperties": false
     },
+    "ViewDataStateRefs": {
+      "type": "object",
+      "properties": {
+        "reads": {"type": "array", "items": {"$ref": "#/$defs/ViewDataStateReadRef"}}
+      },
+      "required": ["reads"],
+      "additionalProperties": false
+    },
     "ViewDataSourceRefs": {
       "type": "object",
       "properties": {
+        "asset_digests": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "cell_refs": {"type": "array", "items": {"$ref": "#/$defs/ViewDataCellRef"}},
         "entity_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "layer_addresses": {"type": "array", "items": {"$ref": "#/$defs/LayerAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "query_address": {"$ref": "#/$defs/QueryAddress"},
         "relation_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
         "row_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "state_reads": {"type": "array", "items": {"$ref": "#/$defs/ViewDataStateReadRef"}}
+        "state": {"$ref": "#/$defs/ViewDataStateRefs"},
+        "subject_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}
       },
-      "required": ["query_address", "entity_addresses", "relation_addresses", "layer_addresses", "row_addresses", "state_reads"],
+      "required": ["subject_addresses", "entity_addresses", "relation_addresses", "layer_addresses", "row_addresses", "cell_refs", "asset_digests", "state"],
       "additionalProperties": false
+    },
+    "ViewDataItemKey": {
+      "type": "string",
+      "pattern": "^vdi:[a-z][a-z0-9_-]*:[A-Za-z0-9_-]{43}$"
     },
     "ViewDataValue": {
       "type": "object",
       "properties": {
-        "kind": {"type": "string", "enum": ["null", "scalar", "stable_address", "string_set"]},
-        "null": {"type": "boolean", "const": true},
+        "kind": {"type": "string", "enum": ["scalar", "stable_address", "string_set"]},
         "scalar": {"$ref": "#/$defs/RecipeScalar"},
         "stable_address": {"$ref": "#/$defs/StableAddress"},
         "string_set": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
@@ -759,143 +811,503 @@
       "x-layerdraw-tagged-union": {
         "property": "kind",
         "variants": {
-          "null": {"required": ["null"], "forbidden": ["scalar", "stable_address", "string_set"]},
-          "scalar": {"required": ["scalar"], "forbidden": ["null", "stable_address", "string_set"]},
-          "stable_address": {"required": ["stable_address"], "forbidden": ["null", "scalar", "string_set"]},
-          "string_set": {"required": ["string_set"], "forbidden": ["null", "scalar", "stable_address"]}
+          "scalar": {"required": ["scalar"], "forbidden": ["stable_address", "string_set"]},
+          "stable_address": {"required": ["stable_address"], "forbidden": ["scalar", "string_set"]},
+          "string_set": {"required": ["string_set"], "forbidden": ["scalar", "stable_address"]}
         }
       }
     },
-    "DiagramViewNode": {
+    "ViewRevision": {
       "type": "object",
       "properties": {
-        "display_name": {"type": "string"},
-        "entity_address": {"$ref": "#/$defs/EntityAddress"},
-        "entity_type_address": {"$ref": "#/$defs/EntityTypeAddress"},
-        "key": {"type": "string", "minLength": 1},
-        "layer_address": {"$ref": "#/$defs/LayerAddress"},
-        "source_entities": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"}
+        "after_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "after_revision_id": {"type": "string", "minLength": 1},
+        "before_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "before_revision_id": {"type": "string", "minLength": 1},
+        "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "kind": {"type": "string", "enum": ["diff", "single"]},
+        "recipe_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "recipe_revision_id": {"type": "string", "minLength": 1},
+        "revision_id": {"type": "string", "minLength": 1}
       },
-      "required": ["key", "entity_address", "display_name", "entity_type_address", "layer_address", "source_entities"],
+      "required": ["kind"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "diff": {"required": ["recipe_revision_id", "recipe_definition_hash", "before_revision_id", "before_definition_hash", "after_revision_id", "after_definition_hash"], "forbidden": ["definition_hash", "revision_id"]},
+          "single": {"required": ["definition_hash", "revision_id"], "forbidden": ["after_definition_hash", "after_revision_id", "before_definition_hash", "before_revision_id", "recipe_definition_hash", "recipe_revision_id"]}
+        }
+      }
+    },
+    "DiagramOccurrence": {
+      "type": "object",
+      "properties": {
+        "entity_address": {"$ref": "#/$defs/EntityAddress"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "layer_address": {"$ref": "#/$defs/LayerAddress"},
+        "parent_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "role": {"type": "string", "enum": ["container", "node", "support"]},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "via_relation_address": {"$ref": "#/$defs/RelationAddress"}
+      },
+      "required": ["key", "entity_address", "layer_address", "role", "source"],
       "additionalProperties": false
     },
-    "DiagramViewEdge": {
+    "DiagramEdge": {
       "type": "object",
       "properties": {
-        "display_name": {"type": "string"},
-        "from_address": {"$ref": "#/$defs/EntityAddress"},
-        "key": {"type": "string", "minLength": 1},
+        "from_occurrence_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
         "relation_address": {"$ref": "#/$defs/RelationAddress"},
         "relation_type_address": {"$ref": "#/$defs/RelationTypeAddress"},
-        "source_relations": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "to_address": {"$ref": "#/$defs/EntityAddress"}
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "to_occurrence_key": {"$ref": "#/$defs/ViewDataItemKey"}
       },
-      "required": ["key", "relation_address", "from_address", "to_address", "relation_type_address", "source_relations"],
+      "required": ["key", "from_occurrence_key", "to_occurrence_key", "relation_address", "relation_type_address", "source"],
       "additionalProperties": false
     },
-    "DiagramViewPlacement": {
+    "DiagramContainer": {
+      "type": "object",
+      "properties": {
+        "child_keys": {"type": "array", "items": {"$ref": "#/$defs/ViewDataItemKey"}, "uniqueItems": true},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "occurrence_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"}
+      },
+      "required": ["key", "occurrence_key", "child_keys", "source"],
+      "additionalProperties": false
+    },
+    "DiagramOverlay": {
+      "type": "object",
+      "properties": {
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "overlay_entity_address": {"$ref": "#/$defs/EntityAddress"},
+        "relation_address": {"$ref": "#/$defs/RelationAddress"},
+        "relation_type_address": {"$ref": "#/$defs/RelationTypeAddress"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "target_occurrence_key": {"$ref": "#/$defs/ViewDataItemKey"}
+      },
+      "required": ["key", "target_occurrence_key", "overlay_entity_address", "relation_address", "relation_type_address", "source"],
+      "additionalProperties": false
+    },
+    "DiagramBadge": {
+      "type": "object",
+      "properties": {
+        "label": {"type": "string"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "relation_address": {"$ref": "#/$defs/RelationAddress"},
+        "relation_type_address": {"$ref": "#/$defs/RelationTypeAddress"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "target_occurrence_key": {"$ref": "#/$defs/ViewDataItemKey"}
+      },
+      "required": ["key", "target_occurrence_key", "relation_address", "relation_type_address", "source"],
+      "additionalProperties": false
+    },
+    "DiagramSupportItem": {
       "type": "object",
       "properties": {
         "entity_address": {"$ref": "#/$defs/EntityAddress"},
-        "height": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"},
-        "width": {"$ref": "#/$defs/CanonicalPositiveFiniteDecimal"},
-        "x": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
-        "y": {"$ref": "#/$defs/CanonicalFiniteDecimal"}
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "relation_address": {"$ref": "#/$defs/RelationAddress"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "support_kind": {"type": "string", "enum": ["hidden_entity", "hidden_relation", "source_only"]}
       },
-      "required": ["entity_address", "x", "y", "width", "height"],
+      "required": ["key", "support_kind", "source"],
       "additionalProperties": false
     },
     "DiagramViewData": {
       "type": "object",
       "properties": {
-        "edges": {"type": "array", "items": {"$ref": "#/$defs/DiagramViewEdge"}, "x-layerdraw-stable-address-order": "relation_address"},
-        "nodes": {"type": "array", "items": {"$ref": "#/$defs/DiagramViewNode"}, "x-layerdraw-stable-address-order": "entity_address"},
-        "placements": {"type": "array", "items": {"$ref": "#/$defs/DiagramViewPlacement"}, "x-layerdraw-stable-address-order": "entity_address"}
+        "badges": {"type": "array", "items": {"$ref": "#/$defs/DiagramBadge"}},
+        "containers": {"type": "array", "items": {"$ref": "#/$defs/DiagramContainer"}},
+        "edges": {"type": "array", "items": {"$ref": "#/$defs/DiagramEdge"}},
+        "occurrences": {"type": "array", "items": {"$ref": "#/$defs/DiagramOccurrence"}},
+        "overlays": {"type": "array", "items": {"$ref": "#/$defs/DiagramOverlay"}},
+        "support_items": {"type": "array", "items": {"$ref": "#/$defs/DiagramSupportItem"}}
       },
-      "required": ["nodes", "edges", "placements"],
-      "additionalProperties": false
+      "required": ["occurrences", "edges", "containers", "overlays", "badges", "support_items"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "occurrences", "property": "key"}, {"array": "edges", "property": "key"}, {"array": "containers", "property": "key"}, {"array": "overlays", "property": "key"}, {"array": "badges", "property": "key"}, {"array": "support_items", "property": "key"}]
     },
-    "TableViewColumnData": {
+    "TableViewValueType": {
+      "type": "string",
+      "enum": ["boolean", "date", "datetime", "enum", "integer", "number", "stable_address", "string", "string_set"]
+    },
+    "TableColumn": {
       "type": "object",
       "properties": {
         "address": {"$ref": "#/$defs/TableColumnAddress"},
+        "enum_values": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "id": {"$ref": "#/$defs/LocalIdentifier"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
         "label": {"type": "string"},
-        "source": {"type": "string", "minLength": 1}
+        "source_column_addresses": {"type": "array", "items": {"$ref": "#/$defs/ColumnAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "state_field_path": {"$ref": "#/$defs/StateFieldPath"},
+        "value_type": {"$ref": "#/$defs/TableViewValueType"}
       },
-      "required": ["id", "label", "source"],
+      "required": ["key", "id", "label", "value_type", "source_column_addresses"],
       "additionalProperties": false
     },
-    "TableViewCellData": {
+    "TableCell": {
       "type": "object",
       "properties": {
-        "column_id": {"$ref": "#/$defs/LocalIdentifier"},
-        "source_cells": {"type": "array", "items": {"$ref": "#/$defs/ViewDataCellRef"}},
-        "source_entities": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "source_relations": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "source_rows": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "state_reads": {"type": "array", "items": {"$ref": "#/$defs/ViewDataStateReadRef"}},
+        "present": {"type": "boolean"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
         "value": {"$ref": "#/$defs/ViewDataValue"}
       },
-      "required": ["column_id", "value", "source_rows", "source_cells", "source_entities", "source_relations", "state_reads"],
+      "required": ["present", "source"],
       "additionalProperties": false
     },
-    "TableViewRowData": {
+    "TableRow": {
       "type": "object",
       "properties": {
-        "cells": {"type": "array", "items": {"$ref": "#/$defs/TableViewCellData"}},
-        "key": {"type": "string", "minLength": 1},
-        "owner_address": {"$ref": "#/$defs/StableAddress"},
-        "source_entities": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "source_relations": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "source_rows": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "subject_address": {"$ref": "#/$defs/StableAddress"}
+        "cells": {"type": "object", "propertyNames": {"$ref": "#/$defs/ViewDataItemKey"}, "additionalProperties": {"$ref": "#/$defs/TableCell"}},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"}
       },
-      "required": ["key", "subject_address", "owner_address", "source_rows", "source_entities", "source_relations", "cells"],
+      "required": ["key", "cells", "source"],
       "additionalProperties": false
     },
     "TableViewData": {
       "type": "object",
       "properties": {
-        "columns": {"type": "array", "items": {"$ref": "#/$defs/TableViewColumnData"}},
-        "rows": {"type": "array", "items": {"$ref": "#/$defs/TableViewRowData"}},
-        "sorts": {"type": "array", "items": {"$ref": "#/$defs/ViewTableSort"}}
+        "columns": {"type": "array", "items": {"$ref": "#/$defs/TableColumn"}},
+        "rows": {"type": "array", "items": {"$ref": "#/$defs/TableRow"}}
       },
-      "required": ["columns", "rows", "sorts"],
-      "additionalProperties": false
+      "required": ["columns", "rows"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "columns", "property": "key"}, {"array": "rows", "property": "key"}]
     },
-    "ContextViewGroup": {
+    "MatrixAxisItem": {
       "type": "object",
       "properties": {
-        "addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "key": {"type": "string", "minLength": 1},
-        "label": {"type": "string"}
+        "entity_address": {"$ref": "#/$defs/EntityAddress"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "label": {"type": "string"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"}
       },
-      "required": ["key", "label", "addresses"],
+      "required": ["key", "entity_address", "label", "source"],
       "additionalProperties": false
     },
-    "ContextViewFact": {
+    "ViewDataQueryPath": {
       "type": "object",
       "properties": {
-        "key": {"type": "string", "minLength": 1},
-        "kind": {"type": "string", "enum": ["entity", "entity_row", "relation", "relation_row"]},
-        "source_entities": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "source_relations": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "source_rows": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
-        "subject_address": {"$ref": "#/$defs/StableAddress"},
+        "entity_addresses": {"type": "array", "items": {"$ref": "#/$defs/EntityAddress"}, "minItems": 1},
+        "relation_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}}
+      },
+      "required": ["entity_addresses", "relation_addresses"],
+      "additionalProperties": false
+    },
+    "MatrixSemanticRef": {
+      "type": "object",
+      "properties": {
+        "kind": {"type": "string", "enum": ["path", "relation"]},
+        "path": {"$ref": "#/$defs/ViewDataQueryPath"},
+        "relation_address": {"$ref": "#/$defs/RelationAddress"}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "path": {"required": ["path"], "forbidden": ["relation_address"]},
+          "relation": {"required": ["relation_address"], "forbidden": ["path"]}
+        }
+      }
+    },
+    "MatrixAttributeItem": {
+      "type": "object",
+      "properties": {
+        "column_address": {"$ref": "#/$defs/ColumnAddress"},
+        "relation_address": {"$ref": "#/$defs/RelationAddress"},
+        "row_address": {"$ref": "#/$defs/StableAddress"},
+        "value": {"$ref": "#/$defs/RecipeScalar"}
+      },
+      "required": ["relation_address", "row_address", "column_address", "value"],
+      "additionalProperties": false
+    },
+    "MatrixDisplayValue": {
+      "type": "object",
+      "properties": {
+        "attributes": {"type": "array", "items": {"$ref": "#/$defs/MatrixAttributeItem"}},
+        "boolean": {"type": "boolean"},
+        "integer": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalInt64"},
+        "kind": {"type": "string", "enum": ["attributes", "boolean", "integer", "string_set"]},
+        "string_set": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "attributes": {"required": ["attributes"], "forbidden": ["boolean", "integer", "string_set"]},
+          "boolean": {"required": ["boolean"], "forbidden": ["attributes", "integer", "string_set"]},
+          "integer": {"required": ["integer"], "forbidden": ["attributes", "boolean", "string_set"]},
+          "string_set": {"required": ["string_set"], "forbidden": ["attributes", "boolean", "integer"]}
+        }
+      }
+    },
+    "MatrixCell": {
+      "type": "object",
+      "properties": {
+        "column_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "display_value": {"$ref": "#/$defs/MatrixDisplayValue"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "row_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "semantic_refs": {"type": "array", "items": {"$ref": "#/$defs/MatrixSemanticRef"}},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"}
+      },
+      "required": ["key", "row_key", "column_key", "semantic_refs", "display_value", "source"],
+      "additionalProperties": false
+    },
+    "MatrixViewData": {
+      "type": "object",
+      "properties": {
+        "cells": {"type": "array", "items": {"$ref": "#/$defs/MatrixCell"}},
+        "column_axis": {"type": "array", "items": {"$ref": "#/$defs/MatrixAxisItem"}},
+        "row_axis": {"type": "array", "items": {"$ref": "#/$defs/MatrixAxisItem"}}
+      },
+      "required": ["row_axis", "column_axis", "cells"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "row_axis", "property": "key"}, {"array": "column_axis", "property": "key"}, {"array": "cells", "property": "key"}]
+    },
+    "TreeOccurrence": {
+      "type": "object",
+      "properties": {
+        "children": {"type": "array", "items": {"$ref": "#/$defs/TreeOccurrence"}},
+        "entity_address": {"$ref": "#/$defs/EntityAddress"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "via_relation_address": {"$ref": "#/$defs/RelationAddress"}
+      },
+      "required": ["key", "entity_address", "children", "source"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "children", "property": "key"}]
+    },
+    "TreeRef": {
+      "type": "object",
+      "properties": {
+        "from_occurrence_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "relation_address": {"$ref": "#/$defs/RelationAddress"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "to_entity_address": {"$ref": "#/$defs/EntityAddress"}
+      },
+      "required": ["key", "from_occurrence_key", "to_entity_address", "relation_address", "source"],
+      "additionalProperties": false
+    },
+    "TreeViewData": {
+      "type": "object",
+      "properties": {
+        "cycle_refs": {"type": "array", "items": {"$ref": "#/$defs/TreeRef"}},
+        "link_refs": {"type": "array", "items": {"$ref": "#/$defs/TreeRef"}},
+        "roots": {"type": "array", "items": {"$ref": "#/$defs/TreeOccurrence"}}
+      },
+      "required": ["roots", "cycle_refs", "link_refs"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "roots", "property": "key"}, {"array": "cycle_refs", "property": "key"}, {"array": "link_refs", "property": "key"}]
+    },
+    "FlowConnectorKind": {
+      "type": "string",
+      "enum": ["control", "data", "error", "message", "sequence"]
+    },
+    "FlowLane": {
+      "type": "object",
+      "properties": {
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "label": {"type": "string"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "step_keys": {"type": "array", "items": {"$ref": "#/$defs/ViewDataItemKey"}, "uniqueItems": true}
+      },
+      "required": ["key", "label", "step_keys", "source"],
+      "additionalProperties": false
+    },
+    "FlowStep": {
+      "type": "object",
+      "properties": {
+        "branch": {"type": "boolean"},
+        "entity_address": {"$ref": "#/$defs/EntityAddress"},
+        "join": {"type": "boolean"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "lane_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"}
+      },
+      "required": ["key", "entity_address", "lane_key", "branch", "join", "source"],
+      "additionalProperties": false
+    },
+    "FlowConnector": {
+      "type": "object",
+      "properties": {
+        "branch_row_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "branch_value": {"$ref": "#/$defs/RecipeScalar"},
+        "from_step_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "kind": {"$ref": "#/$defs/FlowConnectorKind"},
+        "relation_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "to_step_key": {"$ref": "#/$defs/ViewDataItemKey"}
+      },
+      "required": ["key", "from_step_key", "to_step_key", "kind", "branch_row_addresses", "relation_addresses", "source"],
+      "additionalProperties": false
+    },
+    "FlowCycleRef": {
+      "type": "object",
+      "properties": {
+        "branch_row_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "branch_value": {"$ref": "#/$defs/RecipeScalar"},
+        "connector_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "from_step_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "kind": {"$ref": "#/$defs/FlowConnectorKind"},
+        "relation_addresses": {"type": "array", "items": {"$ref": "#/$defs/RelationAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "to_step_key": {"$ref": "#/$defs/ViewDataItemKey"}
+      },
+      "required": ["key", "connector_key", "from_step_key", "to_step_key", "kind", "branch_row_addresses", "relation_addresses", "source"],
+      "additionalProperties": false
+    },
+    "FlowViewData": {
+      "type": "object",
+      "properties": {
+        "connectors": {"type": "array", "items": {"$ref": "#/$defs/FlowConnector"}},
+        "cycle_refs": {"type": "array", "items": {"$ref": "#/$defs/FlowCycleRef"}},
+        "lanes": {"type": "array", "items": {"$ref": "#/$defs/FlowLane"}},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/FlowStep"}}
+      },
+      "required": ["lanes", "steps", "connectors", "cycle_refs"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "lanes", "property": "key"}, {"array": "steps", "property": "key"}, {"array": "connectors", "property": "key"}, {"array": "cycle_refs", "property": "key"}]
+    },
+    "ContextFact": {
+      "type": "object",
+      "properties": {
+        "direction": {"type": "string", "enum": ["incoming", "outgoing"]},
+        "entity_address": {"$ref": "#/$defs/EntityAddress"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "relation_address": {"$ref": "#/$defs/RelationAddress"},
+        "row_addresses": {"type": "array", "items": {"$ref": "#/$defs/StableAddress"}, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
         "text": {"type": "string"}
       },
-      "required": ["key", "subject_address", "kind", "text", "source_entities", "source_relations", "source_rows"],
+      "required": ["key", "direction", "text", "entity_address", "relation_address", "row_addresses", "source"],
       "additionalProperties": false
+    },
+    "ContextAttribute": {
+      "type": "object",
+      "properties": {
+        "group_key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "owner_address": {"$ref": "#/$defs/StableAddress"},
+        "row_address": {"$ref": "#/$defs/StableAddress"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "values": {"type": "object", "propertyNames": {"$ref": "#/$defs/ColumnAddress"}, "additionalProperties": {"$ref": "#/$defs/RecipeScalar"}}
+      },
+      "required": ["key", "group_key", "owner_address", "row_address", "values", "source"],
+      "additionalProperties": false
+    },
+    "ContextGroup": {
+      "type": "object",
+      "properties": {
+        "attributes": {"type": "array", "items": {"$ref": "#/$defs/ContextAttribute"}},
+        "facts": {"type": "array", "items": {"$ref": "#/$defs/ContextFact"}},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "label": {"type": "string"},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"}
+      },
+      "required": ["key", "label", "facts", "attributes", "source"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "facts", "property": "key"}, {"array": "attributes", "property": "key"}]
     },
     "ContextViewData": {
       "type": "object",
       "properties": {
-        "facts": {"type": "array", "items": {"$ref": "#/$defs/ContextViewFact"}},
-        "groups": {"type": "array", "items": {"$ref": "#/$defs/ContextViewGroup"}}
+        "groups": {"type": "array", "items": {"$ref": "#/$defs/ContextGroup"}}
       },
-      "required": ["groups", "facts"],
+      "required": ["groups"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "groups", "property": "key"}]
+    },
+    "ViewDataSemanticMapEntry": {
+      "type": "object",
+      "properties": {
+        "key": {"type": "string"},
+        "value": {"$ref": "#/$defs/ViewDataSemanticValue"}
+      },
+      "required": ["key", "value"],
       "additionalProperties": false
+    },
+    "ViewDataSemanticValue": {
+      "type": "object",
+      "properties": {
+        "address": {"$ref": "#/$defs/StableAddress"},
+        "array": {"type": "array", "items": {"$ref": "#/$defs/ViewDataSemanticValue"}},
+        "blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "boolean": {"type": "boolean"},
+        "decimal": {"$ref": "#/$defs/CanonicalFiniteDecimal"},
+        "integer": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalInt64"},
+        "kind": {"type": "string", "enum": ["absent", "address", "array", "blob", "boolean", "decimal", "integer", "map", "string", "token"]},
+        "map": {"type": "array", "items": {"$ref": "#/$defs/ViewDataSemanticMapEntry"}, "x-layerdraw-canonical-collection-order": "semantic_map_entry"},
+        "string": {"type": "string"},
+        "token": {"type": "string"}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "absent": {"forbidden": ["address", "array", "blob", "boolean", "decimal", "integer", "map", "string", "token"]},
+          "address": {"required": ["address"], "forbidden": ["array", "blob", "boolean", "decimal", "integer", "map", "string", "token"]},
+          "array": {"required": ["array"], "forbidden": ["address", "blob", "boolean", "decimal", "integer", "map", "string", "token"]},
+          "blob": {"required": ["blob"], "forbidden": ["address", "array", "boolean", "decimal", "integer", "map", "string", "token"]},
+          "boolean": {"required": ["boolean"], "forbidden": ["address", "array", "blob", "decimal", "integer", "map", "string", "token"]},
+          "decimal": {"required": ["decimal"], "forbidden": ["address", "array", "blob", "boolean", "integer", "map", "string", "token"]},
+          "integer": {"required": ["integer"], "forbidden": ["address", "array", "blob", "boolean", "decimal", "map", "string", "token"]},
+          "map": {"required": ["map"], "forbidden": ["address", "array", "blob", "boolean", "decimal", "integer", "string", "token"]},
+          "string": {"required": ["string"], "forbidden": ["address", "array", "blob", "boolean", "decimal", "integer", "map", "token"]},
+          "token": {"required": ["token"], "forbidden": ["address", "array", "blob", "boolean", "decimal", "integer", "map", "string"]}
+        }
+      },
+      "x-layerdraw-unique-array-keys": [{"array": "map", "property": "key"}]
+    },
+    "FieldDiff": {
+      "type": "object",
+      "properties": {
+        "after": {"$ref": "#/$defs/ViewDataSemanticValue"},
+        "after_present": {"type": "boolean"},
+        "before": {"$ref": "#/$defs/ViewDataSemanticValue"},
+        "before_present": {"type": "boolean"},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "path": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+      },
+      "required": ["key", "path", "before_present", "after_present"],
+      "additionalProperties": false
+    },
+    "DiffChange": {
+      "type": "object",
+      "properties": {
+        "after_address": {"$ref": "#/$defs/StableAddress"},
+        "after_source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "before_address": {"$ref": "#/$defs/StableAddress"},
+        "before_source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/FieldDiff"}},
+        "key": {"$ref": "#/$defs/ViewDataItemKey"},
+        "kind": {"type": "string", "enum": ["added", "moved", "moved_updated", "removed", "updated"]},
+        "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
+        "subject_kind": {"$ref": "#/$defs/SubjectKind"}
+      },
+      "required": ["key", "kind", "subject_kind", "fields", "source"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "fields", "property": "key"}]
+    },
+    "DiffViewData": {
+      "type": "object",
+      "properties": {
+        "changes": {"type": "array", "items": {"$ref": "#/$defs/DiffChange"}}
+      },
+      "required": ["changes"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "changes", "property": "key"}]
     },
     "ViewData": {
       "type": "object",
@@ -904,21 +1316,33 @@
         "context": {"$ref": "#/$defs/ContextViewData"},
         "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/Diagnostic"}},
         "diagram": {"$ref": "#/$defs/DiagramViewData"},
-        "shape": {"type": "string", "enum": ["context", "diagram", "table"]},
+        "diff": {"$ref": "#/$defs/DiffViewData"},
+        "flow": {"$ref": "#/$defs/FlowViewData"},
+        "kind": {"type": "string", "enum": ["context", "diagram", "diff", "flow", "matrix", "table", "tree"]},
+        "matrix": {"$ref": "#/$defs/MatrixViewData"},
+        "project_address": {"$ref": "#/$defs/ProjectRootAddress"},
+        "query_address": {"$ref": "#/$defs/QueryAddress"},
+        "revision": {"$ref": "#/$defs/ViewRevision"},
+        "shape": {"$ref": "#/$defs/ViewRecipeShape"},
         "source": {"$ref": "#/$defs/ViewDataSourceRefs"},
         "state_input": {"$ref": "#/$defs/ViewDataStateInputRef"},
         "state_policy": {"type": "string", "enum": ["none", "optional", "required"]},
         "table": {"$ref": "#/$defs/TableViewData"},
+        "tree": {"$ref": "#/$defs/TreeViewData"},
         "view_address": {"$ref": "#/$defs/ViewAddress"}
       },
-      "required": ["view_address", "category", "shape", "state_policy", "state_input", "source", "diagnostics"],
+      "required": ["kind", "category", "shape", "project_address", "view_address", "revision", "state_policy", "state_input", "source", "diagnostics"],
       "additionalProperties": false,
       "x-layerdraw-tagged-union": {
-        "property": "shape",
+        "property": "kind",
         "variants": {
-          "context": {"required": ["context"], "forbidden": ["diagram", "table"]},
-          "diagram": {"required": ["diagram"], "forbidden": ["context", "table"]},
-          "table": {"required": ["table"], "forbidden": ["context", "diagram"]}
+          "context": {"required": ["context"], "forbidden": ["diagram", "diff", "flow", "matrix", "table", "tree"]},
+          "diagram": {"required": ["diagram"], "forbidden": ["context", "diff", "flow", "matrix", "table", "tree"]},
+          "diff": {"required": ["diff"], "forbidden": ["context", "diagram", "flow", "matrix", "table", "tree"]},
+          "flow": {"required": ["flow"], "forbidden": ["context", "diagram", "diff", "matrix", "table", "tree"]},
+          "matrix": {"required": ["matrix"], "forbidden": ["context", "diagram", "diff", "flow", "table", "tree"]},
+          "table": {"required": ["table"], "forbidden": ["context", "diagram", "diff", "flow", "matrix", "tree"]},
+          "tree": {"required": ["tree"], "forbidden": ["context", "diagram", "diff", "flow", "matrix", "table"]}
         }
       }
     },
