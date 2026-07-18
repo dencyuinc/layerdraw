@@ -6,6 +6,7 @@
       "operation_id": "operation_1",
       "revision": {
         "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "graph_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
         "document_id": "doc_fixture",
         "revision_id": "rev_1"
       },

@@ -1,0 +1,25 @@
+{
+  "operation_result": {
+    "diagnostics": [{"arguments": {}, "code": "LDL1901", "message_key": "operation_rejected", "protocol_version": 1, "related": [], "severity": "error"}],
+    "failure_code": "runtime.cancelled",
+    "idempotency_key": "idem_commit_000001",
+    "operation_id": "operation_1",
+    "result_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "status": "rejected"
+  },
+  "preview_evaluation": {
+    "authoring_decision": {
+      "access_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "approval_rule_refs": [],
+      "authoring_impact_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "constraint_violations": [],
+      "decision_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "diagnostics": [],
+      "evaluation_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "host_operation_impact_digests": [],
+      "missing_capabilities": [],
+      "outcome": "allow",
+      "required_capabilities": []
+    }
+  }
+}

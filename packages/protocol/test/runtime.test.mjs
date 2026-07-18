@@ -1,14 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
+import accessDecisionFixture from "../../../schemas/fixtures/runtime/access-decision.json" with { type: "json" };
+import commitFailedFixture from "../../../schemas/fixtures/runtime/commit-failed.json" with { type: "json" };
+import commitRequestFixture from "../../../schemas/fixtures/runtime/commit-request.json" with { type: "json" };
+import commitResultPreviewDecisionOnlyFixture from "../../../schemas/fixtures/runtime/commit-result-preview-decision-only.json" with { type: "json" };
+import commitResultPreviewImpactOnlyFixture from "../../../schemas/fixtures/runtime/commit-result-preview-impact-only.json" with { type: "json" };
+import digestCanonicalizationFixture from "../../../schemas/fixtures/runtime/digest-canonicalization.json" with { type: "json" };
+import handshakeFailedFixture from "../../../schemas/fixtures/runtime/handshake-failed.json" with { type: "json" };
+import handshakeRequestFixture from "../../../schemas/fixtures/runtime/handshake-request.json" with { type: "json" };
+import operationAuditPendingFixture from "../../../schemas/fixtures/runtime/operation-audit-pending.json" with { type: "json" };
+import operationNeedsReviewFixture from "../../../schemas/fixtures/runtime/operation-needs-review.json" with { type: "json" };
+import operationRecoveringFixture from "../../../schemas/fixtures/runtime/operation-recovering.json" with { type: "json" };
+import revisionPageFixture from "../../../schemas/fixtures/runtime/revision-page.json" with { type: "json" };
 import { decodeAuthoringDecision, decodeHostOperationImpact, encodeAuthoringDecision } from "../dist/access.gen.js";
 import {
   decodeCommitOperationsRequestEnvelope,
   decodeCommitOperationsResponseEnvelope,
   decodeOperationResult,
+  decodeRuntimeCommitResult,
   decodeListRevisionsRequestEnvelope,
   decodeRevisionPage,
   decodeRuntimeHandshakeRequestEnvelope,
@@ -22,8 +35,25 @@ import {
   encodeRuntimeOperationStatus,
 } from "../dist/runtime.gen.js";
 
-const fixtureRoot = new URL("../../../schemas/fixtures/runtime/", import.meta.url);
-const fixture = async (name) => JSON.parse(await readFile(new URL(name, fixtureRoot), "utf8"));
+const fixtures = Object.freeze({
+  "access-decision.json": accessDecisionFixture,
+  "commit-failed.json": commitFailedFixture,
+  "commit-request.json": commitRequestFixture,
+  "commit-result-preview-decision-only.json": commitResultPreviewDecisionOnlyFixture,
+  "commit-result-preview-impact-only.json": commitResultPreviewImpactOnlyFixture,
+  "digest-canonicalization.json": digestCanonicalizationFixture,
+  "handshake-failed.json": handshakeFailedFixture,
+  "handshake-request.json": handshakeRequestFixture,
+  "operation-audit-pending.json": operationAuditPendingFixture,
+  "operation-needs-review.json": operationNeedsReviewFixture,
+  "operation-recovering.json": operationRecoveringFixture,
+  "revision-page.json": revisionPageFixture,
+});
+const fixture = async (name) => {
+  const value = fixtures[name];
+  assert.ok(value, `unknown runtime fixture: ${name}`);
+  return structuredClone(value);
+};
 
 test("runtime canonical fixtures round-trip through generated TypeScript codecs", async () => {
   const cases = [
@@ -44,6 +74,13 @@ test("runtime canonical fixtures round-trip through generated TypeScript codecs"
 });
 
 test("runtime TypeScript codecs reject unknown fields and invalid typed outcomes", async () => {
+  for (const name of ["commit-result-preview-impact-only.json", "commit-result-preview-decision-only.json"]) {
+    const oneSided = await fixture(name);
+    assert.throws(() => decodeRuntimeCommitResult(JSON.stringify(oneSided)), name);
+  }
+  const needsReview = await fixture("operation-needs-review.json");
+  needsReview.operation_result.diagnostics = [];
+  assert.throws(() => decodeRuntimeOperationStatus(JSON.stringify(needsReview)));
   const handshake = await fixture("handshake-request.json");
   handshake.unknown_minor_field = true;
   assert.throws(() => decodeRuntimeHandshakeRequestEnvelope(JSON.stringify(handshake)));
@@ -116,6 +153,20 @@ test("runtime TypeScript codecs reject unknown fields and invalid typed outcomes
     outcome: "approval_required",
     required_capabilities: [],
   })));
+});
+
+test("runtime digest projection fixture uses cross-language canonical JSON", async () => {
+  const fixtureValue = await fixture("digest-canonicalization.json");
+  const canonicalize = (value) => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]));
+    }
+    return value;
+  };
+  const canonical = JSON.stringify(canonicalize(fixtureValue.value));
+  assert.equal(canonical, fixtureValue.canonical);
+  assert.equal(`sha256:${createHash("sha256").update(canonical).digest("hex")}`, fixtureValue.sha256);
 });
 
 test("runtime extensions are the explicit unknown-field preservation channel", async () => {

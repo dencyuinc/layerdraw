@@ -102,6 +102,19 @@ func TestRuntimeCanonicalFixturesRoundTripInGeneratedGo(t *testing.T) {
 }
 
 func TestRuntimeGeneratedGoRejectsUnknownFieldsAndInvalidClosedOutcomes(t *testing.T) {
+	for _, name := range []string{"commit-result-preview-impact-only.json", "commit-result-preview-decision-only.json"} {
+		if _, err := runtimeprotocol.DecodeRuntimeCommitResult(runtimeFixture(t, name)); err == nil {
+			t.Fatalf("one-sided preview evaluation was accepted: %s", name)
+		}
+	}
+	var needsReview map[string]any
+	if err := json.Unmarshal(runtimeFixture(t, "operation-needs-review.json"), &needsReview); err != nil {
+		t.Fatal(err)
+	}
+	needsReview["operation_result"].(map[string]any)["diagnostics"] = []any{}
+	if _, err := runtimeprotocol.DecodeRuntimeOperationStatus(mustJSONRuntime(t, needsReview)); err == nil {
+		t.Fatal("needs_review without LDL1903 evidence was accepted")
+	}
 	var handshake map[string]any
 	if err := json.Unmarshal(runtimeFixture(t, "handshake-request.json"), &handshake); err != nil {
 		t.Fatal(err)
@@ -136,7 +149,7 @@ func TestRuntimeGeneratedGoRejectsUnknownFieldsAndInvalidClosedOutcomes(t *testi
 		t.Fatal(err)
 	}
 	payload := commit["payload"].(map[string]any)
-	payload["expected_revision"].(map[string]any)["document_id"] = ""
+	payload["operation_batch"].(map[string]any)["base_revision"].(map[string]any)["document_id"] = ""
 	if _, err := runtimeprotocol.DecodeCommitOperationsRequestEnvelope(mustJSONRuntime(t, commit)); err == nil {
 		t.Fatal("malformed revision scope was accepted")
 	}

@@ -2,7 +2,7 @@
   "idempotency_key": "idem_commit_000001",
   "operation_id": "operation_1",
   "operation_result": {
-    "diagnostics": [],
+    "diagnostics": [{"arguments": {}, "code": "LDL1903", "message_key": "operation_recovery_needs_review", "protocol_version": 1, "related": [], "severity": "error"}],
     "idempotency_key": "idem_commit_000001",
     "operation_id": "operation_1",
     "result_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
