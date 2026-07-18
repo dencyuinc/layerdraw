@@ -50,16 +50,19 @@ type ResolvedDependencies struct {
 
 // ResolvedPack binds one install name to immutable installed bytes.
 type ResolvedPack struct {
-	InstallName  string
-	CanonicalID  string
-	Version      string
-	Digest       string
-	Path         string
-	Entry        string
-	Files        []ResolvedPackFile
-	Dependencies []ResolvedPackDependency
-	ManifestPath string
-	Manifest     []byte
+	InstallName string
+	CanonicalID string
+	Version     string
+	Digest      string
+	Path        string
+	Entry       string
+	// RegistrySource is portable, non-secret source identity metadata. The
+	// compiler excludes it from semantic identity; container I/O preserves it.
+	RegistrySource string
+	Files          []ResolvedPackFile
+	Dependencies   []ResolvedPackDependency
+	ManifestPath   string
+	Manifest       []byte
 }
 
 // ResolvedPackFile binds a pack-relative path to its raw digest.
