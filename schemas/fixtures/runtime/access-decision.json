@@ -1,0 +1,12 @@
+{
+  "access_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "approval_rule_refs": [],
+  "constraint_violations": [],
+  "decision_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "diagnostics": [],
+  "evaluation_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "host_operation_impact_digests": [],
+  "missing_capabilities": [],
+  "outcome": "allow",
+  "required_capabilities": []
+}

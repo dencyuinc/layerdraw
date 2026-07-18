@@ -1,0 +1,6 @@
+{
+  "idempotency_key": "idem_commit_000001",
+  "operation_id": "operation_1",
+  "phase": "audit_pending",
+  "retry_after_ms": "250"
+}

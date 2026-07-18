@@ -1,0 +1,13 @@
+{
+  "diagnostics": [],
+  "failure": {
+    "category": "resource",
+    "code": "runtime.stale_revision",
+    "message": "The expected revision is no longer current.",
+    "retryable": false
+  },
+  "host_release": "0.0.0-dev",
+  "outcome": "failed",
+  "protocol": {"name": "runtime", "version": "1.0"},
+  "request_id": "runtime-commit-failed"
+}

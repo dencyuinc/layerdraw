@@ -2,7 +2,8 @@
 
 This Apache-2.0 package contains generated, transport-neutral wire values for
 LayerDraw protocols. Import only a documented subpath (`/common`, `/semantic`,
-or `/engine`); there is intentionally no root barrel export.
+`/access`, `/engine`, or `/runtime`); there is intentionally no root barrel
+export.
 
 All files matching `src/*.gen.ts` are generated from `schemas/` by
 `make generate`. They must not contain LDL parsing, normalization, hashing,

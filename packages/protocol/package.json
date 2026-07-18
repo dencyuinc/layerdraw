@@ -7,6 +7,10 @@
   "sideEffects": false,
   "files": ["dist/*.gen.js", "dist/*.gen.d.ts", "LICENSE", "README.md"],
   "exports": {
+    "./access": {
+      "types": "./dist/access.gen.d.ts",
+      "import": "./dist/access.gen.js"
+    },
     "./common": {
       "types": "./dist/common.gen.d.ts",
       "import": "./dist/common.gen.js"
@@ -18,6 +22,10 @@
     "./semantic": {
       "types": "./dist/semantic.gen.d.ts",
       "import": "./dist/semantic.gen.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.gen.d.ts",
+      "import": "./dist/runtime.gen.js"
     }
   },
   "scripts": {

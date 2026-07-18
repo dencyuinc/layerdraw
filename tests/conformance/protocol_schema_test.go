@@ -2523,7 +2523,13 @@ func TestGeneratedProtocolPackagesHaveNoHandwrittenOrForbiddenDependencies(t *te
 	if _, exists := manifest.Exports["."]; exists {
 		t.Fatal("protocol package must not expose a root barrel entrypoint")
 	}
-	wantedExports := map[string]bool{"./common": true, "./semantic": true, "./engine": true}
+	wantedExports := map[string]bool{
+		"./access":   true,
+		"./common":   true,
+		"./engine":   true,
+		"./runtime":  true,
+		"./semantic": true,
+	}
 	if len(manifest.Exports) != len(wantedExports) {
 		t.Fatalf("unexpected protocol exports: %v", manifest.Exports)
 	}

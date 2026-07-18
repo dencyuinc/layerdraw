@@ -1,0 +1,23 @@
+{
+  "extensions": {"com.layerdraw.fixture": {"preserved": true}},
+  "operation": "runtime.handshake",
+  "payload": {
+    "client_release": "1.0.0",
+    "optional_capabilities": ["runtime.future"],
+    "protocols": [
+      {
+        "name": "runtime",
+        "supported_range": "1.0..1.0",
+        "versions": [
+          {
+            "schema_digest": "sha256:2e7d23c51aeda025c3c9e443c5ec61282c507209f1a45d3cb370d036899e9062",
+            "version": "1.0"
+          }
+        ]
+      }
+    ],
+    "required_capabilities": ["runtime.handshake"]
+  },
+  "protocol": {"name": "runtime", "version": "1.0"},
+  "request_id": "runtime-handshake-fixture"
+}

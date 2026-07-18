@@ -1,0 +1,7 @@
+{
+  "idempotency_key": "idem_commit_000001",
+  "operation_id": "operation_1",
+  "phase": "recovering",
+  "recovery_started_at": "2026-07-18T10:00:00Z",
+  "retry_after_ms": "250"
+}

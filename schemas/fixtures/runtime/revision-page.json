@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "authoring_decision_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "committed_at": "2026-07-18T10:00:00Z",
+      "operation_id": "operation_1",
+      "revision": {
+        "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "document_id": "doc_fixture",
+        "revision_id": "rev_1"
+      },
+      "trigger": "explicit_save"
+    }
+  ],
+  "page": {
+    "result_truncated": false,
+    "returned_bytes": "512",
+    "returned_items": "1"
+  }
+}
