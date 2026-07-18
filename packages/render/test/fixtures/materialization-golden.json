@@ -1,0 +1,69 @@
+{
+  "diagram": {
+    "render_data_digest": "sha256:5c87ee58bc56dc14841db0e5189342e7a451a71b299f147d398eded199ded9a6",
+    "render_input_hash": "sha256:19635300f8299508fe8a89fb5319ad8db370520bd12d69b23c6ca572552ddb8b",
+    "bounds": { "x": -12, "y": 0, "width": 588, "height": 206 },
+    "primitive_counts": {
+      "containers": 1,
+      "occurrences": 5,
+      "ports": 4,
+      "edge_paths": 2,
+      "labels": 7,
+      "overlays": 1,
+      "badges": 1,
+      "support_geometry": 1
+    }
+  },
+  "table": {
+    "render_data_digest": "sha256:70b5bd54f5ab008a3d33ee756d9f1deaa81d4ad8172ebdddcba0965622f299c7",
+    "render_input_hash": "sha256:62b2e213688f8d232fa938221219fefda7a36dca36be0fb9efed6f29b6a45a9e",
+    "bounds": { "x": 0, "y": 0, "width": 709.5, "height": 54.8 },
+    "primitive_counts": { "columns": 4, "rows": 1, "cells": 4 }
+  },
+  "matrix": {
+    "render_data_digest": "sha256:9fb16e735f73b1b6edf65e7d325d11e638945e7ced0daadaad1006b8a4fb5d6b",
+    "render_input_hash": "sha256:35bbb4cb908a37b55c6e5bf2f18122fb68874c221123c2ce0509d1cf9f0ea4b7",
+    "bounds": { "x": 0, "y": 0, "width": 302, "height": 144 },
+    "primitive_counts": {
+      "row_axes": 2,
+      "column_axes": 2,
+      "cells": 4,
+      "totals": 0
+    }
+  },
+  "tree": {
+    "render_data_digest": "sha256:5ba7b5effac6d81d68fb4593ffd2906dcd0a776392b96a4ed472d31a4a73a78a",
+    "render_input_hash": "sha256:b81a1512c8d57d26ebc3563be606ab1c63d735be52f5e81a1534990252747e4b",
+    "bounds": { "x": 0, "y": 0, "width": 96, "height": 160 },
+    "primitive_counts": {
+      "occurrences": 2,
+      "duplicate_refs": 1,
+      "cycle_refs": 1
+    }
+  },
+  "flow": {
+    "render_data_digest": "sha256:8072b16d53d8b4cbcfd49706b23b83d5a8c110a07bf626f09356adcba1de6d1a",
+    "render_input_hash": "sha256:0b441c6366354a4433ba140447e8ba769db6cc7bd5d884d355334130846a35d6",
+    "bounds": { "x": 0, "y": 0, "width": 172, "height": 164 },
+    "primitive_counts": {
+      "lanes": 1,
+      "steps": 2,
+      "branches": 1,
+      "joins": 1,
+      "connectors": 1,
+      "cycle_refs": 1
+    }
+  },
+  "context": {
+    "render_data_digest": "sha256:23f1f831c12462ace5190569728f58a113c9ec388024749985ab6a7d72211931",
+    "render_input_hash": "sha256:589fed250ee9b7d22c8c649342b61875f26a5106d7a67b2a105cca28c7c81168",
+    "bounds": { "x": 0, "y": 0, "width": 232, "height": 312 },
+    "primitive_counts": { "groups": 1, "facts": 3, "relation_summaries": 2 }
+  },
+  "diff": {
+    "render_data_digest": "sha256:6b40ece094c8b5e07bca3ee4f4a377a843b1a0bc3e0ee6b4d3297756a605f755",
+    "render_input_hash": "sha256:17382b9c0024cbdbe20d0bc4459e798bfef5b2d37acd20c90d99193f9cd854b4",
+    "bounds": { "x": 0, "y": 0, "width": 408, "height": 904 },
+    "primitive_counts": { "before": 1, "after": 3, "changes": 3, "fields": 15 }
+  }
+}

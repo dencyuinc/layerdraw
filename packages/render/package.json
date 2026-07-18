@@ -1,7 +1,7 @@
 {
   "name": "@layerdraw/render",
   "version": "0.0.0",
-  "description": "Presentation-only LayerDraw render recipes and RenderData contracts.",
+  "description": "Deterministic presentation-only LayerDraw RenderData materialization and contracts.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "sideEffects": false,
