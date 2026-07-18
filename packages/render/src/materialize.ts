@@ -1450,6 +1450,7 @@ function buildMatrix(context: BuildContext): MatrixRenderData {
     row_axes: rowAxes,
     column_axes: columnAxes,
     cells,
+    legends: [],
     totals: [],
   };
 }
@@ -1823,6 +1824,7 @@ function buildContext(context: BuildContext): ContextRenderData {
     groups,
     facts,
     relation_summaries: summaries,
+    truncation_markers: [],
   };
 }
 

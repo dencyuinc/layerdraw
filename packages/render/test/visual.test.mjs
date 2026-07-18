@@ -613,12 +613,12 @@ test("explicit primitive, route, text, byte, and extent limits fail closed", () 
     );
 });
 
-test("shape entrypoints stay browser-neutral and expose only the documented graph adapters", async () => {
+test("shape entrypoints stay browser-neutral and expose documented adapters", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("../package.json", import.meta.url), "utf8")
   );
-  assert.deepEqual(Object.keys(manifest.exports), [".", "./diagram", "./tree", "./flow"]);
-  for (const file of ["../src/visual.ts", "../src/diagram.ts", "../src/tree.ts", "../src/flow.ts"]) {
+  assert.deepEqual(Object.keys(manifest.exports), [".", "./diagram", "./tree", "./flow", "./table", "./matrix", "./context", "./diff"]);
+  for (const file of ["../src/visual.ts", "../src/structured.ts", "../src/diagram.ts", "../src/tree.ts", "../src/flow.ts", "../src/table.ts", "../src/matrix.ts", "../src/context.ts", "../src/diff.ts"]) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
     assert.doesNotMatch(source, /node:|document\.|window\.|HTMLElement|React/);
   }

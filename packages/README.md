@@ -22,6 +22,7 @@ and must not fork Workbench semantics for browser delivery.
 `RenderData` contracts. It consumes semantic `ViewData` values but neither
 defines nor recomputes Go semantics. Its framework-neutral materialization core
 owns deterministic layout from explicit resolved profile, font, asset, ordering,
-seed, and resource-limit inputs. Its Diagram, Tree, and Flow visual adapters map
-only supplied RenderData geometry and bindings to deterministic SVG plus portable
-interaction metadata; export artifact serialization remains outside this package.
+seed, and resource-limit inputs. Its Diagram, Tree, Flow, Table, Matrix, Context,
+and Diff visual adapters map only supplied RenderData geometry, presentation
+values, and bindings to deterministic SVG plus portable headless interaction
+metadata; export artifact serialization remains outside this package.

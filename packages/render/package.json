@@ -10,7 +10,11 @@
     ".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"},
     "./diagram": {"types": "./dist/diagram.d.ts", "import": "./dist/diagram.js"},
     "./tree": {"types": "./dist/tree.d.ts", "import": "./dist/tree.js"},
-    "./flow": {"types": "./dist/flow.d.ts", "import": "./dist/flow.js"}
+    "./flow": {"types": "./dist/flow.d.ts", "import": "./dist/flow.js"},
+    "./table": {"types": "./dist/table.d.ts", "import": "./dist/table.js"},
+    "./matrix": {"types": "./dist/matrix.d.ts", "import": "./dist/matrix.js"},
+    "./context": {"types": "./dist/context.d.ts", "import": "./dist/context.js"},
+    "./diff": {"types": "./dist/diff.d.ts", "import": "./dist/diff.js"}
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
