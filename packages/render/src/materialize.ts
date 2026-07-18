@@ -1023,13 +1023,14 @@ function buildDiagram(context: BuildContext): DiagramRenderData {
   }
 
   const containers: DiagramRenderData["containers"][number][] = [];
+  // Fold inner containers first so each outer bound includes finalized child geometry.
   const containersByDepth = [...view.containers].sort((left, right) => {
     const leftDepth = depths.get(left.occurrence_key);
     const rightDepth = depths.get(right.occurrence_key);
     if (leftDepth === undefined || rightDepth === undefined) {
       fail("render.geometry_invalid", "missing_container_occurrence", 0);
     }
-    return rightDepth - leftDepth;
+    return rightDepth - leftDepth || compare(left.key, right.key);
   });
   for (const item of containersByDepth) {
     const occurrence = byKey.get(item.occurrence_key);
@@ -1195,14 +1196,22 @@ function buildDiagram(context: BuildContext): DiagramRenderData {
     });
     context.bind(key, item.key, item.source);
   }
-  const containerOrder = new Map(
-    view.containers.map((item, index) => [item.key, index])
+  const containerByKey = new Map(
+    view.containers.map((item) => [item.key, item])
   );
-  containers.sort(
-    (left, right) =>
-      containerOrder.get(left.render_key.slice("diagram-container:".length))! -
-      containerOrder.get(right.render_key.slice("diagram-container:".length))!
-  );
+  // RenderData paint order is outer-to-inner; canonical keys close same-depth ties.
+  containers.sort((left, right) => {
+    const leftKey = left.render_key.slice("diagram-container:".length);
+    const rightKey = right.render_key.slice("diagram-container:".length);
+    const leftContainer = containerByKey.get(leftKey);
+    const rightContainer = containerByKey.get(rightKey);
+    if (leftContainer === undefined || rightContainer === undefined)
+      fail("render.geometry_invalid", "missing_container_occurrence", 0);
+    return (
+      depths.get(leftContainer.occurrence_key)! -
+        depths.get(rightContainer.occurrence_key)! || compare(leftKey, rightKey)
+    );
+  });
   const bounds = allBounds([
     ...outputOccurrences,
     ...containers,

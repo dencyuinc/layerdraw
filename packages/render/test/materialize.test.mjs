@@ -7,6 +7,7 @@ import {
   assertRenderData,
   hashMaterializationInput,
   materializeRenderData,
+  renderDiagramVisualSurface,
 } from "../dist/index.js";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -931,6 +932,53 @@ test("native manual Diagram placement and direction are honored exactly", async 
     rank_separation: 64,
   };
   assert.equal((await materializeRenderData(dangling)).ok, true);
+});
+
+test("nested Diagram materialization preserves inner-first geometry and emits outer-first SVG paint order", async () => {
+  const variant = input("diagram");
+  const rootContainer = variant.view_data.diagram.containers[0];
+  const rootOccurrence = variant.view_data.diagram.occurrences.find(
+    (item) => item.key === rootContainer.occurrence_key
+  );
+  const childOccurrence = variant.view_data.diagram.occurrences.find(
+    (item) => item.parent_key === rootOccurrence.key
+  );
+  const grandchildKey = `vdi:diagram-occurrence:${"G".repeat(43)}`;
+  variant.view_data.diagram.occurrences.push({
+    ...structuredClone(childOccurrence),
+    key: grandchildKey,
+    parent_key: childOccurrence.key,
+  });
+  const innerContainerKey = `vdi:diagram-container:${"I".repeat(43)}`;
+  variant.view_data.diagram.containers.push({
+    key: innerContainerKey,
+    occurrence_key: childOccurrence.key,
+    child_keys: [grandchildKey],
+    source: structuredClone(childOccurrence.source),
+  });
+
+  const materialized = await materializeRenderData(variant);
+  assert.equal(materialized.ok, true, JSON.stringify(materialized.diagnostics));
+  const outerRenderKey = `diagram-container:${rootContainer.key}`;
+  const innerRenderKey = `diagram-container:${innerContainerKey}`;
+  assert.deepEqual(
+    materialized.data.containers.map((item) => item.render_key),
+    [outerRenderKey, innerRenderKey]
+  );
+  const outer = materialized.data.containers[0].bounds;
+  const inner = materialized.data.containers[1].bounds;
+  assert.ok(
+    outer.x <= inner.x &&
+      outer.y <= inner.y &&
+      outer.x + outer.width >= inner.x + inner.width &&
+      outer.y + outer.height >= inner.y + inner.height
+  );
+
+  const surface = renderDiagramVisualSurface(materialized.data);
+  assert.ok(
+    surface.svg.indexOf(`data-render-key="${outerRenderKey}"`) <
+      surface.svg.indexOf(`data-render-key="${innerRenderKey}"`)
+  );
 });
 
 test("display payload required by visual adapters remains in RenderData", async () => {

@@ -1,0 +1,17 @@
+{
+  "diagram": {
+    "svg_sha256": "9aab0c5cd9d7e4f9608367b2e6993082f7c7d71695b899a166061ba4ddd7f740",
+    "svg_bytes": 8277,
+    "hit_targets": 13
+  },
+  "tree": {
+    "svg_sha256": "6022ea636755522e62fca030364e3f2191bdb4cdd589929beac7a7646822a61d",
+    "svg_bytes": 5031,
+    "hit_targets": 5
+  },
+  "flow": {
+    "svg_sha256": "39f6d2966558dae092cb5822fb3c3f21f890ea1975845ee84d30e0c541a17120",
+    "svg_bytes": 9626,
+    "hit_targets": 12
+  }
+}
