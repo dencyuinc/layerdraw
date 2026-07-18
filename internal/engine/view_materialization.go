@@ -43,9 +43,10 @@ func (e Engine) MaterializeView(ctx context.Context, input ViewMaterializationIn
 			result.Matrix = m.matrix(base)
 		case view.ShapeContext:
 			result.Context = m.contextView(base)
-		case view.ShapeTree, view.ShapeFlow:
-			m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View shape materialization is not implemented", input.Recipe.Address, "")
-			return rejectedView(m.diagnostics...)
+		case view.ShapeTree:
+			result.Tree = m.tree(base)
+		case view.ShapeFlow:
+			result.Flow = m.flow(base)
 		case view.ShapeDiff:
 			m.addDiag("LDL1801", "stale_revision_or_semantic_hash", "Diff View requires a Diff materialization source", input.Recipe.Address, "")
 			return rejectedView(m.diagnostics...)
@@ -71,43 +72,59 @@ func (e Engine) MaterializeView(ctx context.Context, input ViewMaterializationIn
 }
 
 type viewMaterializer struct {
-	ctx              context.Context
-	input            ViewMaterializationInput
-	snapshot         Snapshot
-	graph            graph.MasterGraph
-	queryResult      QueryResult
-	project          string
-	revision         ViewRevision
-	stateInput       QueryStateInputRef
-	entities         map[string]graph.Entity
-	relations        map[string]graph.Relation
-	entityTypes      map[string]definition.EntityType
-	relationTypes    map[string]definition.RelationType
-	layers           map[string]definition.Layer
-	outgoing         map[string][]string
-	incoming         map[string][]string
-	diagnostics      []Diagnostic
-	directStateReads map[StateReadRef]bool
-	validatedState   *validatedStateQuerySnapshot
-	staleState       map[string]bool
-	deniedStateReads map[StateReadRef]bool
-	missingStateWarn bool
-	diffBefore       *diffSnapshotProjection
-	diffAfter        *diffSnapshotProjection
-	diffMoves        map[string]string
-	diffSource       ViewDataSourceRefs
+	ctx                 context.Context
+	input               ViewMaterializationInput
+	snapshot            Snapshot
+	graph               graph.MasterGraph
+	queryResult         QueryResult
+	project             string
+	revision            ViewRevision
+	stateInput          QueryStateInputRef
+	entities            map[string]graph.Entity
+	relations           map[string]graph.Relation
+	entityTypes         map[string]definition.EntityType
+	relationTypes       map[string]definition.RelationType
+	layers              map[string]definition.Layer
+	outgoing            map[string][]string
+	incoming            map[string][]string
+	diagnostics         []Diagnostic
+	directStateReads    map[StateReadRef]bool
+	validatedState      *validatedStateQuerySnapshot
+	staleState          map[string]bool
+	deniedStateReads    map[StateReadRef]bool
+	missingStateWarn    bool
+	diffBefore          *diffSnapshotProjection
+	diffAfter           *diffSnapshotProjection
+	diffMoves           map[string]string
+	diffSource          ViewDataSourceRefs
+	limits              ViewMaterializationLimits
+	materializedItems   int64
+	materializationWork int64
 }
 
 func newViewMaterializer(ctx context.Context, input ViewMaterializationInput) *viewMaterializer {
+	limits := input.Limits
+	defaults := DefaultViewMaterializationLimits()
+	if limits.MaxItems == 0 {
+		limits.MaxItems = defaults.MaxItems
+	}
+	if limits.MaxWork == 0 {
+		limits.MaxWork = defaults.MaxWork
+	}
 	return &viewMaterializer{
 		ctx: ctx, input: input, entities: map[string]graph.Entity{}, relations: map[string]graph.Relation{},
 		entityTypes: map[string]definition.EntityType{}, relationTypes: map[string]definition.RelationType{},
 		layers: map[string]definition.Layer{}, outgoing: map[string][]string{}, incoming: map[string][]string{},
 		directStateReads: map[StateReadRef]bool{}, staleState: map[string]bool{}, deniedStateReads: map[StateReadRef]bool{},
+		limits: limits,
 	}
 }
 
 func (m *viewMaterializer) validate() bool {
+	if m.limits.MaxItems <= 0 || m.limits.MaxWork <= 0 {
+		m.addDiag("LDL1702", "view_materialization_conflict", "ViewData materialization item and work limits must be positive", m.input.Recipe.Address, "")
+		return false
+	}
 	if m.input.Recipe.Address == "" {
 		m.addDiag("LDL1701", "unsupported_view_shape_or_export", "View recipe address is required", "", "")
 	}
@@ -585,6 +602,32 @@ func viewItemKey(m *viewMaterializer, kind string, tuple any) string {
 		m.addDiag("LDL1801", "stale_revision_or_semantic_hash", fmt.Sprintf("cannot derive ViewData item key: %v", err), m.input.Recipe.Address, "")
 	}
 	return key
+}
+
+func (m *viewMaterializer) reserveViewItems(amount int64) bool {
+	if amount < 0 || m.materializedItems > m.limits.MaxItems-amount {
+		m.addDiag("LDL1702", "view_materialization_conflict", "ViewData semantic item limit exceeded", m.input.Recipe.Address, "")
+		return false
+	}
+	m.materializedItems += amount
+	return true
+}
+
+func (m *viewMaterializer) reserveViewWork(amount int64) bool {
+	if amount < 0 || m.materializationWork > m.limits.MaxWork-amount {
+		m.addDiag("LDL1702", "view_materialization_conflict", "ViewData materialization work limit exceeded", m.input.Recipe.Address, "")
+		return false
+	}
+	m.materializationWork += amount
+	return true
+}
+
+func (m *viewMaterializer) withinViewCandidateLimit(count int) bool {
+	if int64(count) <= m.limits.MaxItems {
+		return true
+	}
+	m.addDiag("LDL1702", "view_materialization_conflict", "ViewData semantic candidate limit exceeded", m.input.Recipe.Address, "")
+	return false
 }
 
 func sortRelationsByAddress(values []graph.Relation) {

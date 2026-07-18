@@ -42,6 +42,7 @@ func (e Engine) MaterializeDocumentView(ctx context.Context, input MaterializeDo
 			RevisionID: fmt.Sprintf("workbench:%s:%d", input.DocumentGeneration.DocumentHandle.Value, input.DocumentGeneration.Value),
 			Snapshot:   snapshot.compiled, QueryResult: input.QueryResult,
 		},
+		Limits: ViewMaterializationLimits{MaxItems: input.Limits.MaxItems},
 	})
 	if response.Status == "rejected" {
 		return MaterializeDocumentViewResult{}, &ViewMaterializationRejection{Diagnostics: response.Diagnostics}
