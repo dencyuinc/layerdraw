@@ -349,10 +349,24 @@ type ExecuteDocumentQueryResult struct {
 }
 
 type MaterializeDocumentViewInput struct {
-	DocumentGeneration DocumentGeneration `json:"document_generation"`
-	Limits             WorkbenchLimits    `json:"limits"`
-	QueryResult        QueryResult        `json:"query_result"`
-	ViewAddress        string             `json:"view_address"`
+	Diff        *MaterializeDocumentDiffViewInput  `json:"diff,omitempty"`
+	Limits      WorkbenchLimits                    `json:"limits"`
+	Query       *MaterializeDocumentQueryViewInput `json:"query,omitempty"`
+	ViewAddress string                             `json:"view_address"`
+}
+
+type MaterializeDocumentQueryViewInput struct {
+	DocumentGeneration DocumentGeneration  `json:"document_generation"`
+	QueryResult        QueryResult         `json:"query_result"`
+	StateSnapshot      *StateQuerySnapshot `json:"state_snapshot,omitempty"`
+}
+
+type MaterializeDocumentDiffViewInput struct {
+	AfterGeneration   DocumentGeneration `json:"after_generation"`
+	AfterQueryResult  *QueryResult       `json:"after_query_result,omitempty"`
+	BeforeGeneration  DocumentGeneration `json:"before_generation"`
+	BeforeQueryResult *QueryResult       `json:"before_query_result,omitempty"`
+	RecipeGeneration  DocumentGeneration `json:"recipe_generation"`
 }
 
 type MaterializeDocumentViewResult struct {

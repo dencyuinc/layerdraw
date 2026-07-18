@@ -694,9 +694,22 @@
     },
     "QueryStateInputRef": {
       "type": "object",
-      "properties": {"kind": {"type": "string", "enum": ["none"]}},
+      "properties": {
+        "captured_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "kind": {"type": "string", "enum": ["none", "snapshot"]},
+        "snapshot_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "state_version": {"type": "string", "minLength": 1}
+      },
       "required": ["kind"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "none": {"forbidden": ["captured_at", "definition_hash", "snapshot_hash", "state_version"]},
+          "snapshot": {"required": ["captured_at", "definition_hash", "snapshot_hash", "state_version"]}
+        }
+      }
     },
     "QueryStateReadRef": {
       "type": "object",
@@ -773,17 +786,46 @@
       "additionalProperties": false,
       "x-layerdraw-protocol-invariant": "query_result"
     },
-    "MaterializeViewInput": {
+    "MaterializeQueryViewInput": {
       "type": "object",
       "properties": {
         "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
-        "limits": {"$ref": "#/$defs/WorkbenchLimits"},
         "query_result": {"$ref": "#/$defs/QueryExecutionResultData"},
+        "state_snapshot": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StateQuerySnapshot"}
+      },
+      "required": ["document_generation", "query_result"],
+      "additionalProperties": false
+    },
+    "MaterializeDiffViewInput": {
+      "type": "object",
+      "properties": {
+        "after_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "after_query_result": {"$ref": "#/$defs/QueryExecutionResultData"},
+        "before_generation": {"$ref": "#/$defs/DocumentGeneration"},
+        "before_query_result": {"$ref": "#/$defs/QueryExecutionResultData"},
+        "recipe_generation": {"$ref": "#/$defs/DocumentGeneration"}
+      },
+      "required": ["recipe_generation", "before_generation", "after_generation"],
+      "additionalProperties": false
+    },
+    "MaterializeViewInput": {
+      "type": "object",
+      "properties": {
+        "diff": {"$ref": "#/$defs/MaterializeDiffViewInput"},
+        "kind": {"type": "string", "enum": ["diff", "query"]},
+        "limits": {"$ref": "#/$defs/WorkbenchLimits"},
+        "query": {"$ref": "#/$defs/MaterializeQueryViewInput"},
         "view_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewAddress"}
       },
-      "required": ["document_generation", "limits", "view_address", "query_result"],
+      "required": ["kind", "limits", "view_address"],
       "additionalProperties": false,
-      "x-layerdraw-protocol-invariant": "document_bound_input"
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "diff": {"required": ["diff"], "forbidden": ["query"]},
+          "query": {"required": ["query"], "forbidden": ["diff"]}
+        }
+      }
     },
     "MaterializeViewResult": {
       "type": "object",

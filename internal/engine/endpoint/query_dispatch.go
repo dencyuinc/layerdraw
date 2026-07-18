@@ -179,12 +179,33 @@ func mapQueryExecutionResultData(ctx context.Context, input engine.QueryResult) 
 		ReachedEntityAddresses:    reached,
 		SeedEntityAddresses:       seeds,
 		SelectedRelationAddresses: selected,
-		StateInput:                engineprotocol.QueryStateInputRef{Kind: input.StateInput.Kind},
+		StateInput:                mapQueryStateInputRef(input.StateInput),
 		StatePolicy:               input.StatePolicy,
 		StateReads:                stateReads,
 		SupportEntityAddresses:    support,
 		TraversedEntityAddresses:  traversed,
 	}, nil
+}
+
+func mapQueryStateInputRef(input engine.QueryStateInputRef) engineprotocol.QueryStateInputRef {
+	result := engineprotocol.QueryStateInputRef{Kind: input.Kind}
+	if input.SnapshotHash != "" {
+		value := protocolcommon.Digest(input.SnapshotHash)
+		result.SnapshotHash = &value
+	}
+	if input.StateVersion != "" {
+		value := input.StateVersion
+		result.StateVersion = &value
+	}
+	if input.CapturedAt != "" {
+		value := protocolcommon.Rfc3339Time(input.CapturedAt)
+		result.CapturedAt = &value
+	}
+	if input.DefinitionHash != "" {
+		value := protocolcommon.Digest(input.DefinitionHash)
+		result.DefinitionHash = &value
+	}
+	return result
 }
 
 func engineScalarFromRecipeScalar(input semantic.RecipeScalar) (engine.TypedScalar, error) {

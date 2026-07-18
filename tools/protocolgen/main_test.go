@@ -1024,13 +1024,16 @@ func TestEveryGeneratedCodecAndRecursivePredicateUsesBoundedPreflight(t *testing
 		"semantic.DiagnosticArgumentValue",
 		"semantic.RecipePredicate",
 		"semantic.RecipeRowPredicate",
+		"semantic.TreeOccurrence",
+		"semantic.ViewDataSemanticMapEntry",
+		"semantic.ViewDataSemanticValue",
 	} {
 		if !recursiveNames[name] {
 			t.Errorf("schema recursion audit did not find %s", name)
 		}
 	}
-	if len(recursiveNames) != 6 {
-		t.Errorf("schema recursion audit found %d recursive definitions, want 6: %v", len(recursiveNames), recursiveNames)
+	if len(recursiveNames) != 9 {
+		t.Errorf("schema recursion audit found %d recursive definitions, want 9: %v", len(recursiveNames), recursiveNames)
 	}
 
 	reachesRecursive := map[definitionID]bool{}

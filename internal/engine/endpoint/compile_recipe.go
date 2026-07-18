@@ -625,6 +625,156 @@ func mapViewShape(input materialize.ViewShape) (semantic.ViewRecipeShape, error)
 	return result, nil
 }
 
+// mapCompiledViewShape maps the canonical compiler shape already embedded in
+// ViewData. It performs representation conversion only; shape semantics remain
+// owned by the compiler and materializer.
+func mapCompiledViewShape(input viewcompiler.Shape) (semantic.ViewRecipeShape, error) {
+	result := semantic.ViewRecipeShape{Kind: string(input.Kind)}
+	if value := input.Diagram; value != nil {
+		placements := make([]semantic.ViewPlacement, len(value.Placements))
+		for index, placement := range value.Placements {
+			x, err := finiteDecimal(placement.X, false)
+			if err != nil {
+				return result, err
+			}
+			y, err := finiteDecimal(placement.Y, false)
+			if err != nil {
+				return result, err
+			}
+			width, err := finiteDecimal(placement.Width, true)
+			if err != nil {
+				return result, err
+			}
+			height, err := finiteDecimal(placement.Height, true)
+			if err != nil {
+				return result, err
+			}
+			placements[index] = semantic.ViewPlacement{
+				EntityAddress: semantic.EntityAddress(placement.EntityAddress),
+				X:             x,
+				Y:             y,
+				Width:         semantic.CanonicalPositiveFiniteDecimal(width),
+				Height:        semantic.CanonicalPositiveFiniteDecimal(height),
+			}
+		}
+		result.Diagram = &semantic.ViewDiagramShape{
+			Layout:      string(value.Layout),
+			Direction:   string(value.Direction),
+			Abstraction: string(value.Abstraction),
+			Composed:    value.Composed,
+			Placements:  placements,
+		}
+	}
+	if value := input.Table; value != nil {
+		columns := make([]semantic.ViewTableColumn, len(value.Columns))
+		for index, column := range value.Columns {
+			valueType, err := mapTableValueType(column.ValueType)
+			if err != nil {
+				return result, err
+			}
+			columns[index] = semantic.ViewTableColumn{
+				Address:   semantic.TableColumnAddress(column.Address),
+				Aggregate: string(column.Aggregate),
+				ID:        semantic.LocalIdentifier(column.ID),
+				Label:     cloneStringPointer(column.Label),
+				Source:    mapCompiledTableColumnSource(column.Source),
+				ValueType: valueType,
+			}
+		}
+		sorts := make([]semantic.ViewTableSort, len(value.Sorts))
+		for index, item := range value.Sorts {
+			sorts[index] = semantic.ViewTableSort{ColumnID: item.ColumnID, Direction: string(item.Direction), Absent: string(item.Absent)}
+		}
+		result.Table = &semantic.ViewTableShape{
+			RowSource:                string(value.RowSource),
+			AutomaticRelationColumns: cloneStrings(value.AutomaticRelationColumns),
+			EntityTypeAddresses:      typedStringSlicePointer[semantic.EntityTypeAddress](value.EntityTypeAddresses),
+			IncludeEntityID:          value.IncludeEntityID,
+			IncludeType:              value.IncludeType,
+			IncludeLayer:             value.IncludeLayer,
+			Columns:                  columns,
+			Sorts:                    sorts,
+		}
+	}
+	if value := input.Matrix; value != nil {
+		result.Matrix = &semantic.ViewMatrixShape{
+			RowAxis:    mapCompiledMatrixAxis(value.RowAxis),
+			ColumnAxis: mapCompiledMatrixAxis(value.ColumnAxis),
+			Cell: semantic.ViewMatrixCell{
+				RelationTypeAddresses:    typedStringSlicePointer[semantic.RelationTypeAddress](value.Cell.RelationTypeAddresses),
+				Direction:                string(value.Cell.Direction),
+				Semantic:                 string(value.Cell.Semantic),
+				Display:                  string(value.Cell.Display),
+				AttributeColumnAddresses: typedStringSlicePointer[semantic.RelationTypeColumnAddress](value.Cell.AttributeColumnAddresses),
+			},
+		}
+	}
+	if value := input.Tree; value != nil {
+		result.Tree = &semantic.ViewTreeShape{
+			RelationTypeAddresses: typedStrings[semantic.RelationTypeAddress](value.RelationTypeAddresses),
+			CyclePolicy:           string(value.CyclePolicy),
+			SharedChildPolicy:     string(value.SharedChildPolicy),
+		}
+	}
+	if value := input.Flow; value != nil {
+		result.Flow = &semantic.ViewFlowShape{
+			RelationTypeAddresses: typedStrings[semantic.RelationTypeAddress](value.RelationTypeAddresses),
+			LaneBy:                string(value.LaneBy),
+			LaneColumnAddresses:   typedStringSlicePointer[semantic.EntityTypeColumnAddress](value.LaneColumnAddresses),
+			CyclePolicy:           string(value.CyclePolicy),
+			PreserveParallel:      value.PreserveParallel,
+		}
+	}
+	if value := input.Context; value != nil {
+		result.Context = &semantic.ViewContextShape{
+			GroupBy:             string(value.GroupBy),
+			IncludeEntityRows:   value.IncludeEntityRows,
+			IncludeRelationRows: value.IncludeRelationRows,
+			Incoming:            value.Incoming,
+			Outgoing:            value.Outgoing,
+		}
+	}
+	if value := input.Diff; value != nil {
+		include := make([]semantic.SubjectKind, len(value.Include))
+		for index, kind := range value.Include {
+			include[index] = semantic.SubjectKind(kind)
+		}
+		result.Diff = &semantic.ViewDiffShape{Include: include, DetectMoves: value.DetectMoves}
+	}
+	return result, nil
+}
+
+func mapCompiledTableColumnSource(input viewcompiler.TableColumnSource) semantic.ViewTableColumnSource {
+	result := semantic.ViewTableColumnSource{
+		Kind:                  string(input.Kind),
+		RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](input.RelationTypeAddresses),
+	}
+	if input.Field != "" {
+		result.Field = stringPointer(input.Field)
+	}
+	if input.ColumnAddresses != nil {
+		values := typedStrings[semantic.ColumnAddress](input.ColumnAddresses)
+		result.ColumnAddresses = &values
+	}
+	if input.Endpoint != "" {
+		result.Endpoint = stringPointer(string(input.Endpoint))
+	}
+	if input.Direction != "" {
+		result.Direction = stringPointer(string(input.Direction))
+	}
+	if input.StateFieldPath != "" {
+		result.FieldPath = typedStringPointer[semantic.StateFieldPath](string(input.StateFieldPath))
+	}
+	return result
+}
+
+func mapCompiledMatrixAxis(input viewcompiler.MatrixAxis) semantic.ViewMatrixAxis {
+	return semantic.ViewMatrixAxis{
+		EntityTypeAddresses: typedStringSlicePointer[semantic.EntityTypeAddress](input.EntityTypeAddresses),
+		LabelField:          string(input.LabelField),
+	}
+}
+
 func applyCompiledViewShape(result *semantic.ViewRecipeShape, compiled viewcompiler.Shape) error {
 	if result.Kind != string(compiled.Kind) {
 		return fmt.Errorf("compiled View shape kind does not match normalized shape")

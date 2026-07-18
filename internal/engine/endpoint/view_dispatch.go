@@ -9,7 +9,6 @@ import (
 	"math"
 	"reflect"
 	"strconv"
-	"strings"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -49,20 +48,84 @@ func materializeViewMappingError(err error) error {
 
 func mapMaterializeViewInput(input engineprotocol.MaterializeViewInput) (engine.MaterializeDocumentViewInput, error) {
 	result := engine.MaterializeDocumentViewInput{ViewAddress: string(input.ViewAddress)}
-	if err := convertStruct(input.DocumentGeneration, &result.DocumentGeneration); err != nil {
-		return engine.MaterializeDocumentViewInput{}, err
-	}
 	if err := convertStruct(input.Limits, &result.Limits); err != nil {
 		return engine.MaterializeDocumentViewInput{}, err
 	}
+	switch input.Kind {
+	case "query":
+		if input.Query == nil || input.Diff != nil {
+			return engine.MaterializeDocumentViewInput{}, invalidMaterializeViewInput("engine.workbench.invalid_view_source")
+		}
+		mapped, err := mapMaterializeQueryViewInput(*input.Query)
+		if err != nil {
+			return engine.MaterializeDocumentViewInput{}, err
+		}
+		result.Query = &mapped
+	case "diff":
+		if input.Diff == nil || input.Query != nil {
+			return engine.MaterializeDocumentViewInput{}, invalidMaterializeViewInput("engine.workbench.invalid_view_source")
+		}
+		mapped, err := mapMaterializeDiffViewInput(*input.Diff)
+		if err != nil {
+			return engine.MaterializeDocumentViewInput{}, err
+		}
+		result.Diff = &mapped
+	default:
+		return engine.MaterializeDocumentViewInput{}, invalidMaterializeViewInput("engine.workbench.invalid_view_source")
+	}
+	return result, nil
+}
+
+func mapMaterializeQueryViewInput(input engineprotocol.MaterializeQueryViewInput) (engine.MaterializeDocumentQueryViewInput, error) {
+	var result engine.MaterializeDocumentQueryViewInput
+	if err := convertStruct(input.DocumentGeneration, &result.DocumentGeneration); err != nil {
+		return result, err
+	}
 	queryResult, err := queryResultFromProtocol(input.QueryResult)
 	if err != nil {
-		return engine.MaterializeDocumentViewInput{}, &engine.WorkbenchError{
-			Code: "engine.workbench.invalid_query_result", Category: engine.WorkbenchErrorInputInvalid,
-		}
+		return result, invalidMaterializeViewInput("engine.workbench.invalid_query_result")
 	}
 	result.QueryResult = queryResult
+	if input.StateSnapshot != nil {
+		snapshot, err := stateQuerySnapshotFromProtocol(*input.StateSnapshot)
+		if err != nil {
+			return result, invalidMaterializeViewInput("engine.workbench.invalid_state_snapshot")
+		}
+		result.StateSnapshot = &snapshot
+	}
 	return result, nil
+}
+
+func mapMaterializeDiffViewInput(input engineprotocol.MaterializeDiffViewInput) (engine.MaterializeDocumentDiffViewInput, error) {
+	var result engine.MaterializeDocumentDiffViewInput
+	if err := convertStruct(input.RecipeGeneration, &result.RecipeGeneration); err != nil {
+		return result, err
+	}
+	if err := convertStruct(input.BeforeGeneration, &result.BeforeGeneration); err != nil {
+		return result, err
+	}
+	if err := convertStruct(input.AfterGeneration, &result.AfterGeneration); err != nil {
+		return result, err
+	}
+	if input.BeforeQueryResult != nil {
+		mapped, err := queryResultFromProtocol(*input.BeforeQueryResult)
+		if err != nil {
+			return result, invalidMaterializeViewInput("engine.workbench.invalid_query_result")
+		}
+		result.BeforeQueryResult = &mapped
+	}
+	if input.AfterQueryResult != nil {
+		mapped, err := queryResultFromProtocol(*input.AfterQueryResult)
+		if err != nil {
+			return result, invalidMaterializeViewInput("engine.workbench.invalid_query_result")
+		}
+		result.AfterQueryResult = &mapped
+	}
+	return result, nil
+}
+
+func invalidMaterializeViewInput(code string) error {
+	return &engine.WorkbenchError{Code: code, Category: engine.WorkbenchErrorInputInvalid}
 }
 
 func queryResultFromProtocol(input engineprotocol.QueryExecutionResultData) (engine.QueryResult, error) {
@@ -70,7 +133,7 @@ func queryResultFromProtocol(input engineprotocol.QueryExecutionResultData) (eng
 		Arguments:                 make(map[string]engine.TypedScalar, len(input.Arguments)),
 		QueryAddress:              string(input.QueryAddress),
 		StatePolicy:               input.StatePolicy,
-		StateInput:                engine.QueryStateInputRef{Kind: input.StateInput.Kind},
+		StateInput:                queryStateInputRefFromProtocol(input.StateInput),
 		InducedRelationAddresses:  protocolStrings(input.InducedRelationAddresses),
 		PathRelationAddresses:     protocolStrings(input.PathRelationAddresses),
 		PrimaryEntityAddresses:    protocolStrings(input.PrimaryEntityAddresses),
@@ -110,6 +173,54 @@ func queryResultFromProtocol(input engineprotocol.QueryExecutionResultData) (eng
 			return engine.QueryResult{}, err
 		}
 		result.Diagnostics[index] = mapped
+	}
+	return result, nil
+}
+
+func queryStateInputRefFromProtocol(input engineprotocol.QueryStateInputRef) engine.QueryStateInputRef {
+	result := engine.QueryStateInputRef{Kind: input.Kind}
+	if input.SnapshotHash != nil {
+		result.SnapshotHash = string(*input.SnapshotHash)
+	}
+	if input.StateVersion != nil {
+		result.StateVersion = *input.StateVersion
+	}
+	if input.CapturedAt != nil {
+		result.CapturedAt = string(*input.CapturedAt)
+	}
+	if input.DefinitionHash != nil {
+		result.DefinitionHash = string(*input.DefinitionHash)
+	}
+	return result
+}
+
+func stateQuerySnapshotFromProtocol(input semantic.StateQuerySnapshot) (engine.StateQuerySnapshot, error) {
+	result := engine.StateQuerySnapshot{
+		Format:                 string(input.Format),
+		SchemaVersion:          int(input.SchemaVersion),
+		DefinitionProject:      string(input.DefinitionProjectAddress),
+		DefinitionHash:         string(input.DefinitionHash),
+		GraphHash:              string(input.GraphHash),
+		StateVersion:           input.StateVersion,
+		CapturedAt:             string(input.CapturedAt),
+		InaccessibleFieldPaths: protocolStrings(input.InaccessibleFieldPaths),
+		Subjects:               make([]engine.StateQuerySubject, len(input.Subjects)),
+	}
+	for index, subject := range input.Subjects {
+		mapped := engine.StateQuerySubject{
+			SubjectAddress:     string(subject.SubjectAddress),
+			OwnSubjectHash:     string(subject.OwnSubjectHash),
+			Fields:             make(map[string]engine.TypedScalar, len(subject.Fields)),
+			RedactedFieldPaths: protocolStrings(subject.RedactedFieldPaths),
+		}
+		for path, value := range subject.Fields {
+			scalar, err := engineScalarFromRecipeScalar(value)
+			if err != nil {
+				return engine.StateQuerySnapshot{}, err
+			}
+			mapped.Fields[path] = scalar
+		}
+		result.Subjects[index] = mapped
 	}
 	return result, nil
 }
@@ -244,17 +355,106 @@ func mapMaterializeViewResult(ctx context.Context, input engine.MaterializeDocum
 		}
 		return engineprotocol.MaterializeViewResult{}, err
 	}
-	result.ReturnedBytes = engineprotocol.LogicalResponseByteCount(strconv.FormatInt(returnedBytes, 10))
+	blobBytes, err := measureViewDataBlobBytes(ctx, input.ViewData)
+	if err != nil {
+		return engineprotocol.MaterializeViewResult{}, err
+	}
+	if uint64(returnedBytes) > math.MaxUint64-blobBytes {
+		return engineprotocol.MaterializeViewResult{}, fmt.Errorf("ViewData logical response byte count overflows uint64")
+	}
+	logicalBytes := uint64(returnedBytes) + blobBytes
+	if limits.MaxOutputBytes > 0 && logicalBytes > uint64(limits.MaxOutputBytes) {
+		observed := limits.MaxOutputBytes
+		if logicalBytes <= math.MaxInt64 {
+			observed = int64(logicalBytes)
+		} else if observed < math.MaxInt64 {
+			observed++
+		}
+		return engineprotocol.MaterializeViewResult{}, &engine.WorkbenchError{
+			Code: "engine.workbench.limit_exceeded", Category: engine.WorkbenchErrorLimitExceeded,
+			Resource: "view_data_bytes", Limit: limits.MaxOutputBytes, Observed: observed,
+		}
+	}
+	result.ReturnedBytes = engineprotocol.LogicalResponseByteCount(strconv.FormatUint(logicalBytes, 10))
 	if _, err := engineprotocol.EncodeMaterializeViewResult(result); err != nil {
 		return engineprotocol.MaterializeViewResult{}, fmt.Errorf("validate materialized ViewData result: %w", err)
 	}
 	return result, nil
 }
 
+func measureViewDataBlobBytes(ctx context.Context, input engine.ViewData) (uint64, error) {
+	if err := queryMappingContext(ctx); err != nil {
+		return 0, err
+	}
+	if input.Diff == nil {
+		return 0, nil
+	}
+	var total uint64
+	var walk func(engine.SemanticValue, int) error
+	walk = func(value engine.SemanticValue, depth int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if depth > protocolcommon.MaxWireJSONDepth {
+			return fmt.Errorf("Diff semantic value exceeds maximum protocol depth")
+		}
+		switch value.Kind {
+		case engine.SemanticValueBlob:
+			if value.BlobRef == nil {
+				return fmt.Errorf("Diff blob value lacks BlobRef")
+			}
+			if math.MaxUint64-total < value.BlobRef.Size {
+				return fmt.Errorf("ViewData BlobRef byte count overflows uint64")
+			}
+			total += value.BlobRef.Size
+		case engine.SemanticValueArray:
+			for _, item := range value.Array {
+				if err := walk(item, depth+1); err != nil {
+					return err
+				}
+			}
+		case engine.SemanticValueMap:
+			for _, item := range value.Map {
+				if err := walk(item.Value, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for _, change := range input.Diff.Changes {
+		for _, field := range change.Fields {
+			if field.Before != nil {
+				if err := walk(*field.Before, 0); err != nil {
+					return 0, err
+				}
+			}
+			if field.After != nil {
+				if err := walk(*field.After, 0); err != nil {
+					return 0, err
+				}
+			}
+		}
+	}
+	return total, nil
+}
+
 func mapViewData(ctx context.Context, input engine.ViewData) (semantic.ViewData, error) {
 	base, ok := input.Base()
 	if !ok {
 		return semantic.ViewData{}, fmt.Errorf("invalid ViewData union")
+	}
+	shape, err := mapCompiledViewShape(base.Shape)
+	if err != nil {
+		return semantic.ViewData{}, err
+	}
+	revision, err := mapViewRevision(base.Revision)
+	if err != nil {
+		return semantic.ViewData{}, err
+	}
+	source, err := mapViewDataSourceRefs(ctx, base.Source)
+	if err != nil {
+		return semantic.ViewData{}, err
 	}
 	diagnostics := make([]semantic.Diagnostic, len(base.Diagnostics))
 	for index, value := range base.Diagnostics {
@@ -267,47 +467,136 @@ func mapViewData(ctx context.Context, input engine.ViewData) (semantic.ViewData,
 		}
 		diagnostics[index] = mapped
 	}
-	stateReads := make([]semantic.ViewDataStateReadRef, len(base.Source.State.Reads))
-	for index, value := range base.Source.State.Reads {
-		stateReads[index] = semantic.ViewDataStateReadRef{SubjectAddress: semantic.StableAddress(value.SubjectAddress), FieldPath: semantic.StateFieldPath(value.FieldPath)}
-	}
-	queryAddress := ""
-	if base.QueryAddress != nil {
-		queryAddress = *base.QueryAddress
-	}
 	result := semantic.ViewData{
-		ViewAddress: semantic.ViewAddress(base.ViewAddress), Category: base.Category, Shape: string(base.Kind),
-		StatePolicy: base.StatePolicy, StateInput: semantic.ViewDataStateInputRef{Kind: base.StateInput.Kind}, Diagnostics: diagnostics,
-		Source: semantic.ViewDataSourceRefs{
-			QueryAddress:      semantic.QueryAddress(queryAddress),
-			EntityAddresses:   protocolSlice[semantic.EntityAddress](base.Source.EntityAddresses),
-			RelationAddresses: protocolSlice[semantic.RelationAddress](base.Source.RelationAddresses),
-			LayerAddresses:    protocolSlice[semantic.LayerAddress](base.Source.LayerAddresses),
-			RowAddresses:      protocolSlice[semantic.StableAddress](base.Source.RowAddresses), StateReads: stateReads,
-		},
+		Kind:           string(base.Kind),
+		Category:       base.Category,
+		Shape:          shape,
+		ProjectAddress: semantic.ProjectRootAddress(base.ProjectAddress),
+		ViewAddress:    semantic.ViewAddress(base.ViewAddress),
+		Revision:       revision,
+		StatePolicy:    base.StatePolicy,
+		StateInput:     mapViewDataStateInput(base.StateInput),
+		Source:         source,
+		Diagnostics:    diagnostics,
 	}
-	if input.Diagram != nil {
+	if base.QueryAddress != nil {
+		value := semantic.QueryAddress(*base.QueryAddress)
+		result.QueryAddress = &value
+	}
+	switch base.Kind {
+	case engine.ViewDataDiagram:
 		mapped, err := mapDiagramViewData(ctx, *input.Diagram)
 		if err != nil {
 			return semantic.ViewData{}, err
 		}
 		result.Diagram = &mapped
-	}
-	if input.Table != nil {
+	case engine.ViewDataTable:
 		mapped, err := mapTableViewData(ctx, *input.Table)
 		if err != nil {
 			return semantic.ViewData{}, err
 		}
 		result.Table = &mapped
-	}
-	if input.Context != nil {
+	case engine.ViewDataMatrix:
+		mapped, err := mapMatrixViewData(ctx, *input.Matrix)
+		if err != nil {
+			return semantic.ViewData{}, err
+		}
+		result.Matrix = &mapped
+	case engine.ViewDataTree:
+		mapped, err := mapTreeViewData(ctx, *input.Tree)
+		if err != nil {
+			return semantic.ViewData{}, err
+		}
+		result.Tree = &mapped
+	case engine.ViewDataFlow:
+		mapped, err := mapFlowViewData(ctx, *input.Flow)
+		if err != nil {
+			return semantic.ViewData{}, err
+		}
+		result.Flow = &mapped
+	case engine.ViewDataContext:
 		mapped, err := mapContextViewData(ctx, *input.Context)
 		if err != nil {
 			return semantic.ViewData{}, err
 		}
 		result.Context = &mapped
+	case engine.ViewDataDiff:
+		mapped, err := mapDiffViewData(ctx, *input.Diff)
+		if err != nil {
+			return semantic.ViewData{}, err
+		}
+		result.Diff = &mapped
+	default:
+		return semantic.ViewData{}, fmt.Errorf("unsupported ViewData kind %q", base.Kind)
 	}
 	return result, nil
+}
+
+func mapViewRevision(input engine.ViewRevision) (semantic.ViewRevision, error) {
+	if (input.Single == nil) == (input.Diff == nil) {
+		return semantic.ViewRevision{}, fmt.Errorf("invalid View revision union")
+	}
+	if input.Single != nil {
+		if input.Single.Kind != "single" {
+			return semantic.ViewRevision{}, fmt.Errorf("invalid single View revision kind")
+		}
+		revisionID := input.Single.RevisionID
+		definitionHash := protocolcommon.Digest(input.Single.DefinitionHash)
+		return semantic.ViewRevision{Kind: "single", RevisionID: &revisionID, DefinitionHash: &definitionHash}, nil
+	}
+	if input.Diff.Kind != "diff" {
+		return semantic.ViewRevision{}, fmt.Errorf("invalid diff View revision kind")
+	}
+	recipeRevisionID := input.Diff.RecipeRevisionID
+	recipeDefinitionHash := protocolcommon.Digest(input.Diff.RecipeDefinitionHash)
+	beforeRevisionID := input.Diff.BeforeRevisionID
+	beforeDefinitionHash := protocolcommon.Digest(input.Diff.BeforeDefinitionHash)
+	afterRevisionID := input.Diff.AfterRevisionID
+	afterDefinitionHash := protocolcommon.Digest(input.Diff.AfterDefinitionHash)
+	return semantic.ViewRevision{
+		Kind:                 "diff",
+		RecipeRevisionID:     &recipeRevisionID,
+		RecipeDefinitionHash: &recipeDefinitionHash,
+		BeforeRevisionID:     &beforeRevisionID,
+		BeforeDefinitionHash: &beforeDefinitionHash,
+		AfterRevisionID:      &afterRevisionID,
+		AfterDefinitionHash:  &afterDefinitionHash,
+	}, nil
+}
+
+func mapViewDataStateInput(input engine.QueryStateInputRef) semantic.ViewDataStateInputRef {
+	mapped := mapQueryStateInputRef(input)
+	return semantic.ViewDataStateInputRef{
+		Kind:           mapped.Kind,
+		SnapshotHash:   mapped.SnapshotHash,
+		StateVersion:   mapped.StateVersion,
+		CapturedAt:     mapped.CapturedAt,
+		DefinitionHash: mapped.DefinitionHash,
+	}
+}
+
+func mapViewDataSourceRefs(ctx context.Context, input engine.ViewDataSourceRefs) (semantic.ViewDataSourceRefs, error) {
+	if err := queryMappingContext(ctx); err != nil {
+		return semantic.ViewDataSourceRefs{}, err
+	}
+	cellRefs := make([]semantic.ViewDataCellRef, len(input.CellRefs))
+	for index, value := range input.CellRefs {
+		cellRefs[index] = semantic.ViewDataCellRef{RowAddress: semantic.StableAddress(value.RowAddress), ColumnAddress: semantic.ColumnAddress(value.ColumnAddress)}
+	}
+	stateReads := make([]semantic.ViewDataStateReadRef, len(input.State.Reads))
+	for index, value := range input.State.Reads {
+		stateReads[index] = semantic.ViewDataStateReadRef{SubjectAddress: semantic.StableAddress(value.SubjectAddress), FieldPath: semantic.StateFieldPath(value.FieldPath)}
+	}
+	return semantic.ViewDataSourceRefs{
+		SubjectAddresses:  protocolSlice[semantic.StableAddress](input.SubjectAddresses),
+		EntityAddresses:   protocolSlice[semantic.EntityAddress](input.EntityAddresses),
+		RelationAddresses: protocolSlice[semantic.RelationAddress](input.RelationAddresses),
+		LayerAddresses:    protocolSlice[semantic.LayerAddress](input.LayerAddresses),
+		RowAddresses:      protocolSlice[semantic.StableAddress](input.RowAddresses),
+		CellRefs:          cellRefs,
+		AssetDigests:      protocolSlice[protocolcommon.Digest](input.AssetDigests),
+		State:             semantic.ViewDataStateRefs{Reads: stateReads},
+	}, nil
 }
 
 func protocolSlice[T ~string](input []string) []T {
@@ -320,149 +609,149 @@ func protocolSlice[T ~string](input []string) []T {
 
 func mapDiagramViewData(ctx context.Context, input engine.DiagramViewData) (semantic.DiagramViewData, error) {
 	result := semantic.DiagramViewData{
-		Nodes: make([]semantic.DiagramViewNode, len(input.Occurrences)), Edges: make([]semantic.DiagramViewEdge, len(input.Edges)),
-		Placements: []semantic.DiagramViewPlacement{},
+		Occurrences:  make([]semantic.DiagramOccurrence, len(input.Occurrences)),
+		Edges:        make([]semantic.DiagramEdge, len(input.Edges)),
+		Containers:   make([]semantic.DiagramContainer, len(input.Containers)),
+		Overlays:     make([]semantic.DiagramOverlay, len(input.Overlays)),
+		Badges:       make([]semantic.DiagramBadge, len(input.Badges)),
+		SupportItems: make([]semantic.DiagramSupportItem, len(input.SupportItems)),
 	}
-	entityByOccurrence := make(map[string]string, len(input.Occurrences))
 	for index, value := range input.Occurrences {
-		if err := queryMappingContext(ctx); err != nil {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
 			return semantic.DiagramViewData{}, err
 		}
-		entityType := sourceSubjectAddress(value.Source.SubjectAddresses, ":entity-type:")
-		if entityType == "" {
-			return semantic.DiagramViewData{}, fmt.Errorf("Diagram occurrence source lacks EntityType")
+		result.Occurrences[index] = semantic.DiagramOccurrence{
+			Key:                semantic.ViewDataItemKey(value.Key),
+			EntityAddress:      semantic.EntityAddress(value.EntityAddress),
+			LayerAddress:       semantic.LayerAddress(value.LayerAddress),
+			ParentKey:          optionalTypedStringPointer[semantic.ViewDataItemKey](value.ParentKey),
+			ViaRelationAddress: optionalTypedStringPointer[semantic.RelationAddress](value.ViaRelationAddress),
+			Role:               string(value.Role),
+			Source:             source,
 		}
-		result.Nodes[index] = semantic.DiagramViewNode{
-			Key: value.Key, EntityAddress: semantic.EntityAddress(value.EntityAddress), DisplayName: value.EntityAddress,
-			EntityTypeAddress: semantic.EntityTypeAddress(entityType), LayerAddress: semantic.LayerAddress(value.LayerAddress),
-			SourceEntities: protocolSlice[semantic.EntityAddress](value.Source.EntityAddresses),
-		}
-		entityByOccurrence[value.Key] = value.EntityAddress
 	}
 	for index, value := range input.Edges {
-		if err := queryMappingContext(ctx); err != nil {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
 			return semantic.DiagramViewData{}, err
 		}
-		fromAddress, fromOK := entityByOccurrence[value.FromOccurrenceKey]
-		toAddress, toOK := entityByOccurrence[value.ToOccurrenceKey]
-		if !fromOK || !toOK {
-			return semantic.DiagramViewData{}, fmt.Errorf("Diagram edge references an unknown occurrence")
-		}
-		result.Edges[index] = semantic.DiagramViewEdge{
-			Key: value.Key, RelationAddress: semantic.RelationAddress(value.RelationAddress), FromAddress: semantic.EntityAddress(fromAddress),
-			ToAddress: semantic.EntityAddress(toAddress), RelationTypeAddress: semantic.RelationTypeAddress(value.RelationTypeAddress),
-			SourceRelations: protocolSlice[semantic.RelationAddress](value.Source.RelationAddresses),
+		result.Edges[index] = semantic.DiagramEdge{
+			Key:                 semantic.ViewDataItemKey(value.Key),
+			FromOccurrenceKey:   semantic.ViewDataItemKey(value.FromOccurrenceKey),
+			ToOccurrenceKey:     semantic.ViewDataItemKey(value.ToOccurrenceKey),
+			RelationAddress:     semantic.RelationAddress(value.RelationAddress),
+			RelationTypeAddress: semantic.RelationTypeAddress(value.RelationTypeAddress),
+			Source:              source,
 		}
 	}
-	if input.Shape.Diagram != nil {
-		result.Placements = make([]semantic.DiagramViewPlacement, len(input.Shape.Diagram.Placements))
-		for index, value := range input.Shape.Diagram.Placements {
-			x, err := finiteDecimal(value.X, false)
-			if err != nil {
-				return semantic.DiagramViewData{}, err
-			}
-			y, err := finiteDecimal(value.Y, false)
-			if err != nil {
-				return semantic.DiagramViewData{}, err
-			}
-			width, err := finiteDecimal(value.Width, true)
-			if err != nil {
-				return semantic.DiagramViewData{}, err
-			}
-			height, err := finiteDecimal(value.Height, true)
-			if err != nil {
-				return semantic.DiagramViewData{}, err
-			}
-			result.Placements[index] = semantic.DiagramViewPlacement{
-				EntityAddress: semantic.EntityAddress(value.EntityAddress), X: x, Y: y,
-				Width: semantic.CanonicalPositiveFiniteDecimal(width), Height: semantic.CanonicalPositiveFiniteDecimal(height),
-			}
+	for index, value := range input.Containers {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.DiagramViewData{}, err
+		}
+		result.Containers[index] = semantic.DiagramContainer{
+			Key:           semantic.ViewDataItemKey(value.Key),
+			OccurrenceKey: semantic.ViewDataItemKey(value.OccurrenceKey),
+			ChildKeys:     protocolSlice[semantic.ViewDataItemKey](value.ChildKeys),
+			Source:        source,
+		}
+	}
+	for index, value := range input.Overlays {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.DiagramViewData{}, err
+		}
+		result.Overlays[index] = semantic.DiagramOverlay{
+			Key:                  semantic.ViewDataItemKey(value.Key),
+			TargetOccurrenceKey:  semantic.ViewDataItemKey(value.TargetOccurrenceKey),
+			OverlayEntityAddress: semantic.EntityAddress(value.OverlayEntityAddress),
+			RelationAddress:      semantic.RelationAddress(value.RelationAddress),
+			RelationTypeAddress:  semantic.RelationTypeAddress(value.RelationTypeAddress),
+			Source:               source,
+		}
+	}
+	for index, value := range input.Badges {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.DiagramViewData{}, err
+		}
+		result.Badges[index] = semantic.DiagramBadge{
+			Key:                 semantic.ViewDataItemKey(value.Key),
+			TargetOccurrenceKey: semantic.ViewDataItemKey(value.TargetOccurrenceKey),
+			RelationAddress:     semantic.RelationAddress(value.RelationAddress),
+			RelationTypeAddress: semantic.RelationTypeAddress(value.RelationTypeAddress),
+			Label:               cloneStringPointer(value.Label),
+			Source:              source,
+		}
+	}
+	for index, value := range input.SupportItems {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.DiagramViewData{}, err
+		}
+		result.SupportItems[index] = semantic.DiagramSupportItem{
+			Key:             semantic.ViewDataItemKey(value.Key),
+			SupportKind:     string(value.SupportKind),
+			EntityAddress:   optionalTypedStringPointer[semantic.EntityAddress](value.EntityAddress),
+			RelationAddress: optionalTypedStringPointer[semantic.RelationAddress](value.RelationAddress),
+			Source:          source,
 		}
 	}
 	return result, nil
 }
 
-func sourceSubjectAddress(values []string, token string) string {
-	for _, value := range values {
-		if strings.Contains(value, token) {
-			return value
-		}
-	}
-	return ""
-}
-
 func mapTableViewData(ctx context.Context, input engine.TableViewData) (semantic.TableViewData, error) {
 	result := semantic.TableViewData{
-		Columns: make([]semantic.TableViewColumnData, len(input.Columns)), Rows: make([]semantic.TableViewRowData, len(input.Rows)),
-		Sorts: []semantic.ViewTableSort{},
-	}
-	if input.Shape.Table != nil {
-		result.Sorts = make([]semantic.ViewTableSort, len(input.Shape.Table.Sorts))
-		for index, value := range input.Shape.Table.Sorts {
-			result.Sorts[index] = semantic.ViewTableSort{ColumnID: value.ColumnID, Direction: string(value.Direction), Absent: string(value.Absent)}
-		}
+		Columns: make([]semantic.TableColumn, len(input.Columns)),
+		Rows:    make([]semantic.TableRow, len(input.Rows)),
 	}
 	for index, value := range input.Columns {
-		column := semantic.TableViewColumnData{ID: semantic.LocalIdentifier(value.ID), Label: value.Label, Source: "semantic"}
+		column := semantic.TableColumn{
+			Key:                   semantic.ViewDataItemKey(value.Key),
+			ID:                    semantic.LocalIdentifier(value.ID),
+			Label:                 value.Label,
+			ValueType:             semantic.TableViewValueType(value.ValueType),
+			SourceColumnAddresses: protocolSlice[semantic.ColumnAddress](value.SourceColumnAddresses),
+		}
 		if value.Address != nil {
 			address := semantic.TableColumnAddress(*value.Address)
 			column.Address = &address
 		}
+		if value.EnumValues != nil {
+			values := cloneStrings(value.EnumValues)
+			column.EnumValues = &values
+		}
+		if value.StateFieldPath != nil {
+			path := semantic.StateFieldPath(*value.StateFieldPath)
+			column.StateFieldPath = &path
+		}
 		result.Columns[index] = column
 	}
 	for index, value := range input.Rows {
-		if err := queryMappingContext(ctx); err != nil {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
 			return semantic.TableViewData{}, err
 		}
-		subjectAddress := ""
-		ownerAddress := ""
-		if len(value.Source.EntityAddresses) != 0 {
-			subjectAddress = value.Source.EntityAddresses[0]
-			ownerAddress = subjectAddress
-		} else if len(value.Source.RelationAddresses) != 0 {
-			subjectAddress = value.Source.RelationAddresses[0]
-			ownerAddress = subjectAddress
+		row := semantic.TableRow{
+			Key:    semantic.ViewDataItemKey(value.Key),
+			Cells:  make(map[string]semantic.TableCell, len(value.Cells)),
+			Source: source,
 		}
-		if subjectAddress == "" {
-			return semantic.TableViewData{}, fmt.Errorf("Table row source lacks an owner")
-		}
-		row := semantic.TableViewRowData{
-			Key: value.Key, SubjectAddress: semantic.StableAddress(subjectAddress), OwnerAddress: semantic.StableAddress(ownerAddress),
-			SourceRows: protocolSlice[semantic.StableAddress](value.Source.RowAddresses), SourceEntities: protocolSlice[semantic.EntityAddress](value.Source.EntityAddresses),
-			SourceRelations: protocolSlice[semantic.RelationAddress](value.Source.RelationAddresses), Cells: make([]semantic.TableViewCellData, len(input.Columns)),
-		}
-		for cellIndex, column := range input.Columns {
-			cellValue, exists := value.Cells[column.Key]
-			if !exists {
-				return semantic.TableViewData{}, fmt.Errorf("Table row lacks column cell")
-			}
-			mappedValue := semantic.ViewDataValue{Kind: "null"}
-			nullValue := true
-			mappedValue.Null = &nullValue
-			var err error
-			if cellValue.Present {
-				if cellValue.Value == nil {
-					return semantic.TableViewData{}, fmt.Errorf("present Table cell lacks a value")
-				}
-				mappedValue, err = mapViewDataValue(*cellValue.Value)
-			}
+		for key, value := range value.Cells {
+			cellSource, err := mapViewDataSourceRefs(ctx, value.Source)
 			if err != nil {
 				return semantic.TableViewData{}, err
 			}
-			stateReads := make([]semantic.ViewDataStateReadRef, len(cellValue.Source.State.Reads))
-			for readIndex, read := range cellValue.Source.State.Reads {
-				stateReads[readIndex] = semantic.ViewDataStateReadRef{SubjectAddress: semantic.StableAddress(read.SubjectAddress), FieldPath: semantic.StateFieldPath(read.FieldPath)}
+			cell := semantic.TableCell{Present: value.Present, Source: cellSource}
+			if value.Value != nil {
+				mapped, err := mapViewDataValue(*value.Value)
+				if err != nil {
+					return semantic.TableViewData{}, err
+				}
+				cell.Value = &mapped
 			}
-			cellRefs := make([]semantic.ViewDataCellRef, len(cellValue.Source.CellRefs))
-			for refIndex, ref := range cellValue.Source.CellRefs {
-				cellRefs[refIndex] = semantic.ViewDataCellRef{RowAddress: semantic.StableAddress(ref.RowAddress), ColumnAddress: semantic.ColumnAddress(ref.ColumnAddress)}
-			}
-			row.Cells[cellIndex] = semantic.TableViewCellData{
-				ColumnID: semantic.LocalIdentifier(column.ID), Value: mappedValue,
-				SourceRows: protocolSlice[semantic.StableAddress](cellValue.Source.RowAddresses), SourceCells: cellRefs,
-				SourceEntities: protocolSlice[semantic.EntityAddress](cellValue.Source.EntityAddresses), SourceRelations: protocolSlice[semantic.RelationAddress](cellValue.Source.RelationAddresses),
-				StateReads: stateReads,
-			}
+			row.Cells[key] = cell
 		}
 		result.Rows[index] = row
 	}
@@ -488,10 +777,7 @@ func mapViewDataValue(input engine.ViewDataValue) (semantic.ViewDataValue, error
 		value := semantic.StableAddress(*input.Address)
 		result.StableAddress = &value
 	case "string_set":
-		value := append([]string(nil), input.StringSet...)
-		if value == nil {
-			value = []string{}
-		}
+		value := append([]string{}, input.StringSet...)
 		result.StringSet = &value
 	default:
 		return semantic.ViewDataValue{}, fmt.Errorf("unsupported ViewData value kind %q", input.Kind)
@@ -499,20 +785,451 @@ func mapViewDataValue(input engine.ViewDataValue) (semantic.ViewDataValue, error
 	return result, nil
 }
 
-func mapContextViewData(ctx context.Context, input engine.ContextViewData) (semantic.ContextViewData, error) {
-	result := semantic.ContextViewData{Groups: make([]semantic.ContextViewGroup, len(input.Groups)), Facts: []semantic.ContextViewFact{}}
-	for index, value := range input.Groups {
-		if err := queryMappingContext(ctx); err != nil {
-			return semantic.ContextViewData{}, err
+func mapMatrixViewData(ctx context.Context, input engine.MatrixViewData) (semantic.MatrixViewData, error) {
+	rowAxis, err := mapMatrixAxisItems(ctx, input.RowAxis)
+	if err != nil {
+		return semantic.MatrixViewData{}, err
+	}
+	columnAxis, err := mapMatrixAxisItems(ctx, input.ColumnAxis)
+	if err != nil {
+		return semantic.MatrixViewData{}, err
+	}
+	result := semantic.MatrixViewData{
+		RowAxis:    rowAxis,
+		ColumnAxis: columnAxis,
+		Cells:      make([]semantic.MatrixCell, len(input.Cells)),
+	}
+	for index, value := range input.Cells {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.MatrixViewData{}, err
 		}
-		result.Groups[index] = semantic.ContextViewGroup{Key: value.Key, Label: value.Label, Addresses: protocolSlice[semantic.StableAddress](value.Source.EntityAddresses)}
-		for _, fact := range value.Facts {
-			result.Facts = append(result.Facts, semantic.ContextViewFact{
-				Key: fact.Key, SubjectAddress: semantic.StableAddress(fact.RelationAddress), Kind: "relation", Text: fact.Text,
-				SourceEntities: protocolSlice[semantic.EntityAddress](fact.Source.EntityAddresses), SourceRelations: protocolSlice[semantic.RelationAddress](fact.Source.RelationAddresses),
-				SourceRows: protocolSlice[semantic.StableAddress](fact.Source.RowAddresses),
+		semanticRefs := make([]semantic.MatrixSemanticRef, len(value.SemanticRefs))
+		for refIndex, ref := range value.SemanticRefs {
+			mapped, err := mapMatrixSemanticRef(ref)
+			if err != nil {
+				return semantic.MatrixViewData{}, err
+			}
+			semanticRefs[refIndex] = mapped
+		}
+		displayValue, err := mapMatrixDisplayValue(value.DisplayValue)
+		if err != nil {
+			return semantic.MatrixViewData{}, err
+		}
+		result.Cells[index] = semantic.MatrixCell{
+			Key:          semantic.ViewDataItemKey(value.Key),
+			RowKey:       semantic.ViewDataItemKey(value.RowKey),
+			ColumnKey:    semantic.ViewDataItemKey(value.ColumnKey),
+			SemanticRefs: semanticRefs,
+			DisplayValue: displayValue,
+			Source:       source,
+		}
+	}
+	return result, nil
+}
+
+func mapMatrixAxisItems(ctx context.Context, input []engine.MatrixAxisItem) ([]semantic.MatrixAxisItem, error) {
+	result := make([]semantic.MatrixAxisItem, len(input))
+	for index, value := range input {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return nil, err
+		}
+		result[index] = semantic.MatrixAxisItem{
+			Key:           semantic.ViewDataItemKey(value.Key),
+			EntityAddress: semantic.EntityAddress(value.EntityAddress),
+			Label:         value.Label,
+			Source:        source,
+		}
+	}
+	return result, nil
+}
+
+func mapMatrixSemanticRef(input engine.MatrixSemanticRef) (semantic.MatrixSemanticRef, error) {
+	if (input.RelationAddress == nil) == (input.Path == nil) {
+		return semantic.MatrixSemanticRef{}, fmt.Errorf("invalid Matrix semantic-ref union")
+	}
+	if input.RelationAddress != nil {
+		address := semantic.RelationAddress(*input.RelationAddress)
+		return semantic.MatrixSemanticRef{Kind: "relation", RelationAddress: &address}, nil
+	}
+	path := semantic.ViewDataQueryPath{
+		EntityAddresses:   protocolSlice[semantic.EntityAddress](input.Path.EntityAddresses),
+		RelationAddresses: protocolSlice[semantic.RelationAddress](input.Path.RelationAddresses),
+	}
+	return semantic.MatrixSemanticRef{Kind: "path", Path: &path}, nil
+}
+
+func mapMatrixDisplayValue(input engine.MatrixDisplayValue) (semantic.MatrixDisplayValue, error) {
+	result := semantic.MatrixDisplayValue{Kind: input.Kind}
+	switch input.Kind {
+	case "boolean":
+		value := input.Boolean
+		result.Boolean = &value
+	case "integer":
+		value := protocolcommon.CanonicalInt64(strconv.FormatInt(input.Integer, 10))
+		result.Integer = &value
+	case "string_set":
+		value := append([]string{}, input.StringSet...)
+		result.StringSet = &value
+	case "attributes":
+		values := make([]semantic.MatrixAttributeItem, len(input.Attributes))
+		for index, item := range input.Attributes {
+			scalar, err := mapEngineScalar(item.Value)
+			if err != nil {
+				return semantic.MatrixDisplayValue{}, err
+			}
+			values[index] = semantic.MatrixAttributeItem{
+				RelationAddress: semantic.RelationAddress(item.RelationAddress),
+				RowAddress:      semantic.StableAddress(item.RowAddress),
+				ColumnAddress:   semantic.ColumnAddress(item.ColumnAddress),
+				Value:           scalar,
+			}
+		}
+		result.Attributes = &values
+	default:
+		return semantic.MatrixDisplayValue{}, fmt.Errorf("unsupported Matrix display kind %q", input.Kind)
+	}
+	return result, nil
+}
+
+func mapTreeViewData(ctx context.Context, input engine.TreeViewData) (semantic.TreeViewData, error) {
+	roots, err := mapTreeOccurrences(ctx, input.Roots)
+	if err != nil {
+		return semantic.TreeViewData{}, err
+	}
+	cycleRefs, err := mapTreeRefs(ctx, input.CycleRefs)
+	if err != nil {
+		return semantic.TreeViewData{}, err
+	}
+	linkRefs, err := mapTreeRefs(ctx, input.LinkRefs)
+	if err != nil {
+		return semantic.TreeViewData{}, err
+	}
+	return semantic.TreeViewData{Roots: roots, CycleRefs: cycleRefs, LinkRefs: linkRefs}, nil
+}
+
+func mapTreeOccurrences(ctx context.Context, input []engine.TreeOccurrence) ([]semantic.TreeOccurrence, error) {
+	result := make([]semantic.TreeOccurrence, len(input))
+	type frame struct {
+		input  *engine.TreeOccurrence
+		output *semantic.TreeOccurrence
+		depth  int
+	}
+	stack := make([]frame, 0, len(input))
+	for index := range input {
+		stack = append(stack, frame{input: &input[index], output: &result[index], depth: 1})
+	}
+	for len(stack) != 0 {
+		last := len(stack) - 1
+		current := stack[last]
+		stack = stack[:last]
+		if current.depth > protocolcommon.MaxWireJSONDepth {
+			return nil, fmt.Errorf("Tree ViewData exceeds maximum protocol depth")
+		}
+		source, err := mapViewDataSourceRefs(ctx, current.input.Source)
+		if err != nil {
+			return nil, err
+		}
+		*current.output = semantic.TreeOccurrence{
+			Key:                semantic.ViewDataItemKey(current.input.Key),
+			EntityAddress:      semantic.EntityAddress(current.input.EntityAddress),
+			ViaRelationAddress: optionalTypedStringPointer[semantic.RelationAddress](current.input.ViaRelationAddress),
+			Children:           make([]semantic.TreeOccurrence, len(current.input.Children)),
+			Source:             source,
+		}
+		for index := len(current.input.Children) - 1; index >= 0; index-- {
+			stack = append(stack, frame{
+				input:  &current.input.Children[index],
+				output: &current.output.Children[index],
+				depth:  current.depth + 1,
 			})
 		}
+	}
+	return result, nil
+}
+
+func mapTreeRefs(ctx context.Context, input []engine.TreeRef) ([]semantic.TreeRef, error) {
+	result := make([]semantic.TreeRef, len(input))
+	for index, value := range input {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return nil, err
+		}
+		result[index] = semantic.TreeRef{
+			Key:               semantic.ViewDataItemKey(value.Key),
+			FromOccurrenceKey: semantic.ViewDataItemKey(value.FromOccurrenceKey),
+			ToEntityAddress:   semantic.EntityAddress(value.ToEntityAddress),
+			RelationAddress:   semantic.RelationAddress(value.RelationAddress),
+			Source:            source,
+		}
+	}
+	return result, nil
+}
+
+func mapFlowViewData(ctx context.Context, input engine.FlowViewData) (semantic.FlowViewData, error) {
+	result := semantic.FlowViewData{
+		Lanes:      make([]semantic.FlowLane, len(input.Lanes)),
+		Steps:      make([]semantic.FlowStep, len(input.Steps)),
+		Connectors: make([]semantic.FlowConnector, len(input.Connectors)),
+		CycleRefs:  make([]semantic.FlowCycleRef, len(input.CycleRefs)),
+	}
+	for index, value := range input.Lanes {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.FlowViewData{}, err
+		}
+		result.Lanes[index] = semantic.FlowLane{
+			Key: semantic.ViewDataItemKey(value.Key), Label: value.Label,
+			StepKeys: protocolSlice[semantic.ViewDataItemKey](value.StepKeys), Source: source,
+		}
+	}
+	for index, value := range input.Steps {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.FlowViewData{}, err
+		}
+		result.Steps[index] = semantic.FlowStep{
+			Key: semantic.ViewDataItemKey(value.Key), EntityAddress: semantic.EntityAddress(value.EntityAddress),
+			LaneKey: semantic.ViewDataItemKey(value.LaneKey), Branch: value.Branch, Join: value.Join, Source: source,
+		}
+	}
+	for index, value := range input.Connectors {
+		mapped, err := mapFlowConnector(ctx, value)
+		if err != nil {
+			return semantic.FlowViewData{}, err
+		}
+		result.Connectors[index] = mapped
+	}
+	for index, value := range input.CycleRefs {
+		mapped, err := mapFlowCycleRef(ctx, value)
+		if err != nil {
+			return semantic.FlowViewData{}, err
+		}
+		result.CycleRefs[index] = mapped
+	}
+	return result, nil
+}
+
+func mapFlowConnector(ctx context.Context, input engine.FlowConnector) (semantic.FlowConnector, error) {
+	source, err := mapViewDataSourceRefs(ctx, input.Source)
+	if err != nil {
+		return semantic.FlowConnector{}, err
+	}
+	result := semantic.FlowConnector{
+		Key: semantic.ViewDataItemKey(input.Key), FromStepKey: semantic.ViewDataItemKey(input.FromStepKey),
+		ToStepKey: semantic.ViewDataItemKey(input.ToStepKey), Kind: semantic.FlowConnectorKind(input.Kind),
+		BranchRowAddresses: protocolSlice[semantic.StableAddress](input.BranchRowAddresses),
+		RelationAddresses:  protocolSlice[semantic.RelationAddress](input.RelationAddresses), Source: source,
+	}
+	if input.BranchValue != nil {
+		value, err := mapEngineScalar(*input.BranchValue)
+		if err != nil {
+			return semantic.FlowConnector{}, err
+		}
+		result.BranchValue = &value
+	}
+	return result, nil
+}
+
+func mapFlowCycleRef(ctx context.Context, input engine.FlowCycleRef) (semantic.FlowCycleRef, error) {
+	source, err := mapViewDataSourceRefs(ctx, input.Source)
+	if err != nil {
+		return semantic.FlowCycleRef{}, err
+	}
+	result := semantic.FlowCycleRef{
+		Key: semantic.ViewDataItemKey(input.Key), ConnectorKey: semantic.ViewDataItemKey(input.ConnectorKey),
+		FromStepKey: semantic.ViewDataItemKey(input.FromStepKey), ToStepKey: semantic.ViewDataItemKey(input.ToStepKey),
+		Kind: semantic.FlowConnectorKind(input.Kind), BranchRowAddresses: protocolSlice[semantic.StableAddress](input.BranchRowAddresses),
+		RelationAddresses: protocolSlice[semantic.RelationAddress](input.RelationAddresses), Source: source,
+	}
+	if input.BranchValue != nil {
+		value, err := mapEngineScalar(*input.BranchValue)
+		if err != nil {
+			return semantic.FlowCycleRef{}, err
+		}
+		result.BranchValue = &value
+	}
+	return result, nil
+}
+
+func mapContextViewData(ctx context.Context, input engine.ContextViewData) (semantic.ContextViewData, error) {
+	result := semantic.ContextViewData{Groups: make([]semantic.ContextGroup, len(input.Groups))}
+	for index, value := range input.Groups {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.ContextViewData{}, err
+		}
+		group := semantic.ContextGroup{
+			Key:        semantic.ViewDataItemKey(value.Key),
+			Label:      value.Label,
+			Facts:      make([]semantic.ContextFact, len(value.Facts)),
+			Attributes: make([]semantic.ContextAttribute, len(value.Attributes)),
+			Source:     source,
+		}
+		for factIndex, fact := range value.Facts {
+			factSource, err := mapViewDataSourceRefs(ctx, fact.Source)
+			if err != nil {
+				return semantic.ContextViewData{}, err
+			}
+			group.Facts[factIndex] = semantic.ContextFact{
+				Key:             semantic.ViewDataItemKey(fact.Key),
+				Direction:       string(fact.Direction),
+				Text:            fact.Text,
+				EntityAddress:   semantic.EntityAddress(fact.EntityAddress),
+				RelationAddress: semantic.RelationAddress(fact.RelationAddress),
+				RowAddresses:    protocolSlice[semantic.StableAddress](fact.RowAddresses),
+				Source:          factSource,
+			}
+		}
+		for attributeIndex, attribute := range value.Attributes {
+			attributeSource, err := mapViewDataSourceRefs(ctx, attribute.Source)
+			if err != nil {
+				return semantic.ContextViewData{}, err
+			}
+			values := make(map[string]semantic.RecipeScalar, len(attribute.Values))
+			for address, scalar := range attribute.Values {
+				mapped, err := mapEngineScalar(scalar)
+				if err != nil {
+					return semantic.ContextViewData{}, err
+				}
+				values[address] = mapped
+			}
+			group.Attributes[attributeIndex] = semantic.ContextAttribute{
+				Key:          semantic.ViewDataItemKey(attribute.Key),
+				GroupKey:     semantic.ViewDataItemKey(attribute.GroupKey),
+				OwnerAddress: semantic.StableAddress(attribute.OwnerAddress),
+				RowAddress:   semantic.StableAddress(attribute.RowAddress),
+				Values:       values,
+				Source:       attributeSource,
+			}
+		}
+		result.Groups[index] = group
+	}
+	return result, nil
+}
+
+func mapEngineScalar(input engine.TypedScalar) (semantic.RecipeScalar, error) {
+	return mapRecipeScalar(materialize.Scalar{
+		Type: input.Type, String: input.String, Int: input.Int, Float: input.Float, Bool: input.Bool,
+	})
+}
+
+func mapDiffViewData(ctx context.Context, input engine.DiffViewData) (semantic.DiffViewData, error) {
+	result := semantic.DiffViewData{Changes: make([]semantic.DiffChange, len(input.Changes))}
+	for index, value := range input.Changes {
+		source, err := mapViewDataSourceRefs(ctx, value.Source)
+		if err != nil {
+			return semantic.DiffViewData{}, err
+		}
+		change := semantic.DiffChange{
+			Key:         semantic.ViewDataItemKey(value.Key),
+			Kind:        string(value.Kind),
+			SubjectKind: semantic.SubjectKind(value.SubjectKind),
+			Fields:      make([]semantic.FieldDiff, len(value.Fields)),
+			Source:      source,
+		}
+		change.BeforeAddress = optionalTypedStringPointer[semantic.StableAddress](value.BeforeAddress)
+		change.AfterAddress = optionalTypedStringPointer[semantic.StableAddress](value.AfterAddress)
+		if value.BeforeSource != nil {
+			mapped, err := mapViewDataSourceRefs(ctx, *value.BeforeSource)
+			if err != nil {
+				return semantic.DiffViewData{}, err
+			}
+			change.BeforeSource = &mapped
+		}
+		if value.AfterSource != nil {
+			mapped, err := mapViewDataSourceRefs(ctx, *value.AfterSource)
+			if err != nil {
+				return semantic.DiffViewData{}, err
+			}
+			change.AfterSource = &mapped
+		}
+		for fieldIndex, field := range value.Fields {
+			mapped := semantic.FieldDiff{
+				Key:           semantic.ViewDataItemKey(field.Key),
+				Path:          append([]string{}, field.Path...),
+				BeforePresent: field.BeforePresent,
+				AfterPresent:  field.AfterPresent,
+			}
+			if field.Before != nil {
+				before, err := mapViewDataSemanticValue(*field.Before, 0)
+				if err != nil {
+					return semantic.DiffViewData{}, err
+				}
+				mapped.Before = &before
+			}
+			if field.After != nil {
+				after, err := mapViewDataSemanticValue(*field.After, 0)
+				if err != nil {
+					return semantic.DiffViewData{}, err
+				}
+				mapped.After = &after
+			}
+			change.Fields[fieldIndex] = mapped
+		}
+		result.Changes[index] = change
+	}
+	return result, nil
+}
+
+func mapViewDataSemanticValue(input engine.SemanticValue, depth int) (semantic.ViewDataSemanticValue, error) {
+	if depth > protocolcommon.MaxWireJSONDepth {
+		return semantic.ViewDataSemanticValue{}, fmt.Errorf("Diff semantic value exceeds maximum protocol depth")
+	}
+	result := semantic.ViewDataSemanticValue{Kind: string(input.Kind)}
+	switch input.Kind {
+	case engine.SemanticValueAbsent:
+	case engine.SemanticValueAddress:
+		value := semantic.StableAddress(input.Address)
+		result.Address = &value
+	case engine.SemanticValueArray:
+		values := make([]semantic.ViewDataSemanticValue, len(input.Array))
+		for index, item := range input.Array {
+			mapped, err := mapViewDataSemanticValue(item, depth+1)
+			if err != nil {
+				return semantic.ViewDataSemanticValue{}, err
+			}
+			values[index] = mapped
+		}
+		result.Array = &values
+	case engine.SemanticValueBlob:
+		if input.BlobRef == nil {
+			return semantic.ViewDataSemanticValue{}, fmt.Errorf("Diff blob value lacks BlobRef")
+		}
+		value := protocolcommon.BlobRef{
+			BlobID: input.BlobRef.BlobID, Digest: protocolcommon.Digest(input.BlobRef.Digest),
+			Lifetime: protocolcommon.BlobLifetime(input.BlobRef.Lifetime), MediaType: input.BlobRef.MediaType,
+			Size: protocolcommon.CanonicalUint64(strconv.FormatUint(input.BlobRef.Size, 10)),
+		}
+		result.Blob = &value
+	case engine.SemanticValueBoolean:
+		value := input.Boolean
+		result.Boolean = &value
+	case engine.SemanticValueDecimal:
+		value := semantic.CanonicalFiniteDecimal(input.Decimal)
+		result.Decimal = &value
+	case engine.SemanticValueInteger:
+		value := protocolcommon.CanonicalInt64(strconv.FormatInt(input.Integer, 10))
+		result.Integer = &value
+	case engine.SemanticValueMap:
+		values := make([]semantic.ViewDataSemanticMapEntry, len(input.Map))
+		for index, item := range input.Map {
+			mapped, err := mapViewDataSemanticValue(item.Value, depth+1)
+			if err != nil {
+				return semantic.ViewDataSemanticValue{}, err
+			}
+			values[index] = semantic.ViewDataSemanticMapEntry{Key: item.Key, Value: mapped}
+		}
+		result.Map = &values
+	case engine.SemanticValueString:
+		value := input.String
+		result.String = &value
+	case engine.SemanticValueToken:
+		value := input.String
+		result.Token = &value
+	default:
+		return semantic.ViewDataSemanticValue{}, fmt.Errorf("unsupported Diff semantic value kind %q", input.Kind)
 	}
 	return result, nil
 }
