@@ -1195,3 +1195,17 @@ function digestArray(
 }
 
 export * from "./materialize.js";
+export {
+  DEFAULT_VISUAL_SURFACE_LIMITS,
+  renderDiagramVisualSurface,
+  renderFlowVisualSurface,
+  renderTreeVisualSurface,
+  VISUAL_SURFACE_HARD_LIMITS,
+  VisualSurfaceError,
+  type GraphVisualShape,
+  type GraphVisualSurface,
+  type VisualHitTarget,
+  type VisualInteractionMetadata,
+  type VisualSurfaceLimits,
+  type VisualSurfaceOptions,
+} from "./visual.js";
