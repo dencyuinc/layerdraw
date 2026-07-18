@@ -64,6 +64,9 @@ type ListRevisionsOperation interface {
 // Ports is the complete provider-neutral dependency set. Port presence
 // describes storage support but never implies that an operation handler exists.
 type Ports struct {
+	Workbench  port.Workbench
+	Grants     port.GrantSource
+	Scopes     port.ScopeSource
 	Documents  port.DocumentStore
 	State      port.StateBackend
 	Assets     port.AssetStore
@@ -83,8 +86,8 @@ type Config struct {
 	Operations            Operations
 }
 
-// Runtime is the immutable facade configuration. Commit persistence and
-// publication are deliberately absent from this contract milestone.
+// Runtime is the immutable facade configuration. The host-neutral coordinator
+// is installed only when its complete typed port set is present.
 type Runtime struct{ config Config }
 
 func New(config Config) (*Runtime, error) {
@@ -100,7 +103,20 @@ func New(config Config) (*Runtime, error) {
 	if _, err := runtimeprotocol.EncodeRuntimeLimits(config.Limits); err != nil {
 		return nil, fmt.Errorf("runtime configuration: invalid limits")
 	}
-	return &Runtime{config: config}, nil
+	r := &Runtime{config: config}
+	if operationsEmpty(config.Operations) && coordinatorPortsConfigured(config.Ports) {
+		coordinator := newCoordinator(r)
+		r.config.Operations = Operations{OpenDocument: coordinator, CommitOperations: coordinator, CancelOperation: coordinator, GetOperationResult: coordinator, ListRevisions: coordinator}
+	}
+	return r, nil
+}
+
+func operationsEmpty(operations Operations) bool {
+	return operations.OpenDocument == nil && operations.CommitOperations == nil && operations.CancelOperation == nil && operations.GetOperationResult == nil && operations.ListRevisions == nil
+}
+
+func coordinatorPortsConfigured(ports Ports) bool {
+	return ports.Workbench != nil && ports.Grants != nil && ports.Scopes != nil && ports.Documents != nil && ports.State != nil && ports.History != nil && ports.Recovery != nil && ports.Authoring != nil && ports.Clock != nil && ports.Identities != nil
 }
 
 type Descriptor struct {

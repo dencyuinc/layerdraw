@@ -637,7 +637,7 @@ func testBinding(expires time.Time) SessionBinding {
 
 func testRevision() runtimeprotocol.CommittedRevisionRef {
 	providerVersion := runtimeprotocol.ProviderVersionToken("provider-v1")
-	return runtimeprotocol.CommittedRevisionRef{DocumentID: "doc_one", RevisionID: "rev_one", DefinitionHash: digest('2'), ProviderVersion: &providerVersion}
+	return runtimeprotocol.CommittedRevisionRef{DocumentID: "doc_one", RevisionID: "rev_one", DefinitionHash: digest('2'), GraphHash: digest('7'), ProviderVersion: &providerVersion}
 }
 func digest(char byte) protocolcommon.Digest {
 	return protocolcommon.Digest("sha256:" + strings.Repeat(string(char), 64))
@@ -715,6 +715,7 @@ type fakeRecovery struct{}
 func (fakeRecovery) CreatePending(context.Context, port.CreatePendingRecordInput) (port.RecoveryRecord, error) {
 	return port.RecoveryRecord{}, nil
 }
+func (fakeRecovery) AbandonPending(context.Context, port.AbandonPendingRecordInput) error { return nil }
 func (fakeRecovery) Get(context.Context, port.GetRecoveryRecordInput) (port.RecoveryRecord, error) {
 	return port.RecoveryRecord{}, nil
 }
@@ -775,6 +776,9 @@ func (fakeStateBackend) RenewLease(context.Context, port.RenewLeaseInput) (port.
 	return port.StateLease{}, nil
 }
 func (fakeStateBackend) ReleaseLease(context.Context, port.ReleaseLeaseInput) error { return nil }
+func (fakeStateBackend) ValidateLease(context.Context, port.ValidateLeaseInput) (port.StateLease, error) {
+	return port.StateLease{}, nil
+}
 func (fakeStateBackend) AppendAuditEvent(context.Context, port.AppendAuditEventInput) (port.AuditEventRef, error) {
 	return port.AuditEventRef{}, nil
 }

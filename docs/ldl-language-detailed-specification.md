@@ -1944,25 +1944,29 @@ operation応答の意味を次に固定する。
 
 ```text
 OperationResult {
+  operation_id: non-empty string
+  idempotency_key: non-empty string
   status: enum(committed,rejected,committed_state_stale,needs_review)
-  revision?: integer|non-empty string
-  definition_hash?: sha256
+  committed_revision?: CommittedRevisionRef
+  state_version?: non-negative integer
   diagnostics: Diagnostic[]
-  conflicts: Conflict[]
+  failure_code?: RuntimeFailureCode
+  conflict_evidence?: { current_head: CommittedRevisionRef }
+  result_digest: sha256
 }
 
-Conflict {
-  class: enum(stale_revision,subject_changed,subtree_changed,child_set_changed,same_field_changed,delete_vs_update,duplicate_identity,reference_broken,schema_row_incompatible,placement_changed,project_identity_changed)
-  target_address?: StableAddress
-  owner_address?: StableAddress
-  child_kind?: AddressableChildKind
-  path?: string[]
+CommittedRevisionRef {
+  document_id: non-empty string
+  revision_id: non-empty string
+  definition_hash: sha256
+  graph_hash: sha256
+  provider_version?: non-empty string
 }
 ```
 
-`committed`はdefinitionと要求されたstate effectが完了、`committed_state_stale`はdefinitionだけがcommitされ`LDL1902`とstate reconciliationを伴う。`rejected`はdefinitionを公開せず、validation diagnosticまたは上記conflict classを返す。`needs_review`はwrite-ahead recordから公開状態を一意に判定できない場合だけ使い`LDL1903`を返す。`committed_state_stale`と`needs_review`はLDLソースの無効を意味せず、state protocol statusとして診断へ接続する。
+`committed`はdefinitionと要求されたstate effectが完了、`committed_state_stale`はdefinitionだけがcommitされ`LDL1902`とstate reconciliationを伴う。`rejected`はdefinitionを公開せず、validation diagnosticまたはcurrent-headのtyped conflict evidenceを返す。`needs_review`はwrite-ahead recordから公開状態を一意に判定できない場合だけ使い`LDL1903`を返す。`committed_state_stale`と`needs_review`はLDLソースの無効を意味せず、state protocol statusとして診断へ接続する。
 
-`committed`/`committed_state_stale`は`revision`と`definition_hash`を必須、`conflicts`をemptyとする。`rejected`/`needs_review`は確定済みrevision/hashを返してはならない。`rejected`はdiagnosticsまたはconflictsを1件以上、`needs_review`は`LDL1903`を必ず持つ。conflictsはclassのenum記載順、target、owner、child kind、path順でsortしsemantic duplicateを禁止する。diagnosticsは10.2節順とする。
+`committed`/`committed_state_stale`は`committed_revision`を必須とし、`rejected`/`needs_review`は確定済みrevisionを返してはならない。`committed_state_stale`はstate versionと`LDL1902`、`needs_review`は`LDL1903`を必ず持つ。`rejected`はdiagnosticsを1件以上持つか`conflict_evidence.current_head`を返す。`result_digest`は`result_digest`自身を除く全OperationResult fieldのcanonical JSONに対するSHA-256である。diagnosticsは10.2節順とする。
 
 同一subjectの異なるregistered フィールド pathは、相互検証へ影響しない場合だけmergeできる。スキーマ/row editは同じColumn、required/既定値、type、enum set、unique 制約、row cellへ触れる場合にdependentとする。
 

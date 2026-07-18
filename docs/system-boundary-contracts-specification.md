@@ -685,17 +685,18 @@ runtime.open_document
 
 ```text
 OpenRuntimeDocumentResult
-  runtime_session_id
-  document_id
-  committed_revision
-  document_handle
-  document_generation
-  definition_hash
-  state_summary
-  access_summary
-  capability_manifest
-  diagnostics
+  session: RuntimeSessionRef
+  committed_revision: CommittedRevisionRef
+  working_document
+    session: RuntimeSessionRef
+    base_revision: CommittedRevisionRef
+    working_generation
+  state_input: StateInput
+  access_summary: AuthoringGrantSummary
+  capability_manifest: RuntimeCapabilityManifest
 ```
+
+Runtimeはopen時にtrusted StateBackend headをsession bindingへ固定する。StateQuerySnapshot構築を行わないhost-neutral coordinatorは`state_input.kind=none`を返し、存在しないsnapshotを主張しない。固定したstate version、backend version、definition hash、subject hash集合は後続state mutationのpreconditionにだけ使う。
 
 open中にRegistryへfallback fetchしない。resolved pack treeが欠損している場合はRegistry repairを明示的に要求する。
 
@@ -729,11 +730,17 @@ runtime.commit_operations
 
 ```text
 RuntimeCommitInput
-  runtime_session_id
+  session: RuntimeSessionRef
   operation_id
-  operation_batch: OperationBatch
-  authoring_proof?
-  expected_state_version?
+  idempotency_key
+  operation_batch
+    document_id
+    base_revision: CommittedRevisionRef
+    expected_definition_hash
+    preconditions: EngineEditPreconditions
+    operations: SemanticOperationBatch
+  authoring_proof
+  cancellation_token?
   lease_token?
   state_mutation?
   trigger: explicit_save | autosave | realtime_checkpoint | agent_apply | registry_install | restore
@@ -763,14 +770,13 @@ RuntimeSourcePatchCommitInput
 
 ```text
 RuntimeCommitResult
-  operation_id
   operation_result: OperationResult
-  state_version?
-  semantic_diff?
-  authoring_impact
-  authoring_decision
-  repair_actions[]
+  preview_evaluation?
+    authoring_impact: AuthoringImpact
+    authoring_decision: AuthoringDecision
 ```
+
+`preview_evaluation`はEngine previewとAccess evaluationの両方が完了した場合だけ存在し、2 fieldを常に一組で保持する。session、wire、current-head、lease、limit、cancelなどpreview前のterminal rejectionはこれを省略し、未実行のpreview / evaluationを主張しない。
 
 `OperationResult`はLDL詳細仕様11.3節をそのまま使う。head publication前の失敗は`rejected`、publication後のstate / audit不整合は`committed_state_stale`、publication成否を証明できない時だけ`needs_review`とする。wire-validなcommit requestはResponseEnvelopeの`outcome=success`でRuntimeCommitResultを返し、OperationResultの`rejected`をtransport rejectionへ潰さない。wire / session / authorization自体の拒否だけResponseEnvelopeの`outcome=rejected`を使う。
 
@@ -778,12 +784,16 @@ Runtime transaction phaseは次へ固定する。
 
 ```text
 pending -> staged -> publication_pending -> published
+pending -> final (stale head / lease / limit / cancellation / Engine domain rejection)
+pending -> abandoned (pre-publication transport / document-port / authorization rejection)
 published -> state_pending -> audit_pending -> outbox_ready -> final
 publication_pending -> recovering -> final | needs_review
 published/state_pending/audit_pending -> recovering -> final
 ```
 
-pending outbox recordはhead publication前にdurableでなければならない。publication後にoutbox ready化が失敗した場合、recoveryがheadとpending eventを照合してreadyへ進める。broadcast成功はcommit条件ではないが、durable outboxなしでheadをpublishしない。state / audit repair中はOperationResultを`committed_state_stale`へ収束させ、eventにstate statusを含める。
+`runtime.cancel_operation`はtrusted session / document / operationへscopeしたtokenだけを対象にする。publication startと同じlockで線形化し、先行したcancelは`cancel_requested`、publication start後は`too_late`、pending entryがなければ`not_pending`を返す。terminal result確定時にprocess-local cancellation entryを削除する。
+
+pending idempotency reservationはcurrent-head、lease、limit、cancellation、Engine preview、Access evaluationより前にdurableでなければならず、以後のdomain-level typed rejectionは同じrecordを`final`へ確定する。wire / session / authorization rejectionとtransport / document-port failureはtyped OperationResultへ変換せず、publication前の`pending` reservationをoperation、idempotency key、payload digestの一致で条件付きabandonしてtransport rejectionを返す。Engine previewとAccess evaluationの成功後は、trusted evaluation digestとdecision digestを`pending -> staged`の条件付きtransitionへ原子的に束縛し、recoveryとretryは両digestをterminal preview evidenceに対して再検証する。publication前のRecoveryJournal port / invariant failureもtyped rejectionへ変換せず、staged revisionを安全にabortした上でjournalを最後に証明できた`pending`または`staged` phaseへ残し、明示的なrecovery対象とする。CreatePending、Advance、Finalizeの成功は、returned recordのscope、operation、idempotency key、payload digest、base revision、phase、evaluation evidence、terminal resultが要求と完全一致した時だけ信用する。pending outbox recordはhead publication前にdurableでなければならない。publication後にoutbox ready化が失敗した場合、recoveryがheadとpending eventを照合してreadyへ進める。broadcast成功はcommit条件ではないが、durable outboxなしでheadをpublishしない。state / audit repair中はOperationResultを`committed_state_stale`へ収束させ、eventにstate statusを含める。
 
 ### 4.8 Save and autosave
 

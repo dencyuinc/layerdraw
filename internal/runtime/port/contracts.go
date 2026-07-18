@@ -4,14 +4,84 @@ package port
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 )
+
+// Stable adapter outcomes. Providers map their private errors to these values;
+// Runtime never inspects provider error strings.
+var (
+	ErrNotFound      = errors.New("runtime port: not found")
+	ErrConflict      = errors.New("runtime port: conditional conflict")
+	ErrIndeterminate = errors.New("runtime port: publication indeterminate")
+)
+
+// Workbench is the Runtime-facing view of the Go Engine Workbench. It owns all
+// LDL parsing, semantic application, canonical source rewriting, hashes, and
+// AuthoringImpact classification. Runtime only coordinates its result.
+type Workbench interface {
+	Open(context.Context, OpenWorkingDocumentInput) (WorkingDocument, error)
+	Preview(context.Context, PreviewWorkingDocumentInput) (PreparedRevision, error)
+	Checkpoint(context.Context, CheckpointWorkingDocumentInput) (WorkingDocument, error)
+}
+
+type OpenWorkingDocumentInput struct {
+	Scope    runtimeprotocol.RuntimeScope
+	Revision RevisionSnapshot
+	Sources  SourceBlobSet
+	Limits   runtimeprotocol.RuntimeLimits
+}
+
+type WorkingDocument struct {
+	Handle         string
+	Generation     protocolcommon.CanonicalNonNegativeInt64
+	BaseRevision   runtimeprotocol.CommittedRevisionRef
+	DefinitionHash protocolcommon.Digest
+	GraphHash      protocolcommon.Digest
+}
+
+type PreviewWorkingDocumentInput struct {
+	Document      WorkingDocument
+	Batch         engineprotocol.SemanticOperationBatch
+	Preconditions engineprotocol.EngineEditPreconditions
+	MaxOperations protocolcommon.CanonicalPositiveInt64
+}
+
+type PreparedRevision struct {
+	AuthoringImpact semantic.AuthoringImpact
+	DefinitionHash  protocolcommon.Digest
+	GraphHash       protocolcommon.Digest
+	// Sources is the complete canonical source closure produced by Workbench.
+	// Every ref identity is unique and Contents must match its declared size and
+	// sha256 digest before Runtime may pass the set to StageRevision.
+	Sources  SourceBlobSet
+	Manifest protocolcommon.BlobRef
+}
+
+type CheckpointWorkingDocumentInput struct {
+	Document WorkingDocument
+	Prepared PreparedRevision
+	Revision runtimeprotocol.CommittedRevisionRef
+}
+
+// GrantSource resolves a fresh trusted snapshot for every open and commit.
+// A preview proof is an equality precondition and is never treated as a grant.
+type GrantSource interface {
+	ResolveGrant(context.Context, runtimeprotocol.RuntimeScope) (accessprotocol.AuthoringGrantSnapshot, accessprotocol.AuthoringGrantSummary, error)
+}
+
+// ScopeSource resolves trusted host scope; OpenRuntimeDocumentInput deliberately
+// carries only a document id and cannot self-assert organization or access.
+type ScopeSource interface {
+	ResolveScope(context.Context, runtimeprotocol.DocumentID) (runtimeprotocol.RuntimeScope, error)
+}
 
 // DocumentStore owns canonical revision bytes and the conditional head
 // publication point. A provider version is an opaque comparison token, not a
@@ -52,7 +122,9 @@ type ReadSourceBlobsInput struct {
 
 // SourceBlob carries the exact source bytes behind a revision BlobRef. The
 // provider-neutral port owns byte acquisition; Runtime never interprets a
-// provider locator or SDK stream handle.
+// provider locator or SDK stream handle. ReadSourceBlobs returns exactly one
+// SourceBlob for every requested BlobRef, with no missing, extra, or duplicate
+// BlobID and with the complete Ref and Contents verified byte-for-byte.
 type SourceBlob struct {
 	Ref      protocolcommon.BlobRef
 	Contents []byte
@@ -69,10 +141,13 @@ type StageRevisionInput struct {
 	IdempotencyKey    runtimeprotocol.IdempotencyKey
 	BaseRevision      runtimeprotocol.CommittedRevisionRef
 	DefinitionHash    protocolcommon.Digest
+	GraphHash         protocolcommon.Digest
 	SourceBlobs       SourceBlobSet
 	Manifest          protocolcommon.BlobRef
 	DecisionDigest    protocolcommon.Digest
 	EvaluationDigest  protocolcommon.Digest
+	Actor             accessprotocol.ActorRef
+	Trigger           runtimeprotocol.CommitTrigger
 	CancellationToken *runtimeprotocol.CancellationToken
 }
 
@@ -111,9 +186,15 @@ type StateBackend interface {
 	AcquireLease(context.Context, AcquireLeaseInput) (StateLease, error)
 	RenewLease(context.Context, RenewLeaseInput) (StateLease, error)
 	ReleaseLease(context.Context, ReleaseLeaseInput) error
+	ValidateLease(context.Context, ValidateLeaseInput) (StateLease, error)
 	AppendAuditEvent(context.Context, AppendAuditEventInput) (AuditEventRef, error)
 	ListAuditEvents(context.Context, ListAuditEventsInput) (AuditEventPage, error)
 	ExportSnapshot(context.Context, ExportStateSnapshotInput) (StateSnapshot, error)
+}
+
+type ValidateLeaseInput struct {
+	Scope      runtimeprotocol.RuntimeScope
+	LeaseToken runtimeprotocol.LeaseToken
 }
 
 type GetStateHeadInput struct{ Scope runtimeprotocol.RuntimeScope }
@@ -150,8 +231,9 @@ type WriteStateInput struct {
 }
 
 type StateWriteResult struct {
-	StateVersion   protocolcommon.CanonicalNonNegativeInt64
-	BackendVersion runtimeprotocol.ProviderVersionToken
+	// Head is the complete trusted post-write binding. Returning only a version
+	// would leave the next mutation using stale backend and subject metadata.
+	Head StateHead
 }
 
 type AcquireLeaseInput struct {
@@ -280,19 +362,28 @@ type ProviderRevisionRef struct {
 // publication occurred after a timeout or partial failure.
 type RecoveryJournal interface {
 	CreatePending(context.Context, CreatePendingRecordInput) (RecoveryRecord, error)
+	AbandonPending(context.Context, AbandonPendingRecordInput) error
 	Get(context.Context, GetRecoveryRecordInput) (RecoveryRecord, error)
 	Advance(context.Context, AdvanceRecoveryRecordInput) (RecoveryRecord, error)
 	Finalize(context.Context, FinalizeRecoveryRecordInput) (RecoveryRecord, error)
 }
 
+type AbandonPendingRecordInput struct {
+	Scope          runtimeprotocol.RuntimeScope
+	OperationID    runtimeprotocol.OperationID
+	IdempotencyKey runtimeprotocol.IdempotencyKey
+	PayloadDigest  protocolcommon.Digest
+}
+
 type CreatePendingRecordInput struct {
-	Scope            runtimeprotocol.RuntimeScope
-	OperationID      runtimeprotocol.OperationID
-	IdempotencyKey   runtimeprotocol.IdempotencyKey
-	PayloadDigest    protocolcommon.Digest
-	BaseRevision     runtimeprotocol.CommittedRevisionRef
-	EvaluationDigest protocolcommon.Digest
-	DecisionDigest   protocolcommon.Digest
+	Scope          runtimeprotocol.RuntimeScope
+	OperationID    runtimeprotocol.OperationID
+	IdempotencyKey runtimeprotocol.IdempotencyKey
+	PayloadDigest  protocolcommon.Digest
+	// BaseRevision is the caller's validated wire base. Reservation happens
+	// before current-head, lease, preview, and Access evaluation so every typed
+	// rejection can be durably replayed without rerunning those checks.
+	BaseRevision runtimeprotocol.CommittedRevisionRef
 }
 
 type GetRecoveryRecordInput struct {
@@ -307,17 +398,26 @@ type AdvanceRecoveryRecordInput struct {
 	ExpectedPhase     runtimeprotocol.RecoveryPhase
 	NextPhase         runtimeprotocol.RecoveryPhase
 	PublishedRevision *runtimeprotocol.CommittedRevisionRef
+	EvaluationDigest  *protocolcommon.Digest
+	DecisionDigest    *protocolcommon.Digest
 }
 
 type FinalizeRecoveryRecordInput struct {
-	Scope           runtimeprotocol.RuntimeScope
-	OperationResult runtimeprotocol.OperationResult
+	Scope        runtimeprotocol.RuntimeScope
+	CommitResult runtimeprotocol.RuntimeCommitResult
+	// TerminalPhase is final for proven outcomes and needs_review only when
+	// publication cannot be proven from the trusted head.
+	TerminalPhase runtimeprotocol.RecoveryPhase
 }
 
 type RecoveryRecord struct {
-	Status        runtimeprotocol.RuntimeOperationStatus
-	PayloadDigest protocolcommon.Digest
-	BaseRevision  runtimeprotocol.CommittedRevisionRef
+	Scope            runtimeprotocol.RuntimeScope
+	Status           runtimeprotocol.RuntimeOperationStatus
+	CommitResult     *runtimeprotocol.RuntimeCommitResult
+	PayloadDigest    protocolcommon.Digest
+	BaseRevision     runtimeprotocol.CommittedRevisionRef
+	EvaluationDigest *protocolcommon.Digest
+	DecisionDigest   *protocolcommon.Digest
 }
 
 // AuthoringDecision is injected explicitly. Local full-authoring hosts use

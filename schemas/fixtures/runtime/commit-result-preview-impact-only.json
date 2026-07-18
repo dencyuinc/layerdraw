@@ -1,0 +1,21 @@
+{
+  "operation_result": {
+    "diagnostics": [{"arguments": {}, "code": "LDL1901", "message_key": "operation_rejected", "protocol_version": 1, "related": [], "severity": "error"}],
+    "failure_code": "runtime.cancelled",
+    "idempotency_key": "idem_commit_000001",
+    "operation_id": "operation_1",
+    "result_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "status": "rejected"
+  },
+  "preview_evaluation": {
+    "authoring_impact": {
+      "base_definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "entries": [],
+      "impact_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "required_capabilities": [],
+      "resulting_definition_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "semantic_diff_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_diff_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  }
+}

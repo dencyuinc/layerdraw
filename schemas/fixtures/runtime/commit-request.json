@@ -5,6 +5,7 @@
       "access_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "base_revision": {
         "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "graph_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
         "document_id": "doc_fixture",
         "revision_id": "rev_1"
       },
@@ -13,18 +14,27 @@
       "membership_version": "7",
       "policy_refs": []
     },
-    "expected_definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-    "expected_revision": {
+    "operation_batch": {
+      "base_revision": {
       "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "graph_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
       "document_id": "doc_fixture",
       "revision_id": "rev_1"
+      },
+      "document_id": "doc_fixture",
+      "expected_definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "operations": {"operations": [
+        {"operation": "delete_subject", "target_address": "ldl:project:fixture:entity:obsolete"}
+      ]},
+      "preconditions": {
+        "document_generation": {"document_handle": {"endpoint_instance_id": "runtime-fixture", "value": "document_fixture_12345678"}, "value": "1"},
+        "expected_child_sets": [],
+        "expected_source_digests": [],
+        "expected_subject_hashes": [],
+        "expected_subtree_hashes": []
+      }
     },
     "idempotency_key": "idem_commit_000001",
-    "operation_batch": {
-      "operations": [
-        {"operation": "delete_subject", "target_address": "ldl:project:fixture:entity:obsolete"}
-      ]
-    },
     "operation_id": "operation_1",
     "session": {
       "runtime_session_id": "runtime_session_fixture_1",

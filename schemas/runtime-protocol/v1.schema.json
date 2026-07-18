@@ -33,7 +33,7 @@
       "properties": {
         "operation_id": {"$ref": "#/$defs/OperationID"},
         "phase": {"$ref": "#/$defs/RecoveryPhase"},
-        "status": {"type": "string", "enum": ["accepted", "already_final"]}
+        "status": {"type": "string", "enum": ["cancel_requested", "not_pending", "too_late"]}
       },
       "required": ["operation_id", "status", "phase"],
       "additionalProperties": false
@@ -172,11 +172,12 @@
       "type": "object",
       "properties": {
         "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "graph_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
         "document_id": {"$ref": "#/$defs/DocumentID"},
         "provider_version": {"$ref": "#/$defs/ProviderVersionToken"},
         "revision_id": {"$ref": "#/$defs/RevisionID"}
       },
-      "required": ["document_id", "revision_id", "definition_hash"],
+      "required": ["document_id", "revision_id", "definition_hash", "graph_hash"],
       "additionalProperties": false
     },
     "WorkingDocumentRef": {
@@ -260,30 +261,43 @@
       "additionalProperties": false
     },
     "CommitTrigger": {"type": "string", "enum": ["agent_apply", "autosave", "explicit_save", "realtime_checkpoint", "registry_install", "restore"]},
+    "RuntimeOperationBatch": {
+      "type": "object",
+      "description": "The complete committed Engine operation input. Runtime validates document/base/hash identity but delegates all fine-grained precondition and semantic interpretation to Engine Workbench.",
+      "properties": {
+        "base_revision": {"$ref": "#/$defs/CommittedRevisionRef"},
+        "document_id": {"$ref": "#/$defs/DocumentID"},
+        "expected_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "operations": {"$ref": "https://schemas.layerdraw.dev/engine-protocol/v1#/$defs/SemanticOperationBatch"},
+        "preconditions": {"$ref": "https://schemas.layerdraw.dev/engine-protocol/v1#/$defs/EngineEditPreconditions"}
+      },
+      "required": ["document_id", "base_revision", "expected_definition_hash", "preconditions", "operations"],
+      "additionalProperties": false
+    },
     "RuntimeCommitInput": {
       "type": "object",
       "properties": {
         "authoring_proof": {"$ref": "#/$defs/AuthoringProof"},
         "cancellation_token": {"$ref": "#/$defs/CancellationToken"},
-        "expected_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
-        "expected_revision": {"$ref": "#/$defs/CommittedRevisionRef"},
         "idempotency_key": {"$ref": "#/$defs/IdempotencyKey"},
         "lease_token": {"$ref": "#/$defs/LeaseToken"},
-        "operation_batch": {"$ref": "https://schemas.layerdraw.dev/engine-protocol/v1#/$defs/SemanticOperationBatch"},
+        "operation_batch": {"$ref": "#/$defs/RuntimeOperationBatch"},
         "operation_id": {"$ref": "#/$defs/OperationID"},
         "session": {"$ref": "#/$defs/RuntimeSessionRef"},
         "state_mutation": {"$ref": "#/$defs/StateMutation"},
         "trigger": {"$ref": "#/$defs/CommitTrigger"}
       },
-      "required": ["session", "operation_id", "idempotency_key", "expected_revision", "expected_definition_hash", "operation_batch", "trigger", "authoring_proof"],
+      "required": ["session", "operation_id", "idempotency_key", "operation_batch", "trigger", "authoring_proof"],
       "additionalProperties": false
     },
     "OperationResultStatus": {"type": "string", "enum": ["committed", "committed_state_stale", "needs_review", "rejected"]},
     "OperationResult": {
+      "description": "result_digest is SHA-256 over canonical JSON of every OperationResult field except result_digest itself.",
       "type": "object",
       "properties": {
         "committed_revision": {"$ref": "#/$defs/CommittedRevisionRef"},
-        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "conflict_evidence": {"$ref": "#/$defs/ConflictEvidence"},
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}, "maxItems": 256},
         "failure_code": {"$ref": "#/$defs/RuntimeFailureCode"},
         "idempotency_key": {"$ref": "#/$defs/IdempotencyKey"},
         "operation_id": {"$ref": "#/$defs/OperationID"},
@@ -296,21 +310,37 @@
       "x-layerdraw-tagged-union": {
         "property": "status",
         "variants": {
-          "committed": {"required": ["committed_revision"], "forbidden": ["failure_code"]},
-          "committed_state_stale": {"required": ["committed_revision", "state_version"], "forbidden": ["failure_code"]},
-          "needs_review": {"forbidden": ["failure_code"]},
+          "committed": {"required": ["committed_revision"], "forbidden": ["conflict_evidence", "failure_code"]},
+          "committed_state_stale": {"required": ["committed_revision", "state_version"], "forbidden": ["conflict_evidence", "failure_code"], "non_empty": ["diagnostics"]},
+          "needs_review": {"forbidden": ["committed_revision", "conflict_evidence", "failure_code", "state_version"], "non_empty": ["diagnostics"]},
           "rejected": {"required": ["failure_code"], "forbidden": ["committed_revision", "state_version"]}
         }
       }
     },
+    "ConflictEvidence": {
+      "type": "object",
+      "properties": {"current_head": {"$ref": "#/$defs/CommittedRevisionRef"}},
+      "required": ["current_head"],
+      "additionalProperties": false
+    },
+    "PreviewEvaluation": {
+      "type": "object",
+      "description": "One completed Engine preview and Access evaluation. The pair is closed so neither value can be asserted alone.",
+      "properties": {
+        "authoring_decision": {"$ref": "https://schemas.layerdraw.dev/access-protocol/v1#/$defs/AuthoringDecision"},
+        "authoring_impact": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringImpact"}
+      },
+      "required": ["authoring_impact", "authoring_decision"],
+      "additionalProperties": false
+    },
     "RuntimeCommitResult": {
       "type": "object",
       "properties": {
-        "authoring_decision": {"$ref": "https://schemas.layerdraw.dev/access-protocol/v1#/$defs/AuthoringDecision"},
-        "authoring_impact": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringImpact"},
-        "operation_result": {"$ref": "#/$defs/OperationResult"}
+        "operation_result": {"$ref": "#/$defs/OperationResult"},
+        "preview_evaluation": {"$ref": "#/$defs/PreviewEvaluation"}
       },
-      "required": ["operation_result", "authoring_impact", "authoring_decision"],
+      "description": "preview_evaluation is present only after Engine preview and Access evaluation complete; pre-preview terminal rejections omit it.",
+      "required": ["operation_result"],
       "additionalProperties": false
     },
     "RecoveryPhase": {"type": "string", "enum": ["audit_pending", "final", "needs_review", "outbox_ready", "pending", "publication_pending", "published", "recovering", "staged", "state_pending"]},
