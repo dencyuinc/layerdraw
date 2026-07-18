@@ -18,6 +18,10 @@ const (
 	// CapabilityCompile identifies the transport-neutral closed-input compiler.
 	CapabilityCompile = "engine.compile"
 
+	CapabilityInspectLayerdraw = "engine.inspect_layerdraw"
+	CapabilityReadLayerdraw    = "engine.read_layerdraw"
+	CapabilityWriteLayerdraw   = "engine.write_layerdraw"
+
 	CapabilityCloseDocument     = "engine.close_document"
 	CapabilityExecuteQuery      = "engine.execute_query"
 	CapabilityFindSymbols       = "engine.find_symbols"
@@ -45,6 +49,7 @@ var bootstrapCapabilities = []string{
 	CapabilityFindSymbols,
 	CapabilityFindUsages,
 	CapabilityGetNeighbors,
+	CapabilityInspectLayerdraw,
 	CapabilityInspectSubgraph,
 	CapabilityListModules,
 	CapabilityListReferences,
@@ -52,11 +57,13 @@ var bootstrapCapabilities = []string{
 	CapabilityOpenDocument,
 	CapabilityPlanExport,
 	CapabilityReadDeclarations,
+	CapabilityReadLayerdraw,
 	CapabilityReadModules,
 	CapabilityReadReferences,
 	CapabilityReadRows,
 	CapabilityReadScope,
 	CapabilityReplaceSourceTree,
+	CapabilityWriteLayerdraw,
 }
 
 // BuildInfo identifies the source used to build an Engine instance.
