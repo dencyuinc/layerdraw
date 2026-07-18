@@ -102,8 +102,8 @@ corepack pnpm --dir "$consumer" add --offline --ignore-scripts "$archive" >/dev/
 
 (
   cd "$consumer"
-  node --input-type=module -e 'await Promise.all([import("@layerdraw/protocol/common"), import("@layerdraw/protocol/semantic"), import("@layerdraw/protocol/engine")])'
-  node --conditions=browser --input-type=module -e 'await Promise.all([import("@layerdraw/protocol/common"), import("@layerdraw/protocol/semantic"), import("@layerdraw/protocol/engine")])'
+  node --input-type=module -e 'await Promise.all([import("@layerdraw/protocol/common"), import("@layerdraw/protocol/semantic"), import("@layerdraw/protocol/access"), import("@layerdraw/protocol/engine"), import("@layerdraw/protocol/runtime")])'
+  node --conditions=browser --input-type=module -e 'await Promise.all([import("@layerdraw/protocol/common"), import("@layerdraw/protocol/semantic"), import("@layerdraw/protocol/access"), import("@layerdraw/protocol/engine"), import("@layerdraw/protocol/runtime")])'
   node --input-type=module - <<'EOF'
 for (const path of ["@layerdraw/protocol", "@layerdraw/protocol/dist/common.gen.js"]) {
   try {

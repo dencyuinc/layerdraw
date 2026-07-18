@@ -844,7 +844,7 @@ func TestSchemaDialectFailsClosedOverEveryRequiredKeywordDefinition(t *testing.T
 func TestEveryProtocolSchemaMustAdvertiseScalarUnicodeAssertion(t *testing.T) {
 	t.Parallel()
 	root := testRepositoryRoot(t)
-	for _, group := range []string{"protocol-common", "semantic", "engine-protocol"} {
+	for _, group := range []string{"protocol-common", "semantic", "access-protocol", "engine-protocol", "runtime-protocol"} {
 		group := group
 		for _, replacement := range []struct {
 			name string
@@ -1091,7 +1091,7 @@ func TestSchemaDigestChangesWithSchemaBytes(t *testing.T) {
 	t.Parallel()
 	root := testRepositoryRoot(t)
 	copyRoot := t.TempDir()
-	for _, directory := range []string{"protocol-common", "semantic", "engine-protocol"} {
+	for _, directory := range []string{"protocol-common", "semantic", "access-protocol", "engine-protocol", "runtime-protocol"} {
 		source := filepath.Join(root, "schemas", directory, "v1.schema.json")
 		data, err := os.ReadFile(source)
 		if err != nil {
@@ -1126,7 +1126,7 @@ func TestImportedSchemaChangeUpdatesDependentGroupDigests(t *testing.T) {
 	t.Parallel()
 	root := testRepositoryRoot(t)
 	copyRoot := t.TempDir()
-	for _, directory := range []string{"protocol-common", "semantic", "engine-protocol"} {
+	for _, directory := range []string{"protocol-common", "semantic", "access-protocol", "engine-protocol", "runtime-protocol"} {
 		data, err := os.ReadFile(filepath.Join(root, "schemas", directory, "v1.schema.json"))
 		if err != nil {
 			t.Fatal(err)
@@ -1162,7 +1162,7 @@ func TestRunGeneratesEveryOutputAndRemovesOrphans(t *testing.T) {
 	t.Parallel()
 	root := testRepositoryRoot(t)
 	temporary := t.TempDir()
-	for _, directory := range []string{"protocol-common", "semantic", "engine-protocol"} {
+	for _, directory := range []string{"protocol-common", "semantic", "access-protocol", "engine-protocol", "runtime-protocol"} {
 		data, err := os.ReadFile(filepath.Join(root, "schemas", directory, "v1.schema.json"))
 		if err != nil {
 			t.Fatal(err)
@@ -1192,9 +1192,12 @@ func TestRunGeneratesEveryOutputAndRemovesOrphans(t *testing.T) {
 	for _, path := range []string{
 		"gen/go/protocolcommon/types.gen.go", "gen/go/protocolcommon/codec.gen.go",
 		"gen/go/semantic/types.gen.go", "gen/go/semantic/codec.gen.go",
+		"gen/go/accessprotocol/types.gen.go", "gen/go/accessprotocol/codec.gen.go",
 		"gen/go/engineprotocol/types.gen.go", "gen/go/engineprotocol/codec.gen.go",
+		"gen/go/runtimeprotocol/types.gen.go", "gen/go/runtimeprotocol/codec.gen.go",
 		"packages/protocol/src/common.gen.ts", "packages/protocol/src/semantic.gen.ts",
-		"packages/protocol/src/engine.gen.ts", "gen/schema-digests.json",
+		"packages/protocol/src/access.gen.ts", "packages/protocol/src/engine.gen.ts",
+		"packages/protocol/src/runtime.gen.ts", "gen/schema-digests.json",
 	} {
 		if _, err := os.Stat(filepath.Join(temporary, filepath.FromSlash(path))); err != nil {
 			t.Errorf("missing %s: %v", path, err)
@@ -1222,7 +1225,7 @@ func testRepositoryRoot(t *testing.T) string {
 func copyProtocolSchemas(t *testing.T, root string, transform func(string, []byte) []byte) string {
 	t.Helper()
 	temporary := t.TempDir()
-	for _, group := range []string{"protocol-common", "semantic", "engine-protocol"} {
+	for _, group := range []string{"protocol-common", "semantic", "access-protocol", "engine-protocol", "runtime-protocol"} {
 		data, err := os.ReadFile(filepath.Join(root, "schemas", group, "v1.schema.json"))
 		if err != nil {
 			t.Fatal(err)

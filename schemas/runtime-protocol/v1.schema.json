@@ -1,0 +1,588 @@
+{
+  "$schema": "https://schemas.layerdraw.dev/meta/protocol/v1",
+  "$id": "https://schemas.layerdraw.dev/runtime-protocol/v1",
+  "$comment": "SPDX-License-Identifier: Apache-2.0",
+  "title": "LayerDraw Runtime Protocol v1",
+  "x-layerdraw-go-package": "runtimeprotocol",
+  "x-layerdraw-ts-module": "runtime",
+  "x-layerdraw-max-json-bytes": 8388608,
+  "x-layerdraw-max-json-depth": 128,
+  "x-layerdraw-scalar-unicode": true,
+  "$defs": {
+    "DocumentID": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "RuntimeSessionID": {"type": "string", "minLength": 16, "maxLength": 256, "pattern": "^[A-Za-z0-9_-]+$"},
+    "RuntimeSessionGeneration": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+    "RevisionID": {"type": "string", "minLength": 1, "maxLength": 256},
+    "WorkingGeneration": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+    "OperationID": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "IdempotencyKey": {"type": "string", "minLength": 16, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "LeaseToken": {"type": "string", "minLength": 16, "maxLength": 512, "pattern": "^[A-Za-z0-9_-]+$"},
+    "CancellationToken": {"type": "string", "minLength": 16, "maxLength": 256, "pattern": "^[A-Za-z0-9_-]+$"},
+    "CancelOperationInput": {
+      "type": "object",
+      "properties": {
+        "cancellation_token": {"$ref": "#/$defs/CancellationToken"},
+        "operation_id": {"$ref": "#/$defs/OperationID"},
+        "session": {"$ref": "#/$defs/RuntimeSessionRef"}
+      },
+      "required": ["session", "operation_id", "cancellation_token"],
+      "additionalProperties": false
+    },
+    "CancelOperationResult": {
+      "type": "object",
+      "properties": {
+        "operation_id": {"$ref": "#/$defs/OperationID"},
+        "phase": {"$ref": "#/$defs/RecoveryPhase"},
+        "status": {"type": "string", "enum": ["accepted", "already_final"]}
+      },
+      "required": ["operation_id", "status", "phase"],
+      "additionalProperties": false
+    },
+    "RuntimeCursor": {"type": "string", "minLength": 32, "maxLength": 2048, "pattern": "^[A-Za-z0-9._~-]+$"},
+    "ProviderVersionToken": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "RuntimeProtocolRef": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string", "const": "runtime"},
+        "version": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolVersion"}
+      },
+      "required": ["name", "version"],
+      "additionalProperties": false
+    },
+    "RuntimeFailureCode": {
+      "type": "string",
+      "enum": [
+        "runtime.authorization_proof_invalid",
+        "runtime.authorization_stale",
+        "runtime.blob_expired",
+        "runtime.blob_scope_mismatch",
+        "runtime.cancelled",
+        "runtime.capability_unavailable",
+        "runtime.cross_document_handle",
+        "runtime.cursor_scope_mismatch",
+        "runtime.idempotency_mismatch",
+        "runtime.invalid_cursor",
+        "runtime.invalid_recovery_transition",
+        "runtime.malformed_handle",
+        "runtime.revision_scope_mismatch",
+        "runtime.session_expired",
+        "runtime.stale_revision",
+        "runtime.stale_session_generation"
+      ]
+    },
+    "RuntimeByteLimitValue": {
+      "type": "object",
+      "properties": {
+        "hard_maximum": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "unit": {"type": "string", "const": "bytes"}
+      },
+      "required": ["hard_maximum", "unit"],
+      "additionalProperties": false
+    },
+    "RuntimeItemLimitValue": {
+      "type": "object",
+      "properties": {
+        "hard_maximum": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "unit": {"type": "string", "const": "items"}
+      },
+      "required": ["hard_maximum", "unit"],
+      "additionalProperties": false
+    },
+    "RuntimeLimits": {
+      "type": "object",
+      "description": "Hard host limits covering operations, result pages, and detached blobs.",
+      "properties": {
+        "max_blob_bytes": {"$ref": "#/$defs/RuntimeByteLimitValue"},
+        "max_blob_total_bytes": {"$ref": "#/$defs/RuntimeByteLimitValue"},
+        "max_commit_operations": {"$ref": "#/$defs/RuntimeItemLimitValue"},
+        "max_history_items": {"$ref": "#/$defs/RuntimeItemLimitValue"},
+        "max_output_bytes": {"$ref": "#/$defs/RuntimeByteLimitValue"},
+        "max_state_mutations": {"$ref": "#/$defs/RuntimeItemLimitValue"}
+      },
+      "required": ["max_commit_operations", "max_state_mutations", "max_history_items", "max_output_bytes", "max_blob_bytes", "max_blob_total_bytes"],
+      "additionalProperties": false
+    },
+    "RuntimeCapabilityManifest": {
+      "type": "object",
+      "description": "Only runtime operations backed by explicit typed host implementations may be enabled.",
+      "properties": {
+        "authoring_grant_summary": {"$ref": "https://schemas.layerdraw.dev/access-protocol/v1#/$defs/AuthoringGrantSummary"},
+        "limits": {"$ref": "#/$defs/RuntimeLimits"},
+        "manifest_etag": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ManifestETag"},
+        "operations": {
+          "type": "object",
+          "additionalProperties": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/OperationCapability"}
+        },
+        "storage_capabilities": {"type": "array", "items": {"type": "string", "enum": ["assets", "conditional_document_head", "history", "recovery_journal", "state"]}, "uniqueItems": true}
+      },
+      "required": ["manifest_etag", "operations", "limits", "storage_capabilities"],
+      "additionalProperties": false
+    },
+    "RuntimeHandshakeRequest": {
+      "type": "object",
+      "properties": {
+        "client_limits": {"$ref": "#/$defs/RuntimeLimits"},
+        "client_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "optional_capabilities": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CapabilityID"}, "maxItems": 64, "uniqueItems": true},
+        "protocols": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolOffer"}, "minItems": 1, "maxItems": 8},
+        "required_capabilities": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CapabilityID"}, "maxItems": 64, "uniqueItems": true}
+      },
+      "required": ["client_release", "protocols", "required_capabilities", "optional_capabilities"],
+      "additionalProperties": false,
+      "x-layerdraw-disjoint-arrays": [{"left": "required_capabilities", "right": "optional_capabilities"}],
+      "x-layerdraw-unique-array-keys": [{"array": "protocols", "property": "name"}]
+    },
+    "RuntimeHandshakeResult": {
+      "type": "object",
+      "properties": {
+        "capability_manifest": {"$ref": "#/$defs/RuntimeCapabilityManifest"},
+        "capability_statuses": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/RequestedCapabilityStatus"}, "maxItems": 128},
+        "endpoint_instance_id": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/EndpointInstanceID"},
+        "host_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "negotiated_protocols": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/NegotiatedProtocol"}, "minItems": 1, "maxItems": 8},
+        "release_manifest_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["host_release", "endpoint_instance_id", "negotiated_protocols", "capability_statuses", "capability_manifest", "release_manifest_digest"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "capability_statuses", "property": "capability_id"}, {"array": "negotiated_protocols", "property": "name"}]
+    },
+    "RuntimeScope": {
+      "type": "object",
+      "properties": {
+        "access_fingerprint": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "document_id": {"$ref": "#/$defs/DocumentID"},
+        "local_scope_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "organization_scope_id": {"type": "string", "minLength": 1, "maxLength": 256}
+      },
+      "required": ["document_id", "local_scope_id", "access_fingerprint"],
+      "additionalProperties": false
+    },
+    "RuntimeSessionRef": {
+      "type": "object",
+      "properties": {
+        "expires_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "runtime_session_id": {"$ref": "#/$defs/RuntimeSessionID"},
+        "scope": {"$ref": "#/$defs/RuntimeScope"},
+        "session_generation": {"$ref": "#/$defs/RuntimeSessionGeneration"}
+      },
+      "required": ["runtime_session_id", "session_generation", "scope"],
+      "additionalProperties": false
+    },
+    "CommittedRevisionRef": {
+      "type": "object",
+      "properties": {
+        "definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "document_id": {"$ref": "#/$defs/DocumentID"},
+        "provider_version": {"$ref": "#/$defs/ProviderVersionToken"},
+        "revision_id": {"$ref": "#/$defs/RevisionID"}
+      },
+      "required": ["document_id", "revision_id", "definition_hash"],
+      "additionalProperties": false
+    },
+    "WorkingDocumentRef": {
+      "type": "object",
+      "properties": {
+        "base_revision": {"$ref": "#/$defs/CommittedRevisionRef"},
+        "session": {"$ref": "#/$defs/RuntimeSessionRef"},
+        "working_generation": {"$ref": "#/$defs/WorkingGeneration"}
+      },
+      "required": ["session", "base_revision", "working_generation"],
+      "additionalProperties": false
+    },
+    "RuntimeBlobRef": {
+      "type": "object",
+      "properties": {
+        "blob": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/BlobRef"},
+        "expires_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "scope": {"$ref": "#/$defs/RuntimeScope"},
+        "session_generation": {"$ref": "#/$defs/RuntimeSessionGeneration"}
+      },
+      "required": ["blob", "scope", "session_generation"],
+      "additionalProperties": false
+    },
+    "RuntimeCursorBinding": {
+      "type": "object",
+      "description": "Wire shape for an opaque cursor. Schema validation does not authenticate a cursor; Runtime must require an exact match to a trusted issued binding before use.",
+      "properties": {
+        "cursor": {"$ref": "#/$defs/RuntimeCursor"},
+        "expires_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "normalized_request_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "operation": {"type": "string", "pattern": "^runtime\\.[a-z][a-z0-9_]*$"},
+        "revision": {"$ref": "#/$defs/CommittedRevisionRef"},
+        "schema_version": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "scope": {"$ref": "#/$defs/RuntimeScope"}
+      },
+      "required": ["cursor", "operation", "normalized_request_digest", "revision", "scope", "schema_version", "expires_at"],
+      "additionalProperties": false
+    },
+    "StateInput": {
+      "type": "object",
+      "properties": {
+        "expected_state_version": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "kind": {"type": "string", "enum": ["none", "snapshot"]},
+        "snapshot": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StateQuerySnapshot"},
+        "snapshot_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "kind",
+        "variants": {
+          "none": {"forbidden": ["expected_state_version", "snapshot", "snapshot_hash"]},
+          "snapshot": {"required": ["expected_state_version", "snapshot", "snapshot_hash"]}
+        }
+      }
+    },
+    "StateMutation": {
+      "type": "object",
+      "properties": {
+        "affected_subjects": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}, "maxItems": 4096, "uniqueItems": true, "x-layerdraw-stable-address-order": "$item"},
+        "expected_state_version": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "mutation_blob": {"$ref": "#/$defs/RuntimeBlobRef"},
+        "mutation_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["expected_state_version", "affected_subjects", "mutation_blob", "mutation_digest"],
+      "additionalProperties": false
+    },
+    "AuthoringProof": {
+      "type": "object",
+      "description": "A preview/commit equality precondition, not a grant token.",
+      "properties": {
+        "access_fingerprint": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "base_revision": {"$ref": "#/$defs/CommittedRevisionRef"},
+        "decision_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "evaluation_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "expires_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "membership_version": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "policy_refs": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/access-protocol/v1#/$defs/PolicyRef"}, "maxItems": 64}
+      },
+      "required": ["base_revision", "evaluation_digest", "decision_digest", "access_fingerprint", "policy_refs", "membership_version"],
+      "additionalProperties": false
+    },
+    "CommitTrigger": {"type": "string", "enum": ["agent_apply", "autosave", "explicit_save", "realtime_checkpoint", "registry_install", "restore"]},
+    "RuntimeCommitInput": {
+      "type": "object",
+      "properties": {
+        "authoring_proof": {"$ref": "#/$defs/AuthoringProof"},
+        "cancellation_token": {"$ref": "#/$defs/CancellationToken"},
+        "expected_definition_hash": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "expected_revision": {"$ref": "#/$defs/CommittedRevisionRef"},
+        "idempotency_key": {"$ref": "#/$defs/IdempotencyKey"},
+        "lease_token": {"$ref": "#/$defs/LeaseToken"},
+        "operation_batch": {"$ref": "https://schemas.layerdraw.dev/engine-protocol/v1#/$defs/SemanticOperationBatch"},
+        "operation_id": {"$ref": "#/$defs/OperationID"},
+        "session": {"$ref": "#/$defs/RuntimeSessionRef"},
+        "state_mutation": {"$ref": "#/$defs/StateMutation"},
+        "trigger": {"$ref": "#/$defs/CommitTrigger"}
+      },
+      "required": ["session", "operation_id", "idempotency_key", "expected_revision", "expected_definition_hash", "operation_batch", "trigger", "authoring_proof"],
+      "additionalProperties": false
+    },
+    "OperationResultStatus": {"type": "string", "enum": ["committed", "committed_state_stale", "needs_review", "rejected"]},
+    "OperationResult": {
+      "type": "object",
+      "properties": {
+        "committed_revision": {"$ref": "#/$defs/CommittedRevisionRef"},
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "failure_code": {"$ref": "#/$defs/RuntimeFailureCode"},
+        "idempotency_key": {"$ref": "#/$defs/IdempotencyKey"},
+        "operation_id": {"$ref": "#/$defs/OperationID"},
+        "result_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "state_version": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalNonNegativeInt64"},
+        "status": {"$ref": "#/$defs/OperationResultStatus"}
+      },
+      "required": ["operation_id", "idempotency_key", "status", "diagnostics", "result_digest"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "status",
+        "variants": {
+          "committed": {"required": ["committed_revision"], "forbidden": ["failure_code"]},
+          "committed_state_stale": {"required": ["committed_revision", "state_version"], "forbidden": ["failure_code"]},
+          "needs_review": {"forbidden": ["failure_code"]},
+          "rejected": {"required": ["failure_code"], "forbidden": ["committed_revision", "state_version"]}
+        }
+      }
+    },
+    "RuntimeCommitResult": {
+      "type": "object",
+      "properties": {
+        "authoring_decision": {"$ref": "https://schemas.layerdraw.dev/access-protocol/v1#/$defs/AuthoringDecision"},
+        "authoring_impact": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringImpact"},
+        "operation_result": {"$ref": "#/$defs/OperationResult"}
+      },
+      "required": ["operation_result", "authoring_impact", "authoring_decision"],
+      "additionalProperties": false
+    },
+    "RecoveryPhase": {"type": "string", "enum": ["audit_pending", "final", "needs_review", "outbox_ready", "pending", "publication_pending", "published", "recovering", "staged", "state_pending"]},
+    "RuntimeOperationStatus": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {"$ref": "#/$defs/IdempotencyKey"},
+        "operation_id": {"$ref": "#/$defs/OperationID"},
+        "operation_result": {"$ref": "#/$defs/OperationResult"},
+        "phase": {"$ref": "#/$defs/RecoveryPhase"},
+        "recovery_started_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "retry_after_ms": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["phase", "operation_id", "idempotency_key"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "phase",
+        "variants": {
+          "audit_pending": {"forbidden": ["operation_result", "recovery_started_at"]},
+          "final": {"required": ["operation_result"], "forbidden": ["recovery_started_at", "retry_after_ms"]},
+          "needs_review": {"required": ["operation_result"], "forbidden": ["recovery_started_at", "retry_after_ms"]},
+          "outbox_ready": {"forbidden": ["operation_result", "recovery_started_at"]},
+          "pending": {"forbidden": ["operation_result", "recovery_started_at"]},
+          "publication_pending": {"forbidden": ["operation_result", "recovery_started_at"]},
+          "published": {"forbidden": ["operation_result", "recovery_started_at"]},
+          "recovering": {"required": ["recovery_started_at"], "forbidden": ["operation_result"]},
+          "staged": {"forbidden": ["operation_result", "recovery_started_at"]},
+          "state_pending": {"forbidden": ["operation_result", "recovery_started_at"]}
+        }
+      }
+    },
+    "GetOperationResultInput": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {"$ref": "#/$defs/IdempotencyKey"},
+        "lookup_by": {"type": "string", "enum": ["idempotency_key", "operation_id"]},
+        "operation_id": {"$ref": "#/$defs/OperationID"},
+        "session": {"$ref": "#/$defs/RuntimeSessionRef"}
+      },
+      "required": ["session", "lookup_by"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "lookup_by",
+        "variants": {
+          "idempotency_key": {"required": ["idempotency_key"], "forbidden": ["operation_id"]},
+          "operation_id": {"required": ["operation_id"], "forbidden": ["idempotency_key"]}
+        }
+      }
+    },
+    "RevisionMetadata": {
+      "type": "object",
+      "properties": {
+        "authoring_decision_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "committed_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "operation_id": {"$ref": "#/$defs/OperationID"},
+        "parent_revision_id": {"$ref": "#/$defs/RevisionID"},
+        "revision": {"$ref": "#/$defs/CommittedRevisionRef"},
+        "trigger": {"$ref": "#/$defs/CommitTrigger"}
+      },
+      "required": ["revision", "operation_id", "committed_at", "trigger", "authoring_decision_digest"],
+      "additionalProperties": false
+    },
+    "ListRevisionsInput": {
+      "type": "object",
+      "properties": {
+        "cursor": {"$ref": "#/$defs/RuntimeCursor"},
+        "max_items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveSafeInteger"},
+        "max_output_bytes": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalPositiveInt64"},
+        "session": {"$ref": "#/$defs/RuntimeSessionRef"}
+      },
+      "required": ["session", "max_items", "max_output_bytes"],
+      "additionalProperties": false
+    },
+    "RevisionPage": {
+      "type": "object",
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/$defs/RevisionMetadata"}, "maxItems": 1024},
+        "page": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/PageInfo"}
+      },
+      "required": ["items", "page"],
+      "additionalProperties": false
+    },
+    "OpenRuntimeDocumentInput": {
+      "type": "object",
+      "properties": {
+        "document_id": {"$ref": "#/$defs/DocumentID"},
+        "requested_revision_id": {"$ref": "#/$defs/RevisionID"}
+      },
+      "required": ["document_id"],
+      "additionalProperties": false
+    },
+    "OpenRuntimeDocumentResult": {
+      "type": "object",
+      "properties": {
+        "access_summary": {"$ref": "https://schemas.layerdraw.dev/access-protocol/v1#/$defs/AuthoringGrantSummary"},
+        "capability_manifest": {"$ref": "#/$defs/RuntimeCapabilityManifest"},
+        "committed_revision": {"$ref": "#/$defs/CommittedRevisionRef"},
+        "session": {"$ref": "#/$defs/RuntimeSessionRef"},
+        "state_input": {"$ref": "#/$defs/StateInput"},
+        "working_document": {"$ref": "#/$defs/WorkingDocumentRef"}
+      },
+      "required": ["session", "committed_revision", "working_document", "state_input", "access_summary", "capability_manifest"],
+      "additionalProperties": false
+    },
+    "RuntimeHandshakeRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "runtime.handshake"},
+        "payload": {"$ref": "#/$defs/RuntimeHandshakeRequest"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "RuntimeHandshakeResponseEnvelope": {"$ref": "#/$defs/HandshakeResponseEnvelopeBase"},
+    "HandshakeResponseEnvelopeBase": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
+        "host_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/RuntimeHandshakeResult"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "OpenDocumentRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "operation": {"type": "string", "const": "runtime.open_document"},
+        "payload": {"$ref": "#/$defs/OpenRuntimeDocumentInput"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "OpenDocumentResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
+        "host_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/OpenRuntimeDocumentResult"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "host_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "CommitOperationsRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "operation": {"type": "string", "const": "runtime.commit_operations"},
+        "payload": {"$ref": "#/$defs/RuntimeCommitInput"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "CommitOperationsResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
+        "host_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/RuntimeCommitResult"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "host_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "CancelOperationRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "operation": {"type": "string", "const": "runtime.cancel_operation"},
+        "payload": {"$ref": "#/$defs/CancelOperationInput"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "CancelOperationResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
+        "host_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/CancelOperationResult"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "host_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "GetOperationResultRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "operation": {"type": "string", "const": "runtime.get_operation_result"},
+        "payload": {"$ref": "#/$defs/GetOperationResultInput"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "GetOperationResultResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
+        "host_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/RuntimeOperationStatus"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "host_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "ListRevisionsRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "operation": {"type": "string", "const": "runtime.list_revisions"},
+        "payload": {"$ref": "#/$defs/ListRevisionsInput"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "ListRevisionsResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolFailure"},
+        "host_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/RevisionPage"},
+        "protocol": {"$ref": "#/$defs/RuntimeProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "host_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    }
+  }
+}

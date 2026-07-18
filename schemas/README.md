@@ -12,10 +12,16 @@ for invariants that stock JSON Schema cannot express, and is split into:
   capability handshake primitives.
 - `semantic/`: Actor-independent diagnostics, AuthoringCapability and
   AuthoringImpact, StableAddress-indexed compiler projections, hashes, source
-  maps, semantic indexes, and search documents. Future `access-protocol/`
-  schemas consume AuthoringCapability from this group and must not redefine it.
+  maps, semantic indexes, and search documents.
+- `access-protocol/`: versioned authoring-grant evaluation inputs and stable,
+  typed Access decisions. It consumes AuthoringCapability from `semantic/`
+  without redefining Engine-owned authoring semantics.
 - `engine-protocol/`: `engine.handshake` and `engine.compile` operation payloads
   and concrete envelopes.
+- `runtime-protocol/`: versioned host-lifecycle requests and results for
+  sessions, revisions, assets, state, history, recovery, authorization proofs,
+  scoped cursors, and idempotency. It references Engine operation batches
+  rather than duplicating LDL semantics.
 - `meta/`: the dialect meta-schema and the schema for every required
   `x-layerdraw-*` assertion keyword.
 - `fixtures/`: canonical cross-language request and response vectors.

@@ -1,0 +1,42 @@
+{
+  "operation": "runtime.commit_operations",
+  "payload": {
+    "authoring_proof": {
+      "access_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "base_revision": {
+        "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "document_id": "doc_fixture",
+        "revision_id": "rev_1"
+      },
+      "decision_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "evaluation_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "membership_version": "7",
+      "policy_refs": []
+    },
+    "expected_definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "expected_revision": {
+      "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "document_id": "doc_fixture",
+      "revision_id": "rev_1"
+    },
+    "idempotency_key": "idem_commit_000001",
+    "operation_batch": {
+      "operations": [
+        {"operation": "delete_subject", "target_address": "ldl:project:fixture:entity:obsolete"}
+      ]
+    },
+    "operation_id": "operation_1",
+    "session": {
+      "runtime_session_id": "runtime_session_fixture_1",
+      "scope": {
+        "access_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "document_id": "doc_fixture",
+        "local_scope_id": "local_fixture"
+      },
+      "session_generation": "1"
+    },
+    "trigger": "explicit_save"
+  },
+  "protocol": {"name": "runtime", "version": "1.0"},
+  "request_id": "runtime-commit-fixture"
+}

@@ -1516,7 +1516,9 @@ async function authority() {
   const documents = await Promise.all([
     readJSON("protocol-common/v1.schema.json"),
     readJSON("semantic/v1.schema.json"),
+    readJSON("access-protocol/v1.schema.json"),
     readJSON("engine-protocol/v1.schema.json"),
+    readJSON("runtime-protocol/v1.schema.json"),
   ]);
   const ajv = new Ajv2020({allErrors: true, strict: true, validateFormats: true});
   const enumAuthorities = new Map();
@@ -1550,6 +1552,49 @@ async function authority() {
   };
   return compile;
 }
+
+test("independent schema authority validates Runtime and Access canonical fixtures", async () => {
+  const compile = await authority();
+  const runtime = "https://schemas.layerdraw.dev/runtime-protocol/v1";
+  const access = "https://schemas.layerdraw.dev/access-protocol/v1";
+  assert.equal(compile(runtime, "RuntimeHandshakeRequestEnvelope")(await readJSON("fixtures/runtime/handshake-request.json")), true);
+  assert.equal(compile(runtime, "RuntimeHandshakeResponseEnvelope")(await readJSON("fixtures/runtime/handshake-failed.json")), true);
+  assert.equal(compile(runtime, "CommitOperationsRequestEnvelope")(await readJSON("fixtures/runtime/commit-request.json")), true);
+  assert.equal(compile(runtime, "CommitOperationsResponseEnvelope")(await readJSON("fixtures/runtime/commit-failed.json")), true);
+  assert.equal(compile(runtime, "RuntimeOperationStatus")(await readJSON("fixtures/runtime/operation-recovering.json")), true);
+  assert.equal(compile(runtime, "RuntimeOperationStatus")(await readJSON("fixtures/runtime/operation-audit-pending.json")), true);
+  assert.equal(compile(runtime, "RuntimeOperationStatus")(await readJSON("fixtures/runtime/operation-needs-review.json")), true);
+  assert.equal(compile(runtime, "RevisionPage")(await readJSON("fixtures/runtime/revision-page.json")), true);
+  assert.equal(compile(access, "AuthoringDecision")(await readJSON("fixtures/runtime/access-decision.json")), true);
+  assert.equal(compile(runtime, "ListRevisionsRequestEnvelope")({
+    operation: "runtime.list_revisions",
+    payload: {max_items: "1", max_output_bytes: "1024", session: {runtime_session_id: "runtime_session_fixture_1", scope: {access_fingerprint: `sha256:${"1".repeat(64)}`, document_id: "doc_fixture", local_scope_id: "local_fixture"}, session_generation: "1"}},
+    protocol: {name: "engine", version: "1.0"},
+    request_id: "runtime-list-wrong-protocol",
+  }), false);
+});
+
+test("independent schema authority closes every Runtime limit field to its semantic unit", async () => {
+  const compile = await authority();
+  const validate = compile("https://schemas.layerdraw.dev/runtime-protocol/v1", "RuntimeLimits");
+  const correctUnits = {
+    max_blob_bytes: "bytes",
+    max_blob_total_bytes: "bytes",
+    max_commit_operations: "items",
+    max_history_items: "items",
+    max_output_bytes: "bytes",
+    max_state_mutations: "items",
+  };
+  const valid = Object.fromEntries(
+    Object.entries(correctUnits).map(([name, unit]) => [name, {hard_maximum: "10", unit}]),
+  );
+  assert.equal(validate(valid), true);
+  for (const [field, correctUnit] of Object.entries(correctUnits)) {
+    const invalid = structuredClone(valid);
+    invalid[field].unit = correctUnit === "bytes" ? "items" : "bytes";
+    assert.equal(validate(invalid), false, field);
+  }
+});
 
 test("Ajv registration fails closed against the published dialect inventory and shapes", async () => {
   const published = await readJSON("meta/layerdraw-protocol-schema-v1.json");

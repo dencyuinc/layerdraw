@@ -388,7 +388,9 @@ func loadSchemas(root string) (schemaSet, error) {
 	}{
 		{"schemas/protocol-common/v1.schema.json", "https://schemas.layerdraw.dev/protocol-common/v1", "protocolcommon", "common"},
 		{"schemas/semantic/v1.schema.json", "https://schemas.layerdraw.dev/semantic/v1", "semantic", "semantic"},
+		{"schemas/access-protocol/v1.schema.json", "https://schemas.layerdraw.dev/access-protocol/v1", "accessprotocol", "access"},
 		{"schemas/engine-protocol/v1.schema.json", "https://schemas.layerdraw.dev/engine-protocol/v1", "engineprotocol", "engine"},
+		{"schemas/runtime-protocol/v1.schema.json", "https://schemas.layerdraw.dev/runtime-protocol/v1", "runtimeprotocol", "runtime"},
 	}
 	var paths []string
 	expectedByPath := map[string]struct{ id, packageName, module string }{}

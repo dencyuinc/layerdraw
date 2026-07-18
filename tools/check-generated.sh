@@ -127,15 +127,21 @@ make_temporary_directory() {
 
 expected_generated_paths() {
   printf '%s\n' \
+    gen/go/accessprotocol/codec.gen.go \
+    gen/go/accessprotocol/types.gen.go \
     gen/go/engineprotocol/codec.gen.go \
     gen/go/engineprotocol/types.gen.go \
     gen/go/protocolcommon/codec.gen.go \
     gen/go/protocolcommon/types.gen.go \
+    gen/go/runtimeprotocol/codec.gen.go \
+    gen/go/runtimeprotocol/types.gen.go \
     gen/go/semantic/codec.gen.go \
     gen/go/semantic/types.gen.go \
     gen/schema-digests.json \
+    packages/protocol/src/access.gen.ts \
     packages/protocol/src/common.gen.ts \
     packages/protocol/src/engine.gen.ts \
+    packages/protocol/src/runtime.gen.ts \
     packages/protocol/src/semantic.gen.ts \
     tests/conformance/testdata/engine_compile_parity_v1.json
 }

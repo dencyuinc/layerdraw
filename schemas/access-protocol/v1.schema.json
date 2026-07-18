@@ -1,0 +1,178 @@
+{
+  "$schema": "https://schemas.layerdraw.dev/meta/protocol/v1",
+  "$id": "https://schemas.layerdraw.dev/access-protocol/v1",
+  "$comment": "SPDX-License-Identifier: Apache-2.0",
+  "title": "LayerDraw Access Protocol v1",
+  "x-layerdraw-go-package": "accessprotocol",
+  "x-layerdraw-ts-module": "access",
+  "x-layerdraw-max-json-bytes": 8388608,
+  "x-layerdraw-max-json-depth": 128,
+  "x-layerdraw-scalar-unicode": true,
+  "$defs": {
+    "ActorRef": {
+      "type": "object",
+      "properties": {
+        "actor_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "kind": {"type": "string", "enum": ["agent", "service", "user"]}
+      },
+      "required": ["kind", "actor_id"],
+      "additionalProperties": false
+    },
+    "HostOperationKind": {
+      "type": "string",
+      "enum": ["asset_delete", "asset_persist", "asset_stage", "backend_configure", "package_transaction", "project_configure"]
+    },
+    "HostResourceScope": {
+      "type": "object",
+      "properties": {
+        "document_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "local_scope_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "organization_scope_id": {"type": "string", "minLength": 1, "maxLength": 256}
+      },
+      "required": ["document_id", "local_scope_id"],
+      "additionalProperties": false
+    },
+    "HostOperationImpact": {
+      "type": "object",
+      "description": "A host-owned impact derived from a closed operation, never supplied as an authorization claim by a client.",
+      "properties": {
+        "action": {"type": "string", "enum": ["create", "delete", "stage", "update"]},
+        "impact_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "operation_kind": {"$ref": "#/$defs/HostOperationKind"},
+        "required_authoring_capabilities": {
+          "type": "array",
+          "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"},
+          "minItems": 1,
+          "uniqueItems": true,
+          "x-layerdraw-canonical-enum-order": true
+        },
+        "resource_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 512}, "maxItems": 256, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "resource_scope": {"$ref": "#/$defs/HostResourceScope"}
+      },
+      "required": ["operation_kind", "required_authoring_capabilities", "resource_scope", "action", "resource_refs", "impact_digest"],
+      "additionalProperties": false
+    },
+    "AuthoringGrantSnapshot": {
+      "type": "object",
+      "description": "An immutable trusted-host authorization input. It carries no credential or secret material.",
+      "properties": {
+        "access_fingerprint": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "actor_ref": {"$ref": "#/$defs/ActorRef"},
+        "agent_delegation_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "entitlement_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "expires_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "granted_capabilities": {
+          "type": "array",
+          "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"},
+          "uniqueItems": true,
+          "x-layerdraw-canonical-enum-order": true
+        },
+        "host_document_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "issued_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "local_scope_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "membership_version": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"},
+        "organization_scope_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "policy_refs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/PolicyRef"},
+          "maxItems": 64,
+          "x-layerdraw-unique-array-keys": [{"array": "policy_refs", "property": "policy_id"}]
+        }
+      },
+      "required": ["actor_ref", "host_document_id", "local_scope_id", "granted_capabilities", "policy_refs", "membership_version", "issued_at", "access_fingerprint"],
+      "additionalProperties": false
+    },
+    "PolicyRef": {
+      "type": "object",
+      "properties": {
+        "policy_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "policy_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "policy_version": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/CanonicalUint64"}
+      },
+      "required": ["policy_id", "policy_version", "policy_digest"],
+      "additionalProperties": false
+    },
+    "AuthoringGrantSummary": {
+      "type": "object",
+      "properties": {
+        "access_fingerprint": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "constrained_capabilities": {
+          "type": "array",
+          "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"},
+          "uniqueItems": true,
+          "x-layerdraw-canonical-enum-order": true
+        },
+        "expires_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "granted_capabilities": {
+          "type": "array",
+          "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"},
+          "uniqueItems": true,
+          "x-layerdraw-canonical-enum-order": true
+        },
+        "policy_etag": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}
+      },
+      "required": ["granted_capabilities", "constrained_capabilities", "policy_etag", "access_fingerprint"],
+      "additionalProperties": false
+    },
+    "AuthoringDecisionOutcome": {"type": "string", "enum": ["allow", "approval_required", "deny"]},
+    "ConstraintViolation": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "minLength": 1, "maxLength": 64},
+        "code": {"type": "string", "pattern": "^authoring\\.[a-z][a-z0-9_]*$"},
+        "subject_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StableAddress"}
+      },
+      "required": ["code", "action"],
+      "additionalProperties": false
+    },
+    "EvaluateAuthoringInput": {
+      "type": "object",
+      "description": "The single Access input used for local full-authoring and restricted-host decisions alike.",
+      "properties": {
+        "authoring_impact": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringImpact"},
+        "grant_snapshot": {"$ref": "#/$defs/AuthoringGrantSnapshot"},
+        "host_operation_impacts": {"type": "array", "items": {"$ref": "#/$defs/HostOperationImpact"}, "maxItems": 64},
+        "request_intent": {"type": "string", "enum": ["apply", "preview", "propose", "publish"]}
+      },
+      "required": ["request_intent", "host_operation_impacts", "grant_snapshot"],
+      "additionalProperties": false,
+      "x-layerdraw-unique-array-keys": [{"array": "host_operation_impacts", "property": "impact_digest"}]
+    },
+    "AuthoringDecision": {
+      "type": "object",
+      "properties": {
+        "access_fingerprint": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "approval_rule_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 256}, "maxItems": 64, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "authoring_impact_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "constraint_violations": {"type": "array", "items": {"$ref": "#/$defs/ConstraintViolation"}, "maxItems": 256},
+        "decision_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ProtocolDiagnostic"}, "maxItems": 256},
+        "evaluation_digest": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"},
+        "host_operation_impact_digests": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest"}, "maxItems": 64, "uniqueItems": true, "x-layerdraw-unicode-scalar-order": true},
+        "missing_capabilities": {
+          "type": "array",
+          "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"},
+          "uniqueItems": true,
+          "x-layerdraw-canonical-enum-order": true
+        },
+        "outcome": {"$ref": "#/$defs/AuthoringDecisionOutcome"},
+        "required_capabilities": {
+          "type": "array",
+          "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringCapability"},
+          "uniqueItems": true,
+          "x-layerdraw-canonical-enum-order": true
+        }
+      },
+      "required": ["outcome", "evaluation_digest", "host_operation_impact_digests", "access_fingerprint", "required_capabilities", "missing_capabilities", "constraint_violations", "approval_rule_refs", "decision_digest", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-tagged-union": {
+        "property": "outcome",
+        "variants": {
+          "allow": {"empty": ["missing_capabilities", "constraint_violations", "approval_rule_refs"]},
+          "approval_required": {"non_empty": ["approval_rule_refs"]},
+          "deny": {"any_non_empty": ["missing_capabilities", "constraint_violations"]}
+        }
+      }
+    }
+  }
+}

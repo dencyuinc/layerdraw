@@ -1,0 +1,12 @@
+{
+  "idempotency_key": "idem_commit_000001",
+  "operation_id": "operation_1",
+  "operation_result": {
+    "diagnostics": [],
+    "idempotency_key": "idem_commit_000001",
+    "operation_id": "operation_1",
+    "result_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "status": "needs_review"
+  },
+  "phase": "needs_review"
+}

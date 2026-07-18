@@ -525,7 +525,7 @@ GetOperationResultInput
   operation_id? | idempotency_key?
 
 RuntimeOperationStatus
-  phase: pending | staged | publication_pending | published | recovering | final
+  phase: pending | staged | publication_pending | published | state_pending | audit_pending | outbox_ready | recovering | final | needs_review
   operation_id
   idempotency_key
   operation_result?: OperationResult
@@ -549,14 +549,12 @@ type DocumentStore interface {
   StageRevision(context.Context, StageRevisionInput) (StagedRevision, error)
   PublishHead(context.Context, PublishDocumentHeadInput) (PublishHeadResult, error)
   AbortStagedRevision(context.Context, AbortStagedRevisionInput) error
-
-  PutOperationRecord(context.Context, PutOperationRecordInput) (OperationRecord, error)
-  GetOperationRecord(context.Context, GetOperationRecordInput) (OperationRecord, error)
-  FinalizeOperationRecord(context.Context, FinalizeOperationRecordInput) (OperationRecord, error)
 }
 ```
 
 `PublishHead`はexpected revision、definition hash、provider version token、fencing tokenを必須とする。成功したconditional updateがCommitted Revisionのpublication pointである。
+
+operation / idempotency / recovery recordは`DocumentStore`へ重複配置しない。`internal/runtime/port.RecoveryJournal`をtransaction journal相当の唯一のauthorityとし、pending record作成、phase advance、lookup、finalizeを所有する。`DocumentStore`はcanonical revision bytesとconditional head publicationだけを所有する。
 
 #### StateBackend
 
