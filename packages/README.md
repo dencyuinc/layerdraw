@@ -20,4 +20,6 @@ and must not fork Workbench semantics for browser delivery.
 
 `render/` owns the presentation-only, versioned `RenderRecipe` and closed
 `RenderData` contracts. It consumes semantic `ViewData` values but neither
-defines Go semantics nor performs layout or visual rendering.
+defines Go semantics nor performs visual-adapter rendering. Its framework-neutral
+materialization core owns deterministic layout from explicit resolved profile,
+font, asset, ordering, seed, and resource-limit inputs.
