@@ -1526,20 +1526,22 @@ test("cancel join validates a fulfilled terminal response before reuse", async (
   assert.equal(malformed.factory.endpoints.length, 2);
   await malformed.client.dispose();
 
+  const cancelledResponse = await rejectedResponse("cancelled-request");
+  cancelledResponse.outcome = "cancelled";
+  cancelledResponse.diagnostics = [];
+  cancelledResponse.failure = {
+    category: "cancelled",
+    code: "engine.cancelled.safe",
+    message: "cancelled",
+    retryable: false,
+  };
   const engineCancelled = await create({
     compile() {
       return StrictFakeTransport.PENDING;
     },
-    async cancel(record) {
-      const response = await rejectedResponse(record.decoded.request_id);
-      response.outcome = "cancelled";
-      response.diagnostics = [];
-      response.failure = {
-        category: "cancelled",
-        code: "engine.cancelled.safe",
-        message: "cancelled",
-        retryable: false,
-      };
+    cancel(record) {
+      const response = structuredClone(cancelledResponse);
+      response.request_id = record.decoded.request_id;
       record.responseBox.resolve({ control: encode(response), blobs: [] });
       return { reusable: true };
     },
