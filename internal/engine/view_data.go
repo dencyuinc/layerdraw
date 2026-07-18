@@ -20,6 +20,18 @@ type ViewMaterializationInput struct {
 	Recipe CompiledViewRecipe
 	Query  *QueryViewMaterializationInput
 	Diff   *DiffViewMaterializationInput
+	Limits ViewMaterializationLimits
+}
+
+// ViewMaterializationLimits bound semantic ViewData expansion independently
+// from transport serialization. Zero fields select deterministic defaults.
+type ViewMaterializationLimits struct {
+	MaxItems int64
+	MaxWork  int64
+}
+
+func DefaultViewMaterializationLimits() ViewMaterializationLimits {
+	return ViewMaterializationLimits{MaxItems: 1_000_000, MaxWork: 10_000_000}
 }
 
 // QueryViewMaterializationInput binds a QueryResult to one immutable
