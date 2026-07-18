@@ -769,7 +769,8 @@
         "arguments": {"type": "object", "propertyNames": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ParameterAddress"}, "additionalProperties": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/RecipeScalar"}},
         "document_generation": {"$ref": "#/$defs/DocumentGeneration"},
         "limits": {"$ref": "#/$defs/WorkbenchLimits"},
-        "query_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryAddress"}
+        "query_address": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/QueryAddress"},
+        "state_snapshot": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/StateQuerySnapshot"}
       },
       "required": ["document_generation", "limits", "query_address", "arguments"],
       "additionalProperties": false,

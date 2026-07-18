@@ -38,7 +38,8 @@ func (e Engine) ExecuteDocumentQuery(ctx context.Context, input ExecuteDocumentQ
 	}
 	response, err := e.ExecuteQuery(ctx, QueryExecutionInput{
 		Recipe: recipe, Graph: *snapshot.compiled.TypedAST.Graph, Arguments: input.Arguments,
-		Limits: QueryExecutionLimits{MaxItems: input.Limits.MaxItems},
+		Limits: QueryExecutionLimits{MaxItems: input.Limits.MaxItems}, StateSnapshot: input.StateSnapshot,
+		Definition: snapshot.compiled.QueryDefinitionIdentity(),
 	})
 	if err != nil {
 		return ExecuteDocumentQueryResult{}, mapQueryExecutionWorkbenchError(err)

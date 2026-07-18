@@ -819,6 +819,17 @@ func TestExecuteQueryMappingCoversScalarsCyclesAndErrors(t *testing.T) {
 	if err := queryMappingContext(nil); !engine.IsWorkbenchError(err, engine.WorkbenchErrorInvariant) {
 		t.Fatalf("nil query mapping context error = %v", err)
 	}
+	updatedAt := "2026-07-18T00:00:00Z"
+	stateMapped, err := mapExecuteQueryInput(engineprotocol.ExecuteQueryInput{Arguments: map[string]semantic.RecipeScalar{},
+		DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "endpoint", Value: "document_abcdefghijklmnop"}, Value: "1"},
+		Limits:             engineprotocol.WorkbenchLimits{MaxItems: "10", MaxOutputBytes: "1024"}, StateSnapshot: &semantic.StateQuerySnapshot{
+			Format: semantic.StateQuerySnapshotFormatValue, SchemaVersion: 1, DefinitionProjectAddress: "ldl:project:p",
+			DefinitionHash: protocolcommon.Digest("sha256:" + strings.Repeat("a", 64)), GraphHash: protocolcommon.Digest("sha256:" + strings.Repeat("b", 64)), StateVersion: "1", CapturedAt: protocolcommon.Rfc3339Time(updatedAt),
+			InaccessibleFieldPaths: []semantic.StateFieldPath{}, Subjects: []semantic.StateQuerySubject{{SubjectAddress: "ldl:project:p:entity:e", OwnSubjectHash: protocolcommon.Digest("sha256:" + strings.Repeat("c", 64)), Fields: map[string]semantic.RecipeScalar{"system.updated_at": {Kind: "datetime", StringValue: &updatedAt}}, RedactedFieldPaths: []semantic.StateFieldPath{}}},
+		}})
+	if err != nil || stateMapped.StateSnapshot == nil || stateMapped.StateSnapshot.Subjects[0].Fields["system.updated_at"].String != updatedAt {
+		t.Fatalf("runtime state snapshot mapping = %+v err=%v", stateMapped.StateSnapshot, err)
+	}
 	if _, err := mapExecuteQueryInput(engineprotocol.ExecuteQueryInput{Arguments: map[string]semantic.RecipeScalar{"bad": {Kind: "unknown"}}}); err == nil {
 		t.Fatal("bad execute query input scalar accepted")
 	}

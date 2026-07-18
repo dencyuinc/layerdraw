@@ -13,6 +13,38 @@ import (
 )
 
 func TestStateFieldRegistryPublicContract(t *testing.T) {
+	registry := StateFieldRegistry()
+	wantRegistry := []StateFieldPath{
+		StateSystemCreatedAt,
+		StateSystemUpdatedAt,
+		StateSystemCreatedByKind,
+		StateSystemCreatedByID,
+		StateSystemCreatedByDisplayName,
+		StateSystemUpdatedByKind,
+		StateSystemUpdatedByID,
+		StateSystemUpdatedByDisplayName,
+		StateSystemCreatedRevision,
+		StateSystemUpdatedRevision,
+		StateProvenanceSourceKind,
+		StateProvenanceSourceLabel,
+		StateProvenanceSourceURI,
+		StateProvenanceSourceExternalID,
+		StateProvenanceObservedAt,
+		StateProvenanceVerifiedAt,
+		StateProvenanceStaleAfter,
+		StateProvenanceVerifiedByKind,
+		StateProvenanceVerifiedByID,
+		StateProvenanceVerifiedByDisplayName,
+		StateProvenanceConfidence,
+	}
+	if !reflect.DeepEqual(registry, wantRegistry) {
+		t.Fatalf("state registry=%v, want %v", registry, wantRegistry)
+	}
+	registry[0] = StateFieldPath("mutated")
+	if StateFieldRegistry()[0] != StateSystemCreatedAt {
+		t.Fatal("state registry returned shared ordering storage")
+	}
+
 	schema, ok := LookupStateFieldSchema(StateSystemCreatedByKind)
 	want := []string{"user", "agent", "service_account", "anonymous"}
 	if !ok || schema.ValueType != definition.ScalarEnum || !reflect.DeepEqual(schema.EnumValues, want) {

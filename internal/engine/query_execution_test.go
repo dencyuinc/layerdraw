@@ -161,6 +161,31 @@ func TestExecuteDocumentQueryUsesRetainedWorkbenchGeneration(t *testing.T) {
 	}
 }
 
+func TestExecuteDocumentQueryAcceptsRuntimeStateSnapshot(t *testing.T) {
+	t.Parallel()
+	source := requiredStateQuerySource()
+	compiled := compileQueryExecutionFixture(t, source)
+	entity := compiled.TypedAST.Graph.Entities[0]
+	state := validStateQuerySnapshot(t, compiled, []StateQuerySubject{
+		stateSubject(entity.Address, stateFields("system.updated_at", datetimeScalar("2026-07-18T00:00:00Z"))),
+	})
+	instance := New(BuildInfo{})
+	opened, err := instance.OpenDocument(context.Background(), OpenDocumentInput{CompileInput: projectCompileInput(source), RequestedLimits: generousWorkbenchLimits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := instance.ExecuteDocumentQuery(context.Background(), ExecuteDocumentQueryInput{
+		DocumentGeneration: opened.DocumentGeneration, Limits: generousWorkbenchLimits,
+		QueryAddress: "ldl:project:p:query:stale", StateSnapshot: &state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Result.StateInput.Kind != "snapshot" || result.Result.StateInput.SnapshotHash == "" || !reflect.DeepEqual(result.Result.PrimaryEntityAddresses, []string{entity.Address}) {
+		t.Fatalf("state-backed query result = %+v", result.Result)
+	}
+}
+
 func TestExecuteDocumentQueryRejectsInvalidLookupAndLimits(t *testing.T) {
 	t.Parallel()
 	instance := New(BuildInfo{})
