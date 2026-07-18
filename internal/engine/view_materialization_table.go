@@ -3,7 +3,10 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
+	"strings"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/query"
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
@@ -232,15 +235,16 @@ func (m *viewMaterializer) tableColumns(shape *view.TableShape, sources []tableS
 	}
 	sort.Slice(addresses, func(i, j int) bool { return compareStableAddressText(addresses[i], addresses[j]) < 0 })
 	for _, address := range addresses {
-		if seen[address] {
+		definitionColumn := dynamic[address]
+		id := dynamicTableColumnID(definitionColumn, seen)
+		if id == "" {
 			m.addDiag("LDL1701", "invalid_view_source_category_or_shape", "dynamic Table Column identity conflicts with another Column", address, m.input.Recipe.Address)
 			continue
 		}
-		seen[address] = true
-		definitionColumn := dynamic[address]
+		seen[id] = true
 		column := TableColumn{
 			Key: viewItemKey(m, "table-column", []any{m.input.Recipe.Address, address}),
-			ID:  address, Label: definitionColumn.DisplayName, ValueType: string(definitionColumn.ValueType),
+			ID:  id, Label: definitionColumn.DisplayName, ValueType: string(definitionColumn.ValueType),
 			EnumValues: []string{}, SourceColumnAddresses: []string{address},
 		}
 		if definitionColumn.ValueType == definition.ScalarEnum {
@@ -249,6 +253,22 @@ func (m *viewMaterializer) tableColumns(shape *view.TableShape, sources []tableS
 		columns = append(columns, column)
 	}
 	return columns
+}
+
+func dynamicTableColumnID(column definition.Column, seen map[string]bool) string {
+	parts := strings.Split(column.Address, ":")
+	if len(parts) >= 4 {
+		candidate := parts[len(parts)-3] + "_" + column.ID
+		if !seen[candidate] {
+			return candidate
+		}
+	}
+	digest := sha256.Sum256([]byte(column.Address))
+	candidate := "dynamic_" + hex.EncodeToString(digest[:])
+	if !seen[candidate] {
+		return candidate
+	}
+	return ""
 }
 
 func tableValueTypeName(value view.TableValueType) string {
@@ -313,7 +333,7 @@ func (m *viewMaterializer) tableSourceCell(shape *view.TableShape, column TableC
 			}
 			return absentTableCell(baseSource)
 		}
-		if len(column.SourceColumnAddresses) == 1 && column.ID == column.SourceColumnAddresses[0] {
+		if column.Address == nil && len(column.SourceColumnAddresses) == 1 {
 			return m.dynamicRelationAttributeCell(column.SourceColumnAddresses[0], source)
 		}
 	}

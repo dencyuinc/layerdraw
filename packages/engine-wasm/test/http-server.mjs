@@ -27,6 +27,13 @@ const server = createServer(async (request, response) => {
       createReadStream(path).pipe(response);
       return;
     }
+    if (pathname === "/__layerdraw/viewdata-conformance-v1.json") {
+      const path = resolve(repositoryRoot, "tests/conformance/testdata/viewdata_conformance_v1.json");
+      const info = await stat(path);
+      response.writeHead(200, {"cache-control": "no-store", "content-length": info.size, "content-type": "application/json; charset=utf-8"});
+      createReadStream(path).pipe(response);
+      return;
+    }
     const packageFile = /^\/__layerdraw\/packages\/(engine-client|protocol)\/(.+)$/.exec(pathname);
     if (packageFile !== null) {
       const [, packageName, relative] = packageFile;

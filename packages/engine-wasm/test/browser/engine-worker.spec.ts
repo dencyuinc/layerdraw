@@ -14,12 +14,18 @@ const parityCases = [
   "representative_large_graph",
   "cancellation",
 ];
+const viewDataCases = [
+  "diagram", "table_automatic", "table_relation", "table_relation_rows", "matrix", "tree", "flow", "context",
+  "state_optional_absent", "state_optional_present", "state_required_present", "state_required_missing",
+  "composed_diagram", "hidden_diagram_projection", "definition_diff", "mismatched_query_result",
+  "materialization_item_limit", "deterministic_source_map_locale", "cancelled_materialization", "malformed_materialize_wire",
+];
 
 declare global {
   interface Window {
     layerDrawHarnessReady: boolean;
-    runLayerDrawRealArtifactCorpus(): Promise<{limitKeys: string[]; parityCases: string[]; endpointID: string; replacementID: string}>;
-    runLayerDrawEngineClientCorpus(): Promise<{cases: string[]; firstGeneration: number; replacementGeneration: number; state: string}>;
+    runLayerDrawRealArtifactCorpus(): Promise<{limitKeys: string[]; parityCases: string[]; viewDataCases: string[]; endpointID: string; replacementID: string}>;
+    runLayerDrawEngineClientCorpus(): Promise<{cases: string[]; viewDataCases: string[]; firstGeneration: number; replacementGeneration: number; state: string}>;
     runLayerDrawDirectLifecycle(): Promise<{staleFailure: {code: string; phase: string; retryable: boolean}; staleDetached: number; crashCode: string}>;
     runLayerDrawVerifiedSnapshotRace(): Promise<{wasmExecReads: number; revoked: number}>;
   }
@@ -39,6 +45,7 @@ test("packaged module Worker executes the parity corpus through real Go/WASM", a
     "max_output_total_bytes", "max_response_publish_bytes",
   ]);
   expect(result.parityCases).toEqual(parityCases);
+  expect(result.viewDataCases).toEqual(viewDataCases.slice(0, 18));
   expect(result.endpointID).not.toBe(result.replacementID);
   expect(failures).toEqual([]);
 });
@@ -53,6 +60,7 @@ test("public Engine client compiles the parity corpus through a real Go/WASM Wor
   const result = await page.evaluate(() => window.runLayerDrawEngineClientCorpus());
   expect(result).toEqual({
     cases: parityCases,
+    viewDataCases,
     firstGeneration: 1,
     replacementGeneration: 2,
     state: "disposed",

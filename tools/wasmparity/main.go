@@ -104,8 +104,13 @@ func (sink *memoryBlobSink) Publish(_ context.Context, blobs []endpoint.OutputBl
 
 func main() {
 	output := flag.String("output", "tests/conformance/testdata/engine_compile_parity_v1.json", "generated corpus output")
+	viewOutput := flag.String("view-output", viewDataCorpusPath, "generated ViewData conformance corpus output")
 	flag.Parse()
 	if err := generate(*output); err != nil {
+		fmt.Fprintln(os.Stderr, "wasmparity:", err)
+		os.Exit(1)
+	}
+	if err := generateViewDataCorpus(*viewOutput); err != nil {
 		fmt.Fprintln(os.Stderr, "wasmparity:", err)
 		os.Exit(1)
 	}
