@@ -64,6 +64,7 @@ func expectedOperations() []string {
 		OperationMaterializeView,
 		OperationOpenDocument,
 		OperationOrganizeWorkspace,
+		OperationPlanExport,
 		OperationPreviewFragment,
 		OperationPreviewSourcePatch,
 		OperationReadDeclarations,

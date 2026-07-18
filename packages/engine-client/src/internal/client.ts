@@ -44,6 +44,7 @@ import {
   decodeListModulesResponseEnvelope,
   decodeListReferencesResponseEnvelope,
   decodeMaterializeViewResponseEnvelope,
+  decodePlanExportResponseEnvelope,
   decodeOpenDocumentResponseEnvelope,
   decodeOrganizeWorkspaceResponseEnvelope,
   decodePreviewFragmentResponseEnvelope,
@@ -68,6 +69,7 @@ import {
   encodeListModulesRequestEnvelope,
   encodeListReferencesRequestEnvelope,
   encodeMaterializeViewRequestEnvelope,
+  encodePlanExportRequestEnvelope,
   encodeOpenDocumentRequestEnvelope,
   encodeOrganizeWorkspaceRequestEnvelope,
   encodePreviewFragmentRequestEnvelope,
@@ -90,6 +92,7 @@ import {
   isListModulesInput,
   isListReferencesInput,
   isMaterializeViewInput,
+  isPlanExportInput,
   isOpenDocumentInput,
   isOrganizeWorkspaceInput,
   isPreviewFragmentInput,
@@ -487,6 +490,7 @@ type WorkbenchEnvelope =
   | ListModulesResponseEnvelope
   | EngineProtocol.ListReferencesResponseEnvelope
   | EngineProtocol.MaterializeViewResponseEnvelope
+  | EngineProtocol.PlanExportResponseEnvelope
   | EngineProtocol.OrganizeWorkspaceResponseEnvelope
   | EngineProtocol.PreviewFragmentResponseEnvelope
   | EngineProtocol.PreviewSourcePatchResponseEnvelope
@@ -767,6 +771,11 @@ class EngineClientImplementation implements EngineClient {
       options?: WorkbenchOptions,
     ): Promise<WorkbenchOutcome<EngineProtocol.MaterializeViewResponseEnvelope>> =>
       this.materializeView(input, options),
+    planExport: (
+      input: EngineProtocol.PlanExportInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.PlanExportResponseEnvelope>> =>
+      this.planExport(input, options),
     openDocument: (
       input: OpenDocumentInput,
       options?: WorkbenchOptions,
@@ -1054,6 +1063,16 @@ class EngineClientImplementation implements EngineClient {
     return this.executeWorkbenchOperation("engine.materialize_view", input, options, (envelope) =>
       encodeMaterializeViewRequestEnvelope(envelope as EngineProtocol.MaterializeViewRequestEnvelope),
     decodeMaterializeViewResponseEnvelope);
+  }
+
+  private planExport(
+    input: EngineProtocol.PlanExportInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PlanExportResponseEnvelope>> {
+    if (!isPlanExportInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.plan_export", input, options, (envelope) =>
+      encodePlanExportRequestEnvelope(envelope as EngineProtocol.PlanExportRequestEnvelope),
+    decodePlanExportResponseEnvelope);
   }
 
   private organizeWorkspace(

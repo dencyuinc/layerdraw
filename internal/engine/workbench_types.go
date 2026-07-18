@@ -72,6 +72,7 @@ type DocumentCapabilityState struct {
 	ListModules        bool `json:"list_modules"`
 	ListReferences     bool `json:"list_references"`
 	MaterializeView    bool `json:"materialize_view"`
+	PlanExport         bool `json:"plan_export"`
 	OrganizeWorkspace  bool `json:"organize_workspace"`
 	PreviewFragment    bool `json:"preview_fragment"`
 	PreviewOperations  bool `json:"preview_operations"`

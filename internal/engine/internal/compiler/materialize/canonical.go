@@ -25,23 +25,35 @@ import (
 type HashDomain string
 
 const (
-	DomainDefinition   HashDomain = "definition"
-	DomainGraph        HashDomain = "graph"
-	DomainSubject      HashDomain = "subject"
-	DomainSubtree      HashDomain = "subtree"
-	DomainChildSet     HashDomain = "child-set"
-	DomainStateQuery   HashDomain = "state-query-snapshot"
-	DomainViewDataItem HashDomain = "viewdata-item"
+	DomainDefinition         HashDomain = "definition"
+	DomainGraph              HashDomain = "graph"
+	DomainSubject            HashDomain = "subject"
+	DomainSubtree            HashDomain = "subtree"
+	DomainChildSet           HashDomain = "child-set"
+	DomainStateQuery         HashDomain = "state-query-snapshot"
+	DomainViewDataItem       HashDomain = "viewdata-item"
+	DomainExportViewData     HashDomain = "export-viewdata"
+	DomainExportRecipe       HashDomain = "export-recipe"
+	DomainExportProfileRef   HashDomain = "export-profile-ref"
+	DomainExportRequirements HashDomain = "export-profile-requirements"
+	DomainExportStateSummary HashDomain = "export-state-summary"
+	DomainExportInvocation   HashDomain = "export-invocation"
 )
 
 var semanticDomains = map[HashDomain]bool{
-	DomainDefinition:   true,
-	DomainGraph:        true,
-	DomainSubject:      true,
-	DomainSubtree:      true,
-	DomainChildSet:     true,
-	DomainStateQuery:   true,
-	DomainViewDataItem: true,
+	DomainDefinition:         true,
+	DomainGraph:              true,
+	DomainSubject:            true,
+	DomainSubtree:            true,
+	DomainChildSet:           true,
+	DomainStateQuery:         true,
+	DomainViewDataItem:       true,
+	DomainExportViewData:     true,
+	DomainExportRecipe:       true,
+	DomainExportProfileRef:   true,
+	DomainExportRequirements: true,
+	DomainExportStateSummary: true,
+	DomainExportInvocation:   true,
 }
 
 // Canonicalize applies LDL string normalization and emits RFC 8785 JSON. It

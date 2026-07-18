@@ -15,6 +15,7 @@
       "list_references": false,
       "materialize_view": false,
       "organize_workspace": false,
+      "plan_export": false,
       "preview_fragment": false,
       "preview_operations": false,
       "preview_source_patch": false,

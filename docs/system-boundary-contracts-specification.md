@@ -1695,7 +1695,7 @@ ViewData + RenderRecipe
   -> TS Render
   -> RenderData
 
-ViewData + ExportRecipe
+ViewData + ExportRecipe + host-resolved ExportProfileRequirements
   -> Go Export Planner
   -> ExportPlan
 
@@ -1788,6 +1788,12 @@ ExportPlanはGo Engineが所有し、次を完全に指定する。
 - serializer profileとclosed options
 - Source Manifest requirement
 
+Artifactとunitは別identityである。unitはartifact内のsection/sheet/page/slideを`unit_id`、role、orderで固定し、すべての非omitted representationは既存artifactとそのartifactに属する既存unitの両方を参照する。
+
+`ExportProfileRequirements`はhostが選択済みprofileのregistry identity、format、specification digestと、必要asset/font digestのexact setを検証してからEngineへ渡すclosed inputである。Engineはregistry解決を行わず、exporter/serializer profile参照がExportRecipeのprofile参照と完全一致することを検証し、sort済みrequirements全体のhashをPlanへ束縛する。不一致をformatだけで許容してはならない。
+
+ExportPlanの`serializer_options`はcanonical ExportRecipeから決定したcomplete closed normalized ExportOptionsであり、SerializerInputはこれを唯一のoption authorityとして使う。Source Manifestはexporter profileとserializer profileの双方の完全なidentityを記録する。
+
 serializerはExportPlanに無いsheet、page、source mapping、business narrativeを推測しない。
 
 ```text
@@ -1811,6 +1817,7 @@ SerializerInput
 - ExportRecipe normalized digest
 - ExportPlan canonical digest
 - exporter / serializer profile IDとversion
+- resolved export profile requirements canonical digest
 - RenderData digest（required時）
 - asset digest集合
 - font digest集合

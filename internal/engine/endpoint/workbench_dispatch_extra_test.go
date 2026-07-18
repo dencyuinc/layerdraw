@@ -27,6 +27,7 @@ import (
 type fakeWorkbenchDriver struct {
 	descriptor engine.Descriptor
 	plan       sourceplanner.SourcePlan
+	exportPlan engine.ExportPlan
 	generation engine.DocumentGeneration
 	queryState string
 	err        error
@@ -136,6 +137,10 @@ func (driver *fakeWorkbenchDriver) MaterializeDocumentView(_ context.Context, in
 		DocumentGeneration: input.Query.DocumentGeneration,
 		ViewData:           engine.ViewData{Context: &engine.ContextViewData{ViewDataBase: base, Groups: []engine.ContextGroup{}}},
 	}, nil
+}
+
+func (driver *fakeWorkbenchDriver) PlanExport(context.Context, engine.ExportPlanInput) (engine.ExportPlan, error) {
+	return driver.exportPlan, driver.err
 }
 
 func (driver *fakeWorkbenchDriver) GetNeighbors(context.Context, engine.GetNeighborsInput) (engine.GetNeighborsResult, error) {
@@ -1671,6 +1676,9 @@ func TestEngineCompileDriverWorkbenchForwardersAreReachable(t *testing.T) {
 	}
 	if _, err := driver.OrganizeWorkspace(cancelled, engine.OrganizeWorkspaceInput{}); err == nil {
 		t.Fatal("organize workspace forwarder returned nil error")
+	}
+	if _, err := driver.PlanExport(cancelled, engine.ExportPlanInput{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("plan export forwarder error = %v", err)
 	}
 
 	dispatcher := NewCompileDispatcher(engine.New(engine.BuildInfo{}))

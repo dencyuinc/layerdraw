@@ -34,6 +34,10 @@ const viewDataCorpus = JSON.parse(await readFile(
   join(repositoryRoot, "tests/conformance/testdata/viewdata_conformance_v1.json"),
   "utf8",
 ));
+const exportPlanGolden = JSON.parse(await readFile(
+  join(repositoryRoot, "schemas/fixtures/conformance/export-plan-transport-parity-v1.json"),
+  "utf8",
+));
 const releaseManifestDigest = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
 const build = spawnSync(
   "go",
@@ -94,7 +98,10 @@ test("stdio client executes the portable corpus through the real Go sidecar", as
   assert.equal(cancelled.origin, "client");
   assert.equal(cancelled.outcome, "cancelled");
 
-  await executePortableQueryClientWorkflow(client, "stdio-query");
+  assert.deepEqual(await executePortableQueryClientWorkflow(client, "stdio-query"), {
+    input: exportPlanGolden.input,
+    export_plan: exportPlanGolden.export_plan,
+  });
   assert.equal((await executeViewDataClientCorpus(client, viewDataCorpus, "stdio-viewdata")).length, 20);
 
   await client.restart();

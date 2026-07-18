@@ -344,6 +344,7 @@
         "list_modules": {"type": "boolean"},
         "list_references": {"type": "boolean"},
         "materialize_view": {"type": "boolean"},
+        "plan_export": {"type": "boolean"},
         "organize_workspace": {"type": "boolean"},
         "preview_fragment": {"type": "boolean"},
         "preview_operations": {"type": "boolean"},
@@ -355,7 +356,7 @@
         "read_scope": {"type": "boolean"},
         "replace_source_tree": {"type": "boolean"}
       },
-      "required": ["apply_to_handle", "execute_query", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "materialize_view", "organize_workspace", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_modules", "read_references", "read_rows", "read_scope", "replace_source_tree"],
+      "required": ["apply_to_handle", "execute_query", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "materialize_view", "plan_export", "organize_workspace", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_modules", "read_references", "read_rows", "read_scope", "replace_source_tree"],
       "additionalProperties": false
     },
     "WorkingDocumentState": {
@@ -839,6 +840,26 @@
       "required": ["document_generation", "view_data", "returned_items", "returned_bytes"],
       "additionalProperties": false,
       "x-layerdraw-protocol-invariant": "view_data_result"
+    },
+    "PlanExportInput": {
+      "type": "object",
+      "description": "The complete closed semantic input for deterministic ExportPlan generation. The host resolves and verifies profile requirements before invocation; the Engine validates their recipe binding and executes no renderer, registry, or serializer behavior.",
+      "properties": {
+        "recipe": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportRecipe"},
+        "resolved_requirements": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ResolvedExportProfileRequirements"},
+        "state_summary": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExternalStateSummary"},
+        "view_data": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ViewData"}
+      },
+      "required": ["view_data", "recipe", "resolved_requirements"],
+      "additionalProperties": false
+    },
+    "PlanExportResult": {
+      "type": "object",
+      "properties": {
+        "export_plan": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/ExportPlan"}
+      },
+      "required": ["export_plan"],
+      "additionalProperties": false
     },
     "NeighborCursor": {
       "type": "object",
@@ -2005,6 +2026,36 @@
         "failure": {"$ref": "#/$defs/WorkbenchFailure"},
         "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
         "payload": {"$ref": "#/$defs/MaterializeViewResult"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": ["protocol", "request_id", "engine_release", "outcome", "diagnostics"],
+      "additionalProperties": false,
+      "x-layerdraw-outcome-envelope": true
+    },
+    "PlanExportRequestEnvelope": {
+      "type": "object",
+      "properties": {
+        "deadline_at": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Rfc3339Time"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "operation": {"type": "string", "const": "engine.plan_export"},
+        "payload": {"$ref": "#/$defs/PlanExportInput"},
+        "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "trace_context": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/JsonObject"}
+      },
+      "required": ["protocol", "request_id", "operation", "payload"],
+      "additionalProperties": false
+    },
+    "PlanExportResponseEnvelope": {
+      "type": "object",
+      "properties": {
+        "diagnostics": {"type": "array", "items": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/Diagnostic"}},
+        "engine_release": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/ReleaseVersion"},
+        "extensions": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Extensions"},
+        "failure": {"$ref": "#/$defs/WorkbenchFailure"},
+        "outcome": {"$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Outcome"},
+        "payload": {"$ref": "#/$defs/PlanExportResult"},
         "protocol": {"$ref": "#/$defs/EngineProtocolRef"},
         "request_id": {"type": "string", "minLength": 1, "maxLength": 128}
       },
