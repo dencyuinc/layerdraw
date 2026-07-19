@@ -43,6 +43,19 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
+  packages/export:
+    dependencies:
+      '@layerdraw/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@layerdraw/render':
+        specifier: workspace:*
+        version: link:../render
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
   packages/protocol:
     devDependencies:
       ajv:
