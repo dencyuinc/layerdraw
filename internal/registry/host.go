@@ -80,6 +80,27 @@ func DecodeWireRequest(wire []byte, expected WireOperation) (WireRequest, error)
 	return request, nil
 }
 
+// DecodeWireResponse is the response-side companion to DecodeWireRequest. It
+// rejects cross-operation responses and ambiguous success/failure shapes so a
+// framework adapter cannot normalize unvalidated Registry output.
+func DecodeWireResponse(wire []byte, expected WireOperation) (WireResponse, error) {
+	var response WireResponse
+	if err := decodeStrict(wire, &response); err != nil {
+		return WireResponse{}, err
+	}
+	if response.WireVersion != RegistryWireVersion || response.RequestID == "" || !validWireOperation(response.Operation) || response.Operation != expected {
+		return WireResponse{}, errors.New("invalid Registry wire response binding")
+	}
+	if response.OK {
+		if response.Failure != nil || len(response.Value) == 0 || string(response.Value) == "null" {
+			return WireResponse{}, errors.New("invalid Registry success response")
+		}
+	} else if response.Failure == nil || len(response.Value) != 0 {
+		return WireResponse{}, errors.New("invalid Registry failure response")
+	}
+	return response, nil
+}
+
 // HostBinding is the single strict, versioned Registry dispatcher used by all
 // framework shells. Wails and other transports move bytes only.
 type HostBinding struct{ registry *Registry }

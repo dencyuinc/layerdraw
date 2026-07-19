@@ -72,8 +72,13 @@ type RegistryClient struct {
 	PlanInstall, CommitPlan, GetTransaction, RecoverTransaction, AuthorArtifact ClientMethod
 }
 type OwnerEnvelopeIdentity struct{ Operation, RequestID string }
+type OwnerResponseIdentity struct {
+	Operation, RequestID string
+	Outcome              string
+}
 type OwnerDecoder interface {
-	Decode(expectedOperation string, control []byte) (OwnerEnvelopeIdentity, error)
+	DecodeRequest(expectedOperation string, control []byte) (OwnerEnvelopeIdentity, error)
+	DecodeResponse(expectedOperation string, control []byte) (OwnerResponseIdentity, error)
 }
 type ReviewClient struct {
 	Decoder OwnerDecoder
@@ -272,7 +277,7 @@ func (c ClientSet) Invoke(ctx context.Context, generatedMethod string, exchange 
 		if decoder == nil {
 			return ExchangeResult{}, errors.New("desktop contract: owner decoder is unavailable")
 		}
-		identity, decodeErr := decoder.Decode(binding.Operation, exchange.Control)
+		identity, decodeErr := decoder.DecodeRequest(binding.Operation, exchange.Control)
 		if decodeErr != nil || identity.Operation != binding.Operation || identity.RequestID == "" {
 			return ExchangeResult{}, errors.New("desktop contract: owner envelope identity is invalid")
 		}
@@ -450,5 +455,138 @@ func decodeExact(binding BindingMethod, control []byte) error {
 		return err
 	default:
 		return errors.New("desktop contract: binding has no generated decoder")
+	}
+}
+
+// decodeExactResponse is deliberately operation-closed like decodeExact. A
+// parity adapter must decode the owner's typed response before normalizing it;
+// merely observing a common outcome field is insufficient.
+func decodeExactResponse(binding BindingMethod, control []byte) error {
+	switch binding.Operation {
+	case string(engineprotocol.ApplyToHandleRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeApplyToHandleResponseEnvelope(control)
+		return err
+	case string(engineprotocol.CloseDocumentRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(control)
+		return err
+	case string(engineprotocol.CompileRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeCompileResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ExecuteQueryRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(control)
+		return err
+	case string(engineprotocol.FindSymbolsRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeFindSymbolsResponseEnvelope(control)
+		return err
+	case string(engineprotocol.FindUsagesRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeFindUsagesResponseEnvelope(control)
+		return err
+	case string(engineprotocol.FormatScopeRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeFormatScopeResponseEnvelope(control)
+		return err
+	case string(engineprotocol.GetNeighborsRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeGetNeighborsResponseEnvelope(control)
+		return err
+	case string(engineprotocol.HandshakeRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeHandshakeResponseEnvelope(control)
+		return err
+	case string(engineprotocol.InspectSubgraphRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeInspectSubgraphResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ListModulesRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeListModulesResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ListReferencesRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeListReferencesResponseEnvelope(control)
+		return err
+	case string(engineprotocol.MaterializeViewRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeMaterializeViewResponseEnvelope(control)
+		return err
+	case string(engineprotocol.OpenDocumentRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(control)
+		return err
+	case string(engineprotocol.OrganizeWorkspaceRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeOrganizeWorkspaceResponseEnvelope(control)
+		return err
+	case string(engineprotocol.PlanExportRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodePlanExportResponseEnvelope(control)
+		return err
+	case string(engineprotocol.PreviewFragmentRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodePreviewFragmentResponseEnvelope(control)
+		return err
+	case string(engineprotocol.PreviewOperationsRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(control)
+		return err
+	case string(engineprotocol.PreviewSourcePatchRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodePreviewSourcePatchResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ReadDeclarationsRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeReadDeclarationsResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ReadModulesRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeReadModulesResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ReadReferencesRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeReadReferencesResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ReadRowsRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeReadRowsResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ReadScopeRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeReadScopeResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ReplaceSourceTreeRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeReplaceSourceTreeResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.CancelOperationRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeCancelOperationResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.CommitOperationsRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeCommitOperationsResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.AutosaveControlRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeAutosaveControlResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.CloseRuntimeDocumentRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeCloseRuntimeDocumentResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.GetOperationResultRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeGetOperationResultResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.StateSnapshotRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeStateSnapshotResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.RuntimeHandshakeRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeRuntimeHandshakeResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.InspectDocumentRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeInspectDocumentResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.ListRevisionsRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeListRevisionsResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.OpenDocumentRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeOpenDocumentResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.PreviewOperationsRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodePreviewOperationsResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.RestorePreviewRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeRestorePreviewResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.RecoverOperationsRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeRecoverOperationsResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.SaveDocumentRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeSaveDocumentResponseEnvelope(control)
+		return err
+	case string(runtimeprotocol.StageAssetRequestEnvelopeOperationValue):
+		_, err := runtimeprotocol.DecodeStageAssetResponseEnvelope(control)
+		return err
+	case string(registry.WireListSources), string(registry.WireConfigureSource), string(registry.WireConnectSource), string(registry.WireDisconnectSource), string(registry.WireSearch), string(registry.WirePlan), string(registry.WireCommit), string(registry.WireGetTransaction), string(registry.WireRecoverTransaction), string(registry.WireAuthorArtifact):
+		_, err := registry.DecodeWireResponse(control, registry.WireOperation(binding.Operation))
+		return err
+	default:
+		return errors.New("desktop contract: binding has no generated response decoder")
 	}
 }

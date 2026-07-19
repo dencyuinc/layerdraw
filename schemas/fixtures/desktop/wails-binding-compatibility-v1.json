@@ -26,24 +26,5 @@
       "browser_request_fixture": "schemas/fixtures/desktop/registry-list-sources-browser-v1.json",
       "desktop_request_fixture": "schemas/fixtures/desktop/registry-list-sources-request-v1.json"
     }
-  ],
-  "outcomes": [
-    {"browser_decoder":"compile","desktop_decoder":"execute_query","browser_fixture":"schemas/fixtures/engine/compile-success.json","desktop_fixture":"schemas/fixtures/engine/execute-query-success.json","outcome":"success"},
-    {"browser_decoder":"compile","desktop_decoder":"execute_query","browser_fixture":"schemas/fixtures/engine/compile-rejected.json","desktop_fixture":"schemas/fixtures/engine/execute-query-rejected.json","outcome":"rejected"},
-    {"browser_decoder":"handshake","desktop_decoder":"open_document","browser_fixture":"schemas/fixtures/engine/handshake-failed-response.json","desktop_fixture":"schemas/fixtures/engine/workbench-failed-execution-response.json","outcome":"failed"},
-    {"browser_decoder":"handshake","desktop_decoder":"open_document","browser_fixture":"schemas/fixtures/engine/handshake-cancelled-response.json","desktop_fixture":"schemas/fixtures/engine/workbench-cancelled-response.json","outcome":"cancelled"}
-  ],
-  "capability_statuses": [
-    {"capability_id": "desktop.authoring", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.query", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.search", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.analysis", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.registry", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.review", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.export", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.mcp.tools", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.mcp.resources", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.agent_scope_management", "enabled": true, "protocol_version": "1.0"},
-    {"capability_id": "desktop.external_storage", "enabled": false, "protocol_version": "1.0", "unavailable_reason": "not_configured"}
   ]
 }

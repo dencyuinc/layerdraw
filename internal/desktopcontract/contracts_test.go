@@ -19,6 +19,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
+	"github.com/dencyuinc/layerdraw/internal/registry"
 )
 
 var repoRoot = filepath.Join("..", "..")
@@ -73,14 +74,6 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 			BrowserRequestFixture string        `json:"browser_request_fixture"`
 			DesktopRequestFixture string        `json:"desktop_request_fixture"`
 		} `json:"bindings"`
-		Outcomes []struct {
-			BrowserDecoder string                 `json:"browser_decoder"`
-			DesktopDecoder string                 `json:"desktop_decoder"`
-			BrowserFixture string                 `json:"browser_fixture"`
-			DesktopFixture string                 `json:"desktop_fixture"`
-			Outcome        protocolcommon.Outcome `json:"outcome"`
-		} `json:"outcomes"`
-		CapabilityStatuses []json.RawMessage `json:"capability_statuses"`
 	}
 	if err := json.Unmarshal(fixture(t, "schemas/fixtures/desktop/wails-binding-compatibility-v1.json"), &value); err != nil {
 		t.Fatal(err)
@@ -102,66 +95,23 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 				t.Fatalf("binding drift: %+v", binding)
 			}
 		}
-	}
-	wantOutcomes := []protocolcommon.Outcome{protocolcommon.OutcomeSuccess, protocolcommon.OutcomeRejected, protocolcommon.OutcomeFailed, protocolcommon.OutcomeCancelled}
-	if len(value.Outcomes) != len(wantOutcomes) {
-		t.Fatal("outcome fixture is incomplete")
-	}
-	for index, vector := range value.Outcomes {
-		browserBytes, desktopBytes := fixture(t, vector.BrowserFixture), fixture(t, vector.DesktopFixture)
-		if bytes.Equal(browserBytes, desktopBytes) {
-			t.Fatalf("outcome %s uses identical bytes", vector.Outcome)
-		}
-		for surfaceIndex, fixtureName := range []string{vector.BrowserFixture, vector.DesktopFixture} {
-			decoder := []string{vector.BrowserDecoder, vector.DesktopDecoder}[surfaceIndex]
-			var outcome protocolcommon.Outcome
-			switch decoder {
-			case "compile":
-				decoded, err := engineprotocol.DecodeCompileResponseEnvelope(fixture(t, fixtureName))
-				if err != nil {
-					t.Fatal(err)
-				}
-				outcome = decoded.Outcome
-			case "handshake":
-				decoded, err := engineprotocol.DecodeHandshakeResponseEnvelope(fixture(t, fixtureName))
-				if err != nil {
-					t.Fatal(err)
-				}
-				outcome = decoded.Outcome
-			case "execute_query":
-				decoded, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(fixture(t, fixtureName))
-				if err != nil {
-					t.Fatal(err)
-				}
-				outcome = decoded.Outcome
-			case "open_document":
-				decoded, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(fixture(t, fixtureName))
-				if err != nil {
-					t.Fatal(err)
-				}
-				outcome = decoded.Outcome
-			default:
-				t.Fatalf("unknown generated decoder %q", decoder)
-			}
-			if outcome != vector.Outcome || outcome != wantOutcomes[index] {
-				t.Fatalf("outcome drift: %q", outcome)
-			}
+		browserSemantic, desktopSemantic := normalizedJSONWithoutRequestID(t, browser), normalizedJSONWithoutRequestID(t, desktop)
+		if !reflect.DeepEqual(browserSemantic, desktopSemantic) {
+			t.Fatalf("%s changed semantic request across adapters", vector.GeneratedMethod)
 		}
 	}
-	if len(value.CapabilityStatuses) != len(DefaultManifest().RequiredCapabilities)+len(DefaultManifest().OptionalCapabilities) {
-		t.Fatal("capability fixture is incomplete")
+}
+
+func normalizedJSONWithoutRequestID(t *testing.T, wire []byte) map[string]any {
+	t.Helper()
+	var value map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(wire))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		t.Fatal(err)
 	}
-	seen := map[protocolcommon.CapabilityID]bool{}
-	for _, raw := range value.CapabilityStatuses {
-		status, err := protocolcommon.DecodeRequestedCapabilityStatus(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if status.CapabilityID == "" || seen[status.CapabilityID] || status.ProtocolVersion != DesktopProtocolVersion {
-			t.Fatalf("invalid status %+v", status)
-		}
-		seen[status.CapabilityID] = true
-	}
+	delete(value, "request_id")
+	return value
 }
 
 func TestEveryApprovedBindingHasExactDecoderAndRejectsEmptyEnvelope(t *testing.T) {
@@ -231,11 +181,11 @@ func completeClientSet() ClientSet {
 
 type strictOwnerDecoder struct{}
 
-func (strictOwnerDecoder) Decode(expected string, control []byte) (OwnerEnvelopeIdentity, error) {
+func (strictOwnerDecoder) DecodeRequest(expected string, control []byte) (OwnerEnvelopeIdentity, error) {
 	var envelope struct {
-		Operation string         `json:"operation"`
-		RequestID string         `json:"request_id"`
-		Payload   map[string]any `json:"payload"`
+		Operation string        `json:"operation"`
+		RequestID string        `json:"request_id"`
+		Payload   parityRequest `json:"payload"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(control))
 	decoder.DisallowUnknownFields()
@@ -246,48 +196,397 @@ func (strictOwnerDecoder) Decode(expected string, control []byte) (OwnerEnvelope
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return OwnerEnvelopeIdentity{}, errors.New("trailing owner envelope")
 	}
-	if envelope.Operation != expected || envelope.RequestID == "" || envelope.Payload == nil {
+	if envelope.Operation != expected || envelope.RequestID == "" || envelope.Payload.Subject == "" || envelope.Payload.Arguments.Query == "" || envelope.Payload.Arguments.Limit == "" {
 		return OwnerEnvelopeIdentity{}, errors.New("invalid owner envelope")
 	}
 	return OwnerEnvelopeIdentity{Operation: envelope.Operation, RequestID: envelope.RequestID}, nil
 }
 
-func TestOwnerBindingsAreCompleteUsableAndDistinctAcrossSurfaces(t *testing.T) {
-	var fixtureValue struct {
-		Version  int         `json:"version"`
-		Bindings [][4]string `json:"bindings"`
+func (strictOwnerDecoder) DecodeResponse(expected string, control []byte) (OwnerResponseIdentity, error) {
+	var envelope struct {
+		Operation string       `json:"operation"`
+		RequestID string       `json:"request_id"`
+		Payload   parityResult `json:"payload"`
 	}
+	if err := decodeStrictParity(control, &envelope); err != nil || envelope.Operation != expected || envelope.RequestID == "" || envelope.Payload.Outcome != protocolcommon.OutcomeSuccess || len(envelope.Payload.Value.Items) == 0 || envelope.Payload.Value.Total == "" {
+		return OwnerResponseIdentity{}, errors.New("invalid owner response envelope")
+	}
+	return OwnerResponseIdentity{Operation: envelope.Operation, RequestID: envelope.RequestID, Outcome: string(envelope.Payload.Outcome)}, nil
+}
+
+type parityRequest struct {
+	Subject   string `json:"subject"`
+	Arguments struct {
+		Query string `json:"query"`
+		Limit string `json:"limit"`
+	} `json:"arguments"`
+}
+
+type parityResult struct {
+	Outcome protocolcommon.Outcome `json:"outcome"`
+	Value   struct {
+		Items []string `json:"items"`
+		Total string   `json:"total"`
+	} `json:"value"`
+}
+
+type bindingParityFixture struct {
+	Version            int                                        `json:"version"`
+	SemanticRequest    parityRequest                              `json:"semantic_request"`
+	SemanticResult     parityResult                               `json:"semantic_result"`
+	Bindings           [][4]string                                `json:"bindings"`
+	Capabilities       []protocolcommon.CapabilityID              `json:"capabilities"`
+	CapabilityStatuses []protocolcommon.RequestedCapabilityStatus `json:"capability_statuses"`
+}
+
+type normalizedParity struct {
+	Method    string
+	Target    BindingTarget
+	Operation string
+	Request   parityRequest
+	Result    parityResult
+}
+
+func validateBindingParityFixture(value bindingParityFixture) error {
+	if value.Version != 2 || value.SemanticRequest.Subject == "" || value.SemanticRequest.Arguments.Query == "" || value.SemanticRequest.Arguments.Limit == "" || value.SemanticResult.Outcome != protocolcommon.OutcomeSuccess || len(value.SemanticResult.Value.Items) == 0 || value.SemanticResult.Value.Total == "" {
+		return errors.New("invalid non-empty semantic parity fixture")
+	}
+	table := GeneratedBindingTable()
+	if len(value.Bindings) != len(table) {
+		return errors.New("binding parity closure mismatch")
+	}
+	seen := map[string]bool{}
+	for index, row := range value.Bindings {
+		binding := table[index]
+		want := [4]string{binding.GeneratedMethod, string(binding.Target), binding.ClientMethod, binding.Operation}
+		if row != want || seen[row[0]] {
+			return errors.New("binding parity row mismatch")
+		}
+		seen[row[0]] = true
+	}
+	manifest := DefaultManifest()
+	wantCapabilities := append(append([]protocolcommon.CapabilityID(nil), manifest.RequiredCapabilities...), manifest.OptionalCapabilities...)
+	if !reflect.DeepEqual(value.Capabilities, wantCapabilities) {
+		return errors.New("capability parity closure mismatch")
+	}
+	seenCapability := map[protocolcommon.CapabilityID]bool{}
+	for _, capability := range value.Capabilities {
+		if seenCapability[capability] {
+			return errors.New("duplicate capability parity row")
+		}
+		seenCapability[capability] = true
+	}
+	wantStatuses := make([]protocolcommon.RequestedCapabilityStatus, 0, len(wantCapabilities))
+	for _, capability := range manifest.RequiredCapabilities {
+		wantStatuses = append(wantStatuses, protocolcommon.RequestedCapabilityStatus{CapabilityID: capability, Enabled: true, ProtocolVersion: DesktopProtocolVersion})
+	}
+	unavailable := protocolcommon.UnavailableReasonNotConfigured
+	for _, capability := range manifest.OptionalCapabilities {
+		wantStatuses = append(wantStatuses, protocolcommon.RequestedCapabilityStatus{CapabilityID: capability, Enabled: false, ProtocolVersion: DesktopProtocolVersion, UnavailableReason: &unavailable})
+	}
+	if !reflect.DeepEqual(value.CapabilityStatuses, wantStatuses) {
+		return errors.New("capability status parity closure mismatch")
+	}
+	return nil
+}
+
+func cloneBindingParityFixture(t *testing.T, value bindingParityFixture) bindingParityFixture {
+	t.Helper()
+	wire, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clone bindingParityFixture
+	if err := json.Unmarshal(wire, &clone); err != nil {
+		t.Fatal(err)
+	}
+	return clone
+}
+
+func bindingParityCodec(target BindingTarget) string {
+	switch target {
+	case TargetEngine, TargetRuntime:
+		return "generated"
+	case TargetRegistry:
+		return "registry-owner"
+	default:
+		return "owner-generated"
+	}
+}
+
+func decodeBrowserParity(wire []byte, binding BindingMethod) (normalizedParity, error) {
+	var envelope struct {
+		Adapter string `json:"adapter"`
+		Codec   string `json:"codec"`
+		Route   string `json:"route"`
+		Request struct {
+			Operation string        `json:"operation"`
+			Payload   parityRequest `json:"payload"`
+		} `json:"request"`
+		Response struct {
+			Operation string       `json:"operation"`
+			Payload   parityResult `json:"payload"`
+		} `json:"response"`
+	}
+	if err := decodeStrictParity(wire, &envelope); err != nil || envelope.Adapter != "browser-worker" || envelope.Codec != bindingParityCodec(binding.Target) || envelope.Route != binding.Operation || envelope.Request.Operation != binding.Operation || envelope.Response.Operation != binding.Operation {
+		return normalizedParity{}, errors.New("invalid Browser parity adapter envelope")
+	}
+	return normalizedParity{Method: binding.GeneratedMethod, Target: binding.Target, Operation: binding.Operation, Request: envelope.Request.Payload, Result: envelope.Response.Payload}, nil
+}
+
+func decodeDesktopParity(wire []byte, binding BindingMethod) (normalizedParity, error) {
+	var envelope struct {
+		Adapter  string `json:"adapter"`
+		Codec    string `json:"codec"`
+		Method   string `json:"method"`
+		Exchange struct {
+			Operation string `json:"operation"`
+			Control   struct {
+				Operation string        `json:"operation"`
+				Payload   parityRequest `json:"payload"`
+			} `json:"control"`
+		} `json:"exchange"`
+		ExchangeResult struct {
+			Operation string `json:"operation"`
+			Control   struct {
+				Operation string       `json:"operation"`
+				Payload   parityResult `json:"payload"`
+			} `json:"control"`
+		} `json:"exchange_result"`
+	}
+	if err := decodeStrictParity(wire, &envelope); err != nil || envelope.Adapter != "desktop-wails" || envelope.Codec != bindingParityCodec(binding.Target) || envelope.Method != binding.GeneratedMethod || envelope.Exchange.Operation != binding.Operation || envelope.Exchange.Control.Operation != binding.Operation || envelope.ExchangeResult.Operation != binding.Operation || envelope.ExchangeResult.Control.Operation != binding.Operation {
+		return normalizedParity{}, errors.New("invalid Desktop parity adapter envelope")
+	}
+	return normalizedParity{Method: binding.GeneratedMethod, Target: binding.Target, Operation: binding.Operation, Request: envelope.Exchange.Control.Payload, Result: envelope.ExchangeResult.Control.Payload}, nil
+}
+
+func decodeStrictParity(wire []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(wire))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("trailing parity envelope")
+	}
+	return nil
+}
+
+func TestAllBindingsHaveDistinctBrowserDesktopAdaptersWithSemanticParity(t *testing.T) {
+	var fixtureValue bindingParityFixture
 	if err := json.Unmarshal(fixture(t, "schemas/fixtures/desktop/owner-binding-parity-v1.json"), &fixtureValue); err != nil {
 		t.Fatal(err)
 	}
-	if fixtureValue.Version != 1 || len(fixtureValue.Bindings) != 16 {
-		t.Fatal("owner binding closure incomplete")
+	if err := validateBindingParityFixture(fixtureValue); err != nil {
+		t.Fatal(err)
 	}
-	clients := completeClientSet()
-	seen := map[string]bool{}
 	for _, vector := range fixtureValue.Bindings {
 		method, target, clientMethod, operation := vector[0], BindingTarget(vector[1]), vector[2], vector[3]
-		if seen[method] {
-			t.Fatalf("duplicate owner binding %s", method)
-		}
-		seen[method] = true
 		binding, err := findBinding(method, operation)
 		if err != nil || binding.Target != target || binding.ClientMethod != clientMethod {
 			t.Fatalf("binding %s: %+v %v", method, binding, err)
 		}
-		browser := []byte(`{"operation":"` + operation + `","request_id":"browser-` + method + `","payload":{}}`)
-		desktop := []byte(`{"operation":"` + operation + `","request_id":"desktop-` + method + `","payload":{}}`)
-		if bytes.Equal(browser, desktop) {
-			t.Fatal("owner surface bytes are identical")
+		browser, err := json.Marshal(struct {
+			Adapter  string `json:"adapter"`
+			Codec    string `json:"codec"`
+			Route    string `json:"route"`
+			Request  any    `json:"request"`
+			Response any    `json:"response"`
+		}{"browser-worker", bindingParityCodec(target), operation, struct {
+			Operation string        `json:"operation"`
+			Payload   parityRequest `json:"payload"`
+		}{operation, fixtureValue.SemanticRequest}, struct {
+			Operation string       `json:"operation"`
+			Payload   parityResult `json:"payload"`
+		}{operation, fixtureValue.SemanticResult}})
+		if err != nil {
+			t.Fatal(err)
 		}
-		for _, control := range [][]byte{browser, desktop} {
-			if _, err := clients.Invoke(context.Background(), method, Exchange{Operation: operation, Control: control}); err != nil {
-				t.Fatalf("%s: %v", method, err)
-			}
+		desktop, err := json.Marshal(struct {
+			Adapter        string `json:"adapter"`
+			Codec          string `json:"codec"`
+			Method         string `json:"method"`
+			Exchange       any    `json:"exchange"`
+			ExchangeResult any    `json:"exchange_result"`
+		}{"desktop-wails", bindingParityCodec(target), method, struct {
+			Operation string `json:"operation"`
+			Control   any    `json:"control"`
+		}{operation, struct {
+			Operation string        `json:"operation"`
+			Payload   parityRequest `json:"payload"`
+		}{operation, fixtureValue.SemanticRequest}}, struct {
+			Operation string `json:"operation"`
+			Control   any    `json:"control"`
+		}{operation, struct {
+			Operation string       `json:"operation"`
+			Payload   parityResult `json:"payload"`
+		}{operation, fixtureValue.SemanticResult}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Equal(browser, desktop) {
+			t.Fatal("surface adapter bytes are identical")
+		}
+		browserNormalized, browserErr := decodeBrowserParity(browser, binding)
+		desktopNormalized, desktopErr := decodeDesktopParity(desktop, binding)
+		if browserErr != nil || desktopErr != nil || !reflect.DeepEqual(browserNormalized, desktopNormalized) {
+			t.Fatalf("%s semantic parity: browser=%+v desktop=%+v errors=%v/%v", method, browserNormalized, desktopNormalized, browserErr, desktopErr)
 		}
 	}
-	if _, err := clients.Invoke(context.Background(), "ReviewSubmit", Exchange{Operation: "review.other", Control: []byte(`{"operation":"review.other","request_id":"x","payload":{}}`)}); err == nil {
+
+	mutations := []func(*bindingParityFixture){
+		func(value *bindingParityFixture) { value.Bindings = value.Bindings[1:] },
+		func(value *bindingParityFixture) { value.Bindings = append(value.Bindings, value.Bindings[0]) },
+		func(value *bindingParityFixture) { value.Bindings[0][0] = "Unknown" },
+		func(value *bindingParityFixture) { value.Bindings[1] = value.Bindings[0] },
+		func(value *bindingParityFixture) { value.Bindings[0][3] = "engine.replaced" },
+		func(value *bindingParityFixture) { value.Capabilities = value.Capabilities[1:] },
+		func(value *bindingParityFixture) { value.Capabilities = append(value.Capabilities, "desktop.extra") },
+		func(value *bindingParityFixture) { value.Capabilities[0] = "desktop.unknown" },
+		func(value *bindingParityFixture) { value.Capabilities[1] = value.Capabilities[0] },
+		func(value *bindingParityFixture) { value.CapabilityStatuses = value.CapabilityStatuses[1:] },
+		func(value *bindingParityFixture) {
+			value.CapabilityStatuses = append(value.CapabilityStatuses, value.CapabilityStatuses[0])
+		},
+		func(value *bindingParityFixture) { value.CapabilityStatuses[0].CapabilityID = "desktop.unknown" },
+		func(value *bindingParityFixture) { value.CapabilityStatuses[1] = value.CapabilityStatuses[0] },
+		func(value *bindingParityFixture) { value.CapabilityStatuses[0].ProtocolVersion = "2.0" },
+	}
+	for index, mutate := range mutations {
+		candidate := cloneBindingParityFixture(t, fixtureValue)
+		mutate(&candidate)
+		if err := validateBindingParityFixture(candidate); err == nil {
+			t.Fatalf("parity closure mutation %d accepted", index)
+		}
+	}
+}
+
+func TestEveryOwnerBindingUsesStrictRequestAndResponseDecoders(t *testing.T) {
+	var value bindingParityFixture
+	if err := json.Unmarshal(fixture(t, "schemas/fixtures/desktop/owner-binding-parity-v1.json"), &value); err != nil {
+		t.Fatal(err)
+	}
+	clients := completeClientSet()
+	decoder := strictOwnerDecoder{}
+	ownerRows := 0
+	for _, binding := range GeneratedBindingTable() {
+		if binding.Target == TargetEngine || binding.Target == TargetRuntime || binding.Target == TargetRegistry {
+			continue
+		}
+		ownerRows++
+		requests := make([][]byte, 0, 2)
+		responses := make([][]byte, 0, 2)
+		for _, surface := range []string{"browser", "desktop"} {
+			request, err := json.Marshal(struct {
+				Operation string        `json:"operation"`
+				RequestID string        `json:"request_id"`
+				Payload   parityRequest `json:"payload"`
+			}{binding.Operation, surface + "-request-" + binding.GeneratedMethod, value.SemanticRequest})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := json.Marshal(struct {
+				Operation string       `json:"operation"`
+				RequestID string       `json:"request_id"`
+				Payload   parityResult `json:"payload"`
+			}{binding.Operation, surface + "-request-" + binding.GeneratedMethod, value.SemanticResult})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := clients.Invoke(context.Background(), binding.GeneratedMethod, Exchange{Operation: binding.Operation, Control: request}); err != nil {
+				t.Fatalf("%s %s request: %v", surface, binding.GeneratedMethod, err)
+			}
+			if identity, err := decoder.DecodeResponse(binding.Operation, response); err != nil || identity.Operation != binding.Operation || identity.Outcome != string(protocolcommon.OutcomeSuccess) {
+				t.Fatalf("%s %s response: %+v %v", surface, binding.GeneratedMethod, identity, err)
+			}
+			requests = append(requests, request)
+			responses = append(responses, response)
+		}
+		if bytes.Equal(requests[0], requests[1]) || bytes.Equal(responses[0], responses[1]) || !reflect.DeepEqual(normalizedJSONWithoutRequestID(t, requests[0]), normalizedJSONWithoutRequestID(t, requests[1])) || !reflect.DeepEqual(normalizedJSONWithoutRequestID(t, responses[0]), normalizedJSONWithoutRequestID(t, responses[1])) {
+			t.Fatalf("%s does not preserve owner semantic parity through distinct adapters", binding.GeneratedMethod)
+		}
+	}
+	if ownerRows != 16 {
+		t.Fatalf("owner response decoder closure = %d", ownerRows)
+	}
+	bad := []byte(`{"operation":"review.other","request_id":"desktop-bad","payload":{"subject":"fixture-document","arguments":{"query":"status:open","limit":"25"}}}`)
+	if _, err := clients.Invoke(context.Background(), "ReviewSubmit", Exchange{Operation: "review.other", Control: bad}); err == nil {
 		t.Fatal("replaced owner operation accepted")
+	}
+}
+
+func generatedResponseTemplate(t *testing.T, binding BindingMethod, requestID string, result parityResult) []byte {
+	t.Helper()
+	if binding.Target == TargetRegistry {
+		wire, err := json.Marshal(registry.WireResponse{WireVersion: registry.RegistryWireVersion, Operation: registry.WireOperation(binding.Operation), RequestID: requestID, OK: true, Value: mustRawJSON(t, result)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wire
+	}
+	var template []byte
+	if binding.Target == TargetRuntime {
+		template = fixture(t, "schemas/fixtures/runtime/handshake-failed.json")
+	} else {
+		switch binding.Operation {
+		case string(engineprotocol.CompileRequestEnvelopeOperationValue), string(engineprotocol.HandshakeRequestEnvelopeOperationValue):
+			template = fixture(t, "schemas/fixtures/engine/handshake-failed-response.json")
+		default:
+			template = fixture(t, "schemas/fixtures/engine/workbench-failed-execution-response.json")
+		}
+	}
+	var envelope map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(template))
+	decoder.UseNumber()
+	if err := decoder.Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope["request_id"] = requestID
+	wire, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
+}
+
+func mustRawJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	wire, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
+}
+
+func TestEveryGeneratedAndRegistryBindingHasTypedResponseParity(t *testing.T) {
+	var value bindingParityFixture
+	if err := json.Unmarshal(fixture(t, "schemas/fixtures/desktop/owner-binding-parity-v1.json"), &value); err != nil {
+		t.Fatal(err)
+	}
+	decoded := 0
+	for _, binding := range GeneratedBindingTable() {
+		if binding.Target != TargetEngine && binding.Target != TargetRuntime && binding.Target != TargetRegistry {
+			continue
+		}
+		browser := generatedResponseTemplate(t, binding, "browser-"+binding.GeneratedMethod, value.SemanticResult)
+		desktop := generatedResponseTemplate(t, binding, "desktop-"+binding.GeneratedMethod, value.SemanticResult)
+		if bytes.Equal(browser, desktop) {
+			t.Fatalf("%s response adapters are byte-identical", binding.GeneratedMethod)
+		}
+		if err := decodeExactResponse(binding, browser); err != nil {
+			t.Fatalf("%s Browser typed response decoder: %v", binding.GeneratedMethod, err)
+		}
+		if err := decodeExactResponse(binding, desktop); err != nil {
+			t.Fatalf("%s Desktop typed response decoder: %v", binding.GeneratedMethod, err)
+		}
+		if !reflect.DeepEqual(normalizedJSONWithoutRequestID(t, browser), normalizedJSONWithoutRequestID(t, desktop)) {
+			t.Fatalf("%s response semantic parity drift", binding.GeneratedMethod)
+		}
+		decoded++
+	}
+	if decoded != 50 {
+		t.Fatalf("generated/Registry response decoder closure = %d", decoded)
 	}
 }
 
@@ -467,6 +766,16 @@ func TestLocalOwnerAndDelegationUseAccessContracts(t *testing.T) {
 	fence.Generation = "3"
 	if ValidateDelegationFence(fence, delegation, grant, now.Add(2*time.Hour)) {
 		t.Fatal("expired delegation fence accepted")
+	}
+	forgedParent := grant
+	forgedParent.AccessFingerprint = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	requestDelegation = delegation
+	requestDelegation.Generation = 0
+	if ValidateDelegationRequest(forgedParent, requestDelegation, now) {
+		t.Fatal("delegation request accepted a forged active parent fingerprint")
+	}
+	if ValidateDelegationFence(fence, delegation, forgedParent, now) {
+		t.Fatal("delegation fence accepted a forged active parent fingerprint")
 	}
 }
 

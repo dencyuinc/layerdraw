@@ -41,7 +41,7 @@ func ValidateDelegationRequest(parent accessprotocol.AuthoringGrantSnapshot, req
 	if requested.Generation != 0 || (!requested.Permissions.Read && !requested.Permissions.Export && !requested.Permissions.Propose && !requested.Permissions.Apply) {
 		return false
 	}
-	if !grantActive(parent, now) || requested.IssuedAt.After(now) || !now.Before(requested.ExpiresAt) {
+	if parent.AccessFingerprint != accesscore.Fingerprint(parent) || !grantActive(parent, now) || requested.IssuedAt.After(now) || !now.Before(requested.ExpiresAt) {
 		return false
 	}
 	issued, err := accesscore.NewDelegationStore().Delegate(parent, requested)
@@ -51,7 +51,7 @@ func ValidateDelegationRequest(parent accessprotocol.AuthoringGrantSnapshot, req
 // ValidateDelegationFence ensures revocation/expiry publication checks cannot
 // be redirected to another document, local scope, or generation.
 func ValidateDelegationFence(fence DelegationFence, delegation accesscore.Delegation, parent accessprotocol.AuthoringGrantSnapshot, now time.Time) bool {
-	return fence.DelegationID != "" && fence.DelegationID == delegation.ID &&
+	return parent.AccessFingerprint == accesscore.Fingerprint(parent) && fence.DelegationID != "" && fence.DelegationID == delegation.ID &&
 		fence.DocumentID == delegation.DocumentID && fence.LocalScopeID == delegation.LocalScopeID &&
 		fence.Generation == protocolcommon.CanonicalUint64(formatGeneration(delegation.Generation)) &&
 		delegation.ParentActor == parent.ActorRef && delegation.DocumentID == parent.HostDocumentID && delegation.LocalScopeID == parent.LocalScopeID &&
