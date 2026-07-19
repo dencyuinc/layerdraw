@@ -25,3 +25,17 @@ func TestCompleteSearchResultRejectsDuplicatePhysicalSignal(t *testing.T) {
 		t.Fatal("duplicate physical candidate was accepted")
 	}
 }
+
+func TestCompleteQueryAndAnalysisResults(t *testing.T) {
+	query, err := CompleteQueryResult([]QueryRow{{"address": {Kind: "string", Value: "a"}}})
+	if err != nil || !strings.Contains(string(query), `"address"`) {
+		t.Fatalf("query=%s err=%v", query, err)
+	}
+	analysis, err := CompleteAnalysisResult([]AnalysisValue{{Address: "a", MetricName: "importance", TypedValue: "0.5"}})
+	if err != nil || !strings.Contains(string(analysis), `"importance"`) {
+		t.Fatalf("analysis=%s err=%v", analysis, err)
+	}
+	if _, err := CompleteAnalysisResult([]AnalysisValue{{}}); err == nil {
+		t.Fatal("invalid analysis accepted")
+	}
+}

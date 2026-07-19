@@ -110,3 +110,25 @@ func TestProductionEngineAdapterRejectsRawAndPlansBoundedAnalysis(t *testing.T) 
 		t.Fatalf("analysis=%+v err=%v", analysis, err)
 	}
 }
+
+func TestEngineAdapterCompletesQueryAnalysisAndLocalProjection(t *testing.T) {
+	projection, err := NewLocalAccessProjection("sha256:access")
+	if err != nil || !projection.AllowSearchDocument(engine.SearchDocument{}) || !projection.AllowSearchField(engine.SearchDocument{}, engine.SearchField{}) {
+		t.Fatalf("projection=%v err=%v", projection, err)
+	}
+	adapter, _, _ := boundAdapter(t, projection)
+	query, err := adapter.CompleteQuery(context.Background(), port.CompleteExecutionInput{Rows: port.ExecutionResult{Complete: true, Rows: []port.RawRow{{"address": {Kind: "string", Value: "a"}}}}})
+	if err != nil || !strings.Contains(string(query), `"address"`) {
+		t.Fatalf("query=%s err=%v", query, err)
+	}
+	analysis, err := adapter.CompleteAnalysis(context.Background(), port.CompleteExecutionInput{Rows: port.ExecutionResult{Complete: true, Rows: []port.RawRow{{"address": {Kind: "string", Value: "a"}, "metric_name": {Kind: "string", Value: "importance"}, "metric_value": {Kind: "float64", Value: "0.5"}}}}})
+	if err != nil || !strings.Contains(string(analysis), `"importance"`) {
+		t.Fatalf("analysis=%s err=%v", analysis, err)
+	}
+	if _, err := adapter.CompleteQuery(context.Background(), port.CompleteExecutionInput{Rows: port.ExecutionResult{Truncated: true}}); err == nil {
+		t.Fatal("truncated query accepted")
+	}
+	if _, err := adapter.CompleteAnalysis(context.Background(), port.CompleteExecutionInput{Rows: port.ExecutionResult{Complete: true, Rows: []port.RawRow{{}}}}); err == nil {
+		t.Fatal("invalid analysis row accepted")
+	}
+}
