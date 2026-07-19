@@ -20,7 +20,7 @@ GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen ./tools/releaseset .
 
 .PHONY: bootstrap generate generate-check format format-check lint typecheck test coverage coverage-check license-check license-report security \
 	conformance integration build engine-wasm engine-wasm-check engine-wasm-reproducible ci-engine-wasm-check ci-engine-wasm-reproducible \
-	protocol-package-check package verify-packaged release-set release-set-check release-set-reproducible ci clean
+	ladybug-native-bootstrap ladybug-native-check protocol-package-check package verify-packaged release-set release-set-check release-set-reproducible ci clean
 
 bootstrap:
 	$(GO) mod download all
@@ -91,6 +91,14 @@ conformance:
 integration:
 	$(GO) test ./tests/integration/...
 
+ladybug-native-bootstrap:
+	@./tools/install-ladybug-native.sh
+
+ladybug-native-check:
+	@native_dir="$$(./tools/install-ladybug-native.sh)"; \
+		CGO_ENABLED=1 CGO_CFLAGS="-I$$native_dir $${CGO_CFLAGS:-}" CGO_LDFLAGS="-L$$native_dir $${CGO_LDFLAGS:-}" \
+		$(GO) test -count=1 -race -tags ladybug_native ./internal/adapter/search ./internal/host
+
 build:
 	@if [[ "$(VERSION)" != "0.0.0-dev" && "$(RELEASE_MANIFEST)" == "deploy/development-release-manifest.json" ]]; then \
 		printf 'A non-development VERSION requires an explicit verified RELEASE_MANIFEST.\n' >&2; \
@@ -154,7 +162,7 @@ verify-packaged: package
 release-set:
 	./tools/build-release-set.sh
 
-release-set-check: release-set
+release-set-check: ladybug-native-check release-set
 	$(GO) run ./tools/releaseset verify -root "$(CURDIR)" -output "$(CURDIR)/dist/release-set"
 	LAYERDRAW_RELEASE_SET_DIR="$(CURDIR)/dist/release-set" \
 		$(GO) test -run FixedReleaseSet ./tests/packaged/...

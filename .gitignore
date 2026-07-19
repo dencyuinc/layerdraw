@@ -13,6 +13,7 @@ reports/
 .vite/
 .turbo/
 .pnpm-store/
+.cache/
 .layerdraw-data/
 .layerdraw-data*/
 tmp/

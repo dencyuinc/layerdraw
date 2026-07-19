@@ -21,6 +21,8 @@ import (
 
 const evidenceTable = "LayerDrawSearchIndexEvidence"
 
+const GoLadybugBackendVersion = "0.17.0"
+
 var ladybugIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // GoLadybugSession is the production native binding. Physical index evidence
@@ -56,6 +58,20 @@ func (s *GoLadybugSession) Close() {
 }
 
 func (s *GoLadybugSession) Interrupt() { s.conn.Interrupt() }
+
+func (s *GoLadybugSession) BackendVersion() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.queryLocked("CALL DB_VERSION() RETURN *")
+	if err != nil || len(rows) != 1 {
+		return "", ErrPhysicalIndexMissing
+	}
+	version := fmt.Sprint(rows[0]["version"])
+	if version == "" {
+		return "", ErrPhysicalIndexMissing
+	}
+	return version, nil
+}
 
 func (s *GoLadybugSession) ExecutePrepared(ctx context.Context, statement LadybugStatement, limits port.ExecutionLimits, sink port.RowSink) error {
 	s.mu.Lock()
