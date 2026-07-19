@@ -2,7 +2,7 @@
 
 import type { AuthoringDecision, AuthoringGrantSummary } from "@layerdraw/protocol/access";
 import type { ApplyToHandleResult, SemanticConflict, WorkbenchPreviewResult } from "@layerdraw/protocol/engine";
-import type { CommittedRevisionRef, OperationResult, RuntimeCommitResult } from "@layerdraw/protocol/runtime";
+import type { CommittedRevisionRef, ConflictEvidence, OperationResult, RuntimeCommitResult, RuntimeFailureCode } from "@layerdraw/protocol/runtime";
 import type { Diagnostic } from "@layerdraw/protocol/semantic";
 import type { ComposerPresentationState, EditorEdit } from "./contracts.js";
 
@@ -22,7 +22,7 @@ export interface ComposerFailure {
   readonly message: string;
   readonly recoverable: boolean;
   readonly diagnostics: readonly Diagnostic[];
-  readonly conflicts: readonly SemanticConflict[];
+  readonly conflicts: readonly (SemanticConflict | ConflictEvidence)[];
 }
 
 export class ComposerError extends Error {
@@ -109,7 +109,7 @@ export class Composer {
   }
 
   async preview(intent: ComposerIntent): Promise<ComposerSnapshot> {
-    if (this.#snapshot.phase === "closed") return this.#fail("composer.session_closed", "The Composer session is closed.", false, intent);
+    if (this.#snapshot.phase === "closed") return this.#transientFailure("composer.session_closed", "The Composer session is closed.", false, intent);
     if (this.#snapshot.phase === "applying") return this.#transientFailure("composer.invalid_state", "An apply is already in progress.", true, intent);
     if (!intent.id) return this.#fail("composer.validation_failed", "Intent id is required.", true, intent);
     this.#controller?.abort();
@@ -143,6 +143,8 @@ export class Composer {
   }
 
   cancelPreview(): ComposerSnapshot {
+    if (this.#snapshot.phase === "closed") return this.#transientFailure("composer.session_closed", "The Composer session is closed.", false, this.#snapshot.intent);
+    if (this.#snapshot.phase === "applying") return this.#transientFailure("composer.invalid_state", "An apply is already in progress.", true, this.#snapshot.intent);
     if (this.#snapshot.phase !== "previewing") return this.#fail("composer.invalid_state", "No preview is in progress.", true, this.#snapshot.intent);
     this.#controller?.abort();
     this.#controller = undefined;
@@ -152,6 +154,8 @@ export class Composer {
 
   async retry(): Promise<ComposerSnapshot> {
     const intent = this.#snapshot.intent;
+    if (this.#snapshot.phase === "closed") return this.#transientFailure("composer.session_closed", "The Composer session is closed.", false, intent);
+    if (this.#snapshot.phase === "applying") return this.#transientFailure("composer.invalid_state", "An apply is already in progress.", true, intent);
     if (this.#snapshot.phase !== "failed" || intent === undefined) return this.#fail("composer.invalid_state", "There is no failed intent to retry.", true, intent);
     return this.preview(intent);
   }
@@ -159,11 +163,13 @@ export class Composer {
   async apply(): Promise<ComposerSnapshot> { return this.#apply(true); }
 
   async undo(): Promise<ComposerSnapshot> {
+    if (this.#snapshot.phase === "closed") return this.#transientFailure("composer.session_closed", "The Composer session is closed.", false, this.#snapshot.intent);
+    if (this.#snapshot.phase === "applying") return this.#transientFailure("composer.invalid_state", "An apply is already in progress.", true, this.#snapshot.intent);
     const entry = this.#past.at(-1);
     if (entry === undefined) return this.#fail("composer.invalid_state", "There is no semantic intent to undo.", true, this.#snapshot.intent);
     const intent: ComposerIntent = { id: `${entry.forward.id}:undo`, edit: entry.inverse };
     const previewed = await this.preview(intent);
-    if (previewed.phase !== "ready") return previewed;
+    if (previewed.phase !== "ready" || previewed.intent !== intent) return this.#transientFailure("composer.invalid_state", "The undo intent was superseded by a newer preview.", true, intent);
     const applied = await this.#apply(false);
     if (applied.phase === "applied") {
       this.#past.pop();
@@ -174,10 +180,12 @@ export class Composer {
   }
 
   async redo(): Promise<ComposerSnapshot> {
+    if (this.#snapshot.phase === "closed") return this.#transientFailure("composer.session_closed", "The Composer session is closed.", false, this.#snapshot.intent);
+    if (this.#snapshot.phase === "applying") return this.#transientFailure("composer.invalid_state", "An apply is already in progress.", true, this.#snapshot.intent);
     const entry = this.#future.at(-1);
     if (entry === undefined) return this.#fail("composer.invalid_state", "There is no semantic intent to redo.", true, this.#snapshot.intent);
     const previewed = await this.preview(entry.forward);
-    if (previewed.phase !== "ready") return previewed;
+    if (previewed.phase !== "ready" || previewed.intent !== entry.forward) return this.#transientFailure("composer.invalid_state", "The redo intent was superseded by a newer preview.", true, entry.forward);
     const applied = await this.#apply(false);
     if (applied.phase === "applied") {
       this.#future.pop();
@@ -192,13 +200,29 @@ export class Composer {
     this.#controller?.abort();
     this.#controller = undefined;
     ++this.#sequence;
-    await this.#host.close?.();
     this.#publish({ phase: "closed", sequence: this.#sequence });
     this.#listeners.clear();
+    let closeError: unknown;
+    try {
+      await this.#host.close?.();
+    } catch (error) {
+      closeError = error;
+    }
+    if (closeError !== undefined) {
+      throw new ComposerError({
+        code: "composer.transport_failed",
+        message: "The Composer host failed while closing the session.",
+        recoverable: false,
+        diagnostics: emptyDiagnostics,
+        conflicts: emptyConflicts,
+      });
+    }
   }
 
   async #apply(recordHistory: boolean): Promise<ComposerSnapshot> {
     const { intent, presentation } = this.#snapshot;
+    if (this.#snapshot.phase === "closed") return this.#transientFailure("composer.session_closed", "The Composer session is closed.", false, intent);
+    if (this.#snapshot.phase === "applying") return this.#transientFailure("composer.invalid_state", "An apply is already in progress.", true, intent);
     if (this.#snapshot.phase !== "ready" || intent === undefined || presentation === undefined) return this.#fail("composer.invalid_state", "A valid preview is required before apply.", true, intent, presentation);
     const sequence = ++this.#sequence;
     const controller = new AbortController();
@@ -207,7 +231,10 @@ export class Composer {
     try {
       const result = await this.#host.apply(intent.edit, presentation, controller.signal);
       if (sequence !== this.#sequence || controller.signal.aborted) return this.#snapshot;
-      if (result.persistence === "runtime_not_committed") return this.#fail("composer.conflict", "Runtime did not commit the intent.", true, intent, presentation, result);
+      if (result.persistence === "runtime_not_committed") return this.#failRuntimeResult(result, intent, presentation);
+      if (result.persistence === "durable" && !sameRevision(result.committed_revision, result.result.operation_result.committed_revision)) {
+        return this.#fail("composer.validation_failed", "Runtime returned contradictory committed revisions.", false, intent, presentation, result);
+      }
       this.#publish({ phase: "applied", sequence, intent, presentation, apply_result: result });
       if (recordHistory && intent.inverse !== undefined && intent.edit.kind === "semantic_operations" && intent.inverse.kind === "semantic_operations") {
         this.#past.push({ forward: intent, inverse: intent.inverse });
@@ -258,10 +285,10 @@ export class Composer {
   }
 
   #transientFailure(code: ComposerFailureCode, message: string, recoverable: boolean, intent?: ComposerIntent): ComposerSnapshot {
-    return this.#makeSnapshot({
-      phase: "failed",
-      sequence: this.#sequence,
-      ...(intent === undefined ? {} : { intent }),
+    const { can_undo: _undo, can_redo: _redo, failure: _failure, ...state } = this.#snapshot;
+    this.#publish({
+      ...state,
+      ...(state.intent === undefined && intent !== undefined ? { intent } : {}),
       failure: {
         code,
         message,
@@ -270,6 +297,24 @@ export class Composer {
         conflicts: emptyConflicts,
       },
     });
+    return this.#snapshot;
+  }
+
+  #failRuntimeResult(result: Extract<ComposerApplyResult, { persistence: "runtime_not_committed" }>, intent: ComposerIntent, presentation: ComposerPresentationState): ComposerSnapshot {
+    const operation = result.result.operation_result;
+    const code = runtimeFailureCode(operation.failure_code);
+    const failure: ComposerFailure = {
+      code,
+      message: "Runtime did not commit the intent.",
+      recoverable: code !== "composer.validation_failed",
+      diagnostics: [...presentation.preview.diagnostics, ...operation.diagnostics],
+      conflicts: [
+        ...presentation.preview.conflicts,
+        ...(operation.conflict_evidence === undefined ? [] : [operation.conflict_evidence]),
+      ],
+    };
+    this.#publish({ phase: "failed", sequence: this.#sequence, intent, presentation, apply_result: result, failure });
+    return this.#snapshot;
   }
 
   #refreshFlags(): void { this.#publish(this.#snapshot); }
@@ -283,4 +328,21 @@ export class Composer {
     this.#snapshot = this.#makeSnapshot(state);
     for (const listener of this.#listeners) listener(this.#snapshot);
   }
+}
+
+function runtimeFailureCode(code: RuntimeFailureCode | undefined): ComposerFailureCode {
+  if (code === "runtime.cancelled") return "composer.cancelled";
+  if (code === "runtime.capability_unavailable") return "composer.capability_unavailable";
+  if (code === "runtime.authorization_proof_invalid" || code === "runtime.authorization_stale") return "composer.access_denied";
+  if (code === "runtime.stale_revision" || code === "runtime.stale_session_generation" || code === "runtime.session_expired") return "composer.stale_revision";
+  if (code === undefined) return "composer.conflict";
+  return "composer.validation_failed";
+}
+
+function sameRevision(left: CommittedRevisionRef, right: CommittedRevisionRef): boolean {
+  return left.definition_hash === right.definition_hash &&
+    left.document_id === right.document_id &&
+    left.graph_hash === right.graph_hash &&
+    left.provider_version === right.provider_version &&
+    left.revision_id === right.revision_id;
 }

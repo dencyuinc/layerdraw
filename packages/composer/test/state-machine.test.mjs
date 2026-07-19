@@ -11,6 +11,12 @@ const conflictPreview = JSON.parse(await readFile(new URL("../../../schemas/fixt
 const stalePreview = structuredClone(conflictPreview);
 stalePreview.conflicts[0].kind = "stale_revision";
 const edit = { kind: "semantic_operations", request: operationsEnvelope.payload };
+const committedRevision = {
+  definition_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  document_id: "document-1",
+  graph_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  revision_id: "rev-2",
+};
 
 const deferred = () => {
   let resolve;
@@ -60,7 +66,7 @@ test("preview cancellation is typed, recoverable, and cannot publish a late resp
 test("apply retains preview evidence and distinguishes ephemeral from durable authority", async () => {
   const results = [
     { persistence: "ephemeral", applied: { preview_digest: "ephemeral" } },
-    { persistence: "durable", result: { operation_result: { status: "committed" } }, committed_revision: { revision_id: "rev-2" } },
+    { persistence: "durable", result: { operation_result: { status: "committed", committed_revision: committedRevision } }, committed_revision: committedRevision },
   ];
   const composer = new Composer({
     preview: async () => ({ preview: validPreview, grant_summary: { granted_capabilities: [] } }),
@@ -139,6 +145,7 @@ test("observable state, invalid commands, host callbacks, and transport failures
   await composer.close();
   assert.equal(observed.length, count);
   assert.equal((await composer.preview({ id: "closed", edit })).failure.code, "composer.session_closed");
+  assert.equal(composer.snapshot().phase, "closed");
 });
 
 test("close aborts an authoritative apply and suppresses its late result", async () => {
@@ -154,10 +161,69 @@ test("close aborts an authoritative apply and suppresses its late result", async
   const applying = composer.apply();
   const rejectedPreview = await composer.preview({ id: "concurrent-preview", edit });
   assert.equal(rejectedPreview.failure.code, "composer.invalid_state");
+  assert.equal(composer.cancelPreview().failure.code, "composer.invalid_state");
+  assert.equal((await composer.apply()).failure.code, "composer.invalid_state");
+  assert.equal((await composer.retry()).failure.code, "composer.invalid_state");
+  assert.equal((await composer.undo()).failure.code, "composer.invalid_state");
+  assert.equal((await composer.redo()).failure.code, "composer.invalid_state");
   assert.equal(composer.snapshot().phase, "applying");
   await composer.close();
   await applying;
   assert.equal(composer.snapshot().phase, "closed");
+});
+
+test("host close failure is typed after the session becomes terminal", async () => {
+  const composer = new Composer({
+    preview: async () => ({ preview: validPreview }),
+    apply: async () => ({ persistence: "ephemeral", applied: {} }),
+    close: async () => { throw new Error("private host detail"); },
+  });
+  await assert.rejects(composer.close(), (error) =>
+    error instanceof ComposerError && error.failure.code === "composer.transport_failed" && error.failure.recoverable === false,
+  );
+  assert.equal(composer.snapshot().phase, "closed");
+  await composer.close();
+});
+
+test("close publishes terminal state before awaiting host cleanup", async () => {
+  const cleanup = deferred();
+  let previewCalls = 0;
+  const composer = new Composer({
+    preview: async () => { previewCalls++; return { preview: validPreview }; },
+    apply: async () => ({ persistence: "ephemeral", applied: {} }),
+    close: async () => cleanup.promise,
+  });
+  const closing = composer.close();
+  assert.equal(composer.snapshot().phase, "closed");
+  assert.equal((await composer.preview({ id: "during-close", edit })).failure.code, "composer.session_closed");
+  assert.equal(previewCalls, 0);
+  cleanup.resolve();
+  await closing;
+});
+
+test("superseded undo preview cannot apply another intent or corrupt history", async () => {
+  const undoPreview = deferred();
+  const newerPreview = deferred();
+  let applyCalls = 0;
+  const inverse = structuredClone(edit);
+  const newerEdit = structuredClone(edit);
+  const composer = new Composer({
+    preview: async (value) => value === inverse ? undoPreview.promise : value === newerEdit ? newerPreview.promise : { preview: validPreview },
+    apply: async () => { applyCalls++; return { persistence: "ephemeral", applied: {} }; },
+  });
+  await composer.preview({ id: "forward", edit, inverse });
+  await composer.apply();
+  const undoing = composer.undo();
+  const newer = composer.preview({ id: "newer", edit: newerEdit });
+  newerPreview.resolve({ preview: validPreview });
+  await newer;
+  undoPreview.resolve({ preview: validPreview });
+  const rejected = await undoing;
+  assert.equal(rejected.failure.code, "composer.invalid_state");
+  assert.equal(rejected.phase, "ready");
+  assert.equal(composer.snapshot().intent.id, "newer");
+  assert.equal(composer.snapshot().can_undo, true);
+  assert.equal(applyCalls, 1);
 });
 
 test("runtime non-commit is recoverable and close suppresses outstanding work", async () => {
@@ -165,11 +231,13 @@ test("runtime non-commit is recoverable and close suppresses outstanding work", 
   let closeCalled = false;
   const composer = new Composer({
     preview: async (value) => value === edit ? { preview: validPreview } : closePending.promise,
-    apply: async () => ({ persistence: "runtime_not_committed", result: { operation_result: { status: "rejected" } } }),
+    apply: async () => ({ persistence: "runtime_not_committed", result: { operation_result: { status: "rejected", failure_code: "runtime.capability_unavailable", diagnostics: [{ code: "runtime.unavailable" }] } } }),
     close: async () => { closeCalled = true; },
   });
   await composer.preview({ id: "not-committed", edit });
-  assert.equal((await composer.apply()).failure.code, "composer.conflict");
+  const notCommitted = await composer.apply();
+  assert.equal(notCommitted.failure.code, "composer.capability_unavailable");
+  assert.equal(notCommitted.failure.diagnostics.at(-1).code, "runtime.unavailable");
   const otherEdit = structuredClone(edit);
   const outstanding = composer.preview({ id: "close", edit: otherEdit });
   await composer.close();
@@ -177,4 +245,19 @@ test("runtime non-commit is recoverable and close suppresses outstanding work", 
   await outstanding;
   assert.equal(composer.snapshot().phase, "closed");
   assert.equal(closeCalled, true);
+});
+
+test("contradictory durable revisions fail closed", async () => {
+  const composer = new Composer({
+    preview: async () => ({ preview: validPreview }),
+    apply: async () => ({
+      persistence: "durable",
+      result: { operation_result: { status: "committed", committed_revision: committedRevision } },
+      committed_revision: { ...committedRevision, revision_id: "rev-other" },
+    }),
+  });
+  await composer.preview({ id: "revision-mismatch", edit });
+  const result = await composer.apply();
+  assert.equal(result.failure.code, "composer.validation_failed");
+  assert.equal(result.failure.recoverable, false);
 });

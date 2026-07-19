@@ -85,6 +85,10 @@ type CheckpointWorkingDocumentInput struct {
 // A preview proof is an equality precondition and is never treated as a grant.
 type GrantSource interface {
 	ResolveGrant(context.Context, runtimeprotocol.RuntimeScope) (accessprotocol.AuthoringGrantSnapshot, accessprotocol.AuthoringGrantSummary, error)
+	// AcquireAuthoringPublication returns a fence held through authoritative
+	// publication. Delegation revoke/expiry mutation must be linearized against
+	// this fence; returning no fence is not a supported alternate route.
+	AcquireAuthoringPublication(context.Context, runtimeprotocol.RuntimeScope) (release func(), err error)
 }
 
 // ScopeSource resolves trusted host scope; OpenRuntimeDocumentInput deliberately
