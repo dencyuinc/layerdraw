@@ -56,11 +56,34 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
+  packages/library:
+    dependencies:
+      '@layerdraw/registry-client':
+        specifier: workspace:*
+        version: link:../registry-client
+      react:
+        specifier: '>=19.0.0 <20'
+        version: 19.2.7
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
   packages/protocol:
     devDependencies:
       ajv:
         specifier: 8.18.0
         version: 8.18.0
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/registry-client:
+    dependencies:
+      '@layerdraw/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -572,6 +595,10 @@ packages:
 
   queue-microtask@1.2.3:
     resolution: {integrity: sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A==}
+
+  react@19.2.7:
+    resolution: {integrity: sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==}
+    engines: {node: '>=0.10.0'}
 
   read-yaml-file@1.1.0:
     resolution: {integrity: sha512-VIMnQi/Z4HT2Fxuwg5KrY174U1VdUIASQVWXXyqtNRtxSr9IYkn1rsI6Tb6HsrHCmB7gVpNwX6JxPTHcH6IoTA==}
@@ -1131,6 +1158,8 @@ snapshots:
   prettier@2.7.1: {}
 
   queue-microtask@1.2.3: {}
+
+  react@19.2.7: {}
 
   read-yaml-file@1.1.0:
     dependencies:
