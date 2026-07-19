@@ -839,8 +839,7 @@ func (h *Host) metadataPath() string {
 func (h *Host) readMetadataFile() ([]byte, error) {
 	// The private stdio caller explicitly grants this absolute storage root;
 	// New validates and owns the root before metadata access.
-	// codeql[go/path-injection]
-	return os.ReadFile(h.metadataPath())
+	return os.ReadFile(h.metadataPath()) // lgtm[go/path-injection]
 }
 
 func (h *Host) loadMetadata() (lifecycleMetadata, error) {

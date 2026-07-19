@@ -15,56 +15,45 @@ import (
 // throughout the storage implementation.
 
 func trustedPathRemove(path string) error {
-	// codeql[go/path-injection]
-	return os.Remove(path)
+	return os.Remove(path) // lgtm[go/path-injection]
 }
 
 func trustedPathRemoveAll(path string) error {
-	// codeql[go/path-injection]
-	return os.RemoveAll(path)
+	return os.RemoveAll(path) // lgtm[go/path-injection]
 }
 
 func trustedPathReadFile(path string) ([]byte, error) {
-	// codeql[go/path-injection]
-	return os.ReadFile(path)
+	return os.ReadFile(path) // lgtm[go/path-injection]
 }
 
 func trustedPathOpenFile(path string, flag int, permission fs.FileMode) (*os.File, error) {
-	// codeql[go/path-injection]
-	return os.OpenFile(path, flag, permission)
+	return os.OpenFile(path, flag, permission) // lgtm[go/path-injection]
 }
 
 func trustedPathMkdir(path string, permission fs.FileMode) error {
-	// codeql[go/path-injection]
-	return os.Mkdir(path, permission)
+	return os.Mkdir(path, permission) // lgtm[go/path-injection]
 }
 
 func trustedPathMkdirAll(path string, permission fs.FileMode) error {
-	// codeql[go/path-injection]
-	return os.MkdirAll(path, permission)
+	return os.MkdirAll(path, permission) // lgtm[go/path-injection]
 }
 
 func trustedPathRename(source, destination string) error {
-	// codeql[go/path-injection]
-	return os.Rename(source, destination)
+	return os.Rename(source, destination) // lgtm[go/path-injection]
 }
 
 func trustedPathLstat(path string) (fs.FileInfo, error) {
-	// codeql[go/path-injection]
-	return os.Lstat(path)
+	return os.Lstat(path) // lgtm[go/path-injection]
 }
 
 func trustedPathOpen(path string) (*os.File, error) {
-	// codeql[go/path-injection]
-	return os.Open(path)
+	return os.Open(path) // lgtm[go/path-injection]
 }
 
 func trustedPathReadDir(path string) ([]os.DirEntry, error) {
-	// codeql[go/path-injection]
-	return os.ReadDir(path)
+	return os.ReadDir(path) // lgtm[go/path-injection]
 }
 
 func trustedPathChmod(path string, mode fs.FileMode) error {
-	// codeql[go/path-injection]
-	return os.Chmod(path, mode)
+	return os.Chmod(path, mode) // lgtm[go/path-injection]
 }
