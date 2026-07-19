@@ -95,7 +95,7 @@ ladybug-native-bootstrap:
 	@./tools/install-ladybug-native.sh
 
 ladybug-native-check:
-	@native_dir="$$(./tools/install-ladybug-native.sh)"; \
+	@native_dir="$$(./tools/install-ladybug-native.sh)" || exit $$?; \
 		native_export_flags=""; \
 		if [[ "$$(uname -s)" == "Linux" ]]; then native_export_flags="-Wl,--export-dynamic"; fi; \
 		CGO_ENABLED=1 CGO_CFLAGS="-I$$native_dir $${CGO_CFLAGS:-}" CGO_LDFLAGS="-L$$native_dir $$native_export_flags $${CGO_LDFLAGS:-}" \

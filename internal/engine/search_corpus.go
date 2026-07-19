@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 )
 
@@ -17,6 +18,14 @@ type SearchCorpusDocument struct {
 	ContentHash         string
 	LexicalText         string
 	Text                string
+	Fields              []SearchCorpusField
+}
+
+type SearchCorpusField struct {
+	FieldPath     string
+	SourceRef     string
+	Text          string
+	LexicalWeight int
 }
 
 // SearchCorpusProjection is implemented only by the trusted Access boundary.
@@ -43,9 +52,23 @@ func (e Engine) ReadSearchCorpus(ctx context.Context, generation DocumentGenerat
 		}
 		lexicalFields := make([]string, 0, len(document.Fields))
 		embeddingFields := make([]string, 0, len(document.Fields))
+		fields := make([]SearchCorpusField, 0, len(document.Fields))
 		for _, field := range document.Fields {
 			if projection.AllowSearchField(document, field) && field.Text != "" {
-				lexicalFields = append(lexicalFields, field.Text)
+				repetitions := field.LexicalWeight / 20
+				if repetitions < 1 {
+					repetitions = 1
+				}
+				for index := 0; index < repetitions; index++ {
+					lexicalFields = append(lexicalFields, field.Text)
+				}
+				sourceRef := ""
+				if field.SourceRef != nil {
+					if encoded, encodeErr := json.Marshal(field.SourceRef); encodeErr == nil {
+						sourceRef = string(encoded)
+					}
+				}
+				fields = append(fields, SearchCorpusField{FieldPath: field.FieldPath, SourceRef: sourceRef, Text: field.Text, LexicalWeight: field.LexicalWeight})
 				if field.IncludeInEmbedding {
 					embeddingFields = append(embeddingFields, field.Text)
 				}
@@ -55,7 +78,7 @@ func (e Engine) ReadSearchCorpus(ctx context.Context, generation DocumentGenerat
 		if document.OwnerAddress != nil {
 			owner = *document.OwnerAddress
 		}
-		documents = append(documents, SearchCorpusDocument{SubjectAddress: document.SubjectAddress, SubjectKind: string(document.SubjectKind), OwnerAddress: owner, GraphEntryAddresses: append([]string(nil), document.GraphEntryAddresses...), TypeAddresses: append([]string(nil), document.TypeAddresses...), LayerAddresses: append([]string(nil), document.LayerAddresses...), ContentHash: document.ContentHash, LexicalText: strings.Join(lexicalFields, "\n"), Text: strings.Join(embeddingFields, "\n")})
+		documents = append(documents, SearchCorpusDocument{SubjectAddress: document.SubjectAddress, SubjectKind: string(document.SubjectKind), OwnerAddress: owner, GraphEntryAddresses: append([]string(nil), document.GraphEntryAddresses...), TypeAddresses: append([]string(nil), document.TypeAddresses...), LayerAddresses: append([]string(nil), document.LayerAddresses...), ContentHash: document.ContentHash, LexicalText: strings.Join(lexicalFields, "\n"), Text: strings.Join(embeddingFields, "\n"), Fields: fields})
 	}
 	return documents, nil
 }

@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,14 @@ func TestCompleteSearchResultOwnsRRFAndStableOrdering(t *testing.T) {
 		{Signal: "semantic", Address: "b", Kind: "entity", GraphEntries: `[]`, TypeAddresses: `[]`, LayerAddresses: `[]`, ContentHash: "hb", Score: "0.2"},
 	}})
 	if err != nil || !strings.Contains(string(result), `"rank":1`) || !strings.Contains(string(result), `"subject_address":"a"`) || !strings.Contains(string(result), `"semantic_distance":"0.1"`) {
+		t.Fatalf("result=%s err=%v", result, err)
+	}
+}
+
+func TestCompleteSearchResultOwnsMatchedSourceRefsAndBoundedSnippets(t *testing.T) {
+	fields, _ := json.Marshal([]searchResultField{{FieldPath: "name", SourceRef: `{"path":"doc.ldl","line":4}`, Text: "Needle 日本語 suffix", LexicalWeight: 100}, {FieldPath: "description", SourceRef: `{"path":"doc.ldl","line":5}`, Text: "not matched", LexicalWeight: 20}})
+	result, err := CompleteSearchResult(SearchCompletion{Mode: "lexical", QueryDigest: "q", QueryText: "needle", MaxHits: 1, RRFK: 60, LexicalWeight: 1, SnippetMaxBytes: 10, Rows: []SearchCandidateRow{{Signal: "lexical", Address: "a", Kind: "entity", GraphEntries: `[]`, TypeAddresses: `[]`, LayerAddresses: `[]`, ContentHash: "h", Fields: string(fields), Score: "1"}}})
+	if err != nil || !strings.Contains(string(result), `"matched_source_refs":[{"line":4,"path":"doc.ldl"}]`) || !strings.Contains(string(result), `"text":"Needle 日"`) || strings.Contains(string(result), "suffix") || strings.Contains(string(result), "not matched") {
 		t.Fatalf("result=%s err=%v", result, err)
 	}
 }
@@ -37,5 +46,21 @@ func TestCompleteQueryAndAnalysisResults(t *testing.T) {
 	}
 	if _, err := CompleteAnalysisResult([]AnalysisValue{{}}); err == nil {
 		t.Fatal("invalid analysis accepted")
+	}
+}
+
+func TestCompleteSearchResultUsesRuntimeSignedBoundedCursor(t *testing.T) {
+	rows := []SearchCandidateRow{
+		{Signal: "lexical", Address: "a", Kind: "entity", GraphEntries: `[]`, TypeAddresses: `[]`, LayerAddresses: `[]`, ContentHash: "ha", Score: "3"},
+		{Signal: "lexical", Address: "b", Kind: "entity", GraphEntries: `[]`, TypeAddresses: `[]`, LayerAddresses: `[]`, ContentHash: "hb", Score: "2"},
+		{Signal: "lexical", Address: "c", Kind: "entity", GraphEntries: `[]`, TypeAddresses: `[]`, LayerAddresses: `[]`, ContentHash: "hc", Score: "1"},
+	}
+	first, err := CompleteSearchResult(SearchCompletion{Mode: "lexical", QueryDigest: "q", MaxHits: 2, RRFK: 60, LexicalWeight: 1, NextCursor: "signed", Rows: rows})
+	if err != nil || !strings.Contains(string(first), `"next_cursor":"signed"`) || !strings.Contains(string(first), `"result_truncated":true`) {
+		t.Fatalf("first=%s err=%v", first, err)
+	}
+	second, err := CompleteSearchResult(SearchCompletion{Mode: "lexical", QueryDigest: "q", MaxHits: 2, RRFK: 60, LexicalWeight: 1, Offset: 2, NextCursor: "unused", Rows: rows})
+	if err != nil || !strings.Contains(string(second), `"subject_address":"c"`) || strings.Contains(string(second), `next_cursor`) {
+		t.Fatalf("second=%s err=%v", second, err)
 	}
 }

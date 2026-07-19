@@ -80,6 +80,26 @@ func TestGoLadybugApplyIndexLeavesMismatchedPhysicalIndexUntrusted(t *testing.T)
 	}
 }
 
+func TestGoLadybugRejectsIncrementalPlanWhoseActualDocumentSetIsStale(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "incremental.lbug")
+	session, err := OpenGoLadybugSessionWithFTS(databasePath, testFTSExtension(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	for _, query := range []string{"CREATE NODE TABLE SearchDoc (id STRING, content_hash STRING, body STRING, PRIMARY KEY(id))", "CREATE (n:SearchDoc {id: 'old', content_hash: 'old-hash', body: 'stale'})"} {
+		if err := session.controlLocked(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evidence := LadybugIndexEvidence{TableName: "SearchDoc", IndexName: "search_doc_fts", IndexType: "FTS", PropertyNames: []string{"body"}, ContentColumns: []string{"id", "content_hash", "body"}, PrimaryKey: "id", ExpectedDocumentSetDigest: documentSetDigest([]map[string]any{{"id": "new", "content_hash": "new-hash"}})}
+	ref := port.PhysicalIndexRef{IdentityDigest: "sha256:" + string(make([]byte, 64)), BackendVersion: GoLadybugBackendVersion}
+	statements := []LadybugStatement{{Query: testCreateFTS}}
+	if err := session.ApplyIndex(context.Background(), statements, &ref, []LadybugIndexEvidence{evidence}, port.ExecutionLimits{MaxRows: 16, MaxBytes: 4096}, discardRowSink{}); !errors.Is(err, ErrPhysicalIndexMissing) {
+		t.Fatalf("stale incremental document set was trusted: %v", err)
+	}
+}
+
 const testCreateFTS = "CALL CREATE_FTS_INDEX('SearchDoc', 'search_doc_fts', ['body'], stemmer := 'none')"
 
 func buildPhysicalFTSIndex(t *testing.T, databasePath string) port.PhysicalIndexRef {

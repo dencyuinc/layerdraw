@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,8 +28,9 @@ type DurableIndexStore struct {
 }
 
 type persistedIndex struct {
-	Status        port.SearchIndexStatus `json:"status"`
-	PayloadDigest string                 `json:"payload_digest"`
+	Status         port.SearchIndexStatus `json:"status"`
+	PayloadDigest  string                 `json:"payload_digest"`
+	DocumentHashes map[string]string      `json:"document_hashes,omitempty"`
 }
 
 func NewDurableIndexStore(root string, executor port.QueryExecutionPort, now func() time.Time) (*DurableIndexStore, error) {
@@ -152,11 +154,84 @@ func (s *DurableIndexStore) Invalidate(_ context.Context, identity port.SearchIn
 	return nil
 }
 
+func (s *DurableIndexStore) PreviousDocumentHashes(_ context.Context, identity port.SearchIndexIdentity) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return nil, err
+	}
+	var newest persistedIndex
+	found := false
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".active.json") {
+			continue
+		}
+		stored, readErr := s.read(filepath.Join(s.root, entry.Name()))
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !incrementalCompatible(stored.Status.Identity, identity) || len(stored.DocumentHashes) == 0 {
+			continue
+		}
+		if !found || stored.Status.UpdatedAt.After(newest.Status.UpdatedAt) {
+			newest, found = stored, true
+		}
+	}
+	if !found {
+		return nil, port.ErrNotFound
+	}
+	result := make(map[string]string, len(newest.DocumentHashes))
+	for address, digest := range newest.DocumentHashes {
+		if address == "" || digest == "" {
+			return nil, port.ErrConflict
+		}
+		result[address] = digest
+	}
+	return result, nil
+}
+
+func (s *DurableIndexStore) RecordDocumentHashes(_ context.Context, identity port.SearchIndexIdentity, hashes map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key, err := identityKey(identity)
+	if err != nil || len(hashes) == 0 {
+		return port.ErrConflict
+	}
+	path := filepath.Join(s.root, key+".active.json")
+	stored, err := s.read(path)
+	if err != nil || !reflect.DeepEqual(stored.Status.Identity, identity) || stored.Status.State != "active" {
+		return port.ErrConflict
+	}
+	stored.DocumentHashes = make(map[string]string, len(hashes))
+	for address, digest := range hashes {
+		if address == "" || digest == "" {
+			return port.ErrConflict
+		}
+		stored.DocumentHashes[address] = digest
+	}
+	return s.write(path, stored)
+}
+
+func incrementalCompatible(previous, next port.SearchIndexIdentity) bool {
+	if previous.SearchProfileID != next.SearchProfileID || previous.SearchProfileDigest != next.SearchProfileDigest || previous.EmbeddingProfileID != next.EmbeddingProfileID || previous.EmbeddingProfileDigest != next.EmbeddingProfileDigest || previous.AccessProjectionDigest != next.AccessProjectionDigest || previous.LadybugBackendVersion != next.LadybugBackendVersion || previous.IndexSchemaVersion != next.IndexSchemaVersion {
+		return false
+	}
+	a, b := previous.DocumentSnapshotRef, next.DocumentSnapshotRef
+	if a.Kind != b.Kind || a.DefinitionHash != b.DefinitionHash {
+		return false
+	}
+	if a.Kind == port.SnapshotHostRevision {
+		return a.HostDocumentID == b.HostDocumentID
+	}
+	return a.Kind == port.SnapshotPortableGeneration
+}
+
 func identityKey(identity port.SearchIndexIdentity) (string, error) {
 	snapshot := identity.DocumentSnapshotRef
 	validHost := snapshot.Kind == port.SnapshotHostRevision && snapshot.HostDocumentID != "" && snapshot.CommittedRevision != "" && snapshot.SourceTreeDigest == "" && snapshot.DocumentGeneration == 0
 	validPortable := snapshot.Kind == port.SnapshotPortableGeneration && snapshot.HostDocumentID == "" && snapshot.CommittedRevision == "" && snapshot.SourceTreeDigest != ""
-	if (!validHost && !validPortable) || snapshot.DefinitionHash == "" || identity.SearchProfileID == "" || identity.SearchProfileDigest == "" || identity.AccessProjectionDigest == "" || identity.LadybugBackendVersion == "" || identity.IndexSchemaVersion == "" {
+	if (!validHost && !validPortable) || snapshot.DefinitionHash == "" || identity.SearchProfileID == "" || identity.SearchProfileDigest == "" || identity.EmbeddingProfileID == "" || identity.EmbeddingProfileDigest == "" || identity.AccessProjectionDigest == "" || identity.LadybugBackendVersion == "" || identity.IndexSchemaVersion == "" {
 		return "", fmt.Errorf("incomplete identity")
 	}
 	data, err := json.Marshal(identity)

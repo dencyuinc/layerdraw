@@ -221,14 +221,15 @@ type LadybugStatement struct {
 	Parameters map[string]port.RawValue `json:"parameters"`
 }
 type LadybugIndexEvidence struct {
-	TableName       string   `json:"table_name"`
-	IndexName       string   `json:"index_name"`
-	IndexType       string   `json:"index_type"`
-	PropertyNames   []string `json:"property_names"`
-	ContentColumns  []string `json:"content_columns"`
-	PrimaryKey      string   `json:"primary_key"`
-	AllowNonPrimary bool     `json:"allow_non_primary,omitempty"`
-	Relation        bool     `json:"relation,omitempty"`
+	TableName                 string   `json:"table_name"`
+	IndexName                 string   `json:"index_name"`
+	IndexType                 string   `json:"index_type"`
+	PropertyNames             []string `json:"property_names"`
+	ContentColumns            []string `json:"content_columns"`
+	PrimaryKey                string   `json:"primary_key"`
+	AllowNonPrimary           bool     `json:"allow_non_primary,omitempty"`
+	Relation                  bool     `json:"relation,omitempty"`
+	ExpectedDocumentSetDigest string   `json:"expected_document_set_digest,omitempty"`
 }
 type LadybugSession interface {
 	ExecutePrepared(context.Context, LadybugStatement, port.ExecutionLimits, port.RowSink) error

@@ -190,6 +190,26 @@ func TestSearchOperationsDispatchThroughTheWiredSurface(t *testing.T) {
 	}
 }
 
+func TestWailsAndMCPConsumersReceiveIdenticalEngineSearchResultBytes(t *testing.T) {
+	composite := newSearchTestEndpoint(t)
+	request := layerruntime.SearchRequest{}
+	// Wails links the in-process consumer surface directly.
+	wailsResult, err := composite.SearchSurface().Search(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// MCP maps its tool envelope through the same Endpoint operation.
+	control, _ := json.Marshal(searchOperationRequest[layerruntime.SearchRequest]{Operation: OperationSearch, Protocol: runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}, RequestID: "mcp-search", Payload: request})
+	response := executeRuntimeControl(t, composite, OperationSearch, control, emptyBlobSource{})
+	var decoded searchOperationResponse
+	if err := json.Unmarshal(response.Control, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if string(decoded.Payload) != string(wailsResult) {
+		t.Fatalf("Wails=%s MCP=%s", wailsResult, decoded.Payload)
+	}
+}
+
 func TestRuntimePlanResourceAccountingAndFailurePaths(t *testing.T) {
 	digest := protocolcommon.Digest("sha256:" + strings.Repeat("b", 64))
 	ref := protocolcommon.BlobRef{BlobID: "asset/test.bin", Digest: digest, Lifetime: protocolcommon.BlobLifetimeRequest, MediaType: "application/octet-stream", Size: "7"}

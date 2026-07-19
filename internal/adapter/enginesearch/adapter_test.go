@@ -61,6 +61,11 @@ func TestProductionEngineAdapterIssuesOnlyBoundAccessProjectedCorpus(t *testing.
 		if strings.Contains(document.SubjectAddress, ":beta") || strings.Contains(document.Text, "Beta Secret") || strings.Contains(document.Text, "Project Field Secret") || strings.Contains(document.LexicalText, "Project Field Secret") {
 			t.Fatalf("unauthorized document was issued: %+v", document)
 		}
+		for _, field := range document.Fields {
+			if strings.Contains(field.Text, "Beta Secret") || strings.Contains(field.Text, "Project Field Secret") {
+				t.Fatalf("unauthorized field/source projection was issued: %+v", field)
+			}
+		}
 	}
 	wrong := snapshot
 	wrong.CommittedRevision = "r2"

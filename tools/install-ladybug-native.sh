@@ -59,7 +59,7 @@ archive="$download_root/$asset"
 url="https://github.com/LadybugDB/ladybug/releases/download/v$version/$asset"
 extension_asset="libfts-$extension_platform-v$version.lbug_extension"
 extension_archive="$download_root/$extension_asset"
-extension_url="https://extension.ladybugdb.com/v$version/$extension_platform/fts/libfts.lbug_extension"
+fts_extension_url="https://extension.ladybugdb.com/v$version/$extension_platform/fts/libfts.lbug_extension"
 vector_archive="$download_root/libvector-$extension_platform-v$version.lbug_extension"
 algo_archive="$download_root/libalgo-$extension_platform-v$version.lbug_extension"
 
@@ -90,10 +90,10 @@ for extension_name in vector algo; do
   digest_variable="${extension_name}_digest"
   extension_file="${!archive_variable}"
   expected_digest="${!digest_variable}"
-  extension_url="https://extension.ladybugdb.com/v$version/$extension_platform/$extension_name/lib$extension_name.lbug_extension"
+  component_extension_url="https://extension.ladybugdb.com/v$version/$extension_platform/$extension_name/lib$extension_name.lbug_extension"
   if [[ ! -f "$extension_file" || "$(sha256_file "$extension_file")" != "$expected_digest" ]]; then
     temporary_extension="$(mktemp "$download_root/.ladybug-$extension_name-download.XXXXXX")"
-    curl --fail --location --retry 3 --retry-all-errors --output "$temporary_extension" "$extension_url" >&2
+    curl --fail --location --retry 3 --retry-all-errors --output "$temporary_extension" "$component_extension_url" >&2
     actual_digest="$(sha256_file "$temporary_extension")"
     if [[ "$actual_digest" != "$expected_digest" ]]; then
       rm -f "$temporary_extension"
@@ -107,7 +107,7 @@ done
 if [[ ! -f "$extension_archive" || "$(sha256_file "$extension_archive")" != "$extension_digest" ]]; then
   temporary_extension="$(mktemp "$download_root/.ladybug-fts-download.XXXXXX")"
   trap 'rm -f "$temporary_extension"' EXIT
-  curl --fail --location --retry 3 --retry-all-errors --output "$temporary_extension" "$extension_url" >&2
+  curl --fail --location --retry 3 --retry-all-errors --output "$temporary_extension" "$fts_extension_url" >&2
   actual_digest="$(sha256_file "$temporary_extension")"
   if [[ "$actual_digest" != "$extension_digest" ]]; then
     printf 'Ladybug FTS extension digest mismatch: expected %s, got %s\n' "$extension_digest" "$actual_digest" >&2

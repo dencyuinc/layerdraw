@@ -66,7 +66,7 @@ func NewDesktopSearchComposition(config DesktopSearchConfig) (DesktopSearchCompo
 	if err != nil {
 		return DesktopSearchComposition{}, err
 	}
-	service := layerruntime.NewVerifiedSearchService(authorizedEngine, executor, indexes, embedding, documentVerifier)
+	service := layerruntime.NewVerifiedSearchServiceWithCursorAuthority(authorizedEngine, executor, indexes, embedding, documentVerifier, config.PlanKey)
 	return DesktopSearchComposition{Surface: service, service: service, documents: documentProducer}, nil
 }
 

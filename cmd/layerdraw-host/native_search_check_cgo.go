@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -31,7 +32,7 @@ func runNativeSearchCheck(args []string, stdout, stderr io.Writer) (bool, int) {
 	endpoint, search, shutdown, err := hostendpoint.OpenDesktopNativeEndpoint(hostendpoint.DesktopNativeConfig{
 		LocalConfig:  hostendpoint.LocalConfig{Root: root, ReleaseVersion: releaseVersion, SourceRevision: sourceRevision, ReleaseManifestDigest: "sha256:" + strings.Repeat("0", 64), EndpointInstanceID: "native-search-check", TransportID: "in_process"},
 		DatabasePath: args[2], FTSExtensionPath: args[4], VectorExtensionPath: filepath.Join(filepath.Dir(args[4]), "libvector.lbug_extension"), AlgoExtensionPath: filepath.Join(filepath.Dir(args[4]), "libalgo.lbug_extension"), PlanKey: []byte("native-search-check-plan-key-0001"), SearchDocumentKey: []byte("native-search-check-document-key01"), LocalModelSeed: []byte("native-search-check-model-seed-01"), LocalAccessProjectionDigest: "sha256:access",
-		EmbeddingProfile: port.EmbeddingProfile{ProfileID: "check", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}, MaxRows: 16, MaxBytes: 4096,
+		EmbeddingProfile: port.EmbeddingProfile{ProfileID: "check", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}, MaxRows: 16, MaxBytes: 65536,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "layerdraw-host: native_search_composition_unavailable")
@@ -70,7 +71,7 @@ relations calls {
 		return true, 1
 	}
 	profile := port.EmbeddingProfile{ProfileID: "check", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}
-	searchProfile := port.SearchProfile{ProfileID: "default", SpecificationDigest: "sha256:search", MaxHits: 8, LexicalCandidateLimit: 8, SemanticCandidateLimit: 8, RRFK: 60, LexicalWeight: 1, SemanticWeight: 1}
+	searchProfile := port.SearchProfile{ProfileID: "default", SpecificationDigest: "sha256:search", MaxHits: 1, LexicalCandidateLimit: 8, SemanticCandidateLimit: 8, RRFK: 60, LexicalWeight: 1, SemanticWeight: 1}
 	identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: searchProfile.ProfileID, SearchProfileDigest: searchProfile.SpecificationDigest, EmbeddingProfileID: profile.ProfileID, EmbeddingProfileDigest: profile.ModelDigest, AccessProjectionDigest: "sha256:access", LadybugBackendVersion: searchadapter.GoLadybugBackendVersion, IndexSchemaVersion: "1"}
 	buildRequest := layerruntime.SearchIndexBuildRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity, EngineRequest: []byte(`{"kind":"build_search_index"}`)}
 	batchRequest := port.SearchDocumentBatchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: profile.ModelDigest, Corpus: corpus}
@@ -83,16 +84,33 @@ relations calls {
 		fmt.Fprintln(stderr, "layerdraw-host: native_search_index_recovery_failed")
 		return true, 1
 	}
-	lexical, err := search.Surface.Search(context.Background(), layerruntime.SearchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity, Mode: "lexical", QueryText: "alpha", EngineRequest: []byte(`{"kind":"search_documents","mode":"lexical","query_text":"alpha"}`), MaxOutputBytes: 4096})
-	if err != nil || !strings.Contains(string(lexical), "relation:alpha_beta") {
+	lexical, err := search.Surface.Search(context.Background(), layerruntime.SearchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity, Mode: "lexical", QueryText: "alpha", EngineRequest: []byte(`{"kind":"search_documents","mode":"lexical","query_text":"alpha"}`), MaxOutputBytes: 65536})
+	if err != nil || !strings.Contains(string(lexical), "subject_address") {
 		fmt.Fprintln(stderr, "layerdraw-host: native_search_dispatch_failed")
 		return true, 1
 	}
 	for _, mode := range []string{"semantic", "hybrid"} {
-		result, searchErr := search.Surface.Search(context.Background(), layerruntime.SearchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity, Mode: mode, QueryText: "alpha", EngineRequest: []byte(fmt.Sprintf(`{"kind":"search_documents","mode":%q,"query_text":"alpha"}`, mode)), MaxOutputBytes: 4096})
+		searchRequest := layerruntime.SearchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity, Mode: mode, QueryText: "alpha", EngineRequest: []byte(fmt.Sprintf(`{"kind":"search_documents","mode":%q,"query_text":"alpha"}`, mode)), MaxOutputBytes: 65536}
+		result, searchErr := search.Surface.Search(context.Background(), searchRequest)
 		if searchErr != nil || !strings.Contains(string(result), "subject_address") {
 			fmt.Fprintln(stderr, "layerdraw-host: native_search_dispatch_failed")
 			return true, 1
+		}
+		if mode == "semantic" {
+			var page struct {
+				NextCursor      string `json:"next_cursor"`
+				ResultTruncated bool   `json:"result_truncated"`
+			}
+			if json.Unmarshal(result, &page) != nil || !page.ResultTruncated || page.NextCursor == "" {
+				fmt.Fprintln(stderr, "layerdraw-host: native_search_cursor_failed")
+				return true, 1
+			}
+			searchRequest.Cursor = page.NextCursor
+			next, nextErr := search.Surface.Search(context.Background(), searchRequest)
+			if nextErr != nil || !strings.Contains(string(next), "subject_address") || string(next) == string(result) {
+				fmt.Fprintln(stderr, "layerdraw-host: native_search_cursor_failed")
+				return true, 1
+			}
 		}
 	}
 	query, err := search.Surface.ExecuteQuery(context.Background(), port.BoundExecutionRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", Request: []byte(`{"kind":"structural_query","root_addresses":["ldl:project:p:entity:alpha"]}`), MaxOutputBytes: 4096})

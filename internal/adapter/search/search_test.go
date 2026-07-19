@@ -465,6 +465,9 @@ func TestDurableIndexBuildActivateRestartInvalidate(t *testing.T) {
 	if err != nil || active.State != "active" {
 		t.Fatalf("status=%#v err=%v", active, err)
 	}
+	if err := store.RecordDocumentHashes(context.Background(), identity("r1"), map[string]string{"a": "h1", "b": "h2"}); err != nil {
+		t.Fatal(err)
+	}
 	restarted, err := NewDurableIndexStore(root, executor, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -472,6 +475,15 @@ func TestDurableIndexBuildActivateRestartInvalidate(t *testing.T) {
 	got, err := restarted.Describe(context.Background(), identity("r1"))
 	if err != nil || got.State != "active" {
 		t.Fatalf("status=%#v err=%v", got, err)
+	}
+	previous, err := restarted.PreviousDocumentHashes(context.Background(), identity("r2"))
+	if err != nil || previous["a"] != "h1" || previous["b"] != "h2" {
+		t.Fatalf("previous=%v err=%v", previous, err)
+	}
+	incompatible := identity("r2")
+	incompatible.AccessProjectionDigest = "sha256:different"
+	if _, err := restarted.PreviousDocumentHashes(context.Background(), incompatible); !errors.Is(err, port.ErrNotFound) {
+		t.Fatalf("incompatible manifest err=%v", err)
 	}
 	if _, err := restarted.Describe(context.Background(), identity("r2")); !errors.Is(err, port.ErrNotFound) {
 		t.Fatalf("stale identity err=%v", err)

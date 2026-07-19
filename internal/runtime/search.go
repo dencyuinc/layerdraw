@@ -4,9 +4,16 @@ package runtime
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"strings"
 
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -20,6 +27,7 @@ var (
 	ErrSearchCapabilityMissing    = errors.New("search.capability_missing")
 	ErrSearchBackendFailed        = errors.New("search.backend_failed")
 	ErrSearchCancelled            = errors.New("search.cancelled")
+	ErrSearchInvalidCursor        = errors.New("search.cursor_invalid")
 	ErrAnalysisInvalidScope       = errors.New("analysis.invalid_scope")
 )
 
@@ -38,10 +46,19 @@ type SearchService struct {
 	indexes       port.SearchIndexStore
 	embedder      port.EmbeddingProvider
 	batchVerifier port.SearchDocumentBatchVerifier
+	cursorKey     []byte
 }
 
 func NewVerifiedSearchService(engine port.SearchEngine, executor port.QueryExecutionPort, indexes port.SearchIndexStore, embedder port.EmbeddingProvider, verifier port.SearchDocumentBatchVerifier) *SearchService {
 	return &SearchService{engine: engine, executor: executor, indexes: indexes, embedder: embedder, batchVerifier: verifier}
+}
+
+func NewVerifiedSearchServiceWithCursorAuthority(engine port.SearchEngine, executor port.QueryExecutionPort, indexes port.SearchIndexStore, embedder port.EmbeddingProvider, verifier port.SearchDocumentBatchVerifier, key []byte) *SearchService {
+	service := NewVerifiedSearchService(engine, executor, indexes, embedder, verifier)
+	if len(key) >= 16 {
+		service.cursorKey = append([]byte(nil), key...)
+	}
+	return service
 }
 
 func NewSearchService(engine port.SearchEngine, executor port.QueryExecutionPort, indexes port.SearchIndexStore, embedder port.EmbeddingProvider) *SearchService {
@@ -100,6 +117,13 @@ type SearchRequest struct {
 	QueryText              string
 	EngineRequest          []byte
 	MaxOutputBytes         int
+	Cursor                 string
+}
+
+type searchCursorPayload struct {
+	Version, QueryDigest, IndexDigest, EmbeddingDigest, AccessDigest string
+	Snapshot                                                         port.DocumentSnapshotRef
+	Offset                                                           int
 }
 
 type SearchIndexBuildRequest struct {
@@ -160,7 +184,17 @@ func (s *SearchService) RebuildIndex(ctx context.Context, input SearchIndexBuild
 			}
 		}
 	}
-	plan, err := s.engine.PrepareSearchIndex(ctx, port.SearchIndexPreparationInput{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, SearchProfile: input.SearchProfile, EmbeddingProfile: input.EmbeddingProfile, IndexIdentity: input.IndexIdentity, Batch: input.Batch, Embeddings: embeddings, Request: append([]byte(nil), input.EngineRequest...)})
+	previousHashes := map[string]string{}
+	fullRebuild := true
+	manifestStore, supportsManifest := s.indexes.(port.SearchIndexManifestStore)
+	if supportsManifest {
+		previousHashes, err = manifestStore.PreviousDocumentHashes(ctx, input.IndexIdentity)
+		if err != nil && !errors.Is(err, port.ErrNotFound) {
+			return port.SearchIndexStatus{}, fmt.Errorf("%w: index manifest unavailable", ErrSearchBackendFailed)
+		}
+		fullRebuild = err != nil
+	}
+	plan, err := s.engine.PrepareSearchIndex(ctx, port.SearchIndexPreparationInput{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, SearchProfile: input.SearchProfile, EmbeddingProfile: input.EmbeddingProfile, IndexIdentity: input.IndexIdentity, Batch: input.Batch, Embeddings: embeddings, Request: append([]byte(nil), input.EngineRequest...), PreviousContentHashes: previousHashes, FullRebuild: fullRebuild})
 	if err != nil {
 		return port.SearchIndexStatus{}, ErrSearchInvalidRequest
 	}
@@ -171,6 +205,16 @@ func (s *SearchService) RebuildIndex(ctx context.Context, input SearchIndexBuild
 	status, err := s.indexes.Activate(ctx, staged)
 	if err != nil {
 		return port.SearchIndexStatus{}, fmt.Errorf("%w: index activation failed", ErrSearchBackendFailed)
+	}
+	if supportsManifest {
+		currentHashes := make(map[string]string, len(input.Batch.Documents))
+		for _, document := range input.Batch.Documents {
+			currentHashes[document.SubjectAddress] = document.ContentHash
+		}
+		if err := manifestStore.RecordDocumentHashes(ctx, input.IndexIdentity, currentHashes); err != nil {
+			_ = s.indexes.Invalidate(ctx, input.IndexIdentity)
+			return port.SearchIndexStatus{}, fmt.Errorf("%w: index manifest activation failed", ErrSearchBackendFailed)
+		}
 	}
 	return status, nil
 }
@@ -195,6 +239,28 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 	if status.Identity != input.IndexIdentity {
 		return nil, ErrSearchIndexStale
 	}
+	queryHash := sha256.New()
+	_, _ = queryHash.Write(input.EngineRequest)
+	_, _ = queryHash.Write([]byte{0})
+	_, _ = io.WriteString(queryHash, input.QueryText)
+	queryDigest := "sha256:" + hex.EncodeToString(queryHash.Sum(nil))
+	identityBytes, err := json.Marshal(input.IndexIdentity)
+	if err != nil {
+		return nil, ErrSearchInvalidRequest
+	}
+	identityDigestBytes := sha256.Sum256(identityBytes)
+	binding := searchCursorPayload{Version: "v1", QueryDigest: queryDigest, IndexDigest: "sha256:" + hex.EncodeToString(identityDigestBytes[:]), EmbeddingDigest: input.IndexIdentity.EmbeddingProfileDigest, AccessDigest: input.AccessProjectionDigest, Snapshot: input.Snapshot}
+	offset := 0
+	if input.Cursor != "" {
+		if len(s.cursorKey) == 0 {
+			return nil, ErrSearchInvalidCursor
+		}
+		decoded, cursorErr := decodeSearchCursor(s.cursorKey, input.Cursor)
+		if cursorErr != nil || decoded.Version != binding.Version || decoded.QueryDigest != binding.QueryDigest || decoded.IndexDigest != binding.IndexDigest || decoded.EmbeddingDigest != binding.EmbeddingDigest || decoded.AccessDigest != binding.AccessDigest || decoded.Snapshot != binding.Snapshot || decoded.Offset <= 0 {
+			return nil, ErrSearchInvalidCursor
+		}
+		offset = decoded.Offset
+	}
 	var queryEmbedding []float32
 	if input.Mode == "semantic" || input.Mode == "hybrid" {
 		if s.embedder == nil || input.EmbeddingProfile == nil {
@@ -218,6 +284,14 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("%w: Engine rejected search", ErrSearchInvalidRequest)
 	}
+	prepared.Offset = offset
+	if len(s.cursorKey) != 0 {
+		binding.Offset = offset + input.SearchProfile.MaxHits
+		prepared.NextCursor, err = encodeSearchCursor(s.cursorKey, binding)
+		if err != nil {
+			return nil, ErrSearchInvalidCursor
+		}
+	}
 	rows, err := s.executor.Execute(ctx, prepared.Plan)
 	if err != nil {
 		return nil, normalizeExecutionError(err)
@@ -230,6 +304,45 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 		return nil, fmt.Errorf("%w: Engine result exceeded bound", ErrSearchInvalidRequest)
 	}
 	return result, nil
+}
+
+func encodeSearchCursor(key []byte, payload searchCursorPayload) (string, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("layerdraw-search-cursor-v1\x00"))
+	_, _ = mac.Write(data)
+	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
+func decodeSearchCursor(key []byte, token string) (searchCursorPayload, error) {
+	var payload searchCursorPayload
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 {
+		return payload, ErrSearchInvalidCursor
+	}
+	data, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return payload, ErrSearchInvalidCursor
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return payload, ErrSearchInvalidCursor
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("layerdraw-search-cursor-v1\x00"))
+	_, _ = mac.Write(data)
+	if !hmac.Equal(signature, mac.Sum(nil)) {
+		return payload, ErrSearchInvalidCursor
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&payload) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return payload, ErrSearchInvalidCursor
+	}
+	return payload, nil
 }
 
 func finiteVector(values []float32) bool {
@@ -280,7 +393,7 @@ func (s *SearchService) ExecuteAnalysis(ctx context.Context, input port.BoundExe
 }
 
 func validateSearchRequest(input SearchRequest) error {
-	if input.QueryText == "" || input.MaxOutputBytes <= 0 || input.SearchProfile.ProfileID == "" || input.AccessProjectionDigest == "" {
+	if input.QueryText == "" || input.MaxOutputBytes <= 0 || input.SearchProfile.ProfileID == "" || input.SearchProfile.SpecificationDigest == "" || input.AccessProjectionDigest == "" || input.IndexIdentity.EmbeddingProfileID == "" || input.IndexIdentity.EmbeddingProfileDigest == "" || input.IndexIdentity.LadybugBackendVersion == "" || input.IndexIdentity.IndexSchemaVersion == "" {
 		return ErrSearchInvalidRequest
 	}
 	snapshot := input.Snapshot

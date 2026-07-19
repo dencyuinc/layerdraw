@@ -14,10 +14,13 @@ import (
 type searchEngineStub struct {
 	prepareErr, completeErr error
 	prepared                port.SearchPreparationInput
+	completed               port.CompleteSearchInput
 	result                  []byte
+	indexPrepared           port.SearchIndexPreparationInput
 }
 
-func (e *searchEngineStub) PrepareSearchIndex(_ context.Context, _ port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
+func (e *searchEngineStub) PrepareSearchIndex(_ context.Context, input port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
+	e.indexPrepared = input
 	return testPlan(port.PlanSearchIndex), e.prepareErr
 }
 
@@ -25,11 +28,73 @@ func (e *searchEngineStub) PrepareSearch(_ context.Context, in port.SearchPrepar
 	e.prepared = in
 	return port.PreparedSearch{Plan: testPlan(port.PlanSearch), QueryDigest: "query"}, e.prepareErr
 }
-func (e *searchEngineStub) CompleteSearch(_ context.Context, _ port.CompleteSearchInput) ([]byte, error) {
+func (e *searchEngineStub) CompleteSearch(_ context.Context, input port.CompleteSearchInput) ([]byte, error) {
+	e.completed = input
 	if e.result != nil {
 		return e.result, e.completeErr
 	}
 	return []byte(`{"hits":[]}`), e.completeErr
+}
+
+func TestSearchCursorIsSignedAndBoundToAllAuthorities(t *testing.T) {
+	engine := &searchEngineStub{}
+	id := testIdentity()
+	service := NewVerifiedSearchServiceWithCursorAuthority(engine, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id, State: "active"}}, nil, nil, []byte("0123456789abcdef0123456789abcdef"))
+	request := testRequest("lexical")
+	if _, err := service.Search(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	cursor := engine.completed.Prepared.NextCursor
+	if cursor == "" || engine.completed.Prepared.Offset != 0 {
+		t.Fatalf("prepared=%+v", engine.completed.Prepared)
+	}
+	request.Cursor = cursor
+	if _, err := service.Search(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if engine.completed.Prepared.Offset != request.SearchProfile.MaxHits {
+		t.Fatalf("offset=%d", engine.completed.Prepared.Offset)
+	}
+	request.Cursor = cursor + "x"
+	if _, err := service.Search(context.Background(), request); !errors.Is(err, ErrSearchInvalidCursor) {
+		t.Fatalf("tampered cursor err=%v", err)
+	}
+	payload, err := decodeSearchCursor([]byte("0123456789abcdef0123456789abcdef"), cursor)
+	if err != nil || payload.Snapshot != id.DocumentSnapshotRef || payload.AccessDigest != id.AccessProjectionDigest || payload.EmbeddingDigest != id.EmbeddingProfileDigest || payload.IndexDigest == "" || payload.QueryDigest == "" {
+		t.Fatalf("payload=%+v err=%v", payload, err)
+	}
+	mutations := []func(*searchCursorPayload){
+		func(value *searchCursorPayload) { value.QueryDigest = "sha256:other" },
+		func(value *searchCursorPayload) { value.IndexDigest = "sha256:other" },
+		func(value *searchCursorPayload) { value.EmbeddingDigest = "sha256:other" },
+		func(value *searchCursorPayload) { value.AccessDigest = "sha256:other" },
+		func(value *searchCursorPayload) { value.Snapshot.CommittedRevision = "r2" },
+	}
+	for _, mutate := range mutations {
+		changed := payload
+		mutate(&changed)
+		request.Cursor, err = encodeSearchCursor([]byte("0123456789abcdef0123456789abcdef"), changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Search(context.Background(), request); !errors.Is(err, ErrSearchInvalidCursor) {
+			t.Fatalf("authority-rebound cursor err=%v", err)
+		}
+	}
+	for _, malformed := range []string{"", "a.b.c", "$.x", "e30.invalid"} {
+		if _, err := decodeSearchCursor([]byte("0123456789abcdef0123456789abcdef"), malformed); !errors.Is(err, ErrSearchInvalidCursor) {
+			t.Fatalf("malformed cursor %q err=%v", malformed, err)
+		}
+	}
+	request.Cursor = cursor
+	request.QueryText = "different query text"
+	if _, err := service.Search(context.Background(), request); !errors.Is(err, ErrSearchInvalidCursor) {
+		t.Fatalf("query-text rebound cursor err=%v", err)
+	}
+	request.QueryText = "hello"
+	if _, err := NewSearchService(&searchEngineStub{}, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id, State: "active"}}, nil).Search(context.Background(), request); !errors.Is(err, ErrSearchInvalidCursor) {
+		t.Fatalf("unsigned service accepted cursor: %v", err)
+	}
 }
 func (e *searchEngineStub) PrepareQuery(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
 	return testPlan(port.PlanQuery), e.prepareErr
@@ -66,6 +131,26 @@ type indexStub struct {
 type buildIndexStub struct {
 	status                port.SearchIndexStatus
 	applyErr, activateErr error
+}
+
+type manifestIndexStub struct {
+	buildIndexStub
+	previous               map[string]string
+	recorded               map[string]string
+	previousErr, recordErr error
+	invalidated            bool
+}
+
+func (i *manifestIndexStub) PreviousDocumentHashes(context.Context, port.SearchIndexIdentity) (map[string]string, error) {
+	return i.previous, i.previousErr
+}
+func (i *manifestIndexStub) RecordDocumentHashes(_ context.Context, _ port.SearchIndexIdentity, hashes map[string]string) error {
+	i.recorded = hashes
+	return i.recordErr
+}
+func (i *manifestIndexStub) Invalidate(context.Context, port.SearchIndexIdentity) error {
+	i.invalidated = true
+	return nil
 }
 
 func (i buildIndexStub) Describe(context.Context, port.SearchIndexIdentity) (port.SearchIndexStatus, error) {
@@ -354,6 +439,37 @@ func TestRebuildIndexEmbedsFilteredDocumentsAndActivates(t *testing.T) {
 	service = NewVerifiedSearchService(&searchEngineStub{}, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id}}, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{err: errors.New("tampered")})
 	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchEmbeddingProfile) {
 		t.Fatal(err)
+	}
+}
+
+func TestRebuildIndexPassesAndRecordsDurableIncrementalManifest(t *testing.T) {
+	id := testIdentity()
+	profile := testRequest("semantic").EmbeddingProfile
+	batch := port.SearchDocumentBatch{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, EmbeddingProfileDigest: profile.ModelDigest, Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "new", Text: "allowed"}}, Token: "verified"}
+	request := SearchIndexBuildRequest{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, SearchProfile: testRequest("lexical").SearchProfile, EmbeddingProfile: profile, IndexIdentity: id, Batch: batch, EngineRequest: []byte(`{"kind":"build_search_index"}`)}
+	engine := &searchEngineStub{}
+	store := &manifestIndexStub{buildIndexStub: buildIndexStub{status: port.SearchIndexStatus{Identity: id, State: "active"}}, previous: map[string]string{"a": "old", "removed": "h"}}
+	service := NewVerifiedSearchService(engine, executorStub{}, store, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{})
+	if _, err := service.RebuildIndex(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if engine.indexPrepared.FullRebuild || engine.indexPrepared.PreviousContentHashes["removed"] != "h" || store.recorded["a"] != "new" {
+		t.Fatalf("prepared=%+v recorded=%v", engine.indexPrepared, store.recorded)
+	}
+}
+
+func TestRebuildIndexFailsClosedForDurableManifestErrors(t *testing.T) {
+	id := testIdentity()
+	profile := testRequest("semantic").EmbeddingProfile
+	batch := port.SearchDocumentBatch{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, EmbeddingProfileDigest: profile.ModelDigest, Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "new", Text: "allowed"}}, Token: "verified"}
+	request := SearchIndexBuildRequest{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, SearchProfile: testRequest("lexical").SearchProfile, EmbeddingProfile: profile, IndexIdentity: id, Batch: batch, EngineRequest: []byte(`{"kind":"build_search_index"}`)}
+	readFailure := &manifestIndexStub{buildIndexStub: buildIndexStub{status: port.SearchIndexStatus{Identity: id, State: "active"}}, previousErr: errors.New("corrupt")}
+	if _, err := NewVerifiedSearchService(&searchEngineStub{}, executorStub{}, readFailure, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{}).RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchBackendFailed) {
+		t.Fatalf("manifest read err=%v", err)
+	}
+	recordFailure := &manifestIndexStub{buildIndexStub: buildIndexStub{status: port.SearchIndexStatus{Identity: id, State: "active"}}, previousErr: port.ErrNotFound, recordErr: errors.New("disk")}
+	if _, err := NewVerifiedSearchService(&searchEngineStub{}, executorStub{}, recordFailure, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{}).RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchBackendFailed) || !recordFailure.invalidated {
+		t.Fatalf("manifest record err=%v invalidated=%v", err, recordFailure.invalidated)
 	}
 }
 

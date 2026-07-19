@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -401,11 +402,25 @@ func (s *GoLadybugSession) inspectEvidenceLocked(ctx context.Context, evidence L
 	if err != nil {
 		return "", "", ErrPhysicalIndexMissing
 	}
+	if evidence.ExpectedDocumentSetDigest != "" {
+		rows, queryErr := s.queryLocked("MATCH (n:" + evidence.TableName + ") RETURN n.id AS id, n.content_hash AS content_hash ORDER BY id")
+		if queryErr != nil || documentSetDigest(rows) != evidence.ExpectedDocumentSetDigest {
+			return "", "", ErrPhysicalIndexMissing
+		}
+	}
 	digest, err := evidenceDigest(evidence, backend, schemaRows, matched, contentRows)
 	if err != nil {
 		return "", "", ErrPhysicalIndexMissing
 	}
 	return digest, backend, nil
+}
+
+func documentSetDigest(rows []map[string]any) string {
+	hash := sha256.New()
+	for _, row := range rows {
+		_, _ = io.WriteString(hash, fmt.Sprint(row["id"])+"\x00"+fmt.Sprint(row["content_hash"])+"\n")
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func (s *GoLadybugSession) inspectEvidenceSetLocked(ctx context.Context, evidence []LadybugIndexEvidence) (string, string, error) {
@@ -446,6 +461,9 @@ func validEvidence(ref port.PhysicalIndexRef, evidence LadybugIndexEvidence) boo
 		return false
 	}
 	if evidence.IndexName != "" && !ladybugIdentifier.MatchString(evidence.IndexName) {
+		return false
+	}
+	if evidence.ExpectedDocumentSetDigest != "" && (!strings.HasPrefix(evidence.ExpectedDocumentSetDigest, "sha256:") || len(evidence.ExpectedDocumentSetDigest) != len("sha256:")+64) {
 		return false
 	}
 	seen := map[string]bool{}

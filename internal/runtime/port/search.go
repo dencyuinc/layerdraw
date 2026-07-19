@@ -145,6 +145,14 @@ type SearchIndexStore interface {
 	Invalidate(context.Context, SearchIndexIdentity) error
 }
 
+// SearchIndexManifestStore is an optional durable extension used by Runtime to
+// ask Engine for a content-hash incremental plan. The active physical evidence
+// remains authoritative; manifests are only an optimization hint.
+type SearchIndexManifestStore interface {
+	PreviousDocumentHashes(context.Context, SearchIndexIdentity) (map[string]string, error)
+	RecordDocumentHashes(context.Context, SearchIndexIdentity, map[string]string) error
+}
+
 // SearchDocumentInput contains only Engine-produced, Access-filtered text.
 // Providers never receive LDL, source trees, policy decisions, or corpus APIs.
 type SearchDocumentInput struct {
@@ -157,6 +165,14 @@ type SearchDocumentInput struct {
 	ContentHash         string
 	LexicalText         string
 	Text                string
+	Fields              []SearchDocumentField
+}
+
+type SearchDocumentField struct {
+	FieldPath     string
+	SourceRef     string
+	Text          string
+	LexicalWeight int
 }
 
 // SearchDocumentBatch is opaque evidence issued after Engine generation and
@@ -245,6 +261,8 @@ type SearchIndexPreparationInput struct {
 	Batch                  SearchDocumentBatch
 	Embeddings             []EmbeddingVector
 	Request                []byte
+	PreviousContentHashes  map[string]string
+	FullRebuild            bool
 }
 
 type BoundExecutionRequest struct {
@@ -271,16 +289,21 @@ type SearchProfile struct {
 	RRFK                   int
 	LexicalWeight          float64
 	SemanticWeight         float64
+	SnippetMaxBytes        int
 }
 
 type PreparedSearch struct {
-	Plan           ExecutionPlan
-	QueryDigest    string
-	Mode           string
-	MaxHits        int
-	RRFK           int
-	LexicalWeight  float64
-	SemanticWeight float64
+	Plan            ExecutionPlan
+	QueryDigest     string
+	Mode            string
+	MaxHits         int
+	RRFK            int
+	LexicalWeight   float64
+	SemanticWeight  float64
+	Offset          int
+	NextCursor      string
+	QueryText       string
+	SnippetMaxBytes int
 }
 
 type CompleteSearchInput struct {
