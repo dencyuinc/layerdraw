@@ -32,6 +32,13 @@ type Workbench interface {
 	Checkpoint(context.Context, CheckpointWorkingDocumentInput) (WorkingDocument, error)
 }
 
+// WorkingDocumentCloser is optional because some remote Engine facades expire
+// handles server-side. Local hosts implement it to release retained bytes on
+// bounded close and repeated open/close cycles.
+type WorkingDocumentCloser interface {
+	Close(context.Context, WorkingDocument) error
+}
+
 type OpenWorkingDocumentInput struct {
 	Scope    runtimeprotocol.RuntimeScope
 	Revision RevisionSnapshot
@@ -149,6 +156,10 @@ type StageRevisionInput struct {
 	Actor             accessprotocol.ActorRef
 	Trigger           runtimeprotocol.CommitTrigger
 	CancellationToken *runtimeprotocol.CancellationToken
+	// PreviewEvaluation is durable recovery evidence. Local adapters persist it
+	// with the staged candidate so a restarted host never has to recreate or
+	// weaken the authorization decision that preceded publication.
+	PreviewEvaluation *runtimeprotocol.PreviewEvaluation
 }
 
 type StagedRevision struct {
@@ -469,6 +480,7 @@ type AdvanceRecoveryRecordInput struct {
 	PublishedRevision *runtimeprotocol.CommittedRevisionRef
 	EvaluationDigest  *protocolcommon.Digest
 	DecisionDigest    *protocolcommon.Digest
+	PreviewEvaluation *runtimeprotocol.PreviewEvaluation
 }
 
 type FinalizeRecoveryRecordInput struct {
@@ -480,13 +492,14 @@ type FinalizeRecoveryRecordInput struct {
 }
 
 type RecoveryRecord struct {
-	Scope            runtimeprotocol.RuntimeScope
-	Status           runtimeprotocol.RuntimeOperationStatus
-	CommitResult     *runtimeprotocol.RuntimeCommitResult
-	PayloadDigest    protocolcommon.Digest
-	BaseRevision     runtimeprotocol.CommittedRevisionRef
-	EvaluationDigest *protocolcommon.Digest
-	DecisionDigest   *protocolcommon.Digest
+	Scope             runtimeprotocol.RuntimeScope
+	Status            runtimeprotocol.RuntimeOperationStatus
+	CommitResult      *runtimeprotocol.RuntimeCommitResult
+	PayloadDigest     protocolcommon.Digest
+	BaseRevision      runtimeprotocol.CommittedRevisionRef
+	EvaluationDigest  *protocolcommon.Digest
+	DecisionDigest    *protocolcommon.Digest
+	PreviewEvaluation *runtimeprotocol.PreviewEvaluation
 }
 
 // AuthoringDecision is injected explicitly. Local full-authoring hosts use

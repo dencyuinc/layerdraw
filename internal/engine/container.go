@@ -177,8 +177,12 @@ type LayerdrawManifest struct {
 // their paths, raw digests, bounds, and portable-content safety, but does not
 // claim serializer- or profile-specific semantic validation.
 type LayerdrawDocument struct {
-	Manifest          LayerdrawManifest
-	Compilation       Snapshot
+	Manifest    LayerdrawManifest
+	Compilation Snapshot
+	// CompileInput is the fully validated closed input reconstructed from the
+	// portable container. Hosts may persist it without reparsing container
+	// metadata or inventing a second LDL interpretation.
+	CompileInput      CompileInput
 	Files             map[string][]byte
 	ProjectSourceTree map[string][]byte
 	InstalledPackTree map[string][]byte
@@ -311,7 +315,7 @@ func (e Engine) ReadLayerdraw(ctx context.Context, input LayerdrawReadInput) (La
 		}
 	}
 	return LayerdrawDocument{
-		Manifest: manifest, Compilation: snapshot,
+		Manifest: manifest, Compilation: snapshot, CompileInput: cloneSemanticCompileInput(compileInput),
 		Files:             cloneByteMap(files),
 		ProjectSourceTree: cloneByteMap(compileInput.ProjectSourceTree),
 		InstalledPackTree: cloneByteMap(compileInput.InstalledPackTree),

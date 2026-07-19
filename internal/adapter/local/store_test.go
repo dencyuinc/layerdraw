@@ -38,6 +38,14 @@ func TestDocumentStorePublishesConditionallyAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if inspected, err := ds.ListStaged(ctx, scope, 1); err != nil || len(inspected) != 0 {
+		t.Fatalf("empty staged inspection=%+v err=%v", inspected, err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := ds.ListStaged(cancelled, scope, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled staged inspection=%v", err)
+	}
 	provider := runtimeprotocol.ProviderVersionToken("1")
 	base := runtimeprotocol.CommittedRevisionRef{DocumentID: scope.DocumentID, RevisionID: "rev_base", DefinitionHash: testDigest('b'), GraphHash: testDigest('c'), ProviderVersion: &provider}
 	blob := source("source", []byte("x"))
@@ -50,6 +58,13 @@ func TestDocumentStorePublishesConditionallyAndRestarts(t *testing.T) {
 	staged, err := ds.StageRevision(ctx, in)
 	if err != nil {
 		t.Fatal(err)
+	}
+	inspected, err := ds.ListStaged(ctx, scope, 1)
+	if err != nil || len(inspected) != 1 || inspected[0].Stage.StageID != staged.StageID {
+		t.Fatalf("staged inspection=%+v err=%v", inspected, err)
+	}
+	if _, err := ds.ListStaged(ctx, scope, 0); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("unbounded staged inspection=%v", err)
 	}
 	if _, err := ds.PublishHead(ctx, port.PublishDocumentHeadInput{Scope: scope, StageID: staged.StageID, ExpectedRevision: base.RevisionID, ExpectedDefinitionHash: base.DefinitionHash, ExpectedProviderVersion: provider, FencingToken: "2"}); !errors.Is(err, port.ErrConflict) {
 		t.Fatalf("stale fencing error=%v", err)
@@ -220,10 +235,22 @@ func TestRecoveryJournalIndexesTransitionsRestartAndCorruption(t *testing.T) {
 	root := t.TempDir()
 	scope := testScope()
 	j, _ := NewRecoveryJournal(root, Options{})
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := j.List(cancelled, scope, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled recovery inspection=%v", err)
+	}
 	base := runtimeprotocol.CommittedRevisionRef{DocumentID: scope.DocumentID, RevisionID: "base", DefinitionHash: testDigest('b'), GraphHash: testDigest('c')}
 	in := port.CreatePendingRecordInput{Scope: scope, OperationID: "op", IdempotencyKey: "idempotency_key_1", PayloadDigest: testDigest('d'), BaseRevision: base}
 	if _, err := j.CreatePending(ctx, in); err != nil {
 		t.Fatal(err)
+	}
+	inspected, err := j.List(ctx, scope, 1)
+	if err != nil || len(inspected) != 1 || inspected[0].Record.Status.OperationID != in.OperationID {
+		t.Fatalf("recovery inspection=%+v err=%v", inspected, err)
+	}
+	if _, err := j.List(ctx, scope, 0); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("unbounded recovery inspection=%v", err)
 	}
 	other := in
 	other.OperationID = "other"

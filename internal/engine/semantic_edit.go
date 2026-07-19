@@ -1515,7 +1515,9 @@ func replaceSourceRange(input *CompileInput, path string, start, end int, replac
 	if len(replacement) > maxInt-preserved {
 		return
 	}
-	updated := make([]byte, 0, preserved+len(replacement))
+	// Seed capacity from one already-materialized length. append grows safely;
+	// do not repeat the checked combined-length arithmetic in an allocator.
+	updated := make([]byte, 0, len(source))
 	updated = append(updated, source[:start]...)
 	updated = append(updated, replacement...)
 	updated = append(updated, source[end:]...)

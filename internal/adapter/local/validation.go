@@ -164,7 +164,12 @@ func validRecoveryRecordShape(scope runtimeprotocol.RuntimeScope, r port.Recover
 		return false
 	}
 	if r.Status.Phase == runtimeprotocol.RecoveryPhasePending {
-		return r.EvaluationDigest == nil && r.DecisionDigest == nil
+		return r.EvaluationDigest == nil && r.DecisionDigest == nil && r.PreviewEvaluation == nil
+	}
+	if r.PreviewEvaluation != nil {
+		if _, e := runtimeprotocol.EncodePreviewEvaluation(*r.PreviewEvaluation); e != nil || r.EvaluationDigest == nil || r.DecisionDigest == nil || r.PreviewEvaluation.AuthoringDecision.EvaluationDigest != *r.EvaluationDigest || r.PreviewEvaluation.AuthoringDecision.DecisionDigest != *r.DecisionDigest {
+			return false
+		}
 	}
 	if terminal && r.CommitResult != nil && r.CommitResult.PreviewEvaluation == nil {
 		return r.EvaluationDigest == nil && r.DecisionDigest == nil

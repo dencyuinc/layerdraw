@@ -240,6 +240,17 @@ func (r *Runtime) OpenDocument(ctx context.Context, input runtimeprotocol.OpenRu
 	return r.config.Operations.OpenDocument.OpenDocument(ctx, input)
 }
 
+// CloseDocument invalidates one in-process Runtime session. Durable committed
+// data and operation results remain available after close. Repeated close is
+// idempotent for a handle issued by this Runtime instance.
+func (r *Runtime) CloseDocument(ctx context.Context, session runtimeprotocol.RuntimeSessionRef) *ContractError {
+	coordinator, ok := r.config.Operations.OpenDocument.(*Coordinator)
+	if !ok {
+		return unavailableOperation(OperationOpenDocument)
+	}
+	return coordinator.CloseDocument(ctx, session)
+}
+
 func (r *Runtime) CommitOperations(ctx context.Context, input runtimeprotocol.RuntimeCommitInput) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
 	if r.config.Operations.CommitOperations == nil {
 		return runtimeprotocol.RuntimeCommitResult{}, unavailableOperation(OperationCommitOperations)
