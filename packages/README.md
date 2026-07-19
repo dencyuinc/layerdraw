@@ -27,6 +27,12 @@ and Diff visual adapters map only supplied RenderData geometry, presentation
 values, and bindings to deterministic SVG plus portable headless interaction
 metadata; export artifact serialization remains outside this package.
 
+`export/` owns the versioned, framework-neutral browser and Node serialization
+boundary for Go-planned SVG, PNG, JSON, and CSV plain View exports. It consumes
+only an existing `ExportPlan`, matching `ViewData` and optional `RenderData`,
+and exact injected resource/profile inputs; it neither plans exports nor
+resolves ambient resources, storage, registries, network state, or clocks.
+
 `viewer/` owns the framework-neutral readonly and ordered-streaming Viewer
 state machine over `render/`. It validates closed ViewData envelopes, rejects
 gaps and identity mismatches without adoption, keeps immutable interaction

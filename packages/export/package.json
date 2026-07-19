@@ -1,0 +1,29 @@
+{
+  "name": "@layerdraw/export",
+  "version": "0.0.0",
+  "description": "Deterministic framework-neutral serializers for planned LayerDraw View exports.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "LICENSE", "README.md"],
+  "exports": {
+    ".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"},
+    "./browser": {"types": "./dist/browser.d.ts", "import": "./dist/browser.js"},
+    "./node": {"types": "./dist/node.d.ts", "import": "./dist/node.js"}
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build:types": "tsc -p tsconfig.build.json",
+    "generate": "node -e \"\"",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-test-coverage --test-coverage-include=dist/**/*.js --test-coverage-lines=80 --test-coverage-functions=80 --test-coverage-branches=80 test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@layerdraw/protocol": "workspace:*",
+    "@layerdraw/render": "workspace:*"
+  },
+  "devDependencies": {"typescript": "7.0.2"},
+  "engines": {"node": ">=24.18.0 <25"},
+  "publishConfig": {"access": "public", "provenance": true}
+}
