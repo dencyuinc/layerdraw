@@ -1401,6 +1401,45 @@ func TestCoordinatorCommitJournalAndPostPublicationFailures(t *testing.T) {
 	}
 }
 
+func TestCoordinatorHoldsDelegationFenceFromFinalAuthorizationThroughPublication(t *testing.T) {
+	t.Run("acquisition failure", func(t *testing.T) {
+		host, rt := newCoordinatorFixture(t)
+		opened := openCoordinatorFixture(t, rt)
+		host.publicationFenceErr = errors.New("revoked delegation")
+		result, rejection := rt.CommitOperations(context.Background(), commitFixture(opened.Session, host))
+		if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusRejected || host.publishCalls != 0 {
+			t.Fatalf("result=%+v rejection=%v publications=%d", result, rejection, host.publishCalls)
+		}
+	})
+
+	t.Run("revocation waits", func(t *testing.T) {
+		host, rt := newCoordinatorFixture(t)
+		opened := openCoordinatorFixture(t, rt)
+		revokeAcquired := make(chan struct{})
+		host.onPublish = func() {
+			go func() {
+				host.publicationMu.Lock()
+				close(revokeAcquired)
+				host.publicationMu.Unlock()
+			}()
+			select {
+			case <-revokeAcquired:
+				t.Fatal("revocation crossed the final authorization/publication fence")
+			case <-time.After(30 * time.Millisecond):
+			}
+		}
+		result, rejection := rt.CommitOperations(context.Background(), commitFixture(opened.Session, host))
+		if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommitted {
+			t.Fatalf("result=%+v rejection=%v", result, rejection)
+		}
+		select {
+		case <-revokeAcquired:
+		case <-time.After(time.Second):
+			t.Fatal("revocation did not resume after publication fence release")
+		}
+	})
+}
+
 func TestCoordinatorAuthorizationFailureAbandonsReservation(t *testing.T) {
 	host, rt := newCoordinatorFixture(t)
 	opened := openCoordinatorFixture(t, rt)
@@ -1423,6 +1462,29 @@ func TestCoordinatorAuthorizationFailureAbandonsReservation(t *testing.T) {
 	host.abandonErr = errors.New("injected abandon failure")
 	if result, rejection = rt.CommitOperations(context.Background(), input); rejection == nil || rejection.Code != runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable || !reflect.DeepEqual(result, runtimeprotocol.RuntimeCommitResult{}) {
 		t.Fatalf("failed conditional abandon result=%+v rejection=%v", result, rejection)
+	}
+}
+
+func TestCoordinatorSeparatesProposalProofFromApplyAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*coordinatorHost)
+	}{
+		{name: "apply denied", configure: func(host *coordinatorHost) { host.denyApply = true }},
+		{name: "apply impact changed", configure: func(host *coordinatorHost) { host.mismatchApply = true }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, rt := newCoordinatorFixture(t)
+			test.configure(host)
+			opened := openCoordinatorFixture(t, rt)
+			result, rejection := rt.CommitOperations(context.Background(), commitFixture(opened.Session, host))
+			if rejection == nil || !reflect.DeepEqual(result, runtimeprotocol.RuntimeCommitResult{}) {
+				t.Fatalf("result=%+v rejection=%v", result, rejection)
+			}
+			if host.publishCalls != 0 {
+				t.Fatalf("apply rejection published %d times", host.publishCalls)
+			}
+		})
 	}
 }
 
@@ -1536,6 +1598,7 @@ func TestCoordinatorLookupHistoryAndTerminalFinalizeFailures(t *testing.T) {
 
 type coordinatorHost struct {
 	mu                                                                                      sync.Mutex
+	publicationMu                                                                           sync.RWMutex
 	now                                                                                     time.Time
 	base                                                                                    runtimeprotocol.CommittedRevisionRef
 	head                                                                                    port.DocumentHead
@@ -1595,6 +1658,8 @@ type coordinatorHost struct {
 	externalStage                                                                           port.ExternalFileStage
 	externalReceipt                                                                         port.ExternalFileReceipt
 	advancePhases                                                                           []runtimeprotocol.RecoveryPhase
+	denyApply, mismatchApply                                                                bool
+	publicationFenceErr                                                                     error
 }
 
 func TestCoordinatorExternalMaterializationSuccessPendingAndFailure(t *testing.T) {
@@ -1959,6 +2024,14 @@ func (h *coordinatorHost) ResolveGrant(context.Context, runtimeprotocol.RuntimeS
 	return h.grant, h.summary, nil
 }
 
+func (h *coordinatorHost) AcquireAuthoringPublication(context.Context, runtimeprotocol.RuntimeScope) (func(), error) {
+	if h.publicationFenceErr != nil {
+		return nil, h.publicationFenceErr
+	}
+	h.publicationMu.RLock()
+	return h.publicationMu.RUnlock, nil
+}
+
 func (h *coordinatorHost) Now() time.Time { return h.now }
 func (h *coordinatorHost) NewID(context.Context, port.IdentityKind) (string, error) {
 	h.mu.Lock()
@@ -1975,6 +2048,13 @@ func (h *coordinatorHost) NewID(context.Context, port.IdentityKind) (string, err
 func (h *coordinatorHost) Evaluate(_ context.Context, input accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error) {
 	decision := h.decision
 	decision.AuthoringImpactDigest = &input.AuthoringImpact.ImpactDigest
+	if input.RequestIntent == "apply" && h.denyApply {
+		decision.Outcome = accessprotocol.AuthoringDecisionOutcomeDeny
+		decision.Diagnostics = []protocolcommon.ProtocolDiagnostic{{Code: "authoring.agent_scope_denied", Message: "apply denied", Related: []protocolcommon.ProtocolDiagnosticRelated{}, Severity: protocolcommon.ProtocolDiagnosticSeverityError}}
+	}
+	if input.RequestIntent == "apply" && h.mismatchApply {
+		decision.RequiredCapabilities = []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite}
+	}
 	return decision, nil
 }
 

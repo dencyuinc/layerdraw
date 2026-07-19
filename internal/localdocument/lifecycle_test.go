@@ -23,6 +23,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/adapter/local"
 	"github.com/dencyuinc/layerdraw/internal/engine"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
@@ -642,7 +643,7 @@ func localPersistenceFaults(t *testing.T, surface string) []localPersistenceFaul
 
 func stageRecoveryFixture(t *testing.T, host *Host, session *Session, source, suffix string, publish bool, advanceAfterPublish bool) (port.RecoveryRecord, port.StagedRevision) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := host.accessContext(context.Background(), session)
 	operation := runtimeprotocol.OperationID("recovery_" + suffix)
 	key := runtimeprotocol.IdempotencyKey("idempotency_" + suffix + "_value")
 	base := session.Open.CommittedRevision
@@ -693,6 +694,113 @@ func stageRecoveryFixture(t *testing.T, host *Host, session *Session, source, su
 		}
 	}
 	return record, staged
+}
+
+func TestRestartRecoveryReauthorizesDelegatedExternalPublication(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		revoke  bool
+		expired bool
+	}{
+		{name: "live"},
+		{name: "revoked", revoke: true},
+		{name: "expired", expired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			source := "project p \"P\" {}\n"
+			project := writeProject(t, root, source)
+			dataRoot := filepath.Join(root, "data")
+			host := newTestHost(t, dataRoot, nil)
+			owner, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch := runtimeprotocol.RuntimeOperationBatch{DocumentID: owner.Session.Open.CommittedRevision.DocumentID, BaseRevision: owner.Session.Open.CommittedRevision, ExpectedDefinitionHash: owner.Session.Open.CommittedRevision.DefinitionHash, Operations: createLayerBatch(t, "delegated_recovery"), Preconditions: allPreconditions(t, source)}
+			preview, err := host.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: owner.Session.Open.Session, OperationBatch: batch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := host.config.Clock.Now()
+			record, err := host.DelegateAgent(context.Background(), owner.Session, accesscore.Delegation{
+				ID: "recovery-" + test.name, ParentActor: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, Agent: accessprotocol.ActorRef{ActorID: "recovery-agent", Kind: "agent"},
+				DocumentID: string(batch.DocumentID), LocalScopeID: owner.Session.Open.Session.Scope.LocalScopeID,
+				AuthoringCapabilities: append([]semantic.AuthoringCapability(nil), preview.PreviewEvaluation.AuthoringImpact.RequiredCapabilities...), Permissions: accesscore.AgentPermissions{Read: true, Propose: true, Apply: true}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			delegated, err := host.OpenDelegatedDocument(context.Background(), batch.DocumentID, record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal, _ := externalRecoveryFixture(t, host, delegated.Session, source, "delegated_"+test.name, runtimeprotocol.RecoveryPhaseExternalPending)
+			if test.revoke {
+				if err := host.RevokeDelegation(record.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := host.Shutdown(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			restarted := newTestHost(t, dataRoot, func(config *Config) {
+				if test.expired {
+					config.Clock = &fakeClock{now: now.Add(2 * time.Hour)}
+				} else {
+					config.Clock = &fakeClock{now: now.Add(30 * time.Minute)}
+				}
+			})
+			if test.revoke {
+				injected := errors.New("external abort interrupted")
+				faulting, err := local.NewExternalFileStore(restarted.config.Root, local.ExternalFileOptions{Fault: func(point string) error {
+					if point == "before_external_abort" {
+						return injected
+					}
+					return nil
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				restarted.external = faulting
+				if _, err := restarted.Recover(context.Background(), journal.Scope.DocumentID); !errors.Is(err, injected) {
+					t.Fatalf("interrupted abort recovery error=%v", err)
+				}
+				pending, err := restarted.recovery.Get(context.Background(), port.GetRecoveryRecordInput{Scope: journal.Scope, OperationID: &journal.Status.OperationID})
+				if err != nil || pending.Status.Phase != runtimeprotocol.RecoveryPhaseRecovering {
+					t.Fatalf("interrupted abort was not retryable: record=%+v err=%v", pending, err)
+				}
+				if err := restarted.Shutdown(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				restarted = newTestHost(t, dataRoot, func(config *Config) { config.Clock = &fakeClock{now: now.Add(30 * time.Minute)} })
+			}
+			results, recoverErr := restarted.Recover(context.Background(), journal.Scope.DocumentID)
+			inspection, err := restarted.external.Inspect(context.Background(), port.InspectExternalFileInput{Scope: journal.Scope, OperationID: journal.Status.OperationID, IdempotencyKey: journal.Status.IdempotencyKey})
+			if !test.revoke && !test.expired {
+				if recoverErr != nil || len(results) != 1 || err != nil || inspection.Receipt == nil {
+					t.Fatalf("live delegated recovery=%+v recoverErr=%v inspection=%+v inspectErr=%v", results, recoverErr, inspection, err)
+				}
+			} else {
+				if recoverErr != nil || len(results) != 1 || results[0].Status.Phase != runtimeprotocol.RecoveryPhaseNeedsReview || results[0].Status.OperationResult == nil || results[0].Status.OperationResult.Status != runtimeprotocol.OperationResultStatusNeedsReview {
+					t.Fatalf("unauthorized external recovery did not converge: results=%+v err=%v", results, recoverErr)
+				}
+				if !errors.Is(err, port.ErrNotFound) || inspection.Receipt != nil {
+					t.Fatalf("unauthorized external stage survived: inspection=%+v err=%v", inspection, err)
+				}
+				if err := restarted.Shutdown(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				again := newTestHost(t, dataRoot, func(config *Config) { config.Clock = &fakeClock{now: now.Add(3 * time.Hour)} })
+				repeated, err := again.Recover(context.Background(), journal.Scope.DocumentID)
+				if err != nil || len(repeated) != 1 || repeated[0].Status.Phase != runtimeprotocol.RecoveryPhaseNeedsReview {
+					t.Fatalf("repeated restart recovery=%+v err=%v", repeated, err)
+				}
+				if _, err := again.OpenDocument(context.Background(), journal.Scope.DocumentID); err != nil {
+					t.Fatalf("terminal authorization recovery still blocks reopen: %v", err)
+				}
+			}
+		})
+	}
 }
 
 func externalRecoveryFixture(t *testing.T, host *Host, session *Session, source, suffix string, phase runtimeprotocol.RecoveryPhase) (port.RecoveryRecord, port.StagedRevision) {
@@ -1184,6 +1292,37 @@ func TestDefaultBoundariesAndRejectedInputs(t *testing.T) {
 	decision, err := host.authority.Evaluate(context.Background(), denied)
 	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeDeny || len(decision.MissingCapabilities) != 1 {
 		t.Fatalf("deny = %+v %v", decision, err)
+	}
+}
+
+func TestConfiguredLocalActorIsStableAcrossAuthorityRestart(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)}
+	actor := accessprotocol.ActorRef{ActorID: "platform-user-501", Kind: "user"}
+	first := newLocalAuthorityForActor(clock, nil, actor)
+	firstScope := first.add("doc_actor")
+	firstGrant, _, err := first.ResolveGrant(context.Background(), firstScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.now = clock.now.Add(time.Hour)
+	second := newLocalAuthorityForActor(clock, nil, actor)
+	secondScope := second.add("doc_actor")
+	secondGrant, _, err := second.ResolveGrant(context.Background(), secondScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstScope != secondScope || firstGrant.ActorRef != actor || secondGrant.ActorRef != actor || firstGrant.ActorRef.Kind != "user" {
+		t.Fatalf("restart actor/scope = %+v %+v %+v %+v", firstScope, secondScope, firstGrant, secondGrant)
+	}
+	if firstGrant.OrganizationScopeID != nil || secondGrant.OrganizationScopeID != nil {
+		t.Fatal("local actor fabricated organization membership")
+	}
+	legacy := newLocalAuthority(clock, nil).add("doc_actor")
+	wantLegacy := digestJSON(struct {
+		Document runtimeprotocol.DocumentID `json:"document"`
+	}{"doc_actor"})
+	if legacy.AccessFingerprint != wantLegacy || legacy.AccessFingerprint == firstScope.AccessFingerprint {
+		t.Fatalf("legacy/configured fingerprints = %s %s", legacy.AccessFingerprint, firstScope.AccessFingerprint)
 	}
 }
 

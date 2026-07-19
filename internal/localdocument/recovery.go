@@ -5,10 +5,13 @@ package localdocument
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 
+	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/adapter/local"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
@@ -66,7 +69,7 @@ func (h *Host) Recover(ctx context.Context, documentID runtimeprotocol.DocumentI
 		case runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished, runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseOutboxReady:
 			status, err = h.recoverPublished(ctx, scope, record, inspection.PublishedRevision, stage, hasStage)
 		case runtimeprotocol.RecoveryPhaseRecovering:
-			status, err = h.finalizeRecovered(ctx, scope, record, previewFor(record, stage, hasStage), runtimeprotocol.OperationResultStatusNeedsReview, nil, "", runtimeprotocol.RecoveryPhaseNeedsReview)
+			status, err = h.recoverRecovering(ctx, scope, record, stage, hasStage)
 		default:
 			err = port.ErrIndeterminate
 		}
@@ -85,6 +88,18 @@ func (h *Host) Recover(ctx context.Context, documentID runtimeprotocol.DocumentI
 		}
 	}
 	return results, nil
+}
+
+func (h *Host) recoverRecovering(ctx context.Context, scope runtimeprotocol.RuntimeScope, record port.RecoveryRecord, stage local.StagedInspection, hasStage bool) (runtimeprotocol.RuntimeOperationStatus, error) {
+	// An unauthorized external publication is first moved to recovering. Keep
+	// that phase retryable until its durable external stage is gone; otherwise a
+	// crash between terminalization and cleanup would strand the stage forever.
+	if record.ExternalStage != nil && record.Status.ExternalMaterialization != nil && record.Status.ExternalMaterialization.State == runtimeprotocol.ExternalMaterializationStatePending {
+		if err := h.external.Abort(ctx, port.AbortExternalFileInput{Scope: scope, StageID: record.ExternalStage.StageID}); err != nil {
+			return runtimeprotocol.RuntimeOperationStatus{}, err
+		}
+	}
+	return h.finalizeRecovered(ctx, scope, record, previewFor(record, stage, hasStage), runtimeprotocol.OperationResultStatusNeedsReview, nil, "", runtimeprotocol.RecoveryPhaseNeedsReview)
 }
 
 func previewOf(stage local.StagedInspection, ok bool) *runtimeprotocol.PreviewEvaluation {
@@ -184,7 +199,24 @@ func (h *Host) finishPublished(ctx context.Context, scope runtimeprotocol.Runtim
 			if inspection.Receipt != nil {
 				receipt = *inspection.Receipt
 			} else if inspection.Stage != nil && record.ExpectedExternalProviderVersion != nil {
-				receipt, err = h.external.Publish(ctx, port.PublishExternalFileInput{Scope: scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey, StageID: inspection.Stage.StageID, ExpectedProviderVersion: *record.ExpectedExternalProviderVersion})
+				publicationCtx, release, authErr := h.authorizeRecoveredExternalPublication(ctx, scope, record, stage)
+				if authErr != nil {
+					// The document head is already published, but a stale delegation
+					// can never authorize its remaining external side effect. Persist a
+					// terminal review outcome so every later restart converges without
+					// retrying the unauthorized publication.
+					updated, advanceErr := h.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: scope, OperationID: record.Status.OperationID, ExpectedPhase: phase, NextPhase: runtimeprotocol.RecoveryPhaseRecovering, PublishedRevision: &revision})
+					if advanceErr != nil {
+						return runtimeprotocol.RuntimeOperationStatus{}, fmt.Errorf("localdocument: quarantine unauthorized external recovery: %w", advanceErr)
+					}
+					status, recoverErr := h.recoverRecovering(ctx, scope, updated, stage, true)
+					if recoverErr != nil {
+						return runtimeprotocol.RuntimeOperationStatus{}, fmt.Errorf("localdocument: clean up unauthorized external recovery: %w", recoverErr)
+					}
+					return status, nil
+				}
+				receipt, err = h.external.Publish(publicationCtx, port.PublishExternalFileInput{Scope: scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey, StageID: inspection.Stage.StageID, ExpectedProviderVersion: *record.ExpectedExternalProviderVersion})
+				release()
 			} else {
 				err = port.ErrIndeterminate
 			}
@@ -263,6 +295,36 @@ func (h *Host) finishPublished(ctx context.Context, scope runtimeprotocol.Runtim
 		_ = h.external.Abort(context.WithoutCancel(ctx), port.AbortExternalFileInput{Scope: scope, StageID: record.ExternalStage.StageID})
 	}
 	return final, nil
+}
+
+func (h *Host) authorizeRecoveredExternalPublication(ctx context.Context, scope runtimeprotocol.RuntimeScope, record port.RecoveryRecord, stage local.StagedInspection) (context.Context, func(), error) {
+	preview := previewFor(record, stage, true)
+	if preview == nil {
+		return nil, nil, port.ErrIndeterminate
+	}
+	actor := stage.Input.Actor
+	ctx, err := h.authority.recoveredGrantContext(ctx, scope, actor, preview.AuthoringDecision.AccessFingerprint)
+	if err != nil {
+		return nil, nil, err
+	}
+	release, err := h.authority.AcquireAuthoringPublication(ctx, scope)
+	if err != nil || release == nil {
+		return nil, nil, accesscore.ErrGrantStale
+	}
+	grant, _, err := h.authority.ResolveGrant(ctx, scope)
+	if err != nil {
+		release()
+		return nil, nil, accesscore.ErrGrantStale
+	}
+	decision, rejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: scope, CurrentRevision: record.BaseRevision, Evaluation: accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &preview.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "publish"}})
+	if rejection != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || decision.AccessFingerprint != preview.AuthoringDecision.AccessFingerprint || !reflect.DeepEqual(decision.RequiredCapabilities, preview.AuthoringDecision.RequiredCapabilities) {
+		release()
+		if rejection != nil {
+			return nil, nil, rejection
+		}
+		return nil, nil, accesscore.ErrGrantStale
+	}
+	return ctx, release, nil
 }
 
 func (h *Host) advanceRecovery(ctx context.Context, scope runtimeprotocol.RuntimeScope, operation runtimeprotocol.OperationID, from, to runtimeprotocol.RecoveryPhase, revision *runtimeprotocol.CommittedRevisionRef) (port.RecoveryRecord, error) {

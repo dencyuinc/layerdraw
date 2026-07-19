@@ -278,6 +278,11 @@ func (s *ExternalFileStore) Abort(ctx context.Context, input port.AbortExternalF
 		return err
 	}
 	return s.withLock(input.Scope, func(dir string) error {
+		if s.fault != nil {
+			if err := s.fault("before_external_abort"); err != nil {
+				return err
+			}
+		}
 		var stage externalStageDisk
 		metadata := s.stageMetadataPath(dir, input.StageID)
 		if err := s.readJSON(metadata, &stage); err != nil {

@@ -267,10 +267,22 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 	if err != nil {
 		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "current authoring grant could not be resolved"))
 	}
-	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"}
-	decision, rejection := c.runtime.Authorize(ctx, AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: head.Revision, Evaluation: evaluation, Proof: &input.AuthoringProof})
+	// The caller proof is intentionally a proposal proof. Validate that exact
+	// revision/impact/grant evidence first, then independently require current
+	// apply authority. This lets a proposal-only agent preview safely without
+	// turning the preview token into an apply permit.
+	proposalEvaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "propose"}
+	proposalDecision, rejection := c.runtime.Authorize(ctx, AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: head.Revision, Evaluation: proposalEvaluation, Proof: &input.AuthoringProof})
 	if rejection != nil {
 		return c.abandonPending(ctx, input, rejection)
+	}
+	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"}
+	decision, rejection := c.runtime.Authorize(ctx, AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: head.Revision, Evaluation: evaluation})
+	if rejection != nil || decision.AccessFingerprint != proposalDecision.AccessFingerprint || !reflect.DeepEqual(decision.RequiredCapabilities, proposalDecision.RequiredCapabilities) {
+		if rejection != nil {
+			return c.abandonPending(ctx, input, rejection)
+		}
+		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring decision changed between proposal and apply"))
 	}
 	if rejection := c.checkCancellation(ctx, input); rejection != nil {
 		return c.finalRejected(ctx, input, rejection, decision, prepared.AuthoringImpact)
@@ -324,6 +336,27 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 		return runtimeprotocol.RuntimeCommitResult{}, failure
 	} else if rejection != nil {
 		return c.finalRejectedFrom(ctx, input, rejection, decision, prepared.AuthoringImpact)
+	}
+	// Authorization is a publication precondition, not a staging permit. Resolve
+	// the grant and evaluate the complete impact again after every potentially
+	// slow stage/adapter call so policy, delegation expiry/revocation, and agent
+	// scope changes reject before the head or external provider is published.
+	releasePublication, fenceErr := p.Grants.AcquireAuthoringPublication(ctx, input.Session.Scope)
+	if fenceErr != nil || releasePublication == nil {
+		return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring publication fence could not be acquired"), decision, prepared.AuthoringImpact)
+	}
+	defer releasePublication()
+	currentGrant, _, grantErr := p.Grants.ResolveGrant(ctx, input.Session.Scope)
+	if grantErr != nil {
+		return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring grant changed before publication"), decision, prepared.AuthoringImpact)
+	}
+	publicationEvaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: currentGrant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "publish"}
+	publicationDecision, publicationRejection := c.runtime.Authorize(ctx, AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: head.Revision, Evaluation: publicationEvaluation})
+	if publicationRejection != nil || publicationDecision.AccessFingerprint != decision.AccessFingerprint || publicationDecision.RequiredCapabilities == nil || !reflect.DeepEqual(publicationDecision.RequiredCapabilities, decision.RequiredCapabilities) {
+		if publicationRejection != nil {
+			return c.finalRejectedFrom(ctx, input, publicationRejection, decision, prepared.AuthoringImpact)
+		}
+		return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring decision changed before publication"), decision, prepared.AuthoringImpact)
 	}
 	if _, rejection = c.advancePublicationPending(ctx, input, decision, externalStage, expectedExternal); rejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
