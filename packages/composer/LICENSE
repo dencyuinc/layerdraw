@@ -1,0 +1,243 @@
+                           LayerDraw License
+                       Version 1.0, July 2026
+
+Copyright (c) 2026 株式会社DENCYU
+
+1. Acceptance
+
+By using, copying, modifying, distributing, or making the Software available,
+you agree to the terms of this License. If you do not agree, you may not
+exercise any rights granted by this License.
+
+2. Definitions
+
+"Licensor" means 株式会社DENCYU.
+
+"Software" means the LayerDraw source code, object code, binaries, packages,
+and other materials that expressly identify this License or are assigned this
+License by the repository's authoritative licensing matrix. Software does not
+include material expressly licensed under another license.
+
+"You" means the individual or legal entity exercising rights under this
+License.
+
+"Your Organization" means You and any legal entity that controls, is controlled
+by, or is under common control with You. "Control" means the power to direct
+management or policies, whether by ownership, contract, or otherwise.
+
+"End User" means a third party that accesses or uses a product or service made
+available by You. Your personnel and contractors acting solely to operate Your
+product or service are not End Users.
+
+"Schema Definition" means an EntityType, RelationType, Column, Constraint,
+Layer, or an equivalent definition that determines the kinds, structure,
+allowed relationships, or semantic rules of data managed by the Software.
+
+"General-Purpose Schema Authoring" means a capability by which an End User can,
+directly or indirectly, create, modify, delete, import, install, generate, or
+cause arbitrary Schema Definitions. It includes equivalent capabilities
+provided through a user interface, API, SDK, MCP tool, AI agent, uploaded file,
+Pack, Template, service account, or operator automation. It also includes a
+capability that encodes types, fields, relationships, constraints, or semantic
+rules as graph instances, relations, rows, values, or other data when the
+practical effect is to let an End User define an arbitrary schema or type
+system, regardless of the internal representation or operation name. Asking the
+provider to perform genuinely bespoke professional services that result in a
+provider-controlled fixed model is not, by itself, General-Purpose Schema
+Authoring.
+
+"Fixed Model Application" means a product or service in which:
+
+  a. You or Your personnel determine and control all Schema Definitions;
+  b. End Users do not receive General-Purpose Schema Authoring;
+  c. End Users may create, modify, query, view, render, export, or collaborate on
+     graph instances, relations, rows, values, queries, views, layouts, assets,
+     or other data within the provider-defined model; and
+  d. the product or service is presented and operated as a domain application,
+     workflow, analysis product, AI product, or other provider-defined solution,
+     rather than as a general-purpose LayerDraw, diagram, graph, or semantic
+     layer authoring service.
+
+A Fixed Model Application may be commercial, paid, free of charge,
+multi-tenant, or operated for multiple customers. It may offer a catalog of
+provider-defined models. Bounded configuration that does not create or modify a
+Schema Definition does not prevent an application from being a Fixed Model
+Application.
+
+"Customer-Controlled Deployment" means a deployment used for the customer's
+own internal purposes and operated primarily in an account, environment, or
+infrastructure controlled by that customer. Installation, support, maintenance,
+and remote operation by a contractor do not change that status when the
+contractor is not offering the deployment as a shared or general-purpose hosted
+LayerDraw service.
+
+"Read-Only Viewing Service" means a hosted product or service that:
+
+  a. receives or stores user-selected LayerDraw projects or content solely to
+     view, embed, render, download, or export them;
+  b. may provide authentication, access control, and share links only as needed
+     for those read-only purposes;
+  c. does not let an End User create or modify Schema Definitions, graph
+     instances, relations, rows, values, queries, views, layouts, or assets; and
+  d. does not provide collaboration, revision history, Registry or Pack
+     management, general-purpose workspace or project management, or
+     general-purpose SDK, API, or MCP access.
+
+"Restricted Hosted Offering" means a hosted or managed product or service for
+third parties that does any of the following:
+
+  a. provides General-Purpose Schema Authoring;
+  b. provides access to a substantial set of LayerDraw's general-purpose editor,
+     project, server, SDK, API, MCP, registry, collaboration, or authoring
+     functionality as a product or service in itself;
+  c. offers stock, substantially stock, white-labeled, or rebranded LayerDraw;
+  d. markets or operates a LayerDraw-compatible cloud, general-purpose semantic
+     layer builder, general-purpose graph authoring service, or equivalent
+     substitute for LayerDraw; or
+  e. uses an intermediary, service account, AI agent, import flow, Pack,
+     Template, or operator automation to provide an End User with the practical
+     equivalent of any capability described above.
+
+An offering is not a Restricted Hosted Offering merely because it is
+commercial, paid, multi-tenant, uses the Software on a server, competes with a
+particular LayerDraw use case, is a Fixed Model Application, or is a Read-Only
+Viewing Service.
+
+"Commercial License" means a separate written agreement with the Licensor that
+expressly authorizes use otherwise restricted by this License.
+
+3. Copyright License
+
+Subject to this License, the Licensor grants You a worldwide, royalty-free,
+non-exclusive, non-transferable license to use, reproduce, execute, display,
+modify, create derivative works of, distribute, and make the Software available.
+Recipients of distributed copies receive their rights directly under this
+License. You may charge for permitted products, copies, installation, support,
+maintenance, consulting, and other services.
+
+This License permits, without payment to the Licensor:
+
+  a. personal, educational, evaluation, research, and non-commercial use;
+  b. internal use by Your Organization, including internal multi-tenant use;
+  c. Self-host and Customer-Controlled Deployments, including full Schema
+     Definition and authoring capabilities;
+  d. incorporation of the Software, including its SDKs, binaries, WASM modules,
+     MCP adapters, and server components, into a commercial or proprietary
+     product;
+  e. operation of a Fixed Model Application for End Users;
+  f. operation of a Read-Only Viewing Service for End Users; and
+  g. distribution of the Software or modified Software as part of a use allowed
+     by this License.
+
+This License is not copyleft. It does not require You to disclose source code
+for software that merely calls, embeds, communicates with, or is distributed
+alongside the Software. The Software and modifications to it remain subject to
+this License when distributed.
+
+4. Hosted Service Limitation
+
+You may not operate, provide, sell, or make available a Restricted Hosted
+Offering unless a Commercial License authorizes that use.
+
+For avoidance of doubt, a Fixed Model Application or Read-Only Viewing Service
+that satisfies Section 2 is expressly permitted and is not prohibited by this
+Section. A Fixed Model Application may expose substantial instance editing,
+query, view, rendering, export, realtime, or AI functionality of the Software.
+
+Classification depends on the capabilities actually made available and the
+substance of the offering, not only on product names, user-interface visibility,
+role labels, feature flags, or the identity of the technical actor performing an
+operation.
+
+5. Distribution and Notices
+
+If You distribute the Software or modified Software, You must:
+
+  a. provide a copy of this License and the applicable licensing matrix;
+  b. retain all copyright, patent, attribution, and license notices;
+  c. prominently state that You modified the Software, if applicable; and
+  d. preserve notices and licenses for third-party components.
+
+You may not state or imply that a modified distribution is an official
+LayerDraw release or is endorsed by the Licensor. Trademark use is governed by
+applicable law and the Licensor's trademark policy, not by this License.
+
+6. Hosted-Limitation Control Protection
+
+You may modify or remove technical controls for uses otherwise permitted by
+this License. However, You may not remove, alter, disable, bypass, or circumvent
+a license key, entitlement check, or technical control that is clearly
+identified as enforcing Section 4 or a Commercial License, for the purpose of
+operating a Restricted Hosted Offering without the required Commercial License.
+You may not use a technical indirection to make a Restricted Hosted Offering
+appear to be a permitted Fixed Model Application or Read-Only Viewing Service.
+
+7. Patents
+
+Subject to this License, the Licensor grants You a worldwide, royalty-free,
+non-exclusive patent license under any patent claims the Licensor can license,
+or becomes able to license, to make, have made, use, sell, offer for sale,
+import, and otherwise transfer the Software and modifications to it for uses
+permitted by this License.
+
+This patent license does not cover any patent claims that You cause to be
+infringed by modifications or additions to the Software. If You or Your
+Organization initiate a written patent claim alleging that the Software
+infringes or contributes to infringement of a patent, the patent licenses
+granted to You under this License terminate immediately.
+
+8. User Content and Output
+
+The Licensor claims no copyright under this License in data, Schema Definitions,
+LDL source, Packs, Templates, diagrams, views, exports, images, documents, or
+other content created by a user merely because the Software was used to create,
+edit, render, store, or export it. This Section does not change the license of
+Software code or third-party material included in such content.
+
+9. Alternative Licensing
+
+The Licensor may offer the Software under a Commercial License or other terms.
+Receiving separate terms does not change the terms applicable to copies already
+received under this License unless the separate agreement says otherwise.
+
+10. Termination and Cure
+
+Your rights terminate automatically when You violate this License. If this is
+Your first violation and You cure it within thirty days after receiving written
+notice from the Licensor, Your rights are reinstated retroactively. A later
+violation after reinstatement terminates Your rights permanently unless the
+Licensor agrees otherwise in writing.
+
+11. Disclaimer of Warranty
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE SOFTWARE IS PROVIDED "AS IS" AND
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+NON-INFRINGEMENT.
+
+12. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR AND CONTRIBUTORS WILL NOT
+BE LIABLE FOR ANY INDIRECT, SPECIAL, INCIDENTAL, CONSEQUENTIAL, EXEMPLARY, OR
+PUNITIVE DAMAGES, OR FOR LOSS OF PROFITS, REVENUE, DATA, GOODWILL, OR BUSINESS
+OPPORTUNITY, ARISING FROM OR RELATED TO THE SOFTWARE OR THIS LICENSE, UNDER ANY
+LEGAL THEORY, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+13. Severability and No Waiver
+
+If a provision of this License is unenforceable, it will be limited to the
+minimum extent necessary, and the remaining provisions will continue in effect.
+A failure to enforce a provision is not a waiver of the right to enforce it.
+
+14. No Other Rights
+
+This License grants only the rights expressly stated. All other rights are
+reserved by the Licensor. If a non-binding FAQ, summary, translation, or example
+conflicts with this License, this License controls.
+
+15. License Version
+
+This License is LayerDraw License 1.0. A later license version does not apply to
+a copy already received under this version unless the Licensor expressly offers
+that later version for that copy.
+
