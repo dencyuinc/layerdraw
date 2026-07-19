@@ -225,6 +225,46 @@ func TestEvaluatorBindsImpactsAndRejectsMissingOrStaleGrant(t *testing.T) {
 	if decision.Outcome != accessprotocol.AuthoringDecisionOutcomeDeny || !reflect.DeepEqual(decision.MissingCapabilities, wantMissing) || decision.AuthoringImpactDigest == nil || *decision.AuthoringImpactDigest != impact.ImpactDigest || !reflect.DeepEqual(decision.HostOperationImpactDigests, []protocolcommon.Digest{host.ImpactDigest}) {
 		t.Fatalf("decision = %+v", decision)
 	}
+	if err := ValidateAuthoringDecisionBindings(decision, &impact, []accessprotocol.HostOperationImpact{host}); err != nil {
+		t.Fatalf("valid decision bindings rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*accessprotocol.AuthoringDecision){
+		"wire value":       func(value *accessprotocol.AuthoringDecision) { value.DecisionDigest = "invalid" },
+		"authoring digest": func(value *accessprotocol.AuthoringDecision) { value.AuthoringImpactDigest = nil },
+		"host count":       func(value *accessprotocol.AuthoringDecision) { value.HostOperationImpactDigests = nil },
+		"host digest": func(value *accessprotocol.AuthoringDecision) {
+			value.HostOperationImpactDigests[0] = testDigest("other-host")
+		},
+		"required count": func(value *accessprotocol.AuthoringDecision) {
+			value.RequiredCapabilities = value.RequiredCapabilities[:1]
+		},
+		"required order": func(value *accessprotocol.AuthoringDecision) {
+			value.RequiredCapabilities[0], value.RequiredCapabilities[1] = value.RequiredCapabilities[1], value.RequiredCapabilities[0]
+		},
+		"decision digest": func(value *accessprotocol.AuthoringDecision) { value.DecisionDigest = testDigest("other-decision") },
+	} {
+		t.Run("invalid "+name, func(t *testing.T) {
+			candidate := decision
+			candidate.HostOperationImpactDigests = append([]protocolcommon.Digest(nil), decision.HostOperationImpactDigests...)
+			candidate.RequiredCapabilities = append([]semantic.AuthoringCapability(nil), decision.RequiredCapabilities...)
+			mutate(&candidate)
+			if ValidateAuthoringDecisionBindings(candidate, &impact, []accessprotocol.HostOperationImpact{host}) == nil {
+				t.Fatalf("invalid %s accepted", name)
+			}
+		})
+	}
+	if ValidateAuthoringDecisionBindings(decision, nil, []accessprotocol.HostOperationImpact{host}) == nil {
+		t.Fatal("nil authoring impact accepted")
+	}
+	if ValidateAuthoringDecisionBindings(decision, &impact, nil) == nil {
+		t.Fatal("host impact count mismatch accepted")
+	}
+	changedImpact := impact
+	changedImpact.RequiredCapabilities = append([]semantic.AuthoringCapability(nil), impact.RequiredCapabilities...)
+	changedImpact.RequiredCapabilities[0] = semantic.AuthoringCapabilityQueryWrite
+	if ValidateAuthoringDecisionBindings(decision, &changedImpact, []accessprotocol.HostOperationImpact{host}) == nil {
+		t.Fatal("noncanonical required capability projection accepted")
+	}
 	stale, err := (Evaluator{Clock: fixedClock{now}}).EvaluateWithContext(context.Background(), input, EvaluationContext{CurrentAccessFingerprint: testDigest("changed")})
 	if err != nil || stale.Outcome != accessprotocol.AuthoringDecisionOutcomeDeny || len(stale.Diagnostics) != 1 || stale.Diagnostics[0].Code != "authoring.policy_changed" {
 		t.Fatalf("stale = %+v %v", stale, err)

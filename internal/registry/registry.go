@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -472,6 +473,9 @@ func NewMemoryTransactionStore() *MemoryTransactionStore {
 func (s *MemoryTransactionStore) CreateRegistryTransaction(_ context.Context, tx Transaction) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := validateStoredTransaction(tx); err != nil {
+		return err
+	}
 	if _, exists := s.transactions[tx.Plan.TransactionID]; exists {
 		return errors.New("registry transaction already exists")
 	}
@@ -504,7 +508,13 @@ func (s *MemoryTransactionStore) GetRegistryTransaction(_ context.Context, id st
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tx, ok := s.transactions[id]
-	return cloneTransaction(tx), ok, nil
+	if !ok {
+		return Transaction{}, false, nil
+	}
+	if err := validateStoredTransaction(tx); err != nil {
+		return Transaction{}, false, err
+	}
+	return cloneTransaction(tx), true, nil
 }
 
 type Registry struct {
@@ -1262,7 +1272,10 @@ func (e *RuntimePublicationError) Unwrap() error { return e.Cause }
 
 func (r *Registry) Transaction(id string) (Transaction, bool) {
 	tx, ok, err := r.transactions.GetRegistryTransaction(context.Background(), id)
-	return tx, ok && err == nil
+	if err != nil || !ok || validateStoredTransaction(tx) != nil {
+		return Transaction{}, false
+	}
+	return tx, true
 }
 func (r *Registry) GetTransaction(ctx context.Context, id string) (Transaction, error) {
 	tx, ok, err := r.transactions.GetRegistryTransaction(ctx, id)
@@ -1271,6 +1284,9 @@ func (r *Registry) GetTransaction(ctx context.Context, id string) (Transaction, 
 	}
 	if !ok {
 		return Transaction{}, fail(FailureUnavailable, id, true, nil)
+	}
+	if err := validateStoredTransaction(tx); err != nil {
+		return Transaction{}, fail(FailureUnavailable, id, true, err)
 	}
 	return tx, nil
 }
@@ -1970,26 +1986,42 @@ func validateFinalizedPlan(plan InstallPlan) error {
 	if plan.PlanDigest == "" || plan.ProjectMutationPlan.PlanDigest != plan.PlanDigest || digestPlan(plan) != plan.PlanDigest {
 		return errors.New("registry finalized plan digest does not bind its complete body")
 	}
-	if plan.ProjectMutationPlan.RegistryTransactionID != plan.TransactionID || plan.ProjectMutationPlan.HostOperationImpactDigest != plan.HostOperationImpactDigest || plan.ProjectMutationPlan.EvaluationDigest != plan.EvaluationDigest {
+	mutation := plan.ProjectMutationPlan
+	if mutation.RegistryTransactionID != plan.TransactionID || mutation.HostOperationImpactDigest != plan.HostOperationImpactDigest || mutation.EvaluationDigest != plan.EvaluationDigest || mutation.MutationDigest != plan.MutationDigest {
 		return errors.New("registry finalized plan contains inconsistent owner bindings")
+	}
+	if mutation.BaseProjectRevision != plan.BaseRevision || plan.RollbackCheckpoint.BaseProjectRevision != plan.BaseRevision || mutation.ExpectedDefinitionHash != plan.ExpectedDefinitionHash || plan.RollbackCheckpoint.BaseDefinitionHash != plan.ExpectedDefinitionHash || mutation.ExpectedResolvedLockDigest != plan.ExpectedResolvedLockDigest || plan.DependencySnapshot.ResolvedLockDigest != plan.ExpectedResolvedLockDigest || plan.RollbackCheckpoint.BaseResolvedLockDigest != plan.ExpectedResolvedLockDigest || !reflect.DeepEqual(mutation.ResolvedLockDelta, plan.ResolvedLockDelta) {
+		return errors.New("registry finalized plan contains inconsistent project preconditions")
+	}
+	if plan.AuthoringImpact == nil || !reflect.DeepEqual(*plan.AuthoringImpact, mutation.AuthoringImpact) || len(plan.AuthoringImpactDigests) != 1 || plan.AuthoringImpactDigests[0] != mutation.AuthoringImpactDigest || mutation.AuthoringImpactDigest != string(mutation.AuthoringImpact.ImpactDigest) || string(plan.AuthoringImpact.ImpactDigest) != mutation.AuthoringImpactDigest || string(plan.AuthoringImpact.BaseDefinitionHash) != plan.ExpectedDefinitionHash {
+		return errors.New("registry finalized plan contains inconsistent authoring impact bindings")
+	}
+	if err := accesscore.ValidateAuthoringDecisionBindings(plan.AccessDecision, plan.AuthoringImpact, plan.HostOperationImpacts); err != nil {
+		return err
+	}
+	if plan.AccessDecision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || string(plan.AccessDecision.EvaluationDigest) != plan.EvaluationDigest || len(plan.AccessDecision.MissingCapabilities) != 0 || len(plan.AccessDecision.ConstraintViolations) != 0 || len(plan.AccessDecision.ApprovalRuleRefs) != 0 || !reflect.DeepEqual(plan.RequiredCapabilities, capabilitiesToStrings(plan.AccessDecision.RequiredCapabilities)) {
+		return errors.New("registry finalized plan contains an inconsistent Access decision")
 	}
 	if _, err := planBoundDocumentID(plan); err != nil {
 		return err
 	}
+	impact := plan.HostOperationImpacts[0]
+	if impact.OperationKind != accessprotocol.HostOperationKindPackageTransaction || impact.Action != hostImpactAction(plan.Action) || !reflect.DeepEqual(impact.ResourceRefs, []string{plan.RequestedRoot.CanonicalID}) {
+		return errors.New("registry finalized plan host impact does not bind its action and requested root")
+	}
 	return nil
 }
 func transactionRequiresFinalizedPlan(tx Transaction) bool {
-	switch transactionState(tx) {
-	case StateVerified, StateExpandedStaged, StateCompiled, StateAwaitingConfirmation, StateApplying, StateRepairRequired, StateRepairing, StateCommitted, StateSuperseded, StateNeedsReview:
-		return true
-	case StateRolledBack:
-		return planHasFinalizedBody(tx.Plan)
-	default:
-		return false
+	for _, event := range tx.Events {
+		switch event.State {
+		case StateVerified, StateExpandedStaged, StateCompiled, StateAwaitingConfirmation, StateApplying, StateRepairRequired, StateRepairing, StateCommitted, StateSuperseded, StateNeedsReview:
+			return true
+		}
 	}
+	return transactionState(tx) == StateRolledBack && planHasFinalizedBody(tx.Plan)
 }
 func planHasFinalizedBody(plan InstallPlan) bool {
-	return plan.MutationDigest != "" || plan.HostOperationImpactDigest != "" || plan.EvaluationDigest != "" || plan.AuthoringImpact != nil || len(plan.HostOperationImpacts) > 0 || plan.ProjectMutationPlan.PlanDigest != ""
+	return plan.MutationDigest != "" || plan.HostOperationImpactDigest != "" || plan.EvaluationDigest != "" || plan.AuthoringImpact != nil || len(plan.HostOperationImpacts) > 0 || !reflect.DeepEqual(plan.ProjectMutationPlan, ProjectMutationPlan{})
 }
 func validateStoredTransaction(tx Transaction) error {
 	if transactionRequiresFinalizedPlan(tx) || planHasFinalizedBody(tx.Plan) {

@@ -29,10 +29,18 @@ func testFinalizedPlan(t *testing.T, id string) InstallPlan {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := InstallPlan{TransactionID: id, EvaluationDigest: testDigest('e'), HostOperationImpactDigest: string(impact.ImpactDigest), HostOperationImpacts: []accessprotocol.HostOperationImpact{impact}}
-	plan.ProjectMutationPlan.RegistryTransactionID = id
-	plan.ProjectMutationPlan.HostOperationImpactDigest = plan.HostOperationImpactDigest
-	plan.ProjectMutationPlan.EvaluationDigest = plan.EvaluationDigest
+	authoring := semantic.AuthoringImpact{BaseDefinitionHash: protocolcommon.Digest(testDigest('1')), Entries: []semantic.AuthoringImpactEntry{}, ImpactDigest: protocolcommon.Digest(testDigest('5')), RequiredCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilitySchemaWrite}, ResultingDefinitionHash: protocolcommon.Digest(testDigest('2')), SemanticDiffHash: protocolcommon.Digest(testDigest('3')), SourceDiffHash: protocolcommon.Digest(testDigest('4'))}
+	evaluation := protocolcommon.Digest(testDigest('e'))
+	decision := accessprotocol.AuthoringDecision{AccessFingerprint: protocolcommon.Digest(testDigest('a')), ApprovalRuleRefs: []string{}, AuthoringImpactDigest: &authoring.ImpactDigest, ConstraintViolations: []accessprotocol.ConstraintViolation{}, Diagnostics: []protocolcommon.ProtocolDiagnostic{}, EvaluationDigest: evaluation, HostOperationImpactDigests: []protocolcommon.Digest{impact.ImpactDigest}, MissingCapabilities: []semantic.AuthoringCapability{}, Outcome: accessprotocol.AuthoringDecisionOutcomeAllow, RequiredCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage, semantic.AuthoringCapabilitySchemaWrite}}
+	decision.DecisionDigest = protocolcommon.Digest(digestJSON(struct {
+		Evaluation protocolcommon.Digest                   `json:"evaluation"`
+		Outcome    accessprotocol.AuthoringDecisionOutcome `json:"outcome"`
+		Missing    []semantic.AuthoringCapability          `json:"missing"`
+		Violations []accessprotocol.ConstraintViolation    `json:"violations"`
+	}{evaluation, decision.Outcome, decision.MissingCapabilities, decision.ConstraintViolations}))
+	delta := ResolvedLockDelta{Added: []LockedArtifact{}, Updated: []LockedArtifact{}, Removed: []LockedArtifact{}, Pinned: []LockedArtifact{}}
+	plan := InstallPlan{TransactionID: id, Action: ActionUpdate, BaseRevision: "r1", ExpectedDefinitionHash: string(authoring.BaseDefinitionHash), ExpectedResolvedLockDigest: testDigest('0'), DependencySnapshot: ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{}}, ResolvedLockDelta: delta, RollbackCheckpoint: RollbackCheckpoint{BaseProjectRevision: "r1", BaseDefinitionHash: string(authoring.BaseDefinitionHash), BaseResolvedLockDigest: testDigest('0')}, MutationDigest: testDigest('m'), AuthoringImpactDigests: []string{string(authoring.ImpactDigest)}, EvaluationDigest: string(evaluation), HostOperationImpactDigest: string(impact.ImpactDigest), AuthoringImpact: &authoring, HostOperationImpacts: []accessprotocol.HostOperationImpact{impact}, AccessDecision: decision, RequiredCapabilities: []string{string(semantic.AuthoringCapabilityPackageManage), string(semantic.AuthoringCapabilitySchemaWrite)}, RequestedRoot: ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "test/package", Version: "1.0.0"}}
+	plan.ProjectMutationPlan = ProjectMutationPlan{RegistryTransactionID: id, BaseProjectRevision: plan.BaseRevision, ExpectedDefinitionHash: plan.ExpectedDefinitionHash, ExpectedResolvedLockDigest: plan.ExpectedResolvedLockDigest, ResolvedLockDelta: delta, MutationDigest: plan.MutationDigest, AuthoringImpact: authoring, AuthoringImpactDigest: string(authoring.ImpactDigest), HostOperationImpactDigest: plan.HostOperationImpactDigest, EvaluationDigest: plan.EvaluationDigest}
 	plan.PlanDigest = digestPlan(plan)
 	plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
 	return plan
@@ -777,6 +785,15 @@ func TestCriticalFinalizedPlanIntegrityBranches(t *testing.T) {
 		plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
 		return plan
 	}
+	rebindDecision := func(plan *InstallPlan) {
+		decision := &plan.AccessDecision
+		decision.DecisionDigest = protocolcommon.Digest(digestJSON(struct {
+			Evaluation protocolcommon.Digest                   `json:"evaluation"`
+			Outcome    accessprotocol.AuthoringDecisionOutcome `json:"outcome"`
+			Missing    []semantic.AuthoringCapability          `json:"missing"`
+			Violations []accessprotocol.ConstraintViolation    `json:"violations"`
+		}{decision.EvaluationDigest, decision.Outcome, decision.MissingCapabilities, decision.ConstraintViolations}))
+	}
 	base := testFinalizedPlan(t, "integrity-plan")
 
 	inconsistent := base
@@ -791,6 +808,115 @@ func TestCriticalFinalizedPlanIntegrityBranches(t *testing.T) {
 	invalidImpact = rebind(invalidImpact)
 	if validateFinalizedPlan(invalidImpact) == nil {
 		t.Fatal("invalid closed impact passed a recomputed plan digest")
+	}
+
+	mutations := map[string]func(*InstallPlan){
+		"outer mutation digest":         func(p *InstallPlan) { p.MutationDigest = testDigest('6') },
+		"mutation plan mutation digest": func(p *InstallPlan) { p.ProjectMutationPlan.MutationDigest = testDigest('6') },
+		"outer base revision":           func(p *InstallPlan) { p.BaseRevision = "other" },
+		"mutation plan base revision":   func(p *InstallPlan) { p.ProjectMutationPlan.BaseProjectRevision = "other" },
+		"rollback base revision":        func(p *InstallPlan) { p.RollbackCheckpoint.BaseProjectRevision = "other" },
+		"outer definition hash":         func(p *InstallPlan) { p.ExpectedDefinitionHash = testDigest('6') },
+		"mutation plan definition hash": func(p *InstallPlan) { p.ProjectMutationPlan.ExpectedDefinitionHash = testDigest('6') },
+		"rollback definition hash":      func(p *InstallPlan) { p.RollbackCheckpoint.BaseDefinitionHash = testDigest('6') },
+		"outer authoring body": func(p *InstallPlan) {
+			p.AuthoringImpact.ResultingDefinitionHash = protocolcommon.Digest(testDigest('6'))
+		},
+		"mutation plan authoring body": func(p *InstallPlan) {
+			p.ProjectMutationPlan.AuthoringImpact.SemanticDiffHash = protocolcommon.Digest(testDigest('6'))
+		},
+		"outer authoring body digest": func(p *InstallPlan) {
+			p.AuthoringImpact.ImpactDigest = protocolcommon.Digest(testDigest('6'))
+		},
+		"mutation authoring body digest": func(p *InstallPlan) {
+			p.ProjectMutationPlan.AuthoringImpact.ImpactDigest = protocolcommon.Digest(testDigest('6'))
+		},
+		"outer authoring impact missing":      func(p *InstallPlan) { p.AuthoringImpact = nil },
+		"outer authoring digest list missing": func(p *InstallPlan) { p.AuthoringImpactDigests = nil },
+		"outer authoring digest duplicated": func(p *InstallPlan) {
+			p.AuthoringImpactDigests = append(p.AuthoringImpactDigests, p.AuthoringImpactDigests[0])
+		},
+		"mutation authoring digest": func(p *InstallPlan) { p.ProjectMutationPlan.AuthoringImpactDigest = testDigest('6') },
+		"outer lock digest":         func(p *InstallPlan) { p.ExpectedResolvedLockDigest = testDigest('6') },
+		"mutation plan lock digest": func(p *InstallPlan) { p.ProjectMutationPlan.ExpectedResolvedLockDigest = testDigest('6') },
+		"snapshot lock digest":      func(p *InstallPlan) { p.DependencySnapshot.ResolvedLockDigest = testDigest('6') },
+		"rollback lock digest":      func(p *InstallPlan) { p.RollbackCheckpoint.BaseResolvedLockDigest = testDigest('6') },
+		"outer lock delta":          func(p *InstallPlan) { p.ResolvedLockDelta.Added = append(p.ResolvedLockDelta.Added, LockedArtifact{}) },
+		"mutation plan lock delta": func(p *InstallPlan) {
+			p.ProjectMutationPlan.ResolvedLockDelta.Added = append(p.ProjectMutationPlan.ResolvedLockDelta.Added, LockedArtifact{})
+		},
+		"outer evaluation digest":           func(p *InstallPlan) { p.EvaluationDigest = testDigest('6') },
+		"mutation evaluation digest":        func(p *InstallPlan) { p.ProjectMutationPlan.EvaluationDigest = testDigest('6') },
+		"decision evaluation digest":        func(p *InstallPlan) { p.AccessDecision.EvaluationDigest = protocolcommon.Digest(testDigest('6')) },
+		"decision authoring digest missing": func(p *InstallPlan) { p.AccessDecision.AuthoringImpactDigest = nil },
+		"decision authoring digest wrong": func(p *InstallPlan) {
+			value := protocolcommon.Digest(testDigest('6'))
+			p.AccessDecision.AuthoringImpactDigest = &value
+		},
+		"decision host digest missing": func(p *InstallPlan) { p.AccessDecision.HostOperationImpactDigests = nil },
+		"decision host digest wrong": func(p *InstallPlan) {
+			p.AccessDecision.HostOperationImpactDigests[0] = protocolcommon.Digest(testDigest('6'))
+		},
+		"decision host digest duplicated": func(p *InstallPlan) {
+			p.AccessDecision.HostOperationImpactDigests = append(p.AccessDecision.HostOperationImpactDigests, p.AccessDecision.HostOperationImpactDigests[0])
+		},
+		"outer required capabilities": func(p *InstallPlan) { p.RequiredCapabilities = append(p.RequiredCapabilities, "view:write") },
+		"decision required capability missing": func(p *InstallPlan) {
+			p.AccessDecision.RequiredCapabilities = p.AccessDecision.RequiredCapabilities[:1]
+		},
+		"decision required capability extra": func(p *InstallPlan) {
+			p.AccessDecision.RequiredCapabilities = append(p.AccessDecision.RequiredCapabilities, semantic.AuthoringCapabilityViewWrite)
+		},
+		"decision required capability order": func(p *InstallPlan) {
+			p.AccessDecision.RequiredCapabilities[0], p.AccessDecision.RequiredCapabilities[1] = p.AccessDecision.RequiredCapabilities[1], p.AccessDecision.RequiredCapabilities[0]
+		},
+		"allow decision missing capability": func(p *InstallPlan) {
+			p.AccessDecision.MissingCapabilities = []semantic.AuthoringCapability{semantic.AuthoringCapabilitySchemaWrite}
+			rebindDecision(p)
+		},
+		"allow decision constraint": func(p *InstallPlan) {
+			p.AccessDecision.ConstraintViolations = []accessprotocol.ConstraintViolation{{Action: "update", Code: "denied"}}
+			rebindDecision(p)
+		},
+		"allow decision approval": func(p *InstallPlan) { p.AccessDecision.ApprovalRuleRefs = []string{"approval"} },
+		"decision digest":         func(p *InstallPlan) { p.AccessDecision.DecisionDigest = protocolcommon.Digest(testDigest('6')) },
+		"decision outcome": func(p *InstallPlan) {
+			p.AccessDecision.Outcome = accessprotocol.AuthoringDecisionOutcomeDeny
+			rebindDecision(p)
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run("recomputed digest rejects "+name, func(t *testing.T) {
+			plan := clonePlan(base)
+			mutate(&plan)
+			plan = rebind(plan)
+			if validateFinalizedPlan(plan) == nil {
+				t.Fatalf("recomputed PlanDigest blessed contradictory %s", name)
+			}
+		})
+	}
+	for name, replacement := range map[string]struct {
+		action string
+		refs   []string
+	}{
+		"action": {action: "create", refs: []string{base.RequestedRoot.CanonicalID}},
+		"root":   {action: "update", refs: []string{"other/package"}},
+	} {
+		t.Run("valid host descriptor rejects wrong "+name, func(t *testing.T) {
+			plan := clonePlan(base)
+			host, err := accesscore.HostOperationImpact(accessprotocol.HostOperationKindPackageTransaction, replacement.action, plan.HostOperationImpacts[0].ResourceScope, replacement.refs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan.HostOperationImpacts[0] = host
+			plan.HostOperationImpactDigest = string(host.ImpactDigest)
+			plan.ProjectMutationPlan.HostOperationImpactDigest = string(host.ImpactDigest)
+			plan.AccessDecision.HostOperationImpactDigests = []protocolcommon.Digest{host.ImpactDigest}
+			plan = rebind(plan)
+			if validateFinalizedPlan(plan) == nil {
+				t.Fatalf("valid re-sealed host descriptor escaped %s binding", name)
+			}
+		})
 	}
 
 	current := Transaction{Plan: base, Events: []TransactionEvent{{State: StateAwaitingConfirmation, Sequence: 1}}}
@@ -919,7 +1045,7 @@ func TestCriticalFinalizedPlanIntegrityBranches(t *testing.T) {
 		corrupt.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
 		memoryStore.transactions[plan.TransactionID] = corrupt
 		memoryStore.mu.Unlock()
-		if _, err := env.registry.Plan(context.Background(), request); !IsFailure(err, FailurePlanStale) {
+		if _, err := env.registry.Plan(context.Background(), request); !IsFailure(err, FailureUnavailable) {
 			t.Fatalf("Plan retry accepted an in-memory impact mutation: %v", err)
 		}
 
@@ -938,10 +1064,87 @@ func TestCriticalFinalizedPlanIntegrityBranches(t *testing.T) {
 		corrupt.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
 		recoveryStore.transactions[plan.TransactionID] = corrupt
 		recoveryStore.mu.Unlock()
-		if _, err := recoveryEnv.registry.RecoverTransaction(context.Background(), plan.TransactionID); !IsFailure(err, FailureRepairRequired) || recoveryEnv.runtime.calls.Load() != 0 {
+		if _, err := recoveryEnv.registry.RecoverTransaction(context.Background(), plan.TransactionID); !IsFailure(err, FailureUnavailable) || recoveryEnv.runtime.calls.Load() != 0 {
 			t.Fatalf("Recovery accepted an in-memory impact mutation: %v", err)
 		}
 	})
+}
+
+func TestCriticalMemoryReadsAndFinalizedHistoryFailClosed(t *testing.T) {
+	ctx := context.Background()
+	id := "abababababababababababababababab"
+	valid := Transaction{Plan: testFinalizedPlan(t, id), Events: []TransactionEvent{{State: StateCommitted, Sequence: 1}}}
+	corrupt := cloneTransaction(valid)
+	corrupt.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+
+	memory := NewMemoryTransactionStore()
+	if err := memory.CreateRegistryTransaction(ctx, corrupt); err == nil {
+		t.Fatal("Memory create accepted a corrupt finalized transaction")
+	}
+	memory.mu.Lock()
+	memory.transactions[id] = corrupt
+	memory.mu.Unlock()
+	if _, _, err := memory.GetRegistryTransaction(ctx, id); err == nil {
+		t.Fatal("Memory get returned a corrupt finalized transaction")
+	}
+
+	for _, operation := range []string{"Transaction", "GetTransaction", "RecoverTransaction"} {
+		t.Run(operation, func(t *testing.T) {
+			env := newTestEnv(t, NewMemoryTransactionStore())
+			env.registry.transactions = &commitRaceStore{first: corrupt, latest: corrupt}
+			switch operation {
+			case "Transaction":
+				if _, ok := env.registry.Transaction(id); ok {
+					t.Fatal("Transaction returned corrupt finalized state")
+				}
+			case "GetTransaction":
+				if _, err := env.registry.GetTransaction(ctx, id); !IsFailure(err, FailureUnavailable) {
+					t.Fatalf("GetTransaction returned corrupt finalized state: %v", err)
+				}
+			case "RecoverTransaction":
+				if _, err := env.registry.RecoverTransaction(ctx, id); !IsFailure(err, FailureUnavailable) || env.runtime.calls.Load() != 0 {
+					t.Fatalf("non-applying recovery returned corrupt finalized state: %v", err)
+				}
+			}
+		})
+	}
+
+	stripped := Transaction{
+		Plan: InstallPlan{TransactionID: id, PlanDigest: "planning", Action: ActionUpdate, RequestedRoot: valid.Plan.RequestedRoot},
+		Events: []TransactionEvent{
+			{State: StateVerified, Sequence: 1},
+			{State: StateRolledBack, Sequence: 2},
+		},
+	}
+	if !transactionRequiresFinalizedPlan(stripped) || validateStoredTransaction(stripped) == nil {
+		t.Fatal("finalized event history was downgraded by stripping plan markers")
+	}
+	if err := NewMemoryTransactionStore().CreateRegistryTransaction(ctx, stripped); err == nil {
+		t.Fatal("Memory create accepted marker-stripped finalized history")
+	}
+
+	disk, err := NewDiskTransactionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(stripped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(disk.path(id), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := disk.GetRegistryTransaction(ctx, id); err == nil {
+		t.Fatal("Disk get accepted marker-stripped finalized history")
+	}
+	if ok, err := disk.CompareAndSwapRegistryTransaction(ctx, id, 2, stripped); err == nil || ok {
+		t.Fatalf("Disk CAS accepted marker-stripped finalized history: %v", err)
+	}
+
+	pmBody := Transaction{Plan: InstallPlan{TransactionID: id, PlanDigest: "planning", ProjectMutationPlan: ProjectMutationPlan{StagedTreeManifest: testDigest('6')}}, Events: []TransactionEvent{{State: StateRolledBack, Sequence: 1}}}
+	if !planHasFinalizedBody(pmBody.Plan) || validateStoredTransaction(pmBody) == nil {
+		t.Fatal("nonempty mutation-plan body was not treated as finalized")
+	}
 }
 
 func TestRemainingNormativeBranches(t *testing.T) {
@@ -1218,7 +1421,6 @@ func TestCriticalRecoveryIntermediateReplayAndTransportFallbacks(t *testing.T) {
 		id := fmt.Sprintf("resume-%d", index)
 		plan := testFinalizedPlan(t, id)
 		plan.ProjectMutationPlan.StagedTreeManifest = testDigest('s')
-		plan.ProjectMutationPlan.AuthoringImpactDigest = testDigest('a')
 		plan.PlanDigest = digestPlan(plan)
 		plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
 		tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: state, Sequence: 1}}}
@@ -1234,6 +1436,7 @@ func TestCriticalRecoveryIntermediateReplayAndTransportFallbacks(t *testing.T) {
 		env := newTestEnv(t, NewMemoryTransactionStore())
 		plan := testFinalizedPlan(t, "repair-tx")
 		plan.MutationDigest = testDigest('m')
+		plan.ProjectMutationPlan.MutationDigest = plan.MutationDigest
 		plan.PlanDigest = digestPlan(plan)
 		plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
 		tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StateRepairRequired, Sequence: 1, IdempotencyKey: "repair-id"}}}
@@ -1957,10 +2160,11 @@ func TestCriticalRecoveryPersistenceFailures(t *testing.T) {
 			base := NewMemoryTransactionStore()
 			env := newTestEnv(t, base)
 			id := strings.Repeat(string(state[0]), 32)
-			plan := InstallPlan{TransactionID: id, PlanDigest: "plan", MutationDigest: testDigest('m')}
+			plan := InstallPlan{TransactionID: id, PlanDigest: "plan"}
 			if state != StatePlanned {
 				plan = testFinalizedPlan(t, id)
 				plan.MutationDigest = testDigest('m')
+				plan.ProjectMutationPlan.MutationDigest = plan.MutationDigest
 				plan.PlanDigest = digestPlan(plan)
 				plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
 			}
@@ -2046,7 +2250,7 @@ func TestCriticalPlanningJournalFailures(t *testing.T) {
 func TestCriticalNeedsReviewPersistenceFailure(t *testing.T) {
 	base := NewMemoryTransactionStore()
 	env := newTestEnv(t, base)
-	plan := InstallPlan{TransactionID: "needs-review-persistence", PlanDigest: "plan", MutationDigest: testDigest('m')}
+	plan := testFinalizedPlan(t, "needs-review-persistence")
 	tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StateRepairRequired, Sequence: 1}}}
 	if err := base.CreateRegistryTransaction(context.Background(), tx); err != nil {
 		t.Fatal(err)

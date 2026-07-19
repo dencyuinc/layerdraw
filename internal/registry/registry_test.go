@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -119,7 +120,7 @@ func (v *validator) BuildRegistryMutationPlan(_ context.Context, input RegistryM
 	if len(caps) == 0 {
 		caps = []semantic.AuthoringCapability{semantic.AuthoringCapabilitySchemaWrite}
 	}
-	impact := semantic.AuthoringImpact{BaseDefinitionHash: protocolcommon.Digest(testDigest('1')), ResultingDefinitionHash: protocolcommon.Digest(testDigest('2')), SemanticDiffHash: protocolcommon.Digest(testDigest('3')), SourceDiffHash: protocolcommon.Digest(testDigest('4')), ImpactDigest: protocolcommon.Digest(testDigest('5')), RequiredCapabilities: append([]semantic.AuthoringCapability{}, caps...), Entries: []semantic.AuthoringImpactEntry{}}
+	impact := semantic.AuthoringImpact{BaseDefinitionHash: protocolcommon.Digest(input.Project.DefinitionHash), ResultingDefinitionHash: protocolcommon.Digest(testDigest('2')), SemanticDiffHash: protocolcommon.Digest(testDigest('3')), SourceDiffHash: protocolcommon.Digest(testDigest('4')), ImpactDigest: protocolcommon.Digest(testDigest('5')), RequiredCapabilities: append([]semantic.AuthoringCapability{}, caps...), Entries: []semantic.AuthoringImpactEntry{}}
 	result := ProjectMutationPlan{BaseProjectRevision: input.Project.Revision, ExpectedDefinitionHash: input.Project.DefinitionHash, ExpectedResolvedLockDigest: input.Project.DependencySnapshot.ResolvedLockDigest, StagedTreeManifest: testDigest('6'), ResolvedLockDelta: input.ResolvedLockDelta, SourceEdits: []SourceEdit{}, MutationDigest: digestJSON(struct {
 		Action Action
 		Delta  ResolvedLockDelta
@@ -160,6 +161,7 @@ func (a *accessPort) EvaluateRegistryPlan(_ context.Context, input accessprotoco
 			}
 		}
 	}
+	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
 	outcome := accessprotocol.AuthoringDecisionOutcomeAllow
 	if a.deny {
 		outcome = accessprotocol.AuthoringDecisionOutcomeDeny
@@ -169,10 +171,13 @@ func (a *accessPort) EvaluateRegistryPlan(_ context.Context, input accessprotoco
 		hostDigests[i] = impact.ImpactDigest
 	}
 	evaluation := protocolcommon.Digest(digestJSON(input))
-	return accessprotocol.AuthoringDecision{AccessFingerprint: input.GrantSnapshot.AccessFingerprint, ApprovalRuleRefs: []string{}, AuthoringImpactDigest: impactDigest, ConstraintViolations: []accessprotocol.ConstraintViolation{}, DecisionDigest: protocolcommon.Digest(digestJSON(struct {
-		Evaluation protocolcommon.Digest
-		Outcome    accessprotocol.AuthoringDecisionOutcome
-	}{evaluation, outcome})), Diagnostics: []protocolcommon.ProtocolDiagnostic{}, EvaluationDigest: evaluation, HostOperationImpactDigests: hostDigests, MissingCapabilities: []semantic.AuthoringCapability{}, Outcome: outcome, RequiredCapabilities: caps}, nil
+	decisionDigest := protocolcommon.Digest(digestJSON(struct {
+		Evaluation protocolcommon.Digest                   `json:"evaluation"`
+		Outcome    accessprotocol.AuthoringDecisionOutcome `json:"outcome"`
+		Missing    []semantic.AuthoringCapability          `json:"missing"`
+		Violations []accessprotocol.ConstraintViolation    `json:"violations"`
+	}{evaluation, outcome, []semantic.AuthoringCapability{}, []accessprotocol.ConstraintViolation{}}))
+	return accessprotocol.AuthoringDecision{AccessFingerprint: input.GrantSnapshot.AccessFingerprint, ApprovalRuleRefs: []string{}, AuthoringImpactDigest: impactDigest, ConstraintViolations: []accessprotocol.ConstraintViolation{}, DecisionDigest: decisionDigest, Diagnostics: []protocolcommon.ProtocolDiagnostic{}, EvaluationDigest: evaluation, HostOperationImpactDigests: hostDigests, MissingCapabilities: []semantic.AuthoringCapability{}, Outcome: outcome, RequiredCapabilities: caps}, nil
 }
 
 type projectPort struct {
