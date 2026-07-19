@@ -192,6 +192,105 @@ func TestHMACPlanAndConcreteLadybugDriver(t *testing.T) {
 	}
 }
 
+type authorityEngineStub struct{}
+
+func (authorityEngineStub) PrepareSearchIndex(context.Context, port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
+	return validPlan(port.PlanSearchIndex), nil
+}
+func (authorityEngineStub) PrepareSearch(context.Context, port.SearchPreparationInput) (port.PreparedSearch, error) {
+	return port.PreparedSearch{Plan: validPlan(port.PlanSearch), QueryDigest: "sha256:query"}, nil
+}
+func (authorityEngineStub) CompleteSearch(context.Context, port.CompleteSearchInput) ([]byte, error) {
+	return []byte("search"), nil
+}
+func (authorityEngineStub) PrepareQuery(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	return validPlan(port.PlanQuery), nil
+}
+func (authorityEngineStub) CompleteQuery(context.Context, port.CompleteExecutionInput) ([]byte, error) {
+	return []byte("query"), nil
+}
+func (authorityEngineStub) PrepareAnalysis(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	return validPlan(port.PlanAnalysis), nil
+}
+func (authorityEngineStub) CompleteAnalysis(context.Context, port.CompleteExecutionInput) ([]byte, error) {
+	return []byte("analysis"), nil
+}
+
+func TestBoundEngineAuthoritySignsOnlyEnginePreparedPlans(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	engine, verifier, err := BindEnginePlanAuthority(authorityEngineStub{}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexPlan, err := engine.PrepareSearchIndex(context.Background(), port.SearchIndexPreparationInput{})
+	if err != nil || verifier.VerifyPlan(context.Background(), indexPlan) != nil {
+		t.Fatalf("index plan was not signed: %v", err)
+	}
+	prepared, err := engine.PrepareSearch(context.Background(), port.SearchPreparationInput{})
+	if err != nil || verifier.VerifyPlan(context.Background(), prepared.Plan) != nil {
+		t.Fatalf("search plan was not signed: %v", err)
+	}
+	queryPlan, err := engine.PrepareQuery(context.Background(), port.BoundExecutionRequest{})
+	if err != nil || verifier.VerifyPlan(context.Background(), queryPlan) != nil {
+		t.Fatalf("query plan was not signed: %v", err)
+	}
+	analysisPlan, err := engine.PrepareAnalysis(context.Background(), port.BoundExecutionRequest{})
+	if err != nil || verifier.VerifyPlan(context.Background(), analysisPlan) != nil {
+		t.Fatalf("analysis plan was not signed: %v", err)
+	}
+	if got, _ := engine.CompleteSearch(context.Background(), port.CompleteSearchInput{}); string(got) != "search" {
+		t.Fatalf("complete search=%q", got)
+	}
+	if got, _ := engine.CompleteQuery(context.Background(), port.CompleteExecutionInput{}); string(got) != "query" {
+		t.Fatalf("complete query=%q", got)
+	}
+	if got, _ := engine.CompleteAnalysis(context.Background(), port.CompleteExecutionInput{}); string(got) != "analysis" {
+		t.Fatalf("complete analysis=%q", got)
+	}
+	queryPlan.Payload = append(queryPlan.Payload, 'x')
+	if !errors.Is(verifier.VerifyPlan(context.Background(), queryPlan), ErrInvalidPlan) {
+		t.Fatal("modified plan retained authority")
+	}
+	if _, _, err := BindEnginePlanAuthority(nil, key); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("nil Engine accepted: %v", err)
+	}
+	if _, _, err := BindEnginePlanAuthority(authorityEngineStub{}, []byte("short")); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("short key accepted: %v", err)
+	}
+}
+
+func TestLadybugDriverAppliesEvidenceAndForwardsLifecycle(t *testing.T) {
+	if _, err := NewLadybugNativeDriver(nil); err == nil {
+		t.Fatal("nil session accepted")
+	}
+	session := &ladybugSessionStub{}
+	driver, err := NewLadybugNativeDriver(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := port.PhysicalIndexRef{IdentityDigest: "sha256:identity", ContentDigest: "sha256:content", BackendVersion: "0.17.0"}
+	evidence := LadybugIndexEvidence{TableName: "SearchDoc", IndexName: "search_fts", IndexType: "FTS", PropertyNames: []string{"body"}, ContentColumns: []string{"id", "body"}, PrimaryKey: "id"}
+	payload, _ := json.Marshal(LadybugPlan{Statements: []LadybugStatement{{Query: "CALL CREATE_FTS_INDEX(...)"}}, PhysicalIndex: &ref, PhysicalEvidence: &evidence})
+	execution, err := driver.ExecutePlan(context.Background(), port.PlanSearchIndex, payload, port.ExecutionLimits{MaxRows: 1, MaxBytes: 1}, &boundedSink{maxRows: 1, maxBytes: 1})
+	if err != nil || !execution.Complete || execution.PhysicalIndex == nil || *execution.PhysicalIndex != ref {
+		t.Fatalf("execution=%#v err=%v", execution, err)
+	}
+	if err := driver.InspectPhysicalIndex(context.Background(), ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Cancel(context.Background(), "plan"); err != nil || !session.interrupted {
+		t.Fatalf("cancel err=%v interrupted=%v", err, session.interrupted)
+	}
+	missingEvidence, _ := json.Marshal(LadybugPlan{Statements: []LadybugStatement{{Query: "index"}}, PhysicalIndex: &ref})
+	if _, err := driver.ExecutePlan(context.Background(), port.PlanSearchIndex, missingEvidence, port.ExecutionLimits{}, &boundedSink{}); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("missing evidence err=%v", err)
+	}
+	emptyStatement, _ := json.Marshal(LadybugPlan{Statements: []LadybugStatement{{}}})
+	if _, err := driver.ExecutePlan(context.Background(), port.PlanQuery, emptyStatement, port.ExecutionLimits{}, &boundedSink{}); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("empty statement err=%v", err)
+	}
+}
+
 func TestLocalProjectionModelIsDeterministicAndCancellable(t *testing.T) {
 	model, _ := NewLocalProjectionModel(16, []byte("0123456789012345"))
 	left, err := model.Embed(context.Background(), "Ｃafé graph graph")
@@ -240,6 +339,9 @@ func signedBatch(t *testing.T, profile port.EmbeddingProfile, docs []port.Search
 }
 
 func TestEmbeddingProviderAcceptsOnlyConfiguredBoundedInputs(t *testing.T) {
+	if verifier, err := NewSearchDocumentBatchVerifier([]byte("01234567890123456789012345678901")); err != nil || verifier == nil {
+		t.Fatalf("verify-only batch authority: %v", err)
+	}
 	m := &modelStub{values: []float32{1, 2}}
 	p, err := NewEmbeddingProvider(embeddingCapability(false), map[string]VectorModel{"default": m}, false, batchAuthority(t))
 	if err != nil {
