@@ -34,13 +34,13 @@ const server = createServer(async (request, response) => {
       createReadStream(path).pipe(response);
       return;
     }
-    const packageFile = /^\/__layerdraw\/packages\/(engine-client|protocol)\/(.+)$/.exec(pathname);
-    if (packageFile !== null) {
-      const [, packageName, relative] = packageFile;
-      if (packageName === undefined || relative === undefined || relative.includes("..")) throw new Error("invalid package path");
-      const packageRoot = resolve(repositoryRoot, "packages", packageName);
-      const path = resolve(packageRoot, relative);
-      if (!path.startsWith(`${packageRoot}${sep}`)) throw new Error("outside package root");
+    const repositoryFile = /^\/__layerdraw\/(packages\/(engine-client|protocol|render|viewer|export)|tests|schemas)\/(.+)$/.exec(pathname);
+    if (repositoryFile !== null) {
+      const [, prefix, , relative] = repositoryFile;
+      if (prefix === undefined || relative === undefined || relative.includes("..")) throw new Error("invalid repository path");
+      const servedRoot = resolve(repositoryRoot, prefix);
+      const path = resolve(servedRoot, relative);
+      if (!path.startsWith(`${servedRoot}${sep}`)) throw new Error("outside repository path");
       const info = await stat(path);
       response.writeHead(200, {
         "cache-control": "no-store",

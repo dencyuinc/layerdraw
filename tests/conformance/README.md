@@ -8,6 +8,8 @@
 - `testdata/portable_compile_matrix_v1.json`: コーパスを実行する全経路と、異常系分類を担保する実行可能テストの索引
 - `testdata/viewdata_conformance_v1.json`: 全ViewData形状、RelationType投影、Query/Diff、State方針と閉じた失敗分類の共通コーパス
 - `testdata/viewdata_conformance_matrix_v1.json`: ViewDataコーパスを実行するin-process、stdio、WASM、TypeScript client経路の索引
+- `testdata/render_pipeline_conformance_v1.json`: 同じcomplete ViewDataをRender、全visual adapter、Viewer、Node/browser serializerへ通したRender Pipelineの決定的digest、Source Manifest、bounded failure結果
+- `render_pipeline_runner.mjs`: Nodeと実browserが共有するpresentation/export conformance runner。semantic projectionやformatを追加せず、既存の公開package contractだけを組み合わせる
 - `testdata/workbench_portable_editing_v1.json`: Working Document lifecycle、source patch preview、apply、stale rejection、closeを固定するWorkbench編集コーパス
 - `testdata/engine_wasm_worker_v1.json`: WASM Worker transportの閉じたwire grammarとfailure vocabulary
 - `stdio/v1/`: stdio framingの規範fixture

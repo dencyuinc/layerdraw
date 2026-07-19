@@ -42,8 +42,21 @@ declare global {
     runLayerDrawEngineClientCorpus(): Promise<{cases: string[]; viewDataCases: string[]; firstGeneration: number; replacementGeneration: number; state: string}>;
     runLayerDrawDirectLifecycle(): Promise<{staleFailure: {code: string; phase: string; retryable: boolean}; staleDetached: number; crashCode: string}>;
     runLayerDrawVerifiedSnapshotRace(): Promise<{wasmExecReads: number; revoked: number}>;
+    layerDrawRenderPipelineReady: boolean;
+    runLayerDrawRenderPipelineConformance(): Promise<{actual: unknown; expected: unknown}>;
   }
 }
+
+test("Render Pipeline corpus is semantically equivalent in a real browser", async ({page}) => {
+  const failures: string[] = [];
+  page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
+  page.on("pageerror", (error) => failures.push(error.message));
+  await page.goto("/test/browser/render-pipeline.html");
+  await page.waitForFunction(() => window.layerDrawRenderPipelineReady === true);
+  const result = await page.evaluate(() => window.runLayerDrawRenderPipelineConformance());
+  expect(result.actual).toEqual(result.expected);
+  expect(failures).toEqual([]);
+});
 
 test("packaged module Worker executes the parity corpus through real Go/WASM", async ({page}) => {
   test.setTimeout(480_000);
