@@ -1542,11 +1542,12 @@ func TestCriticalResolverLockAndRootHardening(t *testing.T) {
 		addRelease(env, child, childData)
 		addRelease(env, root, rootData)
 		plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, root.Identity))
-		if err != nil || plan.Artifacts[0].Release.Identity != child.Identity || plan.RequestedRoot != root.Identity || env.validator.lastBuild.Requested != root.Identity {
-			t.Fatalf("requested root inferred from ordering: %#v %#v %v", plan.RequestedRoot, env.validator.lastBuild.Requested, err)
+		lastBuild := env.validator.capturedLastBuild()
+		if err != nil || plan.Artifacts[0].Release.Identity != child.Identity || plan.RequestedRoot != root.Identity || lastBuild.Requested != root.Identity {
+			t.Fatalf("requested root inferred from ordering: %#v %#v %v", plan.RequestedRoot, lastBuild.Requested, err)
 		}
-		if _, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "root", IdempotencyKey: "root"}); err != nil || env.validator.lastBuild.Requested != root.Identity {
-			t.Fatalf("commit lost requested root: %#v %v", env.validator.lastBuild.Requested, err)
+		if _, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "root", IdempotencyKey: "root"}); err != nil || env.validator.capturedLastBuild().Requested != root.Identity {
+			t.Fatalf("commit lost requested root: %#v %v", env.validator.capturedLastBuild().Requested, err)
 		}
 	})
 }
