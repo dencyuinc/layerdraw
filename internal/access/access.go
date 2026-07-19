@@ -467,3 +467,45 @@ func digestJSON(value any) protocolcommon.Digest {
 	sum := sha256.Sum256(data)
 	return protocolcommon.Digest("sha256:" + hex.EncodeToString(sum[:]))
 }
+
+// ValidateAuthoringDecisionBindings proves that an Access decision is the
+// canonical projection of the exact Engine and host impacts supplied to it.
+// The evaluation digest remains bound to the trusted grant snapshot at the
+// original evaluation boundary.
+func ValidateAuthoringDecisionBindings(decision accessprotocol.AuthoringDecision, impact *semantic.AuthoringImpact, hosts []accessprotocol.HostOperationImpact) error {
+	if _, err := accessprotocol.EncodeAuthoringDecision(decision); err != nil {
+		return fmt.Errorf("access: invalid authoring decision wire value: %w", err)
+	}
+	if impact == nil || decision.AuthoringImpactDigest == nil || *decision.AuthoringImpactDigest != impact.ImpactDigest {
+		return errors.New("access: authoring decision does not bind the authoring impact")
+	}
+	if len(decision.HostOperationImpactDigests) != len(hosts) {
+		return errors.New("access: authoring decision does not bind every host impact")
+	}
+	required := append([]semantic.AuthoringCapability(nil), impact.RequiredCapabilities...)
+	for i, host := range hosts {
+		if decision.HostOperationImpactDigests[i] != host.ImpactDigest {
+			return errors.New("access: authoring decision host impact order or digest mismatch")
+		}
+		required = append(required, host.RequiredAuthoringCapabilities...)
+	}
+	required = canonicalCapabilities(required)
+	if len(decision.RequiredCapabilities) != len(required) {
+		return errors.New("access: authoring decision required capabilities mismatch")
+	}
+	for i := range required {
+		if decision.RequiredCapabilities[i] != required[i] {
+			return errors.New("access: authoring decision required capabilities are not canonical")
+		}
+	}
+	projection := struct {
+		Evaluation protocolcommon.Digest                   `json:"evaluation"`
+		Outcome    accessprotocol.AuthoringDecisionOutcome `json:"outcome"`
+		Missing    []semantic.AuthoringCapability          `json:"missing"`
+		Violations []accessprotocol.ConstraintViolation    `json:"violations"`
+	}{decision.EvaluationDigest, decision.Outcome, decision.MissingCapabilities, decision.ConstraintViolations}
+	if decision.DecisionDigest != digestJSON(projection) {
+		return errors.New("access: authoring decision digest does not bind its projection")
+	}
+	return nil
+}

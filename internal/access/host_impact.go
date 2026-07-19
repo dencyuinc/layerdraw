@@ -3,6 +3,7 @@
 package access
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 
@@ -47,4 +48,27 @@ func HostOperationImpact(kind accessprotocol.HostOperationKind, action string, s
 	impact := accessprotocol.HostOperationImpact{Action: action, OperationKind: kind, RequiredAuthoringCapabilities: []semantic.AuthoringCapability{capability}, ResourceRefs: refs, ResourceScope: scope}
 	impact.ImpactDigest = digestJSON(impact)
 	return impact, nil
+}
+
+// ValidateHostOperationImpact proves that an impact is the exact canonical
+// output of the closed owner descriptor, including its complete resource
+// scope and digest. Callers must not validate only the digest string because
+// that would allow the descriptor body to drift independently.
+func ValidateHostOperationImpact(impact accessprotocol.HostOperationImpact) error {
+	expected, err := HostOperationImpact(impact.OperationKind, impact.Action, impact.ResourceScope, impact.ResourceRefs)
+	if err != nil {
+		return err
+	}
+	actualCanonical, err := accessprotocol.EncodeHostOperationImpact(impact)
+	if err != nil {
+		return fmt.Errorf("access: invalid host operation wire value: %w", err)
+	}
+	expectedCanonical, err := accessprotocol.EncodeHostOperationImpact(expected)
+	if err != nil {
+		return fmt.Errorf("access: invalid derived host operation wire value: %w", err)
+	}
+	if !bytes.Equal(actualCanonical, expectedCanonical) {
+		return fmt.Errorf("access: host operation impact does not match its closed descriptor digest")
+	}
+	return nil
 }
