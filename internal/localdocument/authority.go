@@ -50,10 +50,18 @@ func (a *localAuthority) add(documentID runtimeprotocol.DocumentID) runtimeproto
 	if existing, ok := a.scopes[documentID]; ok {
 		return existing
 	}
+	// Preserve the pre-Access local-owner scope identity so existing embedded
+	// and headless stores remain readable. A Desktop/host-injected platform
+	// Actor gets an actor-bound fingerprint from its first use.
 	fingerprint := digestJSON(struct {
 		Document runtimeprotocol.DocumentID `json:"document"`
-		Actor    accessprotocol.ActorRef    `json:"actor"`
-	}{documentID, a.actor})
+	}{documentID})
+	if a.actor != (accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}) {
+		fingerprint = digestJSON(struct {
+			Document runtimeprotocol.DocumentID `json:"document"`
+			Actor    accessprotocol.ActorRef    `json:"actor"`
+		}{documentID, a.actor})
+	}
 	scope := runtimeprotocol.RuntimeScope{DocumentID: documentID, LocalScopeID: "local-owner", AccessFingerprint: fingerprint}
 	a.scopes[documentID] = scope
 	a.issued[documentID] = protocolcommon.Rfc3339Time(a.clock.Now().UTC().Format(time.RFC3339Nano))

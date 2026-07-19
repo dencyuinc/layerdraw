@@ -1209,6 +1209,13 @@ func TestConfiguredLocalActorIsStableAcrossAuthorityRestart(t *testing.T) {
 	if firstGrant.OrganizationScopeID != nil || secondGrant.OrganizationScopeID != nil {
 		t.Fatal("local actor fabricated organization membership")
 	}
+	legacy := newLocalAuthority(clock, nil).add("doc_actor")
+	wantLegacy := digestJSON(struct {
+		Document runtimeprotocol.DocumentID `json:"document"`
+	}{"doc_actor"})
+	if legacy.AccessFingerprint != wantLegacy || legacy.AccessFingerprint == firstScope.AccessFingerprint {
+		t.Fatalf("legacy/configured fingerprints = %s %s", legacy.AccessFingerprint, firstScope.AccessFingerprint)
+	}
 }
 
 func TestContainerExternalChangeAndAdditionalRecoveryStates(t *testing.T) {
