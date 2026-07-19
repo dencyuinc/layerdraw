@@ -85,6 +85,12 @@ jobs:
           corepack pnpm --filter @layerdraw/protocol build
           corepack pnpm --filter @layerdraw/engine-client build
 
+      - name: Build Render Pipeline conformance packages
+        run: |
+          corepack pnpm --filter @layerdraw/render build
+          corepack pnpm --filter @layerdraw/viewer build
+          corepack pnpm --filter @layerdraw/export build
+
       - name: Install pinned Playwright browsers
         run: corepack pnpm --filter @layerdraw/engine-wasm exec playwright install --with-deps chromium firefox webkit
 
