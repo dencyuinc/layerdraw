@@ -69,7 +69,7 @@ func (h *Host) Recover(ctx context.Context, documentID runtimeprotocol.DocumentI
 		case runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished, runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseOutboxReady:
 			status, err = h.recoverPublished(ctx, scope, record, inspection.PublishedRevision, stage, hasStage)
 		case runtimeprotocol.RecoveryPhaseRecovering:
-			status, err = h.finalizeRecovered(ctx, scope, record, previewFor(record, stage, hasStage), runtimeprotocol.OperationResultStatusNeedsReview, nil, "", runtimeprotocol.RecoveryPhaseNeedsReview)
+			status, err = h.recoverRecovering(ctx, scope, record, stage, hasStage)
 		default:
 			err = port.ErrIndeterminate
 		}
@@ -88,6 +88,18 @@ func (h *Host) Recover(ctx context.Context, documentID runtimeprotocol.DocumentI
 		}
 	}
 	return results, nil
+}
+
+func (h *Host) recoverRecovering(ctx context.Context, scope runtimeprotocol.RuntimeScope, record port.RecoveryRecord, stage local.StagedInspection, hasStage bool) (runtimeprotocol.RuntimeOperationStatus, error) {
+	// An unauthorized external publication is first moved to recovering. Keep
+	// that phase retryable until its durable external stage is gone; otherwise a
+	// crash between terminalization and cleanup would strand the stage forever.
+	if record.ExternalStage != nil && record.Status.ExternalMaterialization != nil && record.Status.ExternalMaterialization.State == runtimeprotocol.ExternalMaterializationStatePending {
+		if err := h.external.Abort(ctx, port.AbortExternalFileInput{Scope: scope, StageID: record.ExternalStage.StageID}); err != nil {
+			return runtimeprotocol.RuntimeOperationStatus{}, err
+		}
+	}
+	return h.finalizeRecovered(ctx, scope, record, previewFor(record, stage, hasStage), runtimeprotocol.OperationResultStatusNeedsReview, nil, "", runtimeprotocol.RecoveryPhaseNeedsReview)
 }
 
 func previewOf(stage local.StagedInspection, ok bool) *runtimeprotocol.PreviewEvaluation {
@@ -197,11 +209,10 @@ func (h *Host) finishPublished(ctx context.Context, scope runtimeprotocol.Runtim
 					if advanceErr != nil {
 						return runtimeprotocol.RuntimeOperationStatus{}, fmt.Errorf("localdocument: quarantine unauthorized external recovery: %w", advanceErr)
 					}
-					status, finalizeErr := h.finalizeRecovered(ctx, scope, updated, previewFor(updated, stage, true), runtimeprotocol.OperationResultStatusNeedsReview, nil, "", runtimeprotocol.RecoveryPhaseNeedsReview)
-					if finalizeErr != nil {
-						return runtimeprotocol.RuntimeOperationStatus{}, fmt.Errorf("localdocument: finalize unauthorized external recovery: %w", finalizeErr)
+					status, recoverErr := h.recoverRecovering(ctx, scope, updated, stage, true)
+					if recoverErr != nil {
+						return runtimeprotocol.RuntimeOperationStatus{}, fmt.Errorf("localdocument: clean up unauthorized external recovery: %w", recoverErr)
 					}
-					_ = h.external.Abort(context.WithoutCancel(ctx), port.AbortExternalFileInput{Scope: scope, StageID: inspection.Stage.StageID})
 					return status, nil
 				}
 				receipt, err = h.external.Publish(publicationCtx, port.PublishExternalFileInput{Scope: scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey, StageID: inspection.Stage.StageID, ExpectedProviderVersion: *record.ExpectedExternalProviderVersion})

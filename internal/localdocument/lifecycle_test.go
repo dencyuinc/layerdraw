@@ -750,6 +750,30 @@ func TestRestartRecoveryReauthorizesDelegatedExternalPublication(t *testing.T) {
 					config.Clock = &fakeClock{now: now.Add(30 * time.Minute)}
 				}
 			})
+			if test.revoke {
+				injected := errors.New("external abort interrupted")
+				faulting, err := local.NewExternalFileStore(restarted.config.Root, local.ExternalFileOptions{Fault: func(point string) error {
+					if point == "before_external_abort" {
+						return injected
+					}
+					return nil
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				restarted.external = faulting
+				if _, err := restarted.Recover(context.Background(), journal.Scope.DocumentID); !errors.Is(err, injected) {
+					t.Fatalf("interrupted abort recovery error=%v", err)
+				}
+				pending, err := restarted.recovery.Get(context.Background(), port.GetRecoveryRecordInput{Scope: journal.Scope, OperationID: &journal.Status.OperationID})
+				if err != nil || pending.Status.Phase != runtimeprotocol.RecoveryPhaseRecovering {
+					t.Fatalf("interrupted abort was not retryable: record=%+v err=%v", pending, err)
+				}
+				if err := restarted.Shutdown(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				restarted = newTestHost(t, dataRoot, func(config *Config) { config.Clock = &fakeClock{now: now.Add(30 * time.Minute)} })
+			}
 			results, recoverErr := restarted.Recover(context.Background(), journal.Scope.DocumentID)
 			inspection, err := restarted.external.Inspect(context.Background(), port.InspectExternalFileInput{Scope: journal.Scope, OperationID: journal.Status.OperationID, IdempotencyKey: journal.Status.IdempotencyKey})
 			if !test.revoke && !test.expired {
