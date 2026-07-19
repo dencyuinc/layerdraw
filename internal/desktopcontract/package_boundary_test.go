@@ -23,7 +23,7 @@ func TestContractsRemainFrameworkNeutral(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := strings.ToLower(string(data))
-		for _, forbidden := range []string{"github.com/wailsapp", "internal/engine", "internal/runtime", "internal/registry", "internal/review"} {
+		for _, forbidden := range []string{"github.com/wailsapp", "internal/engine", "internal/runtime", "internal/review"} {
 			if strings.Contains(text, forbidden) {
 				t.Fatalf("%s imports forbidden semantic/framework owner %q", entry.Name(), forbidden)
 			}

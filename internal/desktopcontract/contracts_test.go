@@ -135,7 +135,7 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 
 func TestEveryApprovedBindingHasExactDecoderAndRejectsEmptyEnvelope(t *testing.T) {
 	table := GeneratedBindingTable()
-	if len(table) != 40 {
+	if len(table) != 50 {
 		t.Fatalf("binding closure = %d", len(table))
 	}
 	seenMethod, seenOperation := map[string]bool{}, map[string]bool{}
@@ -197,6 +197,7 @@ func TestClientSetInvokesOnlyExactValidatedMethods(t *testing.T) {
 	for _, input := range []struct{ method, operation, fixture string }{
 		{"EngineCompile", "engine.compile", "schemas/fixtures/engine/compile-request.json"},
 		{"RuntimeHandshake", "runtime.handshake", "schemas/fixtures/runtime/handshake-request.json"},
+		{"RegistryListSources", "registry.list_sources", "schemas/fixtures/desktop/registry-list-sources-request-v1.json"},
 	} {
 		control := fixture(t, input.fixture)
 		result, err := clients.Invoke(context.Background(), input.method, Exchange{Operation: input.operation, Control: control})
@@ -311,8 +312,7 @@ func TestResultAndFailureVocabulariesAreClosed(t *testing.T) {
 func TestLocalOwnerAndDelegationUseAccessContracts(t *testing.T) {
 	now := time.Date(2026, 7, 20, 1, 2, 3, 0, time.UTC)
 	request := LocalOwnerGrantRequest{Actor: accessprotocol.ActorRef{ActorID: "local-user", Kind: "user"}, Scope: accessprotocol.HostResourceScope{DocumentID: "doc", LocalScopeID: "local"}, IssuedAt: protocolcommon.Rfc3339Time(now.Format(time.RFC3339Nano))}
-	grant := accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: protocolcommon.Digest("sha256:" + string(make([]byte, 64))), ActorRef: request.Actor, GrantedCapabilities: accesscore.FullAuthoringCapabilities(), HostDocumentID: "doc", IssuedAt: request.IssuedAt, LocalScopeID: "local", MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}
-	grant.AccessFingerprint = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	grant := accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ActorRef: request.Actor, GrantedCapabilities: accesscore.FullAuthoringCapabilities(), HostDocumentID: "doc", IssuedAt: request.IssuedAt, LocalScopeID: "local", MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}
 	if !ValidateLocalOwnerGrant(request, grant) {
 		t.Fatal("valid full-authoring local owner rejected")
 	}

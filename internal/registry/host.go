@@ -66,6 +66,20 @@ type WireCommitInput struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
+// DecodeWireRequest strictly validates the versioned Registry host envelope
+// and its exact expected operation without executing Registry semantics. It is
+// the mechanical binding guard shared by Wails and other framework shells.
+func DecodeWireRequest(wire []byte, expected WireOperation) (WireRequest, error) {
+	var request WireRequest
+	if err := decodeStrict(wire, &request); err != nil {
+		return WireRequest{}, err
+	}
+	if request.WireVersion != RegistryWireVersion || request.RequestID == "" || !validWireOperation(request.Operation) || request.Operation != expected {
+		return WireRequest{}, errors.New("invalid Registry wire request binding")
+	}
+	return request, nil
+}
+
 // HostBinding is the single strict, versioned Registry dispatcher used by all
 // framework shells. Wails and other transports move bytes only.
 type HostBinding struct{ registry *Registry }

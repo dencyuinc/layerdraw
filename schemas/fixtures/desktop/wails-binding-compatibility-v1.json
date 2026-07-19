@@ -15,6 +15,13 @@
       "client_method": "Handshake",
       "operation": "runtime.handshake",
       "request_fixture": "schemas/fixtures/runtime/handshake-request.json"
+    },
+    {
+      "generated_method": "RegistryListSources",
+      "target": "registry_client",
+      "client_method": "ListSources",
+      "operation": "registry.list_sources",
+      "request_fixture": "schemas/fixtures/desktop/registry-list-sources-request-v1.json"
     }
   ],
   "outcomes": [

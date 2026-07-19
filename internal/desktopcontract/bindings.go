@@ -9,6 +9,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/internal/registry"
 )
 
 type BindingTarget string
@@ -61,7 +62,10 @@ type RuntimeClient struct {
 // receive Wails bindings only after the owner package supplies a generated
 // envelope decoder and exact BindingMethod entry; opaque generic dispatch is
 // intentionally absent.
-type RegistryClient struct{ Resolve ClientMethod }
+type RegistryClient struct {
+	ListSources, ConfigureSource, ConnectSource, DisconnectSource, Search,
+	PlanInstall, CommitPlan, GetTransaction, RecoverTransaction, AuthorArtifact ClientMethod
+}
 type ReviewClient struct{ Submit ClientMethod }
 type HostClient struct{ Export ClientMethod }
 
@@ -138,6 +142,16 @@ var generatedBindingTable = []BindingMethod{
 	{"RuntimeRecoverOperations", TargetRuntime, "RecoverOperations", string(runtimeprotocol.RecoverOperationsRequestEnvelopeOperationValue)},
 	{"RuntimeSaveDocument", TargetRuntime, "SaveDocument", string(runtimeprotocol.SaveDocumentRequestEnvelopeOperationValue)},
 	{"RuntimeStageAsset", TargetRuntime, "StageAsset", string(runtimeprotocol.StageAssetRequestEnvelopeOperationValue)},
+	{"RegistryListSources", TargetRegistry, "ListSources", string(registry.WireListSources)},
+	{"RegistryConfigureSource", TargetRegistry, "ConfigureSource", string(registry.WireConfigureSource)},
+	{"RegistryConnectSource", TargetRegistry, "ConnectSource", string(registry.WireConnectSource)},
+	{"RegistryDisconnectSource", TargetRegistry, "DisconnectSource", string(registry.WireDisconnectSource)},
+	{"RegistrySearch", TargetRegistry, "Search", string(registry.WireSearch)},
+	{"RegistryPlanInstall", TargetRegistry, "PlanInstall", string(registry.WirePlan)},
+	{"RegistryCommitPlan", TargetRegistry, "CommitPlan", string(registry.WireCommit)},
+	{"RegistryGetTransaction", TargetRegistry, "GetTransaction", string(registry.WireGetTransaction)},
+	{"RegistryRecoverTransaction", TargetRegistry, "RecoverTransaction", string(registry.WireRecoverTransaction)},
+	{"RegistryAuthorArtifact", TargetRegistry, "AuthorArtifact", string(registry.WireAuthorArtifact)},
 }
 
 func GeneratedBindingTable() []BindingMethod {
@@ -161,6 +175,8 @@ func (c ClientSet) Invoke(ctx context.Context, generatedMethod string, exchange 
 		owner = c.Engine
 	case TargetRuntime:
 		owner = c.Runtime
+	case TargetRegistry:
+		owner = c.Registry
 	default:
 		return ExchangeResult{}, errors.New("desktop contract: binding target is not executable")
 	}
@@ -314,6 +330,9 @@ func decodeExact(binding BindingMethod, control []byte) error {
 		return err
 	case string(runtimeprotocol.StageAssetRequestEnvelopeOperationValue):
 		_, err := runtimeprotocol.DecodeStageAssetRequestEnvelope(control)
+		return err
+	case string(registry.WireListSources), string(registry.WireConfigureSource), string(registry.WireConnectSource), string(registry.WireDisconnectSource), string(registry.WireSearch), string(registry.WirePlan), string(registry.WireCommit), string(registry.WireGetTransaction), string(registry.WireRecoverTransaction), string(registry.WireAuthorArtifact):
+		_, err := registry.DecodeWireRequest(control, registry.WireOperation(binding.Operation))
 		return err
 	default:
 		return errors.New("desktop contract: binding has no generated decoder")
