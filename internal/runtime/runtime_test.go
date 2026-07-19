@@ -633,6 +633,34 @@ func TestHostOperationImpactValidationFailsClosedAcrossScopeAndMapping(t *testin
 	}
 }
 
+func TestExternalMaterializationValidationRejectsAmbiguousAndUnsafeTrees(t *testing.T) {
+	if !validExternalMaterialization(port.ExternalMaterialization{Kind: port.ExternalFileKindContainer, Container: []byte("container")}) {
+		t.Fatal("valid container rejected")
+	}
+	if validExternalMaterialization(port.ExternalMaterialization{Kind: port.ExternalFileKindContainer, Container: []byte("container"), ProjectFiles: []port.ExternalProjectFile{{Path: "document.ldl"}}}) {
+		t.Fatal("mixed container/project accepted")
+	}
+	validProject := port.ExternalMaterialization{Kind: port.ExternalFileKindProject, ProjectFiles: []port.ExternalProjectFile{{Path: "document.ldl"}, {Path: "model/types.ldl"}}}
+	if !validExternalMaterialization(validProject) {
+		t.Fatal("valid project tree rejected")
+	}
+	for _, files := range [][]port.ExternalProjectFile{
+		nil,
+		{{Path: "/absolute.ldl"}},
+		{{Path: "../escape.ldl"}},
+		{{Path: "model/../document.ldl"}},
+		{{Path: "document.txt"}},
+		{{Path: "document.ldl"}, {Path: "document.ldl"}},
+	} {
+		if validExternalMaterialization(port.ExternalMaterialization{Kind: port.ExternalFileKindProject, ProjectFiles: files}) {
+			t.Fatalf("unsafe project tree accepted: %+v", files)
+		}
+	}
+	if validExternalMaterialization(port.ExternalMaterialization{Kind: port.ExternalFileKind("unknown")}) {
+		t.Fatal("unknown external materialization accepted")
+	}
+}
+
 func TestAuthorizeCanonicalizesEquivalentHostImpactSetsBeforeDecision(t *testing.T) {
 	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	request, decision := authorizationFixture(now)
