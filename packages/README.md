@@ -4,6 +4,11 @@ Publishable and private TypeScript workspace packages for protocol clients, rend
 
 TypeScript packages do not implement LDL parsing, validation, query planning, identity, or canonical semantics.
 
+`registry-client/` is the transport-only Registry facade, including the local
+host/Wails entrypoint. `library/` is its framework-neutral Library UI model for
+browse, verified plan presentation, confirmation, repair state, and artifact
+authoring; neither package resolves or verifies Registry content itself.
+
 `protocol/` is the generated, runtime-dependency-free `@layerdraw/protocol`
 package. It exposes only the `common`, `semantic`, and `engine` schema-group
 subpaths and includes generated structural validators plus canonical codecs for

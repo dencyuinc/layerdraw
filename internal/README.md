@@ -13,3 +13,6 @@ semantics.
 - `access/` owns local Actor resolution, authoring decisions, bounded agent
   delegation, and trusted-boundary redaction. It consumes Engine and host
   protocol impacts but does not parse LDL or publish resources.
+- `registry/` owns source, trust, dependency, and transaction decisions. It
+  delegates archive and LDL validation/authoring to the Engine package facade
+  and atomic publication to Runtime ports.
