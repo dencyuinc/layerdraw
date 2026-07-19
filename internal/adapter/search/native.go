@@ -212,20 +212,27 @@ func (e *NativeExecutor) InspectPhysicalIndex(ctx context.Context, ref port.Phys
 // LadybugPlan is the private Engine-issued physical payload understood by the
 // native driver. Query text never crosses the public Runtime/Wails/MCP surface.
 type LadybugPlan struct {
-	Statements    []LadybugStatement     `json:"statements"`
-	PhysicalIndex *port.PhysicalIndexRef `json:"physical_index,omitempty"`
+	Statements       []LadybugStatement     `json:"statements"`
+	PhysicalIndex    *port.PhysicalIndexRef `json:"physical_index,omitempty"`
+	PhysicalEvidence *LadybugIndexEvidence  `json:"physical_evidence,omitempty"`
 }
 type LadybugStatement struct {
 	Query      string                   `json:"query"`
 	Parameters map[string]port.RawValue `json:"parameters"`
 }
+type LadybugIndexEvidence struct {
+	TableName      string   `json:"table_name"`
+	IndexName      string   `json:"index_name"`
+	IndexType      string   `json:"index_type"`
+	PropertyNames  []string `json:"property_names"`
+	ContentColumns []string `json:"content_columns"`
+	PrimaryKey     string   `json:"primary_key"`
+}
 type LadybugSession interface {
 	ExecutePrepared(context.Context, LadybugStatement, port.ExecutionLimits, port.RowSink) error
+	ApplyIndex(context.Context, []LadybugStatement, port.PhysicalIndexRef, LadybugIndexEvidence, port.ExecutionLimits, port.RowSink) error
 	Interrupt()
 	InspectIndex(context.Context, port.PhysicalIndexRef) error
-}
-type PhysicalIndexRecorder interface {
-	RecordPhysicalIndex(context.Context, port.PhysicalIndexRef) error
 }
 
 // LadybugNativeDriver is the concrete transaction/streaming driver used by
@@ -248,6 +255,15 @@ func (d *LadybugNativeDriver) ExecutePlan(ctx context.Context, kind port.PlanKin
 	if err := json.Unmarshal(payload, &plan); err != nil || len(plan.Statements) == 0 {
 		return BackendExecution{}, ErrInvalidPlan
 	}
+	if kind == port.PlanSearchIndex {
+		if plan.PhysicalIndex == nil || plan.PhysicalEvidence == nil {
+			return BackendExecution{}, ErrInvalidPlan
+		}
+		if err := d.session.ApplyIndex(ctx, plan.Statements, *plan.PhysicalIndex, *plan.PhysicalEvidence, limits, sink); err != nil {
+			return BackendExecution{}, err
+		}
+		return BackendExecution{Complete: true, PhysicalIndex: plan.PhysicalIndex}, nil
+	}
 	for _, statement := range plan.Statements {
 		if statement.Query == "" {
 			return BackendExecution{}, ErrInvalidPlan
@@ -256,17 +272,7 @@ func (d *LadybugNativeDriver) ExecutePlan(ctx context.Context, kind port.PlanKin
 			return BackendExecution{}, err
 		}
 	}
-	execution := BackendExecution{Complete: true, PhysicalIndex: plan.PhysicalIndex}
-	if kind == port.PlanSearchIndex && plan.PhysicalIndex == nil {
-		return BackendExecution{}, ErrInvalidPlan
-	}
-	if kind == port.PlanSearchIndex {
-		recorder, ok := d.session.(PhysicalIndexRecorder)
-		if !ok || recorder.RecordPhysicalIndex(ctx, *plan.PhysicalIndex) != nil {
-			return BackendExecution{}, ErrPhysicalIndexMissing
-		}
-	}
-	return execution, nil
+	return BackendExecution{Complete: true}, nil
 }
 func (d *LadybugNativeDriver) Cancel(context.Context, string) error {
 	d.mu.Lock()

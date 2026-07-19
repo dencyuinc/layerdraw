@@ -50,17 +50,17 @@ func (s *ladybugSessionStub) ExecutePrepared(_ context.Context, _ LadybugStateme
 	return nil
 }
 func (s *ladybugSessionStub) Interrupt() { s.interrupted = true }
-func (s *ladybugSessionStub) InspectIndex(_ context.Context, ref port.PhysicalIndexRef) error {
-	if !s.physical[ref] {
-		return ErrPhysicalIndexMissing
-	}
-	return nil
-}
-func (s *ladybugSessionStub) RecordPhysicalIndex(_ context.Context, ref port.PhysicalIndexRef) error {
+func (s *ladybugSessionStub) ApplyIndex(_ context.Context, _ []LadybugStatement, ref port.PhysicalIndexRef, _ LadybugIndexEvidence, _ port.ExecutionLimits, _ port.RowSink) error {
 	if s.physical == nil {
 		s.physical = map[port.PhysicalIndexRef]bool{}
 	}
 	s.physical[ref] = true
+	return nil
+}
+func (s *ladybugSessionStub) InspectIndex(_ context.Context, ref port.PhysicalIndexRef) error {
+	if !s.physical[ref] {
+		return ErrPhysicalIndexMissing
+	}
 	return nil
 }
 

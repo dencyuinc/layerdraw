@@ -42,17 +42,17 @@ func (*compositionLadybug) ExecutePrepared(context.Context, searchadapter.Ladybu
 	return nil
 }
 func (*compositionLadybug) Interrupt() {}
-func (s *compositionLadybug) InspectIndex(_ context.Context, ref port.PhysicalIndexRef) error {
-	if !s.physical[ref] {
-		return searchadapter.ErrPhysicalIndexMissing
-	}
-	return nil
-}
-func (s *compositionLadybug) RecordPhysicalIndex(_ context.Context, ref port.PhysicalIndexRef) error {
+func (s *compositionLadybug) ApplyIndex(_ context.Context, _ []searchadapter.LadybugStatement, ref port.PhysicalIndexRef, _ searchadapter.LadybugIndexEvidence, _ port.ExecutionLimits, _ port.RowSink) error {
 	if s.physical == nil {
 		s.physical = map[port.PhysicalIndexRef]bool{}
 	}
 	s.physical[ref] = true
+	return nil
+}
+func (s *compositionLadybug) InspectIndex(_ context.Context, ref port.PhysicalIndexRef) error {
+	if !s.physical[ref] {
+		return searchadapter.ErrPhysicalIndexMissing
+	}
 	return nil
 }
 
