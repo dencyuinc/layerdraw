@@ -1187,6 +1187,30 @@ func TestDefaultBoundariesAndRejectedInputs(t *testing.T) {
 	}
 }
 
+func TestConfiguredLocalActorIsStableAcrossAuthorityRestart(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)}
+	actor := accessprotocol.ActorRef{ActorID: "platform-user-501", Kind: "user"}
+	first := newLocalAuthorityForActor(clock, nil, actor)
+	firstScope := first.add("doc_actor")
+	firstGrant, _, err := first.ResolveGrant(context.Background(), firstScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.now = clock.now.Add(time.Hour)
+	second := newLocalAuthorityForActor(clock, nil, actor)
+	secondScope := second.add("doc_actor")
+	secondGrant, _, err := second.ResolveGrant(context.Background(), secondScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstScope != secondScope || firstGrant.ActorRef != actor || secondGrant.ActorRef != actor || firstGrant.ActorRef.Kind != "user" {
+		t.Fatalf("restart actor/scope = %+v %+v %+v %+v", firstScope, secondScope, firstGrant, secondGrant)
+	}
+	if firstGrant.OrganizationScopeID != nil || secondGrant.OrganizationScopeID != nil {
+		t.Fatal("local actor fabricated organization membership")
+	}
+}
+
 func TestContainerExternalChangeAndAdditionalRecoveryStates(t *testing.T) {
 	t.Run("container external", func(t *testing.T) {
 		root := t.TempDir()

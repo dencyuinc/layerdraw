@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"sync"
 	"time"
 
@@ -18,23 +17,16 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
-var fullAuthoringCapabilities = []semantic.AuthoringCapability{
-	semantic.AuthoringCapabilityAssetWrite,
-	semantic.AuthoringCapabilityGraphWrite,
-	semantic.AuthoringCapabilityPackageManage,
-	semantic.AuthoringCapabilityProjectConfigure,
-	semantic.AuthoringCapabilityQueryWrite,
-	semantic.AuthoringCapabilityReferenceWrite,
-	semantic.AuthoringCapabilitySchemaWrite,
-	semantic.AuthoringCapabilitySourceMaintain,
-	semantic.AuthoringCapabilityViewWrite,
-}
+var fullAuthoringCapabilities = accesscore.FullAuthoringCapabilities()
 
 type localAuthority struct {
 	clock  port.Clock
+	actor  accessprotocol.ActorRef
+	access accesscore.Evaluator
 	random io.Reader
 	mu     sync.RWMutex
 	scopes map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope
@@ -42,10 +34,14 @@ type localAuthority struct {
 }
 
 func newLocalAuthority(clock port.Clock, random io.Reader) *localAuthority {
+	return newLocalAuthorityForActor(clock, random, accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"})
+}
+
+func newLocalAuthorityForActor(clock port.Clock, random io.Reader, actor accessprotocol.ActorRef) *localAuthority {
 	if random == nil {
 		random = rand.Reader
 	}
-	return &localAuthority{clock: clock, random: random, scopes: map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope{}, issued: map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time{}}
+	return &localAuthority{clock: clock, actor: actor, access: accesscore.Evaluator{Clock: clock}, random: random, scopes: map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope{}, issued: map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time{}}
 }
 
 func (a *localAuthority) add(documentID runtimeprotocol.DocumentID) runtimeprotocol.RuntimeScope {
@@ -56,7 +52,8 @@ func (a *localAuthority) add(documentID runtimeprotocol.DocumentID) runtimeproto
 	}
 	fingerprint := digestJSON(struct {
 		Document runtimeprotocol.DocumentID `json:"document"`
-	}{documentID})
+		Actor    accessprotocol.ActorRef    `json:"actor"`
+	}{documentID, a.actor})
 	scope := runtimeprotocol.RuntimeScope{DocumentID: documentID, LocalScopeID: "local-owner", AccessFingerprint: fingerprint}
 	a.scopes[documentID] = scope
 	a.issued[documentID] = protocolcommon.Rfc3339Time(a.clock.Now().UTC().Format(time.RFC3339Nano))
@@ -81,7 +78,7 @@ func (a *localAuthority) ResolveGrant(_ context.Context, scope runtimeprotocol.R
 	a.mu.RLock()
 	issued := a.issued[scope.DocumentID]
 	a.mu.RUnlock()
-	grant := accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: scope.AccessFingerprint, ActorRef: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, GrantedCapabilities: append([]semantic.AuthoringCapability(nil), fullAuthoringCapabilities...), HostDocumentID: string(scope.DocumentID), IssuedAt: issued, LocalScopeID: scope.LocalScopeID, MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}
+	grant := accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: scope.AccessFingerprint, ActorRef: a.actor, GrantedCapabilities: append([]semantic.AuthoringCapability(nil), fullAuthoringCapabilities...), HostDocumentID: string(scope.DocumentID), IssuedAt: issued, LocalScopeID: scope.LocalScopeID, MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}
 	summary := accessprotocol.AuthoringGrantSummary{AccessFingerprint: scope.AccessFingerprint, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: append([]semantic.AuthoringCapability(nil), fullAuthoringCapabilities...), PolicyEtag: digestJSON(struct {
 		Scope runtimeprotocol.RuntimeScope `json:"scope"`
 	}{scope})}
@@ -89,43 +86,7 @@ func (a *localAuthority) ResolveGrant(_ context.Context, scope runtimeprotocol.R
 }
 
 func (a *localAuthority) Evaluate(_ context.Context, input accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error) {
-	required := []semantic.AuthoringCapability{}
-	if input.AuthoringImpact != nil {
-		required = append(required, input.AuthoringImpact.RequiredCapabilities...)
-	}
-	hostDigests := make([]protocolcommon.Digest, len(input.HostOperationImpacts))
-	for index, impact := range input.HostOperationImpacts {
-		required = append(required, impact.RequiredAuthoringCapabilities...)
-		hostDigests[index] = impact.ImpactDigest
-	}
-	sort.Slice(required, func(i, j int) bool { return required[i] < required[j] })
-	required = uniqueCapabilities(required)
-	granted := map[semantic.AuthoringCapability]bool{}
-	for _, capability := range input.GrantSnapshot.GrantedCapabilities {
-		granted[capability] = true
-	}
-	missing := []semantic.AuthoringCapability{}
-	for _, capability := range required {
-		if !granted[capability] {
-			missing = append(missing, capability)
-		}
-	}
-	evaluationDigest := digestJSON(input)
-	outcome := accessprotocol.AuthoringDecisionOutcomeAllow
-	if len(missing) != 0 {
-		outcome = accessprotocol.AuthoringDecisionOutcomeDeny
-	}
-	projection := struct {
-		Evaluation protocolcommon.Digest                   `json:"evaluation"`
-		Outcome    accessprotocol.AuthoringDecisionOutcome `json:"outcome"`
-		Required   []semantic.AuthoringCapability          `json:"required"`
-	}{evaluationDigest, outcome, required}
-	decision := accessprotocol.AuthoringDecision{AccessFingerprint: input.GrantSnapshot.AccessFingerprint, ApprovalRuleRefs: []string{}, ConstraintViolations: []accessprotocol.ConstraintViolation{}, DecisionDigest: digestJSON(projection), Diagnostics: []protocolcommon.ProtocolDiagnostic{}, EvaluationDigest: evaluationDigest, HostOperationImpactDigests: hostDigests, MissingCapabilities: missing, Outcome: outcome, RequiredCapabilities: required}
-	if input.AuthoringImpact != nil {
-		value := input.AuthoringImpact.ImpactDigest
-		decision.AuthoringImpactDigest = &value
-	}
-	return decision, nil
+	return a.access.Evaluate(context.Background(), input)
 }
 
 func (a *localAuthority) EvaluateStateQuery(_ context.Context, input port.StateQueryAuthorizationInput) (port.StateQueryAuthorizationDecision, error) {
@@ -153,16 +114,6 @@ func (a *localAuthority) NewID(_ context.Context, kind port.IdentityKind) (strin
 		prefix = "identity"
 	}
 	return fmt.Sprintf("%s_%s", prefix, hex.EncodeToString(buffer)), nil
-}
-
-func uniqueCapabilities(input []semantic.AuthoringCapability) []semantic.AuthoringCapability {
-	result := input[:0]
-	for _, value := range input {
-		if len(result) == 0 || result[len(result)-1] != value {
-			result = append(result, value)
-		}
-	}
-	return result
 }
 
 func digestJSON(value any) protocolcommon.Digest {

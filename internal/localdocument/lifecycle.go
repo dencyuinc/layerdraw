@@ -24,6 +24,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/adapter/local"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
@@ -70,6 +71,10 @@ type Config struct {
 	MaxProjectFiles       int
 	MaxProjectBytes       int64
 	AdapterOptions        local.Options
+	// LocalActor resolves the stable OS/host identity used for local-owner
+	// grants. It must not assert organization membership. The default preserves
+	// the host-local owner identity for headless and embedded callers.
+	LocalActor accesscore.LocalActorResolver
 }
 
 type Host struct {
@@ -221,7 +226,15 @@ func New(config Config) (*Host, error) {
 	instance := engineendpoint.NewLocalDocumentEngine()
 	endpointID := config.EndpointInstanceID
 	workbench := &runtimeWorkbench{bridge: instance.NewRuntimeEngineBridge(endpointID), engine: instance, kinds: map[runtimeprotocol.DocumentID]port.ExternalFileKind{}}
-	authority := newLocalAuthority(config.Clock, config.Random)
+	resolver := config.LocalActor
+	if resolver == nil {
+		resolver = accesscore.StaticLocalActorResolver{ActorID: "local-owner"}
+	}
+	actor, err := resolver.ResolveLocalActor(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	authority := newLocalAuthorityForActor(config.Clock, config.Random, actor)
 	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]func(){}}
 	metadata, err := host.loadMetadata()
 	if err != nil {
