@@ -200,7 +200,7 @@ func fixture(t *testing.T) (*Registry, *memoryClient, *validator, *runtime, ed25
 	}
 	v := &validator{}
 	rt := &runtime{}
-	registry, err := New(v, access{}, rt)
+	registry, err := New(v, access{}, rt, NewMemoryTransactionStore())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,14 +403,17 @@ func TestAuthoringAndHostBindingDelegateWithoutSemantics(t *testing.T) {
 }
 
 func TestConfigurationSearchAndValueContracts(t *testing.T) {
-	if _, err := New(nil, access{}, &runtime{}); err == nil {
+	if _, err := New(nil, access{}, &runtime{}, NewMemoryTransactionStore()); err == nil {
 		t.Fatal("accepted nil validator")
 	}
-	if _, err := New(&validator{}, nil, &runtime{}); err == nil {
+	if _, err := New(&validator{}, nil, &runtime{}, NewMemoryTransactionStore()); err == nil {
 		t.Fatal("accepted nil access")
 	}
-	if _, err := New(&validator{}, access{}, nil); err == nil {
+	if _, err := New(&validator{}, access{}, nil, NewMemoryTransactionStore()); err == nil {
 		t.Fatal("accepted nil runtime")
+	}
+	if _, err := New(&validator{}, access{}, &runtime{}, nil); err == nil {
+		t.Fatal("accepted nil transaction store")
 	}
 	r, client, _, _, _ := fixture(t)
 	if err := r.PutTrustPolicy(TrustPolicy{}); err == nil {

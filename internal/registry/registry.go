@@ -256,6 +256,32 @@ type Transaction struct {
 	CommittedRevision string             `json:"committed_revision,omitempty"`
 }
 
+type TransactionStore interface {
+	PutRegistryTransaction(context.Context, Transaction) error
+	GetRegistryTransaction(context.Context, string) (Transaction, bool, error)
+}
+
+type MemoryTransactionStore struct {
+	mu           sync.RWMutex
+	transactions map[string]Transaction
+}
+
+func NewMemoryTransactionStore() *MemoryTransactionStore {
+	return &MemoryTransactionStore{transactions: map[string]Transaction{}}
+}
+func (s *MemoryTransactionStore) PutRegistryTransaction(_ context.Context, tx Transaction) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.transactions[tx.Plan.TransactionID] = cloneTransaction(tx)
+	return nil
+}
+func (s *MemoryTransactionStore) GetRegistryTransaction(_ context.Context, id string) (Transaction, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tx, ok := s.transactions[id]
+	return cloneTransaction(tx), ok, nil
+}
+
 type Registry struct {
 	mu           sync.RWMutex
 	sources      map[string]RegistrySource
@@ -265,14 +291,14 @@ type Registry struct {
 	author       PackageAuthor
 	access       AccessPort
 	runtime      RuntimePort
-	transactions map[string]*Transaction
+	transactions TransactionStore
 }
 
-func New(validator PackageValidator, access AccessPort, runtime RuntimePort) (*Registry, error) {
-	if validator == nil || access == nil || runtime == nil {
-		return nil, errors.New("registry requires Engine validator, Access, and Runtime ports")
+func New(validator PackageValidator, access AccessPort, runtime RuntimePort, transactions TransactionStore) (*Registry, error) {
+	if validator == nil || access == nil || runtime == nil || transactions == nil {
+		return nil, errors.New("registry requires Engine validator, Access, Runtime, and transaction store ports")
 	}
-	return &Registry{sources: map[string]RegistrySource{}, policies: map[string]TrustPolicy{}, clients: map[SourceKind]SourceClient{}, validator: validator, access: access, runtime: runtime, transactions: map[string]*Transaction{}}, nil
+	return &Registry{sources: map[string]RegistrySource{}, policies: map[string]TrustPolicy{}, clients: map[SourceKind]SourceClient{}, validator: validator, access: access, runtime: runtime, transactions: transactions}, nil
 }
 
 func (r *Registry) RegisterClient(kind SourceKind, client SourceClient) {
@@ -450,9 +476,10 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 	}
 	plan.TransactionID = strings.TrimPrefix(digestJSON(struct{ Project, Evaluation string }{request.ProjectID, evaluation}), "sha256:")[:32]
 	plan.PlanDigest = digestPlan(plan)
-	r.mu.Lock()
-	r.transactions[plan.TransactionID] = &Transaction{Plan: plan, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: plan.PlanDigest}, {State: StateVerified, EvidenceDigest: mutation}, {State: StateAwaitingConfirmation, EvidenceDigest: evaluation}}}
-	r.mu.Unlock()
+	tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: plan.PlanDigest}, {State: StateVerified, EvidenceDigest: mutation}, {State: StateAwaitingConfirmation, EvidenceDigest: evaluation}}}
+	if err := r.transactions.PutRegistryTransaction(ctx, tx); err != nil {
+		return InstallPlan{}, fail(FailureUnavailable, plan.TransactionID, true, err)
+	}
 	return clonePlan(plan), nil
 }
 
@@ -553,8 +580,8 @@ func (r *Registry) resolveVersion(ctx context.Context, dependency Dependency, pr
 
 func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
 	r.mu.Lock()
-	tx, ok := r.transactions[input.Plan.TransactionID]
-	if !ok || tx.Plan.PlanDigest != input.Plan.PlanDigest || digestPlan(input.Plan) != input.Plan.PlanDigest {
+	tx, ok, loadErr := r.transactions.GetRegistryTransaction(ctx, input.Plan.TransactionID)
+	if loadErr != nil || !ok || tx.Plan.PlanDigest != input.Plan.PlanDigest || digestPlan(input.Plan) != input.Plan.PlanDigest {
 		r.mu.Unlock()
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
@@ -563,30 +590,30 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
 	tx.Events = append(tx.Events, TransactionEvent{State: StateApplying, EvidenceDigest: tx.Plan.EvaluationDigest})
+	if err := r.transactions.PutRegistryTransaction(ctx, tx); err != nil {
+		r.mu.Unlock()
+		return RuntimeCommitResult{}, fail(FailureUnavailable, input.Plan.TransactionID, true, err)
+	}
 	r.mu.Unlock()
 	result, err := r.runtime.CommitRegistryPlan(ctx, input)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {
 		tx.Events = append(tx.Events, TransactionEvent{State: StateRepairRequired, EvidenceDigest: tx.Plan.MutationDigest})
+		_ = r.transactions.PutRegistryTransaction(ctx, tx)
 		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, err)
 	}
 	tx.CommittedRevision = result.CommittedRevision
 	tx.Events = append(tx.Events, TransactionEvent{State: StateCommitted, EvidenceDigest: digestJSON(result)})
+	if err := r.transactions.PutRegistryTransaction(ctx, tx); err != nil {
+		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, err)
+	}
 	return result, nil
 }
 
 func (r *Registry) Transaction(id string) (Transaction, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tx, ok := r.transactions[id]
-	if !ok {
-		return Transaction{}, false
-	}
-	out := *tx
-	out.Plan = clonePlan(tx.Plan)
-	out.Events = append([]TransactionEvent{}, tx.Events...)
-	return out, true
+	tx, ok, err := r.transactions.GetRegistryTransaction(context.Background(), id)
+	return tx, ok && err == nil
 }
 
 func (r *Registry) sourceContext(id string) (RegistrySource, TrustPolicy, SourceClient, bool) {
@@ -821,4 +848,9 @@ func clonePlan(value InstallPlan) InstallPlan {
 	out.TrustPolicyDigests = append([]string{}, value.TrustPolicyDigests...)
 	out.AuthoringImpactDigests = append([]string{}, value.AuthoringImpactDigests...)
 	return out
+}
+func cloneTransaction(value Transaction) Transaction {
+	value.Plan = clonePlan(value.Plan)
+	value.Events = append([]TransactionEvent{}, value.Events...)
+	return value
 }
