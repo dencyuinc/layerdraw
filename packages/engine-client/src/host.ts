@@ -144,7 +144,10 @@ class LocalHostClientImpl implements LocalHostClient {
     if (!this.hasCapability(operation)) throw new EngineClientTransportError("NEGOTIATION_REJECTED", false);
     let exchange: InternalTransportExchange;
     try { exchange = this.transport.request({ exchangeId: operation, control: buffer(control), blobs }); }
-    catch { throw new EngineClientTransportError("BROKEN_PIPE"); }
+    catch {
+      if (this.state === "ready") this.state = "failed";
+      throw new EngineClientTransportError("BROKEN_PIPE");
+    }
     const abort = (): void => { void exchange.cancel(); };
     if (options?.signal?.aborted) abort();
     else options?.signal?.addEventListener("abort", abort, { once: true });
@@ -154,6 +157,7 @@ class LocalHostClientImpl implements LocalHostClient {
       return decode(decoder.decode(response.control));
     } catch (error) {
       if (error instanceof EngineClientTransportError) throw error;
+      if (this.state === "ready") this.state = "failed";
       throw new EngineClientTransportError("PROCESS_EXITED");
     } finally {
       options?.signal?.removeEventListener("abort", abort);
