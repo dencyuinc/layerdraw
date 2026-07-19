@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -118,6 +119,9 @@ func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *t
 	if _, err := host.Inspect(applySession.Session.Open.Session); !errors.Is(err, accesscore.ErrGrantStale) {
 		t.Fatalf("revoked delegation review read=%v", err)
 	}
+	if _, err := host.GetOperationStatus(context.Background(), applySession.Session, "revoked-operation"); !errors.Is(err, accesscore.ErrGrantStale) {
+		t.Fatalf("revoked delegation operation status=%v", err)
+	}
 
 	noRead, err := host.DelegateAgent(context.Background(), owner.Session, accesscore.Delegation{
 		ID: "no-read", ParentActor: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, Agent: accessprotocol.ActorRef{ActorID: "agent-no-read", Kind: "agent"},
@@ -130,6 +134,17 @@ func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *t
 	if _, err := host.OpenDelegatedDocument(context.Background(), batch.DocumentID, noRead.ID); !errors.Is(err, accesscore.ErrReadDenied) {
 		t.Fatalf("read=false delegation leaked open result: %v", err)
 	}
+
+	expiring := delegate("expiring-read", true)
+	expiringSession, err := host.OpenDelegatedDocument(context.Background(), batch.DocumentID, expiring.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.config.Clock.(*fakeClock).now = clock.Add(2 * time.Hour)
+	if _, err := host.GetOperationStatus(context.Background(), expiringSession.Session, "expired-operation"); !errors.Is(err, accesscore.ErrGrantStale) {
+		t.Fatalf("expired delegation operation status=%v", err)
+	}
+	host.config.Clock.(*fakeClock).now = clock
 
 	live := delegate("restart-live", true)
 	if err := host.Shutdown(context.Background()); err != nil {
@@ -146,6 +161,83 @@ func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *t
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("delegation file mode=%v err=%v", info.Mode().Perm(), err)
 	}
+}
+
+func TestStageAssetLinearizesConcurrentDelegationRevocationAndExpiry(t *testing.T) {
+	newFixture := func(t *testing.T, id string) (*Host, *OpenResult, accesscore.Delegation, time.Time) {
+		t.Helper()
+		root := t.TempDir()
+		project := writeProject(t, root, "project p \"P\" {}\n")
+		host := newTestHost(t, filepath.Join(root, "data"), nil)
+		owner, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := host.config.Clock.Now()
+		record, err := host.DelegateAgent(context.Background(), owner.Session, accesscore.Delegation{
+			ID: id, ParentActor: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, Agent: accessprotocol.ActorRef{ActorID: "asset-agent-" + id, Kind: "agent"},
+			DocumentID: string(owner.Session.Open.CommittedRevision.DocumentID), LocalScopeID: owner.Session.Open.Session.Scope.LocalScopeID,
+			AuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityAssetWrite}, Permissions: accesscore.AgentPermissions{Read: true, Apply: true}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		delegated, err := host.OpenDelegatedDocument(context.Background(), owner.Session.Open.CommittedRevision.DocumentID, record.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host, &delegated, record, now
+	}
+	asset := func(name string, contents []byte) protocolcommon.BlobRef {
+		sum := sha256.Sum256(contents)
+		return protocolcommon.BlobRef{BlobID: "asset/" + name, Digest: protocolcommon.Digest("sha256:" + hex.EncodeToString(sum[:])), Lifetime: protocolcommon.BlobLifetimeRequest, MediaType: "application/octet-stream", Size: protocolcommon.CanonicalUint64(strconv.Itoa(len(contents)))}
+	}
+
+	t.Run("concurrent revoke", func(t *testing.T) {
+		host, delegated, record, _ := newFixture(t, "asset-race")
+		contents := make([]byte, 8<<20)
+		ref := asset("race.bin", contents)
+		start := make(chan struct{})
+		staged := make(chan error, 1)
+		revoked := make(chan error, 1)
+		go func() {
+			<-start
+			_, err := host.StageAsset(context.Background(), runtimeprotocol.StageAssetInput{Session: delegated.Session.Open.Session, ContentBlob: ref}, contents)
+			staged <- err
+		}()
+		go func() { <-start; revoked <- host.RevokeDelegation(record.ID) }()
+		close(start)
+		stageErr, revokeErr := <-staged, <-revoked
+		if revokeErr != nil {
+			t.Fatal(revokeErr)
+		}
+		if stageErr != nil {
+			if _, err := host.assets.Stat(context.Background(), port.AssetRef{Scope: delegated.Session.Open.Session.Scope, Digest: ref.Digest}); !errors.Is(err, port.ErrNotFound) {
+				t.Fatalf("rejected staged asset was published: %v", err)
+			}
+		}
+		later := []byte("after revoke")
+		laterRef := asset("after-revoke.bin", later)
+		if _, err := host.StageAsset(context.Background(), runtimeprotocol.StageAssetInput{Session: delegated.Session.Open.Session, ContentBlob: laterRef}, later); err == nil {
+			t.Fatal("revoked delegation published a later asset")
+		}
+		if _, err := host.assets.Stat(context.Background(), port.AssetRef{Scope: delegated.Session.Open.Session.Scope, Digest: laterRef.Digest}); !errors.Is(err, port.ErrNotFound) {
+			t.Fatalf("post-revoke asset exists: %v", err)
+		}
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		host, delegated, _, now := newFixture(t, "asset-expiry")
+		host.config.Clock.(*fakeClock).now = now.Add(2 * time.Hour)
+		contents := []byte("expired")
+		ref := asset("expired.bin", contents)
+		if _, err := host.StageAsset(context.Background(), runtimeprotocol.StageAssetInput{Session: delegated.Session.Open.Session, ContentBlob: ref}, contents); err == nil {
+			t.Fatal("expired delegation published an asset")
+		}
+		if _, err := host.assets.Stat(context.Background(), port.AssetRef{Scope: delegated.Session.Open.Session.Scope, Digest: ref.Digest}); !errors.Is(err, port.ErrNotFound) {
+			t.Fatalf("expired asset exists: %v", err)
+		}
+	})
 }
 
 func TestProtocolPreviewCommitAndStateSnapshot(t *testing.T) {
@@ -206,7 +298,7 @@ func TestProtocolPreviewCommitAndStateSnapshot(t *testing.T) {
 	if cancelled, err := host.Cancel(context.Background(), runtimeprotocol.CancelOperationInput{Session: opened.Session.Open.Session, OperationID: commit.OperationID, CancellationToken: "cancel_protocol_123456"}); err != nil || cancelled.Status != "not_pending" {
 		t.Fatalf("cancel=%+v err=%v", cancelled, err)
 	}
-	if recovered, err := host.RecoverOperations(context.Background(), opened.Session.Open.CommittedRevision.DocumentID); err != nil || recovered.Operations == nil {
+	if recovered, err := host.RecoverOperations(context.Background(), opened.Session.Open.CommittedRevision.DocumentID); err != nil || recovered.Operations == nil || len(recovered.Operations) != 0 {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
 	assetBytes := []byte("protocol asset")

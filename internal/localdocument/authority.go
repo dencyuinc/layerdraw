@@ -181,6 +181,30 @@ func (a *localAuthority) AuthorizeRead(ctx context.Context, scope runtimeprotoco
 	return accesscore.AuthorizeReadSurface(surface, policy)
 }
 
+// recoveredGrantContext reconstructs only a still-current durable delegation.
+// Recovery records bind the original actor and Access fingerprint; revoked,
+// expired, replaced, or otherwise changed grants therefore fail closed.
+func (a *localAuthority) recoveredGrantContext(ctx context.Context, scope runtimeprotocol.RuntimeScope, actor accessprotocol.ActorRef, fingerprint protocolcommon.Digest) (context.Context, error) {
+	if actor.Kind != "agent" {
+		grant, _, err := a.ResolveGrant(ctx, scope)
+		if err != nil || grant.ActorRef != actor || grant.AccessFingerprint != fingerprint {
+			return nil, accesscore.ErrGrantStale
+		}
+		return ctx, nil
+	}
+	for _, record := range a.delegationStore().Snapshot().Records {
+		if record.Agent != actor || record.DocumentID != string(scope.DocumentID) || record.LocalScopeID != scope.LocalScopeID {
+			continue
+		}
+		candidate := withDelegation(ctx, record.ID)
+		grant, _, err := a.ResolveGrant(candidate, scope)
+		if err == nil && grant.AccessFingerprint == fingerprint && grant.ActorRef == actor {
+			return candidate, nil
+		}
+	}
+	return nil, accesscore.ErrGrantStale
+}
+
 func (a *localAuthority) EvaluateStateQuery(ctx context.Context, input port.StateQueryAuthorizationInput) (port.StateQueryAuthorizationDecision, error) {
 	if err := a.AuthorizeRead(ctx, input.Scope, accesscore.SurfaceQuery); err != nil {
 		return port.StateQueryAuthorizationDecision{}, err

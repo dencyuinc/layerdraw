@@ -287,15 +287,13 @@ func (h *Host) StageAsset(ctx context.Context, input runtimeprotocol.StageAssetI
 }
 
 func (h *Host) RecoverOperations(ctx context.Context, documentID runtimeprotocol.DocumentID) (runtimeprotocol.RecoverOperationsResult, error) {
-	results, err := h.Recover(ctx, documentID)
-	if err != nil {
-		return runtimeprotocol.RecoverOperationsResult{}, err
-	}
-	operations := make([]runtimeprotocol.RuntimeOperationStatus, len(results))
-	for index := range results {
-		operations[index] = results[index].Status
-	}
-	return runtimeprotocol.RecoverOperationsResult{Operations: operations}, nil
+	// Runtime protocol v1 supplies only a document ID, so it cannot bind this
+	// read or mutation to an issued owner/delegated session. Both recovery and
+	// operation details fail closed until a session-bound v2 shape. Trusted
+	// startup recovery calls Host.Recover directly inside the local host.
+	_ = ctx
+	_ = documentID
+	return runtimeprotocol.RecoverOperationsResult{Operations: []runtimeprotocol.RuntimeOperationStatus{}}, nil
 }
 
 func (h *Host) ListRevisions(ctx context.Context, input runtimeprotocol.ListRevisionsInput) (runtimeprotocol.RevisionPage, error) {

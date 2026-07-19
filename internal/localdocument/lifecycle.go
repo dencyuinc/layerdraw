@@ -622,6 +622,14 @@ func (h *Host) GetOperationStatus(ctx context.Context, session *Session, operati
 	if session == nil {
 		return runtimeprotocol.RuntimeOperationStatus{}, errors.New("session is required")
 	}
+	resolved, err := h.SessionFor(session.Open.Session)
+	if err != nil || resolved != session {
+		return runtimeprotocol.RuntimeOperationStatus{}, errors.New("session is closed or unknown")
+	}
+	ctx = h.accessContext(ctx, session)
+	if err := h.authority.AuthorizeRead(ctx, session.Open.Session.Scope, accesscore.SurfaceReview); err != nil {
+		return runtimeprotocol.RuntimeOperationStatus{}, err
+	}
 	status, rejection := h.runtime.GetOperationResult(ctx, runtimeprotocol.GetOperationResultInput{Session: session.Open.Session, LookupBy: "operation_id", OperationID: &operation})
 	if rejection != nil {
 		return runtimeprotocol.RuntimeOperationStatus{}, rejection

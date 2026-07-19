@@ -23,6 +23,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/adapter/local"
 	"github.com/dencyuinc/layerdraw/internal/engine"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
@@ -642,7 +643,7 @@ func localPersistenceFaults(t *testing.T, surface string) []localPersistenceFaul
 
 func stageRecoveryFixture(t *testing.T, host *Host, session *Session, source, suffix string, publish bool, advanceAfterPublish bool) (port.RecoveryRecord, port.StagedRevision) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := host.accessContext(context.Background(), session)
 	operation := runtimeprotocol.OperationID("recovery_" + suffix)
 	key := runtimeprotocol.IdempotencyKey("idempotency_" + suffix + "_value")
 	base := session.Open.CommittedRevision
@@ -693,6 +694,76 @@ func stageRecoveryFixture(t *testing.T, host *Host, session *Session, source, su
 		}
 	}
 	return record, staged
+}
+
+func TestRestartRecoveryReauthorizesDelegatedExternalPublication(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		revoke  bool
+		expired bool
+	}{
+		{name: "live"},
+		{name: "revoked", revoke: true},
+		{name: "expired", expired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			source := "project p \"P\" {}\n"
+			project := writeProject(t, root, source)
+			dataRoot := filepath.Join(root, "data")
+			host := newTestHost(t, dataRoot, nil)
+			owner, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch := runtimeprotocol.RuntimeOperationBatch{DocumentID: owner.Session.Open.CommittedRevision.DocumentID, BaseRevision: owner.Session.Open.CommittedRevision, ExpectedDefinitionHash: owner.Session.Open.CommittedRevision.DefinitionHash, Operations: createLayerBatch(t, "delegated_recovery"), Preconditions: allPreconditions(t, source)}
+			preview, err := host.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: owner.Session.Open.Session, OperationBatch: batch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := host.config.Clock.Now()
+			record, err := host.DelegateAgent(context.Background(), owner.Session, accesscore.Delegation{
+				ID: "recovery-" + test.name, ParentActor: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, Agent: accessprotocol.ActorRef{ActorID: "recovery-agent", Kind: "agent"},
+				DocumentID: string(batch.DocumentID), LocalScopeID: owner.Session.Open.Session.Scope.LocalScopeID,
+				AuthoringCapabilities: append([]semantic.AuthoringCapability(nil), preview.PreviewEvaluation.AuthoringImpact.RequiredCapabilities...), Permissions: accesscore.AgentPermissions{Read: true, Propose: true, Apply: true}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			delegated, err := host.OpenDelegatedDocument(context.Background(), batch.DocumentID, record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal, _ := externalRecoveryFixture(t, host, delegated.Session, source, "delegated_"+test.name, runtimeprotocol.RecoveryPhaseExternalPending)
+			if test.revoke {
+				if err := host.RevokeDelegation(record.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := host.Shutdown(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			restarted := newTestHost(t, dataRoot, func(config *Config) {
+				if test.expired {
+					config.Clock = &fakeClock{now: now.Add(2 * time.Hour)}
+				}
+			})
+			results, recoverErr := restarted.Recover(context.Background(), journal.Scope.DocumentID)
+			inspection, err := restarted.external.Inspect(context.Background(), port.InspectExternalFileInput{Scope: journal.Scope, OperationID: journal.Status.OperationID, IdempotencyKey: journal.Status.IdempotencyKey})
+			if !test.revoke && !test.expired {
+				if recoverErr != nil || len(results) != 1 || err != nil || inspection.Receipt == nil {
+					t.Fatalf("live delegated recovery=%+v recoverErr=%v inspection=%+v inspectErr=%v", results, recoverErr, inspection, err)
+				}
+			} else {
+				if !errors.Is(recoverErr, accesscore.ErrGrantStale) {
+					t.Fatalf("unauthorized external recovery=%v", recoverErr)
+				}
+				if err != nil || inspection.Stage == nil || inspection.Receipt != nil {
+					t.Fatalf("external publication escaped authorization: inspection=%+v err=%v", inspection, err)
+				}
+			}
+		})
+	}
 }
 
 func externalRecoveryFixture(t *testing.T, host *Host, session *Session, source, suffix string, phase runtimeprotocol.RecoveryPhase) (port.RecoveryRecord, port.StagedRevision) {
