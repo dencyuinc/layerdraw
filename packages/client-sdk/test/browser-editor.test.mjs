@@ -293,6 +293,18 @@ test("transport capability is authoritative and cannot be fabricated by an optio
   await editor.close();
 });
 
+test("required capability options cannot suppress the Browser Editor baseline", async () => {
+  const engine = makeEngine();
+  engine.client.getCapabilities = () => ({ operations: {} });
+  const editor = createBrowserEditor({ engine_client: engine.client, asset_resolver: assetResolver(), required_capabilities: [] });
+  await assert.rejects(
+    editor.open({ authority: "engine", input: { compile_input: {}, requested_limits: {} } }),
+    (error) => error.code === "editor.required_capability_unavailable",
+  );
+  assert.equal(engine.calls.some(([name]) => name === "open"), false);
+  await editor.close();
+});
+
 test("approval cancellation and cleanup failures retain their typed channels", async () => {
   const engine = makeEngine();
   const editor = createBrowserEditor({

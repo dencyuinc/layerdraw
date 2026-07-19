@@ -138,8 +138,9 @@ class BrowserEditorImpl implements BrowserEditor {
     const defaults = input.authority === "runtime"
       ? ["runtime.open_document", "runtime.preview_operations", "runtime.commit_operations"] as const
       : ["engine.open_document", "engine.preview_operations", "engine.apply_to_handle"] as const;
+    const required = [...new Set([...defaults, ...(this.#options.required_capabilities ?? [])])];
     const selection = negotiateEditorCapabilities(manifest, {
-      required: this.#options.required_capabilities ?? defaults,
+      required,
       ...(this.#options.optional_capabilities === undefined ? {} : { optional: this.#options.optional_capabilities }),
     });
     return this.#withController(async (signal) => {
