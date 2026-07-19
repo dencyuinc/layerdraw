@@ -5,6 +5,7 @@ package localdocument
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
@@ -188,7 +189,20 @@ func (h *Host) finishPublished(ctx context.Context, scope runtimeprotocol.Runtim
 			} else if inspection.Stage != nil && record.ExpectedExternalProviderVersion != nil {
 				publicationCtx, release, authErr := h.authorizeRecoveredExternalPublication(ctx, scope, record, stage)
 				if authErr != nil {
-					return runtimeprotocol.RuntimeOperationStatus{}, authErr
+					// The document head is already published, but a stale delegation
+					// can never authorize its remaining external side effect. Persist a
+					// terminal review outcome so every later restart converges without
+					// retrying the unauthorized publication.
+					updated, advanceErr := h.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: scope, OperationID: record.Status.OperationID, ExpectedPhase: phase, NextPhase: runtimeprotocol.RecoveryPhaseRecovering, PublishedRevision: &revision})
+					if advanceErr != nil {
+						return runtimeprotocol.RuntimeOperationStatus{}, fmt.Errorf("localdocument: quarantine unauthorized external recovery: %w", advanceErr)
+					}
+					status, finalizeErr := h.finalizeRecovered(ctx, scope, updated, previewFor(updated, stage, true), runtimeprotocol.OperationResultStatusNeedsReview, nil, "", runtimeprotocol.RecoveryPhaseNeedsReview)
+					if finalizeErr != nil {
+						return runtimeprotocol.RuntimeOperationStatus{}, fmt.Errorf("localdocument: finalize unauthorized external recovery: %w", finalizeErr)
+					}
+					_ = h.external.Abort(context.WithoutCancel(ctx), port.AbortExternalFileInput{Scope: scope, StageID: inspection.Stage.StageID})
+					return status, nil
 				}
 				receipt, err = h.external.Publish(publicationCtx, port.PublishExternalFileInput{Scope: scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey, StageID: inspection.Stage.StageID, ExpectedProviderVersion: *record.ExpectedExternalProviderVersion})
 				release()

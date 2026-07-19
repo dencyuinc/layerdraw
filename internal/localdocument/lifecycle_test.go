@@ -746,6 +746,8 @@ func TestRestartRecoveryReauthorizesDelegatedExternalPublication(t *testing.T) {
 			restarted := newTestHost(t, dataRoot, func(config *Config) {
 				if test.expired {
 					config.Clock = &fakeClock{now: now.Add(2 * time.Hour)}
+				} else {
+					config.Clock = &fakeClock{now: now.Add(30 * time.Minute)}
 				}
 			})
 			results, recoverErr := restarted.Recover(context.Background(), journal.Scope.DocumentID)
@@ -755,11 +757,22 @@ func TestRestartRecoveryReauthorizesDelegatedExternalPublication(t *testing.T) {
 					t.Fatalf("live delegated recovery=%+v recoverErr=%v inspection=%+v inspectErr=%v", results, recoverErr, inspection, err)
 				}
 			} else {
-				if !errors.Is(recoverErr, accesscore.ErrGrantStale) {
-					t.Fatalf("unauthorized external recovery=%v", recoverErr)
+				if recoverErr != nil || len(results) != 1 || results[0].Status.Phase != runtimeprotocol.RecoveryPhaseNeedsReview || results[0].Status.OperationResult == nil || results[0].Status.OperationResult.Status != runtimeprotocol.OperationResultStatusNeedsReview {
+					t.Fatalf("unauthorized external recovery did not converge: results=%+v err=%v", results, recoverErr)
 				}
-				if err != nil || inspection.Stage == nil || inspection.Receipt != nil {
-					t.Fatalf("external publication escaped authorization: inspection=%+v err=%v", inspection, err)
+				if !errors.Is(err, port.ErrNotFound) || inspection.Receipt != nil {
+					t.Fatalf("unauthorized external stage survived: inspection=%+v err=%v", inspection, err)
+				}
+				if err := restarted.Shutdown(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				again := newTestHost(t, dataRoot, func(config *Config) { config.Clock = &fakeClock{now: now.Add(3 * time.Hour)} })
+				repeated, err := again.Recover(context.Background(), journal.Scope.DocumentID)
+				if err != nil || len(repeated) != 1 || repeated[0].Status.Phase != runtimeprotocol.RecoveryPhaseNeedsReview {
+					t.Fatalf("repeated restart recovery=%+v err=%v", repeated, err)
+				}
+				if _, err := again.OpenDocument(context.Background(), journal.Scope.DocumentID); err != nil {
+					t.Fatalf("terminal authorization recovery still blocks reopen: %v", err)
 				}
 			}
 		})

@@ -138,7 +138,7 @@ func ValidateRecoveryTransition(from, to runtimeprotocol.RecoveryPhase) *Contrac
 		runtimeprotocol.RecoveryPhaseStaged:             {runtimeprotocol.RecoveryPhasePublicationPending},
 		runtimeprotocol.RecoveryPhasePublicationPending: {runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseRecovering},
 		runtimeprotocol.RecoveryPhasePublished:          {runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseRecovering},
-		runtimeprotocol.RecoveryPhaseExternalPending:    {runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished},
+		runtimeprotocol.RecoveryPhaseExternalPending:    {runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished, runtimeprotocol.RecoveryPhaseRecovering},
 		runtimeprotocol.RecoveryPhaseExternalFailed:     {runtimeprotocol.RecoveryPhaseStatePending},
 		runtimeprotocol.RecoveryPhaseExternalPublished:  {runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseRecovering},
 		runtimeprotocol.RecoveryPhaseStatePending:       {runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseRecovering},
