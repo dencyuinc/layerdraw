@@ -32,16 +32,21 @@ func bytesRepeat(ch byte, n int) []byte {
 }
 
 type memoryClient struct {
-	releases []ArtifactRelease
-	bytes    map[string][]byte
-	offline  bool
-	searches atomic.Int64
+	releases    []ArtifactRelease
+	bytes       map[string][]byte
+	offline     bool
+	searchErr   error
+	downloadErr error
+	searches    atomic.Int64
 }
 
 func (m *memoryClient) Search(_ context.Context, source RegistrySource, input SearchInput) ([]ArtifactRelease, error) {
 	m.searches.Add(1)
 	if m.offline {
 		return nil, errors.New("offline")
+	}
+	if m.searchErr != nil {
+		return nil, m.searchErr
 	}
 	out := []ArtifactRelease{}
 	for _, release := range m.releases {
@@ -55,6 +60,9 @@ func (m *memoryClient) Download(_ context.Context, _ RegistrySource, release Art
 	if m.offline {
 		return nil, errors.New("offline")
 	}
+	if m.downloadErr != nil {
+		return nil, m.downloadErr
+	}
 	value, ok := m.bytes[release.Digest]
 	if !ok {
 		return nil, errors.New("missing")
@@ -62,7 +70,7 @@ func (m *memoryClient) Download(_ context.Context, _ RegistrySource, release Art
 	return append([]byte{}, value...), nil
 }
 
-type validator struct{ fail, mismatch bool }
+type validator struct{ fail, mismatch, nilImpact, migration bool }
 
 func (v *validator) ValidateRegistryArtifact(_ context.Context, release ArtifactRelease, _ []byte) (ValidatedArtifact, error) {
 	if v.fail {
@@ -73,16 +81,30 @@ func (v *validator) ValidateRegistryArtifact(_ context.Context, release Artifact
 		canonical = testDigest('f')
 	}
 	impact := &semantic.AuthoringImpact{BaseDefinitionHash: protocolcommon.Digest(testDigest('1')), ResultingDefinitionHash: protocolcommon.Digest(testDigest('2')), SemanticDiffHash: protocolcommon.Digest(testDigest('3')), SourceDiffHash: protocolcommon.Digest(testDigest('4')), ImpactDigest: protocolcommon.Digest(testDigest('5')), RequiredCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilitySchemaWrite}, Entries: []semantic.AuthoringImpactEntry{}}
-	return ValidatedArtifact{Identity: release.Identity, CanonicalDigest: canonical, StagedTreeManifest: testDigest('6'), ResolvedLockDigest: testDigest('7'), MutationDigest: testDigest('8'), AuthoringImpactDigest: string(impact.ImpactDigest), AuthoringImpact: impact, Diagnostics: []string{}}, nil
+	if v.nilImpact {
+		impact = nil
+	}
+	if impact == nil {
+		return ValidatedArtifact{Identity: release.Identity, CanonicalDigest: canonical, StagedTreeManifest: testDigest('6'), ResolvedLockDigest: testDigest('7'), MutationDigest: testDigest('8'), AuthoringImpactDigest: testDigest('5'), Diagnostics: []string{}}, nil
+	}
+	migrationDigest := ""
+	if v.migration {
+		migrationDigest = testDigest('e')
+	}
+	return ValidatedArtifact{Identity: release.Identity, CanonicalDigest: canonical, StagedTreeManifest: testDigest('6'), ResolvedLockDigest: testDigest('7'), MutationDigest: testDigest('8'), AuthoringImpactDigest: string(impact.ImpactDigest), AuthoringImpact: impact, AddressMigrationPlanDigest: migrationDigest, Diagnostics: []string{}}, nil
 }
 
 type accessPort struct {
 	deny  bool
+	err   error
 	calls atomic.Int64
 }
 
 func (a *accessPort) EvaluateRegistryPlan(_ context.Context, input accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error) {
 	a.calls.Add(1)
+	if a.err != nil {
+		return accessprotocol.AuthoringDecision{}, a.err
+	}
 	caps := []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage}
 	var impactDigest *protocolcommon.Digest
 	if input.AuthoringImpact != nil {

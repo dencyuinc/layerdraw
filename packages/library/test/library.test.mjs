@@ -84,3 +84,19 @@ test("Library maps repair states and cancellation without inventing recovery dec
   const rejected = createLibrary({ client: client({ async authorArtifact() { return { ok: false, failure: { code: "registry.artifact_corrupt", subject: "output", actionable: true } }; } }), capabilities });
   assert.equal((await rejected.author({ kind: "pack", project_id: "p", output_name: "x.ldpack", publisher_id: "p", version: "1.0.0" })).failure.code, "registry.artifact_corrupt");
 });
+
+test("Library preserves host failures for source and recovery intents", async () => {
+  const failure = { code: "registry.unavailable", subject: "host", actionable: true };
+  const library = createLibrary({ client: client({
+    async configureSource() { return { ok: false, failure }; },
+    async connectSource() { return { ok: false, failure }; },
+    async disconnectSource() { return { ok: false, failure }; },
+    async getTransaction() { return { ok: false, failure }; },
+    async recoverTransaction() { return { ok: false, failure }; },
+  }), capabilities });
+  assert.equal((await library.configureSource({ ...source, connected: undefined })).failure.subject, "host");
+  assert.equal((await library.connectSource("official", "credential:official")).failure.subject, "host");
+  assert.equal((await library.disconnectSource("official")).failure.subject, "host");
+  assert.equal((await library.getTransaction("tx")).failure.subject, "host");
+  assert.equal((await library.recoverTransaction("tx")).failure.subject, "host");
+});

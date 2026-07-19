@@ -96,6 +96,9 @@ func (s *DiskTransactionStore) GetRegistryTransaction(ctx context.Context, id st
 	return cloneTransaction(tx), true, nil
 }
 func (s *DiskTransactionStore) CompareAndSwapRegistryTransaction(ctx context.Context, id string, expected uint64, next Transaction) (bool, error) {
+	if !transactionIDPattern.MatchString(id) || next.Plan.TransactionID != id {
+		return false, errors.New("invalid registry transaction id")
+	}
 	release, err := s.lock(ctx)
 	if err != nil {
 		return false, err
