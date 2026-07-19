@@ -24,6 +24,19 @@ type recoveryDisk struct {
 	Idempotency map[string]string        `json:"idempotency"`
 }
 
+func externalPendingStatus(stage port.ExternalFileStage) *runtimeprotocol.ExternalMaterializationStatus {
+	return &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStatePending, CandidateProviderVersion: stage.CandidateProviderVersion}
+}
+
+func externalPublishedStatus(receipt port.ExternalFileReceipt) *runtimeprotocol.ExternalMaterializationStatus {
+	provider, digest := receipt.ProviderVersion, receipt.ReceiptDigest
+	return &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStatePublished, CandidateProviderVersion: receipt.ProviderVersion, ProviderVersion: &provider, ReceiptDigest: &digest}
+}
+
+func externalFailedStatus(stage port.ExternalFileStage, failure runtimeprotocol.ExternalMaterializationFailure) *runtimeprotocol.ExternalMaterializationStatus {
+	return &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStateFailed, CandidateProviderVersion: stage.CandidateProviderVersion, Failure: &failure}
+}
+
 func recoveryRecordID(op, key string) (string, error) {
 	return safeID(strconv.Itoa(len(op)) + ":" + op + ":" + key)
 }
@@ -33,7 +46,7 @@ func validRecoveryEntry(scope runtimeprotocol.RuntimeScope, entry recoveryEntry)
 		return false
 	}
 	phase := entry.Record.Status.Phase
-	publishedPhase := phase == runtimeprotocol.RecoveryPhasePublished || phase == runtimeprotocol.RecoveryPhaseStatePending || phase == runtimeprotocol.RecoveryPhaseAuditPending || phase == runtimeprotocol.RecoveryPhaseOutboxReady
+	publishedPhase := phase == runtimeprotocol.RecoveryPhasePublished || phase == runtimeprotocol.RecoveryPhaseExternalPending || phase == runtimeprotocol.RecoveryPhaseExternalPublished || phase == runtimeprotocol.RecoveryPhaseExternalFailed || phase == runtimeprotocol.RecoveryPhaseStatePending || phase == runtimeprotocol.RecoveryPhaseAuditPending || phase == runtimeprotocol.RecoveryPhaseOutboxReady
 	if publishedPhase && entry.PublishedRevision == nil {
 		return false
 	}
@@ -203,7 +216,7 @@ func (s *Recovery) Get(ctx context.Context, in port.GetRecoveryRecordInput) (por
 }
 
 var legalTransitions = map[runtimeprotocol.RecoveryPhase]map[runtimeprotocol.RecoveryPhase]bool{
-	runtimeprotocol.RecoveryPhasePending: {runtimeprotocol.RecoveryPhaseStaged: true}, runtimeprotocol.RecoveryPhaseStaged: {runtimeprotocol.RecoveryPhasePublicationPending: true}, runtimeprotocol.RecoveryPhasePublicationPending: {runtimeprotocol.RecoveryPhasePublished: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhasePublished: {runtimeprotocol.RecoveryPhaseStatePending: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhaseStatePending: {runtimeprotocol.RecoveryPhaseAuditPending: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhaseAuditPending: {runtimeprotocol.RecoveryPhaseOutboxReady: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhaseOutboxReady: {runtimeprotocol.RecoveryPhaseFinal: true}, runtimeprotocol.RecoveryPhaseRecovering: {runtimeprotocol.RecoveryPhaseFinal: true, runtimeprotocol.RecoveryPhaseNeedsReview: true},
+	runtimeprotocol.RecoveryPhasePending: {runtimeprotocol.RecoveryPhaseStaged: true}, runtimeprotocol.RecoveryPhaseStaged: {runtimeprotocol.RecoveryPhasePublicationPending: true}, runtimeprotocol.RecoveryPhasePublicationPending: {runtimeprotocol.RecoveryPhasePublished: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhasePublished: {runtimeprotocol.RecoveryPhaseExternalPending: true, runtimeprotocol.RecoveryPhaseStatePending: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhaseExternalPending: {runtimeprotocol.RecoveryPhaseExternalFailed: true, runtimeprotocol.RecoveryPhaseExternalPublished: true}, runtimeprotocol.RecoveryPhaseExternalFailed: {runtimeprotocol.RecoveryPhaseStatePending: true}, runtimeprotocol.RecoveryPhaseExternalPublished: {runtimeprotocol.RecoveryPhaseStatePending: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhaseStatePending: {runtimeprotocol.RecoveryPhaseAuditPending: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhaseAuditPending: {runtimeprotocol.RecoveryPhaseOutboxReady: true, runtimeprotocol.RecoveryPhaseRecovering: true}, runtimeprotocol.RecoveryPhaseOutboxReady: {runtimeprotocol.RecoveryPhaseFinal: true}, runtimeprotocol.RecoveryPhaseRecovering: {runtimeprotocol.RecoveryPhaseFinal: true, runtimeprotocol.RecoveryPhaseNeedsReview: true},
 }
 
 func (s *Recovery) Advance(ctx context.Context, in port.AdvanceRecoveryRecordInput) (port.RecoveryRecord, error) {
@@ -258,6 +271,35 @@ func (s *Recovery) Advance(ctx context.Context, in port.AdvanceRecoveryRecordInp
 		}
 		if in.NextPhase == runtimeprotocol.RecoveryPhasePublished && (in.PublishedRevision == nil || entry.PublishedRevision == nil) {
 			return port.ErrConflict
+		}
+		if in.ExternalStage != nil || in.ExpectedExternalProviderVersion != nil {
+			if in.ExpectedPhase != runtimeprotocol.RecoveryPhaseStaged || in.NextPhase != runtimeprotocol.RecoveryPhasePublicationPending || in.ExternalStage == nil || in.ExpectedExternalProviderVersion == nil || entry.Record.ExternalStage != nil {
+				return port.ErrConflict
+			}
+			stage := *in.ExternalStage
+			expected := *in.ExpectedExternalProviderVersion
+			entry.Record.ExternalStage = &stage
+			entry.Record.ExpectedExternalProviderVersion = &expected
+		}
+		if in.ExternalReceipt != nil {
+			if in.ExpectedPhase != runtimeprotocol.RecoveryPhaseExternalPending || in.NextPhase != runtimeprotocol.RecoveryPhaseExternalPublished || entry.Record.ExternalStage == nil || in.ExternalReceipt.ProviderVersion != entry.Record.ExternalStage.CandidateProviderVersion || in.ExternalReceipt.MaterializationDigest != entry.Record.ExternalStage.MaterializationDigest {
+				return port.ErrConflict
+			}
+			receipt := *in.ExternalReceipt
+			entry.Record.ExternalReceipt = &receipt
+			entry.Record.Status.ExternalMaterialization = externalPublishedStatus(receipt)
+		} else if in.NextPhase == runtimeprotocol.RecoveryPhaseExternalPending {
+			if entry.Record.ExternalStage == nil || entry.Record.ExpectedExternalProviderVersion == nil {
+				return port.ErrConflict
+			}
+			entry.Record.Status.ExternalMaterialization = externalPendingStatus(*entry.Record.ExternalStage)
+		} else if in.ExternalFailure != nil {
+			if in.ExpectedPhase != runtimeprotocol.RecoveryPhaseExternalPending || in.NextPhase != runtimeprotocol.RecoveryPhaseExternalFailed || entry.Record.ExternalStage == nil {
+				return port.ErrConflict
+			}
+			failure := *in.ExternalFailure
+			entry.Record.ExternalFailure = &failure
+			entry.Record.Status.ExternalMaterialization = externalFailedStatus(*entry.Record.ExternalStage, failure)
 		}
 		entry.Record.Status.Phase = in.NextPhase
 		if in.NextPhase == runtimeprotocol.RecoveryPhaseRecovering {
@@ -332,7 +374,7 @@ func (s *Recovery) Finalize(ctx context.Context, in port.FinalizeRecoveryRecordI
 			if in.TerminalPhase != runtimeprotocol.RecoveryPhaseFinal {
 				return port.ErrConflict
 			}
-		} else if phase == runtimeprotocol.RecoveryPhaseOutboxReady || phase == runtimeprotocol.RecoveryPhaseRecovering {
+		} else if phase == runtimeprotocol.RecoveryPhaseOutboxReady || phase == runtimeprotocol.RecoveryPhaseRecovering || phase == runtimeprotocol.RecoveryPhaseExternalFailed {
 			if !legalTransitions[phase][in.TerminalPhase] {
 				return port.ErrConflict
 			}
@@ -344,6 +386,7 @@ func (s *Recovery) Finalize(ctx context.Context, in port.FinalizeRecoveryRecordI
 		entry.Record.Status.OperationResult = &result.OperationResult
 		entry.Record.Status.RecoveryStartedAt = nil
 		entry.Record.Status.RetryAfterMs = nil
+		entry.Record.Status.ExternalMaterialization = nil
 		entry.Record.CommitResult = &result
 		if !validRecoveryEntry(in.Scope, entry) {
 			return port.ErrConflict

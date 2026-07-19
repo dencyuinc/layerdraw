@@ -57,16 +57,19 @@ func (timerScheduler) Schedule(delay time.Duration, fn func()) func() {
 }
 
 type Config struct {
-	Root             string
-	Clock            Clock
-	Scheduler        Scheduler
-	Random           io.Reader
-	AutosaveDelay    time.Duration
-	MaxSessions      int
-	MaxRecoveryItems int
-	MaxProjectFiles  int
-	MaxProjectBytes  int64
-	AdapterOptions   local.Options
+	Root                  string
+	ReleaseVersion        protocolcommon.ReleaseVersion
+	EndpointInstanceID    protocolcommon.EndpointInstanceID
+	ReleaseManifestDigest protocolcommon.Digest
+	Clock                 Clock
+	Scheduler             Scheduler
+	Random                io.Reader
+	AutosaveDelay         time.Duration
+	MaxSessions           int
+	MaxRecoveryItems      int
+	MaxProjectFiles       int
+	MaxProjectBytes       int64
+	AdapterOptions        local.Options
 }
 
 type Host struct {
@@ -78,6 +81,7 @@ type Host struct {
 	assets    *local.Assets
 	history   *local.History
 	recovery  *local.Recovery
+	external  *local.ExternalFileStore
 	authority *localAuthority
 	workbench *runtimeWorkbench
 	mu        sync.Mutex
@@ -156,6 +160,17 @@ func New(config Config) (*Host, error) {
 	if config.Clock == nil {
 		config.Clock = systemClock{}
 	}
+	if config.ReleaseVersion == "" {
+		config.ReleaseVersion = "0.0.0-dev"
+	}
+	if config.EndpointInstanceID == "" {
+		config.EndpointInstanceID = "local-document-runtime"
+	}
+	if config.ReleaseManifestDigest == "" {
+		config.ReleaseManifestDigest = digestJSON(struct {
+			Component string `json:"component"`
+		}{"local-document"})
+	}
 	if config.Scheduler == nil {
 		config.Scheduler = timerScheduler{}
 	}
@@ -199,11 +214,15 @@ func New(config Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	external, err := local.NewExternalFileStore(config.Root, local.ExternalFileOptions{MaxFiles: config.MaxProjectFiles, MaxBytes: config.MaxProjectBytes})
+	if err != nil {
+		return nil, err
+	}
 	instance := engineendpoint.NewLocalDocumentEngine()
-	endpointID := protocolcommon.EndpointInstanceID("local-document-runtime")
-	workbench := &runtimeWorkbench{bridge: instance.NewRuntimeEngineBridge(endpointID)}
+	endpointID := config.EndpointInstanceID
+	workbench := &runtimeWorkbench{bridge: instance.NewRuntimeEngineBridge(endpointID), engine: instance, kinds: map[runtimeprotocol.DocumentID]port.ExternalFileKind{}}
 	authority := newLocalAuthority(config.Clock, config.Random)
-	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]func(){}}
+	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]func(){}}
 	metadata, err := host.loadMetadata()
 	if err != nil {
 		return nil, err
@@ -212,9 +231,7 @@ func New(config Config) (*Host, error) {
 	for _, binding := range metadata.Bindings {
 		authority.add(binding.DocumentID)
 	}
-	runtimeValue, err := runtimehost.New(runtimehost.Config{ReleaseVersion: "0.0.0-dev", EndpointInstanceID: endpointID, ReleaseManifestDigest: digestJSON(struct {
-		Component string `json:"component"`
-	}{"local-document"}), Limits: defaultRuntimeLimits(), Ports: runtimehost.Ports{Workbench: workbench, Grants: authority, Scopes: authority, Documents: documents, State: state, Assets: assets, History: history, Recovery: recovery, Authoring: authority, Clock: authority, Identities: authority}})
+	runtimeValue, err := runtimehost.New(runtimehost.Config{ReleaseVersion: config.ReleaseVersion, EndpointInstanceID: endpointID, ReleaseManifestDigest: config.ReleaseManifestDigest, Limits: defaultRuntimeLimits(), Ports: runtimehost.Ports{Workbench: workbench, Grants: authority, Scopes: authority, Documents: documents, State: state, StateBindings: localStateBinding{backend: state}, StateAccess: authority, Assets: assets, History: history, Recovery: recovery, External: external, Authoring: authority, Clock: authority, Identities: authority}})
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +433,11 @@ func (h *Host) openBound(ctx context.Context, binding documentBinding, externalD
 	}
 	h.mu.Unlock()
 	h.authority.add(binding.DocumentID)
+	kind := port.ExternalFileKind(binding.Kind)
+	if err := h.external.Bind(ctx, local.ExternalFileBinding{Scope: h.authority.add(binding.DocumentID), Kind: kind, Locator: binding.Locator}); err != nil {
+		return OpenResult{}, err
+	}
+	h.workbench.BindExternal(binding.DocumentID, kind)
 	if _, err := h.Recover(ctx, binding.DocumentID); err != nil {
 		return OpenResult{}, err
 	}
@@ -499,7 +521,7 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 		input.IdempotencyKey = runtimeprotocol.IdempotencyKey("idem_" + value)
 	}
 	current := input.Session.Open.CommittedRevision
-	input.Preconditions.DocumentGeneration = engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "local-document-runtime", Value: input.Session.working.Handle}, Value: protocolcommon.CanonicalUint64(input.Session.working.Generation)}
+	input.Preconditions.DocumentGeneration = engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: h.config.EndpointInstanceID, Value: input.Session.working.Handle}, Value: protocolcommon.CanonicalUint64(input.Session.working.Generation)}
 	prepared, err := h.workbench.Preview(ctx, port.PreviewWorkingDocumentInput{Document: input.Session.working, Batch: input.Operations, Preconditions: input.Preconditions, MaxOperations: "4096"})
 	if err != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, err
@@ -527,7 +549,60 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 			input.Session.Open.WorkingDocument.WorkingGeneration = runtimeprotocol.WorkingGeneration(working.Generation)
 		}
 	}
+	if external := result.OperationResult.ExternalMaterialization; external != nil && external.State == runtimeprotocol.ExternalMaterializationStatePublished {
+		digest, ok := h.workbench.SourceDigest(input.Session.working.Handle)
+		if !ok {
+			return result, errors.New("published external source baseline is unavailable")
+		}
+		// The journal result and external receipt are already durable. Baseline
+		// metadata is a conservative change-detection cache: a write failure may
+		// cause a later reopen to require review, but must never turn this
+		// published operation into a transport-level rejection.
+		_ = h.acceptSessionSourceBaseline(input.Session, digest)
+	}
 	return result, nil
+}
+
+func (h *Host) acceptSessionSourceBaseline(session *Session, digest protocolcommon.Digest) error {
+	if _, err := protocolcommon.EncodeDigest(digest); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if session == nil || session.closed || h.sessions[session.Open.Session.RuntimeSessionID] != session {
+		return errors.New("session is closed or unknown")
+	}
+	session.SourceDigest = digest
+	return h.acceptDocumentSourceBaselineLocked(session.Open.Session.Scope.DocumentID, digest)
+}
+
+func (h *Host) acceptDocumentSourceBaseline(documentID runtimeprotocol.DocumentID, digest protocolcommon.Digest) error {
+	if _, err := protocolcommon.EncodeDigest(digest); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.acceptDocumentSourceBaselineLocked(documentID, digest)
+}
+
+func (h *Host) acceptDocumentSourceBaselineLocked(documentID runtimeprotocol.DocumentID, digest protocolcommon.Digest) error {
+	for key, binding := range h.metadata.Bindings {
+		if binding.DocumentID != documentID {
+			continue
+		}
+		if binding.SourceDigest == digest {
+			return nil
+		}
+		prior := binding
+		binding.SourceDigest = digest
+		h.metadata.Bindings[key] = binding
+		if err := h.saveMetadataLocked(); err != nil {
+			h.metadata.Bindings[key] = prior
+			return err
+		}
+		return nil
+	}
+	return port.ErrNotFound
 }
 
 func (h *Host) GetOperationStatus(ctx context.Context, session *Session, operation runtimeprotocol.OperationID) (runtimeprotocol.RuntimeOperationStatus, error) {
@@ -565,6 +640,21 @@ func (h *Host) ScheduleAutosave(ctx context.Context, input SaveInput, result cha
 		h.mu.Unlock()
 	})
 	h.autosaves[id] = cancel
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *Host) CancelAutosave(ref runtimeprotocol.RuntimeSessionRef) error {
+	session, err := h.SessionFor(ref)
+	if err != nil {
+		return err
+	}
+	id := session.Open.Session.RuntimeSessionID
+	h.mu.Lock()
+	if cancel := h.autosaves[id]; cancel != nil {
+		cancel()
+		delete(h.autosaves, id)
+	}
 	h.mu.Unlock()
 	return nil
 }

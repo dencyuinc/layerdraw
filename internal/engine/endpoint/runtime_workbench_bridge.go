@@ -164,6 +164,24 @@ func (w *RuntimeEngineBridge) Working(handle string) (BridgeWorking, bool) {
 	}
 	return doc.working, true
 }
+
+// SourceDigest returns the canonical semantic-source digest for the currently
+// checkpointed Engine input. It deliberately excludes a merely prepared
+// candidate, so hosts cannot advance an external baseline before publication.
+func (w *RuntimeEngineBridge) SourceDigest(handle string) (protocolcommon.Digest, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	doc := w.docs[handle]
+	if doc == nil {
+		return "", false
+	}
+	encoded, err := EncodeLocalCompileInput(doc.input)
+	if err != nil {
+		return "", false
+	}
+	return LocalCompileInputRef(encoded).Digest, true
+}
+
 func (w *RuntimeEngineBridge) Opened(documentID, revisionID string) (BridgeWorking, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

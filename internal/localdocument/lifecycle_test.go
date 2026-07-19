@@ -247,6 +247,10 @@ func TestProjectOpenSaveDuplicateRestartExternalChangeAndClose(t *testing.T) {
 	if committed.OperationResult.Status != runtimeprotocol.OperationResultStatusCommitted {
 		t.Fatalf("save = %+v", committed)
 	}
+	materialized, err := os.ReadFile(filepath.Join(project, "document.ldl"))
+	if err != nil || !bytes.Contains(materialized, []byte("layer1")) {
+		t.Fatalf("explicit save did not materialize Engine source: %q err=%v", materialized, err)
+	}
 	duplicate, err := host.Save(context.Background(), save)
 	if err != nil || duplicate.OperationResult.ResultDigest != committed.OperationResult.ResultDigest {
 		t.Fatalf("duplicate = %+v %v", duplicate, err)
@@ -406,6 +410,18 @@ func TestContainerValidationImportIdentityAndNoPartialPublication(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	containerSave, err := host.Save(context.Background(), SaveInput{Session: first.Session, Operations: createLayerBatch(t, "container_saved"), Preconditions: allPreconditions(t, "project p \"P\" {}\n"), OperationID: "container_save", IdempotencyKey: "idempotency_container_save", Trigger: runtimeprotocol.CommitTriggerExplicitSave})
+	if err != nil || containerSave.OperationResult.Status != runtimeprotocol.OperationResultStatusCommitted {
+		t.Fatalf("container save=%+v err=%v", containerSave, err)
+	}
+	materializedContainer, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	containerSource, err := host.engine.ReadContainer(context.Background(), materializedContainer)
+	if err != nil || !bytes.Contains(containerSource.ProjectSourceTree()["document.ldl"], []byte("container_saved")) {
+		t.Fatalf("container was not materialized through Engine: %q err=%v", containerSource.ProjectSourceTree()["document.ldl"], err)
+	}
 	imported, err := host.ImportContainer(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
@@ -494,6 +510,10 @@ func TestAutosaveUsesInjectedSchedulerAndCloseCancels(t *testing.T) {
 	if result.Err != nil || result.Result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommitted {
 		t.Fatalf("autosave = %+v", result)
 	}
+	autosaved, err := os.ReadFile(filepath.Join(project, "document.ldl"))
+	if err != nil || !bytes.Contains(autosaved, []byte("auto")) {
+		t.Fatalf("autosave did not materialize Engine source: %q err=%v", autosaved, err)
+	}
 	second, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
 	if err != nil {
 		t.Fatal(err)
@@ -535,9 +555,12 @@ func TestRecoveryConvergesPublishedHeadAfterJournalFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	documentID := opened.Session.Open.Session.Scope.DocumentID
-	_, err = host.Save(context.Background(), SaveInput{Session: opened.Session, Operations: createLayerBatch(t, "recovered"), Preconditions: allPreconditions(t, source), OperationID: "recovery_save", IdempotencyKey: "idempotency_recover", Trigger: runtimeprotocol.CommitTriggerExplicitSave})
-	if err == nil {
-		t.Fatal("injected post-publication journal failure was hidden")
+	commit, err := host.Save(context.Background(), SaveInput{Session: opened.Session, Operations: createLayerBatch(t, "recovered"), Preconditions: allPreconditions(t, source), OperationID: "recovery_save", IdempotencyKey: "idempotency_recover", Trigger: runtimeprotocol.CommitTriggerExplicitSave})
+	if err != nil {
+		t.Fatalf("published commit was reported as rejected: %v", err)
+	}
+	if commit.OperationResult.Status != runtimeprotocol.OperationResultStatusCommittedExternalPending || commit.OperationResult.CommittedRevision == nil || commit.OperationResult.ExternalMaterialization == nil || commit.OperationResult.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStatePending {
+		t.Fatalf("post-publication journal failure result = %+v", commit)
 	}
 	restarted := newTestHost(t, filepath.Join(root, "data"), nil)
 	results, err := restarted.Recover(context.Background(), documentID)
@@ -613,6 +636,281 @@ func stageRecoveryFixture(t *testing.T, host *Host, session *Session, source, su
 		}
 	}
 	return record, staged
+}
+
+func externalRecoveryFixture(t *testing.T, host *Host, session *Session, source, suffix string, phase runtimeprotocol.RecoveryPhase) (port.RecoveryRecord, port.StagedRevision) {
+	t.Helper()
+	ctx := context.Background()
+	record, staged := stageRecoveryFixture(t, host, session, source, suffix, false, false)
+	var encoded []byte
+	for _, blob := range stagedInputFor(t, host, record.Scope, record.Status.OperationID).SourceBlobs.Blobs {
+		if blob.Ref == stagedInputFor(t, host, record.Scope, record.Status.OperationID).Manifest {
+			encoded = blob.Contents
+			break
+		}
+	}
+	if encoded == nil {
+		t.Fatal("staged Engine source is unavailable")
+	}
+	candidate, err := host.engine.ReadEncodedInput(ctx, encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make([]port.ExternalProjectFile, 0, len(candidate.ProjectSourceTree()))
+	for path, contents := range candidate.ProjectSourceTree() {
+		files = append(files, port.ExternalProjectFile{Path: path, Contents: contents})
+	}
+	externalHead, err := host.external.GetExternalHead(ctx, port.GetExternalFileHeadInput{Scope: record.Scope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalStage, err := host.external.Prepare(ctx, port.PrepareExternalFileInput{Scope: record.Scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey, RevisionID: staged.Revision.RevisionID, ExpectedProviderVersion: externalHead.ProviderVersion, Materialization: port.ExternalMaterialization{Kind: port.ExternalFileKindProject, ProjectFiles: files}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = host.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: record.Scope, OperationID: record.Status.OperationID, ExpectedPhase: runtimeprotocol.RecoveryPhaseStaged, NextPhase: runtimeprotocol.RecoveryPhasePublicationPending, ExternalStage: &externalStage, ExpectedExternalProviderVersion: &externalHead.ProviderVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentHead, err := host.documents.GetHead(ctx, port.GetDocumentHeadInput{Scope: record.Scope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := host.documents.PublishHead(ctx, port.PublishDocumentHeadInput{Scope: record.Scope, StageID: staged.StageID, ExpectedRevision: documentHead.Revision.RevisionID, ExpectedDefinitionHash: documentHead.Revision.DefinitionHash, ExpectedProviderVersion: documentHead.ProviderVersion, FencingToken: documentHead.FencingToken})
+	if err != nil || !published.Published {
+		t.Fatalf("publish external recovery fixture=%+v err=%v", published, err)
+	}
+	if phase == runtimeprotocol.RecoveryPhasePublicationPending {
+		return record, staged
+	}
+	record, err = host.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: record.Scope, OperationID: record.Status.OperationID, ExpectedPhase: runtimeprotocol.RecoveryPhasePublicationPending, NextPhase: runtimeprotocol.RecoveryPhasePublished, PublishedRevision: &published.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase == runtimeprotocol.RecoveryPhasePublished {
+		return record, staged
+	}
+	record, err = host.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: record.Scope, OperationID: record.Status.OperationID, ExpectedPhase: runtimeprotocol.RecoveryPhasePublished, NextPhase: runtimeprotocol.RecoveryPhaseExternalPending, PublishedRevision: &published.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase == runtimeprotocol.RecoveryPhaseExternalPending {
+		return record, staged
+	}
+	if phase == runtimeprotocol.RecoveryPhaseExternalFailed {
+		failure := runtimeprotocol.ExternalMaterializationFailureConflict
+		record, err = host.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: record.Scope, OperationID: record.Status.OperationID, ExpectedPhase: runtimeprotocol.RecoveryPhaseExternalPending, NextPhase: phase, PublishedRevision: &published.Revision, ExternalFailure: &failure})
+	} else {
+		receipt, publishErr := host.external.Publish(ctx, port.PublishExternalFileInput{Scope: record.Scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey, StageID: externalStage.StageID, ExpectedProviderVersion: externalHead.ProviderVersion})
+		if publishErr != nil {
+			t.Fatal(publishErr)
+		}
+		record, err = host.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: record.Scope, OperationID: record.Status.OperationID, ExpectedPhase: runtimeprotocol.RecoveryPhaseExternalPending, NextPhase: runtimeprotocol.RecoveryPhaseExternalPublished, PublishedRevision: &published.Revision, ExternalReceipt: &receipt})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record, staged
+}
+
+func stagedInputFor(t *testing.T, host *Host, scope runtimeprotocol.RuntimeScope, operation runtimeprotocol.OperationID) port.StageRevisionInput {
+	t.Helper()
+	stages, err := host.documents.ListStaged(context.Background(), scope, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range stages {
+		if stage.Input.OperationID == operation {
+			return stage.Input
+		}
+	}
+	t.Fatal("staged revision input not found")
+	return port.StageRevisionInput{}
+}
+
+func TestRecoveryConvergesEveryExternalPublicationPhase(t *testing.T) {
+	for _, phase := range []runtimeprotocol.RecoveryPhase{runtimeprotocol.RecoveryPhasePublicationPending, runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished} {
+		t.Run(string(phase), func(t *testing.T) {
+			root := t.TempDir()
+			source := "project p \"P\" {}\n"
+			project := writeProject(t, root, source)
+			host := newTestHost(t, filepath.Join(root, "data"), nil)
+			opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, _ := externalRecoveryFixture(t, host, opened.Session, source, strings.ReplaceAll(string(phase), "_", ""), phase)
+			results, err := host.Recover(context.Background(), record.Scope.DocumentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 1 || results[0].Status.Phase != runtimeprotocol.RecoveryPhaseFinal || results[0].Status.OperationResult == nil || results[0].Status.OperationResult.ExternalMaterialization == nil {
+				t.Fatalf("recovery result=%+v", results)
+			}
+			external := results[0].Status.OperationResult.ExternalMaterialization
+			wantState := runtimeprotocol.ExternalMaterializationStatePublished
+			if phase == runtimeprotocol.RecoveryPhaseExternalFailed {
+				wantState = runtimeprotocol.ExternalMaterializationStateFailed
+			}
+			if external.State != wantState {
+				t.Fatalf("external state=%s want=%s", external.State, wantState)
+			}
+			if results[0].Status.OperationResult.Status != runtimeprotocol.OperationResultStatusCommittedStateStale {
+				t.Fatalf("state duty precedence=%s", results[0].Status.OperationResult.Status)
+			}
+			if phase == runtimeprotocol.RecoveryPhaseExternalFailed {
+				_, inspectErr := host.external.Inspect(context.Background(), port.InspectExternalFileInput{Scope: record.Scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey})
+				if !errors.Is(inspectErr, port.ErrNotFound) {
+					t.Fatalf("failed external stage was retained: %v", inspectErr)
+				}
+			}
+		})
+	}
+}
+
+func TestRecoveryReconcilesExternalConflictAndRetryableReceiptFailure(t *testing.T) {
+	t.Run("conflict", func(t *testing.T) {
+		root := t.TempDir()
+		source := "project p \"P\" {}\n"
+		project := writeProject(t, root, source)
+		host := newTestHost(t, filepath.Join(root, "data"), nil)
+		opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, _ := externalRecoveryFixture(t, host, opened.Session, source, "external_conflict_recovery", runtimeprotocol.RecoveryPhaseExternalPending)
+		if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project p \"External\" {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		results, err := host.Recover(context.Background(), record.Scope.DocumentID)
+		if err != nil || len(results) != 1 || results[0].Status.OperationResult == nil || results[0].Status.OperationResult.ExternalMaterialization == nil || results[0].Status.OperationResult.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStateFailed {
+			t.Fatalf("conflict recovery=%+v err=%v", results, err)
+		}
+	})
+
+	t.Run("receipt retry", func(t *testing.T) {
+		root := t.TempDir()
+		source := "project p \"P\" {}\n"
+		project := writeProject(t, root, source)
+		host := newTestHost(t, filepath.Join(root, "data"), nil)
+		opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, _ := externalRecoveryFixture(t, host, opened.Session, source, "external_receipt_retry", runtimeprotocol.RecoveryPhaseExternalPending)
+		injected := errors.New("receipt unavailable")
+		faulting, err := local.NewExternalFileStore(host.config.Root, local.ExternalFileOptions{Fault: func(point string) error {
+			if point == "before_external_receipt" {
+				return injected
+			}
+			return nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		host.external = faulting
+		if _, err := host.Recover(context.Background(), record.Scope.DocumentID); !errors.Is(err, injected) {
+			t.Fatalf("retryable external error=%v", err)
+		}
+		clean, err := local.NewExternalFileStore(host.config.Root, local.ExternalFileOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		host.external = clean
+		results, err := host.Recover(context.Background(), record.Scope.DocumentID)
+		if err != nil || len(results) != 1 || results[0].Status.OperationResult == nil || results[0].Status.OperationResult.ExternalMaterialization == nil || results[0].Status.OperationResult.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStatePublished {
+			t.Fatalf("receipt retry recovery=%+v err=%v", results, err)
+		}
+	})
+}
+
+func TestSourceBaselineHelpersFailClosedAndPersistCanonicalDigest(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root, "project p \"P\" {}\n")
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.acceptSessionSourceBaseline(nil, digestJSON("valid")); err == nil {
+		t.Fatal("nil session baseline was accepted")
+	}
+	if err := host.acceptSessionSourceBaseline(opened.Session, "invalid"); err == nil {
+		t.Fatal("invalid session digest was accepted")
+	}
+	if err := host.acceptDocumentSourceBaseline(opened.Session.Open.Session.Scope.DocumentID, "invalid"); err == nil {
+		t.Fatal("invalid document digest was accepted")
+	}
+	if err := host.acceptDocumentSourceBaseline("doc_missing_baseline", digestJSON("missing")); !errors.Is(err, port.ErrNotFound) {
+		t.Fatalf("missing baseline=%v", err)
+	}
+	next := digestJSON("next baseline")
+	if err := host.acceptDocumentSourceBaseline(opened.Session.Open.Session.Scope.DocumentID, next); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.acceptDocumentSourceBaseline(opened.Session.Open.Session.Scope.DocumentID, next); err != nil {
+		t.Fatalf("idempotent baseline=%v", err)
+	}
+	reloaded, err := host.loadMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, binding := range reloaded.Bindings {
+		if binding.DocumentID == opened.Session.Open.Session.Scope.DocumentID {
+			found = binding.SourceDigest == next
+		}
+	}
+	if !found {
+		t.Fatalf("baseline was not persisted: %+v", reloaded)
+	}
+	priorRoot := host.config.Root
+	prior := next
+	failed := digestJSON("failed persistence")
+	host.config.Root = filepath.Join(root, "missing-metadata-root")
+	if err := host.acceptDocumentSourceBaseline(opened.Session.Open.Session.Scope.DocumentID, failed); err == nil {
+		t.Fatal("metadata persistence failure was hidden")
+	}
+	sessionFailed := digestJSON("failed session persistence")
+	if err := host.acceptSessionSourceBaseline(opened.Session, sessionFailed); err == nil {
+		t.Fatal("session metadata persistence failure was hidden")
+	}
+	if opened.Session.SourceDigest != sessionFailed {
+		t.Fatalf("published session baseline was discarded: %s", opened.Session.SourceDigest)
+	}
+	host.config.Root = priorRoot
+	for _, binding := range host.metadata.Bindings {
+		if binding.DocumentID == opened.Session.Open.Session.Scope.DocumentID && binding.SourceDigest != prior {
+			t.Fatalf("failed metadata update was not rolled back: %+v", binding)
+		}
+	}
+	if _, ok := host.workbench.SourceDigest("missing-working-handle"); ok {
+		t.Fatal("missing working handle exposed a source baseline")
+	}
+	if err := host.ScheduleAutosave(context.Background(), SaveInput{}, nil); err == nil {
+		t.Fatal("nil-session autosave was accepted")
+	}
+	if _, err := host.CancelOperation(context.Background(), nil, "operation_nil_session", "cancel_nil_session"); err == nil {
+		t.Fatal("nil-session cancellation was accepted")
+	}
+	if _, err := host.GetOperationStatus(context.Background(), nil, "operation_nil_session"); err == nil {
+		t.Fatal("nil-session status lookup was accepted")
+	}
+	if err := host.Close(context.Background(), nil); err != nil {
+		t.Fatalf("nil close=%v", err)
+	}
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatalf("idempotent close=%v", err)
+	}
+	if err := host.ScheduleAutosave(context.Background(), SaveInput{Session: opened.Session}, nil); err == nil {
+		t.Fatal("closed-session autosave was accepted")
+	}
+	if err := host.acceptSessionSourceBaseline(opened.Session, digestJSON("closed")); err == nil {
+		t.Fatal("closed session baseline was accepted")
+	}
 }
 
 func TestRecoveryRejectsPrepublicationAndFinishesPublishedPhases(t *testing.T) {

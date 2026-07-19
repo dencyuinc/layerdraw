@@ -71,6 +71,7 @@ type Ports struct {
 	State         port.StateBackend
 	StateBindings port.StateBackendBindingResolver
 	StateAccess   port.StateQueryAuthorization
+	External      port.ExternalFileStore
 	Assets        port.AssetStore
 	History       port.HistoryStore
 	Recovery      port.RecoveryJournal

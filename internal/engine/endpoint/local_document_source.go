@@ -8,6 +8,7 @@ import (
 	"errors"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/engine"
 )
 
@@ -37,6 +38,7 @@ type LocalSource struct {
 	PortableID     string
 	DefinitionHash protocolcommon.Digest
 	GraphHash      protocolcommon.Digest
+	subjectHashes  []semantic.SubjectHash
 }
 
 type LocalDocumentEngine struct{ engine engine.Engine }
@@ -88,10 +90,34 @@ func sourceFromSnapshot(input engine.CompileInput, snapshot engine.Snapshot) (Lo
 	if len(snapshot.Diagnostics) != 0 || snapshot.NormalizedDocument == nil || snapshot.GraphHash == nil {
 		return LocalSource{}, errors.New("source is not a valid publishable project")
 	}
-	return LocalSource{input: cloneCompileInput(input), PortableID: snapshot.NormalizedDocument.Project.Address, DefinitionHash: protocolcommon.Digest(snapshot.DefinitionHash), GraphHash: protocolcommon.Digest(*snapshot.GraphHash)}, nil
+	subjectHashes := make([]semantic.SubjectHash, len(snapshot.SubjectSemanticHashes))
+	for index, subject := range snapshot.SubjectSemanticHashes {
+		subjectHashes[index] = semantic.SubjectHash{Address: semantic.StableAddress(subject.Address), Kind: semantic.SubjectKind(subject.Kind), Hash: protocolcommon.Digest(subject.Hash)}
+	}
+	return LocalSource{input: cloneCompileInput(input), PortableID: snapshot.NormalizedDocument.Project.Address, DefinitionHash: protocolcommon.Digest(snapshot.DefinitionHash), GraphHash: protocolcommon.Digest(*snapshot.GraphHash), subjectHashes: subjectHashes}, nil
 }
 
 func (s LocalSource) Digest() protocolcommon.Digest { return digestJSON(s.input) }
+
+func (s LocalSource) SubjectHashes() []semantic.SubjectHash {
+	return append([]semantic.SubjectHash(nil), s.subjectHashes...)
+}
+
+// ProjectSourceTree returns the Engine-owned canonical project projection.
+// Callers receive a deep copy and do not gain access to CompileInput internals.
+func (s LocalSource) ProjectSourceTree() map[string][]byte {
+	return cloneByteMap(s.input.ProjectSourceTree)
+}
+
+// WriteContainer delegates canonical container construction to Engine; hosts
+// never synthesize the container representation themselves.
+func (e *LocalDocumentEngine) WriteContainer(ctx context.Context, source LocalSource) ([]byte, error) {
+	result, err := e.engine.WriteLayerdraw(ctx, engine.LayerdrawWriteInput{CompileInput: cloneCompileInput(source.input)})
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), result...), nil
+}
 
 func (s LocalSource) EncodedInput() ([]byte, protocolcommon.BlobRef, error) {
 	data, err := EncodeLocalCompileInput(s.input)

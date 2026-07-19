@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf16"
@@ -76,6 +78,25 @@ type cancelState struct {
 	token              runtimeprotocol.CancellationToken
 	cancelled          bool
 	publicationStarted bool
+}
+
+type prePublicationCleanup struct {
+	ports         Ports
+	scope         runtimeprotocol.RuntimeScope
+	documentStage string
+	externalStage *port.ExternalFileStage
+	retired       bool
+}
+
+func (cleanup *prePublicationCleanup) run() {
+	if cleanup.retired {
+		return
+	}
+	ctx := context.Background()
+	_ = cleanup.ports.Documents.AbortStagedRevision(ctx, port.AbortStagedRevisionInput{Scope: cleanup.scope, StageID: cleanup.documentStage})
+	if cleanup.externalStage != nil && cleanup.ports.External != nil {
+		_ = cleanup.ports.External.Abort(ctx, port.AbortExternalFileInput{Scope: cleanup.scope, StageID: cleanup.externalStage.StageID})
+	}
 }
 
 type operationKey struct {
@@ -238,6 +259,10 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 	if !validPreparedRevision(prepared, input.OperationBatch.BaseRevision) {
 		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "Engine returned an invalid prepared revision"))
 	}
+	requiresExternal := p.External != nil && (input.Trigger == runtimeprotocol.CommitTriggerExplicitSave || input.Trigger == runtimeprotocol.CommitTriggerAutosave)
+	if requiresExternal && (prepared.External == nil || !validExternalMaterialization(*prepared.External)) {
+		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "Engine did not return a valid external materialization"))
+	}
 	grant, _, err := p.Grants.ResolveGrant(ctx, input.Session.Scope)
 	if err != nil {
 		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "current authoring grant could not be resolved"))
@@ -261,29 +286,49 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 		}
 		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "document store returned an invalid staged revision"))
 	}
+	cleanup := prePublicationCleanup{ports: p, scope: input.Session.Scope, documentStage: staged.StageID}
+	defer cleanup.run()
 	if _, rejection = c.advanceEvaluated(ctx, input, decision, prepared.AuthoringImpact); rejection != nil {
-		_ = p.Documents.AbortStagedRevision(ctx, port.AbortStagedRevisionInput{Scope: input.Session.Scope, StageID: staged.StageID})
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}
 	if rejection := c.checkCancellation(ctx, input); rejection != nil {
-		_ = p.Documents.AbortStagedRevision(ctx, port.AbortStagedRevisionInput{Scope: input.Session.Scope, StageID: staged.StageID})
 		return c.finalRejectedFrom(ctx, input, rejection, decision, prepared.AuthoringImpact)
+	}
+	var externalStage *port.ExternalFileStage
+	var expectedExternal *runtimeprotocol.ProviderVersionToken
+	if requiresExternal {
+		externalHead, externalErr := p.External.GetExternalHead(ctx, port.GetExternalFileHeadInput{Scope: input.Session.Scope})
+		if externalErr != nil {
+			return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "external file head is unavailable"), decision, prepared.AuthoringImpact)
+		}
+		candidate, externalErr := p.External.Prepare(ctx, port.PrepareExternalFileInput{Scope: input.Session.Scope, OperationID: input.OperationID, IdempotencyKey: input.IdempotencyKey, RevisionID: staged.Revision.RevisionID, ExpectedProviderVersion: externalHead.ProviderVersion, Materialization: *prepared.External})
+		if externalErr != nil {
+			code := runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable
+			if errors.Is(externalErr, port.ErrConflict) {
+				code = runtimeprotocol.RuntimeFailureCodeRuntimeStaleRevision
+			}
+			return c.finalRejectedFrom(ctx, input, contractError(code, "external file preparation failed"), decision, prepared.AuthoringImpact)
+		}
+		if !validExternalStage(candidate) {
+			if candidate.StageID != "" {
+				_ = p.External.Abort(context.WithoutCancel(ctx), port.AbortExternalFileInput{Scope: input.Session.Scope, StageID: candidate.StageID})
+			}
+			return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "external file store returned an invalid stage"), decision, prepared.AuthoringImpact)
+		}
+		externalStage, expectedExternal = &candidate, &externalHead.ProviderVersion
+		cleanup.externalStage = externalStage
 	}
 	// Preview, authorization, and staging may take long enough for a lease to
 	// expire or be fenced. Revalidate at the publication boundary.
 	if rejection, failure := c.validateLease(ctx, input, head); failure != nil {
-		_ = p.Documents.AbortStagedRevision(ctx, port.AbortStagedRevisionInput{Scope: input.Session.Scope, StageID: staged.StageID})
 		return runtimeprotocol.RuntimeCommitResult{}, failure
 	} else if rejection != nil {
-		_ = p.Documents.AbortStagedRevision(ctx, port.AbortStagedRevisionInput{Scope: input.Session.Scope, StageID: staged.StageID})
 		return c.finalRejectedFrom(ctx, input, rejection, decision, prepared.AuthoringImpact)
 	}
-	if _, rejection = c.advance(ctx, input, runtimeprotocol.RecoveryPhaseStaged, runtimeprotocol.RecoveryPhasePublicationPending, nil, &decision); rejection != nil {
-		_ = p.Documents.AbortStagedRevision(ctx, port.AbortStagedRevisionInput{Scope: input.Session.Scope, StageID: staged.StageID})
+	if _, rejection = c.advancePublicationPending(ctx, input, decision, externalStage, expectedExternal); rejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}
 	if rejection := c.beginPublication(ctx, input); rejection != nil {
-		_ = p.Documents.AbortStagedRevision(ctx, port.AbortStagedRevisionInput{Scope: input.Session.Scope, StageID: staged.StageID})
 		if rejection.Code == runtimeprotocol.RuntimeFailureCodeRuntimeIdempotencyMismatch {
 			return runtimeprotocol.RuntimeCommitResult{}, rejection
 		}
@@ -291,12 +336,13 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 	}
 	published, err := p.Documents.PublishHead(ctx, port.PublishDocumentHeadInput{Scope: input.Session.Scope, StageID: staged.StageID, ExpectedRevision: head.Revision.RevisionID, ExpectedDefinitionHash: head.Revision.DefinitionHash, ExpectedProviderVersion: head.ProviderVersion, FencingToken: head.FencingToken})
 	if err != nil || !published.Published {
-		return c.resolvePublication(ctx, input, staged, prepared, decision, err)
+		return c.resolvePublication(ctx, input, staged, prepared, decision, err, externalStage, expectedExternal, &cleanup)
 	}
 	if _, encodeErr := runtimeprotocol.EncodeCommittedRevisionRef(published.Revision); encodeErr != nil || !samePublishedRevision(published.Revision, staged.Revision) {
-		return c.resolvePublication(ctx, input, staged, prepared, decision, port.ErrIndeterminate)
+		return c.resolvePublication(ctx, input, staged, prepared, decision, port.ErrIndeterminate, externalStage, expectedExternal, &cleanup)
 	}
-	return c.afterPublication(ctx, input, s, staged.StageID, prepared, decision, published.Revision)
+	cleanup.retired = true
+	return c.afterPublication(ctx, input, s, staged.StageID, prepared, decision, published.Revision, externalStage, expectedExternal)
 }
 
 func (c *Coordinator) resolvePendingConflict(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, payload protocolcommon.Digest) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
@@ -406,17 +452,53 @@ func (c *Coordinator) ListRevisions(ctx context.Context, input runtimeprotocol.L
 	return page, nil
 }
 
-func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, s sessionState, stageID string, prepared port.PreparedRevision, decision accessprotocol.AuthoringDecision, revision runtimeprotocol.CommittedRevisionRef) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
+func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, s sessionState, stageID string, prepared port.PreparedRevision, decision accessprotocol.AuthoringDecision, revision runtimeprotocol.CommittedRevisionRef, externalStage *port.ExternalFileStage, expectedExternal *runtimeprotocol.ProviderVersionToken) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
 	p := c.runtime.config.Ports
-	_, publicationAdvanceErr := c.advance(context.WithoutCancel(ctx), in, runtimeprotocol.RecoveryPhasePublicationPending, runtimeprotocol.RecoveryPhasePublished, &revision, &decision)
+	if _, publicationAdvanceErr := c.advance(context.WithoutCancel(ctx), in, runtimeprotocol.RecoveryPhasePublicationPending, runtimeprotocol.RecoveryPhasePublished, &revision, &decision); publicationAdvanceErr != nil {
+		c.checkpointPublished(in, s, prepared, revision, s.state)
+		if externalStage != nil {
+			return c.externalPendingResult(in, revision, *externalStage, decision, prepared.AuthoringImpact), nil
+		}
+		stateVersion := s.state.StateVersion
+		result := operationResult(in, runtimeprotocol.OperationResultStatusCommittedStateStale, &revision, &stateVersion, "")
+		evaluation := runtimeprotocol.PreviewEvaluation{AuthoringImpact: prepared.AuthoringImpact, AuthoringDecision: decision}
+		return runtimeprotocol.RuntimeCommitResult{OperationResult: result, PreviewEvaluation: &evaluation}, nil
+	}
 	status := runtimeprotocol.OperationResultStatusCommitted
-	if publicationAdvanceErr != nil {
-		status = runtimeprotocol.OperationResultStatusCommittedStateStale
+	var externalStatus *runtimeprotocol.ExternalMaterializationStatus
+	phase := runtimeprotocol.RecoveryPhasePublished
+	if externalStage != nil && expectedExternal != nil {
+		if _, rejection := c.advance(ctx, in, runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseExternalPending, &revision, &decision); rejection != nil {
+			c.checkpointPublished(in, s, prepared, revision, s.state)
+			return c.externalPendingResult(in, revision, *externalStage, decision, prepared.AuthoringImpact), nil
+		}
+		phase = runtimeprotocol.RecoveryPhaseExternalPending
+		receipt, externalErr := p.External.Publish(context.WithoutCancel(ctx), port.PublishExternalFileInput{Scope: in.Session.Scope, OperationID: in.OperationID, IdempotencyKey: in.IdempotencyKey, StageID: externalStage.StageID, ExpectedProviderVersion: *expectedExternal})
+		if externalErr != nil {
+			c.checkpointPublished(in, s, prepared, revision, s.state)
+			if !errors.Is(externalErr, port.ErrConflict) {
+				return c.externalPendingResult(in, revision, *externalStage, decision, prepared.AuthoringImpact), nil
+			}
+			failure := runtimeprotocol.ExternalMaterializationFailureConflict
+			if _, rejection := c.advanceExternal(ctx, in, runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseExternalFailed, &revision, &decision, nil, &failure); rejection != nil {
+				return runtimeprotocol.RuntimeCommitResult{}, rejection
+			}
+			phase = runtimeprotocol.RecoveryPhaseExternalFailed
+			externalStatus = externalFailedResultStatus(*externalStage, failure)
+			status = runtimeprotocol.OperationResultStatusCommittedExternalFailed
+		} else {
+			if _, rejection := c.advanceExternal(ctx, in, runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseExternalPublished, &revision, &decision, &receipt, nil); rejection != nil {
+				c.checkpointPublished(in, s, prepared, revision, s.state)
+				return c.externalPendingResult(in, revision, *externalStage, decision, prepared.AuthoringImpact), nil
+			}
+			phase = runtimeprotocol.RecoveryPhaseExternalPublished
+			externalStatus = externalPublishedResultStatus(receipt)
+		}
 	}
 	stateHead := s.state
 	stateVersion := stateHead.StateVersion
-	if _, err := c.advance(context.WithoutCancel(ctx), in, runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseStatePending, &revision, &decision); err != nil {
-		status = runtimeprotocol.OperationResultStatusCommittedStateStale
+	if _, err := c.advance(context.WithoutCancel(ctx), in, phase, runtimeprotocol.RecoveryPhaseStatePending, &revision, &decision); err != nil {
+		status = committedStateStaleStatus()
 	}
 	if in.StateMutation != nil {
 		lease := runtimeprotocol.LeaseToken("")
@@ -425,7 +507,7 @@ func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.R
 		}
 		result, err := p.State.WriteState(context.WithoutCancel(ctx), port.WriteStateInput{Scope: in.Session.Scope, OperationID: in.OperationID, IdempotencyKey: in.IdempotencyKey, ExpectedStateVersion: in.StateMutation.ExpectedStateVersion, ExpectedBackendVersion: s.state.BackendVersion, ExpectedDefinitionHash: s.state.DefinitionHash, ExpectedSubjectHashes: s.state.SubjectHashes, LeaseToken: lease, Mutation: *in.StateMutation})
 		if err != nil || !validStateHead(result.Head) || result.Head.DefinitionHash != revision.DefinitionHash || result.Head.GraphHash != revision.GraphHash {
-			status = runtimeprotocol.OperationResultStatusCommittedStateStale
+			status = committedStateStaleStatus()
 		} else {
 			stateHead = result.Head
 			stateHead.SubjectHashes = cloneSubjectHashes(result.Head.SubjectHashes)
@@ -433,46 +515,47 @@ func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.R
 		}
 	}
 	if _, rejection := c.advance(context.WithoutCancel(ctx), in, runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseAuditPending, &revision, &decision); rejection != nil {
-		status = runtimeprotocol.OperationResultStatusCommittedStateStale
+		status = committedStateStaleStatus()
 	}
-	metadata := runtimeprotocol.RevisionMetadata{Revision: revision, ParentRevisionID: &in.OperationBatch.BaseRevision.RevisionID, OperationID: in.OperationID, Trigger: in.Trigger, AuthoringDecisionDigest: decision.DecisionDigest, CommittedAt: protocolcommon.Rfc3339Time(p.Clock.Now().UTC().Format(time.RFC3339Nano))}
+	metadata := runtimeprotocol.RevisionMetadata{Revision: revision, ParentRevisionID: &in.OperationBatch.BaseRevision.RevisionID, OperationID: in.OperationID, Trigger: in.Trigger, AuthoringDecisionDigest: decision.DecisionDigest, CommittedAt: protocolcommon.Rfc3339Time(p.Clock.Now().UTC().Format(time.RFC3339Nano)), ExternalMaterialization: externalStatus}
 	if _, err := p.History.AppendRevision(context.WithoutCancel(ctx), port.AppendRevisionInput{Scope: in.Session.Scope, Metadata: metadata}); err != nil {
-		status = runtimeprotocol.OperationResultStatusCommittedStateStale
+		status = committedStateStaleStatus()
 	}
 	if _, rejection := c.advance(context.WithoutCancel(ctx), in, runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseOutboxReady, &revision, &decision); rejection != nil {
-		status = runtimeprotocol.OperationResultStatusCommittedStateStale
+		status = committedStateStaleStatus()
 	}
-	result := operationResult(in, status, &revision, &stateVersion, "")
+	resultStateVersion := &stateVersion
+	if status == runtimeprotocol.OperationResultStatusCommittedExternalFailed {
+		resultStateVersion = nil
+	}
+	result := operationResult(in, status, &revision, resultStateVersion, "")
+	result.ExternalMaterialization = externalStatus
+	result.ResultDigest = digestOperationResult(result)
 	evaluation := runtimeprotocol.PreviewEvaluation{AuthoringImpact: prepared.AuthoringImpact, AuthoringDecision: decision}
 	commitResult := runtimeprotocol.RuntimeCommitResult{OperationResult: result, PreviewEvaluation: &evaluation}
 	if rejection := c.finalizeRecovery(ctx, in, commitResult, runtimeprotocol.RecoveryPhaseFinal, "finalize published operation"); rejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}
+	if externalStatus != nil && externalStatus.State == runtimeprotocol.ExternalMaterializationStateFailed && externalStage != nil {
+		_ = p.External.Abort(context.WithoutCancel(ctx), port.AbortExternalFileInput{Scope: in.Session.Scope, StageID: externalStage.StageID})
+	}
 	// Publication and its terminal result are durable before the disposable
 	// candidate is removed. A crash between these steps leaves an orphan that
 	// the local recovery driver can safely garbage-collect.
 	_ = p.Documents.AbortStagedRevision(context.WithoutCancel(ctx), port.AbortStagedRevisionInput{Scope: in.Session.Scope, StageID: stageID})
-	checkpoint, err := p.Workbench.Checkpoint(context.WithoutCancel(ctx), port.CheckpointWorkingDocumentInput{Document: s.working, Prepared: prepared, Revision: revision})
-	if err == nil {
-		c.mu.Lock()
-		current := c.sessions[in.Session.RuntimeSessionID]
-		current.working = checkpoint
-		current.binding.CurrentRevision = revision
-		current.state = stateHead
-		c.mu.Unlock()
-	}
+	c.checkpointPublished(in, s, prepared, revision, stateHead)
 	commitResult.OperationResult = result
 	return commitResult, nil
 }
 
-func (c *Coordinator) resolvePublication(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, staged port.StagedRevision, prepared port.PreparedRevision, decision accessprotocol.AuthoringDecision, publishErr error) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
+func (c *Coordinator) resolvePublication(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, staged port.StagedRevision, prepared port.PreparedRevision, decision accessprotocol.AuthoringDecision, publishErr error, externalStage *port.ExternalFileStage, expectedExternal *runtimeprotocol.ProviderVersionToken, cleanup *prePublicationCleanup) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
 	head, headErr := c.runtime.config.Ports.Documents.GetHead(context.WithoutCancel(ctx), port.GetDocumentHeadInput{Scope: in.Session.Scope})
 	if headErr == nil && validDocumentHead(head) && samePublishedRevision(head.Revision, staged.Revision) {
+		cleanup.retired = true
 		s, _ := c.session(in.Session)
-		return c.afterPublication(context.WithoutCancel(ctx), in, s, staged.StageID, prepared, decision, head.Revision)
+		return c.afterPublication(context.WithoutCancel(ctx), in, s, staged.StageID, prepared, decision, head.Revision, externalStage, expectedExternal)
 	}
 	if headErr == nil && validDocumentHead(head) && (errors.Is(publishErr, port.ErrConflict) || (publishErr == nil && !reflect.DeepEqual(head.Revision, staged.Revision))) {
-		_ = c.runtime.config.Ports.Documents.AbortStagedRevision(context.WithoutCancel(ctx), port.AbortStagedRevisionInput{Scope: in.Session.Scope, StageID: staged.StageID})
 		result := c.conflict(in, head.Revision)
 		evaluation := runtimeprotocol.PreviewEvaluation{AuthoringImpact: prepared.AuthoringImpact, AuthoringDecision: decision}
 		result.PreviewEvaluation = &evaluation
@@ -481,6 +564,9 @@ func (c *Coordinator) resolvePublication(ctx context.Context, in runtimeprotocol
 		}
 		return result, nil
 	}
+	// Publication cannot be proven either way. Preserve both candidates for the
+	// durable recovery driver; aborting either could destroy the only evidence.
+	cleanup.retired = true
 	_, _ = c.advance(context.WithoutCancel(ctx), in, runtimeprotocol.RecoveryPhasePublicationPending, runtimeprotocol.RecoveryPhaseRecovering, nil, &decision)
 	result := operationResult(in, runtimeprotocol.OperationResultStatusNeedsReview, nil, nil, "")
 	evaluation := runtimeprotocol.PreviewEvaluation{AuthoringImpact: prepared.AuthoringImpact, AuthoringDecision: decision}
@@ -605,6 +691,39 @@ func validPreparedRevision(prepared port.PreparedRevision, base runtimeprotocol.
 		return false
 	}
 	return true
+}
+
+func validExternalMaterialization(materialization port.ExternalMaterialization) bool {
+	switch materialization.Kind {
+	case port.ExternalFileKindContainer:
+		return len(materialization.Container) > 0 && len(materialization.ProjectFiles) == 0
+	case port.ExternalFileKindProject:
+		if len(materialization.Container) != 0 || len(materialization.ProjectFiles) == 0 {
+			return false
+		}
+		seen := make(map[string]struct{}, len(materialization.ProjectFiles))
+		for _, file := range materialization.ProjectFiles {
+			clean := path.Clean(file.Path)
+			if clean != file.Path || clean == "." || strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "../") || path.Ext(clean) != ".ldl" {
+				return false
+			}
+			if _, exists := seen[clean]; exists {
+				return false
+			}
+			seen[clean] = struct{}{}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func validExternalStage(stage port.ExternalFileStage) bool {
+	if stage.StageID == "" || stage.CandidateProviderVersion == "" {
+		return false
+	}
+	_, err := protocolcommon.EncodeDigest(stage.MaterializationDigest)
+	return err == nil
 }
 
 func validSourceClosure(sources port.SourceBlobSet, revision runtimeprotocol.CommittedRevisionRef, expected []protocolcommon.BlobRef) bool {
@@ -937,6 +1056,88 @@ func (c *Coordinator) advance(ctx context.Context, in runtimeprotocol.RuntimeCom
 	return record, nil
 }
 
+func (c *Coordinator) advancePublicationPending(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, decision accessprotocol.AuthoringDecision, externalStage *port.ExternalFileStage, expectedExternal *runtimeprotocol.ProviderVersionToken) (port.RecoveryRecord, *ContractError) {
+	if (externalStage == nil) != (expectedExternal == nil) {
+		return port.RecoveryRecord{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "external publication reservation is incomplete")
+	}
+	record, err := c.runtime.config.Ports.Recovery.Advance(context.WithoutCancel(ctx), port.AdvanceRecoveryRecordInput{
+		Scope:                           in.Session.Scope,
+		OperationID:                     in.OperationID,
+		ExpectedPhase:                   runtimeprotocol.RecoveryPhaseStaged,
+		NextPhase:                       runtimeprotocol.RecoveryPhasePublicationPending,
+		ExternalStage:                   externalStage,
+		ExpectedExternalProviderVersion: expectedExternal,
+	})
+	if err != nil {
+		return port.RecoveryRecord{}, portFailure("advance operation journal", err)
+	}
+	if !validRecoveryRecordForCommit(record, in, logicalCommitDigest(in), runtimeprotocol.RecoveryPhasePublicationPending, &decision) {
+		return port.RecoveryRecord{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "operation journal returned an invalid publication reservation")
+	}
+	return record, nil
+}
+
+func (c *Coordinator) advanceExternal(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, from, to runtimeprotocol.RecoveryPhase, revision *runtimeprotocol.CommittedRevisionRef, decision *accessprotocol.AuthoringDecision, receipt *port.ExternalFileReceipt, failure *runtimeprotocol.ExternalMaterializationFailure) (port.RecoveryRecord, *ContractError) {
+	record, err := c.runtime.config.Ports.Recovery.Advance(context.WithoutCancel(ctx), port.AdvanceRecoveryRecordInput{
+		Scope:             in.Session.Scope,
+		OperationID:       in.OperationID,
+		ExpectedPhase:     from,
+		NextPhase:         to,
+		PublishedRevision: revision,
+		ExternalReceipt:   receipt,
+		ExternalFailure:   failure,
+	})
+	if err != nil {
+		return port.RecoveryRecord{}, portFailure("advance external publication journal", err)
+	}
+	if !validRecoveryRecordForCommit(record, in, logicalCommitDigest(in), to, decision) {
+		return port.RecoveryRecord{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "operation journal returned an invalid external publication transition")
+	}
+	return record, nil
+}
+
+func externalPendingResultStatus(stage port.ExternalFileStage) *runtimeprotocol.ExternalMaterializationStatus {
+	return &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStatePending, CandidateProviderVersion: stage.CandidateProviderVersion}
+}
+
+func externalPublishedResultStatus(receipt port.ExternalFileReceipt) *runtimeprotocol.ExternalMaterializationStatus {
+	provider, digest := receipt.ProviderVersion, receipt.ReceiptDigest
+	return &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStatePublished, CandidateProviderVersion: receipt.ProviderVersion, ProviderVersion: &provider, ReceiptDigest: &digest}
+}
+
+func externalFailedResultStatus(stage port.ExternalFileStage, failure runtimeprotocol.ExternalMaterializationFailure) *runtimeprotocol.ExternalMaterializationStatus {
+	return &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStateFailed, CandidateProviderVersion: stage.CandidateProviderVersion, Failure: &failure}
+}
+
+func (c *Coordinator) externalPendingResult(in runtimeprotocol.RuntimeCommitInput, revision runtimeprotocol.CommittedRevisionRef, stage port.ExternalFileStage, decision accessprotocol.AuthoringDecision, impact semantic.AuthoringImpact) runtimeprotocol.RuntimeCommitResult {
+	result := operationResult(in, runtimeprotocol.OperationResultStatusCommittedExternalPending, &revision, nil, "")
+	result.ExternalMaterialization = externalPendingResultStatus(stage)
+	result.ResultDigest = digestOperationResult(result)
+	evaluation := runtimeprotocol.PreviewEvaluation{AuthoringImpact: impact, AuthoringDecision: decision}
+	return runtimeprotocol.RuntimeCommitResult{OperationResult: result, PreviewEvaluation: &evaluation}
+}
+
+func (c *Coordinator) checkpointPublished(in runtimeprotocol.RuntimeCommitInput, previous sessionState, prepared port.PreparedRevision, revision runtimeprotocol.CommittedRevisionRef, state port.StateHead) {
+	working, err := c.runtime.config.Ports.Workbench.Checkpoint(context.Background(), port.CheckpointWorkingDocumentInput{Document: previous.working, Prepared: prepared, Revision: revision})
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current := c.sessions[in.Session.RuntimeSessionID]
+	if current == nil || current.binding.CurrentRevision.RevisionID != previous.binding.CurrentRevision.RevisionID {
+		return
+	}
+	current.binding.CurrentRevision = revision
+	current.working = working
+	current.state = state
+	current.state.SubjectHashes = cloneSubjectHashes(state.SubjectHashes)
+}
+
+func committedStateStaleStatus() runtimeprotocol.OperationResultStatus {
+	return runtimeprotocol.OperationResultStatusCommittedStateStale
+}
+
 func (c *Coordinator) advanceEvaluated(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, decision accessprotocol.AuthoringDecision, impact semantic.AuthoringImpact) (port.RecoveryRecord, *ContractError) {
 	preview := runtimeprotocol.PreviewEvaluation{AuthoringImpact: impact, AuthoringDecision: decision}
 	record, err := c.runtime.config.Ports.Recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: in.Session.Scope, OperationID: in.OperationID, ExpectedPhase: runtimeprotocol.RecoveryPhasePending, NextPhase: runtimeprotocol.RecoveryPhaseStaged, EvaluationDigest: &decision.EvaluationDigest, DecisionDigest: &decision.DecisionDigest, PreviewEvaluation: &preview})
@@ -1019,6 +1220,12 @@ func operationResult(in runtimeprotocol.RuntimeCommitInput, status runtimeprotoc
 	if status == runtimeprotocol.OperationResultStatusCommittedStateStale {
 		result.Diagnostics = terminalDiagnostic("LDL1902", "operation_state_stale")
 	}
+	if status == runtimeprotocol.OperationResultStatusCommittedExternalPending {
+		result.Diagnostics = terminalDiagnostic("LDL1904", "operation_external_materialization_pending")
+	}
+	if status == runtimeprotocol.OperationResultStatusCommittedExternalFailed {
+		result.Diagnostics = terminalDiagnostic("LDL1905", "operation_external_materialization_failed")
+	}
 	if status == runtimeprotocol.OperationResultStatusNeedsReview {
 		result.Diagnostics = terminalDiagnostic("LDL1903", "operation_recovery_needs_review")
 	}
@@ -1040,21 +1247,31 @@ func RecoveryCommitResult(operationID runtimeprotocol.OperationID, idempotencyKe
 	return runtimeprotocol.RuntimeCommitResult{OperationResult: operationResult(input, status, revision, stateVersion, failure)}
 }
 
+// RecoveryCommitResultWithExternal constructs the same canonical result while
+// retaining durable external-publication evidence reconciled by a host driver.
+func RecoveryCommitResultWithExternal(operationID runtimeprotocol.OperationID, idempotencyKey runtimeprotocol.IdempotencyKey, status runtimeprotocol.OperationResultStatus, revision *runtimeprotocol.CommittedRevisionRef, stateVersion *protocolcommon.CanonicalNonNegativeInt64, failure runtimeprotocol.RuntimeFailureCode, external *runtimeprotocol.ExternalMaterializationStatus) runtimeprotocol.RuntimeCommitResult {
+	result := RecoveryCommitResult(operationID, idempotencyKey, status, revision, stateVersion, failure)
+	result.OperationResult.ExternalMaterialization = external
+	result.OperationResult.ResultDigest = digestOperationResult(result.OperationResult)
+	return result
+}
+
 func terminalDiagnostic(code, messageKey string) []semantic.Diagnostic {
 	return []semantic.Diagnostic{{Code: code, Severity: semantic.DiagnosticSeverityError, MessageKey: messageKey, ProtocolVersion: 1, Arguments: map[string]semantic.DiagnosticArgumentValue{}, Related: []semantic.DiagnosticRelated{}}}
 }
 
 func digestOperationResult(result runtimeprotocol.OperationResult) protocolcommon.Digest {
 	projection := struct {
-		CommittedRevision *runtimeprotocol.CommittedRevisionRef     `json:"committed_revision,omitempty"`
-		ConflictEvidence  *runtimeprotocol.ConflictEvidence         `json:"conflict_evidence,omitempty"`
-		Diagnostics       []semantic.Diagnostic                     `json:"diagnostics"`
-		FailureCode       *runtimeprotocol.RuntimeFailureCode       `json:"failure_code,omitempty"`
-		IdempotencyKey    runtimeprotocol.IdempotencyKey            `json:"idempotency_key"`
-		OperationID       runtimeprotocol.OperationID               `json:"operation_id"`
-		StateVersion      *protocolcommon.CanonicalNonNegativeInt64 `json:"state_version,omitempty"`
-		Status            runtimeprotocol.OperationResultStatus     `json:"status"`
-	}{result.CommittedRevision, result.ConflictEvidence, result.Diagnostics, result.FailureCode, result.IdempotencyKey, result.OperationID, result.StateVersion, result.Status}
+		CommittedRevision *runtimeprotocol.CommittedRevisionRef          `json:"committed_revision,omitempty"`
+		ConflictEvidence  *runtimeprotocol.ConflictEvidence              `json:"conflict_evidence,omitempty"`
+		Diagnostics       []semantic.Diagnostic                          `json:"diagnostics"`
+		External          *runtimeprotocol.ExternalMaterializationStatus `json:"external_materialization,omitempty"`
+		FailureCode       *runtimeprotocol.RuntimeFailureCode            `json:"failure_code,omitempty"`
+		IdempotencyKey    runtimeprotocol.IdempotencyKey                 `json:"idempotency_key"`
+		OperationID       runtimeprotocol.OperationID                    `json:"operation_id"`
+		StateVersion      *protocolcommon.CanonicalNonNegativeInt64      `json:"state_version,omitempty"`
+		Status            runtimeprotocol.OperationResultStatus          `json:"status"`
+	}{result.CommittedRevision, result.ConflictEvidence, result.Diagnostics, result.ExternalMaterialization, result.FailureCode, result.IdempotencyKey, result.OperationID, result.StateVersion, result.Status}
 	return digestValue(projection)
 }
 func digestValue(value any) protocolcommon.Digest {

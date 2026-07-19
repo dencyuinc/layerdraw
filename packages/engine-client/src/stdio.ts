@@ -36,12 +36,22 @@ export interface CreateStdioEngineClientOptions {
   readonly binaryPath: string;
   readonly binaryArguments?: readonly string[];
   readonly cwd?: string;
+  readonly processLifecycle?: StdioProcessLifecycle;
 }
 
-interface StdioProcessOptions {
+export interface StdioProcessLifecycle {
+  spawn(
+    binaryPath: string,
+    binaryArguments: readonly string[],
+    options: Readonly<{ cwd?: string }>,
+  ): ChildProcess;
+}
+
+export interface StdioProcessOptions {
   readonly binaryPath: string;
   readonly binaryArguments: readonly string[];
   readonly cwd?: string;
+  readonly processLifecycle?: StdioProcessLifecycle;
 }
 
 interface Deferred<T> {
@@ -181,12 +191,18 @@ class StdioEngineTransport implements InternalByteTransport {
   constructor(options: StdioProcessOptions) {
     this.ready = this.readyDeferred.promise;
     this.closed = this.closedDeferred.promise;
-    this.child = spawn(options.binaryPath, [...options.binaryArguments], {
-      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-      shell: false,
-      stdio: ["pipe", "pipe", "ignore"],
-      windowsHide: true,
-    });
+    this.child = options.processLifecycle === undefined
+      ? spawn(options.binaryPath, [...options.binaryArguments], {
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        shell: false,
+        stdio: ["pipe", "pipe", "ignore"],
+        windowsHide: true,
+      })
+      : options.processLifecycle.spawn(
+        options.binaryPath,
+        options.binaryArguments,
+        options.cwd === undefined ? {} : { cwd: options.cwd },
+      );
     if (this.child.stdin === null || this.child.stdout === null) {
       throw transportFault("SPAWN_FAILED");
     }
@@ -529,6 +545,11 @@ function stdioTransportFactory(options: StdioProcessOptions): InternalTransportF
   });
 }
 
+/** @internal Shared only with the local-host entrypoint. */
+export function createStdioByteTransport(options: StdioProcessOptions): InternalByteTransport {
+  return new StdioEngineTransport(options);
+}
+
 function validProcessString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !value.includes("\0");
 }
@@ -539,7 +560,7 @@ export async function createStdioEngineClient(
   const value = dataObject(
     options,
     ["client", "binaryPath"],
-    ["binaryArguments", "cwd"],
+    ["binaryArguments", "cwd", "processLifecycle"],
   );
   const client = dataObject(
     value?.client,
@@ -561,6 +582,9 @@ export async function createStdioEngineClient(
     (value.cwd !== undefined && !validProcessString(value.cwd)) ||
     !strictArray(argumentsValue) ||
     argumentsValue.some((argument) => !validProcessString(argument))
+    || (value.processLifecycle !== undefined &&
+      (typeof value.processLifecycle !== "object" || value.processLifecycle === null ||
+        typeof (value.processLifecycle as { spawn?: unknown }).spawn !== "function"))
   ) {
     throw new EngineClientInputError("INVALID_ARGUMENT");
   }
@@ -569,6 +593,7 @@ export async function createStdioEngineClient(
       binaryPath: value.binaryPath,
       binaryArguments: argumentsValue as readonly string[],
       ...(value.cwd === undefined ? {} : { cwd: value.cwd }),
+      ...(value.processLifecycle === undefined ? {} : { processLifecycle: value.processLifecycle as StdioProcessLifecycle }),
     }),
     protocolCollectors: protocolBlobRefCollectors,
     options: value.client as EngineClientCreationOptions,

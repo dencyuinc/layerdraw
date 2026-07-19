@@ -38,13 +38,14 @@ type localAuthority struct {
 	random io.Reader
 	mu     sync.RWMutex
 	scopes map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope
+	issued map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time
 }
 
 func newLocalAuthority(clock port.Clock, random io.Reader) *localAuthority {
 	if random == nil {
 		random = rand.Reader
 	}
-	return &localAuthority{clock: clock, random: random, scopes: map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope{}}
+	return &localAuthority{clock: clock, random: random, scopes: map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope{}, issued: map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time{}}
 }
 
 func (a *localAuthority) add(documentID runtimeprotocol.DocumentID) runtimeprotocol.RuntimeScope {
@@ -58,6 +59,7 @@ func (a *localAuthority) add(documentID runtimeprotocol.DocumentID) runtimeproto
 	}{documentID})
 	scope := runtimeprotocol.RuntimeScope{DocumentID: documentID, LocalScopeID: "local-owner", AccessFingerprint: fingerprint}
 	a.scopes[documentID] = scope
+	a.issued[documentID] = protocolcommon.Rfc3339Time(a.clock.Now().UTC().Format(time.RFC3339Nano))
 	return scope
 }
 
@@ -76,8 +78,10 @@ func (a *localAuthority) ResolveGrant(_ context.Context, scope runtimeprotocol.R
 	if err != nil || resolved != scope {
 		return accessprotocol.AuthoringGrantSnapshot{}, accessprotocol.AuthoringGrantSummary{}, port.ErrConflict
 	}
-	now := protocolcommon.Rfc3339Time(a.clock.Now().UTC().Format(time.RFC3339Nano))
-	grant := accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: scope.AccessFingerprint, ActorRef: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, GrantedCapabilities: append([]semantic.AuthoringCapability(nil), fullAuthoringCapabilities...), HostDocumentID: string(scope.DocumentID), IssuedAt: now, LocalScopeID: scope.LocalScopeID, MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}
+	a.mu.RLock()
+	issued := a.issued[scope.DocumentID]
+	a.mu.RUnlock()
+	grant := accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: scope.AccessFingerprint, ActorRef: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, GrantedCapabilities: append([]semantic.AuthoringCapability(nil), fullAuthoringCapabilities...), HostDocumentID: string(scope.DocumentID), IssuedAt: issued, LocalScopeID: scope.LocalScopeID, MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}
 	summary := accessprotocol.AuthoringGrantSummary{AccessFingerprint: scope.AccessFingerprint, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: append([]semantic.AuthoringCapability(nil), fullAuthoringCapabilities...), PolicyEtag: digestJSON(struct {
 		Scope runtimeprotocol.RuntimeScope `json:"scope"`
 	}{scope})}
@@ -122,6 +126,19 @@ func (a *localAuthority) Evaluate(_ context.Context, input accessprotocol.Evalua
 		decision.AuthoringImpactDigest = &value
 	}
 	return decision, nil
+}
+
+func (a *localAuthority) EvaluateStateQuery(_ context.Context, input port.StateQueryAuthorizationInput) (port.StateQueryAuthorizationDecision, error) {
+	resolved, err := a.ResolveScope(context.Background(), input.Scope.DocumentID)
+	if err != nil || resolved != input.Scope {
+		return port.StateQueryAuthorizationDecision{}, port.ErrConflict
+	}
+	return port.StateQueryAuthorizationDecision{
+		AccessFingerprint:      input.Scope.AccessFingerprint,
+		DecisionDigest:         digestJSON(input),
+		InaccessibleFieldPaths: []semantic.StateFieldPath{},
+		RedactedFieldPaths:     map[semantic.StableAddress][]semantic.StateFieldPath{},
+	}, nil
 }
 
 func (a *localAuthority) Now() time.Time { return a.clock.Now() }

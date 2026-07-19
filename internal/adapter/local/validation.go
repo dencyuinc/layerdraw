@@ -151,7 +151,8 @@ func validRecoveryRecordShape(scope runtimeprotocol.RuntimeScope, r port.Recover
 			return false
 		}
 		status := r.CommitResult.OperationResult.Status
-		if (status == runtimeprotocol.OperationResultStatusCommitted || status == runtimeprotocol.OperationResultStatusCommittedStateStale) != (r.CommitResult.OperationResult.CommittedRevision != nil) {
+		committed := status == runtimeprotocol.OperationResultStatusCommitted || status == runtimeprotocol.OperationResultStatusCommittedExternalFailed || status == runtimeprotocol.OperationResultStatusCommittedExternalPending || status == runtimeprotocol.OperationResultStatusCommittedStateStale
+		if committed != (r.CommitResult.OperationResult.CommittedRevision != nil) {
 			return false
 		}
 		if r.CommitResult.PreviewEvaluation != nil {
@@ -162,6 +163,20 @@ func validRecoveryRecordShape(scope runtimeprotocol.RuntimeScope, r port.Recover
 		}
 	} else if r.CommitResult != nil || r.Status.OperationResult != nil {
 		return false
+	}
+	switch r.Status.Phase {
+	case runtimeprotocol.RecoveryPhaseExternalPending:
+		if r.ExternalStage == nil || r.ExpectedExternalProviderVersion == nil || r.Status.ExternalMaterialization == nil || r.Status.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStatePending {
+			return false
+		}
+	case runtimeprotocol.RecoveryPhaseExternalPublished:
+		if r.ExternalStage == nil || r.ExternalReceipt == nil || r.Status.ExternalMaterialization == nil || r.Status.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStatePublished {
+			return false
+		}
+	case runtimeprotocol.RecoveryPhaseExternalFailed:
+		if r.ExternalStage == nil || r.ExternalFailure == nil || r.Status.ExternalMaterialization == nil || r.Status.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStateFailed {
+			return false
+		}
 	}
 	if r.Status.Phase == runtimeprotocol.RecoveryPhasePending {
 		return r.EvaluationDigest == nil && r.DecisionDigest == nil && r.PreviewEvaluation == nil
@@ -179,15 +194,16 @@ func validRecoveryRecordShape(scope runtimeprotocol.RuntimeScope, r port.Recover
 
 func recoveryResultDigest(result runtimeprotocol.OperationResult) protocolcommon.Digest {
 	projection := struct {
-		CommittedRevision *runtimeprotocol.CommittedRevisionRef     `json:"committed_revision,omitempty"`
-		ConflictEvidence  *runtimeprotocol.ConflictEvidence         `json:"conflict_evidence,omitempty"`
-		Diagnostics       []semantic.Diagnostic                     `json:"diagnostics"`
-		FailureCode       *runtimeprotocol.RuntimeFailureCode       `json:"failure_code,omitempty"`
-		IdempotencyKey    runtimeprotocol.IdempotencyKey            `json:"idempotency_key"`
-		OperationID       runtimeprotocol.OperationID               `json:"operation_id"`
-		StateVersion      *protocolcommon.CanonicalNonNegativeInt64 `json:"state_version,omitempty"`
-		Status            runtimeprotocol.OperationResultStatus     `json:"status"`
-	}{result.CommittedRevision, result.ConflictEvidence, result.Diagnostics, result.FailureCode, result.IdempotencyKey, result.OperationID, result.StateVersion, result.Status}
+		CommittedRevision       *runtimeprotocol.CommittedRevisionRef          `json:"committed_revision,omitempty"`
+		ConflictEvidence        *runtimeprotocol.ConflictEvidence              `json:"conflict_evidence,omitempty"`
+		Diagnostics             []semantic.Diagnostic                          `json:"diagnostics"`
+		ExternalMaterialization *runtimeprotocol.ExternalMaterializationStatus `json:"external_materialization,omitempty"`
+		FailureCode             *runtimeprotocol.RuntimeFailureCode            `json:"failure_code,omitempty"`
+		IdempotencyKey          runtimeprotocol.IdempotencyKey                 `json:"idempotency_key"`
+		OperationID             runtimeprotocol.OperationID                    `json:"operation_id"`
+		StateVersion            *protocolcommon.CanonicalNonNegativeInt64      `json:"state_version,omitempty"`
+		Status                  runtimeprotocol.OperationResultStatus          `json:"status"`
+	}{result.CommittedRevision, result.ConflictEvidence, result.Diagnostics, result.ExternalMaterialization, result.FailureCode, result.IdempotencyKey, result.OperationID, result.StateVersion, result.Status}
 	var b bytes.Buffer
 	e := json.NewEncoder(&b)
 	e.SetEscapeHTML(false)

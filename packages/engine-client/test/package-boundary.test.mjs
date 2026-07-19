@@ -35,11 +35,11 @@ function digest(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-test("export map is closed and isolates root, stdio, and WASM environments", async () => {
+test("export map is closed and isolates root, host, stdio, and WASM environments", async () => {
   const manifest = JSON.parse(
     await readFile(join(packageRoot, "package.json"), "utf8"),
   );
-  assert.deepEqual(Object.keys(manifest.exports), [".", "./stdio", "./wasm"]);
+  assert.deepEqual(Object.keys(manifest.exports), [".", "./stdio", "./host", "./wasm"]);
   assert.equal(manifest.sideEffects, false);
   assert.equal(manifest.type, "module");
   assert.equal(manifest.license, "Apache-2.0");
@@ -66,9 +66,11 @@ test("export map is closed and isolates root, stdio, and WASM environments", asy
 
   const root = await import("@layerdraw/engine-client");
   const stdio = await import("@layerdraw/engine-client/stdio");
+  const host = await import("@layerdraw/engine-client/host");
   const wasm = await import("@layerdraw/engine-client/wasm");
   assert.equal(typeof root.EngineClientInputError, "function");
   assert.equal(typeof stdio.createStdioEngineClient, "function");
+  assert.equal(typeof host.createLocalHostClient, "function");
   assert.equal(typeof wasm.createWasmEngineClient, "function");
   const wasmSource = await readFile(join(packageRoot, "dist/wasm.js"), "utf8");
   assert.equal(/from ["']node:/.test(wasmSource), false);
@@ -109,6 +111,7 @@ test("pack is deterministic, legal-complete, and installable offline", async () 
     assert.match(listing, /package\/README\.md/);
     assert.match(listing, /package\/dist\/index\.js/);
     assert.match(listing, /package\/dist\/stdio\.js/);
+    assert.match(listing, /package\/dist\/host\.js/);
     assert.match(listing, /package\/dist\/wasm\.js/);
     assert.doesNotMatch(listing, /package\/src\//);
     assert.doesNotMatch(listing, /package\/test\//);

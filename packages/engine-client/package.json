@@ -22,6 +22,10 @@
       "types": "./dist/stdio.d.ts",
       "import": "./dist/stdio.js"
     },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "import": "./dist/host.js"
+    },
     "./wasm": {
       "types": "./dist/wasm.d.ts",
       "import": "./dist/wasm.js"
