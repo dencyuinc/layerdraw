@@ -1,53 +1,21 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createHostRegistryClient } from "../dist/host.js";
 
-const digest = `sha256:${"a".repeat(64)}`;
-const source = { source_id: "official", kind: "official", endpoint_ref: "registry:official", trust_policy_id: "official", cache_policy: "verified", priority: 100, connected: true };
-const release = { identity: { kind: "pack", canonical_id: "layerdraw/base", version: "1.0.0" }, source_id: "official", publisher_id: "layerdraw", digest, size: 10, dependencies: [], compatibility: [], signature_status: "verified", license: "Apache-2.0", provenance_digest: digest };
-const plan = { transaction_id: "tx", plan_digest: digest, action: "install", project_id: "p", base_revision: "r", artifacts: [], required_capabilities: ["package:manage"], trust_policy_digests: [digest], mutation_digest: digest, authoring_impact_digests: [digest], host_operation_impact_digest: digest, evaluation_digest: digest };
-const transaction = { transaction_id: "tx", state: "committed", plan_digest: digest, evidence_digest: digest, committed_revision: "r2" };
+const digest=`sha256:${"a".repeat(64)}`;
+const source={source_id:"official",kind:"official",endpoint_ref:"registry:official",trust_policy_id:"official",cache_policy:"verified",priority:100,connected:true};
+const release={identity:{kind:"pack",canonical_id:"layerdraw/base",version:"1.0.0"},source_id:"official",publisher_id:"layerdraw",digest,manifest_digest:digest,dependency_metadata_digest:digest,size:10,dependencies:[],compatibility:[],trust:{status:"verified",policy_digest:digest,evidence_digest:digest},license:"Apache-2.0",provenance_digest:digest};
+const snapshot={resolved_lock_digest:digest,installs:[]};
+const plan={transaction_id:"tx",plan_digest:digest,action:"install",project_id:"p",base_revision:"r",expected_definition_hash:digest,expected_resolved_lock_digest:digest,artifacts:[],required_capabilities:["package:manage"],trust_policy_digests:[digest],source_bindings:[],dependency_snapshot:snapshot,resolved_lock_delta:{added:[],updated:[],removed:[],pinned:[]},rollback_checkpoint:{base_project_revision:"r",base_definition_hash:digest,base_resolved_lock_digest:digest,current_pack_tree_manifest:digest},expires_at:"2026-07-19T01:00:00Z",migration_required:false,creates_new_document:false,mutation_digest:digest,authoring_impact_digests:[],host_operation_impact_digest:digest,evaluation_digest:digest,host_operation_impacts:[],access_decision:{outcome:"allow"},host_capabilities_digest:digest};
+const transaction={plan,events:[{state:"committed",evidence_digest:digest,sequence:5,idempotency_key:"id"}],committed_revision:"r2",operation_result_id:"op"};
 
-test("host adapter maps every operation without interpreting registry semantics", async () => {
-  const calls = [];
-  const binding = { async invoke(operation, input) {
-    calls.push({ operation, input: structuredClone(input) });
-    const values = {
-      "registry.list_sources": [source], "registry.configure_source": source,
-      "registry.connect_source": source, "registry.disconnect_source": { ...source, connected: false },
-      "registry.search": [release], "registry.plan_install": plan,
-      "registry.commit_plan": transaction, "registry.get_transaction": transaction,
-      "registry.author_artifact": release,
-    };
-    return { ok: true, value: values[operation] };
-  }};
-  const client = createHostRegistryClient(binding);
-  assert.deepEqual((await client.listSources()).value, [source]);
-  assert.equal((await client.configureSource({ ...source, connected: undefined })).ok, true);
-  assert.equal((await client.connectSource({ source_id: "official", connection_ref: "keychain:official" })).ok, true);
-  assert.equal((await client.disconnectSource("official")).ok, true);
-  assert.deepEqual((await client.search({ query: "base", kind: "pack" })).value, [release]);
-  assert.deepEqual((await client.plan({ action: "install", project_id: "p", base_revision: "r", expected_definition_hash: digest, expected_resolved_lock_digest: digest, requested: release.identity })).value, plan);
-  assert.deepEqual((await client.commit({ transaction_id: "tx", plan_digest: digest, operation_id: "op", idempotency_key: "id" })).value, transaction);
-  assert.equal((await client.getTransaction("tx")).ok, true);
-  assert.equal((await client.authorArtifact({ kind: "pack", project_id: "p", output_name: "base.ldpack", publisher_id: "layerdraw", version: "1.0.0" })).ok, true);
-  assert.deepEqual(calls.map((call) => call.operation), ["registry.list_sources", "registry.configure_source", "registry.connect_source", "registry.disconnect_source", "registry.search", "registry.plan_install", "registry.commit_plan", "registry.get_transaction", "registry.author_artifact"]);
-  assert.equal(JSON.stringify(calls).includes("keychain:official"), true);
-  assert.equal(JSON.stringify(calls).includes("signature decision"), false);
-});
+function binding(extension={}){const calls=[];return {calls,async invoke(request){calls.push(structuredClone(request));const values={"registry.list_sources":[source],"registry.configure_source":source,"registry.connect_source":source,"registry.disconnect_source":{...source,connected:false},"registry.search":[release],"registry.plan_install":plan,"registry.commit_plan":{committed_revision:"r2",operation_result_id:"op"},"registry.get_transaction":transaction,"registry.recover_transaction":transaction,"registry.author_artifact":release};return {wire_version:"1.0",operation:request.operation,request_id:request.request_id,ok:true,value:values[request.operation]};},...extension}}
 
-test("host adapter fail-closes invalid, thrown, and cancelled responses", async () => {
-  assert.throws(() => createHostRegistryClient(), TypeError);
-  const invalid = createHostRegistryClient({ async invoke() { return { ok: true }; } });
-  assert.equal((await invalid.listSources()).failure.code, "registry.unavailable");
-  const malformedFailure = createHostRegistryClient({ async invoke() { return { ok: false, failure: { code: 1 } }; } });
-  assert.equal((await malformedFailure.search({ query: "x" })).failure.subject, "invalid_host_response");
-  const failure = createHostRegistryClient({ async invoke() { return { ok: false, failure: { code: "registry.signature_revoked", subject: "publisher", actionable: true } }; } });
-  assert.equal((await failure.search({ query: "x" })).failure.code, "registry.signature_revoked");
-  const thrown = createHostRegistryClient({ async invoke() { throw new Error("credential leak"); } });
-  assert.deepEqual(await thrown.listSources(), { ok: false, failure: { code: "registry.unavailable", subject: "registry.list_sources", actionable: true } });
-  const controller = new AbortController(); controller.abort();
-  assert.equal((await thrown.listSources(controller.signal)).failure.code, "registry.cancelled");
-});
+test("host adapter emits the exact versioned operation DTO for every API",async()=>{const host=binding();const client=createHostRegistryClient(host);assert.deepEqual((await client.listSources()).value,[source]);assert.equal((await client.configureSource({...source,connected:undefined})).ok,true);assert.equal((await client.connectSource({source_id:"official",connection_ref:"keychain:official"})).ok,true);assert.equal((await client.disconnectSource("official")).ok,true);assert.deepEqual((await client.search({query:"base",kind:"pack"})).value,[release]);assert.deepEqual((await client.plan({action:"install",project_id:"p",base_revision:"r",expected_definition_hash:digest,expected_resolved_lock_digest:digest,requested:release.identity,dependency_snapshot:snapshot})).value,plan);assert.equal((await client.commit({transaction_id:"tx",plan_digest:digest,operation_id:"op",idempotency_key:"id"})).value.committed_revision,"r2");assert.equal((await client.getTransaction("tx")).value.events.at(-1).state,"committed");assert.equal((await client.recoverTransaction("tx")).ok,true);assert.equal((await client.authorArtifact({kind:"pack",project_id:"p",output_name:"base.ldpack",publisher_id:"layerdraw",version:"1.0.0"})).ok,true);const fixture=JSON.parse(await readFile(new URL("../../../schemas/fixtures/conformance/registry/host-wire-v1.json",import.meta.url),"utf8"));assert.deepEqual(host.calls.map((call)=>call.operation).sort(),fixture.operations);for(const call of host.calls){assert.deepEqual(Object.keys(call).sort(),["input","operation","request_id","wire_version"]);assert.equal(call.wire_version,"1.0");assert.match(call.request_id,/^registry-\d+$/)}});
+
+test("host adapter rejects wrong versions, unions, identities, shapes, throws and cancellation",async()=>{assert.throws(()=>createHostRegistryClient(),TypeError);const cases=[{wire_version:"2.0",operation:"registry.list_sources",request_id:"registry-1",ok:true,value:[]},{wire_version:"1.0",operation:"wrong",request_id:"registry-1",ok:true,value:[]},{wire_version:"1.0",operation:"registry.list_sources",request_id:"wrong",ok:true,value:[]},{wire_version:"1.0",operation:"registry.list_sources",request_id:"registry-1",ok:true,value:[],failure:{}},{wire_version:"1.0",operation:"registry.list_sources",request_id:"registry-1",ok:true,value:{}},{wire_version:"1.0",operation:"registry.list_sources",request_id:"registry-1",ok:false,failure:{code:1,subject:"x",actionable:true}}];for(const response of cases){const client=createHostRegistryClient({async invoke(){return response}});assert.equal((await client.listSources()).failure.subject,"invalid_host_response")};const failure=createHostRegistryClient({async invoke(request){return JSON.stringify({wire_version:"1.0",operation:request.operation,request_id:request.request_id,ok:false,failure:{code:"registry.signature_revoked",subject:"publisher",actionable:true}})}});assert.equal((await failure.search({query:"x"})).failure.code,"registry.signature_revoked");const thrown=createHostRegistryClient({async invoke(){throw new Error("private")}});assert.equal((await thrown.listSources()).failure.subject,"registry.list_sources");const controller=new AbortController();controller.abort();assert.equal((await thrown.listSources(controller.signal)).failure.code,"registry.cancelled")});
+
+test("operation-specific success shapes fail closed",async()=>{for(const method of [async(c)=>c.plan({}),async(c)=>c.commit({}),async(c)=>c.getTransaction("tx"),async(c)=>c.authorArtifact({})]){const client=createHostRegistryClient({async invoke(request){return {wire_version:"1.0",operation:request.operation,request_id:request.request_id,ok:true,value:[]}}});assert.equal((await method(client)).failure.subject,"invalid_host_response")}});

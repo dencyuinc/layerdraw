@@ -1,0 +1,18 @@
+{
+  "wire_version": "1.0",
+  "operations": [
+    "registry.author_artifact",
+    "registry.commit_plan",
+    "registry.configure_source",
+    "registry.connect_source",
+    "registry.disconnect_source",
+    "registry.get_transaction",
+    "registry.list_sources",
+    "registry.plan_install",
+    "registry.recover_transaction",
+    "registry.search"
+  ],
+  "request_required": ["wire_version", "operation", "request_id", "input"],
+  "success_required": ["wire_version", "operation", "request_id", "ok", "value"],
+  "failure_required": ["wire_version", "operation", "request_id", "ok", "failure"]
+}

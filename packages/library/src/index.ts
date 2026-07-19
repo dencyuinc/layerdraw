@@ -2,7 +2,7 @@
 
 import type {
   RegistryAction, RegistryArtifactIdentity, RegistryArtifactKind, RegistryArtifactRelease,
-  RegistryAuthoringInput, RegistryClient, RegistryFailure, RegistryInstallPlan,
+  RegistryAuthoringInput, RegistryClient, RegistryDependencySnapshot, RegistryFailure, RegistryInstallPlan,
   RegistryPlanInput, RegistrySource, RegistryTransaction,
 } from "@layerdraw/registry-client";
 
@@ -19,6 +19,7 @@ export interface LibraryProjectContext {
   readonly revision: string;
   readonly definition_hash: string;
   readonly resolved_lock_digest: string;
+  readonly dependency_snapshot: RegistryDependencySnapshot;
 }
 export type LibraryStatus = "idle" | "loading" | "ready" | "previewing" | "awaiting_confirmation" | "applying" | "committed" | "recoverable_error" | "disabled";
 export interface LibrarySnapshot {
@@ -62,6 +63,9 @@ export class LibraryController {
     if (!result.ok) return this.#fail(result.failure);
     return this.#publish({ ...this.#state, status: "ready", sources: result.value });
   }
+  async configureSource(source: Omit<RegistrySource,"connected">):Promise<LibrarySnapshot>{if(!this.#state.capabilities.manage_sources)return this.#deny("manage_sources");const signal=this.#begin("loading");const result=await this.#client.configureSource(source,signal);if(signal.aborted)return this.snapshot();if(!result.ok)return this.#fail(result.failure);return this.#upsertSource(result.value)}
+  async connectSource(sourceId:string,connectionRef:string):Promise<LibrarySnapshot>{if(!this.#state.capabilities.manage_sources)return this.#deny("manage_sources");const signal=this.#begin("loading");const result=await this.#client.connectSource({source_id:sourceId,connection_ref:connectionRef},signal);if(signal.aborted)return this.snapshot();if(!result.ok)return this.#fail(result.failure);return this.#upsertSource(result.value)}
+  async disconnectSource(sourceId:string):Promise<LibrarySnapshot>{if(!this.#state.capabilities.manage_sources)return this.#deny("manage_sources");const signal=this.#begin("loading");const result=await this.#client.disconnectSource(sourceId,signal);if(signal.aborted)return this.snapshot();if(!result.ok)return this.#fail(result.failure);return this.#upsertSource(result.value)}
   async search(query: string, kind?: RegistryArtifactKind): Promise<LibrarySnapshot> {
     if (!this.#state.capabilities.browse) return this.#deny("browse");
     const signal = this.#begin("loading", { query, ...(kind === undefined ? {} : { kind }) });
@@ -83,6 +87,7 @@ export class LibraryController {
       expected_definition_hash: project.definition_hash,
       expected_resolved_lock_digest: project.resolved_lock_digest,
       requested: this.#state.selected.identity,
+      dependency_snapshot: project.dependency_snapshot,
     };
     const signal = this.#begin("previewing");
     const result = await this.#client.plan(input, signal);
@@ -98,9 +103,10 @@ export class LibraryController {
     const result = await this.#client.commit({ transaction_id: plan.transaction_id, plan_digest: plan.plan_digest, operation_id: operationId, idempotency_key: idempotencyKey }, signal);
     if (signal.aborted) return this.snapshot();
     if (!result.ok) return this.#fail(result.failure);
-    const status = result.value.state === "committed" ? "committed" : result.value.state === "repair_required" || result.value.state === "needs_review" ? "recoverable_error" : "applying";
-    return this.#publish({ ...this.#state, status, transaction: result.value, failure: result.value.failure });
+    const transaction=await this.#client.getTransaction(plan.transaction_id,signal);if(!transaction.ok)return this.#fail(transaction.failure);return this.#publishTransaction(transaction.value);
   }
+  async getTransaction(transactionId:string):Promise<LibrarySnapshot>{const signal=this.#begin("loading");const result=await this.#client.getTransaction(transactionId,signal);if(signal.aborted)return this.snapshot();if(!result.ok)return this.#fail(result.failure);return this.#publishTransaction(result.value)}
+  async recoverTransaction(transactionId:string):Promise<LibrarySnapshot>{if(!this.#state.capabilities.commit_transactions)return this.#deny("commit_transactions");const signal=this.#begin("loading");const result=await this.#client.recoverTransaction(transactionId,signal);if(signal.aborted)return this.snapshot();if(!result.ok)return this.#fail(result.failure);return this.#publishTransaction(result.value)}
   async author(input: RegistryAuthoringInput): Promise<LibrarySnapshot> {
     if (!this.#state.capabilities.author_artifacts) return this.#deny("author_artifacts");
     const signal = this.#begin("loading");
@@ -113,6 +119,8 @@ export class LibraryController {
   #begin(status: LibraryStatus, extension: Partial<LibrarySnapshot> = {}): AbortSignal {
     this.cancel(); this.#operation = new AbortController(); this.#publish({ ...this.#state, ...extension, status, failure: undefined }); return this.#operation.signal;
   }
+  #upsertSource(source:RegistrySource):LibrarySnapshot{const sources=[source,...this.#state.sources.filter((item)=>item.source_id!==source.source_id)];return this.#publish({...this.#state,status:"ready",sources,failure:undefined})}
+  #publishTransaction(transaction:RegistryTransaction):LibrarySnapshot{const state=transaction.events.at(-1)?.state;const status=state==="committed"?"committed":state==="repair_required"||state==="needs_review"?"recoverable_error":"applying";return this.#publish({...this.#state,status,transaction,failure:undefined})}
   #deny(subject: string): LibrarySnapshot { return this.#fail(unavailable(subject)); }
   #fail(failure: RegistryFailure): LibrarySnapshot { return this.#publish({ ...this.#state, status: "recoverable_error", failure }); }
   #publish(state: LibrarySnapshot): LibrarySnapshot { this.#state = Object.freeze(structuredClone(state)); const snapshot = this.snapshot(); this.#onEvent?.({ kind: "changed", snapshot }); return snapshot; }

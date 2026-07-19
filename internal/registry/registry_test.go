@@ -8,127 +8,45 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 )
+
+var testNow = time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+
+func testDigest(ch byte) string { return "sha256:" + string(bytesRepeat(ch, 64)) }
+func bytesRepeat(ch byte, n int) []byte {
+	value := make([]byte, n)
+	for i := range value {
+		value[i] = ch
+	}
+	return value
+}
 
 type memoryClient struct {
 	releases []ArtifactRelease
 	bytes    map[string][]byte
 	offline  bool
-}
-
-func TestResolverAndOrderingEdges(t *testing.T) {
-	r, client, _, _, privateKey := fixture(t)
-	data := []byte("archive")
-	old := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.0.0"}, data, nil)
-	newer := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.1.0"}, data, nil)
-	client.releases = []ArtifactRelease{old, newer}
-	client.bytes[old.Digest] = data
-	plan, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "latest"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.Artifacts[0].Release.Identity.Version != "1.1.0" {
-		t.Fatalf("latest ordering: %#v", plan.Artifacts)
-	}
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "9.0.0"}}); !IsFailure(err, FailureDependencyConflict) {
-		t.Fatalf("missing exact: %v", err)
-	}
-	resolved := map[string]PlanArtifact{"pack:layerdraw/pack": {Release: old}}
-	if err := r.resolve(context.Background(), newer.Identity, false, resolved, map[string]bool{}); !IsFailure(err, FailureDependencyConflict) {
-		t.Fatalf("resolved conflict: %v", err)
-	}
-	if err := r.resolve(context.Background(), old.Identity, false, map[string]PlanArtifact{"pack:layerdraw/pack": {Release: old}}, map[string]bool{}); err != nil {
-		t.Fatalf("same resolved release: %v", err)
-	}
-	if _, err := r.resolveVersion(context.Background(), Dependency{CanonicalID: "layerdraw/pack", VersionRange: "^9.0.0"}, false); !IsFailure(err, FailureDependencyConflict) {
-		t.Fatalf("unmatched range: %v", err)
-	}
-	client.bytes = map[string][]byte{}
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: old.Identity}); !IsFailure(err, FailureUnavailable) {
-		t.Fatalf("download failure: %v", err)
-	}
-	if compareVersions("bad", "worse") >= 0 || compareVersions("1.0.0-alpha", "1.0.0-beta") >= 0 || compareVersions("1.0.0", "1.0.0") != 0 {
-		t.Fatal("fallback/prerelease ordering")
-	}
-	sources := []RegistrySource{{SourceID: "low", Priority: 1}, {SourceID: "high", Priority: 2}}
-	releases := []ArtifactRelease{{Identity: ArtifactIdentity{CanonicalID: "b", Version: "1.0.0"}, SourceID: "low"}, {Identity: ArtifactIdentity{CanonicalID: "a", Version: "1.0.0"}, SourceID: "low"}, {Identity: ArtifactIdentity{CanonicalID: "a", Version: "1.0.0"}, SourceID: "high"}, {Identity: ArtifactIdentity{CanonicalID: "a", Version: "2.0.0"}, SourceID: "low"}}
-	sortReleases(releases, sources)
-	if releases[0].Identity.Version != "2.0.0" || releases[1].SourceID != "high" || releases[3].Identity.CanonicalID != "b" {
-		t.Fatalf("release order: %#v", releases)
-	}
-	if err := r.PutTrustPolicy(TrustPolicy{PolicyID: "second"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.ConfigureSource(RegistrySource{SourceID: "second", Kind: SourceOfficial, EndpointRef: "x", TrustPolicyID: "second", Priority: 200}); err != nil {
-		t.Fatal(err)
-	}
-	if listed := r.Sources(); listed[0].SourceID != "second" {
-		t.Fatalf("source priority: %#v", listed)
-	}
-	_, clients := r.snapshotSources()
-	if clients[SourceOfficial] == nil {
-		t.Fatal("client snapshot missing")
-	}
-}
-
-func TestTrustDecisionEdges(t *testing.T) {
-	public, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.0.0"}
-	release := signedRelease(t, privateKey, identity, []byte("archive"), nil)
-	source := RegistrySource{SourceID: "s", Kind: SourceOfficial}
-	policy := TrustPolicy{PolicyID: "p", RequiredSignature: true, PublicKeys: map[string]ed25519.PublicKey{"key-1": public}}
-	badProfile := cloneRelease(release)
-	badProfile.Signature.Profile = "sigstore"
-	if err := verifyTrust(source, policy, badProfile); !IsFailure(err, FailureSignatureInvalid) {
-		t.Fatalf("profile: %v", err)
-	}
-	badKey := cloneRelease(release)
-	badKey.Signature.KeyID = "missing"
-	if err := verifyTrust(source, policy, badKey); !IsFailure(err, FailureSignatureInvalid) {
-		t.Fatalf("key: %v", err)
-	}
-	badStatement := cloneRelease(release)
-	statement := []byte(`{"artifact_identity":{"kind":"pack","canonical_id":"other","version":"1.0.0"},"ArtifactDigest":"` + release.Digest + `","PublisherID":"layerdraw"}`)
-	badStatement.Signature.Statement = statement
-	badStatement.Signature.Signature = ed25519.Sign(privateKey, statement)
-	if err := verifyTrust(source, policy, badStatement); !IsFailure(err, FailureSignatureInvalid) {
-		t.Fatalf("statement: %v", err)
-	}
-	unsigned := cloneRelease(release)
-	unsigned.Signature = nil
-	local := source
-	local.Kind = SourceLocalDirectory
-	policy.AllowUnsignedLocal = true
-	if err := verifyTrust(local, policy, unsigned); err != nil {
-		t.Fatalf("local unsigned: %v", err)
-	}
-	policy.RequiredSignature = false
-	if err := verifyTrust(source, policy, unsigned); err != nil {
-		t.Fatalf("optional signature: %v", err)
-	}
-}
-
-func TestDigestJSONRejectsUnsupportedValues(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("unsupported canonical value did not panic")
-		}
-	}()
-	_ = digestJSON(make(chan int))
+	searches atomic.Int64
 }
 
 func (m *memoryClient) Search(_ context.Context, source RegistrySource, input SearchInput) ([]ArtifactRelease, error) {
+	m.searches.Add(1)
 	if m.offline {
 		return nil, errors.New("offline")
 	}
 	out := []ArtifactRelease{}
 	for _, release := range m.releases {
 		if release.SourceID == source.SourceID && (input.Query == "" || release.Identity.CanonicalID == input.Query) {
-			out = append(out, release)
+			out = append(out, cloneRelease(release))
 		}
 	}
 	return out, nil
@@ -144,444 +62,467 @@ func (m *memoryClient) Download(_ context.Context, _ RegistrySource, release Art
 	return append([]byte{}, value...), nil
 }
 
-type validator struct {
-	calls    []ArtifactIdentity
-	fail     bool
-	mismatch bool
-}
+type validator struct{ fail, mismatch bool }
 
 func (v *validator) ValidateRegistryArtifact(_ context.Context, release ArtifactRelease, _ []byte) (ValidatedArtifact, error) {
-	v.calls = append(v.calls, release.Identity)
 	if v.fail {
-		return ValidatedArtifact{}, errors.New("Engine package validation failed")
+		return ValidatedArtifact{}, errors.New("invalid container")
 	}
+	canonical := release.Digest
 	if v.mismatch {
-		return ValidatedArtifact{Identity: release.Identity, CanonicalDigest: digestBytes([]byte("other"))}, nil
+		canonical = testDigest('f')
 	}
-	return ValidatedArtifact{Identity: release.Identity, CanonicalDigest: release.Digest, StagedTreeManifest: digestJSON(release.Identity), ResolvedLockDigest: digestJSON(release.Dependencies), MutationDigest: digestJSON(release), AuthoringImpactDigest: digestJSON(release.Identity.CanonicalID)}, nil
+	impact := &semantic.AuthoringImpact{BaseDefinitionHash: protocolcommon.Digest(testDigest('1')), ResultingDefinitionHash: protocolcommon.Digest(testDigest('2')), SemanticDiffHash: protocolcommon.Digest(testDigest('3')), SourceDiffHash: protocolcommon.Digest(testDigest('4')), ImpactDigest: protocolcommon.Digest(testDigest('5')), RequiredCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilitySchemaWrite}, Entries: []semantic.AuthoringImpactEntry{}}
+	return ValidatedArtifact{Identity: release.Identity, CanonicalDigest: canonical, StagedTreeManifest: testDigest('6'), ResolvedLockDigest: testDigest('7'), MutationDigest: testDigest('8'), AuthoringImpactDigest: string(impact.ImpactDigest), AuthoringImpact: impact, Diagnostics: []string{}}, nil
 }
 
-type access struct{ deny bool }
+type accessPort struct {
+	deny  bool
+	calls atomic.Int64
+}
 
-func (a access) PreviewRegistryPlan(_ context.Context, _ InstallPlan) error {
+func (a *accessPort) EvaluateRegistryPlan(_ context.Context, input accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error) {
+	a.calls.Add(1)
+	caps := []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage}
+	var impactDigest *protocolcommon.Digest
+	if input.AuthoringImpact != nil {
+		digest := input.AuthoringImpact.ImpactDigest
+		impactDigest = &digest
+		for _, capability := range input.AuthoringImpact.RequiredCapabilities {
+			if capability != semantic.AuthoringCapabilityPackageManage {
+				caps = append(caps, capability)
+			}
+		}
+	}
+	outcome := accessprotocol.AuthoringDecisionOutcomeAllow
 	if a.deny {
-		return errors.New("denied")
+		outcome = accessprotocol.AuthoringDecisionOutcomeDeny
 	}
-	return nil
+	hostDigests := make([]protocolcommon.Digest, len(input.HostOperationImpacts))
+	for i, impact := range input.HostOperationImpacts {
+		hostDigests[i] = impact.ImpactDigest
+	}
+	evaluation := protocolcommon.Digest(digestJSON(input))
+	return accessprotocol.AuthoringDecision{AccessFingerprint: input.GrantSnapshot.AccessFingerprint, ApprovalRuleRefs: []string{}, AuthoringImpactDigest: impactDigest, ConstraintViolations: []accessprotocol.ConstraintViolation{}, DecisionDigest: protocolcommon.Digest(digestJSON(struct {
+		Evaluation protocolcommon.Digest
+		Outcome    accessprotocol.AuthoringDecisionOutcome
+	}{evaluation, outcome})), Diagnostics: []protocolcommon.ProtocolDiagnostic{}, EvaluationDigest: evaluation, HostOperationImpactDigests: hostDigests, MissingCapabilities: []semantic.AuthoringCapability{}, Outcome: outcome, RequiredCapabilities: caps}, nil
 }
 
-type runtime struct {
-	calls int
-	fail  bool
+type projectPort struct {
+	mu    sync.RWMutex
+	state ProjectState
+	err   error
 }
 
-type author struct {
+func (p *projectPort) CurrentRegistryProjectState(_ context.Context, _ string) (ProjectState, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	state := p.state
+	state.HostCapabilities = append([]string{}, p.state.HostCapabilities...)
+	state.DependencySnapshot = cloneDependencySnapshot(p.state.DependencySnapshot)
+	return state, p.err
+}
+
+type runtimePort struct {
+	calls atomic.Int64
+	err   error
+	block chan struct{}
+}
+
+func (r *runtimePort) CommitRegistryPlan(_ context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
+	r.calls.Add(1)
+	if r.block != nil {
+		<-r.block
+	}
+	if r.err != nil {
+		return RuntimeCommitResult{}, r.err
+	}
+	if input.AccessDecision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || len(input.HostOperationImpacts) != 1 {
+		return RuntimeCommitResult{}, errors.New("missing typed authorization binding")
+	}
+	return RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID}, nil
+}
+
+type credentialBroker struct {
+	lease CredentialLease
+	err   error
+}
+
+func (b credentialBroker) ResolveRegistryConnection(_ context.Context, ref string) (CredentialLease, error) {
+	lease := b.lease
+	lease.ConnectionRef = ref
+	return lease, b.err
+}
+
+type connector struct {
+	calls atomic.Int64
+	err   error
+	seen  []byte
+}
+
+func (c *connector) ProbeRegistrySource(_ context.Context, _ RegistrySource, lease CredentialLease) error {
+	c.calls.Add(1)
+	c.seen = append([]byte{}, lease.Credential...)
+	return c.err
+}
+
+type authorPort struct {
 	result AuthoredArtifact
 	err    error
 }
 
-func (a author) AuthorRegistryArtifact(_ context.Context, _ AuthorArtifactRequest) (AuthoredArtifact, error) {
+func (a authorPort) AuthorRegistryArtifact(_ context.Context, _ AuthorArtifactRequest) (AuthoredArtifact, error) {
 	return a.result, a.err
 }
 
-func (r *runtime) CommitRegistryPlan(_ context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
-	r.calls++
-	if r.fail {
-		return RuntimeCommitResult{}, errors.New("publication uncertain")
-	}
-	return RuntimeCommitResult{CommittedRevision: input.CurrentRevision + "-next", OperationResultID: input.OperationID}, nil
+type testEnv struct {
+	registry   *Registry
+	client     *memoryClient
+	validator  *validator
+	access     *accessPort
+	project    *projectPort
+	runtime    *runtimePort
+	connector  *connector
+	privateKey ed25519.PrivateKey
+	store      TransactionStore
 }
 
-func fixture(t *testing.T) (*Registry, *memoryClient, *validator, *runtime, ed25519.PrivateKey) {
+func newTestEnv(t *testing.T, store TransactionStore) *testEnv {
 	t.Helper()
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	public, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	v := &validator{}
-	rt := &runtime{}
-	registry, err := New(v, access{}, rt, NewMemoryTransactionStore())
+	access := &accessPort{}
+	project := &projectPort{state: ProjectState{ProjectID: "p", DocumentID: "doc", LocalScopeID: "local", Revision: "r1", DefinitionHash: testDigest('1'), DependencySnapshot: ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{}}, PackTreeManifest: testDigest('9'), HostCapabilities: []string{"render.svg"}, GrantSnapshot: accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: protocolcommon.Digest(testDigest('a')), ActorRef: accessprotocol.ActorRef{ActorID: "user", Kind: "user"}, GrantedCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage, semantic.AuthoringCapabilitySchemaWrite}, HostDocumentID: "doc", IssuedAt: protocolcommon.Rfc3339Time(testNow.Format(time.RFC3339)), LocalScopeID: "local", MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}}}
+	runtime := &runtimePort{}
+	broker := credentialBroker{lease: CredentialLease{Credential: []byte("opaque"), ExpiresAt: testNow.Add(time.Hour)}}
+	registry, err := New(v, access, runtime, project, broker, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := TrustPolicy{PolicyID: "official", RequiredSignature: true, TrustedPublishers: map[string]bool{"layerdraw": true}, PublicKeys: map[string]ed25519.PublicKey{"key-1": privateKey.Public().(ed25519.PublicKey)}, RevokedKeys: map[string]bool{}}
-	if err = registry.PutTrustPolicy(policy); err != nil {
+	registry.now = func() time.Time { return testNow }
+	policy := TrustPolicy{PolicyID: "official", RequiredSignature: true, TrustedPublishers: map[string]bool{"layerdraw": true}, PublicKeys: map[string]ed25519.PublicKey{"key-1": public}, RevokedKeys: map[string]bool{}}
+	if err := registry.PutTrustPolicy(policy); err != nil {
 		t.Fatal(err)
 	}
-	if err = registry.ConfigureSource(RegistrySource{SourceID: "official", Kind: SourceOfficial, EndpointRef: "https://registry.layerdraw.dev", TrustPolicyID: "official", CachePolicy: "verified", Priority: 100, Connected: true}); err != nil {
+	if err := registry.ConfigureSource(RegistrySource{SourceID: "official", Kind: SourceOfficial, EndpointRef: "registry:official", TrustPolicyID: "official", CachePolicy: "verified", Priority: 100, Connected: true}); err != nil {
 		t.Fatal(err)
 	}
 	client := &memoryClient{bytes: map[string][]byte{}}
 	registry.RegisterClient(SourceOfficial, client)
-	return registry, client, v, rt, privateKey
+	connector := &connector{}
+	registry.RegisterConnector(SourceOfficial, connector)
+	return &testEnv{registry: registry, client: client, validator: v, access: access, project: project, runtime: runtime, connector: connector, privateKey: privateKey, store: store}
 }
 
-func signedRelease(t *testing.T, privateKey ed25519.PrivateKey, identity ArtifactIdentity, data []byte, dependencies []Dependency) ArtifactRelease {
+func signedRelease(t *testing.T, key ed25519.PrivateKey, identity ArtifactIdentity, data []byte, deps []Dependency) ArtifactRelease {
 	t.Helper()
-	release := ArtifactRelease{Identity: identity, SourceID: "official", PublisherID: "layerdraw", Digest: digestBytes(data), Size: int64(len(data)), Dependencies: dependencies, Compatibility: []CompatibilityDecision{{Subject: "core", Required: ">=0.1.0", Available: "0.1.0", Status: "compatible"}}, License: "Apache-2.0", ProvenanceDigest: digestBytes([]byte("provenance"))}
-	statement, err := json.Marshal(struct {
-		Identity       ArtifactIdentity `json:"artifact_identity"`
-		ArtifactDigest string           `json:"ArtifactDigest"`
-		PublisherID    string           `json:"PublisherID"`
-	}{identity, release.Digest, release.PublisherID})
+	release := ArtifactRelease{Identity: identity, SourceID: "official", PublisherID: "layerdraw", Digest: digestBytes(data), ManifestDigest: testDigest('b'), DependencyMetadataDigest: digestJSON(deps), Size: int64(len(data)), Dependencies: append([]Dependency{}, deps...), Compatibility: []CompatibilityDecision{{Subject: "core", Required: ">=0.1.0", Available: "0.1.0", Status: "compatible", Diagnostics: []string{}}}, License: "Apache-2.0", ProvenanceDigest: testDigest('c')}
+	statement := ArtifactSignatureStatement{ArtifactIdentity: identity, ArtifactDigest: release.Digest, ManifestDigest: release.ManifestDigest, DependencyMetadataDigest: release.DependencyMetadataDigest, PublisherID: release.PublisherID, IssuedAt: testNow.Add(-time.Minute), ExpiresAt: timePointer(testNow.Add(time.Hour))}
+	bytes, err := json.Marshal(statement)
 	if err != nil {
 		t.Fatal(err)
 	}
-	release.Signature = &SignatureEnvelope{Profile: "ed25519", KeyID: "key-1", Statement: statement, Signature: ed25519.Sign(privateKey, statement)}
+	release.Signature = &SignatureEnvelope{Profile: "ed25519", KeyID: "key-1", Statement: bytes, Signature: ed25519.Sign(key, bytes)}
 	return release
 }
+func timePointer(value time.Time) *time.Time { return &value }
+func planRequest(env *testEnv, action Action, identity ArtifactIdentity) PlanRequest {
+	state, _ := env.project.CurrentRegistryProjectState(context.Background(), "p")
+	return PlanRequest{Action: action, ProjectID: "p", BaseRevision: state.Revision, ExpectedDefinitionHash: state.DefinitionHash, ExpectedResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, Requested: identity, DependencySnapshot: state.DependencySnapshot}
+}
+func addRelease(env *testEnv, release ArtifactRelease, data []byte) {
+	env.client.releases = append(env.client.releases, release)
+	env.client.bytes[release.Digest] = append([]byte{}, data...)
+}
 
-func TestPlanResolvesVerifiesAndCommitsAtomically(t *testing.T) {
-	registry, client, validator, runtime, privateKey := fixture(t)
-	depBytes := []byte("dependency archive")
-	rootBytes := []byte("template archive")
-	dep := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/base", Version: "1.2.0"}, depBytes, nil)
-	root := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactTemplate, CanonicalID: "layerdraw/starter", Version: "2.0.0"}, rootBytes, []Dependency{{CanonicalID: "layerdraw/base", VersionRange: "^1.0.0", DigestConstraint: dep.Digest}})
-	client.releases = []ArtifactRelease{root, dep}
-	client.bytes[root.Digest] = rootBytes
-	client.bytes[dep.Digest] = depBytes
-	request := PlanRequest{Action: ActionCreateFromTemplate, ProjectID: "project-1", BaseRevision: "r1", ExpectedDefinitionHash: "definition", ExpectedResolvedLockDigest: "lock", Requested: root.Identity}
-	plan, err := registry.Plan(context.Background(), request)
+func TestInstallPlanBindsTrustTypedAccessAndFreshCommitState(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	bytes := []byte("pack")
+	release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/base", Version: "1.0.0"}, bytes, nil)
+	addRelease(env, release, bytes)
+	plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, release.Identity))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Artifacts) != 2 || plan.Artifacts[0].Release.Identity.CanonicalID != "layerdraw/base" || len(validator.calls) != 2 {
-		t.Fatalf("unexpected resolved closure: %#v", plan.Artifacts)
+	if len(plan.RequiredCapabilities) != 2 || plan.RequiredCapabilities[0] != "package:manage" || plan.RequiredCapabilities[1] != "schema:write" {
+		t.Fatalf("typed capabilities not preserved: %#v", plan.RequiredCapabilities)
 	}
-	if plan.PlanDigest == "" || plan.EvaluationDigest == "" || plan.RequiredCapabilities[0] != "package:manage" {
+	if plan.AuthoringImpact == nil || len(plan.HostOperationImpacts) != 1 || plan.AccessDecision.Outcome != "allow" || len(plan.SourceBindings) != 1 || !plan.ExpiresAt.After(testNow) {
 		t.Fatalf("incomplete plan: %#v", plan)
 	}
-	result, err := registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "idem", CurrentRevision: "r1", CurrentDefinitionHash: "definition", CurrentResolvedLockDigest: "lock"})
+	result, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "idem"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CommittedRevision != "r1-next" || runtime.calls != 1 {
-		t.Fatalf("unexpected runtime result: %#v", result)
-	}
-	transaction, _ := registry.Transaction(plan.TransactionID)
-	if transaction.Events[len(transaction.Events)-1].State != StateCommitted {
-		t.Fatalf("not committed: %#v", transaction.Events)
+	if result.CommittedRevision != "r2" || env.runtime.calls.Load() != 1 || env.access.calls.Load() != 2 {
+		t.Fatalf("commit did not re-evaluate: %#v", result)
 	}
 }
 
-func TestTrustDependencyAndStaleFailuresFailClosed(t *testing.T) {
-	registry, client, _, runtime, privateKey := fixture(t)
-	bytes := []byte("archive")
-	release := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.0.0"}, bytes, nil)
-	client.releases = []ArtifactRelease{release}
-	client.bytes[release.Digest] = bytes
-	release.Signature.Signature[0] ^= 0xff
-	client.releases[0] = release
-	_, err := registry.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", ExpectedDefinitionHash: "d", ExpectedResolvedLockDigest: "l", Requested: release.Identity})
-	if !IsFailure(err, FailureSignatureInvalid) {
-		t.Fatalf("expected signature failure, got %v", err)
-	}
-	release = signedRelease(t, privateKey, release.Identity, bytes, nil)
-	client.releases[0] = release
-	plan, err := registry.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", ExpectedDefinitionHash: "d", ExpectedResolvedLockDigest: "l", Requested: release.Identity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "i", CurrentRevision: "changed", CurrentDefinitionHash: "d", CurrentResolvedLockDigest: "l"})
-	if !IsFailure(err, FailurePlanStale) || runtime.calls != 0 {
-		t.Fatalf("stale plan reached runtime: %v", err)
-	}
-	client.offline = true
-	_, err = registry.Search(context.Background(), SearchInput{Query: "layerdraw/pack"})
-	if !IsFailure(err, FailureUnavailable) {
-		t.Fatalf("offline did not fail closed: %v", err)
-	}
-}
-
-func TestSourceCredentialsRevocationAndRecoveryAreActionable(t *testing.T) {
-	registry, client, _, runtime, privateKey := fixture(t)
-	if err := registry.ConfigureSource(RegistrySource{SourceID: "bad", Kind: SourceSelfHosted, EndpointRef: "https://registry.example?token=redacted", TrustPolicyID: "official"}); !IsFailure(err, FailurePolicyDenied) {
-		t.Fatalf("credential was accepted: %v", err)
-	}
-	bytes := []byte("archive")
-	release := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.0.0"}, bytes, nil)
-	client.releases = []ArtifactRelease{release}
-	client.bytes[release.Digest] = bytes
-	source, policy, _, _ := registry.sourceContext("official")
-	policy.RevokedKeys["key-1"] = true
-	if err := registry.PutTrustPolicy(policy); err != nil {
-		t.Fatal(err)
-	}
-	_, err := registry.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", ExpectedDefinitionHash: "d", ExpectedResolvedLockDigest: "l", Requested: release.Identity})
-	if !IsFailure(err, FailureSignatureRevoked) {
-		t.Fatalf("revocation ignored: %v", err)
-	}
-	policy.RevokedKeys["key-1"] = false
-	if err := registry.PutTrustPolicy(policy); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := registry.Plan(context.Background(), PlanRequest{Action: ActionRepair, ProjectID: "p", BaseRevision: "r", ExpectedDefinitionHash: "d", ExpectedResolvedLockDigest: "l", Requested: release.Identity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime.fail = true
-	_, err = registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "id", CurrentRevision: "r", CurrentDefinitionHash: "d", CurrentResolvedLockDigest: "l"})
-	if !IsFailure(err, FailureRepairRequired) {
-		t.Fatalf("partial publication not recoverable: %v", err)
-	}
-	tx, _ := registry.Transaction(plan.TransactionID)
-	if tx.Events[len(tx.Events)-1].State != StateRepairRequired {
-		t.Fatalf("missing recovery state: %#v", tx.Events)
-	}
-	_ = source
-}
-
-func TestAuthoringAndHostBindingDelegateWithoutSemantics(t *testing.T) {
-	r, client, validator, _, privateKey := fixture(t)
-	if _, err := NewHostBinding(nil); !IsFailure(err, FailureUnavailable) {
-		t.Fatalf("nil binding: %v", err)
-	}
-	binding, err := NewHostBinding(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(binding.ListSources()) != 1 {
-		t.Fatal("binding lost sources")
-	}
-	if err := binding.SetConnected("official", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := binding.ConfigureSource(RegistrySource{SourceID: "second", Kind: SourceOfficial, EndpointRef: "registry:second", TrustPolicyID: "official"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := binding.Search(context.Background(), SearchInput{}); !IsFailure(err, FailureUnavailable) {
-		t.Fatalf("binding search: %v", err)
-	}
-	if _, ok := binding.Transaction("missing"); ok {
-		t.Fatal("binding transaction")
-	}
-	for _, request := range []AuthorArtifactRequest{{}, {Kind: ArtifactPack, ProjectID: "p", OutputName: "wrong.layerdraw", PublisherID: "layerdraw", Version: "1.0.0"}, {Kind: ArtifactTemplate, ProjectID: "p", OutputName: "wrong.ldpack", PublisherID: "layerdraw", Version: "1.0.0"}} {
-		if _, err := binding.AuthorArtifact(context.Background(), request); !IsFailure(err, FailureUnsupportedFormat) {
-			t.Fatalf("author request accepted: %#v %v", request, err)
+func TestCommitRejectsFreshTrustCapabilityAndMembershipChanges(t *testing.T) {
+	for _, mutation := range []func(*testEnv){func(env *testEnv) {
+		_, policy, _, _ := env.registry.sourceContext("official")
+		policy.RevokedKeys["key-1"] = true
+		_ = env.registry.PutTrustPolicy(policy)
+	}, func(env *testEnv) {
+		env.project.mu.Lock()
+		env.project.state.HostCapabilities = []string{"changed"}
+		env.project.mu.Unlock()
+	}, func(env *testEnv) {
+		env.project.mu.Lock()
+		env.project.state.GrantSnapshot.MembershipVersion = "2"
+		env.project.mu.Unlock()
+	}} {
+		env := newTestEnv(t, NewMemoryTransactionStore())
+		data := []byte("pack")
+		release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/base", Version: "1.0.0"}, data, nil)
+		addRelease(env, release, data)
+		plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, release.Identity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutation(env)
+		if _, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "id"}); !IsFailure(err, FailurePlanStale) {
+			t.Fatalf("fresh mutation accepted: %v", err)
+		}
+		if env.runtime.calls.Load() != 0 {
+			t.Fatal("stale plan reached Runtime")
 		}
 	}
+}
+
+func TestActionSpecificPlansAndOfflineRemove(t *testing.T) {
+	oldBytes, newBytes := []byte("old"), []byte("new")
+	for _, action := range []Action{ActionUpdate, ActionPin, ActionRemove, ActionRepair} {
+		env := newTestEnv(t, NewMemoryTransactionStore())
+		old := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/base", Version: "1.0.0"}, oldBytes, nil)
+		newer := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/base", Version: "1.1.0"}, newBytes, nil)
+		env.project.state.DependencySnapshot = ProjectDependencySnapshot{ResolvedLockDigest: testDigest('d'), Installs: []LockedArtifact{{Identity: old.Identity, SourceID: "official", Digest: old.Digest}}}
+		addRelease(env, old, oldBytes)
+		addRelease(env, newer, newBytes)
+		requested := newer.Identity
+		if action == ActionRepair {
+			requested = old.Identity
+		}
+		if action == ActionRemove {
+			env.client.offline = true
+			requested = old.Identity
+		}
+		plan, err := env.registry.Plan(context.Background(), planRequest(env, action, requested))
+		if err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+		switch action {
+		case ActionUpdate:
+			if len(plan.ResolvedLockDelta.Updated) != 1 {
+				t.Fatalf("update delta: %#v", plan.ResolvedLockDelta)
+			}
+		case ActionPin:
+			if len(plan.ResolvedLockDelta.Pinned) != 1 {
+				t.Fatalf("pin delta: %#v", plan.ResolvedLockDelta)
+			}
+		case ActionRemove:
+			if len(plan.ResolvedLockDelta.Removed) != 1 || env.client.searches.Load() != 0 {
+				t.Fatalf("remove was not offline: %#v", plan)
+			}
+		case ActionRepair:
+			if plan.Artifacts[0].Release.Digest != old.Digest {
+				t.Fatal("repair did not bind exact lock")
+			}
+		}
+	}
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	templateBytes := []byte("template")
+	template := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactTemplate, CanonicalID: "layerdraw/starter", Version: "1.0.0"}, templateBytes, nil)
+	addRelease(env, template, templateBytes)
+	plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionCreateFromTemplate, template.Identity))
+	if err != nil || !plan.CreatesNewDocument {
+		t.Fatalf("template flow: %#v %v", plan, err)
+	}
+}
+
+func TestSearchTrustKindSignatureExpiryAndCaretZero(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	data := []byte("pack")
+	release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/base", Version: "0.2.5"}, data, nil)
+	addRelease(env, release, data)
+	kind := ArtifactPack
+	found, err := env.registry.Search(context.Background(), SearchInput{Query: "layerdraw/base", Kind: &kind})
+	if err != nil || found[0].Trust == nil || found[0].Trust.Status != TrustVerified {
+		t.Fatalf("search trust: %#v %v", found, err)
+	}
+	wrongKind := ArtifactTemplate
+	if _, err := env.registry.Search(context.Background(), SearchInput{Query: "layerdraw/base", Kind: &wrongKind}); !IsFailure(err, FailureUnavailable) {
+		t.Fatalf("kind mismatch accepted: %v", err)
+	}
+	if !matchesRange("0.2.5", "^0.2.3", false) || matchesRange("0.3.0", "^0.2.3", false) || matchesRange("0.0.4", "^0.0.3", false) {
+		t.Fatal("caret zero semantics")
+	}
+	expired := cloneRelease(release)
+	statement := ArtifactSignatureStatement{ArtifactIdentity: expired.Identity, ArtifactDigest: expired.Digest, ManifestDigest: expired.ManifestDigest, DependencyMetadataDigest: expired.DependencyMetadataDigest, PublisherID: expired.PublisherID, IssuedAt: testNow.Add(-time.Hour), ExpiresAt: timePointer(testNow.Add(-time.Second))}
+	wire, _ := json.Marshal(statement)
+	expired.Signature.Statement = wire
+	expired.Signature.Signature = ed25519.Sign(env.privateKey, wire)
+	if _, err := verifyTrust(testNow, RegistrySource{Kind: SourceOfficial}, TrustPolicy{PolicyID: "p", RequiredSignature: true, PublicKeys: map[string]ed25519.PublicKey{"key-1": env.privateKey.Public().(ed25519.PublicKey)}}, expired); !IsFailure(err, FailureSignatureInvalid) {
+		t.Fatalf("expired statement accepted: %v", err)
+	}
+	policyA := TrustPolicy{PolicyID: "p", PublicKeys: map[string]ed25519.PublicKey{"key": bytesRepeat('a', 32)}}
+	policyB := clonePolicy(policyA)
+	policyB.PublicKeys["key"][0] = 'b'
+	if digestTrust(policyA) == digestTrust(policyB) {
+		t.Fatal("trust digest omitted key bytes")
+	}
+}
+
+func TestCredentialBrokerConnectAndDisconnect(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	if err := env.registry.ConnectSource(context.Background(), "official", "keychain:official"); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := env.registry.getSource("official")
+	if !source.Connected || source.AuthConnectionRef != "keychain:official" || string(env.connector.seen) != "opaque" {
+		t.Fatalf("connection not verified: %#v", source)
+	}
+	if err := env.registry.DisconnectSource("official"); err != nil {
+		t.Fatal(err)
+	}
+	source, _ = env.registry.getSource("official")
+	if source.Connected || source.AuthConnectionRef != "" {
+		t.Fatalf("disconnect retained auth: %#v", source)
+	}
+	env.registry.credentials = credentialBroker{err: errors.New("locked")}
+	if err := env.registry.ConnectSource(context.Background(), "official", "keychain:bad"); !IsFailure(err, FailurePolicyDenied) {
+		t.Fatalf("broker bypass: %v", err)
+	}
+}
+
+func TestDiskStoreCASConcurrencyRestartAndPublicationFailures(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewDiskTransactionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnv(t, store)
+	data := []byte("pack")
+	release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/base", Version: "1.0.0"}, data, nil)
+	addRelease(env, release, data)
+	plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, release.Identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.runtime.block = make(chan struct{})
+	results := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			_, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "same"})
+			results <- err
+		}()
+	}
+	for env.runtime.calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	close(env.runtime.block)
+	success := 0
+	for i := 0; i < 8; i++ {
+		if <-results == nil {
+			success++
+		}
+	}
+	if env.runtime.calls.Load() != 1 || success < 1 {
+		t.Fatalf("double publication calls=%d success=%d", env.runtime.calls.Load(), success)
+	}
+	reopened, err := NewDiskTransactionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, ok, err := reopened.GetRegistryTransaction(context.Background(), plan.TransactionID)
+	if err != nil || !ok || transactionState(tx) != StateCommitted {
+		t.Fatalf("restart load: %#v %v", tx, err)
+	}
+	env2 := newTestEnv(t, NewMemoryTransactionStore())
+	release = signedRelease(t, env2.privateKey, release.Identity, data, nil)
+	addRelease(env2, release, data)
+	plan, err = env2.registry.Plan(context.Background(), planRequest(env2, ActionInstall, release.Identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env2.runtime.err = &RuntimePublicationError{Published: true, Cause: errors.New("finalize failed")}
+	if _, err := env2.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "id"}); !IsFailure(err, FailureRepairRequired) {
+		t.Fatalf("post publication: %v", err)
+	}
+	tx, _ = env2.registry.Transaction(plan.TransactionID)
+	if transactionState(tx) != StateRepairRequired {
+		t.Fatalf("missing repair state: %#v", tx.Events)
+	}
+}
+
+func TestWireDispatcherStrictParityAndRecovery(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	binding, err := NewHostBinding(env.registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := WireRequest{WireVersion: RegistryWireVersion, Operation: WireListSources, RequestID: "req-1", Input: json.RawMessage(`{}`)}
+	wire, _ := json.Marshal(request)
+	var response WireResponse
+	if err := json.Unmarshal(binding.Dispatch(context.Background(), wire), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK || response.Operation != WireListSources || response.RequestID != "req-1" {
+		t.Fatalf("wire mismatch: %#v", response)
+	}
+	bad := binding.Dispatch(context.Background(), []byte(`{"wire_version":"1.0","operation":"registry.list_sources","request_id":"x","input":{},"extra":true}`))
+	if json.Unmarshal(bad, &response) != nil || response.OK || response.Failure.Code != FailureUnsupportedFormat {
+		t.Fatalf("strict wire accepted unknown field: %s", bad)
+	}
+	contract, err := os.ReadFile(filepath.Join("..", "..", "schemas", "fixtures", "conformance", "registry", "host-wire-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		WireVersion string   `json:"wire_version"`
+		Operations  []string `json:"operations"`
+	}
+	if err := json.Unmarshal(contract, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.WireVersion != RegistryWireVersion || len(fixture.Operations) != 10 {
+		t.Fatalf("wire source mismatch: %#v", fixture)
+	}
+}
+
+func TestAuthoringAndFailureEdges(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
 	request := AuthorArtifactRequest{Kind: ArtifactPack, ProjectID: "p", OutputName: "pack.ldpack", PublisherID: "layerdraw", Version: "1.0.0"}
-	if _, err := r.AuthorArtifact(context.Background(), request); !IsFailure(err, FailureUnavailable) {
+	if _, err := env.registry.AuthorArtifact(context.Background(), request); !IsFailure(err, FailureUnavailable) {
 		t.Fatalf("missing author: %v", err)
 	}
-	bytes := []byte("authored pack")
-	release := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.0.0"}, bytes, nil)
-	r.RegisterPackageAuthor(author{err: errors.New("write failed")})
-	if _, err := r.AuthorArtifact(context.Background(), request); !IsFailure(err, FailureArtifactCorrupt) {
-		t.Fatalf("author error: %v", err)
+	data := []byte("authored")
+	release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.0.0"}, data, nil)
+	env.registry.RegisterPackageAuthor(authorPort{result: AuthoredArtifact{Release: release, Bytes: data}})
+	result, err := env.registry.AuthorArtifact(context.Background(), request)
+	if err != nil || result.Release.Digest != release.Digest {
+		t.Fatalf("author: %#v %v", result, err)
 	}
-	r.RegisterPackageAuthor(author{result: AuthoredArtifact{Release: release, Bytes: []byte("wrong")}})
-	if _, err := r.AuthorArtifact(context.Background(), request); !IsFailure(err, FailureArtifactCorrupt) {
-		t.Fatalf("author digest: %v", err)
-	}
-	r.RegisterPackageAuthor(author{result: AuthoredArtifact{Release: release, Bytes: bytes}})
-	validator.fail = true
-	if _, err := r.AuthorArtifact(context.Background(), request); !IsFailure(err, FailureArtifactCorrupt) {
-		t.Fatalf("author validation: %v", err)
-	}
-	validator.fail = false
-	result, err := r.AuthorArtifact(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result.Bytes[0] = 'X'
-	if bytes[0] == 'X' {
-		t.Fatal("authored bytes aliased")
-	}
-	client.releases = []ArtifactRelease{release}
-	client.bytes[release.Digest] = bytes
-	if err := binding.SetConnected("official", true); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := binding.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := binding.Commit(context.Background(), RuntimeCommitInput{Plan: plan, CurrentRevision: "r"}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestConfigurationSearchAndValueContracts(t *testing.T) {
-	if _, err := New(nil, access{}, &runtime{}, NewMemoryTransactionStore()); err == nil {
-		t.Fatal("accepted nil validator")
-	}
-	if _, err := New(&validator{}, nil, &runtime{}, NewMemoryTransactionStore()); err == nil {
-		t.Fatal("accepted nil access")
-	}
-	if _, err := New(&validator{}, access{}, nil, NewMemoryTransactionStore()); err == nil {
-		t.Fatal("accepted nil runtime")
-	}
-	if _, err := New(&validator{}, access{}, &runtime{}, nil); err == nil {
-		t.Fatal("accepted nil transaction store")
-	}
-	r, client, _, _, _ := fixture(t)
-	if err := r.PutTrustPolicy(TrustPolicy{}); err == nil {
-		t.Fatal("accepted empty policy")
-	}
-	if err := r.ConfigureSource(RegistrySource{}); err == nil {
-		t.Fatal("accepted empty source")
-	}
-	if err := r.ConfigureSource(RegistrySource{SourceID: "unknown", Kind: SourceGit, EndpointRef: "git:repo", TrustPolicyID: "missing"}); !IsFailure(err, FailurePolicyDenied) {
-		t.Fatalf("unknown policy: %v", err)
-	}
-	if err := r.SetConnected("missing", true); !IsFailure(err, FailureUnavailable) {
-		t.Fatalf("missing source: %v", err)
-	}
-	if err := r.SetConnected("official", false); err != nil {
-		t.Fatal(err)
-	}
-	if got := r.Sources(); len(got) != 1 || got[0].Connected {
-		t.Fatalf("source clone/order: %#v", got)
-	}
-	if _, err := r.Search(context.Background(), SearchInput{}); !IsFailure(err, FailureUnavailable) {
-		t.Fatalf("disconnected source: %v", err)
-	}
-	if err := r.SetConnected("official", true); err != nil {
-		t.Fatal(err)
-	}
-	client.releases = []ArtifactRelease{{Identity: ArtifactIdentity{Kind: "invalid", CanonicalID: "x", Version: "1"}, SourceID: "official"}}
-	if _, err := r.Search(context.Background(), SearchInput{}); !IsFailure(err, FailureUnavailable) {
-		t.Fatalf("invalid release accepted: %v", err)
-	}
-	client.releases = nil
-	client.offline = true
-	if _, err := r.Search(context.Background(), SearchInput{}); !IsFailure(err, FailureUnavailable) {
-		t.Fatalf("source error leaked: %v", err)
-	}
-	f := &Failure{Code: FailureUnavailable, Subject: "x", Cause: errors.New("cause")}
-	if f.Error() != "registry.unavailable: x" || f.Unwrap() == nil {
-		t.Fatalf("failure contract: %#v", f)
-	}
-	if _, ok := r.Transaction("missing"); ok {
-		t.Fatal("unknown transaction exists")
-	}
-	if _, _, _, ok := r.sourceContext("missing"); ok {
-		t.Fatal("unknown source context exists")
-	}
-}
-
-func TestPlanningRejectsMalformedRequestsPoliciesAndEngineResults(t *testing.T) {
-	r, client, v, _, privateKey := fixture(t)
-	for _, request := range []PlanRequest{{}, {Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "x", Version: ""}}, {Action: ActionCreateFromTemplate, ProjectID: "p", BaseRevision: "r", Requested: ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "x", Version: "1.0.0"}}} {
-		if _, err := r.Plan(context.Background(), request); err == nil {
-			t.Fatalf("accepted malformed request: %#v", request)
+	for _, invalid := range []AuthorArtifactRequest{{}, {Kind: ArtifactPack, ProjectID: "p", OutputName: "bad.layerdraw", PublisherID: "p", Version: "1.0.0"}} {
+		if _, err := env.registry.AuthorArtifact(context.Background(), invalid); !IsFailure(err, FailureUnsupportedFormat) {
+			t.Fatalf("invalid author accepted: %#v", invalid)
 		}
 	}
-	data := []byte("archive")
-	release := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.0.0"}, data, nil)
-	client.releases = []ArtifactRelease{release}
-	client.bytes[release.Digest] = data
-	v.fail = true
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity}); !IsFailure(err, FailureArtifactCorrupt) {
-		t.Fatalf("validator failure: %v", err)
+	if _, err := New(nil, env.access, env.runtime, env.project, env.registry.credentials, env.store); err == nil {
+		t.Fatal("nil validator accepted")
 	}
-	v.fail = false
-	v.mismatch = true
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity}); !IsFailure(err, FailureArtifactCorrupt) {
-		t.Fatalf("validator mismatch: %v", err)
+	if err := env.registry.ConfigureSource(RegistrySource{SourceID: "bad", EndpointRef: "https://x?token=redacted", TrustPolicyID: "official"}); !IsFailure(err, FailurePolicyDenied) {
+		t.Fatalf("credential in config: %v", err)
 	}
-	v.mismatch = false
-	release.Compatibility = []CompatibilityDecision{{Subject: "render", Status: "incompatible"}}
-	client.releases[0] = release
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity}); !IsFailure(err, FailureIncompatibleCapability) {
-		t.Fatalf("compatibility: %v", err)
-	}
-	release.Compatibility = nil
-	client.releases[0] = release
-	client.bytes[release.Digest] = []byte("wrong")
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity}); !IsFailure(err, FailureArtifactCorrupt) {
-		t.Fatalf("digest: %v", err)
-	}
-	client.bytes[release.Digest] = data
-	r.access = access{deny: true}
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity}); !IsFailure(err, FailurePolicyDenied) {
-		t.Fatalf("access: %v", err)
-	}
-}
-
-func TestDependencyCycleConflictAndVersionRules(t *testing.T) {
-	r, client, _, _, privateKey := fixture(t)
-	aBytes, bBytes := []byte("a"), []byte("b")
-	a := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/a", Version: "1.0.0"}, aBytes, []Dependency{{CanonicalID: "layerdraw/b", VersionRange: "^1.0.0"}})
-	b := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/b", Version: "1.1.0"}, bBytes, []Dependency{{CanonicalID: "layerdraw/a", VersionRange: "1.0.0"}})
-	client.releases = []ArtifactRelease{a, b}
-	client.bytes[a.Digest] = aBytes
-	client.bytes[b.Digest] = bBytes
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: a.Identity}); !IsFailure(err, FailureDependencyCycle) {
-		t.Fatalf("cycle: %v", err)
-	}
-	b.Dependencies = nil
-	a.Dependencies[0].DigestConstraint = digestBytes([]byte("other"))
-	client.releases = []ArtifactRelease{a, b}
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: a.Identity}); !IsFailure(err, FailureDependencyConflict) {
-		t.Fatalf("digest constraint: %v", err)
-	}
-	for _, test := range []struct {
-		version, expr string
-		pre, want     bool
-	}{{"1.2.3", "^1.0.0", false, true}, {"2.0.0", "^1.0.0", false, false}, {"1.2.3", "~1.2.0", false, true}, {"1.3.0", "~1.2.0", false, false}, {"1.2.3", ">=1.2.0", false, true}, {"1.0.0-beta", "*", false, false}, {"1.0.0-beta", "*", true, true}, {"bad", "*", true, false}, {"1.0.0", "1.0.0", false, true}} {
-		if got := matchesRange(test.version, test.expr, test.pre); got != test.want {
-			t.Errorf("matchesRange(%q,%q)=%v", test.version, test.expr, got)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("unsupported digest value")
 		}
-	}
-	for _, value := range []string{"", "01.0.0", "1.x.0", "1.0"} {
-		if _, ok := parseVersion(value); ok {
-			t.Errorf("parsed %q", value)
-		}
-	}
-	if compareVersions("1.0.0", "1.0.0-beta") <= 0 || compareVersions("1.0.0-beta", "1.0.0") >= 0 || compareVersions("1.0.1", "1.0.0") <= 0 || compareVersions("1.1.0", "1.0.9") <= 0 || compareVersions("2.0.0", "1.9.9") <= 0 {
-		t.Fatal("semantic ordering")
-	}
-}
-
-func TestTrustProfilesAndPlanIntegrity(t *testing.T) {
-	r, client, _, runtime, privateKey := fixture(t)
-	data := []byte("archive")
-	release := signedRelease(t, privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/pack", Version: "1.0.0"}, data, nil)
-	client.releases = []ArtifactRelease{release}
-	client.bytes[release.Digest] = data
-	source, policy, _, _ := r.sourceContext("official")
-	policy.TrustedPublishers = map[string]bool{"other": true}
-	if err := r.PutTrustPolicy(policy); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity}); !IsFailure(err, FailurePolicyDenied) {
-		t.Fatalf("publisher: %v", err)
-	}
-	policy.TrustedPublishers = nil
-	release.Signature = nil
-	client.releases[0] = release
-	if err := r.PutTrustPolicy(policy); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity}); !IsFailure(err, FailureSignatureMissing) {
-		t.Fatalf("missing signature: %v", err)
-	}
-	policy.RequiredSignature = false
-	if err := r.PutTrustPolicy(policy); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := r.Plan(context.Background(), PlanRequest{Action: ActionInstall, ProjectID: "p", BaseRevision: "r", Requested: release.Identity})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tampered := plan
-	tampered.Action = ActionRemove
-	if _, err := r.Commit(context.Background(), RuntimeCommitInput{Plan: tampered, CurrentRevision: "r"}); !IsFailure(err, FailurePlanStale) {
-		t.Fatalf("tampered plan: %v", err)
-	}
-	if runtime.calls != 0 {
-		t.Fatal("tampered plan reached runtime")
-	}
-	localPolicy := TrustPolicy{PolicyID: "local", RequiredSignature: true, AllowUnsignedLocal: true}
-	if err := r.PutTrustPolicy(localPolicy); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.ConfigureSource(RegistrySource{SourceID: "local", Kind: SourceLocalDirectory, EndpointRef: "file:registry", TrustPolicyID: "local", Connected: true, Priority: 1}); err != nil {
-		t.Fatal(err)
-	}
-	localClient := &memoryClient{releases: []ArtifactRelease{{Identity: release.Identity, SourceID: "local", PublisherID: "local", Digest: release.Digest, Size: int64(len(data)), License: "x"}}, bytes: map[string][]byte{release.Digest: data}}
-	r.RegisterClient(SourceLocalDirectory, localClient)
-	_ = source
+	}()
+	_ = digestJSON(make(chan int))
 }

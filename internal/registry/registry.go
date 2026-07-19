@@ -18,6 +18,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 )
 
 const (
@@ -100,17 +105,43 @@ type SignatureEnvelope struct {
 	Signature []byte `json:"signature"`
 }
 
+type ArtifactSignatureStatement struct {
+	ArtifactIdentity         ArtifactIdentity `json:"artifact_identity"`
+	ArtifactDigest           string           `json:"artifact_digest"`
+	ManifestDigest           string           `json:"manifest_digest"`
+	DependencyMetadataDigest string           `json:"dependency_metadata_digest"`
+	PublisherID              string           `json:"publisher_id"`
+	IssuedAt                 time.Time        `json:"issued_at"`
+	ExpiresAt                *time.Time       `json:"expires_at,omitempty"`
+}
+
+type TrustStatus string
+
+const (
+	TrustVerified        TrustStatus = "verified"
+	TrustUnsignedAllowed TrustStatus = "unsigned_allowed"
+)
+
+type TrustDecision struct {
+	Status         TrustStatus `json:"status"`
+	PolicyDigest   string      `json:"policy_digest"`
+	EvidenceDigest string      `json:"evidence_digest"`
+}
+
 type ArtifactRelease struct {
-	Identity         ArtifactIdentity        `json:"identity"`
-	SourceID         string                  `json:"source_id"`
-	PublisherID      string                  `json:"publisher_id"`
-	Digest           string                  `json:"digest"`
-	Size             int64                   `json:"size"`
-	Dependencies     []Dependency            `json:"dependencies"`
-	Compatibility    []CompatibilityDecision `json:"compatibility"`
-	Signature        *SignatureEnvelope      `json:"signature,omitempty"`
-	License          string                  `json:"license"`
-	ProvenanceDigest string                  `json:"provenance_digest"`
+	Identity                 ArtifactIdentity        `json:"identity"`
+	SourceID                 string                  `json:"source_id"`
+	PublisherID              string                  `json:"publisher_id"`
+	Digest                   string                  `json:"digest"`
+	ManifestDigest           string                  `json:"manifest_digest"`
+	DependencyMetadataDigest string                  `json:"dependency_metadata_digest"`
+	Size                     int64                   `json:"size"`
+	Dependencies             []Dependency            `json:"dependencies"`
+	Compatibility            []CompatibilityDecision `json:"compatibility"`
+	Signature                *SignatureEnvelope      `json:"signature,omitempty"`
+	License                  string                  `json:"license"`
+	ProvenanceDigest         string                  `json:"provenance_digest"`
+	Trust                    *TrustDecision          `json:"trust,omitempty"`
 }
 
 type CompatibilityDecision struct {
@@ -122,9 +153,9 @@ type CompatibilityDecision struct {
 }
 
 type SearchInput struct {
-	Query             string
-	Kind              *ArtifactKind
-	IncludePrerelease bool
+	Query             string        `json:"query"`
+	Kind              *ArtifactKind `json:"kind,omitempty"`
+	IncludePrerelease bool          `json:"include_prerelease,omitempty"`
 }
 type SourceClient interface {
 	Search(context.Context, RegistrySource, SearchInput) ([]ArtifactRelease, error)
@@ -132,13 +163,15 @@ type SourceClient interface {
 }
 
 type ValidatedArtifact struct {
-	Identity              ArtifactIdentity
-	CanonicalDigest       string
-	StagedTreeManifest    string
-	ResolvedLockDigest    string
-	MutationDigest        string
-	AuthoringImpactDigest string
-	Diagnostics           []string
+	Identity                   ArtifactIdentity          `json:"identity"`
+	CanonicalDigest            string                    `json:"canonical_digest"`
+	StagedTreeManifest         string                    `json:"staged_tree_manifest"`
+	ResolvedLockDigest         string                    `json:"resolved_lock_digest"`
+	MutationDigest             string                    `json:"mutation_digest"`
+	AuthoringImpactDigest      string                    `json:"authoring_impact_digest"`
+	AuthoringImpact            *semantic.AuthoringImpact `json:"authoring_impact,omitempty"`
+	AddressMigrationPlanDigest string                    `json:"address_migration_plan_digest"`
+	Diagnostics                []string                  `json:"diagnostics"`
 }
 
 // PackageValidator is implemented by the Go Engine package facade. Registry
@@ -148,11 +181,11 @@ type PackageValidator interface {
 }
 
 type AuthorArtifactRequest struct {
-	Kind        ArtifactKind
-	ProjectID   string
-	OutputName  string
-	PublisherID string
-	Version     string
+	Kind        ArtifactKind `json:"kind"`
+	ProjectID   string       `json:"project_id"`
+	OutputName  string       `json:"output_name"`
+	PublisherID string       `json:"publisher_id"`
+	Version     string       `json:"version"`
 }
 type AuthoredArtifact struct {
 	Release ArtifactRelease
@@ -172,6 +205,7 @@ type TrustPolicy struct {
 	TrustedPublishers  map[string]bool
 	PublicKeys         map[string]ed25519.PublicKey
 	RevokedKeys        map[string]bool
+	ExpiresAt          *time.Time
 }
 
 type Action string
@@ -186,14 +220,43 @@ const (
 )
 
 type PlanRequest struct {
-	Action                     Action
-	ProjectID                  string
-	BaseRevision               string
-	ExpectedDefinitionHash     string
-	ExpectedResolvedLockDigest string
-	Requested                  ArtifactIdentity
-	IncludePrerelease          bool
-	HostCapabilities           []string
+	Action                     Action                    `json:"action"`
+	ProjectID                  string                    `json:"project_id"`
+	BaseRevision               string                    `json:"base_revision"`
+	ExpectedDefinitionHash     string                    `json:"expected_definition_hash"`
+	ExpectedResolvedLockDigest string                    `json:"expected_resolved_lock_digest"`
+	Requested                  ArtifactIdentity          `json:"requested"`
+	IncludePrerelease          bool                      `json:"include_prerelease,omitempty"`
+	DependencySnapshot         ProjectDependencySnapshot `json:"dependency_snapshot"`
+	RequestedPin               bool                      `json:"requested_pin,omitempty"`
+}
+
+type LockedArtifact struct {
+	Identity ArtifactIdentity `json:"identity"`
+	SourceID string           `json:"source_id"`
+	Digest   string           `json:"digest"`
+	Pinned   bool             `json:"pinned"`
+}
+type ProjectDependencySnapshot struct {
+	ResolvedLockDigest string           `json:"resolved_lock_digest"`
+	Installs           []LockedArtifact `json:"installs"`
+}
+type ResolvedLockDelta struct {
+	Added   []LockedArtifact `json:"added"`
+	Updated []LockedArtifact `json:"updated"`
+	Removed []LockedArtifact `json:"removed"`
+	Pinned  []LockedArtifact `json:"pinned"`
+}
+type RollbackCheckpoint struct {
+	BaseProjectRevision     string `json:"base_project_revision"`
+	BaseDefinitionHash      string `json:"base_definition_hash"`
+	BaseResolvedLockDigest  string `json:"base_resolved_lock_digest"`
+	CurrentPackTreeManifest string `json:"current_pack_tree_manifest"`
+}
+type SourcePlanBinding struct {
+	SourceID          string `json:"source_id"`
+	SourceDigest      string `json:"source_digest"`
+	TrustPolicyDigest string `json:"trust_policy_digest"`
 }
 
 type PlanArtifact struct {
@@ -202,35 +265,78 @@ type PlanArtifact struct {
 }
 
 type InstallPlan struct {
-	TransactionID              string         `json:"transaction_id"`
-	PlanDigest                 string         `json:"plan_digest"`
-	Action                     Action         `json:"action"`
-	ProjectID                  string         `json:"project_id"`
-	BaseRevision               string         `json:"base_revision"`
-	ExpectedDefinitionHash     string         `json:"expected_definition_hash"`
-	ExpectedResolvedLockDigest string         `json:"expected_resolved_lock_digest"`
-	Artifacts                  []PlanArtifact `json:"artifacts"`
-	RequiredCapabilities       []string       `json:"required_capabilities"`
-	TrustPolicyDigests         []string       `json:"trust_policy_digests"`
-	MutationDigest             string         `json:"mutation_digest"`
-	AuthoringImpactDigests     []string       `json:"authoring_impact_digests"`
-	HostOperationImpactDigest  string         `json:"host_operation_impact_digest"`
-	EvaluationDigest           string         `json:"evaluation_digest"`
+	TransactionID              string                               `json:"transaction_id"`
+	PlanDigest                 string                               `json:"plan_digest"`
+	Action                     Action                               `json:"action"`
+	ProjectID                  string                               `json:"project_id"`
+	BaseRevision               string                               `json:"base_revision"`
+	ExpectedDefinitionHash     string                               `json:"expected_definition_hash"`
+	ExpectedResolvedLockDigest string                               `json:"expected_resolved_lock_digest"`
+	Artifacts                  []PlanArtifact                       `json:"artifacts"`
+	RequiredCapabilities       []string                             `json:"required_capabilities"`
+	TrustPolicyDigests         []string                             `json:"trust_policy_digests"`
+	SourceBindings             []SourcePlanBinding                  `json:"source_bindings"`
+	DependencySnapshot         ProjectDependencySnapshot            `json:"dependency_snapshot"`
+	ResolvedLockDelta          ResolvedLockDelta                    `json:"resolved_lock_delta"`
+	RollbackCheckpoint         RollbackCheckpoint                   `json:"rollback_checkpoint"`
+	ExpiresAt                  time.Time                            `json:"expires_at"`
+	MigrationRequired          bool                                 `json:"migration_required"`
+	CreatesNewDocument         bool                                 `json:"creates_new_document"`
+	MutationDigest             string                               `json:"mutation_digest"`
+	AuthoringImpactDigests     []string                             `json:"authoring_impact_digests"`
+	HostOperationImpactDigest  string                               `json:"host_operation_impact_digest"`
+	EvaluationDigest           string                               `json:"evaluation_digest"`
+	AuthoringImpact            *semantic.AuthoringImpact            `json:"authoring_impact,omitempty"`
+	HostOperationImpacts       []accessprotocol.HostOperationImpact `json:"host_operation_impacts"`
+	AccessDecision             accessprotocol.AuthoringDecision     `json:"access_decision"`
+	HostCapabilitiesDigest     string                               `json:"host_capabilities_digest"`
 }
 
 type RuntimeCommitInput struct {
-	Plan                                                                                           InstallPlan
-	OperationID, IdempotencyKey, CurrentRevision, CurrentDefinitionHash, CurrentResolvedLockDigest string
+	Plan                 InstallPlan                          `json:"plan"`
+	OperationID          string                               `json:"operation_id"`
+	IdempotencyKey       string                               `json:"idempotency_key"`
+	AuthoringImpact      *semantic.AuthoringImpact            `json:"authoring_impact,omitempty"`
+	HostOperationImpacts []accessprotocol.HostOperationImpact `json:"host_operation_impacts"`
+	AccessDecision       accessprotocol.AuthoringDecision     `json:"access_decision"`
 }
 type RuntimeCommitResult struct {
-	CommittedRevision string
-	OperationResultID string
+	CommittedRevision string `json:"committed_revision"`
+	OperationResultID string `json:"operation_result_id"`
 }
 type RuntimePort interface {
 	CommitRegistryPlan(context.Context, RuntimeCommitInput) (RuntimeCommitResult, error)
 }
 type AccessPort interface {
-	PreviewRegistryPlan(context.Context, InstallPlan) error
+	EvaluateRegistryPlan(context.Context, accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error)
+}
+
+type ProjectState struct {
+	ProjectID           string
+	DocumentID          string
+	LocalScopeID        string
+	OrganizationScopeID *string
+	Revision            string
+	DefinitionHash      string
+	DependencySnapshot  ProjectDependencySnapshot
+	PackTreeManifest    string
+	HostCapabilities    []string
+	GrantSnapshot       accessprotocol.AuthoringGrantSnapshot
+}
+type ProjectStatePort interface {
+	CurrentRegistryProjectState(context.Context, string) (ProjectState, error)
+}
+
+type CredentialLease struct {
+	ConnectionRef string
+	Credential    []byte
+	ExpiresAt     time.Time
+}
+type CredentialBroker interface {
+	ResolveRegistryConnection(context.Context, string) (CredentialLease, error)
+}
+type SourceConnector interface {
+	ProbeRegistrySource(context.Context, RegistrySource, CredentialLease) error
 }
 
 type TransactionState string
@@ -249,16 +355,20 @@ const (
 type TransactionEvent struct {
 	State          TransactionState `json:"state"`
 	EvidenceDigest string           `json:"evidence_digest"`
+	Sequence       uint64           `json:"sequence"`
+	IdempotencyKey string           `json:"idempotency_key,omitempty"`
 }
 type Transaction struct {
 	Plan              InstallPlan        `json:"plan"`
 	Events            []TransactionEvent `json:"events"`
 	CommittedRevision string             `json:"committed_revision,omitempty"`
+	OperationResultID string             `json:"operation_result_id,omitempty"`
 }
 
 type TransactionStore interface {
-	PutRegistryTransaction(context.Context, Transaction) error
+	CreateRegistryTransaction(context.Context, Transaction) error
 	GetRegistryTransaction(context.Context, string) (Transaction, bool, error)
+	CompareAndSwapRegistryTransaction(context.Context, string, uint64, Transaction) (bool, error)
 }
 
 type MemoryTransactionStore struct {
@@ -269,11 +379,30 @@ type MemoryTransactionStore struct {
 func NewMemoryTransactionStore() *MemoryTransactionStore {
 	return &MemoryTransactionStore{transactions: map[string]Transaction{}}
 }
-func (s *MemoryTransactionStore) PutRegistryTransaction(_ context.Context, tx Transaction) error {
+func (s *MemoryTransactionStore) CreateRegistryTransaction(_ context.Context, tx Transaction) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.transactions[tx.Plan.TransactionID]; exists {
+		return errors.New("registry transaction already exists")
+	}
 	s.transactions[tx.Plan.TransactionID] = cloneTransaction(tx)
 	return nil
+}
+func (s *MemoryTransactionStore) CompareAndSwapRegistryTransaction(_ context.Context, id string, expected uint64, next Transaction) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.transactions[id]
+	if !ok {
+		return false, nil
+	}
+	if transactionVersion(current) != expected {
+		return false, nil
+	}
+	if err := validateTransactionAppend(current, next); err != nil {
+		return false, err
+	}
+	s.transactions[id] = cloneTransaction(next)
+	return true, nil
 }
 func (s *MemoryTransactionStore) GetRegistryTransaction(_ context.Context, id string) (Transaction, bool, error) {
 	s.mu.RLock()
@@ -291,20 +420,29 @@ type Registry struct {
 	author       PackageAuthor
 	access       AccessPort
 	runtime      RuntimePort
+	projectState ProjectStatePort
+	credentials  CredentialBroker
+	connectors   map[SourceKind]SourceConnector
 	transactions TransactionStore
+	now          func() time.Time
 }
 
-func New(validator PackageValidator, access AccessPort, runtime RuntimePort, transactions TransactionStore) (*Registry, error) {
-	if validator == nil || access == nil || runtime == nil || transactions == nil {
-		return nil, errors.New("registry requires Engine validator, Access, Runtime, and transaction store ports")
+func New(validator PackageValidator, access AccessPort, runtime RuntimePort, projectState ProjectStatePort, credentials CredentialBroker, transactions TransactionStore) (*Registry, error) {
+	if validator == nil || access == nil || runtime == nil || projectState == nil || credentials == nil || transactions == nil {
+		return nil, errors.New("registry requires Engine validator, Access, Runtime, project state, credential broker, and transaction store ports")
 	}
-	return &Registry{sources: map[string]RegistrySource{}, policies: map[string]TrustPolicy{}, clients: map[SourceKind]SourceClient{}, validator: validator, access: access, runtime: runtime, transactions: transactions}, nil
+	return &Registry{sources: map[string]RegistrySource{}, policies: map[string]TrustPolicy{}, clients: map[SourceKind]SourceClient{}, connectors: map[SourceKind]SourceConnector{}, validator: validator, access: access, runtime: runtime, projectState: projectState, credentials: credentials, transactions: transactions, now: func() time.Time { return time.Now().UTC() }}, nil
 }
 
 func (r *Registry) RegisterClient(kind SourceKind, client SourceClient) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clients[kind] = client
+}
+func (r *Registry) RegisterConnector(kind SourceKind, connector SourceConnector) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.connectors[kind] = connector
 }
 func (r *Registry) RegisterPackageAuthor(author PackageAuthor) {
 	r.mu.Lock()
@@ -335,14 +473,38 @@ func (r *Registry) ConfigureSource(source RegistrySource) error {
 	r.sources[source.SourceID] = source
 	return nil
 }
-func (r *Registry) SetConnected(sourceID string, connected bool) error {
+func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef string) error {
+	r.mu.RLock()
+	source, ok := r.sources[sourceID]
+	connector := r.connectors[source.Kind]
+	r.mu.RUnlock()
+	if !ok || connector == nil || connectionRef == "" {
+		return fail(FailureUnavailable, sourceID, true, nil)
+	}
+	lease, err := r.credentials.ResolveRegistryConnection(ctx, connectionRef)
+	if err != nil || lease.ConnectionRef != connectionRef || len(lease.Credential) == 0 || !lease.ExpiresAt.After(r.now()) {
+		return fail(FailurePolicyDenied, sourceID, true, err)
+	}
+	if err := connector.ProbeRegistrySource(ctx, source, lease); err != nil {
+		return fail(FailureUnavailable, sourceID, true, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	source = r.sources[sourceID]
+	source.AuthConnectionRef = connectionRef
+	source.Connected = true
+	r.sources[sourceID] = source
+	return nil
+}
+func (r *Registry) DisconnectSource(sourceID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	source, ok := r.sources[sourceID]
 	if !ok {
 		return fail(FailureUnavailable, sourceID, true, nil)
 	}
-	source.Connected = connected
+	source.Connected = false
+	source.AuthConnectionRef = ""
 	r.sources[sourceID] = source
 	return nil
 }
@@ -361,6 +523,12 @@ func (r *Registry) Sources() []RegistrySource {
 	})
 	return out
 }
+func (r *Registry) getSource(id string) (RegistrySource, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	source, ok := r.sources[id]
+	return source, ok
+}
 
 func (r *Registry) Search(ctx context.Context, input SearchInput) ([]ArtifactRelease, error) {
 	sources, clients := r.snapshotSources()
@@ -378,9 +546,18 @@ func (r *Registry) Search(ctx context.Context, input SearchInput) ([]ArtifactRel
 			continue
 		}
 		for _, release := range found {
-			if release.SourceID != source.SourceID || !validIdentity(release.Identity) {
+			if release.SourceID != source.SourceID || !validIdentity(release.Identity) || (input.Kind != nil && release.Identity.Kind != *input.Kind) {
 				continue
 			}
+			_, policy, _, ok := r.sourceContext(source.SourceID)
+			if !ok {
+				continue
+			}
+			decision, err := verifyTrust(r.now(), source, policy, release)
+			if err != nil {
+				continue
+			}
+			release.Trust = &decision
 			releases = append(releases, cloneRelease(release))
 		}
 	}
@@ -425,16 +602,48 @@ func (r *Registry) AuthorArtifact(ctx context.Context, request AuthorArtifactReq
 }
 
 func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, error) {
-	if !validIdentity(request.Requested) || request.ProjectID == "" || request.BaseRevision == "" {
+	if !validAction(request.Action) || !validIdentity(request.Requested) || request.ProjectID == "" || request.BaseRevision == "" {
 		return InstallPlan{}, fail(FailureDependencyConflict, request.Requested.CanonicalID, true, nil)
 	}
 	if request.Action == ActionCreateFromTemplate && request.Requested.Kind != ArtifactTemplate {
 		return InstallPlan{}, fail(FailureUnsupportedFormat, request.Requested.CanonicalID, true, nil)
 	}
+	state, err := r.projectState.CurrentRegistryProjectState(ctx, request.ProjectID)
+	if err != nil {
+		return InstallPlan{}, fail(FailureUnavailable, request.ProjectID, true, err)
+	}
+	if state.ProjectID != request.ProjectID || state.Revision != request.BaseRevision || state.DefinitionHash != request.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != request.ExpectedResolvedLockDigest {
+		return InstallPlan{}, fail(FailurePlanStale, request.ProjectID, true, nil)
+	}
+	installed, hasInstalled := findLocked(state.DependencySnapshot, request.Requested.CanonicalID)
+	switch request.Action {
+	case ActionInstall:
+		if hasInstalled {
+			return InstallPlan{}, fail(FailureDependencyConflict, request.Requested.CanonicalID, true, nil)
+		}
+	case ActionUpdate, ActionPin, ActionRemove, ActionRepair:
+		if !hasInstalled {
+			return InstallPlan{}, fail(FailureDependencyConflict, request.Requested.CanonicalID, true, nil)
+		}
+	}
+	if request.Action == ActionPin && request.Requested.Version == "latest" {
+		return InstallPlan{}, fail(FailureDependencyConflict, request.Requested.CanonicalID, true, nil)
+	}
+	if request.Action == ActionRepair {
+		request.Requested = installed.Identity
+	}
 	resolved := map[string]PlanArtifact{}
-	visiting := map[string]bool{}
-	if err := r.resolve(ctx, request.Requested, request.IncludePrerelease, resolved, visiting); err != nil {
-		return InstallPlan{}, err
+	if request.Action != ActionRemove {
+		visiting := map[string]bool{}
+		if err := r.resolve(ctx, request.Requested, request.IncludePrerelease, resolved, visiting); err != nil {
+			return InstallPlan{}, err
+		}
+		if request.Action == ActionRepair {
+			root := resolved[string(request.Requested.Kind)+":"+request.Requested.CanonicalID]
+			if root.Release.Digest != installed.Digest || root.Release.SourceID != installed.SourceID {
+				return InstallPlan{}, fail(FailureRepairRequired, request.Requested.CanonicalID, true, errors.New("repair requires the exact locked source and digest"))
+			}
+		}
 	}
 	keys := make([]string, 0, len(resolved))
 	for key := range resolved {
@@ -444,6 +653,9 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 	artifacts := make([]PlanArtifact, 0, len(keys))
 	impacts := []string{}
 	trust := []string{}
+	bindings := []SourcePlanBinding{}
+	var authoringImpact *semantic.AuthoringImpact
+	migrationRequired := false
 	for _, key := range keys {
 		item := resolved[key]
 		artifacts = append(artifacts, item)
@@ -456,28 +668,49 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 			Source RegistrySource
 			Policy string
 		}{source, digestTrust(policy)}))
+		bindings = append(bindings, SourcePlanBinding{SourceID: source.SourceID, SourceDigest: digestJSON(source), TrustPolicyDigest: digestTrust(policy)})
+		if item.Release.Identity == request.Requested && item.Validation.AuthoringImpact != nil {
+			impact := *item.Validation.AuthoringImpact
+			authoringImpact = &impact
+		}
+		if item.Validation.AddressMigrationPlanDigest != "" {
+			migrationRequired = true
+		}
+		for _, compatibility := range item.Release.Compatibility {
+			if compatibility.Status == "migration_required" {
+				migrationRequired = true
+			}
+			if strings.HasPrefix(compatibility.Subject, "capability:") && !containsString(state.HostCapabilities, strings.TrimPrefix(compatibility.Subject, "capability:")) {
+				return InstallPlan{}, fail(FailureIncompatibleCapability, compatibility.Subject, true, nil)
+			}
+		}
+	}
+	if request.Action != ActionRemove && authoringImpact == nil {
+		return InstallPlan{}, fail(FailureArtifactCorrupt, request.Requested.CanonicalID, true, errors.New("Engine validation omitted resulting AuthoringImpact"))
 	}
 	sort.Strings(impacts)
 	sort.Strings(trust)
-	hostImpact := digestJSON(struct {
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].SourceID < bindings[j].SourceID })
+	hostCapabilities := append([]string{}, state.HostCapabilities...)
+	sort.Strings(hostCapabilities)
+	delta := buildLockDelta(request.Action, state.DependencySnapshot, resolved, request.Requested)
+	hostImpactDigest := protocolcommon.Digest(digestJSON(struct {
 		Action    Action
 		ProjectID string
-	}{request.Action, request.ProjectID})
+		Delta     ResolvedLockDelta
+	}{request.Action, request.ProjectID, delta}))
+	hostImpact := accessprotocol.HostOperationImpact{Action: hostImpactAction(request.Action), ImpactDigest: hostImpactDigest, OperationKind: accessprotocol.HostOperationKindPackageTransaction, RequiredAuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage}, ResourceRefs: []string{request.Requested.CanonicalID}, ResourceScope: accessprotocol.HostResourceScope{DocumentID: state.DocumentID, LocalScopeID: state.LocalScopeID, OrganizationScopeID: state.OrganizationScopeID}}
 	mutation := digestJSON(artifacts)
-	evaluation := digestJSON(struct {
-		Mutation  string
-		Authoring []string
-		Host      string
-		Base      string
-	}{mutation, impacts, hostImpact, request.BaseRevision})
-	plan := InstallPlan{Action: request.Action, ProjectID: request.ProjectID, BaseRevision: request.BaseRevision, ExpectedDefinitionHash: request.ExpectedDefinitionHash, ExpectedResolvedLockDigest: request.ExpectedResolvedLockDigest, Artifacts: artifacts, RequiredCapabilities: []string{"package:manage"}, TrustPolicyDigests: trust, MutationDigest: mutation, AuthoringImpactDigests: impacts, HostOperationImpactDigest: hostImpact, EvaluationDigest: evaluation}
-	if err := r.access.PreviewRegistryPlan(ctx, plan); err != nil {
+	evaluate := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: authoringImpact, GrantSnapshot: state.GrantSnapshot, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, RequestIntent: "registry." + string(request.Action)}
+	decision, err := r.access.EvaluateRegistryPlan(ctx, evaluate)
+	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow {
 		return InstallPlan{}, fail(FailurePolicyDenied, request.ProjectID, true, err)
 	}
-	plan.TransactionID = strings.TrimPrefix(digestJSON(struct{ Project, Evaluation string }{request.ProjectID, evaluation}), "sha256:")[:32]
+	plan := InstallPlan{Action: request.Action, ProjectID: request.ProjectID, BaseRevision: state.Revision, ExpectedDefinitionHash: state.DefinitionHash, ExpectedResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, Artifacts: artifacts, RequiredCapabilities: capabilitiesToStrings(decision.RequiredCapabilities), TrustPolicyDigests: trust, SourceBindings: bindings, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, RollbackCheckpoint: RollbackCheckpoint{BaseProjectRevision: state.Revision, BaseDefinitionHash: state.DefinitionHash, BaseResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, CurrentPackTreeManifest: state.PackTreeManifest}, ExpiresAt: r.now().Add(15 * time.Minute), MigrationRequired: migrationRequired, CreatesNewDocument: request.Action == ActionCreateFromTemplate, MutationDigest: mutation, AuthoringImpactDigests: impacts, HostOperationImpactDigest: string(hostImpactDigest), EvaluationDigest: string(decision.EvaluationDigest), AuthoringImpact: authoringImpact, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, AccessDecision: decision, HostCapabilitiesDigest: digestJSON(hostCapabilities)}
+	plan.TransactionID = strings.TrimPrefix(digestJSON(struct{ Project, Evaluation, Mutation string }{request.ProjectID, plan.EvaluationDigest, plan.MutationDigest}), "sha256:")[:32]
 	plan.PlanDigest = digestPlan(plan)
-	tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: plan.PlanDigest}, {State: StateVerified, EvidenceDigest: mutation}, {State: StateAwaitingConfirmation, EvidenceDigest: evaluation}}}
-	if err := r.transactions.PutRegistryTransaction(ctx, tx); err != nil {
+	tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: plan.PlanDigest, Sequence: 1}, {State: StateVerified, EvidenceDigest: mutation, Sequence: 2}, {State: StateAwaitingConfirmation, EvidenceDigest: plan.EvaluationDigest, Sequence: 3}}}
+	if err := r.transactions.CreateRegistryTransaction(ctx, tx); err != nil {
 		return InstallPlan{}, fail(FailureUnavailable, plan.TransactionID, true, err)
 	}
 	return clonePlan(plan), nil
@@ -530,7 +763,10 @@ func (r *Registry) resolve(ctx context.Context, identity ArtifactIdentity, prere
 	if int64(len(bytes)) != selected.Size || digestBytes(bytes) != selected.Digest {
 		return fail(FailureArtifactCorrupt, identity.CanonicalID, true, nil)
 	}
-	if err := verifyTrust(source, policy, *selected); err != nil {
+	if selected.Identity.Kind != identity.Kind {
+		return fail(FailureUnsupportedFormat, identity.CanonicalID, true, nil)
+	}
+	if _, err := verifyTrust(r.now(), source, policy, *selected); err != nil {
 		return err
 	}
 	validated, err := r.validator.ValidateRegistryArtifact(ctx, *selected, bytes)
@@ -579,41 +815,143 @@ func (r *Registry) resolveVersion(ctx context.Context, dependency Dependency, pr
 }
 
 func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
-	r.mu.Lock()
 	tx, ok, loadErr := r.transactions.GetRegistryTransaction(ctx, input.Plan.TransactionID)
 	if loadErr != nil || !ok || tx.Plan.PlanDigest != input.Plan.PlanDigest || digestPlan(input.Plan) != input.Plan.PlanDigest {
-		r.mu.Unlock()
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
-	if input.CurrentRevision != tx.Plan.BaseRevision || input.CurrentDefinitionHash != tx.Plan.ExpectedDefinitionHash || input.CurrentResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
-		r.mu.Unlock()
+	if !tx.Plan.ExpiresAt.After(r.now()) {
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
-	tx.Events = append(tx.Events, TransactionEvent{State: StateApplying, EvidenceDigest: tx.Plan.EvaluationDigest})
-	if err := r.transactions.PutRegistryTransaction(ctx, tx); err != nil {
-		r.mu.Unlock()
-		return RuntimeCommitResult{}, fail(FailureUnavailable, input.Plan.TransactionID, true, err)
+	state, err := r.projectState.CurrentRegistryProjectState(ctx, tx.Plan.ProjectID)
+	if err != nil || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
+		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, err)
 	}
-	r.mu.Unlock()
+	hostCapabilities := append([]string{}, state.HostCapabilities...)
+	sort.Strings(hostCapabilities)
+	if digestJSON(hostCapabilities) != tx.Plan.HostCapabilitiesDigest {
+		return RuntimeCommitResult{}, fail(FailurePlanStale, "host_capabilities", true, nil)
+	}
+	for _, binding := range tx.Plan.SourceBindings {
+		source, policy, _, ok := r.sourceContext(binding.SourceID)
+		if !ok || digestJSON(source) != binding.SourceDigest || digestTrust(policy) != binding.TrustPolicyDigest {
+			return RuntimeCommitResult{}, fail(FailurePlanStale, binding.SourceID, true, nil)
+		}
+		for _, artifact := range tx.Plan.Artifacts {
+			if artifact.Release.SourceID == binding.SourceID {
+				if _, err := verifyTrust(r.now(), source, policy, artifact.Release); err != nil {
+					return RuntimeCommitResult{}, fail(FailurePlanStale, binding.SourceID, true, err)
+				}
+			}
+		}
+	}
+	evaluate := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: tx.Plan.AuthoringImpact, GrantSnapshot: state.GrantSnapshot, HostOperationImpacts: append([]accessprotocol.HostOperationImpact{}, tx.Plan.HostOperationImpacts...), RequestIntent: "registry." + string(tx.Plan.Action)}
+	decision, err := r.access.EvaluateRegistryPlan(ctx, evaluate)
+	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || string(decision.EvaluationDigest) != tx.Plan.EvaluationDigest {
+		return RuntimeCommitResult{}, fail(FailurePlanStale, "authoring_policy", true, err)
+	}
+	stateName := transactionState(tx)
+	if stateName == StateCommitted {
+		if lastIdempotencyKey(tx) == input.IdempotencyKey {
+			return RuntimeCommitResult{CommittedRevision: tx.CommittedRevision, OperationResultID: tx.OperationResultID}, nil
+		}
+		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
+	}
+	if stateName == StateApplying {
+		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, errors.New("publication outcome requires recovery; refusing duplicate publish"))
+	}
+	if stateName != StateAwaitingConfirmation {
+		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
+	}
+	expectedVersion := transactionVersion(tx)
+	tx.Events = append(tx.Events, TransactionEvent{State: StateApplying, EvidenceDigest: tx.Plan.EvaluationDigest, Sequence: expectedVersion + 1, IdempotencyKey: input.IdempotencyKey})
+	swapped, storeErr := r.transactions.CompareAndSwapRegistryTransaction(ctx, tx.Plan.TransactionID, expectedVersion, tx)
+	if storeErr != nil {
+		return RuntimeCommitResult{}, fail(FailureUnavailable, input.Plan.TransactionID, true, storeErr)
+	}
+	if !swapped {
+		latest, ok, err := r.transactions.GetRegistryTransaction(ctx, tx.Plan.TransactionID)
+		if err != nil || !ok {
+			return RuntimeCommitResult{}, fail(FailureUnavailable, input.Plan.TransactionID, true, err)
+		}
+		if transactionState(latest) == StateCommitted && lastIdempotencyKey(latest) == input.IdempotencyKey {
+			return RuntimeCommitResult{CommittedRevision: latest.CommittedRevision, OperationResultID: latest.OperationResultID}, nil
+		}
+		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, errors.New("concurrent publication already started"))
+	}
+	input.AuthoringImpact = tx.Plan.AuthoringImpact
+	input.HostOperationImpacts = append([]accessprotocol.HostOperationImpact{}, tx.Plan.HostOperationImpacts...)
+	input.AccessDecision = decision
 	result, err := r.runtime.CommitRegistryPlan(ctx, input)
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if err != nil {
-		tx.Events = append(tx.Events, TransactionEvent{State: StateRepairRequired, EvidenceDigest: tx.Plan.MutationDigest})
-		_ = r.transactions.PutRegistryTransaction(ctx, tx)
-		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, err)
+		nextState := StateRolledBack
+		code := FailureUnavailable
+		var publication *RuntimePublicationError
+		if errors.As(err, &publication) && publication.Published {
+			nextState = StateRepairRequired
+			code = FailureRepairRequired
+		}
+		version := transactionVersion(tx)
+		tx.Events = append(tx.Events, TransactionEvent{State: nextState, EvidenceDigest: tx.Plan.MutationDigest, Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
+		if ok, storeErr := r.transactions.CompareAndSwapRegistryTransaction(ctx, tx.Plan.TransactionID, version, tx); storeErr != nil || !ok {
+			return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, storeErr)
+		}
+		return RuntimeCommitResult{}, fail(code, input.Plan.TransactionID, true, err)
 	}
 	tx.CommittedRevision = result.CommittedRevision
-	tx.Events = append(tx.Events, TransactionEvent{State: StateCommitted, EvidenceDigest: digestJSON(result)})
-	if err := r.transactions.PutRegistryTransaction(ctx, tx); err != nil {
-		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, err)
+	tx.OperationResultID = result.OperationResultID
+	version := transactionVersion(tx)
+	tx.Events = append(tx.Events, TransactionEvent{State: StateCommitted, EvidenceDigest: digestJSON(result), Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
+	if ok, storeErr := r.transactions.CompareAndSwapRegistryTransaction(ctx, tx.Plan.TransactionID, version, tx); storeErr != nil || !ok {
+		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, storeErr)
 	}
 	return result, nil
 }
 
+type RuntimePublicationError struct {
+	Published bool
+	Cause     error
+}
+
+func (e *RuntimePublicationError) Error() string {
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return "registry runtime publication failed"
+}
+func (e *RuntimePublicationError) Unwrap() error { return e.Cause }
+
 func (r *Registry) Transaction(id string) (Transaction, bool) {
 	tx, ok, err := r.transactions.GetRegistryTransaction(context.Background(), id)
 	return tx, ok && err == nil
+}
+func (r *Registry) GetTransaction(ctx context.Context, id string) (Transaction, error) {
+	tx, ok, err := r.transactions.GetRegistryTransaction(ctx, id)
+	if err != nil {
+		return Transaction{}, fail(FailureUnavailable, id, true, err)
+	}
+	if !ok {
+		return Transaction{}, fail(FailureUnavailable, id, true, nil)
+	}
+	return tx, nil
+}
+func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transaction, error) {
+	tx, err := r.GetTransaction(ctx, id)
+	if err != nil {
+		return Transaction{}, err
+	}
+	if transactionState(tx) != StateApplying {
+		return tx, nil
+	}
+	version := transactionVersion(tx)
+	tx.Events = append(tx.Events, TransactionEvent{State: StateRepairRequired, EvidenceDigest: tx.Plan.MutationDigest, Sequence: version + 1, IdempotencyKey: lastIdempotencyKey(tx)})
+	ok, err := r.transactions.CompareAndSwapRegistryTransaction(ctx, id, version, tx)
+	if err != nil {
+		return Transaction{}, fail(FailureUnavailable, id, true, err)
+	}
+	if !ok {
+		return r.GetTransaction(ctx, id)
+	}
+	return tx, nil
 }
 
 func (r *Registry) sourceContext(id string) (RegistrySource, TrustPolicy, SourceClient, bool) {
@@ -646,35 +984,36 @@ func (r *Registry) snapshotSources() ([]RegistrySource, map[SourceKind]SourceCli
 	return sources, clients
 }
 
-func verifyTrust(source RegistrySource, policy TrustPolicy, release ArtifactRelease) error {
+func verifyTrust(now time.Time, source RegistrySource, policy TrustPolicy, release ArtifactRelease) (TrustDecision, error) {
+	policyDigest := digestTrust(policy)
+	if policy.ExpiresAt != nil && !policy.ExpiresAt.After(now) {
+		return TrustDecision{}, fail(FailurePolicyDenied, policy.PolicyID, true, nil)
+	}
 	if policy.TrustedPublishers != nil && !policy.TrustedPublishers[release.PublisherID] {
-		return fail(FailurePolicyDenied, release.PublisherID, true, nil)
+		return TrustDecision{}, fail(FailurePolicyDenied, release.PublisherID, true, nil)
 	}
 	if release.Signature == nil {
 		if source.Kind == SourceLocalDirectory && policy.AllowUnsignedLocal {
-			return nil
+			return TrustDecision{Status: TrustUnsignedAllowed, PolicyDigest: policyDigest, EvidenceDigest: digestJSON(release.Identity)}, nil
 		}
 		if policy.RequiredSignature {
-			return fail(FailureSignatureMissing, release.Identity.CanonicalID, true, nil)
+			return TrustDecision{}, fail(FailureSignatureMissing, release.Identity.CanonicalID, true, nil)
 		}
-		return nil
+		return TrustDecision{Status: TrustUnsignedAllowed, PolicyDigest: policyDigest, EvidenceDigest: digestJSON(release.Identity)}, nil
 	}
 	envelope := release.Signature
 	if policy.RevokedKeys[envelope.KeyID] {
-		return fail(FailureSignatureRevoked, envelope.KeyID, true, nil)
+		return TrustDecision{}, fail(FailureSignatureRevoked, envelope.KeyID, true, nil)
 	}
 	key := policy.PublicKeys[envelope.KeyID]
 	if len(key) != ed25519.PublicKeySize || envelope.Profile != "ed25519" || !ed25519.Verify(key, envelope.Statement, envelope.Signature) {
-		return fail(FailureSignatureInvalid, release.Identity.CanonicalID, true, nil)
+		return TrustDecision{}, fail(FailureSignatureInvalid, release.Identity.CanonicalID, true, nil)
 	}
-	var statement struct {
-		Identity                    ArtifactIdentity `json:"artifact_identity"`
-		ArtifactDigest, PublisherID string
+	var statement ArtifactSignatureStatement
+	if json.Unmarshal(envelope.Statement, &statement) != nil || statement.ArtifactIdentity != release.Identity || statement.ArtifactDigest != release.Digest || statement.ManifestDigest != release.ManifestDigest || statement.DependencyMetadataDigest != release.DependencyMetadataDigest || statement.PublisherID != release.PublisherID || statement.IssuedAt.After(now) || (statement.ExpiresAt != nil && !statement.ExpiresAt.After(now)) {
+		return TrustDecision{}, fail(FailureSignatureInvalid, release.Identity.CanonicalID, true, nil)
 	}
-	if json.Unmarshal(envelope.Statement, &statement) != nil || statement.Identity != release.Identity || statement.ArtifactDigest != release.Digest || statement.PublisherID != release.PublisherID {
-		return fail(FailureSignatureInvalid, release.Identity.CanonicalID, true, nil)
-	}
-	return nil
+	return TrustDecision{Status: TrustVerified, PolicyDigest: policyDigest, EvidenceDigest: digestBytes(envelope.Statement)}, nil
 }
 
 type semanticVersion struct {
@@ -736,8 +1075,18 @@ func matchesRange(version, expr string, prerelease bool) bool {
 		return true
 	}
 	if strings.HasPrefix(expr, "^") {
-		base, ok := parseVersion(strings.TrimPrefix(expr, "^"))
-		return ok && compareVersions(version, strings.TrimPrefix(expr, "^")) >= 0 && v.major == base.major
+		baseText := strings.TrimPrefix(expr, "^")
+		base, ok := parseVersion(baseText)
+		if !ok || compareVersions(version, baseText) < 0 {
+			return false
+		}
+		if base.major > 0 {
+			return v.major == base.major
+		}
+		if base.minor > 0 {
+			return v.major == 0 && v.minor == base.minor
+		}
+		return v.major == 0 && v.minor == 0 && v.patch == base.patch
 	}
 	if strings.HasPrefix(expr, "~") {
 		base, ok := parseVersion(strings.TrimPrefix(expr, "~"))
@@ -750,6 +1099,82 @@ func matchesRange(version, expr string, prerelease bool) bool {
 }
 func validIdentity(value ArtifactIdentity) bool {
 	return (value.Kind == ArtifactPack || value.Kind == ArtifactTemplate) && value.CanonicalID != "" && value.Version != ""
+}
+func validAction(action Action) bool {
+	switch action {
+	case ActionInstall, ActionUpdate, ActionPin, ActionRemove, ActionRepair, ActionCreateFromTemplate:
+		return true
+	default:
+		return false
+	}
+}
+func findLocked(snapshot ProjectDependencySnapshot, canonicalID string) (LockedArtifact, bool) {
+	for _, item := range snapshot.Installs {
+		if item.Identity.CanonicalID == canonicalID {
+			return item, true
+		}
+	}
+	return LockedArtifact{}, false
+}
+func lockedFromPlan(item PlanArtifact, pinned bool) LockedArtifact {
+	return LockedArtifact{Identity: item.Release.Identity, SourceID: item.Release.SourceID, Digest: item.Release.Digest, Pinned: pinned}
+}
+func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved map[string]PlanArtifact, requested ArtifactIdentity) ResolvedLockDelta {
+	delta := ResolvedLockDelta{Added: []LockedArtifact{}, Updated: []LockedArtifact{}, Removed: []LockedArtifact{}, Pinned: []LockedArtifact{}}
+	if action == ActionRemove {
+		if installed, ok := findLocked(snapshot, requested.CanonicalID); ok {
+			delta.Removed = append(delta.Removed, installed)
+		}
+		return delta
+	}
+	keys := make([]string, 0, len(resolved))
+	for key := range resolved {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		item := resolved[key]
+		lock := lockedFromPlan(item, action == ActionPin && item.Release.Identity.CanonicalID == requested.CanonicalID)
+		if prior, ok := findLocked(snapshot, item.Release.Identity.CanonicalID); ok {
+			if action == ActionPin {
+				delta.Pinned = append(delta.Pinned, lock)
+			} else if prior.Digest != lock.Digest || prior.Identity.Version != lock.Identity.Version {
+				delta.Updated = append(delta.Updated, lock)
+			}
+		} else {
+			delta.Added = append(delta.Added, lock)
+		}
+	}
+	return delta
+}
+func hostImpactAction(action Action) string {
+	switch action {
+	case ActionRemove:
+		return "delete"
+	case ActionInstall, ActionCreateFromTemplate:
+		return "create"
+	default:
+		return "update"
+	}
+}
+func capabilitiesToStrings(values []semantic.AuthoringCapability) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = string(value)
+	}
+	return out
+}
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+func cloneDependencySnapshot(value ProjectDependencySnapshot) ProjectDependencySnapshot {
+	value.Installs = append([]LockedArtifact{}, value.Installs...)
+	return value
 }
 func sortReleases(releases []ArtifactRelease, sources []RegistrySource) {
 	priority := map[string]int{}
@@ -783,8 +1208,8 @@ func digestJSON(value any) string {
 func digestPlan(plan InstallPlan) string { plan.PlanDigest = ""; return digestJSON(plan) }
 func digestTrust(policy TrustPolicy) string {
 	keys := make([]string, 0, len(policy.PublicKeys))
-	for key := range policy.PublicKeys {
-		keys = append(keys, key)
+	for key, value := range policy.PublicKeys {
+		keys = append(keys, key+":"+hex.EncodeToString(value))
 	}
 	sort.Strings(keys)
 	publishers := make([]string, 0, len(policy.TrustedPublishers))
@@ -801,11 +1226,16 @@ func digestTrust(policy TrustPolicy) string {
 		}
 	}
 	sort.Strings(revoked)
+	var expires string
+	if policy.ExpiresAt != nil {
+		expires = policy.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
 	return digestJSON(struct {
 		ID                        string
 		Required, Unsigned        bool
 		Keys, Publishers, Revoked []string
-	}{policy.PolicyID, policy.RequiredSignature, policy.AllowUnsignedLocal, keys, publishers, revoked})
+		Expires                   string
+	}{policy.PolicyID, policy.RequiredSignature, policy.AllowUnsignedLocal, keys, publishers, revoked, expires})
 }
 func clonePolicy(p TrustPolicy) TrustPolicy {
 	out := p
@@ -853,4 +1283,46 @@ func cloneTransaction(value Transaction) Transaction {
 	value.Plan = clonePlan(value.Plan)
 	value.Events = append([]TransactionEvent{}, value.Events...)
 	return value
+}
+func transactionVersion(value Transaction) uint64 {
+	if len(value.Events) == 0 {
+		return 0
+	}
+	return value.Events[len(value.Events)-1].Sequence
+}
+func transactionState(value Transaction) TransactionState {
+	if len(value.Events) == 0 {
+		return ""
+	}
+	return value.Events[len(value.Events)-1].State
+}
+func lastIdempotencyKey(value Transaction) string {
+	for i := len(value.Events) - 1; i >= 0; i-- {
+		if value.Events[i].IdempotencyKey != "" {
+			return value.Events[i].IdempotencyKey
+		}
+	}
+	return ""
+}
+func validateTransactionAppend(current, next Transaction) error {
+	if current.Plan.TransactionID == "" || next.Plan.TransactionID != current.Plan.TransactionID || next.Plan.PlanDigest != current.Plan.PlanDigest || len(next.Events) != len(current.Events)+1 {
+		return errors.New("registry transaction CAS must append exactly one event")
+	}
+	if transactionVersion(next) != transactionVersion(current)+1 {
+		return errors.New("registry transaction sequence mismatch")
+	}
+	from, to := transactionState(current), transactionState(next)
+	allowed := false
+	switch from {
+	case StateAwaitingConfirmation:
+		allowed = to == StateApplying
+	case StateApplying:
+		allowed = to == StateCommitted || to == StateRolledBack || to == StateRepairRequired
+	case StateRepairRequired:
+		allowed = to == StateCommitted || to == StateNeedsReview
+	}
+	if !allowed {
+		return fmt.Errorf("invalid registry transaction transition %s -> %s", from, to)
+	}
+	return nil
 }
