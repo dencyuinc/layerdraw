@@ -23,6 +23,7 @@ import type {
   ConflictEvidence,
   OpenRuntimeDocumentInput,
   OpenRuntimeDocumentResult,
+  OperationResult,
   RuntimeCapabilityManifest,
   RuntimeCommitResult,
 } from "@layerdraw/protocol/runtime";
@@ -45,6 +46,24 @@ export interface EditorPreviewResult {
   readonly diagnostics: readonly Diagnostic[] | readonly ProtocolDiagnostic[];
 }
 
+export type RuntimeCommittedOperationResult = OperationResult &
+  Readonly<{
+    status: "committed" | "committed_external_failed" | "committed_external_pending" | "committed_state_stale";
+    committed_revision: CommittedRevisionRef;
+  }>;
+
+export type RuntimeNotCommittedOperationResult = OperationResult &
+  Readonly<{
+    status: "needs_review" | "rejected";
+    committed_revision?: never;
+  }>;
+
+export type RuntimeCommittedEditorResult = Omit<RuntimeCommitResult, "operation_result"> &
+  Readonly<{ operation_result: RuntimeCommittedOperationResult }>;
+
+export type RuntimeNotCommittedEditorResult = Omit<RuntimeCommitResult, "operation_result"> &
+  Readonly<{ operation_result: RuntimeNotCommittedOperationResult }>;
+
 export type EditorApplyResult =
   | Readonly<{
       persistence: "ephemeral";
@@ -58,12 +77,12 @@ export type EditorApplyResult =
     }>
   | Readonly<{
       persistence: "durable";
-      result: RuntimeCommitResult;
+      result: RuntimeCommittedEditorResult;
       committed_revision: CommittedRevisionRef;
     }>
   | Readonly<{
       persistence: "runtime_not_committed";
-      result: RuntimeCommitResult;
+      result: RuntimeNotCommittedEditorResult;
       committed_revision?: never;
     }>;
 

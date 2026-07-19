@@ -19,7 +19,21 @@ factory({} as never);
 declare const applyResult: EditorApplyResult;
 if (applyResult.persistence === "durable") {
   applyResult.committed_revision.revision_id;
+  const committedStatus:
+    | "committed"
+    | "committed_external_failed"
+    | "committed_external_pending"
+    | "committed_state_stale" = applyResult.result.operation_result.status;
+  applyResult.result.operation_result.committed_revision.revision_id;
+  void committedStatus;
 } else {
   const noCommittedRevision: undefined = applyResult.committed_revision;
   void noCommittedRevision;
+}
+
+if (applyResult.persistence === "runtime_not_committed") {
+  const notCommittedStatus: "needs_review" | "rejected" = applyResult.result.operation_result.status;
+  const noRuntimeCommittedRevision: undefined = applyResult.result.operation_result.committed_revision;
+  void notCommittedStatus;
+  void noRuntimeCommittedRevision;
 }

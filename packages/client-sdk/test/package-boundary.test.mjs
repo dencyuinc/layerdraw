@@ -20,4 +20,6 @@ test("public declaration exposes lifecycle methods and persistence-discriminated
   assert.match(declaration, /persistence: "ephemeral"/);
   assert.match(declaration, /persistence: "durable"/);
   assert.match(declaration, /committed_revision\?: never/);
+  assert.match(declaration, /status: "needs_review" \| "rejected"/);
+  assert.match(declaration, /status: "committed" \| "committed_external_failed" \| "committed_external_pending" \| "committed_state_stale"/);
 });
