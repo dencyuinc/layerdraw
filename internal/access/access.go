@@ -364,17 +364,37 @@ func constraintViolations(impact *semantic.AuthoringImpact, constraints GraphCon
 		return []accessprotocol.ConstraintViolation{}
 	}
 	result := []accessprotocol.ConstraintViolation{}
+	constrained := constraints.EntityTypes != nil || constraints.RelationTypes != nil || constraints.Layers != nil || constraints.Columns != nil || constraints.Actions != nil
 	for _, entry := range impact.Entries {
+		if constrained && entry.Capability == semantic.AuthoringCapabilityGraphWrite && entry.GraphFacts == nil {
+			result = append(result, accessprotocol.ConstraintViolation{Action: string(entry.Action), Code: "authoring.constraint_facts_missing", SubjectAddress: entry.SubjectAddress})
+			continue
+		}
 		if entry.GraphFacts == nil {
 			continue
 		}
 		facts := entry.GraphFacts
-		denied := !allAllowedEntityTypes(facts.EntityTypeAddresses, constraints.EntityTypes) || !allAllowedRelationTypes(facts.RelationTypeAddresses, constraints.RelationTypes) || !allAllowedLayers(facts.LayerAddresses, constraints.Layers) || !allAllowedColumns(facts.ColumnAddresses, constraints.Columns) || !allAllowedStrings(facts.ActionFlags, constraints.Actions)
+		denied := constrained && !validGraphActions(facts.ActionFlags) || !allAllowedEntityTypes(facts.EntityTypeAddresses, constraints.EntityTypes) || !allAllowedRelationTypes(facts.RelationTypeAddresses, constraints.RelationTypes) || !allAllowedLayers(facts.LayerAddresses, constraints.Layers) || !allAllowedColumns(facts.ColumnAddresses, constraints.Columns) || !allAllowedStrings(facts.ActionFlags, constraints.Actions)
 		if denied {
 			result = append(result, accessprotocol.ConstraintViolation{Action: string(entry.Action), Code: "authoring.constraint_denied", SubjectAddress: entry.SubjectAddress})
 		}
 	}
 	return result
+}
+
+func validGraphActions(actions []string) bool {
+	if len(actions) == 0 {
+		return false
+	}
+	// Mirror the closed Semantic v1 GraphAuthoringFacts action vocabulary. An
+	// in-process Engine adapter must not bypass the wire codec with a new value.
+	allowed := map[string]bool{"create": true, "update": true, "delete": true, "rename": true, "move": true, "bind": true, "unbind": true, "maintain": true}
+	for _, action := range actions {
+		if !allowed[action] {
+			return false
+		}
+	}
+	return true
 }
 
 func allAllowedEntityTypes(v []semantic.EntityTypeAddress, p map[string]bool) bool {

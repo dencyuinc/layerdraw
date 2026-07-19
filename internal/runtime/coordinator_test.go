@@ -1401,6 +1401,45 @@ func TestCoordinatorCommitJournalAndPostPublicationFailures(t *testing.T) {
 	}
 }
 
+func TestCoordinatorHoldsDelegationFenceFromFinalAuthorizationThroughPublication(t *testing.T) {
+	t.Run("acquisition failure", func(t *testing.T) {
+		host, rt := newCoordinatorFixture(t)
+		opened := openCoordinatorFixture(t, rt)
+		host.publicationFenceErr = errors.New("revoked delegation")
+		result, rejection := rt.CommitOperations(context.Background(), commitFixture(opened.Session, host))
+		if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusRejected || host.publishCalls != 0 {
+			t.Fatalf("result=%+v rejection=%v publications=%d", result, rejection, host.publishCalls)
+		}
+	})
+
+	t.Run("revocation waits", func(t *testing.T) {
+		host, rt := newCoordinatorFixture(t)
+		opened := openCoordinatorFixture(t, rt)
+		revokeAcquired := make(chan struct{})
+		host.onPublish = func() {
+			go func() {
+				host.publicationMu.Lock()
+				close(revokeAcquired)
+				host.publicationMu.Unlock()
+			}()
+			select {
+			case <-revokeAcquired:
+				t.Fatal("revocation crossed the final authorization/publication fence")
+			case <-time.After(30 * time.Millisecond):
+			}
+		}
+		result, rejection := rt.CommitOperations(context.Background(), commitFixture(opened.Session, host))
+		if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommitted {
+			t.Fatalf("result=%+v rejection=%v", result, rejection)
+		}
+		select {
+		case <-revokeAcquired:
+		case <-time.After(time.Second):
+			t.Fatal("revocation did not resume after publication fence release")
+		}
+	})
+}
+
 func TestCoordinatorAuthorizationFailureAbandonsReservation(t *testing.T) {
 	host, rt := newCoordinatorFixture(t)
 	opened := openCoordinatorFixture(t, rt)
@@ -1559,6 +1598,7 @@ func TestCoordinatorLookupHistoryAndTerminalFinalizeFailures(t *testing.T) {
 
 type coordinatorHost struct {
 	mu                                                                                      sync.Mutex
+	publicationMu                                                                           sync.RWMutex
 	now                                                                                     time.Time
 	base                                                                                    runtimeprotocol.CommittedRevisionRef
 	head                                                                                    port.DocumentHead
@@ -1619,6 +1659,7 @@ type coordinatorHost struct {
 	externalReceipt                                                                         port.ExternalFileReceipt
 	advancePhases                                                                           []runtimeprotocol.RecoveryPhase
 	denyApply, mismatchApply                                                                bool
+	publicationFenceErr                                                                     error
 }
 
 func TestCoordinatorExternalMaterializationSuccessPendingAndFailure(t *testing.T) {
@@ -1981,6 +2022,14 @@ func (h *coordinatorHost) ResolveGrant(context.Context, runtimeprotocol.RuntimeS
 		return accessprotocol.AuthoringGrantSnapshot{}, accessprotocol.AuthoringGrantSummary{}, errors.New("injected grant failure")
 	}
 	return h.grant, h.summary, nil
+}
+
+func (h *coordinatorHost) AcquireAuthoringPublication(context.Context, runtimeprotocol.RuntimeScope) (func(), error) {
+	if h.publicationFenceErr != nil {
+		return nil, h.publicationFenceErr
+	}
+	h.publicationMu.RLock()
+	return h.publicationMu.RUnlock, nil
 }
 
 func (h *coordinatorHost) Now() time.Time { return h.now }

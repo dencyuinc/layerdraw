@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,50 @@ func TestDelegationSnapshotLoadingFailsClosed(t *testing.T) {
 			t.Fatal("delegation symlink accepted")
 		}
 	})
+}
+
+func TestDelegationPublicationFenceLinearizesRevocation(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root, "project p \"P\" {}\n")
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := host.config.Clock.Now()
+	record, err := host.DelegateAgent(context.Background(), opened.Session, accesscore.Delegation{
+		ID: "publication-fence", ParentActor: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, Agent: accessprotocol.ActorRef{ActorID: "agent", Kind: "agent"},
+		DocumentID: string(opened.Session.Open.CommittedRevision.DocumentID), LocalScopeID: opened.Session.Open.Session.Scope.LocalScopeID,
+		AuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite}, Permissions: accesscore.AgentPermissions{Read: true, Propose: true, Apply: true}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withDelegation(context.Background(), record.ID)
+	release, err := host.authority.AcquireAuthoringPublication(ctx, opened.Session.Open.Session.Scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := make(chan error, 1)
+	go func() { revoked <- host.RevokeDelegation(record.ID) }()
+	select {
+	case err := <-revoked:
+		release()
+		t.Fatalf("revocation crossed an in-flight publication fence: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	if _, _, err := host.authority.ResolveGrant(ctx, opened.Session.Open.Session.Scope); err != nil {
+		release()
+		t.Fatalf("fenced publication lost its linearized grant: %v", err)
+	}
+	var once sync.Once
+	once.Do(release)
+	if err := <-revoked; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.authority.AcquireAuthoringPublication(ctx, opened.Session.Open.Session.Scope); !errors.Is(err, accesscore.ErrGrantStale) {
+		t.Fatalf("revoked grant reacquired publication fence: %v", err)
+	}
 }
 
 func TestDelegationHostRejectsInvalidManagementRoutes(t *testing.T) {

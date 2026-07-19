@@ -29,10 +29,33 @@ type localAuthority struct {
 	access           accesscore.Evaluator
 	random           io.Reader
 	mu               sync.RWMutex
+	delegationFence  sync.RWMutex
 	scopes           map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope
 	issued           map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time
 	delegations      *accesscore.DelegationStore
 	agentPermissions map[protocolcommon.Digest]accesscore.AgentPermissions
+}
+
+// AcquireAuthoringPublication linearizes delegated publication against revoke
+// and expiry checks. A successful release function must be held through the
+// authoritative storage publication.
+func (a *localAuthority) AcquireAuthoringPublication(ctx context.Context, scope runtimeprotocol.RuntimeScope) (func(), error) {
+	id, _ := ctx.Value(delegationContextKey{}).(string)
+	if id == "" {
+		return func() {}, nil
+	}
+	a.delegationFence.RLock()
+	record, err := a.delegationStore().Resolve(id, a.clock.Now())
+	if err != nil || record.DocumentID != string(scope.DocumentID) || record.LocalScopeID != scope.LocalScopeID {
+		a.delegationFence.RUnlock()
+		return nil, accesscore.ErrGrantStale
+	}
+	return a.delegationFence.RUnlock, nil
+}
+
+func (a *localAuthority) lockDelegationMutation() func() {
+	a.delegationFence.Lock()
+	return a.delegationFence.Unlock
 }
 
 type delegationContextKey struct{}
@@ -142,7 +165,26 @@ func (a *localAuthority) Evaluate(ctx context.Context, input accessprotocol.Eval
 	return a.access.Evaluate(ctx, input)
 }
 
-func (a *localAuthority) EvaluateStateQuery(_ context.Context, input port.StateQueryAuthorizationInput) (port.StateQueryAuthorizationDecision, error) {
+func (a *localAuthority) AuthorizeRead(ctx context.Context, scope runtimeprotocol.RuntimeScope, surface accesscore.ReadSurface) error {
+	resolved, err := a.ResolveScope(context.Background(), scope.DocumentID)
+	if err != nil || resolved != scope {
+		return port.ErrConflict
+	}
+	policy := accesscore.ProjectionPolicy{Read: true, Export: true}
+	if id, _ := ctx.Value(delegationContextKey{}).(string); id != "" {
+		record, err := a.delegationStore().Resolve(id, a.clock.Now())
+		if err != nil || record.DocumentID != string(scope.DocumentID) || record.LocalScopeID != scope.LocalScopeID {
+			return accesscore.ErrGrantStale
+		}
+		policy.Read, policy.Export = record.Permissions.Read, record.Permissions.Export
+	}
+	return accesscore.AuthorizeReadSurface(surface, policy)
+}
+
+func (a *localAuthority) EvaluateStateQuery(ctx context.Context, input port.StateQueryAuthorizationInput) (port.StateQueryAuthorizationDecision, error) {
+	if err := a.AuthorizeRead(ctx, input.Scope, accesscore.SurfaceQuery); err != nil {
+		return port.StateQueryAuthorizationDecision{}, err
+	}
 	resolved, err := a.ResolveScope(context.Background(), input.Scope.DocumentID)
 	if err != nil || resolved != input.Scope {
 		return port.StateQueryAuthorizationDecision{}, port.ErrConflict

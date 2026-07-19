@@ -102,6 +102,8 @@ func (h *Host) DelegateAgent(ctx context.Context, session *Session, requested ac
 	}
 	h.delegationMu.Lock()
 	defer h.delegationMu.Unlock()
+	releaseFence := h.authority.lockDelegationMutation()
+	defer releaseFence()
 	candidate, err := h.authority.delegationStore().Clone()
 	if err != nil {
 		return accesscore.Delegation{}, err
@@ -127,6 +129,10 @@ func (h *Host) OpenDelegatedDocument(ctx context.Context, documentID runtimeprot
 	}
 	opened.Session.delegationID = delegationID
 	ctx = h.accessContext(ctx, opened.Session)
+	if err := h.authority.AuthorizeRead(ctx, opened.Session.Open.Session.Scope, accesscore.SurfaceReview); err != nil {
+		_ = h.Close(context.Background(), opened.Session)
+		return OpenResult{}, err
+	}
 	_, summary, err := h.authority.ResolveGrant(ctx, opened.Session.Open.Session.Scope)
 	if err != nil {
 		_ = h.Close(context.Background(), opened.Session)
@@ -139,6 +145,8 @@ func (h *Host) OpenDelegatedDocument(ctx context.Context, documentID runtimeprot
 func (h *Host) RevokeDelegation(id string) error {
 	h.delegationMu.Lock()
 	defer h.delegationMu.Unlock()
+	releaseFence := h.authority.lockDelegationMutation()
+	defer releaseFence()
 	candidate, err := h.authority.delegationStore().Clone()
 	if err != nil {
 		return err

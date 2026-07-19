@@ -57,6 +57,20 @@ func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, surface := range []accesscore.ReadSurface{accesscore.SurfaceSearch, accesscore.SurfaceQuery, accesscore.SurfaceReview, accesscore.SurfaceMCP} {
+		if err := host.AuthorizeReadSurface(context.Background(), proposalSession.Session.Open.Session, surface); err != nil {
+			t.Fatalf("delegated %s read denied: %v", surface, err)
+		}
+	}
+	if err := host.AuthorizeReadSurface(context.Background(), proposalSession.Session.Open.Session, accesscore.SurfaceExport); !errors.Is(err, accesscore.ErrReadDenied) {
+		t.Fatalf("export=false delegation export=%v", err)
+	}
+	if err := host.AuthorizeReadSurface(context.Background(), proposalSession.Session.Open.Session, accesscore.ReadSurface("future")); !errors.Is(err, accesscore.ErrReadDenied) {
+		t.Fatalf("unknown delegated read surface=%v", err)
+	}
+	if _, err := host.StateSnapshot(context.Background(), proposalSession.Session.Open.Session); err != nil {
+		t.Fatalf("delegated query read=%v", err)
+	}
 	proposalPreview, err := host.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: proposalSession.Session.Open.Session, OperationBatch: batch})
 	if err != nil || proposalPreview.PreviewEvaluation.AuthoringDecision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow {
 		t.Fatalf("proposal preview=%+v err=%v", proposalPreview, err)
@@ -100,6 +114,21 @@ func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *t
 	applyCommit := runtimeprotocol.RuntimeCommitInput{Session: applySession.Session.Open.Session, OperationID: "revoked_commit", IdempotencyKey: "revoked_commit_idempotency", OperationBatch: batch, AuthoringProof: applyPreview.AuthoringProof, Trigger: runtimeprotocol.CommitTriggerExplicitSave}
 	if _, err := host.SaveRuntime(context.Background(), applyCommit); err == nil {
 		t.Fatal("revoked delegation bypassed SaveRuntime authorization")
+	}
+	if _, err := host.Inspect(applySession.Session.Open.Session); !errors.Is(err, accesscore.ErrGrantStale) {
+		t.Fatalf("revoked delegation review read=%v", err)
+	}
+
+	noRead, err := host.DelegateAgent(context.Background(), owner.Session, accesscore.Delegation{
+		ID: "no-read", ParentActor: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, Agent: accessprotocol.ActorRef{ActorID: "agent-no-read", Kind: "agent"},
+		DocumentID: string(batch.DocumentID), LocalScopeID: owner.Session.Open.Session.Scope.LocalScopeID,
+		AuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite}, Permissions: accesscore.AgentPermissions{Propose: true}, IssuedAt: clock, ExpiresAt: clock.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.OpenDelegatedDocument(context.Background(), batch.DocumentID, noRead.ID); !errors.Is(err, accesscore.ErrReadDenied) {
+		t.Fatalf("read=false delegation leaked open result: %v", err)
 	}
 
 	live := delegate("restart-live", true)

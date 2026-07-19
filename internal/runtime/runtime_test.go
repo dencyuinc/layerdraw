@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -557,10 +558,11 @@ func TestAuthorizeUsesInjectedDecisionForFullLocalGrantAndBindsAllImpacts(t *tes
 	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	grant := testGrant(now)
 	hostImpact := accessprotocol.HostOperationImpact{
-		Action: "stage", ImpactDigest: digest('3'), OperationKind: accessprotocol.HostOperationKindAssetStage,
+		Action: "stage", OperationKind: accessprotocol.HostOperationKindAssetStage,
 		RequiredAuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityAssetWrite}, ResourceRefs: []string{"asset"},
 		ResourceScope: accessprotocol.HostResourceScope{DocumentID: grant.HostDocumentID, LocalScopeID: grant.LocalScopeID},
 	}
+	hostImpact = sealHostImpact(hostImpact)
 	engineImpact := semantic.AuthoringImpact{
 		BaseDefinitionHash: digest('7'), Entries: []semantic.AuthoringImpactEntry{}, ImpactDigest: digest('8'),
 		RequiredCapabilities: []semantic.AuthoringCapability{}, ResultingDefinitionHash: digest('9'),
@@ -605,7 +607,7 @@ func TestAuthorizeUsesInjectedDecisionForFullLocalGrantAndBindsAllImpacts(t *tes
 func TestHostOperationImpactValidationFailsClosedAcrossScopeAndMapping(t *testing.T) {
 	organization := "org"
 	scope := runtimeprotocol.RuntimeScope{DocumentID: "doc", LocalScopeID: "local", OrganizationScopeID: &organization}
-	base := accessprotocol.HostOperationImpact{Action: "stage", ImpactDigest: digest('1'), OperationKind: accessprotocol.HostOperationKindAssetStage, RequiredAuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityAssetWrite}, ResourceRefs: []string{}, ResourceScope: accessprotocol.HostResourceScope{DocumentID: "doc", LocalScopeID: "local", OrganizationScopeID: &organization}}
+	base := sealHostImpact(accessprotocol.HostOperationImpact{Action: "stage", OperationKind: accessprotocol.HostOperationKindAssetStage, RequiredAuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityAssetWrite}, ResourceRefs: []string{"asset"}, ResourceScope: accessprotocol.HostResourceScope{DocumentID: "doc", LocalScopeID: "local", OrganizationScopeID: &organization}})
 	if !validHostOperationImpact(base, scope) {
 		t.Fatal("valid host impact rejected")
 	}
@@ -623,6 +625,9 @@ func TestHostOperationImpactValidationFailsClosedAcrossScopeAndMapping(t *testin
 		func(impact *accessprotocol.HostOperationImpact) {
 			impact.OperationKind = accessprotocol.HostOperationKind("unknown")
 		},
+		func(impact *accessprotocol.HostOperationImpact) { impact.Action = "update" },
+		func(impact *accessprotocol.HostOperationImpact) { impact.ResourceRefs = []string{"z", "a"} },
+		func(impact *accessprotocol.HostOperationImpact) { impact.ImpactDigest = digest('f') },
 	} {
 		candidate := base
 		candidate.RequiredAuthoringCapabilities = append([]semantic.AuthoringCapability(nil), base.RequiredAuthoringCapabilities...)
@@ -665,17 +670,19 @@ func TestAuthorizeCanonicalizesEquivalentHostImpactSetsBeforeDecision(t *testing
 	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	request, decision := authorizationFixture(now)
 	second := request.Evaluation.HostOperationImpacts[0]
-	second.ImpactDigest = digest('2')
 	second.OperationKind = accessprotocol.HostOperationKindAssetPersist
+	second.Action = "create"
 	second.ResourceRefs = []string{"asset-a", "asset-b"}
+	second = sealHostImpact(second)
 	request.Evaluation.HostOperationImpacts = []accessprotocol.HostOperationImpact{request.Evaluation.HostOperationImpacts[0], second}
-	decision.HostOperationImpactDigests = []protocolcommon.Digest{second.ImpactDigest, request.Evaluation.HostOperationImpacts[0].ImpactDigest}
+	expected := canonicalizeAuthoringInput(request.Evaluation).HostOperationImpacts
+	decision.HostOperationImpactDigests = []protocolcommon.Digest{expected[0].ImpactDigest, expected[1].ImpactDigest}
 	decider := &fakeDecision{decision: decision}
 	runtime := newTestRuntime(t, Ports{Authoring: decider, Clock: fixedClock{now}})
 	if _, rejection := runtime.Authorize(context.Background(), request); rejection != nil {
 		t.Fatal(rejection)
 	}
-	if len(decider.input.HostOperationImpacts) != 2 || decider.input.HostOperationImpacts[0].ImpactDigest != second.ImpactDigest {
+	if !reflect.DeepEqual(decider.input.HostOperationImpacts, expected) {
 		t.Fatalf("decision input was not canonicalized: %+v", decider.input.HostOperationImpacts)
 	}
 }
@@ -742,10 +749,11 @@ func testGrant(now time.Time) accessprotocol.AuthoringGrantSnapshot {
 func authorizationFixture(now time.Time) (AuthorizationRequest, accessprotocol.AuthoringDecision) {
 	grant := testGrant(now)
 	hostImpact := accessprotocol.HostOperationImpact{
-		Action: "stage", ImpactDigest: digest('3'), OperationKind: accessprotocol.HostOperationKindAssetStage,
+		Action: "stage", OperationKind: accessprotocol.HostOperationKindAssetStage,
 		RequiredAuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityAssetWrite}, ResourceRefs: []string{"asset"},
 		ResourceScope: accessprotocol.HostResourceScope{DocumentID: grant.HostDocumentID, LocalScopeID: grant.LocalScopeID},
 	}
+	hostImpact = sealHostImpact(hostImpact)
 	engineImpact := semantic.AuthoringImpact{
 		BaseDefinitionHash: digest('7'), Entries: []semantic.AuthoringImpactEntry{}, ImpactDigest: digest('8'),
 		RequiredCapabilities: []semantic.AuthoringCapability{}, ResultingDefinitionHash: digest('9'),
@@ -768,6 +776,12 @@ func authorizationFixture(now time.Time) (AuthorizationRequest, accessprotocol.A
 		Proof:           &proof,
 	}
 	return request, decision
+}
+
+func sealHostImpact(impact accessprotocol.HostOperationImpact) accessprotocol.HostOperationImpact {
+	impact.ImpactDigest = ""
+	impact.ImpactDigest = digestValue(impact)
+	return impact
 }
 
 type fixedClock struct{ now time.Time }

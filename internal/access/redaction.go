@@ -72,8 +72,8 @@ func (b *ReadBoundary) Read(ctx context.Context, request ReadRequest) ([]Record,
 	}
 	// Deny before consulting the unredacted provider. Besides avoiding leaks,
 	// this prevents a denied export/MCP request from triggering raw reads.
-	if !policy.Read || (request.Surface == SurfaceExport && !policy.Export) {
-		return nil, ErrReadDenied
+	if err := AuthorizeReadSurface(request.Surface, policy); err != nil {
+		return nil, err
 	}
 	records, err := b.source.ReadUnredacted(ctx, request)
 	if err != nil {
@@ -83,8 +83,8 @@ func (b *ReadBoundary) Read(ctx context.Context, request ReadRequest) ([]Record,
 }
 
 func project(surface ReadSurface, policy ProjectionPolicy, records []Record) ([]Record, error) {
-	if !policy.Read || (surface == SurfaceExport && !policy.Export) {
-		return nil, ErrReadDenied
+	if err := AuthorizeReadSurface(surface, policy); err != nil {
+		return nil, err
 	}
 	result := make([]Record, 0, len(records))
 	for _, record := range records {
@@ -108,4 +108,20 @@ func project(surface ReadSurface, policy ProjectionPolicy, records []Record) ([]
 		result = append(result, projected)
 	}
 	return result, nil
+}
+
+// AuthorizeReadSurface is the shared fail-closed gate used by typed host reads
+// and record-producing Search/Query/Review/export/MCP boundaries alike.
+func AuthorizeReadSurface(surface ReadSurface, policy ProjectionPolicy) error {
+	switch surface {
+	case SurfaceSearch, SurfaceQuery, SurfaceReview, SurfaceMCP:
+		if policy.Read {
+			return nil
+		}
+	case SurfaceExport:
+		if policy.Read && policy.Export {
+			return nil
+		}
+	}
+	return ErrReadDenied
 }

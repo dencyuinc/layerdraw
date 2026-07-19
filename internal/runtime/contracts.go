@@ -266,7 +266,34 @@ func validHostOperationImpact(impact accessprotocol.HostOperationImpact, scope r
 		return false
 	}
 	want := semanticCapabilityForHostOperation(impact.OperationKind)
-	return want != "" && len(impact.RequiredAuthoringCapabilities) == 1 && impact.RequiredAuthoringCapabilities[0] == want
+	if want == "" || len(impact.RequiredAuthoringCapabilities) != 1 || impact.RequiredAuthoringCapabilities[0] != want || !validHostOperationAction(impact.OperationKind, impact.Action) || len(impact.ResourceRefs) == 0 {
+		return false
+	}
+	for index, ref := range impact.ResourceRefs {
+		if ref == "" || (index > 0 && impact.ResourceRefs[index-1] >= ref) {
+			return false
+		}
+	}
+	candidate := impact
+	candidate.ImpactDigest = ""
+	return impact.ImpactDigest == digestValue(candidate)
+}
+
+func validHostOperationAction(kind accessprotocol.HostOperationKind, action string) bool {
+	switch kind {
+	case accessprotocol.HostOperationKindAssetDelete:
+		return action == "delete"
+	case accessprotocol.HostOperationKindAssetPersist:
+		return action == "create" || action == "update"
+	case accessprotocol.HostOperationKindAssetStage:
+		return action == "stage"
+	case accessprotocol.HostOperationKindPackageTransaction:
+		return action == "create" || action == "update" || action == "delete"
+	case accessprotocol.HostOperationKindBackendConfigure, accessprotocol.HostOperationKindProjectConfigure:
+		return action == "update"
+	default:
+		return false
+	}
 }
 
 func semanticCapabilityForHostOperation(kind accessprotocol.HostOperationKind) semantic.AuthoringCapability {

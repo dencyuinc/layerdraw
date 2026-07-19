@@ -265,6 +265,15 @@ func TestGraphConstraintsConsumeEngineFactsWithoutLDLParsing(t *testing.T) {
 		t.Fatalf("multi-dimensional denial = %+v", got)
 	}
 	impact.Entries[0].GraphFacts = nil
+	if got := constraintViolations(impact, allDenied); len(got) != 1 || got[0].Code != "authoring.constraint_facts_missing" {
+		t.Fatalf("missing constrained graph facts = %+v", got)
+	}
+	impact.Entries[0].GraphFacts = &semantic.GraphAuthoringFacts{ActionFlags: []string{"future_action"}, ColumnAddresses: []semantic.ColumnAddress{}, EndpointEntityAddresses: []semantic.EntityAddress{}, EntityTypeAddresses: []semantic.EntityTypeAddress{}, LayerAddresses: []semantic.LayerAddress{}, RelationTypeAddresses: []semantic.RelationTypeAddress{}}
+	if got := constraintViolations(impact, GraphConstraints{EntityTypes: map[string]bool{}}); len(got) != 1 {
+		t.Fatalf("unknown constrained graph action = %+v", got)
+	}
+	impact.Entries[0].Capability = semantic.AuthoringCapabilitySchemaWrite
+	impact.Entries[0].GraphFacts = nil
 	if got := constraintViolations(impact, allDenied); len(got) != 0 {
 		t.Fatalf("non-graph entry = %+v", got)
 	}
@@ -307,6 +316,16 @@ func TestProjectionRedactsBeforeEveryTrustedBoundary(t *testing.T) {
 	boundary, _ = NewReadBoundary(deniedSource, testPolicyResolver{ProjectionPolicy{Read: false}})
 	if _, err := boundary.Read(context.Background(), ReadRequest{Surface: SurfaceMCP}); !errors.Is(err, ErrReadDenied) || deniedSource.called {
 		t.Fatalf("denied raw read: called=%v err=%v", deniedSource.called, err)
+	}
+	exportSource := &observingReadSource{records: records}
+	boundary, _ = NewReadBoundary(exportSource, testPolicyResolver{ProjectionPolicy{Read: true, Export: false}})
+	if _, err := boundary.Read(context.Background(), ReadRequest{Surface: SurfaceExport}); !errors.Is(err, ErrReadDenied) || exportSource.called {
+		t.Fatalf("denied export raw read: called=%v err=%v", exportSource.called, err)
+	}
+	unknownSource := &observingReadSource{records: records}
+	boundary, _ = NewReadBoundary(unknownSource, testPolicyResolver{ProjectionPolicy{Read: true, Export: true}})
+	if _, err := boundary.Read(context.Background(), ReadRequest{Surface: ReadSurface("future")}); !errors.Is(err, ErrReadDenied) || unknownSource.called {
+		t.Fatalf("unknown surface raw read: called=%v err=%v", unknownSource.called, err)
 	}
 
 	nested := map[string]any{"value": "original"}
@@ -396,24 +415,31 @@ func TestEvaluationDigestBindsRevisionPolicyAndDelegation(t *testing.T) {
 func TestHostOperationImpactDerivesClosedCapabilities(t *testing.T) {
 	scope := accessprotocol.HostResourceScope{DocumentID: "doc", LocalScopeID: "local"}
 	cases := []struct {
-		kind accessprotocol.HostOperationKind
-		want semantic.AuthoringCapability
+		kind   accessprotocol.HostOperationKind
+		action string
+		want   semantic.AuthoringCapability
 	}{
-		{accessprotocol.HostOperationKindAssetDelete, semantic.AuthoringCapabilityAssetWrite},
-		{accessprotocol.HostOperationKindAssetPersist, semantic.AuthoringCapabilityAssetWrite},
-		{accessprotocol.HostOperationKindAssetStage, semantic.AuthoringCapabilityAssetWrite},
-		{accessprotocol.HostOperationKindPackageTransaction, semantic.AuthoringCapabilityPackageManage},
-		{accessprotocol.HostOperationKindBackendConfigure, semantic.AuthoringCapabilityProjectConfigure},
-		{accessprotocol.HostOperationKindProjectConfigure, semantic.AuthoringCapabilityProjectConfigure},
+		{accessprotocol.HostOperationKindAssetDelete, "delete", semantic.AuthoringCapabilityAssetWrite},
+		{accessprotocol.HostOperationKindAssetPersist, "create", semantic.AuthoringCapabilityAssetWrite},
+		{accessprotocol.HostOperationKindAssetStage, "stage", semantic.AuthoringCapabilityAssetWrite},
+		{accessprotocol.HostOperationKindPackageTransaction, "update", semantic.AuthoringCapabilityPackageManage},
+		{accessprotocol.HostOperationKindBackendConfigure, "update", semantic.AuthoringCapabilityProjectConfigure},
+		{accessprotocol.HostOperationKindProjectConfigure, "update", semantic.AuthoringCapabilityProjectConfigure},
 	}
 	for _, test := range cases {
-		impact, err := HostOperationImpact(test.kind, "apply", scope, []string{"z", "a"})
+		impact, err := HostOperationImpact(test.kind, test.action, scope, []string{"z", "a"})
 		if err != nil || !reflect.DeepEqual(impact.RequiredAuthoringCapabilities, []semantic.AuthoringCapability{test.want}) || !reflect.DeepEqual(impact.ResourceRefs, []string{"a", "z"}) || impact.ImpactDigest == "" {
 			t.Fatalf("%s impact = %+v err=%v", test.kind, impact, err)
 		}
 	}
 	if _, err := HostOperationImpact(accessprotocol.HostOperationKind("unknown"), "apply", scope, nil); err == nil {
 		t.Fatal("unknown host operation accepted")
+	}
+	if _, err := HostOperationImpact(accessprotocol.HostOperationKindAssetStage, "update", scope, []string{"asset"}); err == nil {
+		t.Fatal("invalid operation action accepted")
+	}
+	if _, err := HostOperationImpact(accessprotocol.HostOperationKindAssetStage, "stage", scope, []string{"asset", "asset"}); err == nil {
+		t.Fatal("duplicate operation resource accepted")
 	}
 }
 

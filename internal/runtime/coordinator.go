@@ -341,6 +341,11 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 	// the grant and evaluate the complete impact again after every potentially
 	// slow stage/adapter call so policy, delegation expiry/revocation, and agent
 	// scope changes reject before the head or external provider is published.
+	releasePublication, fenceErr := p.Grants.AcquireAuthoringPublication(ctx, input.Session.Scope)
+	if fenceErr != nil || releasePublication == nil {
+		return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring publication fence could not be acquired"), decision, prepared.AuthoringImpact)
+	}
+	defer releasePublication()
 	currentGrant, _, grantErr := p.Grants.ResolveGrant(ctx, input.Session.Scope)
 	if grantErr != nil {
 		return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring grant changed before publication"), decision, prepared.AuthoringImpact)
