@@ -4,6 +4,7 @@ package local
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -295,18 +296,81 @@ func TestRejectsTraversalIdentityAndPreservesOSFailureClass(t *testing.T) {
 	if _, err := d.ReadRevision(context.Background(), port.ReadRevisionInput{Scope: scope, RevisionID: "../escape"}); !errors.Is(err, port.ErrConflict) {
 		t.Fatalf("traversal=%v", err)
 	}
-	if !errors.Is(classify(syscall.ENOSPC), syscall.ENOSPC) || !errors.Is(classify(syscall.EACCES), fs.ErrPermission) {
-		t.Fatal("OS failure class was lost")
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "tests", "conformance", "testdata", "local_runtime_persistence_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int `json:"schema_version"`
+		FaultMatrix   []struct {
+			ID            string `json:"id"`
+			Surface       string `json:"surface"`
+			Injection     string `json:"injection"`
+			ExpectedError string `json:"expected_error"`
+		} `json:"fault_matrix"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil || corpus.SchemaVersion != 1 {
+		t.Fatalf("invalid persistence fault corpus: version=%d err=%v", corpus.SchemaVersion, err)
+	}
+	cases := 0
+	for _, fault := range corpus.FaultMatrix {
+		if fault.Surface != "filesystem_error" {
+			continue
+		}
+		cases++
+		t.Run(fault.ID, func(t *testing.T) {
+			var injected error
+			switch fault.Injection {
+			case "ENOSPC":
+				injected = syscall.ENOSPC
+			case "EACCES":
+				injected = syscall.EACCES
+			default:
+				t.Fatalf("unknown filesystem error %q", fault.Injection)
+			}
+			classified := classify(injected)
+			if fault.ExpectedError == "preserved" && !errors.Is(classified, injected) {
+				t.Fatalf("OS failure class was lost: %v", classified)
+			}
+			if fault.ExpectedError == "permission" && !errors.Is(classified, fs.ErrPermission) {
+				t.Fatalf("permission class was lost: %v", classified)
+			}
+		})
+	}
+	if cases == 0 {
+		t.Fatal("persistence fault corpus has no filesystem_error cases")
 	}
 }
 
 func TestInjectedAtomicFilesystemFailures(t *testing.T) {
-	for _, op := range []string{"open", "write", "sync", "rename", "dirsync"} {
-		t.Run(op, func(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "tests", "conformance", "testdata", "local_runtime_persistence_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int `json:"schema_version"`
+		FaultMatrix   []struct {
+			ID                 string `json:"id"`
+			Surface            string `json:"surface"`
+			Injection          string `json:"injection"`
+			ExpectedVisibility string `json:"expected_visibility"`
+			ExpectedError      string `json:"expected_error"`
+		} `json:"fault_matrix"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil || corpus.SchemaVersion != 1 {
+		t.Fatalf("invalid persistence fault corpus: version=%d err=%v", corpus.SchemaVersion, err)
+	}
+	cases := 0
+	for _, fault := range corpus.FaultMatrix {
+		if fault.Surface != "filesystem_atomic" {
+			continue
+		}
+		cases++
+		t.Run(fault.ID, func(t *testing.T) {
 			root := t.TempDir()
-			injected := errors.New("injected " + op)
+			injected := errors.New("injected " + fault.Injection)
 			s, err := New(root, Options{Fault: func(got, _ string) error {
-				if got == op {
+				if got == fault.Injection {
 					return injected
 				}
 				return nil
@@ -315,12 +379,18 @@ func TestInjectedAtomicFilesystemFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			err = s.atomicWrite(filepath.Join(root, "record"), bytes.NewReader([]byte("x")), 1)
-			if !errors.Is(err, injected) {
+			if !errors.Is(err, injected) || (fault.ExpectedError == "indeterminate") != errors.Is(err, port.ErrIndeterminate) {
 				t.Fatalf("error=%v", err)
 			}
-			if _, statErr := os.Lstat(filepath.Join(root, "record")); statErr == nil && op != "dirsync" {
-				t.Fatal("failed atomic write became visible")
+			_, statErr := os.Lstat(filepath.Join(root, "record"))
+			visible := statErr == nil
+			wantVisible := fault.ExpectedVisibility == "published_indeterminate"
+			if visible != wantVisible {
+				t.Fatalf("visibility=%t want=%t", visible, wantVisible)
 			}
 		})
+	}
+	if cases == 0 {
+		t.Fatal("persistence fault corpus has no filesystem_atomic cases")
 	}
 }

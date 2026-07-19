@@ -533,6 +533,10 @@ func TestAutosaveUsesInjectedSchedulerAndCloseCancels(t *testing.T) {
 }
 
 func TestRecoveryConvergesPublishedHeadAfterJournalFailure(t *testing.T) {
+	fault := localPersistenceFault(t, "published_journal_failure")
+	if fault.Injection != "recovery_fourth_write" {
+		t.Fatalf("unsupported lifecycle fault injection %q", fault.Injection)
+	}
 	root := t.TempDir()
 	source := "project p \"P\" {}\n"
 	project := writeProject(t, root, source)
@@ -559,7 +563,7 @@ func TestRecoveryConvergesPublishedHeadAfterJournalFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("published commit was reported as rejected: %v", err)
 	}
-	if commit.OperationResult.Status != runtimeprotocol.OperationResultStatusCommittedExternalPending || commit.OperationResult.CommittedRevision == nil || commit.OperationResult.ExternalMaterialization == nil || commit.OperationResult.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStatePending {
+	if commit.OperationResult.Status != runtimeprotocol.OperationResultStatus(fault.ExpectedStatus) || commit.OperationResult.CommittedRevision == nil || commit.OperationResult.ExternalMaterialization == nil || commit.OperationResult.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStatePending {
 		t.Fatalf("post-publication journal failure result = %+v", commit)
 	}
 	restarted := newTestHost(t, filepath.Join(root, "data"), nil)
@@ -571,7 +575,11 @@ func TestRecoveryConvergesPublishedHeadAfterJournalFailure(t *testing.T) {
 		t.Fatalf("recovery = %+v", results)
 	}
 	status := results[0].Status.OperationResult.Status
-	if status != runtimeprotocol.OperationResultStatusCommitted && status != runtimeprotocol.OperationResultStatusCommittedStateStale {
+	allowed := false
+	for _, expected := range fault.ExpectedRecoveryStatus {
+		allowed = allowed || status == runtimeprotocol.OperationResultStatus(expected)
+	}
+	if !allowed {
 		t.Fatalf("recovery status = %s", status)
 	}
 	openedAgain, err := restarted.OpenProject(context.Background(), OpenProjectInput{Root: project})
@@ -581,6 +589,55 @@ func TestRecoveryConvergesPublishedHeadAfterJournalFailure(t *testing.T) {
 	if len(openedAgain.History.Items) != 2 {
 		t.Fatalf("history after recovery = %+v", openedAgain.History)
 	}
+}
+
+type localPersistenceFaultCase struct {
+	ID                     string   `json:"id"`
+	Surface                string   `json:"surface"`
+	Injection              string   `json:"injection"`
+	Phase                  string   `json:"phase"`
+	Publish                bool     `json:"publish"`
+	AdvanceAfterPublish    bool     `json:"advance_after_publish"`
+	ExtraAdvances          int      `json:"extra_advances"`
+	ExpectedStatus         string   `json:"expected_status"`
+	ExpectedRecoveryStatus []string `json:"expected_recovery_status"`
+	ExpectedExternalState  string   `json:"expected_external_state"`
+}
+
+func localPersistenceFault(t *testing.T, id string) localPersistenceFaultCase {
+	t.Helper()
+	for _, fault := range localPersistenceFaults(t, "local_lifecycle") {
+		if fault.ID == id {
+			return fault
+		}
+	}
+	t.Fatalf("persistence fault corpus has no local_lifecycle case %q", id)
+	return localPersistenceFaultCase{}
+}
+
+func localPersistenceFaults(t *testing.T, surface string) []localPersistenceFaultCase {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "tests", "conformance", "testdata", "local_runtime_persistence_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int                         `json:"schema_version"`
+		FaultMatrix   []localPersistenceFaultCase `json:"fault_matrix"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil || corpus.SchemaVersion != 1 {
+		t.Fatalf("invalid persistence fault corpus: version=%d err=%v", corpus.SchemaVersion, err)
+	}
+	result := make([]localPersistenceFaultCase, 0, len(corpus.FaultMatrix))
+	for _, fault := range corpus.FaultMatrix {
+		if fault.Surface == surface {
+			result = append(result, fault)
+		}
+	}
+	if len(result) == 0 {
+		t.Fatalf("persistence fault corpus has no %s cases", surface)
+	}
+	return result
 }
 
 func stageRecoveryFixture(t *testing.T, host *Host, session *Session, source, suffix string, publish bool, advanceAfterPublish bool) (port.RecoveryRecord, port.StagedRevision) {
@@ -729,8 +786,9 @@ func stagedInputFor(t *testing.T, host *Host, scope runtimeprotocol.RuntimeScope
 }
 
 func TestRecoveryConvergesEveryExternalPublicationPhase(t *testing.T) {
-	for _, phase := range []runtimeprotocol.RecoveryPhase{runtimeprotocol.RecoveryPhasePublicationPending, runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished} {
-		t.Run(string(phase), func(t *testing.T) {
+	for _, fault := range localPersistenceFaults(t, "external_recovery_phase") {
+		t.Run(fault.ID, func(t *testing.T) {
+			phase := runtimeprotocol.RecoveryPhase(fault.Phase)
 			root := t.TempDir()
 			source := "project p \"P\" {}\n"
 			project := writeProject(t, root, source)
@@ -748,14 +806,11 @@ func TestRecoveryConvergesEveryExternalPublicationPhase(t *testing.T) {
 				t.Fatalf("recovery result=%+v", results)
 			}
 			external := results[0].Status.OperationResult.ExternalMaterialization
-			wantState := runtimeprotocol.ExternalMaterializationStatePublished
-			if phase == runtimeprotocol.RecoveryPhaseExternalFailed {
-				wantState = runtimeprotocol.ExternalMaterializationStateFailed
-			}
+			wantState := runtimeprotocol.ExternalMaterializationState(fault.ExpectedExternalState)
 			if external.State != wantState {
 				t.Fatalf("external state=%s want=%s", external.State, wantState)
 			}
-			if results[0].Status.OperationResult.Status != runtimeprotocol.OperationResultStatusCommittedStateStale {
+			if results[0].Status.OperationResult.Status != runtimeprotocol.OperationResultStatus(fault.ExpectedStatus) {
 				t.Fatalf("state duty precedence=%s", results[0].Status.OperationResult.Status)
 			}
 			if phase == runtimeprotocol.RecoveryPhaseExternalFailed {
@@ -914,13 +969,8 @@ func TestSourceBaselineHelpersFailClosedAndPersistCanonicalDigest(t *testing.T) 
 }
 
 func TestRecoveryRejectsPrepublicationAndFinishesPublishedPhases(t *testing.T) {
-	for _, test := range []struct {
-		name             string
-		publish, advance bool
-		extra            int
-		want             runtimeprotocol.OperationResultStatus
-	}{{"pending stage", false, false, 0, runtimeprotocol.OperationResultStatusRejected}, {"publication not started", false, true, 0, runtimeprotocol.OperationResultStatusRejected}, {"published journal", true, true, 0, runtimeprotocol.OperationResultStatusCommittedStateStale}, {"state pending", true, true, 1, runtimeprotocol.OperationResultStatusCommittedStateStale}, {"audit pending", true, true, 2, runtimeprotocol.OperationResultStatusCommittedStateStale}, {"outbox ready", true, true, 3, runtimeprotocol.OperationResultStatusCommittedStateStale}} {
-		t.Run(test.name, func(t *testing.T) {
+	for _, fault := range localPersistenceFaults(t, "local_recovery_phase") {
+		t.Run(fault.ID, func(t *testing.T) {
 			root := t.TempDir()
 			source := "project p \"P\" {}\n"
 			project := writeProject(t, root, source)
@@ -929,10 +979,10 @@ func TestRecoveryRejectsPrepublicationAndFinishesPublishedPhases(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			record, _ := stageRecoveryFixture(t, host, opened.Session, source, strings.ReplaceAll(test.name, " ", "_"), test.publish, test.advance)
+			record, _ := stageRecoveryFixture(t, host, opened.Session, source, fault.ID, fault.Publish, fault.AdvanceAfterPublish)
 			phase := runtimeprotocol.RecoveryPhasePublished
 			head, _ := host.documents.GetHead(context.Background(), port.GetDocumentHeadInput{Scope: record.Scope})
-			for i := 0; i < test.extra; i++ {
+			for i := 0; i < fault.ExtraAdvances; i++ {
 				next := map[runtimeprotocol.RecoveryPhase]runtimeprotocol.RecoveryPhase{runtimeprotocol.RecoveryPhasePublished: runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseStatePending: runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseAuditPending: runtimeprotocol.RecoveryPhaseOutboxReady}[phase]
 				updated, err := host.recovery.Advance(context.Background(), port.AdvanceRecoveryRecordInput{Scope: record.Scope, OperationID: record.Status.OperationID, ExpectedPhase: phase, NextPhase: next, PublishedRevision: &head.Revision})
 				if err != nil {
@@ -941,16 +991,20 @@ func TestRecoveryRejectsPrepublicationAndFinishesPublishedPhases(t *testing.T) {
 				record = updated
 				phase = next
 			}
+			if record.Status.Phase != runtimeprotocol.RecoveryPhase(fault.Phase) {
+				t.Fatalf("fixture phase=%s want=%s", record.Status.Phase, fault.Phase)
+			}
 			results, err := host.Recover(context.Background(), record.Scope.DocumentID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(results) != 1 || results[0].Status.OperationResult == nil || results[0].Status.OperationResult.Status != test.want {
+			want := runtimeprotocol.OperationResultStatus(fault.ExpectedStatus)
+			if len(results) != 1 || results[0].Status.OperationResult == nil || results[0].Status.OperationResult.Status != want {
 				t.Fatalf("results = %+v", results)
 			}
 			again, err := host.Recover(context.Background(), record.Scope.DocumentID)
 			wantAgain := 0
-			if test.want == runtimeprotocol.OperationResultStatusNeedsReview {
+			if want == runtimeprotocol.OperationResultStatusNeedsReview {
 				wantAgain = 1
 			}
 			if err != nil || len(again) != wantAgain || (wantAgain == 1 && !again[0].Converged) {

@@ -1,0 +1,337 @@
+{
+  "schema_version": 1,
+  "workflow": {
+    "initial_source": "project p \"P\" {}\n",
+    "project_address": "ldl:project:p",
+    "operations": {
+      "operations": [
+        {
+          "operation": "create_subject",
+          "subject_kind": "layer",
+          "parent_address": "ldl:project:p",
+          "id": "layer_conformance",
+          "fields": {
+            "display_name": "Layer conformance",
+            "order": "1"
+          }
+        }
+      ]
+    },
+    "asset_text": "local-runtime-conformance-asset\u0000bytes",
+    "expected": {
+      "initial_history_items": 1,
+      "committed_history_items": 2,
+      "initial_definition_hash": "sha256:1b390b3b4b1007dc712a3269f8c3d74ce31f5785df189d7b8c562827f1b9aafc",
+      "initial_graph_hash": "sha256:7ad17036bb269c3a518207a6a2ce7d5cf809c6361860ee7280209df165432940",
+      "committed_definition_hash": "sha256:383428d5f9f7b03ea8aa9cfd7e9711cca74aba495a8539aeceb7ab6c0f86b291",
+      "committed_graph_hash": "sha256:c92f5a45b3ed666691cd9ae72cb0939f907e4d00a370fd5cfb3193f690a52be4",
+      "commit_status": "committed",
+      "external_state": "published",
+      "state_kind": "snapshot"
+    }
+  },
+  "fault_matrix": [
+    {
+      "id": "cancel_before_publication",
+      "surface": "in_memory",
+      "injection": "cancel_before_publication",
+      "expected_status": "rejected",
+      "expected_publications": 0,
+      "expected_preview": false,
+      "retry_stable": true,
+      "recoverable": true
+    },
+    {
+      "id": "preview_failure",
+      "surface": "in_memory",
+      "injection": "preview_failure",
+      "expected_status": "rejected",
+      "expected_publications": 0,
+      "expected_preview": false,
+      "retry_stable": true,
+      "recoverable": true
+    },
+    {
+      "id": "conditional_conflict",
+      "surface": "in_memory",
+      "injection": "conditional_conflict",
+      "expected_status": "rejected",
+      "expected_publications": 0,
+      "expected_preview": true,
+      "retry_stable": true,
+      "recoverable": true
+    },
+    {
+      "id": "conflict_without_trusted_head",
+      "surface": "in_memory",
+      "injection": "conflict_without_trusted_head",
+      "expected_status": "needs_review",
+      "expected_publications": 0,
+      "expected_preview": true,
+      "expected_recovery_phase": "needs_review",
+      "retry_stable": false,
+      "recoverable": false
+    },
+    {
+      "id": "invalid_lease",
+      "surface": "in_memory",
+      "injection": "invalid_lease",
+      "expected_status": "rejected",
+      "expected_publications": 0,
+      "expected_preview": false,
+      "retry_stable": true,
+      "recoverable": true
+    },
+    {
+      "id": "lease_fenced_before_publication",
+      "surface": "in_memory",
+      "injection": "lease_fenced_before_publication",
+      "expected_status": "rejected",
+      "expected_publications": 0,
+      "expected_preview": true,
+      "retry_stable": true,
+      "recoverable": true
+    },
+    {
+      "id": "indeterminate_publication",
+      "surface": "in_memory",
+      "injection": "indeterminate_publication",
+      "expected_status": "committed",
+      "expected_publications": 1,
+      "expected_preview": true,
+      "retry_stable": false,
+      "recoverable": true
+    },
+    {
+      "id": "state_failure_after_publication",
+      "surface": "in_memory",
+      "injection": "state_failure_after_publication",
+      "expected_status": "committed_state_stale",
+      "expected_publications": 1,
+      "expected_preview": true,
+      "retry_stable": false,
+      "recoverable": true
+    },
+    {
+      "id": "history_failure_after_publication",
+      "surface": "in_memory",
+      "injection": "history_failure_after_publication",
+      "expected_status": "committed_state_stale",
+      "expected_publications": 1,
+      "expected_preview": true,
+      "retry_stable": false,
+      "recoverable": true
+    },
+    {
+      "id": "atomic_open_failure",
+      "surface": "filesystem_atomic",
+      "injection": "open",
+      "expected_visibility": "absent",
+      "expected_error": "injected"
+    },
+    {
+      "id": "atomic_write_failure",
+      "surface": "filesystem_atomic",
+      "injection": "write",
+      "expected_visibility": "absent",
+      "expected_error": "injected"
+    },
+    {
+      "id": "atomic_sync_failure",
+      "surface": "filesystem_atomic",
+      "injection": "sync",
+      "expected_visibility": "absent",
+      "expected_error": "injected"
+    },
+    {
+      "id": "atomic_rename_failure",
+      "surface": "filesystem_atomic",
+      "injection": "rename",
+      "expected_visibility": "absent",
+      "expected_error": "injected"
+    },
+    {
+      "id": "atomic_directory_sync_failure",
+      "surface": "filesystem_atomic",
+      "injection": "dirsync",
+      "expected_visibility": "published_indeterminate",
+      "expected_error": "indeterminate"
+    },
+    {
+      "id": "published_journal_failure",
+      "surface": "local_lifecycle",
+      "injection": "recovery_fourth_write",
+      "expected_status": "committed_external_pending",
+      "expected_recovery_status": [
+        "committed",
+        "committed_state_stale"
+      ],
+      "recoverable": true
+    },
+    {
+      "id": "disk_full",
+      "surface": "filesystem_error",
+      "injection": "ENOSPC",
+      "expected_error": "preserved"
+    },
+    {
+      "id": "permission_failure",
+      "surface": "filesystem_error",
+      "injection": "EACCES",
+      "expected_error": "permission"
+    },
+    {
+      "id": "pending_stage",
+      "surface": "local_recovery_phase",
+      "phase": "staged",
+      "publish": false,
+      "advance_after_publish": false,
+      "extra_advances": 0,
+      "expected_status": "rejected"
+    },
+    {
+      "id": "publication_not_started",
+      "surface": "local_recovery_phase",
+      "phase": "publication_pending",
+      "publish": false,
+      "advance_after_publish": true,
+      "extra_advances": 0,
+      "expected_status": "rejected"
+    },
+    {
+      "id": "published_journal",
+      "surface": "local_recovery_phase",
+      "phase": "published",
+      "publish": true,
+      "advance_after_publish": true,
+      "extra_advances": 0,
+      "expected_status": "committed_state_stale"
+    },
+    {
+      "id": "state_pending",
+      "surface": "local_recovery_phase",
+      "phase": "state_pending",
+      "publish": true,
+      "advance_after_publish": true,
+      "extra_advances": 1,
+      "expected_status": "committed_state_stale"
+    },
+    {
+      "id": "audit_pending",
+      "surface": "local_recovery_phase",
+      "phase": "audit_pending",
+      "publish": true,
+      "advance_after_publish": true,
+      "extra_advances": 2,
+      "expected_status": "committed_state_stale"
+    },
+    {
+      "id": "outbox_ready",
+      "surface": "local_recovery_phase",
+      "phase": "outbox_ready",
+      "publish": true,
+      "advance_after_publish": true,
+      "extra_advances": 3,
+      "expected_status": "committed_state_stale"
+    },
+    {
+      "id": "external_publication_pending",
+      "surface": "external_recovery_phase",
+      "phase": "publication_pending",
+      "expected_status": "committed_state_stale",
+      "expected_external_state": "published"
+    },
+    {
+      "id": "external_published",
+      "surface": "external_recovery_phase",
+      "phase": "published",
+      "expected_status": "committed_state_stale",
+      "expected_external_state": "published"
+    },
+    {
+      "id": "external_pending",
+      "surface": "external_recovery_phase",
+      "phase": "external_pending",
+      "expected_status": "committed_state_stale",
+      "expected_external_state": "published"
+    },
+    {
+      "id": "external_failed",
+      "surface": "external_recovery_phase",
+      "phase": "external_failed",
+      "expected_status": "committed_state_stale",
+      "expected_external_state": "failed"
+    },
+    {
+      "id": "external_receipt_published",
+      "surface": "external_recovery_phase",
+      "phase": "external_published",
+      "expected_status": "committed_state_stale",
+      "expected_external_state": "published"
+    },
+    {
+      "id": "runtime_process_crash",
+      "surface": "typescript_stdio",
+      "injection": "SIGKILL",
+      "expected_client_state": "failed",
+      "expected_restart_state": "ready"
+    }
+  ],
+  "adversarial_matrix": [
+    {
+      "id": "truncated_container",
+      "path": "internal/localdocument/lifecycle_test.go",
+      "test": "TestContainerValidationImportIdentityAndNoPartialPublication"
+    },
+    {
+      "id": "path_traversal",
+      "path": "internal/adapter/local/store_test.go",
+      "test": "TestRejectsTraversalIdentityAndPreservesOSFailureClass"
+    },
+    {
+      "id": "intermediate_symlink",
+      "path": "internal/adapter/local/qa_regression_test.go",
+      "test": "TestEveryAdapterRejectsIntermediateNamespaceSymlink"
+    },
+    {
+      "id": "final_record_symlink",
+      "path": "internal/adapter/local/qa_regression_test.go",
+      "test": "TestEveryAdapterRejectsFinalRecordSymlink"
+    },
+    {
+      "id": "asset_digest_mismatch",
+      "path": "internal/adapter/local/store_test.go",
+      "test": "TestAssetsBoundStreamsDigestConcurrencyAndSymlinks"
+    },
+    {
+      "id": "malformed_protocol_frame",
+      "path": "internal/transport/stdio/frame_test.go",
+      "test": "TestValidateFrameMalformedTable"
+    },
+    {
+      "id": "oversized_protocol_frame",
+      "path": "internal/transport/stdio/frame_test.go",
+      "test": "TestFrameAbsoluteBoundsAndGeneratedControlLimit"
+    },
+    {
+      "id": "private_root_permission_drift",
+      "path": "internal/adapter/local/qa_regression_test.go",
+      "test": "TestFinalFileSymlinkAndReopenedPermissionsRejected"
+    },
+    {
+      "id": "concurrent_writers",
+      "path": "internal/runtime/coordinator_test.go",
+      "test": "TestCoordinatorRaceHasExactlyOnePublicationPoint"
+    },
+    {
+      "id": "stale_head",
+      "path": "internal/runtime/coordinator_test.go",
+      "test": "TestCoordinatorStaleBaseReturnsTrustedEvidenceWithoutPreview"
+    },
+    {
+      "id": "persisted_corruption",
+      "path": "internal/localdocument/lifecycle_test.go",
+      "test": "TestBoundsCancellationAndCorruptionDiagnostics"
+    }
+  ]
+}

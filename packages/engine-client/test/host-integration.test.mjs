@@ -19,9 +19,13 @@ const storageRoot = join(temporary, "storage");
 const projectRoot = join(temporary, "project");
 const manifestBytes = await readFile(join(repositoryRoot, "deploy/development-release-manifest.json"));
 const releaseManifestDigest = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
+const persistenceCorpus = JSON.parse(await readFile(join(repositoryRoot, "tests/conformance/testdata/local_runtime_persistence_v1.json"), "utf8"));
+assert.equal(persistenceCorpus.schema_version, 1);
+const processCrashFault = persistenceCorpus.fault_matrix.find((fault) => fault.id === "runtime_process_crash" && fault.surface === "typescript_stdio");
+assert.notEqual(processCrashFault, undefined);
 
 await mkdir(projectRoot, { recursive: true });
-await writeFile(join(projectRoot, "document.ldl"), 'project p "P" {}\n');
+await writeFile(join(projectRoot, "document.ldl"), persistenceCorpus.workflow.initial_source);
 const build = spawnSync("go", [
   "build", "-trimpath", "-buildvcs=false", "-ldflags",
   `-s -w -X main.releaseVersion=0.0.0-dev -X main.sourceRevision=abcdef0 -X main.releaseManifestDigest=${releaseManifestDigest}`,
@@ -65,12 +69,12 @@ function preconditions(compiled) {
   };
 }
 
-function editBatch(revision, suffix, compiled) {
+function editBatch(revision, suffix, compiled, operations) {
   return {
     document_id: revision.document_id,
     base_revision: revision,
     expected_definition_hash: revision.definition_hash,
-    operations: { operations: [{
+    operations: operations ?? { operations: [{
       operation: "create_subject", subject_kind: "layer",
       parent_address: "ldl:project:p", id: `layer_${suffix}`,
       fields: { display_name: `Layer ${suffix}`, order: "1" },
@@ -79,8 +83,8 @@ function editBatch(revision, suffix, compiled) {
   };
 }
 
-async function previewedCommit(client, session, revision, suffix, trigger, compiled) {
-  const operation_batch = editBatch(revision, suffix, compiled);
+async function previewedCommit(client, session, revision, suffix, trigger, compiled, operations) {
+  const operation_batch = editBatch(revision, suffix, compiled, operations);
   const preview = await client.previewOperations({ session, operation_batch });
   assert.equal(preview.outcome, "success", JSON.stringify(preview));
   return {
@@ -118,7 +122,7 @@ test("local host exposes generated Runtime operations and the existing Engine fa
     assert.equal(client.hasCapability(operation), false, operation);
   }
   assert.equal(client.engine.hasCapability("engine.compile"), true);
-  const compilation = await client.engine.compile(makePortableRequest('project p "P" {}\n').request);
+  const compilation = await client.engine.compile(makePortableRequest(persistenceCorpus.workflow.initial_source).request);
   assert.equal(compilation.outcome, "success");
   const compiled = compilation.response.payload;
 
@@ -127,6 +131,8 @@ test("local host exposes generated Runtime operations and the existing Engine fa
     local_source: { kind: "project", path: projectRoot, entry_path: "document.ldl" },
   });
   assert.equal(opened.outcome, "success");
+  assert.equal(opened.payload.committed_revision.definition_hash, persistenceCorpus.workflow.expected.initial_definition_hash);
+  assert.equal(opened.payload.committed_revision.graph_hash, persistenceCorpus.workflow.expected.initial_graph_hash);
   let session = opened.payload.session;
   let documentId;
 
@@ -134,7 +140,7 @@ test("local host exposes generated Runtime operations and the existing Engine fa
   assert.equal(inspected.outcome, "success");
   const state = await client.getStateSnapshot({ session });
   assert.equal(state.outcome, "success");
-  assert.equal(state.payload.state_input.kind, "snapshot");
+  assert.equal(state.payload.state_input.kind, persistenceCorpus.workflow.expected.state_kind);
   assert.equal(state.payload.state_input.snapshot.format, "layerdraw-query-state");
   const canonicalState = encodeStateQuerySnapshot(state.payload.state_input.snapshot);
   assert.match(state.payload.state_input.snapshot_hash, /^sha256:[0-9a-f]{64}$/);
@@ -142,12 +148,16 @@ test("local host exposes generated Runtime operations and the existing Engine fa
   assert.equal(encodeStateQuerySnapshot(repeatedState.payload.state_input.snapshot), canonicalState);
   assert.equal(repeatedState.payload.state_input.snapshot_hash, state.payload.state_input.snapshot_hash);
 
-  const first = await previewedCommit(client, session, opened.payload.committed_revision, "commit", "explicit_save", compiled);
+  const first = await previewedCommit(client, session, opened.payload.committed_revision, "conformance", "explicit_save", compiled, persistenceCorpus.workflow.operations);
   const committed = await client.commitOperations(first.input);
   assert.equal(committed.outcome, "success", JSON.stringify(committed));
-  assert.equal(committed.payload.operation_result.status, "committed");
-  assert.equal(committed.payload.operation_result.external_materialization.state, "published");
-  assert.match(await readFile(join(projectRoot, "document.ldl"), "utf8"), /layer_commit/);
+  assert.equal(committed.payload.operation_result.status, persistenceCorpus.workflow.expected.commit_status);
+  assert.equal(committed.payload.operation_result.external_materialization.state, persistenceCorpus.workflow.expected.external_state);
+  assert.equal(committed.payload.operation_result.committed_revision.definition_hash, persistenceCorpus.workflow.expected.committed_definition_hash);
+  assert.equal(committed.payload.operation_result.committed_revision.graph_hash, persistenceCorpus.workflow.expected.committed_graph_hash);
+  assert.match(await readFile(join(projectRoot, "document.ldl"), "utf8"), /layer_conformance/);
+  const duplicate = await client.commitOperations(first.input);
+  assert.deepEqual(duplicate.payload.operation_result, committed.payload.operation_result);
 
   const saveRoot = join(temporary, "save-project");
   await mkdir(saveRoot, { recursive: true });
@@ -183,7 +193,7 @@ test("local host exposes generated Runtime operations and the existing Engine fa
   assert.equal(cancelled.payload.status, "not_pending");
   assert.equal((await client.previewRestore({ session, revision_id: history.payload.items[0].revision.revision_id })).outcome, "success");
 
-  const bytes = new TextEncoder().encode("portable-host-asset\0bytes");
+  const bytes = new TextEncoder().encode(persistenceCorpus.workflow.asset_text);
   const blob = {
     blob_id: "asset/test.bin",
     digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
@@ -217,11 +227,12 @@ test("local host reports a crashed process and can explicitly restart", async (c
   context.after(() => client.dispose());
   const runtime = processes.find((record) => record.arguments[0] === "stdio");
   assert.notEqual(runtime, undefined);
-  runtime.child.kill("SIGKILL");
+  runtime.child.kill(processCrashFault.injection);
   await new Promise((resolve) => runtime.child.once("exit", resolve));
   await assert.rejects(client.recoverOperations({ document_id: "missing" }));
+  assert.equal(client.state, processCrashFault.expected_client_state);
   await client.restart();
-  assert.equal(client.state, "ready");
+  assert.equal(client.state, processCrashFault.expected_restart_state);
   const opened = await client.openDocument({
     document_id: "bootstrap",
     local_source: { kind: "project", path: projectRoot, entry_path: "document.ldl" },

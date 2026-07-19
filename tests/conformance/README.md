@@ -12,6 +12,7 @@
 - `render_pipeline_runner.mjs`: Nodeと実browserが共有するpresentation/export conformance runner。semantic projectionやformatを追加せず、既存の公開package contractだけを組み合わせる
 - `testdata/workbench_portable_editing_v1.json`: Working Document lifecycle、source patch preview、apply、stale rejection、closeを固定するWorkbench編集コーパス
 - `testdata/engine_wasm_worker_v1.json`: WASM Worker transportの閉じたwire grammarとfailure vocabulary
+- `testdata/local_runtime_persistence_v1.json`: Local Runtimeのproject/container lifecycle、state、asset、history、idempotency、再起動、transaction phase、filesystem fault、stdio process crashを束ねる共通コーパスと障害行列
 - `stdio/v1/`: stdio framingの規範fixture
 
 共通コーパスはsingle/multi-module Project、installed/root Pack、asset、全宣言family、決定論的rejection、resource limit、128 nodeの代表的大規模graph、cancellationを含む。`tools/wasmparity`がin-process Go oracleから生成し、生成差分があればCIを失敗させる。
@@ -19,6 +20,8 @@
 ViewDataコーパスはdiagram、table、matrix、tree、flow、context、diffの全形状、全RelationType投影モード、Query/Diff source、Stateのnone/optional/required、source/map順序とlocale非依存入力を含む。成功ケースはViewData全体を比較し、invalid input、limit、cancellation、malformed wireはViewDataを一部も公開しない閉じた分類として比較する。
 
 Workbench編集コーパスはopaqueな`document_handle`、`preview_id`、`engine_release`を正規化し、固定可能なoperation outcome、generation、changed source files、diagnostic code、source bytes、hash presenceを比較する。handleやpreview IDの値そのものをfixture化してはならない。
+
+Local Runtime persistenceコーパスは同じsource、SemanticOperationBatch、asset bytes、terminal statusをin-process Runtime ports、local filesystem lifecycle、`layerdraw-host` stdio、TypeScript local-host clientで共有する。Go直呼びは固定clock/identityでstate hash、revision linkage、container bytes、restart後の結果を比較し、stdio clientはopaqueなhost/session IDを値として固定せず、同じdefinition/graph hash、typed result、external publication、state snapshot、history順序を検証する。障害行列の各entryは少なくとも1つの実行可能テストから読み込まれ、テスト内だけの別名fault tableを正本にしない。
 
 ## 比較契約
 
