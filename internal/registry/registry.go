@@ -932,11 +932,14 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 		if artifactKey(prior.Identity) == artifactKey(request.Requested) {
 			continue
 		}
-		if candidate, ok := resolved[artifactKey(prior.Identity)]; ok && !lockedReleaseBindingMatches(prior, candidate.Release) {
+		if candidate, ok := resolved[artifactKey(prior.Identity)]; ok && !lockedReleaseBindingMatches(prior, candidate.Release, resolved) {
 			return InstallPlan{}, fail(FailureDependencyConflict, prior.Identity.CanonicalID, true, errors.New("installed dependency requires an explicit update transaction"))
 		}
 	}
-	delta := buildLockDelta(request.Action, state.DependencySnapshot, resolved, request.Requested)
+	delta, err := buildLockDelta(request.Action, state.DependencySnapshot, resolved, request.Requested)
+	if err != nil {
+		return InstallPlan{}, fail(FailureArtifactCorrupt, request.Requested.CanonicalID, true, err)
+	}
 	mutationPlan, err := r.validator.BuildRegistryMutationPlan(ctx, RegistryMutationBuildInput{Action: request.Action, Project: state, Artifacts: artifacts, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, Requested: request.Requested, NewDocumentID: func() string {
 		if request.Action == ActionCreateFromTemplate {
 			return state.DocumentID
@@ -1156,10 +1159,11 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 	stateName := transactionState(tx)
 	if stateName == StateCommitted {
 		if lastIdempotencyKey(tx) == input.IdempotencyKey {
-			if tx.RuntimeResult != nil {
-				return *tx.RuntimeResult, nil
+			result, resultErr := persistedRuntimeCommitResult(tx, input, state.DocumentID)
+			if resultErr != nil {
+				return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, resultErr)
 			}
-			return RuntimeCommitResult{CommittedRevision: tx.CommittedRevision, OperationResultID: tx.OperationResultID}, nil
+			return result, nil
 		}
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
@@ -1188,7 +1192,11 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 			return RuntimeCommitResult{}, fail(FailureUnavailable, input.Plan.TransactionID, true, err)
 		}
 		if transactionState(latest) == StateCommitted && lastIdempotencyKey(latest) == input.IdempotencyKey {
-			return RuntimeCommitResult{CommittedRevision: latest.CommittedRevision, OperationResultID: latest.OperationResultID}, nil
+			result, resultErr := persistedRuntimeCommitResult(latest, input, state.DocumentID)
+			if resultErr != nil {
+				return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, resultErr)
+			}
+			return result, nil
 		}
 		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, errors.New("concurrent publication already started"))
 	}
@@ -1208,7 +1216,7 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		}
 		return RuntimeCommitResult{}, fail(code, input.Plan.TransactionID, true, err)
 	}
-	if resultErr := validateRuntimeCommitResult(tx.Plan, input, result); resultErr != nil {
+	if resultErr := validateRuntimeCommitResult(tx.Plan, input, result, state.DocumentID); resultErr != nil {
 		version := transactionVersion(tx)
 		tx.Events = append(tx.Events, TransactionEvent{State: StateRepairRequired, EvidenceDigest: tx.Plan.MutationDigest, Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
 		_, _ = r.transactions.CompareAndSwapRegistryTransaction(ctx, tx.Plan.TransactionID, version, tx)
@@ -1328,7 +1336,11 @@ func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transacti
 		if tx.RuntimeInput == nil {
 			return r.recoveryNeedsReview(ctx, tx, errors.New("Runtime committed outcome is missing its durable operation binding"))
 		}
-		if resultErr := validateRuntimeCommitResult(tx.Plan, *tx.RuntimeInput, outcome.Result); resultErr != nil {
+		expectedDocumentID, documentErr := r.runtimeResultDocumentID(ctx, tx.Plan)
+		if documentErr != nil {
+			return r.recoveryNeedsReview(ctx, tx, documentErr)
+		}
+		if resultErr := validateRuntimeCommitResult(tx.Plan, *tx.RuntimeInput, outcome.Result, expectedDocumentID); resultErr != nil {
 			return r.recoveryNeedsReview(ctx, tx, resultErr)
 		}
 		tx.RuntimeResult = &outcome.Result
@@ -1702,32 +1714,66 @@ func findLocked(snapshot ProjectDependencySnapshot, identity ArtifactIdentity) (
 	}
 	return LockedArtifact{}, false
 }
-func lockedFromPlan(item PlanArtifact, pinned bool) LockedArtifact {
+func lockedFromPlan(item PlanArtifact, pinned bool, resolved map[string]PlanArtifact) (LockedArtifact, error) {
 	dependencies := make([]ArtifactIdentity, 0, len(item.Release.Dependencies))
 	for _, dependency := range item.Release.Dependencies {
 		kind := dependency.Kind
 		if kind == "" {
 			kind = ArtifactPack
 		}
-		dependencies = append(dependencies, ArtifactIdentity{Kind: kind, CanonicalID: dependency.CanonicalID, Version: dependency.VersionRange})
+		child, ok := resolved[artifactKey(ArtifactIdentity{Kind: kind, CanonicalID: dependency.CanonicalID})]
+		if !ok {
+			return LockedArtifact{}, errors.New("resolved dependency graph is incomplete")
+		}
+		dependencies = append(dependencies, child.Release.Identity)
 	}
-	return LockedArtifact{Identity: item.Release.Identity, SourceID: item.Release.SourceID, PublisherID: item.Release.PublisherID, Digest: item.Release.Digest, ProvenanceDigest: item.Release.ProvenanceDigest, DependencyMetadataDigest: item.Release.DependencyMetadataDigest, Dependencies: dependencies, Pinned: pinned}
+	return LockedArtifact{Identity: item.Release.Identity, SourceID: item.Release.SourceID, PublisherID: item.Release.PublisherID, Digest: item.Release.Digest, ProvenanceDigest: item.Release.ProvenanceDigest, DependencyMetadataDigest: item.Release.DependencyMetadataDigest, Dependencies: dependencies, Pinned: pinned}, nil
 }
-func lockedReleaseBindingMatches(locked LockedArtifact, release ArtifactRelease) bool {
-	return locked.Identity == release.Identity && locked.SourceID == release.SourceID && locked.PublisherID == release.PublisherID && locked.Digest == release.Digest && locked.ProvenanceDigest == release.ProvenanceDigest && locked.DependencyMetadataDigest == release.DependencyMetadataDigest
+func lockedReleaseBindingMatches(locked LockedArtifact, release ArtifactRelease, resolved map[string]PlanArtifact) bool {
+	expected, err := lockedFromPlan(PlanArtifact{Release: release}, locked.Pinned, resolved)
+	return err == nil && locked.Identity == expected.Identity && locked.SourceID == expected.SourceID && locked.PublisherID == expected.PublisherID && locked.Digest == expected.Digest && locked.ProvenanceDigest == expected.ProvenanceDigest && locked.DependencyMetadataDigest == expected.DependencyMetadataDigest && digestJSON(locked.Dependencies) == digestJSON(expected.Dependencies)
 }
-func validateRuntimeCommitResult(plan InstallPlan, input RuntimeCommitInput, result RuntimeCommitResult) error {
+func validateRuntimeCommitResult(plan InstallPlan, input RuntimeCommitInput, result RuntimeCommitResult, expectedDocumentID string) error {
 	if strings.TrimSpace(result.CommittedRevision) == "" || !validRuntimeOperationID(input.OperationID) || !validRuntimeOperationID(result.OperationResultID) || result.OperationResultID != input.OperationID {
 		return errors.New("Runtime commit result is not bound to the requested operation and committed revision")
 	}
+	if expectedDocumentID == "" || result.DocumentID != expectedDocumentID {
+		return errors.New("Runtime commit result is not bound to the expected Document")
+	}
 	if plan.CreatesNewDocument {
-		if plan.NewDocumentID == "" || result.DocumentID != plan.NewDocumentID || !result.InitialCommittedRevision {
+		if plan.NewDocumentID != expectedDocumentID || !result.InitialCommittedRevision {
 			return errors.New("Runtime did not create the bound initial Document revision")
 		}
 	} else if result.InitialCommittedRevision {
 		return errors.New("Runtime marked an existing Document update as its initial revision")
 	}
 	return nil
+}
+func persistedRuntimeCommitResult(tx Transaction, input RuntimeCommitInput, expectedDocumentID string) (RuntimeCommitResult, error) {
+	result := RuntimeCommitResult{CommittedRevision: tx.CommittedRevision, OperationResultID: tx.OperationResultID, DocumentID: expectedDocumentID, InitialCommittedRevision: tx.Plan.CreatesNewDocument}
+	if tx.RuntimeResult != nil {
+		result = *tx.RuntimeResult
+		if tx.CommittedRevision != result.CommittedRevision || tx.OperationResultID != result.OperationResultID {
+			return RuntimeCommitResult{}, errors.New("persisted Runtime result does not match transaction convergence fields")
+		}
+	}
+	if err := validateRuntimeCommitResult(tx.Plan, input, result, expectedDocumentID); err != nil {
+		return RuntimeCommitResult{}, err
+	}
+	return result, nil
+}
+func (r *Registry) runtimeResultDocumentID(ctx context.Context, plan InstallPlan) (string, error) {
+	if plan.CreatesNewDocument {
+		if plan.NewDocumentID == "" {
+			return "", errors.New("template plan is missing its Document identity")
+		}
+		return plan.NewDocumentID, nil
+	}
+	state, err := r.projectState.CurrentRegistryProjectState(ctx, plan.ProjectID)
+	if err != nil || state.DocumentID == "" {
+		return "", errors.New("existing Document identity is unavailable during recovery")
+	}
+	return state.DocumentID, nil
 }
 func validRuntimeOperationID(value string) bool {
 	if len(value) == 0 || len(value) > 256 || !isASCIIAlphaNumeric(value[0]) {
@@ -1744,13 +1790,13 @@ func validRuntimeOperationID(value string) bool {
 func isASCIIAlphaNumeric(value byte) bool {
 	return (value >= '0' && value <= '9') || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
 }
-func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved map[string]PlanArtifact, requested ArtifactIdentity) ResolvedLockDelta {
+func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved map[string]PlanArtifact, requested ArtifactIdentity) (ResolvedLockDelta, error) {
 	delta := ResolvedLockDelta{Added: []LockedArtifact{}, Updated: []LockedArtifact{}, Removed: []LockedArtifact{}, Pinned: []LockedArtifact{}}
 	if action == ActionRemove {
 		if installed, ok := findLocked(snapshot, requested); ok {
 			delta.Removed = append(delta.Removed, installed)
 		}
-		return delta
+		return delta, nil
 	}
 	keys := make([]string, 0, len(resolved))
 	for key := range resolved {
@@ -1759,7 +1805,10 @@ func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved 
 	sort.Strings(keys)
 	for _, key := range keys {
 		item := resolved[key]
-		lock := lockedFromPlan(item, action == ActionPin && item.Release.Identity.CanonicalID == requested.CanonicalID)
+		lock, err := lockedFromPlan(item, action == ActionPin && item.Release.Identity.CanonicalID == requested.CanonicalID, resolved)
+		if err != nil {
+			return ResolvedLockDelta{}, err
+		}
 		if prior, ok := findLocked(snapshot, item.Release.Identity); ok {
 			if action == ActionPin {
 				delta.Pinned = append(delta.Pinned, lock)
@@ -1781,7 +1830,7 @@ func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved 
 			return artifactKey(delta.Removed[i].Identity) < artifactKey(delta.Removed[j].Identity)
 		})
 	}
-	return delta
+	return delta, nil
 }
 func artifactKey(identity ArtifactIdentity) string {
 	return string(identity.Kind) + ":" + identity.CanonicalID

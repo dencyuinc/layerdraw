@@ -292,6 +292,25 @@ type faultStore struct {
 	casFalse  bool
 }
 
+type commitRaceStore struct {
+	first  Transaction
+	latest Transaction
+	gets   atomic.Int64
+}
+
+func (s *commitRaceStore) CreateRegistryTransaction(context.Context, Transaction) error {
+	return errors.New("unexpected create")
+}
+func (s *commitRaceStore) GetRegistryTransaction(context.Context, string) (Transaction, bool, error) {
+	if s.gets.Add(1) == 1 {
+		return cloneTransaction(s.first), true, nil
+	}
+	return cloneTransaction(s.latest), true, nil
+}
+func (s *commitRaceStore) CompareAndSwapRegistryTransaction(context.Context, string, uint64, Transaction) (bool, error) {
+	return false, nil
+}
+
 func (s *faultStore) CreateRegistryTransaction(ctx context.Context, tx Transaction) error {
 	if s.createErr != nil {
 		return s.createErr
@@ -875,7 +894,7 @@ func TestCriticalTemplateNewDocumentAndAuthoritativeRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	env2.runtime.recovery = RuntimeRegistryOutcome{Status: RuntimeRegistryCommitted, Result: RuntimeCommitResult{CommittedRevision: "runtime-r2", OperationResultID: "recover-op"}}
+	env2.runtime.recovery = RuntimeRegistryOutcome{Status: RuntimeRegistryCommitted, Result: RuntimeCommitResult{CommittedRevision: "runtime-r2", OperationResultID: "recover-op", DocumentID: "doc"}}
 	recovered, err := env2.registry.RecoverTransaction(context.Background(), recoverPlan.TransactionID)
 	if err != nil || transactionState(recovered) != StateCommitted || recovered.CommittedRevision != "runtime-r2" || env2.runtime.calls.Load() != 0 {
 		t.Fatalf("authoritative recovery: %#v %v", recovered, err)
@@ -1028,7 +1047,10 @@ func TestCriticalHelperAndStaleLockBranches(t *testing.T) {
 		t.Fatal("missing closure")
 	}
 	resolved := map[string]PlanArtifact{artifactKey(root): {Release: ArtifactRelease{Identity: root, Digest: "new"}}}
-	delta := buildLockDelta(ActionUpdate, snapshot, resolved, root)
+	delta, err := buildLockDelta(ActionUpdate, snapshot, resolved, root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(delta.Removed) != 1 || delta.Removed[0].Identity != child {
 		t.Fatalf("full removed closure=%#v", delta)
 	}
@@ -1125,10 +1147,46 @@ func TestCriticalPlanAndCommitFreshnessBranches(t *testing.T) {
 		memory.transactions[plan.TransactionID] = tx
 		memory.mu.Unlock()
 		second, err := env.registry.Commit(context.Background(), input)
-		if err != nil || second.CommittedRevision != first.CommittedRevision || second.OperationResultID != first.OperationResultID {
+		if err != nil || second != first || second.DocumentID != "doc" || second.InitialCommittedRevision {
 			t.Fatalf("legacy result retry: %#v %v", second, err)
 		}
 	})
+
+	for _, documentID := range []string{"", "wrong-document"} {
+		t.Run("corrupt committed result retry "+documentID, func(t *testing.T) {
+			env, plan := prepare(t, ArtifactPack)
+			input := RuntimeCommitInput{Plan: plan, OperationID: "corrupt-retry", IdempotencyKey: "corrupt-retry"}
+			if _, err := env.registry.Commit(context.Background(), input); err != nil {
+				t.Fatal(err)
+			}
+			memory := env.store.(*MemoryTransactionStore)
+			memory.mu.Lock()
+			tx := memory.transactions[plan.TransactionID]
+			tx.RuntimeResult.DocumentID = documentID
+			memory.transactions[plan.TransactionID] = tx
+			memory.mu.Unlock()
+			if _, err := env.registry.Commit(context.Background(), input); !IsFailure(err, FailureRepairRequired) {
+				t.Fatalf("corrupt persisted Runtime result accepted on retry: %v", err)
+			}
+		})
+	}
+
+	for _, documentID := range []string{"", "wrong-document"} {
+		t.Run("corrupt committed result CAS race "+documentID, func(t *testing.T) {
+			env, plan := prepare(t, ArtifactPack)
+			input := RuntimeCommitInput{Plan: plan, OperationID: "cas-race", IdempotencyKey: "cas-race"}
+			awaiting, _, _ := env.store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+			latest := cloneTransaction(awaiting)
+			latest.CommittedRevision = "r2"
+			latest.OperationResultID = input.OperationID
+			latest.RuntimeResult = &RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID, DocumentID: documentID}
+			latest.Events = append(latest.Events, TransactionEvent{State: StateCommitted, EvidenceDigest: testDigest('r'), Sequence: transactionVersion(latest) + 1, IdempotencyKey: input.IdempotencyKey})
+			env.registry.transactions = &commitRaceStore{first: awaiting, latest: latest}
+			if _, err := env.registry.Commit(context.Background(), input); !IsFailure(err, FailureRepairRequired) {
+				t.Fatalf("corrupt CAS winner Runtime result accepted: %v", err)
+			}
+		})
+	}
 
 	t.Run("remove commit rebuilds aggregate from removed identity", func(t *testing.T) {
 		env := newTestEnv(t, NewMemoryTransactionStore())
@@ -1435,10 +1493,12 @@ func TestCriticalRuntimeCommittedOutcomeValidation(t *testing.T) {
 		template bool
 		result   RuntimeCommitResult
 	}{
-		{"existing missing revision", false, RuntimeCommitResult{OperationResultID: "bound-op"}},
-		{"existing missing operation result", false, RuntimeCommitResult{CommittedRevision: "r2"}},
-		{"existing wrong operation result", false, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "other-op"}},
-		{"existing marked initial", false, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op", InitialCommittedRevision: true}},
+		{"existing missing revision", false, RuntimeCommitResult{OperationResultID: "bound-op", DocumentID: "doc"}},
+		{"existing missing operation result", false, RuntimeCommitResult{CommittedRevision: "r2", DocumentID: "doc"}},
+		{"existing wrong operation result", false, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "other-op", DocumentID: "doc"}},
+		{"existing empty document", false, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op"}},
+		{"existing wrong document", false, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op", DocumentID: "other-document"}},
+		{"existing marked initial", false, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op", DocumentID: "doc", InitialCommittedRevision: true}},
 		{"template missing revision", true, RuntimeCommitResult{OperationResultID: "bound-op", DocumentID: "new-document", InitialCommittedRevision: true}},
 		{"template wrong operation result", true, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "other-op", DocumentID: "new-document", InitialCommittedRevision: true}},
 		{"template wrong document", true, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op", DocumentID: "other-document", InitialCommittedRevision: true}},
@@ -1658,7 +1718,12 @@ func TestCriticalResolverLockAndRootHardening(t *testing.T) {
 			child := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/authority-child", Version: "1.0.0"}, childData, nil)
 			rootID := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/authority-root", Version: "1.0.0"}
 			root := signedRelease(t, env.privateKey, rootID, rootData, []Dependency{{Kind: ArtifactPack, CanonicalID: child.Identity.CanonicalID, VersionRange: child.Identity.Version, DigestConstraint: child.Digest}})
-			env.project.state.DependencySnapshot = ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{lockedFromPlan(PlanArtifact{Release: child}, false)}}
+			childPlan := PlanArtifact{Release: child}
+			childLock, err := lockedFromPlan(childPlan, false, map[string]PlanArtifact{artifactKey(child.Identity): childPlan})
+			if err != nil {
+				t.Fatal(err)
+			}
+			env.project.state.DependencySnapshot = ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{childLock}}
 			addRelease(env, child, childData)
 			addRelease(env, root, rootData)
 			return env, child, rootID
@@ -1690,6 +1755,57 @@ func TestCriticalResolverLockAndRootHardening(t *testing.T) {
 				}
 			}
 		})
+	})
+
+	t.Run("lock stores exact resolved dependency identity", func(t *testing.T) {
+		env := newTestEnv(t, NewMemoryTransactionStore())
+		childData, rootData := []byte("range-child"), []byte("range-root")
+		child := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/range-child", Version: "1.2.3"}, childData, nil)
+		root := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/range-root", Version: "1.0.0"}, rootData, []Dependency{{Kind: ArtifactPack, CanonicalID: child.Identity.CanonicalID, VersionRange: "^1.0.0"}})
+		addRelease(env, child, childData)
+		addRelease(env, root, rootData)
+		plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, root.Identity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rootLock *LockedArtifact
+		for index := range plan.ResolvedLockDelta.Added {
+			if plan.ResolvedLockDelta.Added[index].Identity == root.Identity {
+				rootLock = &plan.ResolvedLockDelta.Added[index]
+			}
+		}
+		if rootLock == nil || len(rootLock.Dependencies) != 1 || rootLock.Dependencies[0] != child.Identity {
+			t.Fatalf("dependency range escaped into resolved lock: %#v", rootLock)
+		}
+	})
+
+	t.Run("locked dependency edge drift conflicts", func(t *testing.T) {
+		env := newTestEnv(t, NewMemoryTransactionStore())
+		leafData, middleData, rootData := []byte("edge-leaf"), []byte("edge-middle"), []byte("edge-root")
+		leaf := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/edge-leaf", Version: "1.2.3"}, leafData, nil)
+		middle := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/edge-middle", Version: "1.0.0"}, middleData, []Dependency{{Kind: ArtifactPack, CanonicalID: leaf.Identity.CanonicalID, VersionRange: "^1.0.0"}})
+		root := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/edge-root", Version: "1.0.0"}, rootData, []Dependency{{Kind: ArtifactPack, CanonicalID: middle.Identity.CanonicalID, VersionRange: middle.Identity.Version}})
+		resolved := map[string]PlanArtifact{artifactKey(leaf.Identity): {Release: leaf}, artifactKey(middle.Identity): {Release: middle}}
+		middleLock, err := lockedFromPlan(resolved[artifactKey(middle.Identity)], false, resolved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		middleLock.Dependencies[0].Version = "1.2.2"
+		env.project.state.DependencySnapshot = ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{middleLock}}
+		addRelease(env, leaf, leafData)
+		addRelease(env, middle, middleData)
+		addRelease(env, root, rootData)
+		if _, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, root.Identity)); !IsFailure(err, FailureDependencyConflict) {
+			t.Fatalf("dependency edge drift accepted: %v", err)
+		}
+	})
+
+	t.Run("incomplete resolved dependency graph fails closed", func(t *testing.T) {
+		identity := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/incomplete-root", Version: "1.0.0"}
+		root := PlanArtifact{Release: ArtifactRelease{Identity: identity, Dependencies: []Dependency{{Kind: ArtifactPack, CanonicalID: "critical/missing-child", VersionRange: "^1.0.0"}}}}
+		if _, err := buildLockDelta(ActionInstall, ProjectDependencySnapshot{}, map[string]PlanArtifact{artifactKey(identity): root}, identity); err == nil {
+			t.Fatal("incomplete resolved dependency graph produced a lock delta")
+		}
 	})
 
 	t.Run("requested root is not artifact ordering", func(t *testing.T) {
@@ -1752,6 +1868,16 @@ func TestCriticalOperationIdentityAndSemverHardening(t *testing.T) {
 	}
 	if compareVersions("1.0.0-beta.11", "1.0.0-beta.2") <= 0 {
 		t.Fatal("numeric prerelease length precedence reversed")
+	}
+	if _, err := env.registry.runtimeResultDocumentID(context.Background(), InstallPlan{CreatesNewDocument: true}); err == nil {
+		t.Fatal("template without Document identity accepted")
+	}
+	env.project.err = errors.New("project unavailable")
+	if _, err := env.registry.runtimeResultDocumentID(context.Background(), InstallPlan{ProjectID: "p"}); err == nil {
+		t.Fatal("unavailable existing Document identity accepted")
+	}
+	if _, err := persistedRuntimeCommitResult(Transaction{Plan: InstallPlan{}, CommittedRevision: "r2", OperationResultID: "op", RuntimeResult: &RuntimeCommitResult{CommittedRevision: "other", OperationResultID: "op", DocumentID: "doc"}}, RuntimeCommitInput{OperationID: "op"}, "doc"); err == nil {
+		t.Fatal("mismatched persisted Runtime convergence fields accepted")
 	}
 }
 

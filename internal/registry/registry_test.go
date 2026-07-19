@@ -229,7 +229,7 @@ func (r *runtimePort) CommitRegistryPlan(_ context.Context, input RuntimeCommitI
 	if input.AccessDecision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || len(input.HostOperationImpacts) != 1 {
 		return RuntimeCommitResult{}, errors.New("missing typed authorization binding")
 	}
-	result := RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID}
+	result := RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID, DocumentID: input.HostOperationImpacts[0].ResourceScope.DocumentID}
 	if input.Plan.CreatesNewDocument {
 		result.DocumentID = input.Plan.NewDocumentID
 		result.InitialCommittedRevision = true
@@ -521,11 +521,15 @@ func TestDiskStoreCASConcurrencyRestartAndPublicationFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.runtime.block = make(chan struct{})
-	results := make(chan error, 8)
+	type commitAttempt struct {
+		result RuntimeCommitResult
+		err    error
+	}
+	results := make(chan commitAttempt, 8)
 	for i := 0; i < 8; i++ {
 		go func() {
-			_, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "same"})
-			results <- err
+			result, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "op", IdempotencyKey: "same"})
+			results <- commitAttempt{result: result, err: err}
 		}()
 	}
 	for env.runtime.calls.Load() == 0 {
@@ -534,8 +538,12 @@ func TestDiskStoreCASConcurrencyRestartAndPublicationFailures(t *testing.T) {
 	close(env.runtime.block)
 	success := 0
 	for i := 0; i < 8; i++ {
-		if <-results == nil {
+		attempt := <-results
+		if attempt.err == nil {
 			success++
+			if attempt.result.DocumentID != "doc" || attempt.result.InitialCommittedRevision || attempt.result.CommittedRevision == "" || attempt.result.OperationResultID != "op" {
+				t.Fatalf("CAS retry returned partial Runtime result: %#v", attempt.result)
+			}
 		}
 	}
 	if env.runtime.calls.Load() != 1 || success < 1 {
