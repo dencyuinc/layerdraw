@@ -446,6 +446,7 @@ type TransactionEvent struct {
 type Transaction struct {
 	Plan                InstallPlan          `json:"plan"`
 	Events              []TransactionEvent   `json:"events"`
+	PlanningRequest     *PlanRequest         `json:"planning_request,omitempty"`
 	CommittedRevision   string               `json:"committed_revision,omitempty"`
 	OperationResultID   string               `json:"operation_result_id,omitempty"`
 	RuntimeInput        *RuntimeCommitInput  `json:"runtime_input,omitempty"`
@@ -774,7 +775,7 @@ func (r *Registry) AuthorArtifact(ctx context.Context, request AuthorArtifactReq
 	return result, nil
 }
 
-func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, error) {
+func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result InstallPlan, resultErr error) {
 	if !validAction(request.Action) || !validIdentity(request.Requested) || (request.Action != ActionCreateFromTemplate && (request.ProjectID == "" || request.BaseRevision == "")) {
 		return InstallPlan{}, fail(FailureDependencyConflict, request.Requested.CanonicalID, true, nil)
 	}
@@ -831,6 +832,42 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 	if request.Action == ActionRepair {
 		request.Requested = installed.Identity
 	}
+	transactionID := strings.TrimPrefix(digestJSON(struct {
+		Request    PlanRequest
+		DocumentID string
+	}{request, state.DocumentID}), "sha256:")[:32]
+	planningDigest := digestJSON(struct {
+		Request    PlanRequest
+		DocumentID string
+	}{request, state.DocumentID})
+	planningRequest := request
+	tx, exists, loadErr := r.transactions.GetRegistryTransaction(ctx, transactionID)
+	if loadErr != nil {
+		return InstallPlan{}, fail(FailureUnavailable, transactionID, true, loadErr)
+	}
+	if exists {
+		if transactionState(tx) == StateAwaitingConfirmation {
+			return clonePlan(tx.Plan), nil
+		}
+		if tx.PlanningRequest == nil || digestPlanningRequest(*tx.PlanningRequest) != digestPlanningRequest(request) || (transactionState(tx) != StatePlanned && transactionState(tx) != StateDownloading) {
+			return InstallPlan{}, fail(FailurePlanStale, transactionID, true, nil)
+		}
+	} else {
+		tx = Transaction{Plan: InstallPlan{TransactionID: transactionID, PlanDigest: planningDigest, Action: request.Action, ProjectID: request.ProjectID}, PlanningRequest: &planningRequest, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: digestJSON(request), Sequence: 1}}}
+		if err := r.transactions.CreateRegistryTransaction(ctx, tx); err != nil {
+			return InstallPlan{}, fail(FailureUnavailable, transactionID, true, err)
+		}
+	}
+	if transactionState(tx) == StatePlanned {
+		if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateDownloading, EvidenceDigest: digestJSON(request)}); err != nil {
+			return InstallPlan{}, err
+		}
+	}
+	defer func() {
+		if resultErr != nil && transactionState(tx) == StateDownloading {
+			_ = r.appendEvent(ctx, &tx, TransactionEvent{State: StateRolledBack, EvidenceDigest: digestJSON(resultErr)})
+		}
+	}()
 	resolved := map[string]PlanArtifact{}
 	if request.Action != ActionRemove {
 		visiting := map[string]bool{}
@@ -920,26 +957,14 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 	if request.Action == ActionCreateFromTemplate {
 		plan.NewDocumentID = state.DocumentID
 	}
-	plan.TransactionID = strings.TrimPrefix(digestJSON(struct {
-		Request    PlanRequest
-		DocumentID string
-	}{request, state.DocumentID}), "sha256:")[:32]
+	plan.TransactionID = transactionID
 	plan.ProjectMutationPlan.RegistryTransactionID = plan.TransactionID
 	plan.ProjectMutationPlan.HostOperationImpactDigest = plan.HostOperationImpactDigest
 	plan.ProjectMutationPlan.EvaluationDigest = plan.EvaluationDigest
 	plan.PlanDigest = digestPlan(plan)
 	plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
-	if existing, ok, _ := r.transactions.GetRegistryTransaction(ctx, plan.TransactionID); ok {
-		if existing.Plan.PlanDigest == plan.PlanDigest && transactionState(existing) == StateAwaitingConfirmation {
-			return clonePlan(existing.Plan), nil
-		}
-		return InstallPlan{}, fail(FailurePlanStale, plan.TransactionID, true, nil)
-	}
-	tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: digestJSON(request), Sequence: 1}}}
-	if err := r.transactions.CreateRegistryTransaction(ctx, tx); err != nil {
-		return InstallPlan{}, fail(FailureUnavailable, plan.TransactionID, true, err)
-	}
-	for _, step := range []TransactionEvent{{State: StateDownloading, EvidenceDigest: digestJSON(plan.SourceBindings)}, {State: StateVerified, EvidenceDigest: digestJSON(plan.TrustPolicyDigests)}, {State: StateExpandedStaged, EvidenceDigest: plan.ProjectMutationPlan.StagedTreeManifest}, {State: StateCompiled, EvidenceDigest: plan.ProjectMutationPlan.AuthoringImpactDigest}, {State: StateAwaitingConfirmation, EvidenceDigest: plan.EvaluationDigest}} {
+	tx.Plan = plan
+	for _, step := range []TransactionEvent{{State: StateVerified, EvidenceDigest: digestJSON(plan.TrustPolicyDigests)}, {State: StateExpandedStaged, EvidenceDigest: plan.ProjectMutationPlan.StagedTreeManifest}, {State: StateCompiled, EvidenceDigest: plan.ProjectMutationPlan.AuthoringImpactDigest}, {State: StateAwaitingConfirmation, EvidenceDigest: plan.EvaluationDigest}} {
 		version := transactionVersion(tx)
 		step.Sequence = version + 1
 		tx.Events = append(tx.Events, step)
@@ -1223,6 +1248,13 @@ func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transacti
 	tx, err := r.GetTransaction(ctx, id)
 	if err != nil {
 		return Transaction{}, err
+	}
+	if (transactionState(tx) == StatePlanned || transactionState(tx) == StateDownloading) && tx.PlanningRequest != nil {
+		if _, err := r.Plan(ctx, *tx.PlanningRequest); err != nil {
+			latest, _, _ := r.transactions.GetRegistryTransaction(ctx, id)
+			return latest, err
+		}
+		return r.GetTransaction(ctx, id)
 	}
 	for {
 		var next *TransactionEvent
@@ -1638,6 +1670,10 @@ func digestPlan(plan InstallPlan) string {
 	plan.ProjectMutationPlan.PlanDigest = ""
 	return digestJSON(plan)
 }
+func digestPlanningRequest(request PlanRequest) string {
+	request.DependencySnapshot = cloneDependencySnapshot(request.DependencySnapshot)
+	return digestJSON(request)
+}
 func digestTrust(policy TrustPolicy) string {
 	keys := make([]string, 0, len(policy.PublicKeys))
 	for key, value := range policy.PublicKeys {
@@ -1718,6 +1754,11 @@ func clonePlan(value InstallPlan) InstallPlan {
 func cloneTransaction(value Transaction) Transaction {
 	value.Plan = clonePlan(value.Plan)
 	value.Events = append([]TransactionEvent{}, value.Events...)
+	if value.PlanningRequest != nil {
+		request := *value.PlanningRequest
+		request.DependencySnapshot = cloneDependencySnapshot(request.DependencySnapshot)
+		value.PlanningRequest = &request
+	}
 	if value.RuntimeInput != nil {
 		input := *value.RuntimeInput
 		input.Plan = clonePlan(input.Plan)
@@ -1757,13 +1798,17 @@ func lastIdempotencyKey(value Transaction) string {
 	return ""
 }
 func validateTransactionAppend(current, next Transaction) error {
-	if current.Plan.TransactionID == "" || next.Plan.TransactionID != current.Plan.TransactionID || next.Plan.PlanDigest != current.Plan.PlanDigest || len(next.Events) != len(current.Events)+1 {
+	if current.Plan.TransactionID == "" || next.Plan.TransactionID != current.Plan.TransactionID || len(next.Events) != len(current.Events)+1 {
 		return errors.New("registry transaction CAS must append exactly one event")
 	}
 	if transactionVersion(next) != transactionVersion(current)+1 {
 		return errors.New("registry transaction sequence mismatch")
 	}
 	from, to := transactionState(current), transactionState(next)
+	planFinalized := from == StateDownloading && to == StateVerified && current.PlanningRequest != nil && next.PlanningRequest != nil && digestPlanningRequest(*current.PlanningRequest) == digestPlanningRequest(*next.PlanningRequest) && current.Plan.PlanDigest != next.Plan.PlanDigest && next.Plan.PlanDigest == digestPlan(next.Plan)
+	if current.Plan.PlanDigest != next.Plan.PlanDigest && !planFinalized {
+		return fmt.Errorf("registry transaction plan changed outside finalization (%s -> %s, request_bound=%t, digest_bound=%t)", from, to, current.PlanningRequest != nil && next.PlanningRequest != nil && digestPlanningRequest(*current.PlanningRequest) == digestPlanningRequest(*next.PlanningRequest), next.Plan.PlanDigest == digestPlan(next.Plan))
+	}
 	allowed := false
 	switch from {
 	case StatePlanned:

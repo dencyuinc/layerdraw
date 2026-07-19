@@ -836,7 +836,7 @@ func TestCriticalTemplateNewDocumentAndAuthoritativeRecovery(t *testing.T) {
 	before := env.project.currentCalls.Load()
 	plan, err := env.registry.Plan(context.Background(), PlanRequest{Action: ActionCreateFromTemplate, Requested: release.Identity, DependencySnapshot: ProjectDependencySnapshot{}})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%v: %v", err, errors.Unwrap(err))
 	}
 	if env.project.currentCalls.Load() != before || plan.NewDocumentID != "new-document" || plan.BaseRevision != "" {
 		t.Fatalf("template reused existing project: %#v", plan)
@@ -1267,5 +1267,50 @@ func TestCriticalRecoveryPersistenceFailures(t *testing.T) {
 	env := newTestEnv(t, NewMemoryTransactionStore())
 	if _, _, _, ok := env.registry.sourceContext("missing"); ok {
 		t.Fatal("missing source context resolved")
+	}
+}
+
+func TestCriticalRecoveryResumesPersistedDownloadRequest(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	data := []byte("resume-download")
+	release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/resume-download", Version: "1.0.0"}, data, nil)
+	addRelease(env, release, data)
+	request := planRequest(env, ActionInstall, release.Identity)
+	id := strings.TrimPrefix(digestJSON(struct {
+		Request    PlanRequest
+		DocumentID string
+	}{request, env.project.state.DocumentID}), "sha256:")[:32]
+	tx := Transaction{
+		Plan:            InstallPlan{TransactionID: id, PlanDigest: digestPlanningRequest(request), Action: request.Action, ProjectID: request.ProjectID},
+		PlanningRequest: &request,
+		Events:          []TransactionEvent{{State: StateDownloading, EvidenceDigest: digestJSON(request), Sequence: 1}},
+	}
+	if err := env.store.CreateRegistryTransaction(context.Background(), tx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := env.registry.RecoverTransaction(context.Background(), id)
+	if err != nil || transactionState(recovered) != StateAwaitingConfirmation || recovered.Plan.PlanDigest == tx.Plan.PlanDigest {
+		t.Fatalf("download recovery: %#v %v", recovered, err)
+	}
+	retry, err := env.registry.Plan(context.Background(), request)
+	if err != nil || retry.PlanDigest != recovered.Plan.PlanDigest {
+		t.Fatalf("finalized retry: %#v %v", retry, err)
+	}
+}
+
+func TestCriticalPlanningJournalFailures(t *testing.T) {
+	for name, store := range map[string]TransactionStore{
+		"load":   &faultStore{base: NewMemoryTransactionStore(), getErr: errors.New("load failed")},
+		"append": &faultStore{base: NewMemoryTransactionStore(), casErr: errors.New("append failed")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := newTestEnv(t, store)
+			data := []byte("planning-journal")
+			release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/planning-" + name, Version: "1.0.0"}, data, nil)
+			addRelease(env, release, data)
+			if _, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, release.Identity)); !IsFailure(err, FailureUnavailable) {
+				t.Fatalf("planning persistence failure lost: %v", err)
+			}
+		})
 	}
 }

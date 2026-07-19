@@ -95,6 +95,7 @@ export interface RegistryTransactionEvent { readonly state: RegistryTransactionS
 export interface RegistryTransaction {
   readonly plan: RegistryInstallPlan;
   readonly events: readonly RegistryTransactionEvent[];
+  readonly planning_request?: RegistryPlanInput;
   readonly committed_revision?: string;
   readonly operation_result_id?: string;
   readonly runtime_input?:Readonly<Record<string,unknown>>;
