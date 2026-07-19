@@ -267,10 +267,22 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 	if err != nil {
 		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "current authoring grant could not be resolved"))
 	}
-	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"}
-	decision, rejection := c.runtime.Authorize(ctx, AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: head.Revision, Evaluation: evaluation, Proof: &input.AuthoringProof})
+	// The caller proof is intentionally a proposal proof. Validate that exact
+	// revision/impact/grant evidence first, then independently require current
+	// apply authority. This lets a proposal-only agent preview safely without
+	// turning the preview token into an apply permit.
+	proposalEvaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "propose"}
+	proposalDecision, rejection := c.runtime.Authorize(ctx, AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: head.Revision, Evaluation: proposalEvaluation, Proof: &input.AuthoringProof})
 	if rejection != nil {
 		return c.abandonPending(ctx, input, rejection)
+	}
+	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"}
+	decision, rejection := c.runtime.Authorize(ctx, AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: head.Revision, Evaluation: evaluation})
+	if rejection != nil || decision.AccessFingerprint != proposalDecision.AccessFingerprint || !reflect.DeepEqual(decision.RequiredCapabilities, proposalDecision.RequiredCapabilities) {
+		if rejection != nil {
+			return c.abandonPending(ctx, input, rejection)
+		}
+		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring decision changed between proposal and apply"))
 	}
 	if rejection := c.checkCancellation(ctx, input); rejection != nil {
 		return c.finalRejected(ctx, input, rejection, decision, prepared.AuthoringImpact)

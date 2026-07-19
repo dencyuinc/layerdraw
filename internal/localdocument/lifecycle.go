@@ -90,10 +90,13 @@ type Host struct {
 	authority *localAuthority
 	workbench *runtimeWorkbench
 	mu        sync.Mutex
-	metadata  lifecycleMetadata
-	sessions  map[runtimeprotocol.RuntimeSessionID]*Session
-	autosaves map[runtimeprotocol.RuntimeSessionID]func()
-	closed    bool
+	// delegationMu serializes durable delegation snapshots independently from
+	// session lifecycle locking.
+	delegationMu sync.Mutex
+	metadata     lifecycleMetadata
+	sessions     map[runtimeprotocol.RuntimeSessionID]*Session
+	autosaves    map[runtimeprotocol.RuntimeSessionID]func()
+	closed       bool
 }
 
 type lifecycleMetadata struct {
@@ -118,6 +121,14 @@ type Session struct {
 	working       port.WorkingDocument
 	sourceInput   engineendpoint.LocalSource
 	closed        bool
+	delegationID  string
+}
+
+func (h *Host) accessContext(ctx context.Context, session *Session) context.Context {
+	if session != nil && session.delegationID != "" {
+		return withDelegation(ctx, session.delegationID)
+	}
+	return ctx
 }
 
 type ExternalChange struct {
@@ -234,7 +245,11 @@ func New(config Config) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	authority := newLocalAuthorityForActor(config.Clock, config.Random, actor)
+	delegations, err := loadDelegations(config.Root)
+	if err != nil {
+		return nil, err
+	}
+	authority := newLocalAuthorityWithDelegations(config.Clock, config.Random, actor, delegations)
 	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]func(){}}
 	metadata, err := host.loadMetadata()
 	if err != nil {
@@ -489,6 +504,7 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 	if closed {
 		return runtimeprotocol.RuntimeCommitResult{}, errors.New("session is closed or unknown")
 	}
+	ctx = h.accessContext(ctx, input.Session)
 	if input.Trigger == "" {
 		input.Trigger = runtimeprotocol.CommitTriggerExplicitSave
 	}
@@ -543,7 +559,7 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 	if err != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, err
 	}
-	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"}
+	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "propose"}
 	decision, authorizationRejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: input.Session.Open.Session.Scope, CurrentRevision: current, Evaluation: evaluation})
 	if authorizationRejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, authorizationRejection

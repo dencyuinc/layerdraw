@@ -130,11 +130,15 @@
       "description": "The single Access input used for local full-authoring and restricted-host decisions alike.",
       "properties": {
         "authoring_impact": {"$ref": "https://schemas.layerdraw.dev/semantic/v1#/$defs/AuthoringImpact"},
+        "base_revision_digest": {
+          "$ref": "https://schemas.layerdraw.dev/protocol-common/v1#/$defs/Digest",
+          "description": "Host-owned digest of the complete canonical committed revision used for preview or publication."
+        },
         "grant_snapshot": {"$ref": "#/$defs/AuthoringGrantSnapshot"},
         "host_operation_impacts": {"type": "array", "items": {"$ref": "#/$defs/HostOperationImpact"}, "maxItems": 64},
         "request_intent": {"type": "string", "enum": ["apply", "preview", "propose", "publish"]}
       },
-      "required": ["request_intent", "host_operation_impacts", "grant_snapshot"],
+      "required": ["request_intent", "base_revision_digest", "host_operation_impacts", "grant_snapshot"],
       "additionalProperties": false,
       "x-layerdraw-unique-array-keys": [{"array": "host_operation_impacts", "property": "impact_digest"}]
     },

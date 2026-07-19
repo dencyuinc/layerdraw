@@ -67,6 +67,7 @@ func (h *Host) Preview(ctx context.Context, input runtimeprotocol.PreviewOperati
 	if err != nil {
 		return runtimeprotocol.PreviewOperationsResult{}, err
 	}
+	ctx = h.accessContext(ctx, session)
 	current := session.Open.CommittedRevision
 	if input.OperationBatch.DocumentID != current.DocumentID || !sameCommittedRevision(input.OperationBatch.BaseRevision, current) || input.OperationBatch.ExpectedDefinitionHash != current.DefinitionHash {
 		return runtimeprotocol.PreviewOperationsResult{}, port.ErrConflict
@@ -81,7 +82,7 @@ func (h *Host) Preview(ctx context.Context, input runtimeprotocol.PreviewOperati
 	if err != nil {
 		return runtimeprotocol.PreviewOperationsResult{}, err
 	}
-	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"}
+	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "propose"}
 	decision, rejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: current, Evaluation: evaluation})
 	if rejection != nil {
 		return runtimeprotocol.PreviewOperationsResult{}, rejection
@@ -110,6 +111,7 @@ func (h *Host) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitIn
 	if err != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, err
 	}
+	ctx = h.accessContext(ctx, session)
 	if change, detectErr := h.detectExternalChange(ctx, session); detectErr != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, detectErr
 	} else if change != nil {
@@ -239,6 +241,7 @@ func (h *Host) StageAsset(ctx context.Context, input runtimeprotocol.StageAssetI
 	if err != nil {
 		return runtimeprotocol.StageAssetResult{}, err
 	}
+	ctx = h.accessContext(ctx, session)
 	ref := input.ContentBlob
 	if ref.Lifetime != protocolcommon.BlobLifetimeRequest || ref.Size != protocolcommon.CanonicalUint64(strconv.Itoa(len(contents))) {
 		return runtimeprotocol.StageAssetResult{}, port.ErrConflict

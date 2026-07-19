@@ -24,13 +24,21 @@ import (
 var fullAuthoringCapabilities = accesscore.FullAuthoringCapabilities()
 
 type localAuthority struct {
-	clock  port.Clock
-	actor  accessprotocol.ActorRef
-	access accesscore.Evaluator
-	random io.Reader
-	mu     sync.RWMutex
-	scopes map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope
-	issued map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time
+	clock            port.Clock
+	actor            accessprotocol.ActorRef
+	access           accesscore.Evaluator
+	random           io.Reader
+	mu               sync.RWMutex
+	scopes           map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope
+	issued           map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time
+	delegations      *accesscore.DelegationStore
+	agentPermissions map[protocolcommon.Digest]accesscore.AgentPermissions
+}
+
+type delegationContextKey struct{}
+
+func withDelegation(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, delegationContextKey{}, id)
 }
 
 func newLocalAuthority(clock port.Clock, random io.Reader) *localAuthority {
@@ -38,10 +46,27 @@ func newLocalAuthority(clock port.Clock, random io.Reader) *localAuthority {
 }
 
 func newLocalAuthorityForActor(clock port.Clock, random io.Reader, actor accessprotocol.ActorRef) *localAuthority {
+	return newLocalAuthorityWithDelegations(clock, random, actor, accesscore.NewDelegationStore())
+}
+
+func newLocalAuthorityWithDelegations(clock port.Clock, random io.Reader, actor accessprotocol.ActorRef, delegations *accesscore.DelegationStore) *localAuthority {
 	if random == nil {
 		random = rand.Reader
 	}
-	return &localAuthority{clock: clock, actor: actor, access: accesscore.Evaluator{Clock: clock}, random: random, scopes: map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope{}, issued: map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time{}}
+	return &localAuthority{clock: clock, actor: actor, access: accesscore.Evaluator{Clock: clock}, random: random, scopes: map[runtimeprotocol.DocumentID]runtimeprotocol.RuntimeScope{}, issued: map[runtimeprotocol.DocumentID]protocolcommon.Rfc3339Time{}, delegations: delegations, agentPermissions: map[protocolcommon.Digest]accesscore.AgentPermissions{}}
+}
+
+func (a *localAuthority) delegationStore() *accesscore.DelegationStore {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.delegations
+}
+
+func (a *localAuthority) replaceDelegationStore(store *accesscore.DelegationStore) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.delegations = store
+	a.agentPermissions = map[protocolcommon.Digest]accesscore.AgentPermissions{}
 }
 
 func (a *localAuthority) add(documentID runtimeprotocol.DocumentID) runtimeprotocol.RuntimeScope {
@@ -78,7 +103,7 @@ func (a *localAuthority) ResolveScope(_ context.Context, documentID runtimeproto
 	return scope, nil
 }
 
-func (a *localAuthority) ResolveGrant(_ context.Context, scope runtimeprotocol.RuntimeScope) (accessprotocol.AuthoringGrantSnapshot, accessprotocol.AuthoringGrantSummary, error) {
+func (a *localAuthority) ResolveGrant(ctx context.Context, scope runtimeprotocol.RuntimeScope) (accessprotocol.AuthoringGrantSnapshot, accessprotocol.AuthoringGrantSummary, error) {
 	resolved, err := a.ResolveScope(context.Background(), scope.DocumentID)
 	if err != nil || resolved != scope {
 		return accessprotocol.AuthoringGrantSnapshot{}, accessprotocol.AuthoringGrantSummary{}, port.ErrConflict
@@ -90,11 +115,31 @@ func (a *localAuthority) ResolveGrant(_ context.Context, scope runtimeprotocol.R
 	summary := accessprotocol.AuthoringGrantSummary{AccessFingerprint: scope.AccessFingerprint, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: append([]semantic.AuthoringCapability(nil), fullAuthoringCapabilities...), PolicyEtag: digestJSON(struct {
 		Scope runtimeprotocol.RuntimeScope `json:"scope"`
 	}{scope})}
+	if id, _ := ctx.Value(delegationContextKey{}).(string); id != "" {
+		agent, permissions, err := a.delegationStore().Grant(grant, id, a.clock.Now())
+		if err != nil {
+			return accessprotocol.AuthoringGrantSnapshot{}, accessprotocol.AuthoringGrantSummary{}, err
+		}
+		a.mu.Lock()
+		a.agentPermissions[*agent.AgentDelegationDigest] = permissions
+		a.mu.Unlock()
+		grant = agent
+		summary.AccessFingerprint, summary.GrantedCapabilities, summary.ExpiresAt = agent.AccessFingerprint, append([]semantic.AuthoringCapability(nil), agent.GrantedCapabilities...), agent.ExpiresAt
+	}
 	return grant, summary, nil
 }
 
-func (a *localAuthority) Evaluate(_ context.Context, input accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error) {
-	return a.access.Evaluate(context.Background(), input)
+func (a *localAuthority) Evaluate(ctx context.Context, input accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error) {
+	if input.GrantSnapshot.ActorRef.Kind == "agent" && input.GrantSnapshot.AgentDelegationDigest != nil {
+		a.mu.RLock()
+		permissions, ok := a.agentPermissions[*input.GrantSnapshot.AgentDelegationDigest]
+		a.mu.RUnlock()
+		if !ok {
+			return accessprotocol.AuthoringDecision{}, accesscore.ErrGrantStale
+		}
+		return a.access.EvaluateWithContext(ctx, input, accesscore.EvaluationContext{CurrentAccessFingerprint: input.GrantSnapshot.AccessFingerprint, AgentPermissions: &permissions})
+	}
+	return a.access.Evaluate(ctx, input)
 }
 
 func (a *localAuthority) EvaluateStateQuery(_ context.Context, input port.StateQueryAuthorizationInput) (port.StateQueryAuthorizationDecision, error) {

@@ -1426,6 +1426,29 @@ func TestCoordinatorAuthorizationFailureAbandonsReservation(t *testing.T) {
 	}
 }
 
+func TestCoordinatorSeparatesProposalProofFromApplyAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*coordinatorHost)
+	}{
+		{name: "apply denied", configure: func(host *coordinatorHost) { host.denyApply = true }},
+		{name: "apply impact changed", configure: func(host *coordinatorHost) { host.mismatchApply = true }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, rt := newCoordinatorFixture(t)
+			test.configure(host)
+			opened := openCoordinatorFixture(t, rt)
+			result, rejection := rt.CommitOperations(context.Background(), commitFixture(opened.Session, host))
+			if rejection == nil || !reflect.DeepEqual(result, runtimeprotocol.RuntimeCommitResult{}) {
+				t.Fatalf("result=%+v rejection=%v", result, rejection)
+			}
+			if host.publishCalls != 0 {
+				t.Fatalf("apply rejection published %d times", host.publishCalls)
+			}
+		})
+	}
+}
+
 func TestCoordinatorRetryRejectsUnboundEvaluationEvidence(t *testing.T) {
 	host, rt := newCoordinatorFixture(t)
 	opened := openCoordinatorFixture(t, rt)
@@ -1595,6 +1618,7 @@ type coordinatorHost struct {
 	externalStage                                                                           port.ExternalFileStage
 	externalReceipt                                                                         port.ExternalFileReceipt
 	advancePhases                                                                           []runtimeprotocol.RecoveryPhase
+	denyApply, mismatchApply                                                                bool
 }
 
 func TestCoordinatorExternalMaterializationSuccessPendingAndFailure(t *testing.T) {
@@ -1975,6 +1999,13 @@ func (h *coordinatorHost) NewID(context.Context, port.IdentityKind) (string, err
 func (h *coordinatorHost) Evaluate(_ context.Context, input accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error) {
 	decision := h.decision
 	decision.AuthoringImpactDigest = &input.AuthoringImpact.ImpactDigest
+	if input.RequestIntent == "apply" && h.denyApply {
+		decision.Outcome = accessprotocol.AuthoringDecisionOutcomeDeny
+		decision.Diagnostics = []protocolcommon.ProtocolDiagnostic{{Code: "authoring.agent_scope_denied", Message: "apply denied", Related: []protocolcommon.ProtocolDiagnosticRelated{}, Severity: protocolcommon.ProtocolDiagnosticSeverityError}}
+	}
+	if input.RequestIntent == "apply" && h.mismatchApply {
+		decision.RequiredCapabilities = []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite}
+	}
 	return decision, nil
 }
 

@@ -6,15 +6,118 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
+
+func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *testing.T) {
+	root := t.TempDir()
+	source := "project p \"P\" {}\n"
+	project := writeProject(t, root, source)
+	scheduler := &fakeScheduler{}
+	host := newTestHost(t, filepath.Join(root, "data"), func(config *Config) { config.Scheduler = scheduler })
+	owner, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := runtimeprotocol.RuntimeOperationBatch{DocumentID: owner.Session.Open.CommittedRevision.DocumentID, BaseRevision: owner.Session.Open.CommittedRevision, ExpectedDefinitionHash: owner.Session.Open.CommittedRevision.DefinitionHash, Operations: createLayerBatch(t, "delegated"), Preconditions: allPreconditions(t, source)}
+	ownerPreview, err := host.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: owner.Session.Open.Session, OperationBatch: batch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := host.config.Clock.Now()
+	delegate := func(id string, apply bool) accesscore.Delegation {
+		t.Helper()
+		record, err := host.DelegateAgent(context.Background(), owner.Session, accesscore.Delegation{
+			ID: id, ParentActor: accessprotocol.ActorRef{ActorID: "local-owner", Kind: "user"}, Agent: accessprotocol.ActorRef{ActorID: "agent-" + id, Kind: "agent"},
+			DocumentID: string(batch.DocumentID), LocalScopeID: owner.Session.Open.Session.Scope.LocalScopeID,
+			AuthoringCapabilities: append([]semantic.AuthoringCapability(nil), ownerPreview.PreviewEvaluation.AuthoringImpact.RequiredCapabilities...),
+			Permissions:           accesscore.AgentPermissions{Read: true, Propose: true, Apply: apply}, IssuedAt: clock, ExpiresAt: clock.Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+
+	proposalOnly := delegate("proposal-only", false)
+	proposalSession, err := host.OpenDelegatedDocument(context.Background(), batch.DocumentID, proposalOnly.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposalPreview, err := host.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: proposalSession.Session.Open.Session, OperationBatch: batch})
+	if err != nil || proposalPreview.PreviewEvaluation.AuthoringDecision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow {
+		t.Fatalf("proposal preview=%+v err=%v", proposalPreview, err)
+	}
+	proposalCommit := runtimeprotocol.RuntimeCommitInput{Session: proposalSession.Session.Open.Session, OperationID: "proposal_only_commit", IdempotencyKey: "proposal_only_idempotency", OperationBatch: batch, AuthoringProof: proposalPreview.AuthoringProof, Trigger: runtimeprotocol.CommitTriggerExplicitSave}
+	if _, err := host.Commit(context.Background(), proposalCommit); err == nil {
+		t.Fatal("proposal-only delegation applied a commit")
+	}
+	if inspected, err := host.Inspect(owner.Session.Open.Session); err != nil || inspected.CommittedRevision != owner.Session.Open.CommittedRevision {
+		t.Fatalf("proposal-only path changed head: %+v err=%v", inspected, err)
+	}
+
+	applicable := delegate("applicable", true)
+	applySession, err := host.OpenDelegatedDocument(context.Background(), batch.DocumentID, applicable.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyPreview, err := host.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: applySession.Session.Open.Session, OperationBatch: batch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetBytes := []byte("delegated asset")
+	assetSum := sha256.Sum256(assetBytes)
+	asset := protocolcommon.BlobRef{BlobID: "asset/delegated.bin", Digest: protocolcommon.Digest("sha256:" + hex.EncodeToString(assetSum[:])), Lifetime: protocolcommon.BlobLifetimeRequest, MediaType: "application/octet-stream", Size: protocolcommon.CanonicalUint64("15")}
+	if _, err := host.StageAsset(context.Background(), runtimeprotocol.StageAssetInput{Session: applySession.Session.Open.Session, ContentBlob: asset}, assetBytes); err == nil {
+		t.Fatal("graph-only delegation bypassed asset authorization")
+	}
+	autosaveResult := make(chan AutosaveResult, 1)
+	if err := host.ScheduleAutosave(context.Background(), SaveInput{Session: applySession.Session, Operations: batch.Operations, Preconditions: batch.Preconditions, OperationID: "revoked_autosave", IdempotencyKey: "revoked_autosave_idempotency"}, autosaveResult); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RevokeDelegation(applicable.ID); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.fireLast()
+	select {
+	case result := <-autosaveResult:
+		t.Fatalf("revoked pending autosave ran: %+v", result)
+	default:
+	}
+	applyCommit := runtimeprotocol.RuntimeCommitInput{Session: applySession.Session.Open.Session, OperationID: "revoked_commit", IdempotencyKey: "revoked_commit_idempotency", OperationBatch: batch, AuthoringProof: applyPreview.AuthoringProof, Trigger: runtimeprotocol.CommitTriggerExplicitSave}
+	if _, err := host.SaveRuntime(context.Background(), applyCommit); err == nil {
+		t.Fatal("revoked delegation bypassed SaveRuntime authorization")
+	}
+
+	live := delegate("restart-live", true)
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newTestHost(t, filepath.Join(root, "data"), nil)
+	if _, err := restarted.OpenDelegatedDocument(context.Background(), batch.DocumentID, applicable.ID); !errors.Is(err, accesscore.ErrGrantStale) {
+		t.Fatalf("revoked delegation resurrected after restart: %v", err)
+	}
+	if _, err := restarted.OpenDelegatedDocument(context.Background(), batch.DocumentID, live.ID); err != nil {
+		t.Fatalf("live delegation was not durable: %v", err)
+	}
+	info, err := os.Stat(delegationPath(filepath.Join(root, "data")))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("delegation file mode=%v err=%v", info.Mode().Perm(), err)
+	}
+}
 
 func TestProtocolPreviewCommitAndStateSnapshot(t *testing.T) {
 	root := t.TempDir()

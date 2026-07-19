@@ -48,6 +48,25 @@ type LocalActorResolver interface {
 	ResolveLocalActor(context.Context) (accessprotocol.ActorRef, error)
 }
 
+// PlatformIdentityAdapter is implemented by the Desktop/native host. Access
+// receives only an opaque stable local-user identifier, never OS credentials.
+type PlatformIdentityAdapter interface {
+	StableLocalUserID(context.Context) (string, error)
+}
+
+type PlatformLocalActorResolver struct{ Adapter PlatformIdentityAdapter }
+
+func (r PlatformLocalActorResolver) ResolveLocalActor(ctx context.Context) (accessprotocol.ActorRef, error) {
+	if r.Adapter == nil {
+		return accessprotocol.ActorRef{}, errors.New("access: platform identity adapter is missing")
+	}
+	id, err := r.Adapter.StableLocalUserID(ctx)
+	if err != nil {
+		return accessprotocol.ActorRef{}, fmt.Errorf("access: resolve platform identity: %w", err)
+	}
+	return StaticLocalActorResolver{ActorID: id}.ResolveLocalActor(ctx)
+}
+
 type StaticLocalActorResolver struct{ ActorID string }
 
 func (r StaticLocalActorResolver) ResolveLocalActor(context.Context) (accessprotocol.ActorRef, error) {
@@ -62,7 +81,10 @@ func (r StaticLocalActorResolver) ResolveLocalActor(context.Context) (accessprot
 }
 
 type AgentPermissions struct {
-	Read, Export, Propose, Apply bool
+	Read    bool `json:"read"`
+	Export  bool `json:"export"`
+	Propose bool `json:"propose"`
+	Apply   bool `json:"apply"`
 }
 
 func (p AgentPermissions) Allows(intent string) bool {
@@ -79,22 +101,72 @@ func (p AgentPermissions) Allows(intent string) bool {
 }
 
 type Delegation struct {
-	ID                    string
-	ParentActor           accessprotocol.ActorRef
-	Agent                 accessprotocol.ActorRef
-	DocumentID            string
-	LocalScopeID          string
-	AuthoringCapabilities []semantic.AuthoringCapability
-	Permissions           AgentPermissions
-	IssuedAt              time.Time
-	ExpiresAt             time.Time
-	Generation            uint64
+	ID                    string                         `json:"id"`
+	ParentActor           accessprotocol.ActorRef        `json:"parent_actor"`
+	Agent                 accessprotocol.ActorRef        `json:"agent"`
+	DocumentID            string                         `json:"document_id"`
+	LocalScopeID          string                         `json:"local_scope_id"`
+	AuthoringCapabilities []semantic.AuthoringCapability `json:"authoring_capabilities"`
+	Permissions           AgentPermissions               `json:"permissions"`
+	IssuedAt              time.Time                      `json:"issued_at"`
+	ExpiresAt             time.Time                      `json:"expires_at"`
+	Generation            uint64                         `json:"generation"`
 }
 
 type DelegationStore struct {
 	mu      sync.RWMutex
 	records map[string]Delegation
 	revoked map[string]uint64
+}
+
+type DelegationSnapshot struct {
+	Version int               `json:"version"`
+	Records []Delegation      `json:"records"`
+	Revoked map[string]uint64 `json:"revoked"`
+}
+
+func NewDelegationStoreFromSnapshot(snapshot DelegationSnapshot) (*DelegationStore, error) {
+	store := NewDelegationStore()
+	if snapshot.Version != 1 || snapshot.Revoked == nil {
+		return nil, ErrInvalidDelegation
+	}
+	for _, record := range snapshot.Records {
+		if record.ID == "" || record.Generation == 0 || record.Agent.Kind != "agent" {
+			return nil, ErrInvalidDelegation
+		}
+		if _, exists := store.records[record.ID]; exists {
+			return nil, ErrInvalidDelegation
+		}
+		store.records[record.ID] = cloneDelegation(record)
+	}
+	for id, generation := range snapshot.Revoked {
+		if record, ok := store.records[id]; !ok || generation == 0 || generation > record.Generation {
+			return nil, ErrInvalidDelegation
+		}
+		store.revoked[id] = generation
+	}
+	return store, nil
+}
+
+func (s *DelegationStore) Snapshot() DelegationSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := DelegationSnapshot{Version: 1, Records: make([]Delegation, 0, len(s.records)), Revoked: map[string]uint64{}}
+	for _, record := range s.records {
+		result.Records = append(result.Records, cloneDelegation(record))
+	}
+	sort.Slice(result.Records, func(i, j int) bool { return result.Records[i].ID < result.Records[j].ID })
+	for id, generation := range s.revoked {
+		result.Revoked[id] = generation
+	}
+	return result
+}
+
+// Clone returns an independent store suitable for staging a durable update.
+// Hosts can persist the clone before atomically making it authoritative, so a
+// failed disk write never leaves restart behavior different from live state.
+func (s *DelegationStore) Clone() (*DelegationStore, error) {
+	return NewDelegationStoreFromSnapshot(s.Snapshot())
 }
 
 func NewDelegationStore() *DelegationStore {
@@ -257,11 +329,12 @@ func (e Evaluator) EvaluateWithContext(_ context.Context, input accessprotocol.E
 		code = "authoring.constraint_denied"
 	}
 	evaluation := struct {
-		Authoring *protocolcommon.Digest  `json:"authoring_impact_digest,omitempty"`
-		Host      []protocolcommon.Digest `json:"host_operation_impact_digests"`
-		Access    protocolcommon.Digest   `json:"access_fingerprint"`
-		Intent    string                  `json:"request_intent"`
-	}{Host: hostDigests, Access: input.GrantSnapshot.AccessFingerprint, Intent: input.RequestIntent}
+		Authoring    *protocolcommon.Digest                `json:"authoring_impact_digest,omitempty"`
+		BaseRevision protocolcommon.Digest                 `json:"base_revision_digest"`
+		Host         []protocolcommon.Digest               `json:"host_operation_impact_digests"`
+		Grant        accessprotocol.AuthoringGrantSnapshot `json:"grant_snapshot"`
+		Intent       string                                `json:"request_intent"`
+	}{BaseRevision: input.BaseRevisionDigest, Host: hostDigests, Grant: input.GrantSnapshot, Intent: input.RequestIntent}
 	if input.AuthoringImpact != nil {
 		evaluation.Authoring = &input.AuthoringImpact.ImpactDigest
 	}

@@ -18,6 +18,35 @@ type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
 
+type testPlatformIdentity struct {
+	id  string
+	err error
+}
+
+func (a testPlatformIdentity) StableLocalUserID(context.Context) (string, error) { return a.id, a.err }
+
+type testReadSource struct{ records []Record }
+
+func (s testReadSource) ReadUnredacted(context.Context, ReadRequest) ([]Record, error) {
+	return s.records, nil
+}
+
+type observingReadSource struct {
+	records []Record
+	called  bool
+}
+
+func (s *observingReadSource) ReadUnredacted(context.Context, ReadRequest) ([]Record, error) {
+	s.called = true
+	return s.records, nil
+}
+
+type testPolicyResolver struct{ policy ProjectionPolicy }
+
+func (r testPolicyResolver) ResolveProjectionPolicy(context.Context, ReadRequest) (ProjectionPolicy, error) {
+	return r.policy, nil
+}
+
 func TestStableLocalOwnerAndFullAuthoringPreset(t *testing.T) {
 	resolver := StaticLocalActorResolver{ActorID: "os-user-S-1-5-21"}
 	first, err := resolver.ResolveLocalActor(context.Background())
@@ -47,6 +76,24 @@ func TestStableLocalOwnerAndFullAuthoringPreset(t *testing.T) {
 	}
 	if permissions.Allows("unknown") || (AgentPermissions{}).Allows("preview") {
 		t.Fatal("unknown or unreadable intent allowed")
+	}
+}
+
+func TestPlatformLocalActorResolverUsesOnlyStableHostIdentity(t *testing.T) {
+	resolver := PlatformLocalActorResolver{Adapter: testPlatformIdentity{id: "platform-user-501"}}
+	first, err := resolver.ResolveLocalActor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := resolver.ResolveLocalActor(context.Background())
+	if err != nil || first != second || first.Kind != "user" || first.ActorID != "platform-user-501" {
+		t.Fatalf("platform actor=%+v %+v err=%v", first, second, err)
+	}
+	if _, err := (PlatformLocalActorResolver{}).ResolveLocalActor(context.Background()); err == nil {
+		t.Fatal("missing platform adapter accepted")
+	}
+	if _, err := (PlatformLocalActorResolver{Adapter: testPlatformIdentity{err: errors.New("platform unavailable")}}).ResolveLocalActor(context.Background()); err == nil {
+		t.Fatal("platform identity failure ignored")
 	}
 }
 
@@ -238,8 +285,12 @@ func TestGraphConstraintsConsumeEngineFactsWithoutLDLParsing(t *testing.T) {
 func TestProjectionRedactsBeforeEveryTrustedBoundary(t *testing.T) {
 	records := []Record{{SubjectAddress: "entity:visible", Fields: map[string]any{"public": "ok", "secret": "do-not-leak"}}, {SubjectAddress: "entity:hidden", Fields: map[string]any{"public": "hidden"}}}
 	policy := ProjectionPolicy{Read: true, Export: true, AllowedSubjects: map[string]bool{"entity:visible": true}, AllowedFields: map[string]bool{"public": true}}
+	boundary, err := NewReadBoundary(testReadSource{records}, testPolicyResolver{policy})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, surface := range []ReadSurface{SurfaceSearch, SurfaceQuery, SurfaceReview, SurfaceExport, SurfaceMCP} {
-		projected, err := Project(surface, policy, records)
+		projected, err := boundary.Read(context.Background(), ReadRequest{Surface: surface, Actor: accessprotocol.ActorRef{ActorID: "agent", Kind: "agent"}, DocumentID: "doc"})
 		if err != nil || len(projected) != 1 || projected[0].Fields["public"] != "ok" {
 			t.Fatalf("%s projection = %+v %v", surface, projected, err)
 		}
@@ -248,8 +299,121 @@ func TestProjectionRedactsBeforeEveryTrustedBoundary(t *testing.T) {
 		}
 	}
 	policy.Export = false
-	if _, err := Project(SurfaceExport, policy, records); !errors.Is(err, ErrReadDenied) {
+	boundary, _ = NewReadBoundary(testReadSource{records}, testPolicyResolver{policy})
+	if _, err := boundary.Read(context.Background(), ReadRequest{Surface: SurfaceExport}); !errors.Is(err, ErrReadDenied) {
 		t.Fatalf("export scope = %v", err)
+	}
+	deniedSource := &observingReadSource{records: records}
+	boundary, _ = NewReadBoundary(deniedSource, testPolicyResolver{ProjectionPolicy{Read: false}})
+	if _, err := boundary.Read(context.Background(), ReadRequest{Surface: SurfaceMCP}); !errors.Is(err, ErrReadDenied) || deniedSource.called {
+		t.Fatalf("denied raw read: called=%v err=%v", deniedSource.called, err)
+	}
+
+	nested := map[string]any{"value": "original"}
+	boundary, _ = NewReadBoundary(testReadSource{[]Record{{SubjectAddress: "entity", Fields: map[string]any{"nested": nested}}}}, testPolicyResolver{ProjectionPolicy{Read: true}})
+	projected, err := boundary.Read(context.Background(), ReadRequest{Surface: SurfaceQuery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected[0].Fields["nested"].(map[string]any)["value"] = "changed"
+	if nested["value"] != "original" {
+		t.Fatal("projected nested value aliases unredacted source")
+	}
+}
+
+func TestDelegationSnapshotSurvivesRestartAndPreservesRevocation(t *testing.T) {
+	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
+	parent := ownerGrant(now, []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite})
+	store := NewDelegationStore()
+	for _, id := range []string{"live", "revoked"} {
+		_, err := store.Delegate(parent, Delegation{ID: id, ParentActor: parent.ActorRef, Agent: accessprotocol.ActorRef{ActorID: "agent-" + id, Kind: "agent"}, DocumentID: parent.HostDocumentID, LocalScopeID: parent.LocalScopeID, AuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite}, Permissions: AgentPermissions{Read: true, Propose: true}, IssuedAt: now, ExpiresAt: now.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Revoke("revoked"); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewDelegationStoreFromSnapshot(store.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := restarted.Grant(parent, "live", now.Add(time.Minute)); err != nil {
+		t.Fatalf("live delegation after restart: %v", err)
+	}
+	if _, _, err := restarted.Grant(parent, "revoked", now.Add(time.Minute)); !errors.Is(err, ErrGrantStale) {
+		t.Fatalf("revoked delegation after restart: %v", err)
+	}
+	clone, err := restarted.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clone.Revoke("live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Resolve("live", now); err != nil {
+		t.Fatalf("clone mutation changed source store: %v", err)
+	}
+	for _, invalid := range []DelegationSnapshot{{}, {Version: 1}, {Version: 1, Records: []Delegation{{ID: "bad"}}, Revoked: map[string]uint64{}}, {Version: 1, Records: store.Snapshot().Records, Revoked: map[string]uint64{"missing": 1}}} {
+		if _, err := NewDelegationStoreFromSnapshot(invalid); !errors.Is(err, ErrInvalidDelegation) {
+			t.Fatalf("invalid snapshot accepted: %+v err=%v", invalid, err)
+		}
+	}
+}
+
+func TestEvaluationDigestBindsRevisionPolicyAndDelegation(t *testing.T) {
+	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
+	grant := ownerGrant(now, []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite})
+	base := accessprotocol.EvaluateAuthoringInput{BaseRevisionDigest: testDigest("revision-a"), GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "preview"}
+	evaluator := Evaluator{Clock: fixedClock{now}}
+	first, err := evaluator.Evaluate(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertChanged := func(name string, input accessprotocol.EvaluateAuthoringInput) {
+		t.Helper()
+		decision, err := evaluator.Evaluate(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.EvaluationDigest == first.EvaluationDigest {
+			t.Fatalf("%s was not bound into evaluation digest", name)
+		}
+	}
+	changedRevision := base
+	changedRevision.BaseRevisionDigest = testDigest("revision-b")
+	assertChanged("revision", changedRevision)
+	changedPolicy := base
+	changedPolicy.GrantSnapshot.PolicyRefs = []accessprotocol.PolicyRef{{PolicyID: "policy", PolicyDigest: testDigest("policy"), PolicyVersion: "2"}}
+	assertChanged("policy", changedPolicy)
+	changedDelegation := base
+	delegation := testDigest("delegation")
+	changedDelegation.GrantSnapshot.AgentDelegationDigest = &delegation
+	changedDelegation.GrantSnapshot.ActorRef = accessprotocol.ActorRef{ActorID: "agent", Kind: "agent"}
+	assertChanged("delegation", changedDelegation)
+}
+
+func TestHostOperationImpactDerivesClosedCapabilities(t *testing.T) {
+	scope := accessprotocol.HostResourceScope{DocumentID: "doc", LocalScopeID: "local"}
+	cases := []struct {
+		kind accessprotocol.HostOperationKind
+		want semantic.AuthoringCapability
+	}{
+		{accessprotocol.HostOperationKindAssetDelete, semantic.AuthoringCapabilityAssetWrite},
+		{accessprotocol.HostOperationKindAssetPersist, semantic.AuthoringCapabilityAssetWrite},
+		{accessprotocol.HostOperationKindAssetStage, semantic.AuthoringCapabilityAssetWrite},
+		{accessprotocol.HostOperationKindPackageTransaction, semantic.AuthoringCapabilityPackageManage},
+		{accessprotocol.HostOperationKindBackendConfigure, semantic.AuthoringCapabilityProjectConfigure},
+		{accessprotocol.HostOperationKindProjectConfigure, semantic.AuthoringCapabilityProjectConfigure},
+	}
+	for _, test := range cases {
+		impact, err := HostOperationImpact(test.kind, "apply", scope, []string{"z", "a"})
+		if err != nil || !reflect.DeepEqual(impact.RequiredAuthoringCapabilities, []semantic.AuthoringCapability{test.want}) || !reflect.DeepEqual(impact.ResourceRefs, []string{"a", "z"}) || impact.ImpactDigest == "" {
+			t.Fatalf("%s impact = %+v err=%v", test.kind, impact, err)
+		}
+	}
+	if _, err := HostOperationImpact(accessprotocol.HostOperationKind("unknown"), "apply", scope, nil); err == nil {
+		t.Fatal("unknown host operation accepted")
 	}
 }
 

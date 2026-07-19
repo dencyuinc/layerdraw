@@ -172,12 +172,20 @@ func (r *Runtime) Authorize(ctx context.Context, request AuthorizationRequest) (
 		return accessprotocol.AuthoringDecision{}, rejection
 	}
 	input := request.Evaluation
+	expectedRevisionDigest := digestValue(request.CurrentRevision)
+	if input.BaseRevisionDigest != "" && input.BaseRevisionDigest != expectedRevisionDigest {
+		return accessprotocol.AuthoringDecision{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid, "authoring evaluation is bound to another revision")
+	}
+	// Runtime is the trusted owner of the revision binding. Callers cannot
+	// self-assert it and older in-process consumers remain source compatible.
+	input.BaseRevisionDigest = expectedRevisionDigest
 	if _, err := accessprotocol.EncodeEvaluateAuthoringInput(input); err != nil {
 		return accessprotocol.AuthoringDecision{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid, "authoring decision input is malformed")
 	}
 	input = canonicalizeAuthoringInput(input)
 	grant := input.GrantSnapshot
-	if grant.HostDocumentID != string(request.Scope.DocumentID) || grant.LocalScopeID != request.Scope.LocalScopeID || grant.AccessFingerprint != request.Scope.AccessFingerprint || !sameOptionalString(grant.OrganizationScopeID, request.Scope.OrganizationScopeID) {
+	accessMismatch := grant.AccessFingerprint != request.Scope.AccessFingerprint && (grant.ActorRef.Kind != "agent" || grant.AgentDelegationDigest == nil)
+	if grant.HostDocumentID != string(request.Scope.DocumentID) || grant.LocalScopeID != request.Scope.LocalScopeID || accessMismatch || !sameOptionalString(grant.OrganizationScopeID, request.Scope.OrganizationScopeID) {
 		return accessprotocol.AuthoringDecision{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring grant scope does not match the Runtime request")
 	}
 	for _, impact := range input.HostOperationImpacts {

@@ -484,6 +484,9 @@ func TestAuthorizeRejectsEveryStaleOrMalformedBoundary(t *testing.T) {
 		{"malformed input", func(request *AuthorizationRequest, _ *accessprotocol.AuthoringDecision) {
 			request.Evaluation = accessprotocol.EvaluateAuthoringInput{}
 		}, nil, runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid},
+		{"revision digest mismatch", func(request *AuthorizationRequest, _ *accessprotocol.AuthoringDecision) {
+			request.Evaluation.BaseRevisionDigest = digest('f')
+		}, nil, runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid},
 		{"grant scope", func(request *AuthorizationRequest, _ *accessprotocol.AuthoringDecision) {
 			request.Evaluation.GrantSnapshot.HostDocumentID = "doc_other"
 		}, nil, runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale},
@@ -584,6 +587,9 @@ func TestAuthorizeUsesInjectedDecisionForFullLocalGrantAndBindsAllImpacts(t *tes
 	if decider.calls != 1 {
 		t.Fatalf("full local grant bypassed injected decision port: calls=%d", decider.calls)
 	}
+	if decider.input.BaseRevisionDigest != digestValue(testRevision()) {
+		t.Fatalf("Access input revision digest=%s want=%s", decider.input.BaseRevisionDigest, digestValue(testRevision()))
+	}
 	decider.decision.HostOperationImpactDigests = []protocolcommon.Digest{digest('6')}
 	if _, rejection := runtime.Authorize(context.Background(), request); rejection == nil || rejection.Code != runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid {
 		t.Fatalf("rejection=%v", rejection)
@@ -593,6 +599,37 @@ func TestAuthorizeUsesInjectedDecisionForFullLocalGrantAndBindsAllImpacts(t *tes
 	decider.decision.AuthoringImpactDigest = &wrongEngineImpact
 	if _, rejection := runtime.Authorize(context.Background(), request); rejection == nil || rejection.Code != runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid {
 		t.Fatalf("Engine impact rejection=%v", rejection)
+	}
+}
+
+func TestHostOperationImpactValidationFailsClosedAcrossScopeAndMapping(t *testing.T) {
+	organization := "org"
+	scope := runtimeprotocol.RuntimeScope{DocumentID: "doc", LocalScopeID: "local", OrganizationScopeID: &organization}
+	base := accessprotocol.HostOperationImpact{Action: "stage", ImpactDigest: digest('1'), OperationKind: accessprotocol.HostOperationKindAssetStage, RequiredAuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityAssetWrite}, ResourceRefs: []string{}, ResourceScope: accessprotocol.HostResourceScope{DocumentID: "doc", LocalScopeID: "local", OrganizationScopeID: &organization}}
+	if !validHostOperationImpact(base, scope) {
+		t.Fatal("valid host impact rejected")
+	}
+	for _, mutate := range []func(*accessprotocol.HostOperationImpact){
+		func(impact *accessprotocol.HostOperationImpact) { impact.ResourceScope.DocumentID = "other" },
+		func(impact *accessprotocol.HostOperationImpact) { impact.ResourceScope.LocalScopeID = "other" },
+		func(impact *accessprotocol.HostOperationImpact) { impact.ResourceScope.OrganizationScopeID = nil },
+		func(impact *accessprotocol.HostOperationImpact) { impact.RequiredAuthoringCapabilities = nil },
+		func(impact *accessprotocol.HostOperationImpact) {
+			impact.RequiredAuthoringCapabilities = append(impact.RequiredAuthoringCapabilities, semantic.AuthoringCapabilityGraphWrite)
+		},
+		func(impact *accessprotocol.HostOperationImpact) {
+			impact.RequiredAuthoringCapabilities[0] = semantic.AuthoringCapabilityGraphWrite
+		},
+		func(impact *accessprotocol.HostOperationImpact) {
+			impact.OperationKind = accessprotocol.HostOperationKind("unknown")
+		},
+	} {
+		candidate := base
+		candidate.RequiredAuthoringCapabilities = append([]semantic.AuthoringCapability(nil), base.RequiredAuthoringCapabilities...)
+		mutate(&candidate)
+		if validHostOperationImpact(candidate, scope) {
+			t.Fatalf("invalid host impact accepted: %+v", candidate)
+		}
 	}
 }
 
