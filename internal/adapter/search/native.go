@@ -214,23 +214,25 @@ func (e *NativeExecutor) InspectPhysicalIndex(ctx context.Context, ref port.Phys
 type LadybugPlan struct {
 	Statements       []LadybugStatement     `json:"statements"`
 	PhysicalIndex    *port.PhysicalIndexRef `json:"physical_index,omitempty"`
-	PhysicalEvidence *LadybugIndexEvidence  `json:"physical_evidence,omitempty"`
+	PhysicalEvidence []LadybugIndexEvidence `json:"physical_evidence,omitempty"`
 }
 type LadybugStatement struct {
 	Query      string                   `json:"query"`
 	Parameters map[string]port.RawValue `json:"parameters"`
 }
 type LadybugIndexEvidence struct {
-	TableName      string   `json:"table_name"`
-	IndexName      string   `json:"index_name"`
-	IndexType      string   `json:"index_type"`
-	PropertyNames  []string `json:"property_names"`
-	ContentColumns []string `json:"content_columns"`
-	PrimaryKey     string   `json:"primary_key"`
+	TableName       string   `json:"table_name"`
+	IndexName       string   `json:"index_name"`
+	IndexType       string   `json:"index_type"`
+	PropertyNames   []string `json:"property_names"`
+	ContentColumns  []string `json:"content_columns"`
+	PrimaryKey      string   `json:"primary_key"`
+	AllowNonPrimary bool     `json:"allow_non_primary,omitempty"`
+	Relation        bool     `json:"relation,omitempty"`
 }
 type LadybugSession interface {
 	ExecutePrepared(context.Context, LadybugStatement, port.ExecutionLimits, port.RowSink) error
-	ApplyIndex(context.Context, []LadybugStatement, port.PhysicalIndexRef, LadybugIndexEvidence, port.ExecutionLimits, port.RowSink) error
+	ApplyIndex(context.Context, []LadybugStatement, *port.PhysicalIndexRef, []LadybugIndexEvidence, port.ExecutionLimits, port.RowSink) error
 	Interrupt()
 	InspectIndex(context.Context, port.PhysicalIndexRef) error
 }
@@ -256,10 +258,10 @@ func (d *LadybugNativeDriver) ExecutePlan(ctx context.Context, kind port.PlanKin
 		return BackendExecution{}, ErrInvalidPlan
 	}
 	if kind == port.PlanSearchIndex {
-		if plan.PhysicalIndex == nil || plan.PhysicalEvidence == nil {
+		if plan.PhysicalIndex == nil || len(plan.PhysicalEvidence) == 0 {
 			return BackendExecution{}, ErrInvalidPlan
 		}
-		if err := d.session.ApplyIndex(ctx, plan.Statements, *plan.PhysicalIndex, *plan.PhysicalEvidence, limits, sink); err != nil {
+		if err := d.session.ApplyIndex(ctx, plan.Statements, plan.PhysicalIndex, plan.PhysicalEvidence, limits, sink); err != nil {
 			return BackendExecution{}, err
 		}
 		return BackendExecution{Complete: true, PhysicalIndex: plan.PhysicalIndex}, nil

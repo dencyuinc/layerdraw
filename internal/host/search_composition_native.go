@@ -19,16 +19,19 @@ import (
 // the one shared Wails/MCP Desktop search surface.
 type NativeDesktopSearchComposition struct {
 	DesktopSearchComposition
-	ladybug *searchadapter.GoLadybugSession
+	ladybug      *searchadapter.GoLadybugSession
+	engineSearch *enginesearch.Adapter
 }
 
 type DesktopNativeConfig struct {
 	LocalConfig
-	DatabasePath, FTSExtensionPath string
-	PlanKey, SearchDocumentKey     []byte
-	EmbeddingProfile               port.EmbeddingProfile
-	LocalModelSeed                 []byte
-	MaxRows, MaxBytes              int
+	DatabasePath, FTSExtensionPath         string
+	VectorExtensionPath, AlgoExtensionPath string
+	PlanKey, SearchDocumentKey             []byte
+	EmbeddingProfile                       port.EmbeddingProfile
+	LocalAccessProjectionDigest            string
+	LocalModelSeed                         []byte
+	MaxRows, MaxBytes                      int
 }
 
 // OpenDesktopNativeEndpoint is the production in-process composition root used
@@ -44,12 +47,18 @@ func OpenDesktopNativeEndpoint(config DesktopNativeConfig) (*Endpoint, *NativeDe
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, nil, err
 	}
-	engineSearch := enginesearch.New(engineFacade.Compiler())
-	search, err := OpenDesktopNativeSearchComposition(DesktopSearchConfig{Root: config.Root, Engine: engineSearch, DocumentProducer: engineSearch, PlanKey: config.PlanKey, SearchDocumentKey: config.SearchDocumentKey, EmbeddingProfile: config.EmbeddingProfile, LocalModelSeed: config.LocalModelSeed, PlanProtocolVersion: "v1", MaxRows: config.MaxRows, MaxBytes: config.MaxBytes}, config.DatabasePath, config.FTSExtensionPath)
+	projection, err := enginesearch.NewLocalAccessProjection(config.LocalAccessProjectionDigest)
 	if err != nil {
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, nil, err
 	}
+	engineSearch := enginesearch.New(engineFacade.Compiler(), projection)
+	search, err := openDesktopNativeSearchComposition(DesktopSearchConfig{Root: config.Root, Engine: engineSearch, DocumentProducer: engineSearch, PlanKey: config.PlanKey, SearchDocumentKey: config.SearchDocumentKey, EmbeddingProfile: config.EmbeddingProfile, LocalModelSeed: config.LocalModelSeed, PlanProtocolVersion: "v1", MaxRows: config.MaxRows, MaxBytes: config.MaxBytes, Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...)}, config.DatabasePath, []string{config.FTSExtensionPath, config.VectorExtensionPath, config.AlgoExtensionPath}, true)
+	if err != nil {
+		_ = localHost.Shutdown(context.Background())
+		return nil, nil, nil, err
+	}
+	search.engineSearch = engineSearch
 	endpoint, err := New(Config{LocalHost: localHost, Engine: engineFacade, Search: search.Surface})
 	if err != nil {
 		search.Close()
@@ -63,17 +72,33 @@ func OpenDesktopNativeEndpoint(config DesktopNativeConfig) (*Endpoint, *NativeDe
 	return endpoint, search, shutdown, nil
 }
 
+func (c *NativeDesktopSearchComposition) CorpusEngine() *enginesearch.Adapter {
+	if c == nil {
+		return nil
+	}
+	return c.engineSearch
+}
+
 // OpenDesktopNativeSearchComposition wires the actual go-ladybug v0.17 native
 // binding. Callers cannot substitute a non-production Ladybug session or claim
 // a backend version that was not read from the opened database.
 func OpenDesktopNativeSearchComposition(config DesktopSearchConfig, databasePath, ftsExtensionPath string) (*NativeDesktopSearchComposition, error) {
+	return openDesktopNativeSearchComposition(config, databasePath, []string{ftsExtensionPath}, false)
+}
+
+func openDesktopNativeSearchComposition(config DesktopSearchConfig, databasePath string, extensionPaths []string, requireOfficialProfile bool) (*NativeDesktopSearchComposition, error) {
 	if config.Ladybug != nil || config.BackendVersion != "" {
 		return nil, fmt.Errorf("native Desktop composition owns Ladybug configuration")
 	}
-	if ftsExtensionPath == "" {
-		return nil, fmt.Errorf("native Desktop composition requires a bundled FTS extension")
+	for _, extensionPath := range extensionPaths {
+		if extensionPath == "" {
+			return nil, fmt.Errorf("native Desktop composition requires bundled extensions")
+		}
 	}
-	ladybug, err := searchadapter.OpenGoLadybugSessionWithFTS(databasePath, ftsExtensionPath)
+	if requireOfficialProfile && len(extensionPaths) != 3 {
+		return nil, fmt.Errorf("native Desktop composition requires FTS, VECTOR, and ALGO extensions")
+	}
+	ladybug, err := searchadapter.OpenGoLadybugSessionWithExtensions(databasePath, extensionPaths)
 	if err != nil {
 		return nil, err
 	}

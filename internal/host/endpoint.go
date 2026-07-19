@@ -45,12 +45,13 @@ var runtimeOperations = []string{
 }
 
 type Endpoint struct {
-	host       *localdocument.Host
-	engine     *engineendpoint.CompileDispatcher
-	descriptor *engineendpoint.Descriptor
-	negotiated *engineendpoint.NegotiatedContext
-	release    protocolcommon.ReleaseVersion
-	search     ConsumerSearchSurface
+	host             *localdocument.Host
+	engine           *engineendpoint.CompileDispatcher
+	descriptor       *engineendpoint.Descriptor
+	negotiated       *engineendpoint.NegotiatedContext
+	release          protocolcommon.ReleaseVersion
+	search           ConsumerSearchSurface
+	searchOperations map[string]bool
 
 	mu         sync.Mutex
 	handshaken bool
@@ -90,12 +91,22 @@ func New(config Config) (*Endpoint, error) {
 	if config.LocalHost == nil || config.Engine == nil {
 		return nil, errors.New("host composition requires Runtime and Engine")
 	}
-	return &Endpoint{host: config.LocalHost, engine: config.Engine.Dispatcher(), descriptor: config.Engine.Descriptor(), negotiated: config.Engine.Negotiated(), release: protocolcommon.ReleaseVersion(config.Engine.ReleaseVersion()), search: config.Search}, nil
+	operations := map[string]bool{}
+	if config.Search != nil {
+		manifest, err := config.Search.Capabilities(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("host Search capability derivation failed: %w", err)
+		}
+		operations[OperationSearch] = manifest.SearchAvailable
+		operations[OperationExecuteQuery] = manifest.QueryAvailable
+		operations[OperationAnalyzeGraph] = manifest.AnalysisAvailable
+	}
+	return &Endpoint{host: config.LocalHost, engine: config.Engine.Dispatcher(), descriptor: config.Engine.Descriptor(), negotiated: config.Engine.Negotiated(), release: protocolcommon.ReleaseVersion(config.Engine.ReleaseVersion()), search: config.Search, searchOperations: operations}, nil
 }
 
 func (e *Endpoint) Supports(operation string) bool {
-	if e.search != nil && (operation == OperationSearch || operation == OperationExecuteQuery || operation == OperationAnalyzeGraph) {
-		return true
+	if operation == OperationSearch || operation == OperationExecuteQuery || operation == OperationAnalyzeGraph {
+		return e.searchOperations[operation]
 	}
 	for _, candidate := range runtimeOperations {
 		if operation == candidate {
@@ -136,11 +147,9 @@ func (e *Endpoint) Handshake(_ context.Context, control []byte) (engineendpoint.
 		manifest.Operations[operation] = protocolcommon.OperationCapability{Enabled: true, ProtocolVersion: "1.0"}
 	}
 	if e.search != nil {
-		if searchManifest, searchErr := e.search.Capabilities(context.Background()); searchErr == nil {
-			manifest.Operations[OperationSearch] = protocolcommon.OperationCapability{Enabled: searchManifest.SearchAvailable, ProtocolVersion: "1.0"}
-			manifest.Operations[OperationExecuteQuery] = protocolcommon.OperationCapability{Enabled: searchManifest.QueryAvailable, ProtocolVersion: "1.0"}
-			manifest.Operations[OperationAnalyzeGraph] = protocolcommon.OperationCapability{Enabled: searchManifest.AnalysisAvailable, ProtocolVersion: "1.0"}
-		}
+		manifest.Operations[OperationSearch] = protocolcommon.OperationCapability{Enabled: e.searchOperations[OperationSearch], ProtocolVersion: "1.0"}
+		manifest.Operations[OperationExecuteQuery] = protocolcommon.OperationCapability{Enabled: e.searchOperations[OperationExecuteQuery], ProtocolVersion: "1.0"}
+		manifest.Operations[OperationAnalyzeGraph] = protocolcommon.OperationCapability{Enabled: e.searchOperations[OperationAnalyzeGraph], ProtocolVersion: "1.0"}
 	}
 	manifest.ManifestEtag = runtimeManifestETag(manifest)
 	enabled := func(id protocolcommon.CapabilityID) bool {
@@ -241,6 +250,9 @@ func (p *runtimePlan) ExecuteDispatch(ctx context.Context, source engineendpoint
 }
 
 func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control []byte) (engineendpoint.DispatchPlan, *engineendpoint.DispatchResponse, error) {
+	if (operation == OperationSearch || operation == OperationExecuteQuery || operation == OperationAnalyzeGraph) && !e.Supports(operation) {
+		return nil, nil, errors.New("Search operation capability unavailable")
+	}
 	plan := &runtimePlan{endpoint: e, operation: operation}
 	switch operation {
 	case OperationSearch:

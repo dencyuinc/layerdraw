@@ -350,18 +350,26 @@ func TestBuildRejectsPackagePostinstall(t *testing.T) {
 	}
 }
 
-func TestDesktopFTSComponentBindsPackagedExtensionDigest(t *testing.T) {
+func TestDesktopExtensionComponentsBindPackagedDigests(t *testing.T) {
 	digest := strings.Repeat("a", 64)
-	ref := "pkg:generic/ladybugdb-fts-extension@0.17.0"
-	component := cyclonedxComponent{Type: "library", BOMRef: ref, Name: "LadybugDB FTS extension", Version: "0.17.0", PURL: ref, Hashes: []cyclonedxHash{{Algorithm: "SHA-256", Content: digest}}, Licenses: licenses("MIT")}
-	closure := cyclonedxAuthority{Components: map[string]cyclonedxComponent{ref: component}}
-	authority := desktopNativeAuthority{LadybugVersion: "0.17.0", FTSSHA256: digest}
-	if err := validateDesktopFTSComponent(closure, authority); err != nil {
+	components := map[string]cyclonedxComponent{}
+	for _, item := range []struct{ ref, name string }{
+		{"pkg:generic/ladybugdb-fts-extension@0.17.0", "LadybugDB FTS extension"},
+		{"pkg:generic/ladybugdb-vector-extension@0.17.0", "LadybugDB Vector extension"},
+		{"pkg:generic/ladybugdb-algo-extension@0.17.0", "LadybugDB Algo extension"},
+	} {
+		components[item.ref] = cyclonedxComponent{Type: "library", BOMRef: item.ref, Name: item.name, Version: "0.17.0", PURL: item.ref, Hashes: []cyclonedxHash{{Algorithm: "SHA-256", Content: digest}}, Licenses: licenses("MIT")}
+	}
+	closure := cyclonedxAuthority{Components: components}
+	authority := desktopNativeAuthority{LadybugVersion: "0.17.0", FTSSHA256: digest, VectorSHA256: digest, AlgoSHA256: digest}
+	if err := validateDesktopExtensionComponents(closure, authority); err != nil {
 		t.Fatal(err)
 	}
+	ref := "pkg:generic/ladybugdb-fts-extension@0.17.0"
+	component := closure.Components[ref]
 	component.Hashes[0].Content = strings.Repeat("b", 64)
 	closure.Components[ref] = component
-	if err := validateDesktopFTSComponent(closure, authority); err == nil {
+	if err := validateDesktopExtensionComponents(closure, authority); err == nil {
 		t.Fatal("forged FTS component digest was accepted")
 	}
 }
@@ -438,6 +446,10 @@ func releaseFixture(t *testing.T, packageVersion string) (string, string, string
 	}
 	ftsExtension := []byte("verified extension")
 	ftsDigest := sha256.Sum256(ftsExtension)
+	vectorExtension := []byte("verified vector extension")
+	vectorDigest := sha256.Sum256(vectorExtension)
+	algoExtension := []byte("verified algo extension")
+	algoDigest := sha256.Sum256(algoExtension)
 	desktopSBOM := cycloneDXBytesWithDependency(t, "layerdraw-host-native", testVersion, "LadybugDB FTS extension", "0.17.0", "MIT")
 	var desktopDocument cyclonedxDocument
 	if err := json.Unmarshal(desktopSBOM, &desktopDocument); err != nil {
@@ -448,6 +460,17 @@ func releaseFixture(t *testing.T, packageVersion string) (string, string, string
 	desktopDocument.Components[0].Hashes = []cyclonedxHash{{Algorithm: "SHA-256", Content: hex.EncodeToString(ftsDigest[:])}}
 	desktopDocument.Dependencies[0].DependsOn[0] = desktopDocument.Components[0].BOMRef
 	desktopDocument.Dependencies[1].Ref = desktopDocument.Components[0].BOMRef
+	for _, extension := range []struct{ name, purl, digest string }{
+		{"LadybugDB Vector extension", "pkg:generic/ladybugdb-vector-extension@0.17.0", hex.EncodeToString(vectorDigest[:])},
+		{"LadybugDB Algo extension", "pkg:generic/ladybugdb-algo-extension@0.17.0", hex.EncodeToString(algoDigest[:])},
+	} {
+		component := desktopDocument.Components[0]
+		component.Name, component.BOMRef, component.PURL = extension.name, extension.purl, extension.purl
+		component.Hashes = []cyclonedxHash{{Algorithm: "SHA-256", Content: extension.digest}}
+		desktopDocument.Components = append(desktopDocument.Components, component)
+		desktopDocument.Dependencies[0].DependsOn = append(desktopDocument.Dependencies[0].DependsOn, extension.purl)
+		desktopDocument.Dependencies = append(desktopDocument.Dependencies, cyclonedxDependency{Ref: extension.purl})
+	}
 	desktopSBOM, err := canonicalJSON(desktopDocument)
 	if err != nil {
 		t.Fatal(err)
@@ -455,23 +478,29 @@ func releaseFixture(t *testing.T, packageVersion string) (string, string, string
 	if err := os.WriteFile(filepath.Join(desktopLegal, "layerdraw-host-native.cdx.json"), desktopSBOM, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(desktopLegal, "THIRD_PARTY_NOTICES.txt"), []byte("LadybugDB FTS extension 0.17.0\nLicense: MIT\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(desktopLegal, "THIRD_PARTY_NOTICES.txt"), []byte("LadybugDB FTS extension 0.17.0\nLicense: MIT\nLadybugDB Vector extension 0.17.0\nLicense: MIT\nLadybugDB Algo extension 0.17.0\nLicense: MIT\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	desktopAuthority, err := json.Marshal(desktopNativeAuthority{
-		LadybugVersion: "0.17.0",
-		Platform:       runtime.GOOS + "/" + runtime.GOARCH,
-		FTSExtension:   "libfts.lbug_extension",
-		FTSSHA256:      hex.EncodeToString(ftsDigest[:]),
-		Host:           "layerdraw-host-native",
+		LadybugVersion:  "0.17.0",
+		Platform:        runtime.GOOS + "/" + runtime.GOARCH,
+		FTSExtension:    "libfts.lbug_extension",
+		FTSSHA256:       hex.EncodeToString(ftsDigest[:]),
+		VectorExtension: "libvector.lbug_extension",
+		VectorSHA256:    hex.EncodeToString(vectorDigest[:]),
+		AlgoExtension:   "libalgo.lbug_extension",
+		AlgoSHA256:      hex.EncodeToString(algoDigest[:]),
+		Host:            "layerdraw-host-native",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeArchive(t, filepath.Join(output, "artifacts", "layerdraw-host-native-"+testVersion+".tar.gz"), map[string][]byte{
-		"layerdraw-host-native": []byte("#!/bin/sh\nprintf 'layerdraw-host " + testVersion + " (test)\\n'\n"),
-		"libfts.lbug_extension": ftsExtension,
-		"ladybug-native.json":   append(desktopAuthority, '\n'),
+		"layerdraw-host-native":    []byte("#!/bin/sh\nprintf 'layerdraw-host " + testVersion + " (test)\\n'\n"),
+		"libfts.lbug_extension":    ftsExtension,
+		"libvector.lbug_extension": vectorExtension,
+		"libalgo.lbug_extension":   algoExtension,
+		"ladybug-native.json":      append(desktopAuthority, '\n'),
 	})
 	writePackage(t, filepath.Join(output, "artifacts", "layerdraw-protocol-"+testVersion+".tgz"), packageAuthority{Name: "@layerdraw/protocol", Version: packageVersion, License: "Apache-2.0"}, nil)
 	wasmSBOM := cycloneDXBytesWithDependency(t, "@layerdraw/engine-wasm", testVersion, "example.com/wasm", "v2.0.0", "BSD-3-Clause")

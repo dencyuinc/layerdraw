@@ -148,9 +148,15 @@ type SearchIndexStore interface {
 // SearchDocumentInput contains only Engine-produced, Access-filtered text.
 // Providers never receive LDL, source trees, policy decisions, or corpus APIs.
 type SearchDocumentInput struct {
-	SubjectAddress string
-	ContentHash    string
-	Text           string
+	SubjectAddress      string
+	SubjectKind         string
+	OwnerAddress        string
+	GraphEntryAddresses []string
+	TypeAddresses       []string
+	LayerAddresses      []string
+	ContentHash         string
+	LexicalText         string
+	Text                string
 }
 
 // SearchDocumentBatch is opaque evidence issued after Engine generation and
@@ -178,7 +184,15 @@ type SearchDocumentBatchRequest struct {
 	Snapshot               DocumentSnapshotRef
 	AccessProjectionDigest string
 	EmbeddingProfileDigest string
-	Documents              []SearchDocumentInput
+	Corpus                 SearchCorpusRef
+}
+
+// SearchCorpusRef identifies a retained Engine generation that was bound to a
+// snapshot by the trusted document/Access pipeline. It contains no corpus text.
+type SearchCorpusRef struct {
+	EndpointInstanceID string
+	DocumentHandle     string
+	Generation         uint64
 }
 
 type EmbeddingProfile struct {
@@ -254,11 +268,19 @@ type SearchProfile struct {
 	LexicalCandidateLimit  int
 	SemanticCandidateLimit int
 	MaxHits                int
+	RRFK                   int
+	LexicalWeight          float64
+	SemanticWeight         float64
 }
 
 type PreparedSearch struct {
-	Plan        ExecutionPlan
-	QueryDigest string
+	Plan           ExecutionPlan
+	QueryDigest    string
+	Mode           string
+	MaxHits        int
+	RRFK           int
+	LexicalWeight  float64
+	SemanticWeight float64
 }
 
 type CompleteSearchInput struct {

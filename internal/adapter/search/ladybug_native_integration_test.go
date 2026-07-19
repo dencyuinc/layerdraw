@@ -71,7 +71,7 @@ func TestGoLadybugApplyIndexLeavesMismatchedPhysicalIndexUntrusted(t *testing.T)
 		t.Fatal(err)
 	}
 	ref := port.PhysicalIndexRef{IdentityDigest: "sha256:" + string(make([]byte, 64)), ContentDigest: digest + "-mismatch", BackendVersion: backend}
-	err = session.ApplyIndex(context.Background(), []LadybugStatement{{Query: testCreateFTS}}, ref, evidence, port.ExecutionLimits{MaxRows: 16, MaxBytes: 4096}, discardRowSink{})
+	err = session.ApplyIndex(context.Background(), []LadybugStatement{{Query: testCreateFTS}}, &ref, []LadybugIndexEvidence{evidence}, port.ExecutionLimits{MaxRows: 16, MaxBytes: 4096}, discardRowSink{})
 	if !errors.Is(err, ErrPhysicalIndexMissing) {
 		t.Fatalf("expected mismatched digest rejection, got %v", err)
 	}
@@ -86,15 +86,15 @@ func buildPhysicalFTSIndex(t *testing.T, databasePath string) port.PhysicalIndex
 	t.Helper()
 	session := createFTSFixture(t, databasePath)
 	evidence := testFTSEvidence()
-	digest, backend, err := session.inspectEvidenceLocked(context.Background(), evidence)
+	_, backend, err := session.inspectEvidenceLocked(context.Background(), evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := session.controlLocked("CALL DROP_FTS_INDEX('SearchDoc', 'search_doc_fts')"); err != nil {
 		t.Fatal(err)
 	}
-	ref := port.PhysicalIndexRef{IdentityDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111", ContentDigest: digest, BackendVersion: backend}
-	if err := session.ApplyIndex(context.Background(), []LadybugStatement{{Query: testCreateFTS}}, ref, evidence, port.ExecutionLimits{MaxRows: 16, MaxBytes: 4096}, discardRowSink{}); err != nil {
+	ref := port.PhysicalIndexRef{IdentityDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111", BackendVersion: backend}
+	if err := session.ApplyIndex(context.Background(), []LadybugStatement{{Query: testCreateFTS}}, &ref, []LadybugIndexEvidence{evidence}, port.ExecutionLimits{MaxRows: 16, MaxBytes: 4096}, discardRowSink{}); err != nil {
 		t.Fatal(err)
 	}
 	session.Close()
@@ -118,6 +118,24 @@ func createFTSFixture(t *testing.T, databasePath string) *GoLadybugSession {
 		}
 	}
 	return session
+}
+
+func TestGoLadybugExecutesBoundedProjectedPageRank(t *testing.T) {
+	extensions := []string{testFTSExtension(t), filepath.Join(filepath.Dir(testFTSExtension(t)), "libvector.lbug_extension"), filepath.Join(filepath.Dir(testFTSExtension(t)), "libalgo.lbug_extension")}
+	session, err := OpenGoLadybugSessionWithExtensions(filepath.Join(t.TempDir(), "algo.lbug"), extensions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	for _, query := range []string{"CREATE NODE TABLE SearchNode(id STRING, PRIMARY KEY(id))", "CREATE REL TABLE SearchEdge(FROM SearchNode TO SearchNode, id STRING)", "CREATE (:SearchNode {id: 'a'}), (:SearchNode {id: 'b'})", "MATCH (a:SearchNode {id: 'a'}), (b:SearchNode {id: 'b'}) CREATE (a)-[:SearchEdge {id: 'ab'}]->(b)", `CALL PROJECT_GRAPH('test_graph', {'SearchNode': 'n.id IN ["a","b"]'}, {'SearchEdge': 'true'})`} {
+		if err := session.controlLocked(query); err != nil {
+			t.Fatalf("query=%s: %v", query, err)
+		}
+	}
+	rows, err := session.queryLocked("CALL page_rank('test_graph') RETURN node.id AS address, rank AS metric_value ORDER BY address")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
 }
 
 func openFTSSession(t *testing.T, databasePath string) *GoLadybugSession {

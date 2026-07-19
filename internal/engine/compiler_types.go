@@ -257,6 +257,7 @@ type (
 	SourceMap              = index.SourceMapV1
 	SemanticIndex          = index.SemanticIndexV1
 	SearchDocument         = index.SearchDocument
+	SearchField            = index.SearchField
 )
 
 // LosslessSyntaxTree retains every loaded module's source, CST, and tokens.

@@ -154,8 +154,9 @@ func TestSearchServiceCapabilitiesAreSharedAndEmbeddingIsTypedOptional(t *testin
 	missing := allCapabilities()
 	missing.Primitives = missing.Primitives[1:]
 	s = NewSearchService(&searchEngineStub{}, executorStub{capability: missing}, indexStub{}, nil)
-	if _, err := s.Capabilities(context.Background()); !errors.Is(err, ErrSearchCapabilityMissing) {
-		t.Fatal(err)
+	missingManifest, err := s.Capabilities(context.Background())
+	if err != nil || missingManifest.QueryAvailable || !missingManifest.SearchAvailable || !missingManifest.AnalysisAvailable {
+		t.Fatalf("manifest=%#v err=%v", missingManifest, err)
 	}
 }
 

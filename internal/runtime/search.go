@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"slices"
 
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -57,12 +56,24 @@ func (s *SearchService) Capabilities(ctx context.Context) (SearchCapabilityManif
 	if err != nil {
 		return SearchCapabilityManifest{}, fmt.Errorf("%w: adapter capability unavailable", ErrSearchBackendFailed)
 	}
-	for _, required := range port.RequiredSearchPrimitives {
-		if !slices.Contains(capability.Primitives, required) {
-			return SearchCapabilityManifest{}, fmt.Errorf("%w: required primitive %s", ErrSearchCapabilityMissing, required)
+	has := func(required ...port.SearchPrimitive) bool {
+		for _, value := range required {
+			found := false
+			for _, primitive := range capability.Primitives {
+				found = found || primitive == value
+			}
+			if !found {
+				return false
+			}
 		}
+		return true
 	}
-	manifest := SearchCapabilityManifest{QueryAvailable: true, SearchAvailable: true, AnalysisAvailable: true, Adapter: capability}
+	manifest := SearchCapabilityManifest{
+		QueryAvailable:    has(port.PrimitiveStructuralMatch, port.PrimitiveTypedPredicate),
+		SearchAvailable:   has(port.PrimitiveFTSBM25),
+		AnalysisAvailable: has(port.PrimitivePageRank, port.PrimitiveKCore, port.PrimitiveLouvain, port.PrimitiveSCC, port.PrimitiveWCC),
+		Adapter:           capability,
+	}
 	if s.embedder == nil {
 		manifest.EmbeddingReason = "embedding provider is not configured"
 		return manifest, nil
@@ -72,7 +83,10 @@ func (s *SearchService) Capabilities(ctx context.Context) (SearchCapabilityManif
 		manifest.EmbeddingReason = "embedding provider is unavailable"
 		return manifest, nil
 	}
-	manifest.EmbeddingAvailable = true
+	manifest.EmbeddingAvailable = has(port.PrimitiveVectorHNSW, port.PrimitiveVectorFiltered)
+	if !manifest.EmbeddingAvailable {
+		manifest.EmbeddingReason = "native adapter does not provide vector primitives"
+	}
 	return manifest, nil
 }
 

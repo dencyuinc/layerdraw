@@ -50,11 +50,11 @@ func (s *ladybugSessionStub) ExecutePrepared(_ context.Context, _ LadybugStateme
 	return nil
 }
 func (s *ladybugSessionStub) Interrupt() { s.interrupted = true }
-func (s *ladybugSessionStub) ApplyIndex(_ context.Context, _ []LadybugStatement, ref port.PhysicalIndexRef, _ LadybugIndexEvidence, _ port.ExecutionLimits, _ port.RowSink) error {
+func (s *ladybugSessionStub) ApplyIndex(_ context.Context, _ []LadybugStatement, ref *port.PhysicalIndexRef, _ []LadybugIndexEvidence, _ port.ExecutionLimits, _ port.RowSink) error {
 	if s.physical == nil {
 		s.physical = map[port.PhysicalIndexRef]bool{}
 	}
-	s.physical[ref] = true
+	s.physical[*ref] = true
 	return nil
 }
 func (s *ladybugSessionStub) InspectIndex(_ context.Context, ref port.PhysicalIndexRef) error {
@@ -296,7 +296,7 @@ func TestLadybugDriverAppliesEvidenceAndForwardsLifecycle(t *testing.T) {
 	}
 	ref := port.PhysicalIndexRef{IdentityDigest: "sha256:identity", ContentDigest: "sha256:content", BackendVersion: "0.17.0"}
 	evidence := LadybugIndexEvidence{TableName: "SearchDoc", IndexName: "search_fts", IndexType: "FTS", PropertyNames: []string{"body"}, ContentColumns: []string{"id", "body"}, PrimaryKey: "id"}
-	payload, _ := json.Marshal(LadybugPlan{Statements: []LadybugStatement{{Query: "CALL CREATE_FTS_INDEX(...)"}}, PhysicalIndex: &ref, PhysicalEvidence: &evidence})
+	payload, _ := json.Marshal(LadybugPlan{Statements: []LadybugStatement{{Query: "CALL CREATE_FTS_INDEX(...)"}}, PhysicalIndex: &ref, PhysicalEvidence: []LadybugIndexEvidence{evidence}})
 	execution, err := driver.ExecutePlan(context.Background(), port.PlanSearchIndex, payload, port.ExecutionLimits{MaxRows: 1, MaxBytes: 1}, &boundedSink{maxRows: 1, maxBytes: 1})
 	if err != nil || !execution.Complete || execution.PhysicalIndex == nil || *execution.PhysicalIndex != ref {
 		t.Fatalf("execution=%#v err=%v", execution, err)

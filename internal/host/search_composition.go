@@ -22,6 +22,7 @@ type DesktopSearchConfig struct {
 	LocalModelSeed                      []byte
 	BackendVersion, PlanProtocolVersion string
 	MaxRows, MaxBytes                   int
+	Primitives                          []port.SearchPrimitive
 }
 type DesktopSearchComposition struct {
 	Surface   ConsumerSearchSurface
@@ -48,7 +49,7 @@ func NewDesktopSearchComposition(config DesktopSearchConfig) (DesktopSearchCompo
 	if err != nil {
 		return DesktopSearchComposition{}, err
 	}
-	capability := port.QueryAdapterCapability{AdapterID: "layerdraw.ladybug.native", Backend: "ladybug_native", BackendVersion: config.BackendVersion, PlanProtocolVersion: config.PlanProtocolVersion, Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...), MaxRows: config.MaxRows, MaxBytes: config.MaxBytes}
+	capability := port.QueryAdapterCapability{AdapterID: "layerdraw.ladybug.native", Backend: "ladybug_native", BackendVersion: config.BackendVersion, PlanProtocolVersion: config.PlanProtocolVersion, Primitives: append([]port.SearchPrimitive(nil), config.Primitives...), MaxRows: config.MaxRows, MaxBytes: config.MaxBytes}
 	executor, err := searchadapter.NewNativeExecutor(capability, driver, planVerifier)
 	if err != nil {
 		return DesktopSearchComposition{}, err

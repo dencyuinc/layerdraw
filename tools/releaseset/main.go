@@ -197,11 +197,15 @@ type artifactInput struct {
 }
 
 type desktopNativeAuthority struct {
-	LadybugVersion string `json:"ladybug_version"`
-	Platform       string `json:"platform"`
-	FTSExtension   string `json:"fts_extension"`
-	FTSSHA256      string `json:"fts_sha256"`
-	Host           string `json:"host"`
+	LadybugVersion  string `json:"ladybug_version"`
+	Platform        string `json:"platform"`
+	FTSExtension    string `json:"fts_extension"`
+	FTSSHA256       string `json:"fts_sha256"`
+	VectorExtension string `json:"vector_extension"`
+	VectorSHA256    string `json:"vector_sha256"`
+	AlgoExtension   string `json:"algo_extension"`
+	AlgoSHA256      string `json:"algo_sha256"`
+	Host            string `json:"host"`
 }
 
 func main() {
@@ -477,8 +481,8 @@ func verify(root, output string) error {
 			packages[artifact.ArtifactID] = authority
 		} else if artifact.ArtifactID == "layerdraw-host-native" {
 			archivePath := filepath.Join(output, filepath.FromSlash(artifact.Path))
-			entries := make(map[string][]byte, 3)
-			for _, name := range []string{"layerdraw-host-native", "libfts.lbug_extension", "ladybug-native.json"} {
+			entries := make(map[string][]byte, 5)
+			for _, name := range []string{"layerdraw-host-native", "libfts.lbug_extension", "libvector.lbug_extension", "libalgo.lbug_extension", "ladybug-native.json"} {
 				data, err := readTarFile(archivePath, name)
 				if err != nil || len(data) == 0 {
 					return fmt.Errorf("Desktop native archive is missing %s", name)
@@ -495,11 +499,13 @@ func verify(root, output string) error {
 				return errors.New("Desktop native authority has trailing content")
 			}
 			ftsDigest := sha256.Sum256(entries["libfts.lbug_extension"])
-			if authority.LadybugVersion != "0.17.0" || authority.Platform != runtime.GOOS+"/"+runtime.GOARCH || authority.FTSExtension != "libfts.lbug_extension" || authority.Host != "layerdraw-host-native" || authority.FTSSHA256 != hex.EncodeToString(ftsDigest[:]) {
+			vectorDigest := sha256.Sum256(entries["libvector.lbug_extension"])
+			algoDigest := sha256.Sum256(entries["libalgo.lbug_extension"])
+			if authority.LadybugVersion != "0.17.0" || authority.Platform != runtime.GOOS+"/"+runtime.GOARCH || authority.FTSExtension != "libfts.lbug_extension" || authority.VectorExtension != "libvector.lbug_extension" || authority.AlgoExtension != "libalgo.lbug_extension" || authority.Host != "layerdraw-host-native" || authority.FTSSHA256 != hex.EncodeToString(ftsDigest[:]) || authority.VectorSHA256 != hex.EncodeToString(vectorDigest[:]) || authority.AlgoSHA256 != hex.EncodeToString(algoDigest[:]) {
 				return errors.New("Desktop native authority mismatch")
 			}
-			if err := validateDesktopFTSComponent(closure, authority); err != nil {
-				return errors.New("Desktop FTS extension is not bound to its CycloneDX component")
+			if err := validateDesktopExtensionComponents(closure, authority); err != nil {
+				return errors.New("Desktop extensions are not bound to their CycloneDX components")
 			}
 		} else {
 			versionOutput, err := exec.Command(filepath.Join(output, filepath.FromSlash(artifact.Path)), "--version").CombinedOutput()
@@ -519,10 +525,16 @@ func verify(root, output string) error {
 	return nil
 }
 
-func validateDesktopFTSComponent(closure cyclonedxAuthority, authority desktopNativeAuthority) error {
-	ftsComponent, exists := closure.Components["pkg:generic/ladybugdb-fts-extension@0.17.0"]
-	if !exists || ftsComponent.Name != "LadybugDB FTS extension" || ftsComponent.Version != authority.LadybugVersion || componentLicense(ftsComponent) != "MIT" || len(ftsComponent.Hashes) != 1 || ftsComponent.Hashes[0].Algorithm != "SHA-256" || ftsComponent.Hashes[0].Content != authority.FTSSHA256 {
-		return errors.New("FTS component authority mismatch")
+func validateDesktopExtensionComponents(closure cyclonedxAuthority, authority desktopNativeAuthority) error {
+	for _, expected := range []struct{ purl, name, digest string }{
+		{"pkg:generic/ladybugdb-fts-extension@0.17.0", "LadybugDB FTS extension", authority.FTSSHA256},
+		{"pkg:generic/ladybugdb-vector-extension@0.17.0", "LadybugDB Vector extension", authority.VectorSHA256},
+		{"pkg:generic/ladybugdb-algo-extension@0.17.0", "LadybugDB Algo extension", authority.AlgoSHA256},
+	} {
+		component, exists := closure.Components[expected.purl]
+		if !exists || component.Name != expected.name || component.Version != authority.LadybugVersion || componentLicense(component) != "MIT" || len(component.Hashes) != 1 || component.Hashes[0].Algorithm != "SHA-256" || component.Hashes[0].Content != expected.digest {
+			return errors.New("extension component authority mismatch")
+		}
 	}
 	return nil
 }

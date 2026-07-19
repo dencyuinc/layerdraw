@@ -14,7 +14,7 @@ import (
 type compositionEngine struct{}
 
 func (compositionEngine) ProduceSearchDocumentBatch(_ context.Context, request port.SearchDocumentBatchRequest) (port.SearchDocumentBatch, error) {
-	return port.SearchDocumentBatch{Snapshot: request.Snapshot, AccessProjectionDigest: request.AccessProjectionDigest, EmbeddingProfileDigest: request.EmbeddingProfileDigest, Documents: append([]port.SearchDocumentInput(nil), request.Documents...)}, nil
+	return port.SearchDocumentBatch{Snapshot: request.Snapshot, AccessProjectionDigest: request.AccessProjectionDigest, EmbeddingProfileDigest: request.EmbeddingProfileDigest, Documents: []port.SearchDocumentInput{{SubjectAddress: "trusted", SubjectKind: "entity", ContentHash: "sha256:content", Text: "searchable"}}}, nil
 }
 
 func (compositionEngine) PrepareSearchIndex(context.Context, port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
@@ -47,11 +47,11 @@ func (*compositionLadybug) ExecutePrepared(context.Context, searchadapter.Ladybu
 	return nil
 }
 func (*compositionLadybug) Interrupt() {}
-func (s *compositionLadybug) ApplyIndex(_ context.Context, _ []searchadapter.LadybugStatement, ref port.PhysicalIndexRef, _ searchadapter.LadybugIndexEvidence, _ port.ExecutionLimits, _ port.RowSink) error {
+func (s *compositionLadybug) ApplyIndex(_ context.Context, _ []searchadapter.LadybugStatement, ref *port.PhysicalIndexRef, _ []searchadapter.LadybugIndexEvidence, _ port.ExecutionLimits, _ port.RowSink) error {
 	if s.physical == nil {
 		s.physical = map[port.PhysicalIndexRef]bool{}
 	}
-	s.physical[ref] = true
+	s.physical[*ref] = true
 	return nil
 }
 func (s *compositionLadybug) InspectIndex(_ context.Context, ref port.PhysicalIndexRef) error {
@@ -63,7 +63,7 @@ func (s *compositionLadybug) InspectIndex(_ context.Context, ref port.PhysicalIn
 
 func TestDesktopSearchCompositionProvidesOneWailsMCPSurface(t *testing.T) {
 	profile := port.EmbeddingProfile{ProfileID: "local", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}
-	composition, err := NewDesktopSearchComposition(DesktopSearchConfig{Root: t.TempDir(), Engine: compositionEngine{}, DocumentProducer: compositionEngine{}, Ladybug: &compositionLadybug{}, PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"), EmbeddingProfile: profile, LocalModelSeed: []byte("0123456789012345"), BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096})
+	composition, err := NewDesktopSearchComposition(DesktopSearchConfig{Root: t.TempDir(), Engine: compositionEngine{}, DocumentProducer: compositionEngine{}, Ladybug: &compositionLadybug{}, PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"), EmbeddingProfile: profile, LocalModelSeed: []byte("0123456789012345"), BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096, Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestDesktopSearchCompositionProvidesOneWailsMCPSurface(t *testing.T) {
 	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: "doc", CommittedRevision: "r1", DefinitionHash: "sha256:def"}
 	searchProfile := port.SearchProfile{ProfileID: "default", SpecificationDigest: "sha256:search", MaxHits: 1, LexicalCandidateLimit: 1, SemanticCandidateLimit: 1}
 	identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: searchProfile.ProfileID, SearchProfileDigest: searchProfile.SpecificationDigest, EmbeddingProfileID: profile.ProfileID, EmbeddingProfileDigest: profile.ModelDigest, AccessProjectionDigest: "sha256:access", LadybugBackendVersion: "1", IndexSchemaVersion: "1"}
-	_, err = composition.RebuildIndex(context.Background(), layerruntime.SearchIndexBuildRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity}, port.SearchDocumentBatchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: profile.ModelDigest, Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "sha256:content", Text: "searchable"}}})
+	_, err = composition.RebuildIndex(context.Background(), layerruntime.SearchIndexBuildRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity}, port.SearchDocumentBatchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: profile.ModelDigest, Corpus: port.SearchCorpusRef{EndpointInstanceID: "test", DocumentHandle: "trusted", Generation: 1}})
 	if err == nil {
 		t.Fatal("invalid stub physical plan unexpectedly rebuilt an index")
 	}

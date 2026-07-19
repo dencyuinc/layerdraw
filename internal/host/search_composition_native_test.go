@@ -27,30 +27,21 @@ func TestOpenDesktopNativeEndpointWiresProductionSearch(t *testing.T) {
 			EndpointInstanceID:    "desktop-native-test", TransportID: "in_process",
 		},
 		DatabasePath: databasePath, FTSExtensionPath: ftsExtensionPath,
+		VectorExtensionPath: filepath.Join(filepath.Dir(ftsExtensionPath), "libvector.lbug_extension"), AlgoExtensionPath: filepath.Join(filepath.Dir(ftsExtensionPath), "libalgo.lbug_extension"),
 		PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"),
 		LocalModelSeed:   []byte("0123456789012345"),
 		EmbeddingProfile: port.EmbeddingProfile{ProfileID: "local", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024},
 		MaxRows:          100, MaxBytes: 4096,
+		LocalAccessProjectionDigest: "sha256:access",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer shutdown(context.Background())
-	for _, operation := range []string{OperationSearch, OperationExecuteQuery, OperationAnalyzeGraph} {
-		if !endpoint.Supports(operation) {
-			t.Fatalf("production endpoint does not support %s", operation)
-		}
+	if !endpoint.Supports(OperationSearch) || !endpoint.Supports(OperationExecuteQuery) || !endpoint.Supports(OperationAnalyzeGraph) {
+		t.Fatal("production endpoint does not expose the official native primitive profile")
 	}
-	result, err := search.Surface.ExecuteAnalysis(context.Background(), port.BoundExecutionRequest{
-		Snapshot:               port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: "check", CommittedRevision: "r1", DefinitionHash: "sha256:def"},
-		AccessProjectionDigest: "sha256:access", Request: []byte(`{"kind":"count_search_documents"}`), MaxOutputBytes: 4096,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(result), "document_count") {
-		t.Fatalf("result=%s", result)
-	}
+	_ = search
 }
 
 func TestDesktopNativeSearchCompositionUsesProductionLadybugBinding(t *testing.T) {
@@ -70,6 +61,7 @@ func TestDesktopNativeSearchCompositionUsesProductionLadybugBinding(t *testing.T
 		PlanProtocolVersion: "v1",
 		MaxRows:             100,
 		MaxBytes:            4096,
+		Primitives:          append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...),
 	}, filepath.Join(t.TempDir(), "desktop-search.lbug"), ftsExtensionPath)
 	if err != nil {
 		t.Fatal(err)

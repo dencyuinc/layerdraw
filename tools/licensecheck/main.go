@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -170,23 +171,32 @@ func run(args []string) error {
 		bundledLicense := flags.String("bundled-license", "", "co-distributed native component SPDX license")
 		bundledLicenseFile := flags.String("bundled-license-file", "", "reviewed license text for the co-distributed native component")
 		bundledLicenseSHA256 := flags.String("bundled-license-sha256", "", "reviewed license text SHA-256")
+		var bundledComponents []string
+		flags.Func("bundled-component", "NAME|VERSION|FILE|LICENSE|LICENSE_FILE|LICENSE_SHA256 (repeatable)", func(value string) error {
+			bundledComponents = append(bundledComponents, value)
+			return nil
+		})
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *binary == "" {
 			return errors.New("bundle requires -binary")
 		}
-		extra := bundledModule{}
+		var extras []bundledModule
 		if *bundledName != "" || *bundledVersion != "" || *bundledFile != "" || *bundledLicense != "" || *bundledLicenseFile != "" || *bundledLicenseSHA256 != "" {
-			extra.Review = reviewedGoModule{Module: *bundledName, Version: *bundledVersion, License: *bundledLicense, LicenseFile: *bundledLicenseFile, LicenseSHA256: *bundledLicenseSHA256}
-			extra.PURL = fmt.Sprintf("pkg:generic/%s@%s", strings.ToLower(strings.ReplaceAll(*bundledName, " ", "-")), *bundledVersion)
-			if extra.Review.Module == "" || extra.Review.Version == "" || *bundledFile == "" || extra.Review.License == "" || extra.Review.LicenseFile == "" || extra.Review.LicenseSHA256 == "" {
+			bundledComponents = append(bundledComponents, strings.Join([]string{*bundledName, *bundledVersion, *bundledFile, *bundledLicense, *bundledLicenseFile, *bundledLicenseSHA256}, "|"))
+		}
+		p, err := loadPolicy(*root, *policyPath)
+		if err != nil {
+			return err
+		}
+		for _, specification := range bundledComponents {
+			fields := strings.Split(specification, "|")
+			if len(fields) != 6 || slices.Contains(fields, "") {
 				return errors.New("bundled component metadata is incomplete")
 			}
-			p, err := loadPolicy(*root, *policyPath)
-			if err != nil {
-				return err
-			}
+			extra := bundledModule{Review: reviewedGoModule{Module: fields[0], Version: fields[1], License: fields[3], LicenseFile: fields[4], LicenseSHA256: fields[5]}}
+			extra.PURL = fmt.Sprintf("pkg:generic/%s@%s", strings.ToLower(strings.ReplaceAll(extra.Review.Module, " ", "-")), extra.Review.Version)
 			if err := requireAllowedLicense(extra.Review.License, stringSet(p.AllowedLicenseExpressions), stringSet(p.DeniedLicenseExpressions)); err != nil {
 				return fmt.Errorf("bundled component: %w", err)
 			}
@@ -201,7 +211,7 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("bundled component license: %w", err)
 			}
-			bundledPath := *bundledFile
+			bundledPath := fields[2]
 			if !filepath.IsAbs(bundledPath) {
 				bundledPath = filepath.Join(*root, bundledPath)
 			}
@@ -209,8 +219,9 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("bundled component: %w", err)
 			}
+			extras = append(extras, extra)
 		}
-		return bundleArtifact(*root, *policyPath, *binary, *output, *version, extra)
+		return bundleArtifact(*root, *policyPath, *binary, *output, *version, extras)
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
@@ -811,7 +822,7 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func bundleArtifact(root, policyPath, binary, output, version string, extra bundledModule) error {
+func bundleArtifact(root, policyPath, binary, output, version string, extras []bundledModule) error {
 	p, err := loadPolicy(root, policyPath)
 	if err != nil {
 		return err
@@ -871,9 +882,7 @@ func bundleArtifact(root, policyPath, binary, output, version string, extra bund
 		bundled = append(bundled, bundledModule{Review: review, LicenseText: licenseText})
 		seen[key] = true
 	}
-	if extra.Review.Module != "" {
-		bundled = append(bundled, extra)
-	}
+	bundled = append(bundled, extras...)
 	sort.Slice(bundled, func(i, j int) bool {
 		return moduleKey(bundled[i].Review.Module, bundled[i].Review.Version) < moduleKey(bundled[j].Review.Module, bundled[j].Review.Version)
 	})

@@ -86,7 +86,7 @@ func TestFixedReleaseSetNativeUsesVerifiedSidecarIdentity(t *testing.T) {
 		"http_proxy=http://127.0.0.1:1", "https_proxy=http://127.0.0.1:1", "all_proxy=http://127.0.0.1:1",
 		"NO_PROXY=", "no_proxy=",
 	}
-	if output, err := desktopCommand.CombinedOutput(); err != nil || !bytes.Contains(output, []byte("ladybug 0.17.0 fts loaded")) {
+	if output, err := desktopCommand.CombinedOutput(); err != nil || !bytes.Contains(output, []byte("ladybug 0.17.0 search-query-analysis verified")) {
 		t.Fatalf("offline Desktop native check: output=%q err=%v", output, err)
 	}
 
@@ -145,14 +145,16 @@ func offlineCommand(t *testing.T, binary string, arguments ...string) *exec.Cmd 
 		if sandbox, err := exec.LookPath("sandbox-exec"); err == nil {
 			return exec.Command(sandbox, append([]string{"-p", "(version 1) (allow default) (deny network*)", binary}, arguments...)...)
 		}
+		t.Fatal("strict offline check requires sandbox-exec on darwin")
 	}
 	if runtime.GOOS == "linux" {
 		if unshare, err := exec.LookPath("unshare"); err == nil && exec.Command(unshare, "-n", "true").Run() == nil {
 			return exec.Command(unshare, append([]string{"-n", binary}, arguments...)...)
 		}
+		t.Fatal("strict offline check requires an operational unshare network namespace on linux")
 	}
-	t.Log("OS network namespace enforcement is unavailable; invalid all-proxy settings and an empty bypass list remain active")
-	return exec.Command(binary, arguments...)
+	t.Fatalf("strict offline check has no network isolation mechanism for %s", runtime.GOOS)
+	return nil
 }
 
 func extractDesktopNative(t *testing.T, archivePath, destination string) {
@@ -168,7 +170,7 @@ func extractDesktopNative(t *testing.T, archivePath, destination string) {
 	}
 	defer compressed.Close()
 	archive := tar.NewReader(compressed)
-	allowed := map[string]bool{"layerdraw-host-native": true, "libfts.lbug_extension": true, "ladybug-native.json": true, "LICENSE": true, "NOTICE": true, "LICENSING.md": true, "THIRD_PARTY_NOTICES.txt": true}
+	allowed := map[string]bool{"layerdraw-host-native": true, "libfts.lbug_extension": true, "libvector.lbug_extension": true, "libalgo.lbug_extension": true, "ladybug-native.json": true, "LICENSE": true, "NOTICE": true, "LICENSING.md": true, "THIRD_PARTY_NOTICES.txt": true}
 	for {
 		header, err := archive.Next()
 		if err == io.EOF {

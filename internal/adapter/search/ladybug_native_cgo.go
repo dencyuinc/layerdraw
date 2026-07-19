@@ -40,11 +40,17 @@ func OpenGoLadybugSession(databasePath string) (*GoLadybugSession, error) {
 }
 
 func OpenGoLadybugSessionWithFTS(databasePath, ftsExtensionPath string) (*GoLadybugSession, error) {
+	return OpenGoLadybugSessionWithExtensions(databasePath, []string{ftsExtensionPath})
+}
+
+func OpenGoLadybugSessionWithExtensions(databasePath string, extensionPaths []string) (*GoLadybugSession, error) {
 	if databasePath == "" || databasePath == ":memory:" || !strings.HasPrefix(databasePath, "/") {
 		return nil, fmt.Errorf("absolute on-disk Ladybug path required")
 	}
-	if ftsExtensionPath != "" && (!filepath.IsAbs(ftsExtensionPath) || strings.Contains(ftsExtensionPath, "'")) {
-		return nil, fmt.Errorf("absolute Ladybug FTS extension path required")
+	for _, extensionPath := range extensionPaths {
+		if extensionPath != "" && (!filepath.IsAbs(extensionPath) || strings.Contains(extensionPath, "'")) {
+			return nil, fmt.Errorf("absolute Ladybug extension path required")
+		}
 	}
 	db, err := lbug.OpenDatabase(databasePath, lbug.DefaultSystemConfig())
 	if err != nil {
@@ -56,10 +62,12 @@ func OpenGoLadybugSessionWithFTS(databasePath, ftsExtensionPath string) (*GoLady
 		return nil, err
 	}
 	session := &GoLadybugSession{db: db, conn: conn}
-	if ftsExtensionPath != "" {
-		if err := session.controlLocked("LOAD EXTENSION '" + ftsExtensionPath + "'"); err != nil {
-			session.Close()
-			return nil, err
+	for _, extensionPath := range extensionPaths {
+		if extensionPath != "" {
+			if err := session.controlLocked("LOAD EXTENSION '" + extensionPath + "'"); err != nil {
+				session.Close()
+				return nil, err
+			}
 		}
 	}
 	return session, nil
@@ -94,8 +102,8 @@ func (s *GoLadybugSession) ExecutePrepared(ctx context.Context, statement Ladybu
 	return s.executePreparedLocked(ctx, statement, limits, sink)
 }
 
-func (s *GoLadybugSession) ApplyIndex(ctx context.Context, statements []LadybugStatement, ref port.PhysicalIndexRef, evidence LadybugIndexEvidence, limits port.ExecutionLimits, sink port.RowSink) (err error) {
-	if !validEvidence(ref, evidence) {
+func (s *GoLadybugSession) ApplyIndex(ctx context.Context, statements []LadybugStatement, ref *port.PhysicalIndexRef, evidence []LadybugIndexEvidence, limits port.ExecutionLimits, sink port.RowSink) (err error) {
+	if ref == nil || !validEvidenceSet(*ref, evidence) {
 		return ErrInvalidPlan
 	}
 	s.mu.Lock()
@@ -124,6 +132,29 @@ func (s *GoLadybugSession) ApplyIndex(ctx context.Context, statements []LadybugS
 	if err = s.controlLocked("COMMIT"); err != nil {
 		return err
 	}
+	existingIndexes := map[string]bool{}
+	if rows, indexErr := s.queryLocked("CALL SHOW_INDEXES() RETURN *"); indexErr == nil {
+		for _, row := range rows {
+			existingIndexes[fmt.Sprint(row["index_name"])] = true
+		}
+	}
+	for _, item := range evidence {
+		if !existingIndexes[item.IndexName] {
+			continue
+		}
+		procedure := ""
+		switch item.IndexType {
+		case "FTS":
+			procedure = "DROP_FTS_INDEX"
+		case "HNSW":
+			procedure = "DROP_VECTOR_INDEX"
+		default:
+			return ErrPhysicalIndexMissing
+		}
+		if err := s.controlLocked("CALL " + procedure + "('" + item.TableName + "', '" + item.IndexName + "')"); err != nil {
+			return err
+		}
+	}
 	for _, statement := range statements {
 		if statement.Query == "" {
 			return ErrInvalidPlan
@@ -148,10 +179,11 @@ func (s *GoLadybugSession) ApplyIndex(ctx context.Context, statements []LadybugS
 			_ = s.controlLocked("ROLLBACK")
 		}
 	}()
-	digest, backend, err := s.inspectEvidenceLocked(ctx, evidence)
-	if err != nil || digest != ref.ContentDigest || backend != ref.BackendVersion {
+	digest, backend, err := s.inspectEvidenceSetLocked(ctx, evidence)
+	if err != nil || backend != ref.BackendVersion || (ref.ContentDigest != "" && digest != ref.ContentDigest) {
 		return ErrPhysicalIndexMissing
 	}
+	ref.ContentDigest = digest
 	evidenceJSON, err := json.Marshal(evidence)
 	if err != nil {
 		return ErrInvalidPlan
@@ -189,11 +221,11 @@ func (s *GoLadybugSession) InspectIndex(ctx context.Context, ref port.PhysicalIn
 	if err != nil || len(rows) != 1 || fmt.Sprint(rows[0]["content_digest"]) != ref.ContentDigest || fmt.Sprint(rows[0]["backend_version"]) != ref.BackendVersion {
 		return ErrPhysicalIndexMissing
 	}
-	var evidence LadybugIndexEvidence
-	if err := json.Unmarshal([]byte(fmt.Sprint(rows[0]["evidence_json"])), &evidence); err != nil || !validEvidence(ref, evidence) {
+	var evidence []LadybugIndexEvidence
+	if err := json.Unmarshal([]byte(fmt.Sprint(rows[0]["evidence_json"])), &evidence); err != nil || !validEvidenceSet(ref, evidence) {
 		return ErrPhysicalIndexMissing
 	}
-	digest, backend, err := s.inspectEvidenceLocked(ctx, evidence)
+	digest, backend, err := s.inspectEvidenceSetLocked(ctx, evidence)
 	if err != nil || digest != ref.ContentDigest || backend != ref.BackendVersion {
 		return ErrPhysicalIndexMissing
 	}
@@ -347,21 +379,23 @@ func (s *GoLadybugSession) inspectEvidenceLocked(ctx context.Context, evidence L
 	if !schemaContainsEvidence(schemaRows, evidence) {
 		return "", "", ErrPhysicalIndexMissing
 	}
-	indexRows, err := s.queryLocked("CALL SHOW_INDEXES() RETURN *")
-	if err != nil {
-		return "", "", ErrPhysicalIndexMissing
-	}
 	var matched map[string]any
-	for _, row := range indexRows {
-		if fmt.Sprint(row["table_name"]) == evidence.TableName && fmt.Sprint(row["index_name"]) == evidence.IndexName {
-			if matched != nil {
-				return "", "", ErrPhysicalIndexMissing
-			}
-			matched = row
+	if evidence.IndexName != "" {
+		indexRows, err := s.queryLocked("CALL SHOW_INDEXES() RETURN *")
+		if err != nil {
+			return "", "", ErrPhysicalIndexMissing
 		}
-	}
-	if matched == nil || fmt.Sprint(matched["index_type"]) != evidence.IndexType || fmt.Sprint(matched["extension_loaded"]) != "true" || matched["index_definition"] == nil || !samePropertyNames(matched["property_names"], evidence.PropertyNames) {
-		return "", "", ErrPhysicalIndexMissing
+		for _, row := range indexRows {
+			if fmt.Sprint(row["table_name"]) == evidence.TableName && fmt.Sprint(row["index_name"]) == evidence.IndexName {
+				if matched != nil {
+					return "", "", ErrPhysicalIndexMissing
+				}
+				matched = row
+			}
+		}
+		if matched == nil || fmt.Sprint(matched["index_type"]) != evidence.IndexType || fmt.Sprint(matched["extension_loaded"]) != "true" || matched["index_definition"] == nil || !samePropertyNames(matched["property_names"], evidence.PropertyNames) {
+			return "", "", ErrPhysicalIndexMissing
+		}
 	}
 	contentRows, err := s.queryLocked(contentQuery(evidence))
 	if err != nil {
@@ -374,8 +408,44 @@ func (s *GoLadybugSession) inspectEvidenceLocked(ctx context.Context, evidence L
 	return digest, backend, nil
 }
 
+func (s *GoLadybugSession) inspectEvidenceSetLocked(ctx context.Context, evidence []LadybugIndexEvidence) (string, string, error) {
+	digests := make([]string, len(evidence))
+	backend := ""
+	for index, item := range evidence {
+		digest, currentBackend, err := s.inspectEvidenceLocked(ctx, item)
+		if err != nil || (backend != "" && currentBackend != backend) {
+			return "", "", ErrPhysicalIndexMissing
+		}
+		digests[index], backend = digest, currentBackend
+	}
+	data, err := json.Marshal(digests)
+	if err != nil {
+		return "", "", ErrPhysicalIndexMissing
+	}
+	digest := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(digest[:]), backend, nil
+}
+
+func validEvidenceSet(ref port.PhysicalIndexRef, evidence []LadybugIndexEvidence) bool {
+	if len(evidence) == 0 {
+		return false
+	}
+	for _, item := range evidence {
+		if !validEvidence(ref, item) {
+			return false
+		}
+	}
+	return true
+}
+
 func validEvidence(ref port.PhysicalIndexRef, evidence LadybugIndexEvidence) bool {
-	if ref.IdentityDigest == "" || ref.ContentDigest == "" || ref.BackendVersion == "" || !ladybugIdentifier.MatchString(evidence.TableName) || !ladybugIdentifier.MatchString(evidence.IndexName) || evidence.IndexType == "" || !ladybugIdentifier.MatchString(evidence.PrimaryKey) || len(evidence.PropertyNames) == 0 || len(evidence.ContentColumns) == 0 {
+	if ref.IdentityDigest == "" || ref.BackendVersion == "" || !ladybugIdentifier.MatchString(evidence.TableName) || !ladybugIdentifier.MatchString(evidence.PrimaryKey) || len(evidence.ContentColumns) == 0 {
+		return false
+	}
+	if (evidence.IndexName == "") != (evidence.IndexType == "" || len(evidence.PropertyNames) == 0) {
+		return false
+	}
+	if evidence.IndexName != "" && !ladybugIdentifier.MatchString(evidence.IndexName) {
 		return false
 	}
 	seen := map[string]bool{}
@@ -396,7 +466,7 @@ func schemaContainsEvidence(rows []map[string]any, evidence LadybugIndexEvidence
 	for _, name := range evidence.ContentColumns {
 		want[name] = true
 	}
-	primary := false
+	primary := evidence.AllowNonPrimary
 	for _, row := range rows {
 		name := fmt.Sprint(row["name"])
 		delete(want, name)
@@ -425,7 +495,11 @@ func contentQuery(evidence LadybugIndexEvidence) string {
 	for _, column := range evidence.ContentColumns {
 		columns = append(columns, "n."+column+" AS "+column)
 	}
-	return "MATCH (n:" + evidence.TableName + ") RETURN " + strings.Join(columns, ", ") + " ORDER BY n." + evidence.PrimaryKey
+	pattern := "(n:" + evidence.TableName + ")"
+	if evidence.Relation {
+		pattern = "()-[n:" + evidence.TableName + "]->()"
+	}
+	return "MATCH " + pattern + " RETURN " + strings.Join(columns, ", ") + " ORDER BY n." + evidence.PrimaryKey
 }
 
 func evidenceDigest(evidence LadybugIndexEvidence, backend string, schemaRows []map[string]any, indexRow map[string]any, contentRows []map[string]any) (string, error) {
@@ -470,6 +544,12 @@ func ladybugValue(value port.RawValue) (any, error) {
 		return strconv.ParseFloat(value.Value, 64)
 	case "bool":
 		return strconv.ParseBool(value.Value)
+	case "float32_array":
+		var result []float32
+		if err := json.Unmarshal([]byte(value.Value), &result); err != nil || len(result) == 0 {
+			return nil, ErrInvalidPlan
+		}
+		return result, nil
 	default:
 		return nil, ErrInvalidPlan
 	}
