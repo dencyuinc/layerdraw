@@ -18,13 +18,13 @@ factory({} as never);
 
 declare const applyResult: EditorApplyResult;
 if (applyResult.persistence === "durable") {
-  applyResult.committed_revision.revision_id;
+  void applyResult.committed_revision.revision_id;
   const committedStatus:
     | "committed"
     | "committed_external_failed"
     | "committed_external_pending"
     | "committed_state_stale" = applyResult.result.operation_result.status;
-  applyResult.result.operation_result.committed_revision.revision_id;
+  void applyResult.result.operation_result.committed_revision.revision_id;
   void committedStatus;
 } else {
   const noCommittedRevision: undefined = applyResult.committed_revision;
