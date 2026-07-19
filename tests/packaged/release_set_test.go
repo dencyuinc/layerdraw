@@ -148,8 +148,14 @@ func offlineCommand(t *testing.T, binary string, arguments ...string) *exec.Cmd 
 		t.Fatal("strict offline check requires sandbox-exec on darwin")
 	}
 	if runtime.GOOS == "linux" {
-		if unshare, err := exec.LookPath("unshare"); err == nil && exec.Command(unshare, "-n", "true").Run() == nil {
-			return exec.Command(unshare, append([]string{"-n", binary}, arguments...)...)
+		if unshare, err := exec.LookPath("unshare"); err == nil {
+			if exec.Command(unshare, "-n", "true").Run() == nil {
+				return exec.Command(unshare, append([]string{"-n", binary}, arguments...)...)
+			}
+			if sudo, sudoErr := exec.LookPath("sudo"); sudoErr == nil && exec.Command(sudo, "-n", unshare, "-n", "true").Run() == nil {
+				command := []string{"-n", unshare, "-n", binary}
+				return exec.Command(sudo, append(command, arguments...)...)
+			}
 		}
 		t.Fatal("strict offline check requires an operational unshare network namespace on linux")
 	}
