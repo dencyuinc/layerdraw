@@ -1,20 +1,13 @@
 {
-  "name": "@layerdraw/render",
+  "name": "@layerdraw/viewer",
   "version": "0.0.0",
-  "description": "Deterministic presentation-only LayerDraw RenderData materialization and visual adapters.",
+  "description": "Framework-neutral readonly and ordered-streaming Viewer state machine.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "sideEffects": false,
   "files": ["dist/**/*.js", "dist/**/*.d.ts", "LICENSE", "README.md"],
   "exports": {
-    ".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"},
-    "./diagram": {"types": "./dist/diagram.d.ts", "import": "./dist/diagram.js"},
-    "./tree": {"types": "./dist/tree.d.ts", "import": "./dist/tree.js"},
-    "./flow": {"types": "./dist/flow.d.ts", "import": "./dist/flow.js"},
-    "./table": {"types": "./dist/table.d.ts", "import": "./dist/table.js"},
-    "./matrix": {"types": "./dist/matrix.d.ts", "import": "./dist/matrix.js"},
-    "./context": {"types": "./dist/context.d.ts", "import": "./dist/context.js"},
-    "./diff": {"types": "./dist/diff.d.ts", "import": "./dist/diff.js"}
+    ".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"}
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
@@ -24,7 +17,10 @@
     "test": "node --test --experimental-test-coverage --test-coverage-include=dist/**/*.js --test-coverage-lines=85 --test-coverage-functions=85 --test-coverage-branches=80 test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {"@layerdraw/protocol": "workspace:*"},
+  "dependencies": {
+    "@layerdraw/protocol": "workspace:*",
+    "@layerdraw/render": "workspace:*"
+  },
   "devDependencies": {"typescript": "7.0.2"},
   "engines": {"node": ">=24.18.0 <25"},
   "publishConfig": {"access": "public", "provenance": true}

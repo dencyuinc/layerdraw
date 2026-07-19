@@ -26,3 +26,11 @@ seed, and resource-limit inputs. Its Diagram, Tree, Flow, Table, Matrix, Context
 and Diff visual adapters map only supplied RenderData geometry, presentation
 values, and bindings to deterministic SVG plus portable headless interaction
 metadata; export artifact serialization remains outside this package.
+
+`viewer/` owns the framework-neutral readonly and ordered-streaming Viewer
+state machine over `render/`. It validates closed ViewData envelopes, rejects
+gaps and identity mismatches without adoption, keeps immutable interaction
+state separate from semantic data, exposes exact source inspection, and bounds
+resolver work, queued replacements, retained publications, presentation refs,
+and host event delivery. It has no React, DOM, Node-only, Engine, Runtime, LDL,
+container, persistence, collaboration, or export-planning dependency.
