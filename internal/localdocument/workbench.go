@@ -5,7 +5,9 @@ package localdocument
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
@@ -15,6 +17,15 @@ import (
 
 type runtimeWorkbench struct {
 	bridge *engineendpoint.RuntimeEngineBridge
+	engine *engineendpoint.LocalDocumentEngine
+	mu     sync.RWMutex
+	kinds  map[runtimeprotocol.DocumentID]port.ExternalFileKind
+}
+
+func (w *runtimeWorkbench) BindExternal(documentID runtimeprotocol.DocumentID, kind port.ExternalFileKind) {
+	w.mu.Lock()
+	w.kinds[documentID] = kind
+	w.mu.Unlock()
 }
 
 func (w *runtimeWorkbench) Open(ctx context.Context, in port.OpenWorkingDocumentInput) (port.WorkingDocument, error) {
@@ -47,7 +58,39 @@ func (w *runtimeWorkbench) Preview(ctx context.Context, in port.PreviewWorkingDo
 	}
 	ref := engineendpoint.LocalCompileInputRef(prepared.EncodedInput)
 	sources := port.SourceBlobSet{Revision: in.Document.BaseRevision, Blobs: []port.SourceBlob{{Ref: ref, Contents: prepared.EncodedInput}}}
-	return port.PreparedRevision{AuthoringImpact: prepared.AuthoringImpact, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, Sources: sources, Manifest: ref}, nil
+	result := port.PreparedRevision{AuthoringImpact: prepared.AuthoringImpact, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, Sources: sources, Manifest: ref}
+	w.mu.RLock()
+	kind, fileBacked := w.kinds[in.Document.BaseRevision.DocumentID]
+	w.mu.RUnlock()
+	if fileBacked {
+		source, err := w.engine.ReadEncodedInput(ctx, prepared.EncodedInput)
+		if err != nil {
+			return port.PreparedRevision{}, err
+		}
+		switch kind {
+		case port.ExternalFileKindProject:
+			tree := source.ProjectSourceTree()
+			paths := make([]string, 0, len(tree))
+			for path := range tree {
+				paths = append(paths, path)
+			}
+			sort.Strings(paths)
+			files := make([]port.ExternalProjectFile, 0, len(paths))
+			for _, path := range paths {
+				files = append(files, port.ExternalProjectFile{Path: path, Contents: tree[path]})
+			}
+			result.External = &port.ExternalMaterialization{Kind: kind, ProjectFiles: files}
+		case port.ExternalFileKindContainer:
+			container, err := w.engine.WriteContainer(ctx, source)
+			if err != nil {
+				return port.PreparedRevision{}, err
+			}
+			result.External = &port.ExternalMaterialization{Kind: kind, Container: container}
+		default:
+			return port.PreparedRevision{}, port.ErrConflict
+		}
+	}
+	return result, nil
 }
 
 func (w *runtimeWorkbench) Checkpoint(ctx context.Context, in port.CheckpointWorkingDocumentInput) (port.WorkingDocument, error) {
@@ -80,6 +123,10 @@ func (w *runtimeWorkbench) Working(handle string, revision runtimeprotocol.Commi
 		return port.WorkingDocument{}, false
 	}
 	return workingFromBridge(value, revision), true
+}
+
+func (w *runtimeWorkbench) SourceDigest(handle string) (protocolcommon.Digest, bool) {
+	return w.bridge.SourceDigest(handle)
 }
 
 func (w *runtimeWorkbench) Opened(revision runtimeprotocol.CommittedRevisionRef) (port.WorkingDocument, bool) {

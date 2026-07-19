@@ -14,6 +14,7 @@ import type {
   OpenDocumentInput,
   OpenDocumentResponseEnvelope,
 } from "@layerdraw/protocol/engine";
+import type { LocalHostClient } from "../src/host.js";
 
 declare const client: EngineClient;
 declare const ref: RequestBlobRef;
@@ -72,6 +73,25 @@ client.transport;
 
 const kind: EngineClientErrorKind = "misuse";
 void kind;
+
+declare const host: LocalHostClient;
+host.openDocument({ document_id: "document" });
+host.inspectDocument({ session: {} as never });
+host.previewOperations({} as never);
+host.commitOperations({} as never);
+host.saveDocument({} as never);
+host.controlAutosave({} as never);
+host.getStateSnapshot({ session: {} as never });
+host.listRevisions({} as never);
+host.previewRestore({} as never);
+host.stageAsset({} as never, bytes);
+host.closeDocument({ session: {} as never });
+host.cancelOperation({} as never);
+host.getOperationResult({} as never);
+host.recoverOperations({ document_id: "document" });
+host.engine.compile(request);
+host.restart();
+host.dispose();
 
 function narrow(outcome: CompileOutcome): void {
   if (outcome.origin === "client") {

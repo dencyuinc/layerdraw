@@ -11,6 +11,7 @@ RELEASE_MANIFEST ?= deploy/development-release-manifest.json
 RELEASE_MANIFEST_DIGEST ?= sha256:$(shell { command -v sha256sum >/dev/null && sha256sum $(RELEASE_MANIFEST) || shasum -a 256 $(RELEASE_MANIFEST); } | awk '{print $$1}')
 COVERAGE_BASE_REF ?= origin/main
 ENGINE_BINARY := dist/layerdraw-engine
+HOST_BINARY := dist/layerdraw-host
 ENGINE_WASM_DIR := dist/engine-wasm
 LICENSE_REPORT := reports/dependency-licenses.json
 GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen ./tools/releaseset ./tools/wasmparity
@@ -99,7 +100,11 @@ build:
 	CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false \
 		-ldflags "-s -w -X main.releaseVersion=$(VERSION) -X main.sourceRevision=$(SOURCE_REVISION) -X main.releaseManifestDigest=$(RELEASE_MANIFEST_DIGEST)" \
 		-o $(ENGINE_BINARY) ./cmd/layerdraw-engine
+	CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false \
+		-ldflags "-s -w -X main.releaseVersion=$(VERSION) -X main.sourceRevision=$(SOURCE_REVISION) -X main.releaseManifestDigest=$(RELEASE_MANIFEST_DIGEST)" \
+		-o $(HOST_BINARY) ./cmd/layerdraw-host
 	cp $(RELEASE_MANIFEST) dist/layerdraw-engine.release-manifest.json
+	cp $(RELEASE_MANIFEST) dist/layerdraw-host.release-manifest.json
 	$(PNPM) exec turbo run build
 
 engine-wasm:

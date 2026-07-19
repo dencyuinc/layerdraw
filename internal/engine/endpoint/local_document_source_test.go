@@ -4,6 +4,7 @@ package endpoint
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -26,6 +27,14 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 	if err != nil || source.PortableID != "ldl:project:p" || source.Digest() == "" {
 		t.Fatalf("compile source=%+v err=%v", source, err)
 	}
+	if len(source.SubjectHashes()) == 0 || string(source.ProjectSourceTree()["document.ldl"]) != "project p \"P\" {}\n" {
+		t.Fatalf("source projection=%q subjects=%+v", source.ProjectSourceTree(), source.SubjectHashes())
+	}
+	projectCopy := source.ProjectSourceTree()
+	projectCopy["document.ldl"][0] = 'X'
+	if string(source.ProjectSourceTree()["document.ldl"]) != "project p \"P\" {}\n" {
+		t.Fatal("project source projection was not defensive")
+	}
 	encoded, ref, err := source.EncodedInput()
 	if err != nil || ref.Digest != LocalCompileInputRef(encoded).Digest {
 		t.Fatalf("encode ref=%+v err=%v", ref, err)
@@ -38,7 +47,7 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 		t.Fatal("unknown encoded input was accepted")
 	}
 
-	archive, err := engine.New(engine.BuildInfo{}).WriteLayerdraw(ctx, engine.LayerdrawWriteInput{CompileInput: source.input})
+	archive, err := localEngine.WriteContainer(ctx, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +80,9 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 	if found, ok := bridge.Opened(working.DocumentID, working.RevisionID); !ok || found != working {
 		t.Fatalf("opened=%+v ok=%v", found, ok)
 	}
+	if digest, ok := bridge.SourceDigest(working.Handle); !ok || digest != ref.Digest {
+		t.Fatalf("source digest=%s ok=%v want=%s", digest, ok, ref.Digest)
+	}
 
 	compiled, err := engine.New(engine.BuildInfo{}).Compile(ctx, source.input)
 	if err != nil {
@@ -89,6 +101,9 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 	if err != nil || checkpoint.Generation != "2" || checkpoint.RevisionID != "revision_2" {
 		t.Fatalf("checkpoint=%+v err=%v", checkpoint, err)
 	}
+	if digest, ok := bridge.SourceDigest(checkpoint.Handle); !ok || digest == ref.Digest {
+		t.Fatalf("checkpoint source digest=%s ok=%v", digest, ok)
+	}
 	if _, err := bridge.Checkpoint(ctx, working, prepared, "revision_3"); err == nil {
 		t.Fatal("stale checkpoint was accepted")
 	}
@@ -101,6 +116,9 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 	if _, ok := bridge.Working(checkpoint.Handle); ok {
 		t.Fatal("closed working document remained visible")
 	}
+	if _, ok := bridge.SourceDigest(checkpoint.Handle); ok {
+		t.Fatal("closed source digest remained visible")
+	}
 	if _, ok := bridge.Opened("missing", "missing"); ok {
 		t.Fatal("missing opened document was reported")
 	}
@@ -109,6 +127,20 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 	}
 	if err := bridge.Close(BridgeWorking{Handle: "unknown"}); err != nil {
 		t.Fatalf("unknown close was not idempotent: %v", err)
+	}
+}
+
+func TestHostEngineFacadeOwnsOneNegotiatedEngineBoundary(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	facade, err := NewHostEngineFacade("1.2.3", "abcdef0", digest, "host-facade-test", "stdio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facade.Descriptor() == nil || facade.Dispatcher() == nil || facade.Negotiated() == nil || facade.ReleaseVersion() != "1.2.3" || !facade.Negotiated().SupportsOperation("engine.compile") {
+		t.Fatalf("facade=%+v", facade)
+	}
+	if _, err := NewHostEngineFacade("1.2.3", "abcdef0", "invalid", "host-facade-test", "stdio"); err == nil {
+		t.Fatal("invalid facade authority was accepted")
 	}
 }
 

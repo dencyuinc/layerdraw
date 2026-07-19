@@ -158,6 +158,18 @@ func TestNegotiationCoversInvalidInputEnabledOptionalAndAllWiredPorts(t *testing
 	); got.HardMaximum != "1" {
 		t.Fatalf("smaller client byte limit was not selected: %+v", got)
 	}
+	if got := minByteLimit(
+		runtimeprotocol.RuntimeByteLimitValue{HardMaximum: "10", Unit: runtimeprotocol.RuntimeByteLimitValueUnitValue},
+		runtimeprotocol.RuntimeByteLimitValue{HardMaximum: "20", Unit: runtimeprotocol.RuntimeByteLimitValueUnitValue},
+	); got.HardMaximum != "10" {
+		t.Fatalf("larger client byte limit changed the host maximum: %+v", got)
+	}
+	if got := minItemLimit(
+		runtimeprotocol.RuntimeItemLimitValue{HardMaximum: "10", Unit: runtimeprotocol.RuntimeItemLimitValueUnitValue},
+		runtimeprotocol.RuntimeItemLimitValue{HardMaximum: "1", Unit: runtimeprotocol.RuntimeItemLimitValueUnitValue},
+	); got.HardMaximum != "1" {
+		t.Fatalf("smaller client item limit was not selected: %+v", got)
+	}
 	if !decimalLess("9", "10") || decimalLess("20", "10") {
 		t.Fatal("canonical decimal comparison is incorrect")
 	}

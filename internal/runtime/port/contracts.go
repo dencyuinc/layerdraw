@@ -70,6 +70,9 @@ type PreparedRevision struct {
 	// sha256 digest before Runtime may pass the set to StageRevision.
 	Sources  SourceBlobSet
 	Manifest protocolcommon.BlobRef
+	// External is an optional, already-materialized file-backed projection.
+	// Server-backed Workbench implementations leave it nil.
+	External *ExternalMaterialization
 }
 
 type CheckpointWorkingDocumentInput struct {
@@ -402,6 +405,92 @@ type DeleteAssetInput struct {
 	ExpectedUnreferenced bool
 }
 
+type ExternalFileKind string
+
+const (
+	ExternalFileKindContainer ExternalFileKind = "container"
+	ExternalFileKindProject   ExternalFileKind = "project"
+)
+
+type ExternalProjectFile struct {
+	Path     string
+	Contents []byte
+}
+
+// ExternalMaterialization is the complete bounded file-backed projection
+// produced by the host's Engine boundary. Runtime and storage adapters never
+// parse LDL or reconstruct a source tree from semantic output.
+type ExternalMaterialization struct {
+	Kind         ExternalFileKind
+	ProjectFiles []ExternalProjectFile
+	Container    []byte
+}
+
+type ExternalFileHead struct {
+	ProviderVersion runtimeprotocol.ProviderVersionToken
+}
+
+type GetExternalFileHeadInput struct{ Scope runtimeprotocol.RuntimeScope }
+
+type PrepareExternalFileInput struct {
+	Scope                   runtimeprotocol.RuntimeScope
+	OperationID             runtimeprotocol.OperationID
+	IdempotencyKey          runtimeprotocol.IdempotencyKey
+	RevisionID              runtimeprotocol.RevisionID
+	ExpectedProviderVersion runtimeprotocol.ProviderVersionToken
+	Materialization         ExternalMaterialization
+}
+
+type ExternalFileStage struct {
+	StageID                  string
+	CandidateProviderVersion runtimeprotocol.ProviderVersionToken
+	MaterializationDigest    protocolcommon.Digest
+}
+
+type PublishExternalFileInput struct {
+	Scope                   runtimeprotocol.RuntimeScope
+	OperationID             runtimeprotocol.OperationID
+	IdempotencyKey          runtimeprotocol.IdempotencyKey
+	StageID                 string
+	ExpectedProviderVersion runtimeprotocol.ProviderVersionToken
+}
+
+type ExternalFileReceipt struct {
+	OperationID           runtimeprotocol.OperationID
+	IdempotencyKey        runtimeprotocol.IdempotencyKey
+	RevisionID            runtimeprotocol.RevisionID
+	ProviderVersion       runtimeprotocol.ProviderVersionToken
+	ReceiptDigest         protocolcommon.Digest
+	MaterializationDigest protocolcommon.Digest
+}
+
+type InspectExternalFileInput struct {
+	Scope          runtimeprotocol.RuntimeScope
+	OperationID    runtimeprotocol.OperationID
+	IdempotencyKey runtimeprotocol.IdempotencyKey
+}
+
+type ExternalFileInspection struct {
+	Stage   *ExternalFileStage
+	Receipt *ExternalFileReceipt
+}
+
+type AbortExternalFileInput struct {
+	Scope   runtimeprotocol.RuntimeScope
+	StageID string
+}
+
+// ExternalFileStore conditionally publishes a complete file-backed source
+// projection after DocumentStore publication. Prepare is non-visible and
+// Publish is idempotent by operation and idempotency identity.
+type ExternalFileStore interface {
+	GetExternalHead(context.Context, GetExternalFileHeadInput) (ExternalFileHead, error)
+	Prepare(context.Context, PrepareExternalFileInput) (ExternalFileStage, error)
+	Publish(context.Context, PublishExternalFileInput) (ExternalFileReceipt, error)
+	Inspect(context.Context, InspectExternalFileInput) (ExternalFileInspection, error)
+	Abort(context.Context, AbortExternalFileInput) error
+}
+
 // HistoryStore indexes immutable DocumentStore revisions; it is not the
 // source of canonical document bytes.
 type HistoryStore interface {
@@ -473,14 +562,18 @@ type GetRecoveryRecordInput struct {
 }
 
 type AdvanceRecoveryRecordInput struct {
-	Scope             runtimeprotocol.RuntimeScope
-	OperationID       runtimeprotocol.OperationID
-	ExpectedPhase     runtimeprotocol.RecoveryPhase
-	NextPhase         runtimeprotocol.RecoveryPhase
-	PublishedRevision *runtimeprotocol.CommittedRevisionRef
-	EvaluationDigest  *protocolcommon.Digest
-	DecisionDigest    *protocolcommon.Digest
-	PreviewEvaluation *runtimeprotocol.PreviewEvaluation
+	Scope                           runtimeprotocol.RuntimeScope
+	OperationID                     runtimeprotocol.OperationID
+	ExpectedPhase                   runtimeprotocol.RecoveryPhase
+	NextPhase                       runtimeprotocol.RecoveryPhase
+	PublishedRevision               *runtimeprotocol.CommittedRevisionRef
+	EvaluationDigest                *protocolcommon.Digest
+	DecisionDigest                  *protocolcommon.Digest
+	PreviewEvaluation               *runtimeprotocol.PreviewEvaluation
+	ExternalStage                   *ExternalFileStage
+	ExpectedExternalProviderVersion *runtimeprotocol.ProviderVersionToken
+	ExternalReceipt                 *ExternalFileReceipt
+	ExternalFailure                 *runtimeprotocol.ExternalMaterializationFailure
 }
 
 type FinalizeRecoveryRecordInput struct {
@@ -492,14 +585,18 @@ type FinalizeRecoveryRecordInput struct {
 }
 
 type RecoveryRecord struct {
-	Scope             runtimeprotocol.RuntimeScope
-	Status            runtimeprotocol.RuntimeOperationStatus
-	CommitResult      *runtimeprotocol.RuntimeCommitResult
-	PayloadDigest     protocolcommon.Digest
-	BaseRevision      runtimeprotocol.CommittedRevisionRef
-	EvaluationDigest  *protocolcommon.Digest
-	DecisionDigest    *protocolcommon.Digest
-	PreviewEvaluation *runtimeprotocol.PreviewEvaluation
+	Scope                           runtimeprotocol.RuntimeScope
+	Status                          runtimeprotocol.RuntimeOperationStatus
+	CommitResult                    *runtimeprotocol.RuntimeCommitResult
+	PayloadDigest                   protocolcommon.Digest
+	BaseRevision                    runtimeprotocol.CommittedRevisionRef
+	EvaluationDigest                *protocolcommon.Digest
+	DecisionDigest                  *protocolcommon.Digest
+	PreviewEvaluation               *runtimeprotocol.PreviewEvaluation
+	ExternalStage                   *ExternalFileStage
+	ExpectedExternalProviderVersion *runtimeprotocol.ProviderVersionToken
+	ExternalReceipt                 *ExternalFileReceipt
+	ExternalFailure                 *runtimeprotocol.ExternalMaterializationFailure
 }
 
 // AuthoringDecision is injected explicitly. Local full-authoring hosts use

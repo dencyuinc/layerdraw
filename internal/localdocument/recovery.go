@@ -63,7 +63,7 @@ func (h *Host) Recover(ctx context.Context, documentID runtimeprotocol.DocumentI
 			status, err = h.finalizeRecovered(ctx, scope, record, previewFor(record, stage, hasStage), runtimeprotocol.OperationResultStatusRejected, nil, runtimeprotocol.RuntimeFailureCodeRuntimeCancelled, runtimeprotocol.RecoveryPhaseFinal)
 		case runtimeprotocol.RecoveryPhasePublicationPending:
 			status, err = h.recoverPublicationPending(ctx, scope, record, stage, hasStage)
-		case runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseOutboxReady:
+		case runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished, runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseOutboxReady:
 			status, err = h.recoverPublished(ctx, scope, record, inspection.PublishedRevision, stage, hasStage)
 		case runtimeprotocol.RecoveryPhaseRecovering:
 			status, err = h.finalizeRecovered(ctx, scope, record, previewFor(record, stage, hasStage), runtimeprotocol.OperationResultStatusNeedsReview, nil, "", runtimeprotocol.RecoveryPhaseNeedsReview)
@@ -166,8 +166,50 @@ func (h *Host) recoverPublished(ctx context.Context, scope runtimeprotocol.Runti
 }
 
 func (h *Host) finishPublished(ctx context.Context, scope runtimeprotocol.RuntimeScope, record port.RecoveryRecord, phase runtimeprotocol.RecoveryPhase, revision runtimeprotocol.CommittedRevisionRef, stage local.StagedInspection) (runtimeprotocol.RuntimeOperationStatus, error) {
+	var externalStatus *runtimeprotocol.ExternalMaterializationStatus
+	if record.ExternalStage != nil {
+		if phase == runtimeprotocol.RecoveryPhasePublished {
+			updated, err := h.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: scope, OperationID: record.Status.OperationID, ExpectedPhase: phase, NextPhase: runtimeprotocol.RecoveryPhaseExternalPending, PublishedRevision: &revision})
+			if err != nil {
+				return runtimeprotocol.RuntimeOperationStatus{}, err
+			}
+			record, phase = updated, runtimeprotocol.RecoveryPhaseExternalPending
+		}
+		if phase == runtimeprotocol.RecoveryPhaseExternalPending {
+			inspection, err := h.external.Inspect(ctx, port.InspectExternalFileInput{Scope: scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey})
+			if err != nil {
+				return runtimeprotocol.RuntimeOperationStatus{}, err
+			}
+			var receipt port.ExternalFileReceipt
+			if inspection.Receipt != nil {
+				receipt = *inspection.Receipt
+			} else if inspection.Stage != nil && record.ExpectedExternalProviderVersion != nil {
+				receipt, err = h.external.Publish(ctx, port.PublishExternalFileInput{Scope: scope, OperationID: record.Status.OperationID, IdempotencyKey: record.Status.IdempotencyKey, StageID: inspection.Stage.StageID, ExpectedProviderVersion: *record.ExpectedExternalProviderVersion})
+			} else {
+				err = port.ErrIndeterminate
+			}
+			if err != nil {
+				if !errors.Is(err, port.ErrConflict) {
+					return runtimeprotocol.RuntimeOperationStatus{}, err
+				}
+				failure := runtimeprotocol.ExternalMaterializationFailureConflict
+				updated, advanceErr := h.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: scope, OperationID: record.Status.OperationID, ExpectedPhase: phase, NextPhase: runtimeprotocol.RecoveryPhaseExternalFailed, PublishedRevision: &revision, ExternalFailure: &failure})
+				if advanceErr != nil {
+					return runtimeprotocol.RuntimeOperationStatus{}, advanceErr
+				}
+				record, phase = updated, runtimeprotocol.RecoveryPhaseExternalFailed
+			} else {
+				updated, advanceErr := h.recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: scope, OperationID: record.Status.OperationID, ExpectedPhase: phase, NextPhase: runtimeprotocol.RecoveryPhaseExternalPublished, PublishedRevision: &revision, ExternalReceipt: &receipt})
+				if advanceErr != nil {
+					return runtimeprotocol.RuntimeOperationStatus{}, advanceErr
+				}
+				record, phase = updated, runtimeprotocol.RecoveryPhaseExternalPublished
+			}
+		}
+		externalStatus = record.Status.ExternalMaterialization
+	}
 	for phase != runtimeprotocol.RecoveryPhaseOutboxReady {
-		next := map[runtimeprotocol.RecoveryPhase]runtimeprotocol.RecoveryPhase{runtimeprotocol.RecoveryPhasePublished: runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseStatePending: runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseAuditPending: runtimeprotocol.RecoveryPhaseOutboxReady}[phase]
+		next := map[runtimeprotocol.RecoveryPhase]runtimeprotocol.RecoveryPhase{runtimeprotocol.RecoveryPhasePublished: runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseExternalFailed: runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseExternalPublished: runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseStatePending: runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseAuditPending: runtimeprotocol.RecoveryPhaseOutboxReady}[phase]
 		if next == "" {
 			return runtimeprotocol.RuntimeOperationStatus{}, port.ErrIndeterminate
 		}
@@ -185,7 +227,7 @@ func (h *Host) finishPublished(ctx context.Context, scope runtimeprotocol.Runtim
 	if trigger == "" {
 		trigger = runtimeprotocol.CommitTriggerRestore
 	}
-	_, err := h.history.AppendRevision(ctx, port.AppendRevisionInput{Scope: scope, Metadata: runtimeprotocol.RevisionMetadata{Revision: revision, ParentRevisionID: &parent, OperationID: record.Status.OperationID, Trigger: trigger, AuthoringDecisionDigest: *decisionDigest, CommittedAt: protocolcommon.Rfc3339Time(h.config.Clock.Now().UTC().Format("2006-01-02T15:04:05.999999999Z07:00"))}})
+	_, err := h.history.AppendRevision(ctx, port.AppendRevisionInput{Scope: scope, Metadata: runtimeprotocol.RevisionMetadata{Revision: revision, ParentRevisionID: &parent, OperationID: record.Status.OperationID, Trigger: trigger, AuthoringDecisionDigest: *decisionDigest, CommittedAt: protocolcommon.Rfc3339Time(h.config.Clock.Now().UTC().Format("2006-01-02T15:04:05.999999999Z07:00")), ExternalMaterialization: externalStatus}})
 	stateVersion := protocolcommon.CanonicalNonNegativeInt64("0")
 	status := runtimeprotocol.OperationResultStatusCommittedStateStale
 	if stateHead, stateErr := h.state.GetHead(ctx, port.GetStateHeadInput{Scope: scope}); stateErr == nil {
@@ -196,8 +238,31 @@ func (h *Host) finishPublished(ctx context.Context, scope runtimeprotocol.Runtim
 	}
 	if err != nil {
 		status = runtimeprotocol.OperationResultStatusCommittedStateStale
+	} else if status == runtimeprotocol.OperationResultStatusCommitted && externalStatus != nil && externalStatus.State == runtimeprotocol.ExternalMaterializationStateFailed {
+		status = runtimeprotocol.OperationResultStatusCommittedExternalFailed
 	}
-	return h.finalizeRecoveredWithState(ctx, scope, record, previewFor(record, stage, true), status, &revision, &stateVersion, "", runtimeprotocol.RecoveryPhaseFinal)
+	resultState := &stateVersion
+	if status == runtimeprotocol.OperationResultStatusCommittedExternalFailed {
+		resultState = nil
+	}
+	if externalStatus != nil && externalStatus.State == runtimeprotocol.ExternalMaterializationStatePublished {
+		digest := stage.Input.Manifest.Digest
+		if stage.Input.OperationID != record.Status.OperationID || digest == "" {
+			return runtimeprotocol.RuntimeOperationStatus{}, port.ErrIndeterminate
+		}
+		// The external receipt is authoritative. Failure to refresh the
+		// conservative metadata cache must not rewrite a committed operation as
+		// a recovery failure; a later reopen will safely surface review instead.
+		_ = h.acceptDocumentSourceBaseline(scope.DocumentID, digest)
+	}
+	final, err := h.finalizeRecoveredWithExternal(ctx, scope, record, previewFor(record, stage, true), status, &revision, resultState, "", runtimeprotocol.RecoveryPhaseFinal, externalStatus)
+	if err != nil {
+		return runtimeprotocol.RuntimeOperationStatus{}, err
+	}
+	if externalStatus != nil && externalStatus.State == runtimeprotocol.ExternalMaterializationStateFailed && record.ExternalStage != nil {
+		_ = h.external.Abort(context.WithoutCancel(ctx), port.AbortExternalFileInput{Scope: scope, StageID: record.ExternalStage.StageID})
+	}
+	return final, nil
 }
 
 func (h *Host) advanceRecovery(ctx context.Context, scope runtimeprotocol.RuntimeScope, operation runtimeprotocol.OperationID, from, to runtimeprotocol.RecoveryPhase, revision *runtimeprotocol.CommittedRevisionRef) (port.RecoveryRecord, error) {
@@ -209,7 +274,11 @@ func (h *Host) finalizeRecovered(ctx context.Context, scope runtimeprotocol.Runt
 }
 
 func (h *Host) finalizeRecoveredWithState(ctx context.Context, scope runtimeprotocol.RuntimeScope, record port.RecoveryRecord, preview *runtimeprotocol.PreviewEvaluation, status runtimeprotocol.OperationResultStatus, revision *runtimeprotocol.CommittedRevisionRef, stateVersion *protocolcommon.CanonicalNonNegativeInt64, failure runtimeprotocol.RuntimeFailureCode, terminal runtimeprotocol.RecoveryPhase) (runtimeprotocol.RuntimeOperationStatus, error) {
-	result := runtimehost.RecoveryCommitResult(record.Status.OperationID, record.Status.IdempotencyKey, status, revision, stateVersion, failure)
+	return h.finalizeRecoveredWithExternal(ctx, scope, record, preview, status, revision, stateVersion, failure, terminal, nil)
+}
+
+func (h *Host) finalizeRecoveredWithExternal(ctx context.Context, scope runtimeprotocol.RuntimeScope, record port.RecoveryRecord, preview *runtimeprotocol.PreviewEvaluation, status runtimeprotocol.OperationResultStatus, revision *runtimeprotocol.CommittedRevisionRef, stateVersion *protocolcommon.CanonicalNonNegativeInt64, failure runtimeprotocol.RuntimeFailureCode, terminal runtimeprotocol.RecoveryPhase, external *runtimeprotocol.ExternalMaterializationStatus) (runtimeprotocol.RuntimeOperationStatus, error) {
+	result := runtimehost.RecoveryCommitResultWithExternal(record.Status.OperationID, record.Status.IdempotencyKey, status, revision, stateVersion, failure, external)
 	result.PreviewEvaluation = preview
 	final, err := h.recovery.Finalize(ctx, port.FinalizeRecoveryRecordInput{Scope: scope, CommitResult: result, TerminalPhase: terminal})
 	if err != nil {

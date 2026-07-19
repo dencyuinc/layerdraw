@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -1539,11 +1540,171 @@ type coordinatorHost struct {
 	createPendingRelease                                                                    <-chan struct{}
 	closeCalls                                                                              int
 	closeErr                                                                                error
+	externalEnabled                                                                         bool
+	externalMalformed                                                                       bool
+	externalPrepareCalls, externalPublishCalls, externalAbortCalls                          int
+	externalPublishErr                                                                      error
+	afterExternalPrepare                                                                    func()
+	externalStage                                                                           port.ExternalFileStage
+	externalReceipt                                                                         port.ExternalFileReceipt
+	advancePhases                                                                           []runtimeprotocol.RecoveryPhase
+}
+
+func TestCoordinatorExternalMaterializationSuccessPendingAndFailure(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		publishErr error
+		status     runtimeprotocol.OperationResultStatus
+		phase      runtimeprotocol.RecoveryPhase
+		extState   runtimeprotocol.ExternalMaterializationState
+	}{
+		{name: "published", status: runtimeprotocol.OperationResultStatusCommitted, phase: runtimeprotocol.RecoveryPhaseFinal, extState: runtimeprotocol.ExternalMaterializationStatePublished},
+		{name: "pending io", publishErr: errors.New("external unavailable"), status: runtimeprotocol.OperationResultStatusCommittedExternalPending, phase: runtimeprotocol.RecoveryPhaseExternalPending, extState: runtimeprotocol.ExternalMaterializationStatePending},
+		{name: "failed conflict", publishErr: port.ErrConflict, status: runtimeprotocol.OperationResultStatusCommittedExternalFailed, phase: runtimeprotocol.RecoveryPhaseFinal, extState: runtimeprotocol.ExternalMaterializationStateFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, rt := newExternalCoordinatorFixture(t)
+			host.externalPublishErr = test.publishErr
+			opened := openCoordinatorFixture(t, rt)
+			input := commitFixture(opened.Session, host)
+			result, rejection := rt.CommitOperations(context.Background(), input)
+			if rejection != nil {
+				t.Fatal(rejection)
+			}
+			if result.OperationResult.Status != test.status || result.OperationResult.ExternalMaterialization == nil || result.OperationResult.ExternalMaterialization.State != test.extState {
+				t.Fatalf("result=%+v", result)
+			}
+			record := host.records[input.OperationID]
+			if record.Status.Phase != test.phase || host.externalPrepareCalls != 1 || host.externalPublishCalls != 1 {
+				t.Fatalf("phase=%s prepare=%d publish=%d", record.Status.Phase, host.externalPrepareCalls, host.externalPublishCalls)
+			}
+			if test.phase == runtimeprotocol.RecoveryPhaseFinal {
+				if record.CommitResult == nil || record.Status.OperationResult == nil {
+					t.Fatalf("terminal record=%+v", record)
+				}
+				if len(host.history) != 1 || !slices.Contains(host.advancePhases, runtimeprotocol.RecoveryPhaseStatePending) || !slices.Contains(host.advancePhases, runtimeprotocol.RecoveryPhaseAuditPending) || !slices.Contains(host.advancePhases, runtimeprotocol.RecoveryPhaseOutboxReady) {
+					t.Fatalf("post-publication duties history=%d phases=%v", len(host.history), host.advancePhases)
+				}
+			} else if record.CommitResult != nil || record.Status.ExternalMaterialization == nil {
+				t.Fatalf("pending record=%+v", record)
+			}
+		})
+	}
+}
+
+func TestCoordinatorExternalStageCleanupBeforeDocumentPublication(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*coordinatorHost, *Runtime, runtimeprotocol.RuntimeCommitInput)
+	}{
+		{name: "lease", configure: func(host *coordinatorHost, _ *Runtime, _ runtimeprotocol.RuntimeCommitInput) {
+			host.includeLease = true
+			host.failLeaseOnCall = 2
+		}},
+		{name: "cancel", configure: func(host *coordinatorHost, rt *Runtime, input runtimeprotocol.RuntimeCommitInput) {
+			host.afterExternalPrepare = func() {
+				_, _ = rt.CancelOperation(context.Background(), runtimeprotocol.CancelOperationInput{Session: input.Session, OperationID: input.OperationID, CancellationToken: *input.CancellationToken})
+			}
+		}},
+		{name: "document publication conflict", configure: func(host *coordinatorHost, _ *Runtime, _ runtimeprotocol.RuntimeCommitInput) {
+			host.publishErr = port.ErrConflict
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, rt := newExternalCoordinatorFixture(t)
+			opened := openCoordinatorFixture(t, rt)
+			input := commitFixture(opened.Session, host)
+			if test.name == "cancel" {
+				token := runtimeprotocol.CancellationToken("cancel_external_cleanup")
+				input.CancellationToken = &token
+			}
+			test.configure(host, rt, input)
+			if host.includeLease {
+				input.LeaseToken = ptr(runtimeprotocol.LeaseToken("lease_token_0001"))
+			}
+			_, _ = rt.CommitOperations(context.Background(), input)
+			if host.externalPrepareCalls != 1 || host.externalAbortCalls != 1 || host.abortCalls != 1 || host.successfulPublishes != 0 {
+				t.Fatalf("prepare=%d external_abort=%d document_abort=%d published=%d", host.externalPrepareCalls, host.externalAbortCalls, host.abortCalls, host.successfulPublishes)
+			}
+		})
+	}
+}
+
+func TestCoordinatorExternalProjectionFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*coordinatorHost)
+	}{
+		{name: "missing", configure: func(host *coordinatorHost) { host.externalEnabled = false }},
+		{name: "malformed", configure: func(host *coordinatorHost) { host.externalMalformed = true }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, rt := newExternalCoordinatorFixture(t)
+			test.configure(host)
+			opened := openCoordinatorFixture(t, rt)
+			result, rejection := rt.CommitOperations(context.Background(), commitFixture(opened.Session, host))
+			if rejection == nil || rejection.Code != runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable || !reflect.DeepEqual(result, runtimeprotocol.RuntimeCommitResult{}) || host.stageCalls != 0 || host.externalPrepareCalls != 0 {
+				t.Fatalf("result=%+v rejection=%v stage=%d external_prepare=%d", result, rejection, host.stageCalls, host.externalPrepareCalls)
+			}
+		})
+	}
+}
+
+func TestCoordinatorExternalFailureWithHistoryFailureIsStateStale(t *testing.T) {
+	host, rt := newExternalCoordinatorFixture(t)
+	host.externalPublishErr = port.ErrConflict
+	host.historyErr = errors.New("history unavailable")
+	opened := openCoordinatorFixture(t, rt)
+	result, rejection := rt.CommitOperations(context.Background(), commitFixture(opened.Session, host))
+	if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommittedStateStale || result.OperationResult.ExternalMaterialization == nil || result.OperationResult.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStateFailed {
+		t.Fatalf("result=%+v rejection=%v", result, rejection)
+	}
+}
+
+func TestCoordinatorPostPublicationAdvanceFailureReturnsTruthfulPendingResult(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		failFrom     runtimeprotocol.RecoveryPhase
+		durablePhase runtimeprotocol.RecoveryPhase
+	}{
+		{name: "publication pending to published", failFrom: runtimeprotocol.RecoveryPhasePublicationPending, durablePhase: runtimeprotocol.RecoveryPhasePublicationPending},
+		{name: "published to external pending", failFrom: runtimeprotocol.RecoveryPhasePublished, durablePhase: runtimeprotocol.RecoveryPhasePublished},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, rt := newExternalCoordinatorFixture(t)
+			host.advanceErrFrom = test.failFrom
+			opened := openCoordinatorFixture(t, rt)
+			input := commitFixture(opened.Session, host)
+			result, rejection := rt.CommitOperations(context.Background(), input)
+			record := host.records[input.OperationID]
+			if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommittedExternalPending || result.OperationResult.ExternalMaterialization == nil || result.OperationResult.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStatePending || record.Status.Phase != test.durablePhase || record.Status.ExternalMaterialization != nil || record.ExternalStage == nil || host.externalPublishCalls != 0 {
+				t.Fatalf("result=%+v rejection=%v record=%+v publish=%d", result, rejection, record, host.externalPublishCalls)
+			}
+		})
+	}
+}
+
+func newExternalCoordinatorFixture(t *testing.T) (*coordinatorHost, *Runtime) {
+	t.Helper()
+	host, _ := newCoordinatorFixture(t)
+	host.externalEnabled = true
+	host.externalStage = port.ExternalFileStage{StageID: "external-stage", CandidateProviderVersion: "external-v2", MaterializationDigest: digest('e')}
+	host.externalReceipt = port.ExternalFileReceipt{OperationID: "operation_1", IdempotencyKey: "idem_commit_000001", RevisionID: "rev_2", ProviderVersion: "external-v2", MaterializationDigest: digest('e'), ReceiptDigest: digest('d')}
+	rt, err := New(Config{ReleaseVersion: "0.0.0-dev", EndpointInstanceID: "runtime-coordinator", ReleaseManifestDigest: digest('f'), Limits: testLimits("100"), Ports: Ports{Workbench: host, Grants: host, Scopes: host, Documents: host, State: coordinatorState{host}, External: coordinatorExternalHost{host}, History: host, Recovery: host, Authoring: host, Clock: host, Identities: host}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host, rt
 }
 
 func TestCoordinatorCloseAndRecoveryResult(t *testing.T) {
 	host, rt := newCoordinatorFixture(t)
 	opened := openCoordinatorFixture(t, rt)
+	coordinator := rt.config.Operations.OpenDocument.(*Coordinator)
+	key := operationKey{documentID: opened.Session.Scope.DocumentID, sessionID: opened.Session.RuntimeSessionID, operation: "operation_closed_with_session"}
+	coordinator.mu.Lock()
+	coordinator.cancels[key] = cancelState{token: "cancel_closed_with_session"}
+	coordinator.mu.Unlock()
 	invalid := opened.Session
 	invalid.SessionGeneration = "2"
 	if rejection := rt.CloseDocument(context.Background(), invalid); rejection == nil {
@@ -1551,6 +1712,12 @@ func TestCoordinatorCloseAndRecoveryResult(t *testing.T) {
 	}
 	if rejection := rt.CloseDocument(context.Background(), opened.Session); rejection != nil || host.closeCalls != 1 {
 		t.Fatalf("close rejection=%v calls=%d", rejection, host.closeCalls)
+	}
+	coordinator.mu.RLock()
+	_, cancelRetained := coordinator.cancels[key]
+	coordinator.mu.RUnlock()
+	if cancelRetained {
+		t.Fatal("close retained session cancellation state")
 	}
 	if rejection := rt.CloseDocument(context.Background(), opened.Session); rejection != nil || host.closeCalls != 1 {
 		t.Fatalf("repeated close rejection=%v calls=%d", rejection, host.closeCalls)
@@ -1572,6 +1739,11 @@ func TestCoordinatorCloseAndRecoveryResult(t *testing.T) {
 	result := RecoveryCommitResult("operation_recovered", "idempotency_recovered", runtimeprotocol.OperationResultStatusCommittedStateStale, &revision, &stateVersion, runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable)
 	if result.OperationResult.ResultDigest == "" || result.OperationResult.CommittedRevision == nil || len(result.OperationResult.Diagnostics) != 1 {
 		t.Fatalf("recovery result=%+v", result)
+	}
+	external := externalPublishedResultStatus(port.ExternalFileReceipt{OperationID: "operation_recovered", IdempotencyKey: "idempotency_recovered", RevisionID: revision.RevisionID, ProviderVersion: "external-v2", MaterializationDigest: digest('e'), ReceiptDigest: digest('f')})
+	withExternal := RecoveryCommitResultWithExternal("operation_recovered", "idempotency_recovered", runtimeprotocol.OperationResultStatusCommittedStateStale, &revision, &stateVersion, runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, external)
+	if withExternal.OperationResult.ExternalMaterialization == nil || withExternal.OperationResult.ExternalMaterialization.State != runtimeprotocol.ExternalMaterializationStatePublished || withExternal.OperationResult.ResultDigest == result.OperationResult.ResultDigest {
+		t.Fatalf("external recovery result=%+v", withExternal)
 	}
 }
 
@@ -1686,6 +1858,10 @@ func cloneSourceBlobSetForTest(value port.SourceBlobSet) port.SourceBlobSet {
 
 func cloneRecoveryRecordForTest(record port.RecoveryRecord) port.RecoveryRecord {
 	clone := record
+	if record.Status.ExternalMaterialization != nil {
+		value := *record.Status.ExternalMaterialization
+		clone.Status.ExternalMaterialization = &value
+	}
 	if record.Status.OperationResult != nil {
 		operationResult := *record.Status.OperationResult
 		clone.Status.OperationResult = &operationResult
@@ -1699,6 +1875,20 @@ func cloneRecoveryRecordForTest(record port.RecoveryRecord) port.RecoveryRecord 
 	}
 	if record.DecisionDigest != nil {
 		clone.DecisionDigest = ptr(*record.DecisionDigest)
+	}
+	if record.ExternalStage != nil {
+		value := *record.ExternalStage
+		clone.ExternalStage = &value
+	}
+	if record.ExpectedExternalProviderVersion != nil {
+		clone.ExpectedExternalProviderVersion = ptr(*record.ExpectedExternalProviderVersion)
+	}
+	if record.ExternalReceipt != nil {
+		value := *record.ExternalReceipt
+		clone.ExternalReceipt = &value
+	}
+	if record.ExternalFailure != nil {
+		clone.ExternalFailure = ptr(*record.ExternalFailure)
 	}
 	return clone
 }
@@ -1782,7 +1972,50 @@ func (h *coordinatorHost) Preview(_ context.Context, input port.PreviewWorkingDo
 	if h.mutatePreparedSources != nil {
 		h.mutatePreparedSources(&sources)
 	}
-	return port.PreparedRevision{AuthoringImpact: impact, DefinitionHash: definitionHash, GraphHash: digest('c'), Sources: sources, Manifest: protocolcommon.BlobRef{BlobID: "manifest", Digest: digest('d'), Lifetime: protocolcommon.BlobLifetimeRequest, MediaType: "application/json", Size: "2"}}, nil
+	result := port.PreparedRevision{AuthoringImpact: impact, DefinitionHash: definitionHash, GraphHash: digest('c'), Sources: sources, Manifest: protocolcommon.BlobRef{BlobID: "manifest", Digest: digest('d'), Lifetime: protocolcommon.BlobLifetimeRequest, MediaType: "application/json", Size: "2"}}
+	if h.externalEnabled {
+		result.External = &port.ExternalMaterialization{Kind: port.ExternalFileKindProject, ProjectFiles: []port.ExternalProjectFile{{Path: "document.ldl", Contents: []byte("project fixture {}\n")}}}
+		if h.externalMalformed {
+			result.External.ProjectFiles[0].Path = "../escaped.ldl"
+		}
+	}
+	return result, nil
+}
+
+type coordinatorExternalHost struct{ host *coordinatorHost }
+
+func (h coordinatorExternalHost) GetExternalHead(context.Context, port.GetExternalFileHeadInput) (port.ExternalFileHead, error) {
+	return port.ExternalFileHead{ProviderVersion: "external-v1"}, nil
+}
+func (h coordinatorExternalHost) Prepare(_ context.Context, input port.PrepareExternalFileInput) (port.ExternalFileStage, error) {
+	h.host.externalPrepareCalls++
+	if h.host.afterExternalPrepare != nil {
+		h.host.afterExternalPrepare()
+	}
+	stage := h.host.externalStage
+	stage.CandidateProviderVersion = "external-v2"
+	return stage, nil
+}
+func (h coordinatorExternalHost) Publish(_ context.Context, input port.PublishExternalFileInput) (port.ExternalFileReceipt, error) {
+	h.host.externalPublishCalls++
+	if h.host.externalPublishErr != nil {
+		return port.ExternalFileReceipt{}, h.host.externalPublishErr
+	}
+	receipt := h.host.externalReceipt
+	receipt.OperationID, receipt.IdempotencyKey = input.OperationID, input.IdempotencyKey
+	return receipt, nil
+}
+func (h coordinatorExternalHost) Inspect(context.Context, port.InspectExternalFileInput) (port.ExternalFileInspection, error) {
+	if h.host.externalReceipt.ReceiptDigest != "" {
+		value := h.host.externalReceipt
+		return port.ExternalFileInspection{Receipt: &value}, nil
+	}
+	value := h.host.externalStage
+	return port.ExternalFileInspection{Stage: &value}, nil
+}
+func (h coordinatorExternalHost) Abort(context.Context, port.AbortExternalFileInput) error {
+	h.host.externalAbortCalls++
+	return nil
 }
 func (h *coordinatorHost) Checkpoint(_ context.Context, input port.CheckpointWorkingDocumentInput) (port.WorkingDocument, error) {
 	result := input.Document
@@ -1975,7 +2208,32 @@ func (h *coordinatorHost) Advance(_ context.Context, input port.AdvanceRecoveryR
 			record.DecisionDigest = ptr(digest('0'))
 		}
 	}
+	if input.ExternalStage != nil || input.ExpectedExternalProviderVersion != nil {
+		if input.ExternalStage == nil || input.ExpectedExternalProviderVersion == nil {
+			return port.RecoveryRecord{}, port.ErrConflict
+		}
+		stage, expected := *input.ExternalStage, *input.ExpectedExternalProviderVersion
+		record.ExternalStage = &stage
+		record.ExpectedExternalProviderVersion = &expected
+	}
+	if input.NextPhase == runtimeprotocol.RecoveryPhaseExternalPending {
+		if record.ExternalStage == nil {
+			return port.RecoveryRecord{}, port.ErrConflict
+		}
+		record.Status.ExternalMaterialization = externalPendingResultStatus(*record.ExternalStage)
+	}
+	if input.ExternalReceipt != nil {
+		receipt := *input.ExternalReceipt
+		record.ExternalReceipt = &receipt
+		record.Status.ExternalMaterialization = externalPublishedResultStatus(receipt)
+	}
+	if input.ExternalFailure != nil {
+		failure := *input.ExternalFailure
+		record.ExternalFailure = &failure
+		record.Status.ExternalMaterialization = externalFailedResultStatus(*record.ExternalStage, failure)
+	}
 	record.Status.Phase = input.NextPhase
+	h.advancePhases = append(h.advancePhases, input.NextPhase)
 	if input.NextPhase == runtimeprotocol.RecoveryPhaseRecovering {
 		started := protocolcommon.Rfc3339Time(h.now.Format(time.RFC3339))
 		record.Status.RecoveryStartedAt = &started
