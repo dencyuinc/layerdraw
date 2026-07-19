@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import type { ComposerIntent, ComposerSnapshot, EditorEdit } from "@layerdraw/composer";
-import type { EngineClient } from "@layerdraw/engine-client";
+import type { EngineClient, OutputBlob } from "@layerdraw/engine-client";
 import type { AuthoringDecision, AuthoringGrantSummary } from "@layerdraw/protocol/access";
 import type {
   CapabilityID,
@@ -38,8 +38,14 @@ export type BrowserDocumentInput =
   | Readonly<{ authority: "runtime"; input: OpenRuntimeDocumentInput }>;
 
 export type BrowserDocumentSession =
-  | Readonly<{ authority: "engine"; persistence: "ephemeral"; session: OpenDocumentResult }>
-  | Readonly<{ authority: "runtime"; persistence: "durable"; session: OpenRuntimeDocumentResult }>;
+  | Readonly<{ authority: "engine"; persistence: "ephemeral"; session: OpenDocumentResult; capabilities: BrowserEditorCapabilityState }>
+  | Readonly<{ authority: "runtime"; persistence: "durable"; session: OpenRuntimeDocumentResult; capabilities: BrowserEditorCapabilityState }>;
+
+export interface BrowserEditorCapabilityState {
+  readonly authority: "engine" | "runtime";
+  readonly manifest: CapabilityManifest | RuntimeCapabilityManifest;
+  readonly selection: EditorCapabilitySelection;
+}
 
 export interface EditorPreviewResult {
   readonly authority: "engine" | "trusted_access" | "runtime";
@@ -105,6 +111,7 @@ export interface BrowserEditor {
   cancelPreview(): ComposerSnapshot;
   snapshot(): ComposerSnapshot;
   subscribe(listener: (snapshot: ComposerSnapshot) => void): () => void;
+  getCapabilities(): BrowserEditorCapabilityState | undefined;
   materializeView(input: MaterializeViewInput): Promise<ViewData>;
   close(): Promise<void>;
 }
@@ -112,8 +119,16 @@ export interface BrowserEditor {
 export interface DocumentProvider {
   open(input: BrowserDocumentInput, signal: AbortSignal): Promise<unknown>;
   read(signal: AbortSignal): Promise<unknown>;
-  writeWithPrecondition(input: unknown, signal: AbortSignal): Promise<HostWriteReceipt>;
+  writeWithPrecondition(input: HostWriteInput, signal: AbortSignal): Promise<HostWriteReceipt>;
   close(): Promise<void>;
+}
+
+export interface HostWriteInput {
+  readonly edit: EditorEdit;
+  readonly preview: EditorPreviewResult;
+  readonly applied: ApplyToHandleResult;
+  /** Exact Engine response attachments referenced by applied.source_diff. */
+  readonly blobs: readonly OutputBlob[];
 }
 
 export interface AssetResolver {
@@ -151,12 +166,14 @@ export interface BrowserRuntimeClient {
   dispose?(): Promise<void>;
 }
 
+export type RuntimeCommitMetadata = Omit<RuntimeCommitInput, "session" | "operation_batch" | "authoring_proof">;
+
 export type RuntimeCommitInputFactory = (context: Readonly<{
   edit: EditorEdit;
   session: OpenRuntimeDocumentResult;
   authoring_proof: AuthoringProof;
   operation_batch: RuntimeOperationBatch;
-}>) => RuntimeCommitInput;
+}>) => RuntimeCommitMetadata;
 
 export interface BrowserEditorOptions {
   readonly engine_client: EngineClient;

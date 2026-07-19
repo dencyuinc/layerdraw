@@ -121,6 +121,13 @@ test("local host exposes generated Runtime operations and the existing Engine fa
   for (const operation of ["registry.resolve", "runtime.realtime", "runtime.mcp", "runtime.remote_storage", "runtime.native_export", "runtime.organization", "runtime.workspace"]) {
     assert.equal(client.hasCapability(operation), false, operation);
   }
+  const activeProbe = client.recoverOperations({ document_id: "missing_concurrent_a" });
+  await assert.rejects(
+    client.recoverOperations({ document_id: "missing_concurrent_b" }),
+    (error) => error?.code === "SINGLE_FLIGHT_BUSY",
+  );
+  await activeProbe;
+  assert.equal(client.state, "ready");
   assert.equal(client.engine.hasCapability("engine.compile"), true);
   assert.equal(client.engine.getCapabilities().operations["engine.preview_operations"].enabled, true);
   const portable = makePortableRequest(persistenceCorpus.workflow.initial_source);
