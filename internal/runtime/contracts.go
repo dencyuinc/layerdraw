@@ -138,7 +138,7 @@ func ValidateRecoveryTransition(from, to runtimeprotocol.RecoveryPhase) *Contrac
 		runtimeprotocol.RecoveryPhaseStaged:             {runtimeprotocol.RecoveryPhasePublicationPending},
 		runtimeprotocol.RecoveryPhasePublicationPending: {runtimeprotocol.RecoveryPhasePublished, runtimeprotocol.RecoveryPhaseRecovering},
 		runtimeprotocol.RecoveryPhasePublished:          {runtimeprotocol.RecoveryPhaseExternalPending, runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseRecovering},
-		runtimeprotocol.RecoveryPhaseExternalPending:    {runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished},
+		runtimeprotocol.RecoveryPhaseExternalPending:    {runtimeprotocol.RecoveryPhaseExternalFailed, runtimeprotocol.RecoveryPhaseExternalPublished, runtimeprotocol.RecoveryPhaseRecovering},
 		runtimeprotocol.RecoveryPhaseExternalFailed:     {runtimeprotocol.RecoveryPhaseStatePending},
 		runtimeprotocol.RecoveryPhaseExternalPublished:  {runtimeprotocol.RecoveryPhaseStatePending, runtimeprotocol.RecoveryPhaseRecovering},
 		runtimeprotocol.RecoveryPhaseStatePending:       {runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseRecovering},
@@ -172,12 +172,20 @@ func (r *Runtime) Authorize(ctx context.Context, request AuthorizationRequest) (
 		return accessprotocol.AuthoringDecision{}, rejection
 	}
 	input := request.Evaluation
+	expectedRevisionDigest := digestValue(request.CurrentRevision)
+	if input.BaseRevisionDigest != "" && input.BaseRevisionDigest != expectedRevisionDigest {
+		return accessprotocol.AuthoringDecision{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid, "authoring evaluation is bound to another revision")
+	}
+	// Runtime is the trusted owner of the revision binding. Callers cannot
+	// self-assert it and older in-process consumers remain source compatible.
+	input.BaseRevisionDigest = expectedRevisionDigest
 	if _, err := accessprotocol.EncodeEvaluateAuthoringInput(input); err != nil {
 		return accessprotocol.AuthoringDecision{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid, "authoring decision input is malformed")
 	}
 	input = canonicalizeAuthoringInput(input)
 	grant := input.GrantSnapshot
-	if grant.HostDocumentID != string(request.Scope.DocumentID) || grant.LocalScopeID != request.Scope.LocalScopeID || grant.AccessFingerprint != request.Scope.AccessFingerprint || !sameOptionalString(grant.OrganizationScopeID, request.Scope.OrganizationScopeID) {
+	accessMismatch := grant.AccessFingerprint != request.Scope.AccessFingerprint && (grant.ActorRef.Kind != "agent" || grant.AgentDelegationDigest == nil)
+	if grant.HostDocumentID != string(request.Scope.DocumentID) || grant.LocalScopeID != request.Scope.LocalScopeID || accessMismatch || !sameOptionalString(grant.OrganizationScopeID, request.Scope.OrganizationScopeID) {
 		return accessprotocol.AuthoringDecision{}, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring grant scope does not match the Runtime request")
 	}
 	for _, impact := range input.HostOperationImpacts {
@@ -258,7 +266,34 @@ func validHostOperationImpact(impact accessprotocol.HostOperationImpact, scope r
 		return false
 	}
 	want := semanticCapabilityForHostOperation(impact.OperationKind)
-	return want != "" && len(impact.RequiredAuthoringCapabilities) == 1 && impact.RequiredAuthoringCapabilities[0] == want
+	if want == "" || len(impact.RequiredAuthoringCapabilities) != 1 || impact.RequiredAuthoringCapabilities[0] != want || !validHostOperationAction(impact.OperationKind, impact.Action) || len(impact.ResourceRefs) == 0 {
+		return false
+	}
+	for index, ref := range impact.ResourceRefs {
+		if ref == "" || (index > 0 && impact.ResourceRefs[index-1] >= ref) {
+			return false
+		}
+	}
+	candidate := impact
+	candidate.ImpactDigest = ""
+	return impact.ImpactDigest == digestValue(candidate)
+}
+
+func validHostOperationAction(kind accessprotocol.HostOperationKind, action string) bool {
+	switch kind {
+	case accessprotocol.HostOperationKindAssetDelete:
+		return action == "delete"
+	case accessprotocol.HostOperationKindAssetPersist:
+		return action == "create" || action == "update"
+	case accessprotocol.HostOperationKindAssetStage:
+		return action == "stage"
+	case accessprotocol.HostOperationKindPackageTransaction:
+		return action == "create" || action == "update" || action == "delete"
+	case accessprotocol.HostOperationKindBackendConfigure, accessprotocol.HostOperationKindProjectConfigure:
+		return action == "update"
+	default:
+		return false
+	}
 }
 
 func semanticCapabilityForHostOperation(kind accessprotocol.HostOperationKind) semantic.AuthoringCapability {

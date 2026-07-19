@@ -13,6 +13,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -51,6 +52,10 @@ func (h *Host) Inspect(ref runtimeprotocol.RuntimeSessionRef) (runtimeprotocol.R
 	if err != nil {
 		return runtimeprotocol.RuntimeInspectionResult{}, err
 	}
+	ctx := h.accessContext(context.Background(), session)
+	if err := h.authority.AuthorizeRead(ctx, ref.Scope, accesscore.SurfaceReview); err != nil {
+		return runtimeprotocol.RuntimeInspectionResult{}, err
+	}
 	return runtimeprotocol.RuntimeInspectionResult{
 		Session: session.Open.Session, CommittedRevision: session.Open.CommittedRevision,
 		WorkingDocument: session.Open.WorkingDocument, StateInput: session.Open.StateInput,
@@ -66,6 +71,7 @@ func (h *Host) Preview(ctx context.Context, input runtimeprotocol.PreviewOperati
 	if err != nil {
 		return runtimeprotocol.PreviewOperationsResult{}, err
 	}
+	ctx = h.accessContext(ctx, session)
 	current := session.Open.CommittedRevision
 	if input.OperationBatch.DocumentID != current.DocumentID || !sameCommittedRevision(input.OperationBatch.BaseRevision, current) || input.OperationBatch.ExpectedDefinitionHash != current.DefinitionHash {
 		return runtimeprotocol.PreviewOperationsResult{}, port.ErrConflict
@@ -80,7 +86,7 @@ func (h *Host) Preview(ctx context.Context, input runtimeprotocol.PreviewOperati
 	if err != nil {
 		return runtimeprotocol.PreviewOperationsResult{}, err
 	}
-	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"}
+	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "propose"}
 	decision, rejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: current, Evaluation: evaluation})
 	if rejection != nil {
 		return runtimeprotocol.PreviewOperationsResult{}, rejection
@@ -109,6 +115,7 @@ func (h *Host) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitIn
 	if err != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, err
 	}
+	ctx = h.accessContext(ctx, session)
 	if change, detectErr := h.detectExternalChange(ctx, session); detectErr != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, detectErr
 	} else if change != nil {
@@ -189,6 +196,10 @@ func (h *Host) StateSnapshot(ctx context.Context, ref runtimeprotocol.RuntimeSes
 	if err != nil {
 		return runtimeprotocol.StateSnapshotResult{}, err
 	}
+	ctx = h.accessContext(ctx, session)
+	if err := h.authority.AuthorizeRead(ctx, ref.Scope, accesscore.SurfaceQuery); err != nil {
+		return runtimeprotocol.StateSnapshotResult{}, err
+	}
 	revision, err := h.documents.ReadRevision(ctx, port.ReadRevisionInput{Scope: ref.Scope, RevisionID: session.Open.CommittedRevision.RevisionID})
 	if err != nil {
 		return runtimeprotocol.StateSnapshotResult{}, err
@@ -226,6 +237,10 @@ func (h *Host) PreviewRestore(ctx context.Context, input runtimeprotocol.Restore
 	if err != nil {
 		return runtimeprotocol.RestorePreviewResult{}, err
 	}
+	ctx = h.accessContext(ctx, session)
+	if err := h.authority.AuthorizeRead(ctx, input.Session.Scope, accesscore.SurfaceReview); err != nil {
+		return runtimeprotocol.RestorePreviewResult{}, err
+	}
 	revision, err := h.history.GetRevision(ctx, port.GetRevisionMetadataInput{Scope: session.Open.Session.Scope, RevisionID: input.RevisionID})
 	if err != nil {
 		return runtimeprotocol.RestorePreviewResult{}, err
@@ -238,8 +253,29 @@ func (h *Host) StageAsset(ctx context.Context, input runtimeprotocol.StageAssetI
 	if err != nil {
 		return runtimeprotocol.StageAssetResult{}, err
 	}
+	ctx = h.accessContext(ctx, session)
 	ref := input.ContentBlob
 	if ref.Lifetime != protocolcommon.BlobLifetimeRequest || ref.Size != protocolcommon.CanonicalUint64(strconv.Itoa(len(contents))) {
+		return runtimeprotocol.StageAssetResult{}, port.ErrConflict
+	}
+	releasePublication, err := h.authority.AcquireAuthoringPublication(ctx, session.Open.Session.Scope)
+	if err != nil || releasePublication == nil {
+		return runtimeprotocol.StageAssetResult{}, accesscore.ErrGrantStale
+	}
+	defer releasePublication()
+	grant, _, err := h.authority.ResolveGrant(ctx, session.Open.Session.Scope)
+	if err != nil {
+		return runtimeprotocol.StageAssetResult{}, err
+	}
+	impact, err := accesscore.HostOperationImpact(accessprotocol.HostOperationKindAssetStage, "stage", accessprotocol.HostResourceScope{DocumentID: string(session.Open.Session.Scope.DocumentID), LocalScopeID: session.Open.Session.Scope.LocalScopeID, OrganizationScopeID: session.Open.Session.Scope.OrganizationScopeID}, []string{ref.BlobID})
+	if err != nil {
+		return runtimeprotocol.StageAssetResult{}, err
+	}
+	decision, rejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: session.Open.Session.Scope, CurrentRevision: session.Open.CommittedRevision, Evaluation: accessprotocol.EvaluateAuthoringInput{GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{impact}, RequestIntent: "publish"}})
+	if rejection != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow {
+		if rejection != nil {
+			return runtimeprotocol.StageAssetResult{}, rejection
+		}
 		return runtimeprotocol.StageAssetResult{}, port.ErrConflict
 	}
 	metadata, err := h.assets.PutIfAbsent(ctx, port.PutAssetInput{Scope: session.Open.Session.Scope, ExpectedDigest: ref.Digest, MediaType: ref.MediaType, Size: protocolcommon.CanonicalUint64(ref.Size), Contents: bytes.NewReader(contents)})
@@ -251,19 +287,22 @@ func (h *Host) StageAsset(ctx context.Context, input runtimeprotocol.StageAssetI
 }
 
 func (h *Host) RecoverOperations(ctx context.Context, documentID runtimeprotocol.DocumentID) (runtimeprotocol.RecoverOperationsResult, error) {
-	results, err := h.Recover(ctx, documentID)
-	if err != nil {
-		return runtimeprotocol.RecoverOperationsResult{}, err
-	}
-	operations := make([]runtimeprotocol.RuntimeOperationStatus, len(results))
-	for index := range results {
-		operations[index] = results[index].Status
-	}
-	return runtimeprotocol.RecoverOperationsResult{Operations: operations}, nil
+	// Runtime protocol v1 supplies only a document ID, so it cannot bind this
+	// read or mutation to an issued owner/delegated session. Both recovery and
+	// operation details fail closed until a session-bound v2 shape. Trusted
+	// startup recovery calls Host.Recover directly inside the local host.
+	_ = ctx
+	_ = documentID
+	return runtimeprotocol.RecoverOperationsResult{Operations: []runtimeprotocol.RuntimeOperationStatus{}}, nil
 }
 
 func (h *Host) ListRevisions(ctx context.Context, input runtimeprotocol.ListRevisionsInput) (runtimeprotocol.RevisionPage, error) {
-	if _, err := h.SessionFor(input.Session); err != nil {
+	session, err := h.SessionFor(input.Session)
+	if err != nil {
+		return runtimeprotocol.RevisionPage{}, err
+	}
+	ctx = h.accessContext(ctx, session)
+	if err := h.authority.AuthorizeRead(ctx, input.Session.Scope, accesscore.SurfaceReview); err != nil {
 		return runtimeprotocol.RevisionPage{}, err
 	}
 	result, rejection := h.runtime.ListRevisions(ctx, input)
@@ -274,7 +313,12 @@ func (h *Host) ListRevisions(ctx context.Context, input runtimeprotocol.ListRevi
 }
 
 func (h *Host) OperationResult(ctx context.Context, input runtimeprotocol.GetOperationResultInput) (runtimeprotocol.RuntimeOperationStatus, error) {
-	if _, err := h.SessionFor(input.Session); err != nil {
+	session, err := h.SessionFor(input.Session)
+	if err != nil {
+		return runtimeprotocol.RuntimeOperationStatus{}, err
+	}
+	ctx = h.accessContext(ctx, session)
+	if err := h.authority.AuthorizeRead(ctx, input.Session.Scope, accesscore.SurfaceReview); err != nil {
 		return runtimeprotocol.RuntimeOperationStatus{}, err
 	}
 	result, rejection := h.runtime.GetOperationResult(ctx, input)
@@ -282,6 +326,17 @@ func (h *Host) OperationResult(ctx context.Context, input runtimeprotocol.GetOpe
 		return runtimeprotocol.RuntimeOperationStatus{}, rejection
 	}
 	return result, nil
+}
+
+// AuthorizeReadSurface is the mandatory host composition point for future
+// Search, Query, Review, export, and MCP adapters. The session, not caller
+// input, selects the delegated actor context.
+func (h *Host) AuthorizeReadSurface(ctx context.Context, ref runtimeprotocol.RuntimeSessionRef, surface accesscore.ReadSurface) error {
+	session, err := h.SessionFor(ref)
+	if err != nil {
+		return err
+	}
+	return h.authority.AuthorizeRead(h.accessContext(ctx, session), ref.Scope, surface)
 }
 
 func (h *Host) Cancel(ctx context.Context, input runtimeprotocol.CancelOperationInput) (runtimeprotocol.CancelOperationResult, error) {
