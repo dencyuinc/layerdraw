@@ -77,6 +77,9 @@ func DecodeWireRequest(wire []byte, expected WireOperation) (WireRequest, error)
 	if request.WireVersion != RegistryWireVersion || request.RequestID == "" || !validWireOperation(request.Operation) || request.Operation != expected {
 		return WireRequest{}, errors.New("invalid Registry wire request binding")
 	}
+	if err := decodeWireInput(request.Operation, request.Input); err != nil {
+		return WireRequest{}, errors.New("invalid Registry operation input")
+	}
 	return request, nil
 }
 
@@ -95,10 +98,61 @@ func DecodeWireResponse(wire []byte, expected WireOperation) (WireResponse, erro
 		if response.Failure != nil || len(response.Value) == 0 || string(response.Value) == "null" {
 			return WireResponse{}, errors.New("invalid Registry success response")
 		}
+		if err := decodeWireValue(response.Operation, response.Value); err != nil {
+			return WireResponse{}, errors.New("invalid Registry operation result")
+		}
 	} else if response.Failure == nil || len(response.Value) != 0 {
 		return WireResponse{}, errors.New("invalid Registry failure response")
 	}
 	return response, nil
+}
+
+func decodeWireInput(operation WireOperation, input json.RawMessage) error {
+	var destination any
+	switch operation {
+	case WireListSources:
+		destination = &struct{}{}
+	case WireConfigureSource:
+		destination = &ConfigureSourceInput{}
+	case WireConnectSource:
+		destination = &RegistryConnectionInput{}
+	case WireDisconnectSource:
+		destination = &SourceIDInput{}
+	case WireSearch:
+		destination = &SearchInput{}
+	case WirePlan:
+		destination = &PlanRequest{}
+	case WireCommit:
+		destination = &WireCommitInput{}
+	case WireGetTransaction, WireRecoverTransaction:
+		destination = &TransactionIDInput{}
+	case WireAuthorArtifact:
+		destination = &AuthorArtifactRequest{}
+	default:
+		return errors.New("unknown Registry operation")
+	}
+	return decodeStrict(input, destination)
+}
+
+func decodeWireValue(operation WireOperation, value json.RawMessage) error {
+	var destination any
+	switch operation {
+	case WireListSources:
+		destination = &[]RegistrySource{}
+	case WireConfigureSource, WireConnectSource, WireDisconnectSource:
+		destination = &RegistrySource{}
+	case WireSearch:
+		destination = &[]ArtifactRelease{}
+	case WirePlan:
+		destination = &InstallPlan{}
+	case WireCommit, WireGetTransaction, WireRecoverTransaction:
+		destination = &Transaction{}
+	case WireAuthorArtifact:
+		destination = &ArtifactRelease{}
+	default:
+		return errors.New("unknown Registry operation")
+	}
+	return decodeStrict(value, destination)
 }
 
 // HostBinding is the single strict, versioned Registry dispatcher used by all

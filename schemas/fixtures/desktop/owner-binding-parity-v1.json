@@ -1,9 +1,8 @@
 {
-  "version": 2,
-  "semantic_request": {"subject":"fixture-document","arguments":{"query":"status:open","limit":"25"}},
-  "semantic_result": {"outcome":"success","value":{"items":["fixture-result"],"total":"1"}},
+  "version": 3,
   "bindings": [
     ["EngineApplyToHandle","engine_client","ApplyToHandle","engine.apply_to_handle"],
+    ["EngineClassifyAuthoringImpact","engine_client","ClassifyAuthoringImpact","engine.classify_authoring_impact"],
     ["EngineCloseDocument","engine_client","CloseDocument","engine.close_document"],
     ["EngineCompile","engine_client","Compile","engine.compile"],
     ["EngineExecuteQuery","engine_client","ExecuteQuery","engine.execute_query"],

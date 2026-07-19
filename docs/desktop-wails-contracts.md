@@ -23,7 +23,10 @@ optional and must report a typed unavailable status when it is not configured.
 
 Generated methods select one exact Engine or Runtime client method and forward
 the existing operation, control envelope, and protocol blobs unchanged only
-after the matching generated decoder accepts the envelope. Registry, Review,
+after the matching generated request decoder accepts the envelope. Before a
+result can cross Wails, its outer operation and request ID must match the
+request and the matching generated or owner response decoder must accept its
+operation-specific result envelope. Registry, Review,
 and Host owner methods may be exposed only with the same exact generated-decoder
 registration; no prefix or opaque generic dispatch exists.
 They do not infer capability from method presence, interpret LDL, rewrite
@@ -31,6 +34,11 @@ source, classify authoring impact, make Access decisions, resolve Registry
 semantics, plan exports, or implement MCP semantics. Browser and Desktop retain
 the same success, rejected/failed, and cancelled outcome; the compatibility
 fixture is `schemas/fixtures/desktop/wails-binding-compatibility-v1.json`.
+The exact binding/capability closure is
+`schemas/fixtures/desktop/owner-binding-parity-v1.json`; conformance derives all
+Engine and Runtime request/success fixtures from the normative schemas and
+compares canonical results through distinct Browser-worker and Desktop-Wails
+adapter shapes.
 
 Wails owns only window lifecycle, native-dialog invocation, generated binding,
 and frontend asset embedding. Native dialogs return opaque host-issued tokens,

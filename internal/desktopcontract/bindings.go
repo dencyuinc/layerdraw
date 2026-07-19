@@ -4,6 +4,7 @@ package desktopcontract
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 
@@ -39,8 +40,9 @@ type Blob struct {
 }
 
 type ExchangeResult struct {
-	Control []byte `json:"control"`
-	Blobs   []Blob `json:"blobs"`
+	Operation string `json:"operation"`
+	Control   []byte `json:"control"`
+	Blobs     []Blob `json:"blobs"`
 }
 
 type ClientMethod func(context.Context, Exchange) (ExchangeResult, error)
@@ -49,7 +51,7 @@ type ClientMethod func(context.Context, Exchange) (ExchangeResult, error)
 // fields make the composition mapping explicit and impossible to satisfy with
 // one generic prefix dispatcher.
 type EngineClient struct {
-	ApplyToHandle, CloseDocument, Compile, ExecuteQuery, FindSymbols, FindUsages,
+	ApplyToHandle, ClassifyAuthoringImpact, CloseDocument, Compile, ExecuteQuery, FindSymbols, FindUsages,
 	FormatScope, GetNeighbors, Handshake, InspectSubgraph, ListModules,
 	ListReferences, MaterializeView, OpenDocument, OrganizeWorkspace, PlanExport,
 	PreviewFragment, PreviewOperations, PreviewSourcePatch, ReadDeclarations,
@@ -165,6 +167,7 @@ type BindingMethod struct {
 
 var generatedBindingTable = []BindingMethod{
 	{"EngineApplyToHandle", TargetEngine, "ApplyToHandle", string(engineprotocol.ApplyToHandleRequestEnvelopeOperationValue)},
+	{"EngineClassifyAuthoringImpact", TargetEngine, "ClassifyAuthoringImpact", string(engineprotocol.ClassifyAuthoringImpactRequestEnvelopeOperationValue)},
 	{"EngineCloseDocument", TargetEngine, "CloseDocument", string(engineprotocol.CloseDocumentRequestEnvelopeOperationValue)},
 	{"EngineCompile", TargetEngine, "Compile", string(engineprotocol.CompileRequestEnvelopeOperationValue)},
 	{"EngineExecuteQuery", TargetEngine, "ExecuteQuery", string(engineprotocol.ExecuteQueryRequestEnvelopeOperationValue)},
@@ -272,6 +275,7 @@ func (c ClientSet) Invoke(ctx context.Context, generatedMethod string, exchange 
 	default:
 		return ExchangeResult{}, errors.New("desktop contract: binding target is not executable")
 	}
+	requestID := ""
 	if err := decodeExact(binding, exchange.Control); err != nil {
 		decoder := ownerDecoder(owner)
 		if decoder == nil {
@@ -280,6 +284,12 @@ func (c ClientSet) Invoke(ctx context.Context, generatedMethod string, exchange 
 		identity, decodeErr := decoder.DecodeRequest(binding.Operation, exchange.Control)
 		if decodeErr != nil || identity.Operation != binding.Operation || identity.RequestID == "" {
 			return ExchangeResult{}, errors.New("desktop contract: owner envelope identity is invalid")
+		}
+		requestID = identity.RequestID
+	} else {
+		requestID, err = controlRequestID(exchange.Control)
+		if err != nil {
+			return ExchangeResult{}, errors.New("desktop contract: request identity is invalid")
 		}
 	}
 	field := reflect.ValueOf(owner).FieldByName(binding.ClientMethod)
@@ -290,7 +300,44 @@ func (c ClientSet) Invoke(ctx context.Context, generatedMethod string, exchange 
 	if !ok {
 		return ExchangeResult{}, errors.New("desktop contract: binding client method has an invalid type")
 	}
-	return method(ctx, exchange)
+	result, err := method(ctx, exchange)
+	if err != nil {
+		return ExchangeResult{}, err
+	}
+	if result.Operation != binding.Operation {
+		return ExchangeResult{}, errors.New("desktop contract: response operation does not match binding")
+	}
+	responseID := ""
+	if err := decodeExactResponse(binding, result.Control); err != nil {
+		decoder := ownerDecoder(owner)
+		if decoder == nil {
+			return ExchangeResult{}, errors.New("desktop contract: owner response decoder is unavailable")
+		}
+		identity, decodeErr := decoder.DecodeResponse(binding.Operation, result.Control)
+		if decodeErr != nil || identity.Operation != binding.Operation || identity.RequestID == "" {
+			return ExchangeResult{}, errors.New("desktop contract: owner response envelope identity is invalid")
+		}
+		responseID = identity.RequestID
+	} else {
+		responseID, err = controlRequestID(result.Control)
+		if err != nil {
+			return ExchangeResult{}, errors.New("desktop contract: response identity is invalid")
+		}
+	}
+	if responseID != requestID {
+		return ExchangeResult{}, errors.New("desktop contract: response request ID does not match request")
+	}
+	return result, nil
+}
+
+func controlRequestID(control []byte) (string, error) {
+	var identity struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(control, &identity); err != nil || identity.RequestID == "" {
+		return "", errors.New("invalid envelope request ID")
+	}
+	return identity.RequestID, nil
 }
 
 func ownerDecoder(owner any) OwnerDecoder {
@@ -332,6 +379,9 @@ func decodeExact(binding BindingMethod, control []byte) error {
 	switch binding.Operation {
 	case string(engineprotocol.ApplyToHandleRequestEnvelopeOperationValue):
 		_, err := engineprotocol.DecodeApplyToHandleRequestEnvelope(control)
+		return err
+	case string(engineprotocol.ClassifyAuthoringImpactRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeClassifyAuthoringImpactRequestEnvelope(control)
 		return err
 	case string(engineprotocol.CloseDocumentRequestEnvelopeOperationValue):
 		_, err := engineprotocol.DecodeCloseDocumentRequestEnvelope(control)
@@ -465,6 +515,9 @@ func decodeExactResponse(binding BindingMethod, control []byte) error {
 	switch binding.Operation {
 	case string(engineprotocol.ApplyToHandleRequestEnvelopeOperationValue):
 		_, err := engineprotocol.DecodeApplyToHandleResponseEnvelope(control)
+		return err
+	case string(engineprotocol.ClassifyAuthoringImpactRequestEnvelopeOperationValue):
+		_, err := engineprotocol.DecodeClassifyAuthoringImpactResponseEnvelope(control)
 		return err
 	case string(engineprotocol.CloseDocumentRequestEnvelopeOperationValue):
 		_, err := engineprotocol.DecodeCloseDocumentResponseEnvelope(control)
