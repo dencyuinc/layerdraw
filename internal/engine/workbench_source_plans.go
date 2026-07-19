@@ -77,6 +77,9 @@ type ApplyToHandleResult struct {
 	PreviewDigest      SourcePlannerDigest
 	ResultingHashes    SourcePlannerResultingHashes
 	SourceDiff         SourcePlannerSourceDiff
+	// Attachments carries the exact request-lifetime source blobs referenced by
+	// SourceDiff to the endpoint boundary. It is not part of the wire payload.
+	Attachments SourcePlannerBlobs
 }
 
 // PreviewSourcePatch runs guarded source patches against one retained Working
@@ -208,6 +211,7 @@ func (e Engine) ApplyToHandle(ctx context.Context, input ApplyToHandleInput) (Ap
 	authoringImpact := retained.authoringImpact
 	resultingHashes := retained.resultingHashes
 	previewDigest := retained.previewDigest
+	attachments := clonePlannerBlobs(retained.attachments)
 	store.mu.RUnlock()
 
 	replacement, err := e.compileWorkingSnapshot(ctx, candidate)
@@ -258,6 +262,7 @@ func (e Engine) ApplyToHandle(ctx context.Context, input ApplyToHandleInput) (Ap
 		PreviewDigest:      SourcePlannerDigest(previewDigest),
 		ResultingHashes:    resultingHashes,
 		SourceDiff:         sourceDiff,
+		Attachments:        attachments,
 	}, nil
 }
 
@@ -280,6 +285,7 @@ func (e Engine) retainPreview(ctx context.Context, document *workingDocument, pl
 		sourceDiff:      preview.SourceDiff,
 		authoringImpact: *preview.AuthoringImpact,
 		resultingHashes: *preview.ResultingHashes,
+		attachments:     clonePlannerBlobs(plan.Attachments),
 	}
 	retained.retained = retainedPreviewBytes(retained)
 
@@ -341,6 +347,7 @@ func retainedPreviewBytes(preview *retainedPreview) int64 {
 	total = saturatingAdd(total, retainedOwnedBytes(preview.sourceDiff))
 	total = saturatingAdd(total, retainedOwnedBytes(preview.authoringImpact))
 	total = saturatingAdd(total, retainedOwnedBytes(preview.resultingHashes))
+	total = saturatingAdd(total, retainedOwnedBytes(preview.attachments))
 	return total
 }
 

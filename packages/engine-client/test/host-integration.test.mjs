@@ -122,9 +122,33 @@ test("local host exposes generated Runtime operations and the existing Engine fa
     assert.equal(client.hasCapability(operation), false, operation);
   }
   assert.equal(client.engine.hasCapability("engine.compile"), true);
-  const compilation = await client.engine.compile(makePortableRequest(persistenceCorpus.workflow.initial_source).request);
+  assert.equal(client.engine.getCapabilities().operations["engine.preview_operations"].enabled, true);
+  const portable = makePortableRequest(persistenceCorpus.workflow.initial_source);
+  const compilation = await client.engine.compile(portable.request);
   assert.equal(compilation.outcome, "success");
   const compiled = compilation.response.payload;
+
+  const engineOpened = await client.engine.workbench.openDocument({
+    compile_input: portable.request.input,
+    requested_limits: { max_items: "10000", max_output_bytes: "67108864" },
+  }, { blobs: portable.request.blobs });
+  assert.equal(engineOpened.outcome, "success");
+  const engineGeneration = engineOpened.response.payload.document_generation;
+  const enginePreconditions = { ...preconditions(compiled), document_generation: engineGeneration };
+  const enginePreview = await client.engine.workbench.previewOperations({
+    batch: { operations: [{ operation: "create_subject", subject_kind: "layer", parent_address: "ldl:project:p", id: "browser_editor", fields: { display_name: "Browser Editor", order: "99" } }] },
+    limits: { max_items: "10000", max_output_bytes: "67108864" },
+    preconditions: enginePreconditions,
+  });
+  assert.equal(enginePreview.outcome, "success", JSON.stringify(enginePreview));
+  assert.equal(enginePreview.response.payload.status, "valid");
+  const engineApplied = await client.engine.workbench.applyToHandle({
+    base_generation: enginePreview.response.payload.base_generation,
+    preview_digest: enginePreview.response.payload.preview_digest,
+    preview_id: enginePreview.response.payload.preview_id,
+  });
+  assert.equal(engineApplied.outcome, "success", JSON.stringify(engineApplied));
+  assert.equal(engineApplied.response.payload.document_generation.value, "2");
 
   const opened = await client.openDocument({
     document_id: "bootstrap",

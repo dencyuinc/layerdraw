@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-import type { EditorEdit } from "@layerdraw/composer";
+import type { ComposerIntent, ComposerSnapshot, EditorEdit } from "@layerdraw/composer";
 import type { EngineClient } from "@layerdraw/engine-client";
 import type { AuthoringDecision, AuthoringGrantSummary } from "@layerdraw/protocol/access";
 import type {
@@ -24,8 +24,12 @@ import type {
   OpenRuntimeDocumentInput,
   OpenRuntimeDocumentResult,
   OperationResult,
+  AuthoringProof,
+  RuntimeCommitInput,
   RuntimeCapabilityManifest,
   RuntimeCommitResult,
+  RuntimeOperationBatch,
+  RuntimeSessionRef,
 } from "@layerdraw/protocol/runtime";
 import type { Diagnostic, ViewData } from "@layerdraw/protocol/semantic";
 
@@ -86,45 +90,73 @@ export type EditorApplyResult =
       committed_revision?: never;
     }>;
 
-export interface HostWriteReceipt {
+export interface HostWriteReceipt extends Readonly<Record<string, unknown>> {
   readonly receipt_id: string;
   readonly persistence_claim: "host_defined";
 }
 
 export interface BrowserEditor {
   open(input: BrowserDocumentInput): Promise<BrowserDocumentSession>;
-  preview(edit: EditorEdit): Promise<EditorPreviewResult>;
+  preview(edit: EditorEdit, options?: Readonly<{ intent_id?: string; inverse?: EditorEdit }>): Promise<EditorPreviewResult>;
   apply(edit: EditorEdit): Promise<EditorApplyResult>;
+  undo(): Promise<ComposerSnapshot>;
+  redo(): Promise<ComposerSnapshot>;
+  retry(): Promise<ComposerSnapshot>;
+  cancelPreview(): ComposerSnapshot;
+  snapshot(): ComposerSnapshot;
+  subscribe(listener: (snapshot: ComposerSnapshot) => void): () => void;
   materializeView(input: MaterializeViewInput): Promise<ViewData>;
   close(): Promise<void>;
 }
 
 export interface DocumentProvider {
-  open(input: BrowserDocumentInput): Promise<unknown>;
-  read(): Promise<unknown>;
-  writeWithPrecondition(input: unknown): Promise<HostWriteReceipt>;
+  open(input: BrowserDocumentInput, signal: AbortSignal): Promise<unknown>;
+  read(signal: AbortSignal): Promise<unknown>;
+  writeWithPrecondition(input: unknown, signal: AbortSignal): Promise<HostWriteReceipt>;
   close(): Promise<void>;
 }
 
 export interface AssetResolver {
-  resolve(logicalRef: string): Promise<Uint8Array>;
-  put(bytes: Uint8Array): Promise<string>;
+  resolve(logicalRef: string, signal: AbortSignal): Promise<Uint8Array>;
+  put(bytes: Uint8Array, signal: AbortSignal): Promise<string>;
   describeCapability(): Readonly<Record<string, unknown>>;
+  dispose?(): Promise<void>;
 }
 
 export interface AuthoringAccessClient {
-  getEffectiveGrant(): Promise<AuthoringGrantSummary>;
-  evaluatePreview(preview: WorkbenchPreviewResult): Promise<AuthoringDecision>;
+  getEffectiveGrant(signal: AbortSignal): Promise<AuthoringGrantSummary>;
+  evaluatePreview(preview: WorkbenchPreviewResult, signal: AbortSignal): Promise<AuthoringDecision>;
 }
 
 export interface ApprovalHandler {
-  requestApproval(preview: EditorPreviewResult): Promise<"approved" | "cancelled" | "denied">;
-  reportResult(result: EditorApplyResult): Promise<void>;
+  requestApproval(preview: EditorPreviewResult, signal: AbortSignal): Promise<"approved" | "cancelled" | "denied">;
+  reportResult(result: EditorApplyResult, signal: AbortSignal): Promise<void>;
+}
+
+export interface BrowserRuntimePreviewResult {
+  readonly preview: WorkbenchPreviewResult;
+  readonly authoring_proof: AuthoringProof;
+  readonly operation_batch: RuntimeOperationBatch;
+  readonly authoring_decision: AuthoringDecision;
+  readonly grant_summary: AuthoringGrantSummary;
 }
 
 export interface BrowserRuntimeClient {
   getCapabilities(): RuntimeCapabilityManifest;
+  openDocument(input: OpenRuntimeDocumentInput, options: Readonly<{ signal: AbortSignal }>): Promise<OpenRuntimeDocumentResult>;
+  previewEditor(edit: EditorEdit, session: OpenRuntimeDocumentResult, options: Readonly<{ signal: AbortSignal }>): Promise<BrowserRuntimePreviewResult>;
+  commitOperations(input: RuntimeCommitInput, options: Readonly<{ signal: AbortSignal }>): Promise<RuntimeCommitResult>;
+  materializeView(input: MaterializeViewInput, session: RuntimeSessionRef, options: Readonly<{ signal: AbortSignal }>): Promise<ViewData>;
+  closeDocument(session: RuntimeSessionRef, options: Readonly<{ signal: AbortSignal }>): Promise<void>;
+  dispose?(): Promise<void>;
 }
+
+export type RuntimeCommitInputFactory = (context: Readonly<{
+  edit: EditorEdit;
+  session: OpenRuntimeDocumentResult;
+  authoring_proof: AuthoringProof;
+  operation_batch: RuntimeOperationBatch;
+}>) => RuntimeCommitInput;
 
 export interface BrowserEditorOptions {
   readonly engine_client: EngineClient;
@@ -132,10 +164,13 @@ export interface BrowserEditorOptions {
   readonly authoring_access_client?: AuthoringAccessClient;
   readonly document_provider?: DocumentProvider;
   readonly asset_resolver: AssetResolver;
-  readonly capability_manifest: CapabilityManifest | RuntimeCapabilityManifest;
+  /** Additional host-declared capabilities. Transport capabilities are always
+   * read from the selected Engine or Runtime and cannot be fabricated here. */
+  readonly capability_manifest?: CapabilityManifest | RuntimeCapabilityManifest;
   readonly required_capabilities?: readonly CapabilityID[];
   readonly optional_capabilities?: readonly CapabilityID[];
   readonly approval_handler?: ApprovalHandler;
+  readonly runtime_commit_input_factory?: RuntimeCommitInputFactory;
 }
 
 export type BrowserEditorFactory = (options: BrowserEditorOptions) => BrowserEditor;

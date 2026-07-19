@@ -173,6 +173,14 @@ func (driver *fakeWorkbenchDriver) PreviewFragment(_ context.Context, input engi
 	return driver.plan, nil
 }
 
+func (driver *fakeWorkbenchDriver) PreviewOperations(_ context.Context, _ engineprotocol.PreviewOperationsInput) (engineprotocol.WorkbenchPreviewResult, []OutputBlob, error) {
+	var result engineprotocol.WorkbenchPreviewResult
+	if err := convertStruct(driver.plan.Preview, &result); err != nil {
+		return result, nil, err
+	}
+	return result, sourcePlanOutputBlobs(driver.plan), driver.err
+}
+
 func (driver *fakeWorkbenchDriver) FormatScope(_ context.Context, input engine.FormatScopeInput) (engine.SourcePlannerPlan, error) {
 	driver.generation = input.DocumentGeneration
 	return driver.plan, nil
@@ -1566,6 +1574,7 @@ func TestWorkbenchTerminalEnvelopeSupportsEveryOperation(t *testing.T) {
 		OperationReadReferences,
 		OperationPreviewSourcePatch,
 		OperationPreviewFragment,
+		OperationPreviewOperations,
 		OperationFormatScope,
 		OperationOrganizeWorkspace,
 		OperationApplyToHandle,

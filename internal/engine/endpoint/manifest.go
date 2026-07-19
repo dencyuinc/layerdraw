@@ -66,6 +66,7 @@ func operationCapabilities(version protocolcommon.ProtocolVersion, compileLimits
 		OperationOpenDocument,
 		OperationOrganizeWorkspace,
 		OperationPreviewFragment,
+		OperationPreviewOperations,
 		OperationPreviewSourcePatch,
 		OperationReadDeclarations,
 		OperationReadModules,

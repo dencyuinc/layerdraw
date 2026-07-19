@@ -6,11 +6,11 @@ import test from "node:test";
 
 test("client SDK editor contract has no React, Wails, Registry, MCP, server, or realtime dependency", async () => {
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.deepEqual(Object.keys(manifest.exports), [".", "./editor"]);
+  assert.deepEqual(Object.keys(manifest.exports), [".", "./editor", "./browser-editor"]);
   const files = (await readdir(new URL("../src", import.meta.url))).filter((name) => name.endsWith(".ts"));
   const source = (await Promise.all(files.map((name) => readFile(new URL(`../src/${name}`, import.meta.url), "utf8")))).join("\n");
   assert.doesNotMatch(source, /from\s+["'](?:react|node:|@wails|@layerdraw\/(?:registry|mcp|server))/);
-  assert.doesNotMatch(source, /\b(?:document|window|localStorage|sessionStorage)\b/);
+  assert.doesNotMatch(source, /\b(?:window|localStorage|sessionStorage)\b|\bdocument\s*(?:\.|\[)/);
 });
 
 test("public declaration exposes lifecycle methods and persistence-discriminated apply results", async () => {

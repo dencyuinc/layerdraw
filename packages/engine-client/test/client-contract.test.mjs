@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
   EngineClientBackpressureError,
@@ -22,6 +23,11 @@ import {
   successResponse,
   waitFor,
 } from "./support.mjs";
+
+const previewOperationsEnvelope = JSON.parse(await readFile(
+  new URL("../../../schemas/fixtures/engine/workbench-preview-operations-request.json", import.meta.url),
+  "utf8",
+));
 
 async function create(overrides, options = {}) {
   const factory = await makeFactory(overrides);
@@ -218,6 +224,7 @@ test("workbench facade routes generated operations without interpreting LDL", as
       limits,
       preconditions,
     }, { blobs: [{ ref: sourceBlob, bytes: sourceBytes }] }],
+    ["previewOperations", previewOperationsEnvelope.payload, {}],
     ["formatScope", { limits, preconditions, scope_addresses: ["ldl:project:p:entity:alpha"] }, {}],
     ["organizeWorkspace", { limits, preconditions, strategy: "standard_layout" }, {}],
     ["applyToHandle", {
@@ -256,6 +263,7 @@ test("workbench facade routes generated operations without interpreting LDL", as
     { operation: "engine.read_references", blobs: 0 },
     { operation: "engine.preview_source_patch", blobs: 1 },
     { operation: "engine.preview_fragment", blobs: 1 },
+    { operation: "engine.preview_operations", blobs: 0 },
     { operation: "engine.format_scope", blobs: 0 },
     { operation: "engine.organize_workspace", blobs: 0 },
     { operation: "engine.apply_to_handle", blobs: 0 },
