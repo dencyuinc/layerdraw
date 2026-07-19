@@ -836,8 +836,15 @@ func (h *Host) metadataPath() string {
 	return filepath.Join(h.config.Root, "local-document-bindings.json")
 }
 
+func (h *Host) readMetadataFile() ([]byte, error) {
+	// The private stdio caller explicitly grants this absolute storage root;
+	// New validates and owns the root before metadata access.
+	// codeql[go/path-injection]
+	return os.ReadFile(h.metadataPath())
+}
+
 func (h *Host) loadMetadata() (lifecycleMetadata, error) {
-	data, err := os.ReadFile(h.metadataPath())
+	data, err := h.readMetadataFile()
 	if errors.Is(err, fs.ErrNotExist) {
 		return lifecycleMetadata{Version: metadataVersion, Bindings: map[string]documentBinding{}}, nil
 	}

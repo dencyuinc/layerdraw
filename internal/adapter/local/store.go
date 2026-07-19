@@ -125,7 +125,7 @@ func NewRecoveryJournal(root string, o Options) (*Recovery, error) {
 func secureRoot(root string) error {
 	existed := false
 	for p := root; ; p = filepath.Dir(p) {
-		info, err := os.Lstat(p)
+		info, err := trustedPathLstat(p)
 		if err == nil {
 			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 				return fmt.Errorf("local adapter root crosses non-directory or symlink: %w", port.ErrConflict)
@@ -133,14 +133,14 @@ func secureRoot(root string) error {
 			if p == root {
 				existed = true
 				if info.Mode().Perm() != dirMode {
-					entries, readErr := os.ReadDir(root)
+					entries, readErr := trustedPathReadDir(root)
 					if readErr != nil {
 						return classify(readErr)
 					}
 					if len(entries) != 0 {
 						return fmt.Errorf("local adapter root permissions are not private: %w", port.ErrConflict)
 					}
-					if chmodErr := os.Chmod(root, dirMode); chmodErr != nil {
+					if chmodErr := trustedPathChmod(root, dirMode); chmodErr != nil {
 						return classify(chmodErr)
 					}
 				}
@@ -155,15 +155,15 @@ func secureRoot(root string) error {
 			break
 		}
 	}
-	if err := os.MkdirAll(root, dirMode); err != nil {
+	if err := trustedPathMkdirAll(root, dirMode); err != nil {
 		return classify(err)
 	}
 	if !existed {
-		if err := os.Chmod(root, dirMode); err != nil {
+		if err := trustedPathChmod(root, dirMode); err != nil {
 			return classify(err)
 		}
 	}
-	info, err := os.Lstat(root)
+	info, err := trustedPathLstat(root)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("unsafe local adapter root: %w", port.ErrConflict)
 	}

@@ -292,7 +292,7 @@ func (s *ExternalFileStore) Abort(ctx context.Context, input port.AbortExternalF
 		if err := s.removeOwnedExternalPath(stage, stage.StagedPath, false); err != nil {
 			return err
 		}
-		if err := os.Remove(metadata); err != nil {
+		if err := trustedPathRemove(metadata); err != nil {
 			return err
 		}
 		return syncExternalDir(filepath.Dir(metadata))
@@ -352,7 +352,7 @@ func (s *ExternalFileStore) cleanupExternalArtifacts(dir string, stage externalS
 		return err
 	}
 	metadata := s.stageMetadataPath(dir, stage.Stage.StageID)
-	if err := os.Remove(metadata); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := trustedPathRemove(metadata); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return syncExternalDir(filepath.Dir(metadata))
@@ -367,7 +367,7 @@ func (s *ExternalFileStore) removeOwnedExternalPath(stage externalStageDisk, tar
 			if err := ensureOwnedExternalPath(target, false); err != nil {
 				return err
 			}
-			contents, err := os.ReadFile(target)
+			contents, err := trustedPathReadFile(target)
 			if err != nil {
 				return err
 			}
@@ -392,10 +392,10 @@ func (s *ExternalFileStore) removeOwnedExternalPath(stage externalStageDisk, tar
 		return err
 	}
 	if stage.Kind == port.ExternalFileKindContainer {
-		if err := os.Remove(target); err != nil {
+		if err := trustedPathRemove(target); err != nil {
 			return err
 		}
-	} else if err := os.RemoveAll(target); err != nil {
+	} else if err := trustedPathRemoveAll(target); err != nil {
 		return err
 	}
 	return syncExternalDir(filepath.Dir(target))
@@ -467,7 +467,7 @@ func (s *ExternalFileStore) validateOwnedProjectTree(stage externalStageDisk, ro
 
 func (s *ExternalFileStore) currentVersion(binding externalBindingDisk) (runtimeprotocol.ProviderVersionToken, []string, error) {
 	if binding.Kind == port.ExternalFileKindContainer {
-		contents, err := os.ReadFile(binding.Locator)
+		contents, err := trustedPathReadFile(binding.Locator)
 		if err != nil {
 			return "", nil, err
 		}
@@ -573,7 +573,7 @@ func (s *ExternalFileStore) writeExternalStage(path string, value port.ExternalM
 		return err
 	}
 	if value.Kind == port.ExternalFileKindContainer {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		file, err := trustedPathOpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err
 		}
@@ -589,7 +589,7 @@ func (s *ExternalFileStore) writeExternalStage(path string, value port.ExternalM
 		}
 		return syncExternalDir(filepath.Dir(path))
 	}
-	if err := os.Mkdir(path, 0o700); err != nil {
+	if err := trustedPathMkdir(path, 0o700); err != nil {
 		return err
 	}
 	directories := map[string]struct{}{path: {}}
@@ -611,7 +611,7 @@ func (s *ExternalFileStore) writeExternalStage(path string, value port.ExternalM
 				break
 			}
 		}
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		f, err := trustedPathOpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err
 		}
@@ -633,7 +633,7 @@ func (s *ExternalFileStore) writeExternalStage(path string, value port.ExternalM
 		}
 	}
 	marker := filepath.Join(path, externalOwnerMarker)
-	markerFile, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	markerFile, err := trustedPathOpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -690,7 +690,7 @@ func (s *ExternalFileStore) publishProject(binding externalBindingDisk, stage ex
 		if err := ensureExternalRoot(filepath.Dir(stage.BackupPath), true); err != nil {
 			return err
 		}
-		if err := os.Mkdir(stage.BackupPath, 0o700); err != nil {
+		if err := trustedPathMkdir(stage.BackupPath, 0o700); err != nil {
 			return err
 		}
 		if err := writeExternalOwnerMarker(stage.BackupPath, externalOwner(stage.Stage.StageID, stage.Stage.MaterializationDigest)); err != nil {
@@ -726,7 +726,7 @@ func (s *ExternalFileStore) publishProject(binding externalBindingDisk, stage ex
 			if err := requireExternalAbsent(backup); err != nil {
 				return err
 			}
-			if err := os.Rename(target, backup); err != nil {
+			if err := trustedPathRename(target, backup); err != nil {
 				return err
 			}
 			if err := syncExternalRename(target, backup); err != nil {
@@ -764,7 +764,7 @@ func (s *ExternalFileStore) publishProject(binding externalBindingDisk, stage ex
 			if err := requireExternalAbsent(target); err != nil {
 				return err
 			}
-			if err := os.Rename(staged, target); err != nil {
+			if err := trustedPathRename(staged, target); err != nil {
 				return err
 			}
 			if err := syncExternalRename(staged, target); err != nil {
@@ -786,7 +786,7 @@ func (s *ExternalFileStore) publishContainer(binding externalBindingDisk, stage 
 		if err := requireExternalAbsent(stage.BackupPath); err != nil {
 			return err
 		}
-		if err := os.Rename(binding.Locator, stage.BackupPath); err != nil {
+		if err := trustedPathRename(binding.Locator, stage.BackupPath); err != nil {
 			return err
 		}
 		if err := syncExternalRename(binding.Locator, stage.BackupPath); err != nil {
@@ -805,7 +805,7 @@ func (s *ExternalFileStore) publishContainer(binding externalBindingDisk, stage 
 		if err := requireExternalAbsent(binding.Locator); err != nil {
 			return err
 		}
-		if err := os.Rename(stage.StagedPath, binding.Locator); err != nil {
+		if err := trustedPathRename(stage.StagedPath, binding.Locator); err != nil {
 			return err
 		}
 		return syncExternalRename(stage.StagedPath, binding.Locator)
@@ -880,7 +880,7 @@ func externalFileDigests(files []port.ExternalProjectFile) map[string]protocolco
 
 func writeExternalOwnerMarker(root, owner string) error {
 	marker := filepath.Join(root, externalOwnerMarker)
-	file, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	file, err := trustedPathOpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -903,7 +903,7 @@ func validateExternalOwnerMarker(root, owner string) error {
 	if err := ensureExternalManagedFile(root, marker); err != nil {
 		return err
 	}
-	contents, err := os.ReadFile(marker)
+	contents, err := trustedPathReadFile(marker)
 	if err != nil || string(contents) != owner {
 		return port.ErrConflict
 	}
@@ -935,7 +935,7 @@ func externalDigestBytes(value []byte) protocolcommon.Digest {
 }
 
 func externalExists(path string) bool {
-	_, err := os.Lstat(path)
+	_, err := trustedPathLstat(path)
 	return err == nil
 }
 
@@ -944,7 +944,7 @@ func externalMissing(err error) bool {
 }
 
 func requireExternalAbsent(path string) error {
-	_, err := os.Lstat(path)
+	_, err := trustedPathLstat(path)
 	if err == nil {
 		return port.ErrConflict
 	}
@@ -960,7 +960,7 @@ func ensureExternalRoot(root string, wantDirectory bool) error {
 	if err != nil || real != clean {
 		return port.ErrConflict
 	}
-	info, err := os.Lstat(clean)
+	info, err := trustedPathLstat(clean)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 {
 		return port.ErrConflict
 	}
@@ -988,7 +988,7 @@ func ensureExternalManagedParent(root, target string, allowMissing bool) error {
 	}
 	for _, part := range strings.Split(parent, string(filepath.Separator)) {
 		current = filepath.Join(current, part)
-		info, statErr := os.Lstat(current)
+		info, statErr := trustedPathLstat(current)
 		if errors.Is(statErr, fs.ErrNotExist) && allowMissing {
 			continue
 		}
@@ -1003,7 +1003,7 @@ func ensureExternalManagedFile(root, target string) error {
 	if err := ensureExternalManagedParent(root, target, false); err != nil {
 		return err
 	}
-	info, err := os.Lstat(target)
+	info, err := trustedPathLstat(target)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return port.ErrConflict
 	}
@@ -1025,15 +1025,15 @@ func mkdirExternalManagedParents(root, target string) error {
 	for _, part := range strings.Split(relative, string(filepath.Separator)) {
 		parent := current
 		current = filepath.Join(current, part)
-		info, statErr := os.Lstat(current)
+		info, statErr := trustedPathLstat(current)
 		if errors.Is(statErr, fs.ErrNotExist) {
-			if err := os.Mkdir(current, 0o700); err != nil {
+			if err := trustedPathMkdir(current, 0o700); err != nil {
 				return err
 			}
 			if err := syncExternalDir(parent); err != nil {
 				return err
 			}
-			info, statErr = os.Lstat(current)
+			info, statErr = trustedPathLstat(current)
 		}
 		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return port.ErrConflict
@@ -1047,7 +1047,7 @@ func ensureOwnedExternalPath(path string, wantDirectory bool) error {
 	if err := ensureExternalRoot(parent, true); err != nil {
 		return err
 	}
-	info, err := os.Lstat(path)
+	info, err := trustedPathLstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 {
 		return port.ErrConflict
 	}
@@ -1071,7 +1071,7 @@ func syncExternalRename(source, destination string) error {
 }
 
 func syncExternalDir(path string) error {
-	directory, err := os.Open(path)
+	directory, err := trustedPathOpen(path)
 	if err != nil {
 		return err
 	}
