@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"time"
@@ -50,6 +51,13 @@ func stateSnapshotError(code StateSnapshotErrorCode) *StateSnapshotError {
 type StateAddressMove struct {
 	SourceAddress semantic.StableAddress
 	TargetAddress semantic.StableAddress
+}
+
+func checkedCombinedCapacity(left, right int) (int, bool) {
+	if left < 0 || right < 0 || left > math.MaxInt-right {
+		return 0, false
+	}
+	return left + right, true
 }
 
 // StateQueryDefinition is trusted Engine output for one fixed definition.
@@ -336,7 +344,11 @@ func (r *Runtime) projectStateQuerySnapshot(ctx context.Context, input BuildStat
 		}
 		validatedSources[record.SubjectAddress] = true
 	}
-	authorizationSubjects := make(map[semantic.StableAddress]semantic.StateSubjectKind, len(active)+len(state.Records))
+	authorizationCapacity, ok := checkedCombinedCapacity(len(active), len(state.Records))
+	if !ok {
+		return BuiltStateQueryInput{}, stateSnapshotError(StateSnapshotInvalid)
+	}
+	authorizationSubjects := make(map[semantic.StableAddress]semantic.StateSubjectKind, authorizationCapacity)
 	for address, subject := range active {
 		authorizationSubjects[address] = subject.kind
 	}
@@ -387,7 +399,11 @@ func (r *Runtime) projectStateQuerySnapshot(ctx context.Context, input BuildStat
 
 	seenActive := map[semantic.StableAddress]bool{}
 	seenSnapshot := map[semantic.StableAddress]bool{}
-	records := make([]CanonicalStateRecord, 0, len(state.Records)+len(active))
+	recordCapacity, ok := checkedCombinedCapacity(len(state.Records), len(active))
+	if !ok {
+		return BuiltStateQueryInput{}, stateSnapshotError(StateSnapshotInvalid)
+	}
+	records := make([]CanonicalStateRecord, 0, recordCapacity)
 	subjects := make([]semantic.StateQuerySubject, 0, len(state.Records))
 	for _, raw := range state.Records {
 		address := raw.SubjectAddress

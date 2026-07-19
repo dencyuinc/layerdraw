@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -18,6 +19,32 @@ import (
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
+
+func TestCheckedCombinedCapacityBoundaries(t *testing.T) {
+	tests := []struct {
+		name      string
+		left      int
+		right     int
+		want      int
+		wantValid bool
+	}{
+		{name: "zero", left: 0, right: 0, want: 0, wantValid: true},
+		{name: "maximum left", left: math.MaxInt, right: 0, want: math.MaxInt, wantValid: true},
+		{name: "maximum sum", left: math.MaxInt - 1, right: 1, want: math.MaxInt, wantValid: true},
+		{name: "overflow right", left: math.MaxInt, right: 1, wantValid: false},
+		{name: "overflow left", left: 1, right: math.MaxInt, wantValid: false},
+		{name: "negative left", left: -1, right: 1, wantValid: false},
+		{name: "negative right", left: 1, right: -1, wantValid: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, valid := checkedCombinedCapacity(tc.left, tc.right)
+			if got != tc.want || valid != tc.wantValid {
+				t.Fatalf("got=(%d,%v) want=(%d,%v)", got, valid, tc.want, tc.wantValid)
+			}
+		})
+	}
+}
 
 func TestBuildStateQuerySnapshotCanonicalizesAllSubjectKindsAfterAuthorization(t *testing.T) {
 	t.Parallel()
