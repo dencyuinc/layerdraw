@@ -99,7 +99,7 @@ func (h *HostBinding) Dispatch(ctx context.Context, wire []byte) []byte {
 		err = decodeStrict(request.Input, &input)
 		if err == nil {
 			err = h.registry.ConfigureSource(input.Source)
-			value = input.Source
+			value, _ = h.registry.getSource(input.Source.SourceID)
 		}
 	case WireConnectSource:
 		var input RegistryConnectionInput

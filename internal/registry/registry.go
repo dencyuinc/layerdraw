@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,6 +78,7 @@ type RegistrySource struct {
 	CachePolicy       string     `json:"cache_policy"`
 	Priority          int        `json:"priority"`
 	Connected         bool       `json:"connected"`
+	Revision          uint64     `json:"revision"`
 }
 
 type ArtifactKind string
@@ -93,9 +95,10 @@ type ArtifactIdentity struct {
 }
 
 type Dependency struct {
-	CanonicalID      string `json:"canonical_id"`
-	VersionRange     string `json:"version_range"`
-	DigestConstraint string `json:"digest_constraint,omitempty"`
+	Kind             ArtifactKind `json:"kind"`
+	CanonicalID      string       `json:"canonical_id"`
+	VersionRange     string       `json:"version_range"`
+	DigestConstraint string       `json:"digest_constraint,omitempty"`
 }
 
 type SignatureEnvelope struct {
@@ -159,6 +162,11 @@ type SearchInput struct {
 }
 type SourceClient interface {
 	Search(context.Context, RegistrySource, SearchInput) ([]ArtifactRelease, error)
+}
+type StreamingSourceClient interface {
+	OpenArtifact(context.Context, RegistrySource, ArtifactRelease) (io.ReadCloser, error)
+}
+type ByteSourceClient interface {
 	Download(context.Context, RegistrySource, ArtifactRelease) ([]byte, error)
 }
 
@@ -178,6 +186,44 @@ type ValidatedArtifact struct {
 // never parses ZIP entries, LDL, resolved trees, or package manifests itself.
 type PackageValidator interface {
 	ValidateRegistryArtifact(context.Context, ArtifactRelease, []byte) (ValidatedArtifact, error)
+	BuildRegistryMutationPlan(context.Context, RegistryMutationBuildInput) (ProjectMutationPlan, error)
+}
+
+type SourceEdit struct {
+	Path         string `json:"path"`
+	BeforeDigest string `json:"before_digest,omitempty"`
+	AfterDigest  string `json:"after_digest"`
+}
+type StateMigrationProposal struct {
+	ProposalDigest   string   `json:"proposal_digest"`
+	AffectedSubjects []string `json:"affected_subjects"`
+}
+type ProjectMutationPlan struct {
+	RegistryTransactionID      string                   `json:"registry_transaction_id"`
+	PlanDigest                 string                   `json:"plan_digest"`
+	BaseProjectRevision        string                   `json:"base_project_revision,omitempty"`
+	ExpectedDefinitionHash     string                   `json:"expected_definition_hash,omitempty"`
+	ExpectedResolvedLockDigest string                   `json:"expected_resolved_lock_digest,omitempty"`
+	StagedTreeManifest         string                   `json:"staged_tree_manifest"`
+	ResolvedLockDelta          ResolvedLockDelta        `json:"resolved_lock_delta"`
+	SourceEdits                []SourceEdit             `json:"source_edits"`
+	AddressMigrationPlanDigest string                   `json:"address_migration_plan_digest,omitempty"`
+	StateMigrationProposal     *StateMigrationProposal  `json:"state_migration_proposal,omitempty"`
+	TrustPolicyDigest          string                   `json:"trust_policy_digest"`
+	MutationDigest             string                   `json:"mutation_digest"`
+	AuthoringImpact            semantic.AuthoringImpact `json:"authoring_impact"`
+	AuthoringImpactDigest      string                   `json:"authoring_impact_digest"`
+	HostOperationImpactDigest  string                   `json:"host_operation_impact_digest"`
+	EvaluationDigest           string                   `json:"evaluation_digest"`
+}
+type RegistryMutationBuildInput struct {
+	Action             Action                    `json:"action"`
+	Project            ProjectState              `json:"project"`
+	Artifacts          []PlanArtifact            `json:"artifacts"`
+	DependencySnapshot ProjectDependencySnapshot `json:"dependency_snapshot"`
+	ResolvedLockDelta  ResolvedLockDelta         `json:"resolved_lock_delta"`
+	Requested          ArtifactIdentity          `json:"requested"`
+	NewDocumentID      string                    `json:"new_document_id,omitempty"`
 }
 
 type AuthorArtifactRequest struct {
@@ -232,10 +278,14 @@ type PlanRequest struct {
 }
 
 type LockedArtifact struct {
-	Identity ArtifactIdentity `json:"identity"`
-	SourceID string           `json:"source_id"`
-	Digest   string           `json:"digest"`
-	Pinned   bool             `json:"pinned"`
+	Identity                 ArtifactIdentity   `json:"identity"`
+	SourceID                 string             `json:"source_id"`
+	PublisherID              string             `json:"publisher_id"`
+	Digest                   string             `json:"digest"`
+	ProvenanceDigest         string             `json:"provenance_digest"`
+	DependencyMetadataDigest string             `json:"dependency_metadata_digest"`
+	Dependencies             []ArtifactIdentity `json:"dependencies"`
+	Pinned                   bool               `json:"pinned"`
 }
 type ProjectDependencySnapshot struct {
 	ResolvedLockDigest string           `json:"resolved_lock_digest"`
@@ -290,6 +340,10 @@ type InstallPlan struct {
 	HostOperationImpacts       []accessprotocol.HostOperationImpact `json:"host_operation_impacts"`
 	AccessDecision             accessprotocol.AuthoringDecision     `json:"access_decision"`
 	HostCapabilitiesDigest     string                               `json:"host_capabilities_digest"`
+	ProjectMutationPlan        ProjectMutationPlan                  `json:"project_mutation_plan"`
+	NewDocumentID              string                               `json:"new_document_id,omitempty"`
+	RuntimeSessionID           string                               `json:"runtime_session_id"`
+	LeaseToken                 string                               `json:"lease_token,omitempty"`
 }
 
 type RuntimeCommitInput struct {
@@ -299,13 +353,34 @@ type RuntimeCommitInput struct {
 	AuthoringImpact      *semantic.AuthoringImpact            `json:"authoring_impact,omitempty"`
 	HostOperationImpacts []accessprotocol.HostOperationImpact `json:"host_operation_impacts"`
 	AccessDecision       accessprotocol.AuthoringDecision     `json:"access_decision"`
+	MutationPlan         ProjectMutationPlan                  `json:"mutation_plan"`
+	RuntimeSessionID     string                               `json:"runtime_session_id"`
+	LeaseToken           string                               `json:"lease_token,omitempty"`
 }
 type RuntimeCommitResult struct {
-	CommittedRevision string `json:"committed_revision"`
-	OperationResultID string `json:"operation_result_id"`
+	CommittedRevision        string `json:"committed_revision"`
+	OperationResultID        string `json:"operation_result_id"`
+	DocumentID               string `json:"document_id"`
+	InitialCommittedRevision bool   `json:"initial_committed_revision"`
 }
 type RuntimePort interface {
 	CommitRegistryPlan(context.Context, RuntimeCommitInput) (RuntimeCommitResult, error)
+}
+type RuntimeRegistryStatus string
+
+const (
+	RuntimeRegistryUnknown    RuntimeRegistryStatus = "unknown"
+	RuntimeRegistryCommitted  RuntimeRegistryStatus = "committed"
+	RuntimeRegistrySuperseded RuntimeRegistryStatus = "superseded"
+)
+
+type RuntimeRegistryOutcome struct {
+	Status              RuntimeRegistryStatus
+	Result              RuntimeCommitResult
+	SupersedingRevision string
+}
+type RuntimeRecoveryPort interface {
+	LookupRegistryCommit(context.Context, string, string, string) (RuntimeRegistryOutcome, error)
 }
 type AccessPort interface {
 	EvaluateRegistryPlan(context.Context, accessprotocol.EvaluateAuthoringInput) (accessprotocol.AuthoringDecision, error)
@@ -322,9 +397,14 @@ type ProjectState struct {
 	PackTreeManifest    string
 	HostCapabilities    []string
 	GrantSnapshot       accessprotocol.AuthoringGrantSnapshot
+	RuntimeSessionID    string
+	LeaseToken          string
 }
 type ProjectStatePort interface {
 	CurrentRegistryProjectState(context.Context, string) (ProjectState, error)
+}
+type TemplateDocumentPort interface {
+	NewRegistryDocumentState(context.Context, ArtifactIdentity) (ProjectState, error)
 }
 
 type CredentialLease struct {
@@ -343,12 +423,17 @@ type TransactionState string
 
 const (
 	StatePlanned              TransactionState = "planned"
+	StateDownloading          TransactionState = "downloading"
 	StateVerified             TransactionState = "verified"
+	StateExpandedStaged       TransactionState = "expanded_staged"
+	StateCompiled             TransactionState = "compiled"
 	StateAwaitingConfirmation TransactionState = "awaiting_confirmation"
 	StateApplying             TransactionState = "applying_project_change"
 	StateCommitted            TransactionState = "committed"
 	StateRolledBack           TransactionState = "rolled_back"
 	StateRepairRequired       TransactionState = "repair_required"
+	StateRepairing            TransactionState = "repairing"
+	StateSuperseded           TransactionState = "superseded"
 	StateNeedsReview          TransactionState = "needs_review"
 )
 
@@ -359,10 +444,13 @@ type TransactionEvent struct {
 	IdempotencyKey string           `json:"idempotency_key,omitempty"`
 }
 type Transaction struct {
-	Plan              InstallPlan        `json:"plan"`
-	Events            []TransactionEvent `json:"events"`
-	CommittedRevision string             `json:"committed_revision,omitempty"`
-	OperationResultID string             `json:"operation_result_id,omitempty"`
+	Plan                InstallPlan          `json:"plan"`
+	Events              []TransactionEvent   `json:"events"`
+	CommittedRevision   string               `json:"committed_revision,omitempty"`
+	OperationResultID   string               `json:"operation_result_id,omitempty"`
+	RuntimeInput        *RuntimeCommitInput  `json:"runtime_input,omitempty"`
+	SupersedingRevision string               `json:"superseding_revision,omitempty"`
+	RuntimeResult       *RuntimeCommitResult `json:"runtime_result,omitempty"`
 }
 
 type TransactionStore interface {
@@ -412,26 +500,37 @@ func (s *MemoryTransactionStore) GetRegistryTransaction(_ context.Context, id st
 }
 
 type Registry struct {
-	mu           sync.RWMutex
-	sources      map[string]RegistrySource
-	policies     map[string]TrustPolicy
-	clients      map[SourceKind]SourceClient
-	validator    PackageValidator
-	author       PackageAuthor
-	access       AccessPort
-	runtime      RuntimePort
-	projectState ProjectStatePort
-	credentials  CredentialBroker
-	connectors   map[SourceKind]SourceConnector
-	transactions TransactionStore
-	now          func() time.Time
+	mu               sync.RWMutex
+	sources          map[string]RegistrySource
+	policies         map[string]TrustPolicy
+	clients          map[SourceKind]SourceClient
+	validator        PackageValidator
+	author           PackageAuthor
+	access           AccessPort
+	runtime          RuntimePort
+	projectState     ProjectStatePort
+	credentials      CredentialBroker
+	connectors       map[SourceKind]SourceConnector
+	transactions     TransactionStore
+	now              func() time.Time
+	verifiedCache    map[string]verifiedCacheEntry
+	maxArtifactBytes int64
 }
+
+type verifiedCacheEntry struct {
+	Release    ArtifactRelease
+	Bytes      []byte
+	Validation ValidatedArtifact
+	Trust      TrustDecision
+}
+
+const defaultMaxRegistryArtifactBytes int64 = 64 << 20
 
 func New(validator PackageValidator, access AccessPort, runtime RuntimePort, projectState ProjectStatePort, credentials CredentialBroker, transactions TransactionStore) (*Registry, error) {
 	if validator == nil || access == nil || runtime == nil || projectState == nil || credentials == nil || transactions == nil {
 		return nil, errors.New("registry requires Engine validator, Access, Runtime, project state, credential broker, and transaction store ports")
 	}
-	return &Registry{sources: map[string]RegistrySource{}, policies: map[string]TrustPolicy{}, clients: map[SourceKind]SourceClient{}, connectors: map[SourceKind]SourceConnector{}, validator: validator, access: access, runtime: runtime, projectState: projectState, credentials: credentials, transactions: transactions, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &Registry{sources: map[string]RegistrySource{}, policies: map[string]TrustPolicy{}, clients: map[SourceKind]SourceClient{}, connectors: map[SourceKind]SourceConnector{}, validator: validator, access: access, runtime: runtime, projectState: projectState, credentials: credentials, transactions: transactions, verifiedCache: map[string]verifiedCacheEntry{}, maxArtifactBytes: defaultMaxRegistryArtifactBytes, now: func() time.Time { return time.Now().UTC() }}, nil
 }
 
 func (r *Registry) RegisterClient(kind SourceKind, client SourceClient) {
@@ -470,12 +569,22 @@ func (r *Registry) ConfigureSource(source RegistrySource) error {
 	if _, ok := r.policies[source.TrustPolicyID]; !ok {
 		return fail(FailurePolicyDenied, source.TrustPolicyID, true, errors.New("unknown trust policy"))
 	}
+	current, exists := r.sources[source.SourceID]
+	source.Connected = false
+	source.AuthConnectionRef = ""
+	if exists {
+		source.Revision = current.Revision + 1
+	} else {
+		source.Revision = 1
+	}
 	r.sources[source.SourceID] = source
 	return nil
 }
 func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef string) error {
 	r.mu.RLock()
 	source, ok := r.sources[sourceID]
+	sourceDigest := digestJSON(source)
+	sourceRevision := source.Revision
 	connector := r.connectors[source.Kind]
 	r.mu.RUnlock()
 	if !ok || connector == nil || connectionRef == "" {
@@ -490,9 +599,14 @@ func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef st
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	source = r.sources[sourceID]
+	current, stillExists := r.sources[sourceID]
+	if !stillExists || current.Revision != sourceRevision || digestJSON(current) != sourceDigest {
+		return fail(FailurePlanStale, sourceID, true, errors.New("source changed during connection probe"))
+	}
+	source = current
 	source.AuthConnectionRef = connectionRef
 	source.Connected = true
+	source.Revision++
 	r.sources[sourceID] = source
 	return nil
 }
@@ -505,6 +619,7 @@ func (r *Registry) DisconnectSource(sourceID string) error {
 	}
 	source.Connected = false
 	source.AuthConnectionRef = ""
+	source.Revision++
 	r.sources[sourceID] = source
 	return nil
 }
@@ -543,7 +658,7 @@ func (r *Registry) Search(ctx context.Context, input SearchInput) ([]ArtifactRel
 		}
 		found, err := client.Search(ctx, source, input)
 		if err != nil {
-			continue
+			found = r.cachedReleases(source.SourceID, input)
 		}
 		for _, release := range found {
 			if release.SourceID != source.SourceID || !validIdentity(release.Identity) || (input.Kind != nil && release.Identity.Kind != *input.Kind) {
@@ -553,12 +668,11 @@ func (r *Registry) Search(ctx context.Context, input SearchInput) ([]ArtifactRel
 			if !ok {
 				continue
 			}
-			decision, err := verifyTrust(r.now(), source, policy, release)
+			validatedRelease, _, _, err := r.fetchValidated(ctx, source, policy, client, release)
 			if err != nil {
 				continue
 			}
-			release.Trust = &decision
-			releases = append(releases, cloneRelease(release))
+			releases = append(releases, cloneRelease(validatedRelease))
 		}
 	}
 	if len(releases) == 0 {
@@ -566,6 +680,65 @@ func (r *Registry) Search(ctx context.Context, input SearchInput) ([]ArtifactRel
 	}
 	sortReleases(releases, sources)
 	return releases, nil
+}
+func (r *Registry) cachedReleases(sourceID string, input SearchInput) []ArtifactRelease {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := []ArtifactRelease{}
+	for _, entry := range r.verifiedCache {
+		release := entry.Release
+		if release.SourceID == sourceID && (input.Query == "" || release.Identity.CanonicalID == input.Query) && (input.Kind == nil || release.Identity.Kind == *input.Kind) {
+			out = append(out, cloneRelease(release))
+		}
+	}
+	return out
+}
+
+func (r *Registry) fetchValidated(ctx context.Context, source RegistrySource, policy TrustPolicy, client SourceClient, release ArtifactRelease) (ArtifactRelease, []byte, ValidatedArtifact, error) {
+	decision, err := verifyTrust(r.now(), source, policy, release)
+	if err != nil {
+		return ArtifactRelease{}, nil, ValidatedArtifact{}, err
+	}
+	if release.Size < 0 || release.Size > r.maxArtifactBytes {
+		return ArtifactRelease{}, nil, ValidatedArtifact{}, fail(FailureArtifactCorrupt, release.Identity.CanonicalID, true, errors.New("artifact exceeds host byte limit"))
+	}
+	r.mu.RLock()
+	cached, cachedOK := r.verifiedCache[release.Digest]
+	r.mu.RUnlock()
+	if cachedOK && cached.Release.Identity == release.Identity && cached.Release.SourceID == release.SourceID && cached.Release.PublisherID == release.PublisherID && cached.Release.ProvenanceDigest == release.ProvenanceDigest && cached.Release.DependencyMetadataDigest == release.DependencyMetadataDigest && int64(len(cached.Bytes)) == release.Size && digestBytes(cached.Bytes) == release.Digest {
+		out := cloneRelease(release)
+		out.Trust = &decision
+		return out, append([]byte{}, cached.Bytes...), cached.Validation, nil
+	}
+	var body []byte
+	if streaming, ok := client.(StreamingSourceClient); ok {
+		reader, openErr := streaming.OpenArtifact(ctx, source, release)
+		if openErr != nil {
+			return ArtifactRelease{}, nil, ValidatedArtifact{}, fail(FailureUnavailable, source.SourceID, true, openErr)
+		}
+		defer reader.Close()
+		body, err = io.ReadAll(io.LimitReader(reader, r.maxArtifactBytes+1))
+	} else if byteClient, ok := client.(ByteSourceClient); ok {
+		body, err = byteClient.Download(ctx, source, release)
+	} else {
+		err = errors.New("source client has no streaming artifact transport")
+	}
+	if err != nil {
+		return ArtifactRelease{}, nil, ValidatedArtifact{}, fail(FailureUnavailable, source.SourceID, true, err)
+	}
+	if int64(len(body)) != release.Size || int64(len(body)) > r.maxArtifactBytes || digestBytes(body) != release.Digest {
+		return ArtifactRelease{}, nil, ValidatedArtifact{}, fail(FailureArtifactCorrupt, release.Identity.CanonicalID, true, nil)
+	}
+	validation, err := r.validator.ValidateRegistryArtifact(ctx, release, body)
+	if err != nil || validation.Identity != release.Identity || validation.CanonicalDigest != release.Digest {
+		return ArtifactRelease{}, nil, ValidatedArtifact{}, fail(FailureArtifactCorrupt, release.Identity.CanonicalID, true, err)
+	}
+	out := cloneRelease(release)
+	out.Trust = &decision
+	r.mu.Lock()
+	r.verifiedCache[release.Digest] = verifiedCacheEntry{Release: cloneRelease(out), Bytes: append([]byte{}, body...), Validation: validation, Trust: decision}
+	r.mu.Unlock()
+	return out, body, validation, nil
 }
 
 func (r *Registry) AuthorArtifact(ctx context.Context, request AuthorArtifactRequest) (AuthoredArtifact, error) {
@@ -602,20 +775,37 @@ func (r *Registry) AuthorArtifact(ctx context.Context, request AuthorArtifactReq
 }
 
 func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, error) {
-	if !validAction(request.Action) || !validIdentity(request.Requested) || request.ProjectID == "" || request.BaseRevision == "" {
+	if !validAction(request.Action) || !validIdentity(request.Requested) || (request.Action != ActionCreateFromTemplate && (request.ProjectID == "" || request.BaseRevision == "")) {
 		return InstallPlan{}, fail(FailureDependencyConflict, request.Requested.CanonicalID, true, nil)
 	}
 	if request.Action == ActionCreateFromTemplate && request.Requested.Kind != ArtifactTemplate {
 		return InstallPlan{}, fail(FailureUnsupportedFormat, request.Requested.CanonicalID, true, nil)
 	}
-	state, err := r.projectState.CurrentRegistryProjectState(ctx, request.ProjectID)
-	if err != nil {
-		return InstallPlan{}, fail(FailureUnavailable, request.ProjectID, true, err)
+	var state ProjectState
+	var err error
+	if request.Action == ActionCreateFromTemplate {
+		allocator, ok := r.projectState.(TemplateDocumentPort)
+		if !ok {
+			return InstallPlan{}, fail(FailureUnavailable, "template_document_allocator", true, nil)
+		}
+		state, err = allocator.NewRegistryDocumentState(ctx, request.Requested)
+		if err != nil || state.DocumentID == "" || state.RuntimeSessionID == "" {
+			return InstallPlan{}, fail(FailureUnavailable, "template_document_allocator", true, err)
+		}
+		request.ProjectID = state.ProjectID
+		request.BaseRevision = ""
+		request.ExpectedDefinitionHash = ""
+		request.ExpectedResolvedLockDigest = ""
+	} else {
+		state, err = r.projectState.CurrentRegistryProjectState(ctx, request.ProjectID)
+		if err != nil {
+			return InstallPlan{}, fail(FailureUnavailable, request.ProjectID, true, err)
+		}
+		if state.ProjectID != request.ProjectID || state.Revision != request.BaseRevision || state.DefinitionHash != request.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != request.ExpectedResolvedLockDigest || state.RuntimeSessionID == "" {
+			return InstallPlan{}, fail(FailurePlanStale, request.ProjectID, true, nil)
+		}
 	}
-	if state.ProjectID != request.ProjectID || state.Revision != request.BaseRevision || state.DefinitionHash != request.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != request.ExpectedResolvedLockDigest {
-		return InstallPlan{}, fail(FailurePlanStale, request.ProjectID, true, nil)
-	}
-	installed, hasInstalled := findLocked(state.DependencySnapshot, request.Requested.CanonicalID)
+	installed, hasInstalled := findLocked(state.DependencySnapshot, request.Requested)
 	switch request.Action {
 	case ActionInstall:
 		if hasInstalled {
@@ -624,6 +814,15 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 	case ActionUpdate, ActionPin, ActionRemove, ActionRepair:
 		if !hasInstalled {
 			return InstallPlan{}, fail(FailureDependencyConflict, request.Requested.CanonicalID, true, nil)
+		}
+	}
+	if request.Action == ActionRemove {
+		for _, candidate := range state.DependencySnapshot.Installs {
+			for _, dependency := range candidate.Dependencies {
+				if dependency.Kind == request.Requested.Kind && dependency.CanonicalID == request.Requested.CanonicalID {
+					return InstallPlan{}, fail(FailureDependencyConflict, candidate.Identity.CanonicalID, true, errors.New("installed dependent requires removed artifact"))
+				}
+			}
 		}
 	}
 	if request.Action == ActionPin && request.Requested.Version == "latest" {
@@ -645,6 +844,12 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 			}
 		}
 	}
+	if hasInstalled && request.Action != ActionRemove {
+		root := resolved[string(request.Requested.Kind)+":"+request.Requested.CanonicalID]
+		if (installed.SourceID != "" && root.Release.SourceID != installed.SourceID) || (installed.PublisherID != "" && root.Release.PublisherID != installed.PublisherID) || (installed.ProvenanceDigest != "" && root.Release.ProvenanceDigest != installed.ProvenanceDigest) {
+			return InstallPlan{}, fail(FailureDependencyConflict, request.Requested.CanonicalID, true, errors.New("locked source, publisher, or provenance changed"))
+		}
+	}
 	keys := make([]string, 0, len(resolved))
 	for key := range resolved {
 		keys = append(keys, key)
@@ -654,7 +859,6 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 	impacts := []string{}
 	trust := []string{}
 	bindings := []SourcePlanBinding{}
-	var authoringImpact *semantic.AuthoringImpact
 	migrationRequired := false
 	for _, key := range keys {
 		item := resolved[key]
@@ -669,10 +873,6 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 			Policy string
 		}{source, digestTrust(policy)}))
 		bindings = append(bindings, SourcePlanBinding{SourceID: source.SourceID, SourceDigest: digestJSON(source), TrustPolicyDigest: digestTrust(policy)})
-		if item.Release.Identity == request.Requested && item.Validation.AuthoringImpact != nil {
-			impact := *item.Validation.AuthoringImpact
-			authoringImpact = &impact
-		}
 		if item.Validation.AddressMigrationPlanDigest != "" {
 			migrationRequired = true
 		}
@@ -685,33 +885,68 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (InstallPlan, 
 			}
 		}
 	}
-	if request.Action != ActionRemove && authoringImpact == nil {
-		return InstallPlan{}, fail(FailureArtifactCorrupt, request.Requested.CanonicalID, true, errors.New("Engine validation omitted resulting AuthoringImpact"))
-	}
 	sort.Strings(impacts)
 	sort.Strings(trust)
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].SourceID < bindings[j].SourceID })
 	hostCapabilities := append([]string{}, state.HostCapabilities...)
 	sort.Strings(hostCapabilities)
 	delta := buildLockDelta(request.Action, state.DependencySnapshot, resolved, request.Requested)
+	mutationPlan, err := r.validator.BuildRegistryMutationPlan(ctx, RegistryMutationBuildInput{Action: request.Action, Project: state, Artifacts: artifacts, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, Requested: request.Requested, NewDocumentID: func() string {
+		if request.Action == ActionCreateFromTemplate {
+			return state.DocumentID
+		}
+		return ""
+	}()})
+	if err != nil || mutationPlan.AuthoringImpactDigest == "" || mutationPlan.MutationDigest == "" || string(mutationPlan.AuthoringImpact.ImpactDigest) != mutationPlan.AuthoringImpactDigest {
+		return InstallPlan{}, fail(FailureArtifactCorrupt, request.Requested.CanonicalID, true, err)
+	}
+	if mutationPlan.BaseProjectRevision != state.Revision || mutationPlan.ExpectedDefinitionHash != state.DefinitionHash || mutationPlan.ExpectedResolvedLockDigest != state.DependencySnapshot.ResolvedLockDigest || digestJSON(mutationPlan.ResolvedLockDelta) != digestJSON(delta) {
+		return InstallPlan{}, fail(FailureArtifactCorrupt, request.Requested.CanonicalID, true, errors.New("Engine mutation plan preconditions or lock delta mismatch"))
+	}
+	authoringImpact := &mutationPlan.AuthoringImpact
 	hostImpactDigest := protocolcommon.Digest(digestJSON(struct {
 		Action    Action
 		ProjectID string
 		Delta     ResolvedLockDelta
 	}{request.Action, request.ProjectID, delta}))
 	hostImpact := accessprotocol.HostOperationImpact{Action: hostImpactAction(request.Action), ImpactDigest: hostImpactDigest, OperationKind: accessprotocol.HostOperationKindPackageTransaction, RequiredAuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage}, ResourceRefs: []string{request.Requested.CanonicalID}, ResourceScope: accessprotocol.HostResourceScope{DocumentID: state.DocumentID, LocalScopeID: state.LocalScopeID, OrganizationScopeID: state.OrganizationScopeID}}
-	mutation := digestJSON(artifacts)
-	evaluate := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: authoringImpact, GrantSnapshot: state.GrantSnapshot, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, RequestIntent: "registry." + string(request.Action)}
+	mutation := mutationPlan.MutationDigest
+	evaluate := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: authoringImpact, GrantSnapshot: state.GrantSnapshot, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, RequestIntent: "apply"}
 	decision, err := r.access.EvaluateRegistryPlan(ctx, evaluate)
-	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow {
+	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || !decisionBindsMutation(decision, *authoringImpact, hostImpact) {
 		return InstallPlan{}, fail(FailurePolicyDenied, request.ProjectID, true, err)
 	}
-	plan := InstallPlan{Action: request.Action, ProjectID: request.ProjectID, BaseRevision: state.Revision, ExpectedDefinitionHash: state.DefinitionHash, ExpectedResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, Artifacts: artifacts, RequiredCapabilities: capabilitiesToStrings(decision.RequiredCapabilities), TrustPolicyDigests: trust, SourceBindings: bindings, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, RollbackCheckpoint: RollbackCheckpoint{BaseProjectRevision: state.Revision, BaseDefinitionHash: state.DefinitionHash, BaseResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, CurrentPackTreeManifest: state.PackTreeManifest}, ExpiresAt: r.now().Add(15 * time.Minute), MigrationRequired: migrationRequired, CreatesNewDocument: request.Action == ActionCreateFromTemplate, MutationDigest: mutation, AuthoringImpactDigests: impacts, HostOperationImpactDigest: string(hostImpactDigest), EvaluationDigest: string(decision.EvaluationDigest), AuthoringImpact: authoringImpact, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, AccessDecision: decision, HostCapabilitiesDigest: digestJSON(hostCapabilities)}
-	plan.TransactionID = strings.TrimPrefix(digestJSON(struct{ Project, Evaluation, Mutation string }{request.ProjectID, plan.EvaluationDigest, plan.MutationDigest}), "sha256:")[:32]
+	plan := InstallPlan{Action: request.Action, ProjectID: request.ProjectID, BaseRevision: state.Revision, ExpectedDefinitionHash: state.DefinitionHash, ExpectedResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, Artifacts: artifacts, RequiredCapabilities: capabilitiesToStrings(decision.RequiredCapabilities), TrustPolicyDigests: trust, SourceBindings: bindings, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, RollbackCheckpoint: RollbackCheckpoint{BaseProjectRevision: state.Revision, BaseDefinitionHash: state.DefinitionHash, BaseResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, CurrentPackTreeManifest: state.PackTreeManifest}, ExpiresAt: r.now().Add(15 * time.Minute), MigrationRequired: migrationRequired, CreatesNewDocument: request.Action == ActionCreateFromTemplate, MutationDigest: mutation, AuthoringImpactDigests: []string{mutationPlan.AuthoringImpactDigest}, HostOperationImpactDigest: string(hostImpactDigest), EvaluationDigest: string(decision.EvaluationDigest), AuthoringImpact: authoringImpact, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, AccessDecision: decision, HostCapabilitiesDigest: digestJSON(hostCapabilities), ProjectMutationPlan: mutationPlan, RuntimeSessionID: state.RuntimeSessionID, LeaseToken: state.LeaseToken}
+	if request.Action == ActionCreateFromTemplate {
+		plan.NewDocumentID = state.DocumentID
+	}
+	plan.TransactionID = strings.TrimPrefix(digestJSON(struct {
+		Request    PlanRequest
+		DocumentID string
+	}{request, state.DocumentID}), "sha256:")[:32]
+	plan.ProjectMutationPlan.RegistryTransactionID = plan.TransactionID
+	plan.ProjectMutationPlan.HostOperationImpactDigest = plan.HostOperationImpactDigest
+	plan.ProjectMutationPlan.EvaluationDigest = plan.EvaluationDigest
 	plan.PlanDigest = digestPlan(plan)
-	tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: plan.PlanDigest, Sequence: 1}, {State: StateVerified, EvidenceDigest: mutation, Sequence: 2}, {State: StateAwaitingConfirmation, EvidenceDigest: plan.EvaluationDigest, Sequence: 3}}}
+	plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
+	if existing, ok, _ := r.transactions.GetRegistryTransaction(ctx, plan.TransactionID); ok {
+		if existing.Plan.PlanDigest == plan.PlanDigest && transactionState(existing) == StateAwaitingConfirmation {
+			return clonePlan(existing.Plan), nil
+		}
+		return InstallPlan{}, fail(FailurePlanStale, plan.TransactionID, true, nil)
+	}
+	tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: digestJSON(request), Sequence: 1}}}
 	if err := r.transactions.CreateRegistryTransaction(ctx, tx); err != nil {
 		return InstallPlan{}, fail(FailureUnavailable, plan.TransactionID, true, err)
+	}
+	for _, step := range []TransactionEvent{{State: StateDownloading, EvidenceDigest: digestJSON(plan.SourceBindings)}, {State: StateVerified, EvidenceDigest: digestJSON(plan.TrustPolicyDigests)}, {State: StateExpandedStaged, EvidenceDigest: plan.ProjectMutationPlan.StagedTreeManifest}, {State: StateCompiled, EvidenceDigest: plan.ProjectMutationPlan.AuthoringImpactDigest}, {State: StateAwaitingConfirmation, EvidenceDigest: plan.EvaluationDigest}} {
+		version := transactionVersion(tx)
+		step.Sequence = version + 1
+		tx.Events = append(tx.Events, step)
+		swapped, appendErr := r.transactions.CompareAndSwapRegistryTransaction(ctx, plan.TransactionID, version, tx)
+		if appendErr != nil || !swapped {
+			return InstallPlan{}, fail(FailureUnavailable, plan.TransactionID, true, appendErr)
+		}
 	}
 	return clonePlan(plan), nil
 }
@@ -756,32 +991,19 @@ func (r *Registry) resolve(ctx context.Context, identity ArtifactIdentity, prere
 	if !ok || !source.Connected || client == nil {
 		return fail(FailureUnavailable, selected.SourceID, true, nil)
 	}
-	bytes, err := client.Download(ctx, source, *selected)
-	if err != nil {
-		return fail(FailureUnavailable, selected.SourceID, true, err)
-	}
-	if int64(len(bytes)) != selected.Size || digestBytes(bytes) != selected.Digest {
-		return fail(FailureArtifactCorrupt, identity.CanonicalID, true, nil)
-	}
 	if selected.Identity.Kind != identity.Kind {
 		return fail(FailureUnsupportedFormat, identity.CanonicalID, true, nil)
 	}
-	if _, err := verifyTrust(r.now(), source, policy, *selected); err != nil {
-		return err
-	}
-	validated, err := r.validator.ValidateRegistryArtifact(ctx, *selected, bytes)
+	verified, _, validated, err := r.fetchValidated(ctx, source, policy, client, *selected)
 	if err != nil {
-		return fail(FailureArtifactCorrupt, identity.CanonicalID, true, err)
-	}
-	if validated.Identity != selected.Identity || validated.CanonicalDigest != selected.Digest {
-		return fail(FailureArtifactCorrupt, identity.CanonicalID, true, nil)
+		return err
 	}
 	for _, decision := range selected.Compatibility {
 		if decision.Status == "incompatible" || decision.Status == "disabled" {
 			return fail(FailureIncompatibleCapability, decision.Subject, true, nil)
 		}
 	}
-	resolved[key] = PlanArtifact{Release: cloneRelease(*selected), Validation: validated}
+	resolved[key] = PlanArtifact{Release: cloneRelease(verified), Validation: validated}
 	dependencies := append([]Dependency{}, selected.Dependencies...)
 	sort.Slice(dependencies, func(i, j int) bool { return dependencies[i].CanonicalID < dependencies[j].CanonicalID })
 	for _, dependency := range dependencies {
@@ -789,10 +1011,14 @@ func (r *Registry) resolve(ctx context.Context, identity ArtifactIdentity, prere
 		if err != nil {
 			return err
 		}
-		if err := r.resolve(ctx, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: dependency.CanonicalID, Version: version}, prerelease, resolved, visiting); err != nil {
+		dependencyKind := dependency.Kind
+		if dependencyKind == "" {
+			dependencyKind = ArtifactPack
+		}
+		if err := r.resolve(ctx, ArtifactIdentity{Kind: dependencyKind, CanonicalID: dependency.CanonicalID, Version: version}, prerelease, resolved, visiting); err != nil {
 			return err
 		}
-		child := resolved[string(ArtifactPack)+":"+dependency.CanonicalID]
+		child := resolved[string(dependencyKind)+":"+dependency.CanonicalID]
 		if dependency.DigestConstraint != "" && child.Release.Digest != dependency.DigestConstraint {
 			return fail(FailureDependencyConflict, dependency.CanonicalID, true, nil)
 		}
@@ -801,7 +1027,10 @@ func (r *Registry) resolve(ctx context.Context, identity ArtifactIdentity, prere
 }
 
 func (r *Registry) resolveVersion(ctx context.Context, dependency Dependency, prerelease bool) (string, error) {
-	kind := ArtifactPack
+	kind := dependency.Kind
+	if kind == "" {
+		kind = ArtifactPack
+	}
 	releases, err := r.Search(ctx, SearchInput{Query: dependency.CanonicalID, Kind: &kind, IncludePrerelease: prerelease})
 	if err != nil {
 		return "", err
@@ -822,9 +1051,23 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 	if !tx.Plan.ExpiresAt.After(r.now()) {
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
-	state, err := r.projectState.CurrentRegistryProjectState(ctx, tx.Plan.ProjectID)
-	if err != nil || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
-		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, err)
+	var state ProjectState
+	var err error
+	if tx.Plan.CreatesNewDocument {
+		allocator, ok := r.projectState.(TemplateDocumentPort)
+		if !ok {
+			return RuntimeCommitResult{}, fail(FailurePlanStale, "template_document_allocator", true, nil)
+		}
+		requested := tx.Plan.Artifacts[0].Release.Identity
+		state, err = allocator.NewRegistryDocumentState(ctx, requested)
+		if err != nil || state.DocumentID != tx.Plan.NewDocumentID {
+			return RuntimeCommitResult{}, fail(FailurePlanStale, tx.Plan.NewDocumentID, true, err)
+		}
+	} else {
+		state, err = r.projectState.CurrentRegistryProjectState(ctx, tx.Plan.ProjectID)
+		if err != nil || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
+			return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, err)
+		}
 	}
 	hostCapabilities := append([]string{}, state.HostCapabilities...)
 	sort.Strings(hostCapabilities)
@@ -832,7 +1075,7 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		return RuntimeCommitResult{}, fail(FailurePlanStale, "host_capabilities", true, nil)
 	}
 	for _, binding := range tx.Plan.SourceBindings {
-		source, policy, _, ok := r.sourceContext(binding.SourceID)
+		source, policy, client, ok := r.sourceContext(binding.SourceID)
 		if !ok || digestJSON(source) != binding.SourceDigest || digestTrust(policy) != binding.TrustPolicyDigest {
 			return RuntimeCommitResult{}, fail(FailurePlanStale, binding.SourceID, true, nil)
 		}
@@ -841,17 +1084,47 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 				if _, err := verifyTrust(r.now(), source, policy, artifact.Release); err != nil {
 					return RuntimeCommitResult{}, fail(FailurePlanStale, binding.SourceID, true, err)
 				}
+				kind := artifact.Release.Identity.Kind
+				fresh, searchErr := client.Search(ctx, source, SearchInput{Query: artifact.Release.Identity.CanonicalID, Kind: &kind, IncludePrerelease: true})
+				if searchErr != nil {
+					return RuntimeCommitResult{}, fail(FailurePlanStale, binding.SourceID, true, searchErr)
+				}
+				matched := false
+				for _, candidate := range fresh {
+					if immutableReleaseBinding(candidate, artifact.Release) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					return RuntimeCommitResult{}, fail(FailurePlanStale, artifact.Release.Identity.CanonicalID, true, errors.New("artifact metadata changed"))
+				}
 			}
 		}
 	}
-	evaluate := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: tx.Plan.AuthoringImpact, GrantSnapshot: state.GrantSnapshot, HostOperationImpacts: append([]accessprotocol.HostOperationImpact{}, tx.Plan.HostOperationImpacts...), RequestIntent: "registry." + string(tx.Plan.Action)}
+	freshMutation, mutationErr := r.validator.BuildRegistryMutationPlan(ctx, RegistryMutationBuildInput{Action: tx.Plan.Action, Project: state, Artifacts: tx.Plan.Artifacts, DependencySnapshot: tx.Plan.DependencySnapshot, ResolvedLockDelta: tx.Plan.ResolvedLockDelta, Requested: func() ArtifactIdentity {
+		if len(tx.Plan.Artifacts) > 0 {
+			return tx.Plan.Artifacts[0].Release.Identity
+		}
+		if len(tx.Plan.ResolvedLockDelta.Removed) > 0 {
+			return tx.Plan.ResolvedLockDelta.Removed[0].Identity
+		}
+		return ArtifactIdentity{}
+	}(), NewDocumentID: tx.Plan.NewDocumentID})
+	if mutationErr != nil || mutationSemanticDigest(freshMutation) != mutationSemanticDigest(tx.Plan.ProjectMutationPlan) {
+		return RuntimeCommitResult{}, fail(FailurePlanStale, "project_mutation_plan", true, mutationErr)
+	}
+	evaluate := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &freshMutation.AuthoringImpact, GrantSnapshot: state.GrantSnapshot, HostOperationImpacts: append([]accessprotocol.HostOperationImpact{}, tx.Plan.HostOperationImpacts...), RequestIntent: "apply"}
 	decision, err := r.access.EvaluateRegistryPlan(ctx, evaluate)
-	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || string(decision.EvaluationDigest) != tx.Plan.EvaluationDigest {
+	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || string(decision.EvaluationDigest) != tx.Plan.EvaluationDigest || !decisionBindsMutation(decision, freshMutation.AuthoringImpact, tx.Plan.HostOperationImpacts[0]) {
 		return RuntimeCommitResult{}, fail(FailurePlanStale, "authoring_policy", true, err)
 	}
 	stateName := transactionState(tx)
 	if stateName == StateCommitted {
 		if lastIdempotencyKey(tx) == input.IdempotencyKey {
+			if tx.RuntimeResult != nil {
+				return *tx.RuntimeResult, nil
+			}
 			return RuntimeCommitResult{CommittedRevision: tx.CommittedRevision, OperationResultID: tx.OperationResultID}, nil
 		}
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
@@ -863,6 +1136,13 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
 	expectedVersion := transactionVersion(tx)
+	input.MutationPlan = tx.Plan.ProjectMutationPlan
+	input.RuntimeSessionID = state.RuntimeSessionID
+	input.LeaseToken = state.LeaseToken
+	input.AuthoringImpact = &freshMutation.AuthoringImpact
+	input.HostOperationImpacts = append([]accessprotocol.HostOperationImpact{}, tx.Plan.HostOperationImpacts...)
+	input.AccessDecision = decision
+	tx.RuntimeInput = &input
 	tx.Events = append(tx.Events, TransactionEvent{State: StateApplying, EvidenceDigest: tx.Plan.EvaluationDigest, Sequence: expectedVersion + 1, IdempotencyKey: input.IdempotencyKey})
 	swapped, storeErr := r.transactions.CompareAndSwapRegistryTransaction(ctx, tx.Plan.TransactionID, expectedVersion, tx)
 	if storeErr != nil {
@@ -878,9 +1158,6 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		}
 		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, errors.New("concurrent publication already started"))
 	}
-	input.AuthoringImpact = tx.Plan.AuthoringImpact
-	input.HostOperationImpacts = append([]accessprotocol.HostOperationImpact{}, tx.Plan.HostOperationImpacts...)
-	input.AccessDecision = decision
 	result, err := r.runtime.CommitRegistryPlan(ctx, input)
 	if err != nil {
 		nextState := StateRolledBack
@@ -897,8 +1174,16 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		}
 		return RuntimeCommitResult{}, fail(code, input.Plan.TransactionID, true, err)
 	}
+	if tx.Plan.CreatesNewDocument && (result.DocumentID != tx.Plan.NewDocumentID || !result.InitialCommittedRevision || result.CommittedRevision == "") {
+		err = errors.New("Runtime did not create the bound initial Document revision")
+		version := transactionVersion(tx)
+		tx.Events = append(tx.Events, TransactionEvent{State: StateRepairRequired, EvidenceDigest: tx.Plan.MutationDigest, Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
+		_, _ = r.transactions.CompareAndSwapRegistryTransaction(ctx, tx.Plan.TransactionID, version, tx)
+		return RuntimeCommitResult{}, fail(FailureRepairRequired, tx.Plan.TransactionID, true, err)
+	}
 	tx.CommittedRevision = result.CommittedRevision
 	tx.OperationResultID = result.OperationResultID
+	tx.RuntimeResult = &result
 	version := transactionVersion(tx)
 	tx.Events = append(tx.Events, TransactionEvent{State: StateCommitted, EvidenceDigest: digestJSON(result), Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
 	if ok, storeErr := r.transactions.CompareAndSwapRegistryTransaction(ctx, tx.Plan.TransactionID, version, tx); storeErr != nil || !ok {
@@ -939,19 +1224,92 @@ func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transacti
 	if err != nil {
 		return Transaction{}, err
 	}
-	if transactionState(tx) != StateApplying {
+	for {
+		var next *TransactionEvent
+		switch transactionState(tx) {
+		case StatePlanned:
+			next = &TransactionEvent{State: StateDownloading, EvidenceDigest: digestJSON(tx.Plan.SourceBindings)}
+		case StateDownloading:
+			next = &TransactionEvent{State: StateVerified, EvidenceDigest: digestJSON(tx.Plan.TrustPolicyDigests)}
+		case StateVerified:
+			next = &TransactionEvent{State: StateExpandedStaged, EvidenceDigest: tx.Plan.ProjectMutationPlan.StagedTreeManifest}
+		case StateExpandedStaged:
+			next = &TransactionEvent{State: StateCompiled, EvidenceDigest: tx.Plan.ProjectMutationPlan.AuthoringImpactDigest}
+		case StateCompiled:
+			next = &TransactionEvent{State: StateAwaitingConfirmation, EvidenceDigest: tx.Plan.EvaluationDigest}
+		}
+		if next == nil {
+			break
+		}
+		if err := r.appendEvent(ctx, &tx, *next); err != nil {
+			return Transaction{}, err
+		}
+	}
+	if transactionState(tx) != StateApplying && transactionState(tx) != StateRepairRequired {
 		return tx, nil
 	}
-	version := transactionVersion(tx)
-	tx.Events = append(tx.Events, TransactionEvent{State: StateRepairRequired, EvidenceDigest: tx.Plan.MutationDigest, Sequence: version + 1, IdempotencyKey: lastIdempotencyKey(tx)})
-	ok, err := r.transactions.CompareAndSwapRegistryTransaction(ctx, id, version, tx)
-	if err != nil {
-		return Transaction{}, fail(FailureUnavailable, id, true, err)
+	if transactionState(tx) == StateApplying {
+		if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateRepairRequired, EvidenceDigest: tx.Plan.MutationDigest, IdempotencyKey: lastIdempotencyKey(tx)}); err != nil {
+			return Transaction{}, err
+		}
 	}
+	if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateRepairing, EvidenceDigest: tx.Plan.MutationDigest, IdempotencyKey: lastIdempotencyKey(tx)}); err != nil {
+		return Transaction{}, err
+	}
+	recovery, ok := r.runtime.(RuntimeRecoveryPort)
 	if !ok {
-		return r.GetTransaction(ctx, id)
+		return r.recoveryNeedsReview(ctx, tx, errors.New("Runtime recovery lookup unavailable"))
+	}
+	outcome, lookupErr := recovery.LookupRegistryCommit(ctx, id, tx.Plan.PlanDigest, func() string {
+		if tx.RuntimeInput != nil {
+			return tx.RuntimeInput.OperationID
+		}
+		return ""
+	}())
+	if lookupErr != nil {
+		return r.recoveryNeedsReview(ctx, tx, lookupErr)
+	}
+	if outcome.Status == RuntimeRegistryUnknown && tx.RuntimeInput != nil {
+		result, replayErr := r.runtime.CommitRegistryPlan(ctx, *tx.RuntimeInput)
+		if replayErr != nil {
+			return r.recoveryNeedsReview(ctx, tx, replayErr)
+		}
+		outcome = RuntimeRegistryOutcome{Status: RuntimeRegistryCommitted, Result: result}
+	}
+	switch outcome.Status {
+	case RuntimeRegistryCommitted:
+		tx.RuntimeResult = &outcome.Result
+		tx.CommittedRevision = outcome.Result.CommittedRevision
+		tx.OperationResultID = outcome.Result.OperationResultID
+		if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateCommitted, EvidenceDigest: digestJSON(outcome.Result), IdempotencyKey: lastIdempotencyKey(tx)}); err != nil {
+			return Transaction{}, err
+		}
+	case RuntimeRegistrySuperseded:
+		tx.SupersedingRevision = outcome.SupersedingRevision
+		if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateSuperseded, EvidenceDigest: digestJSON(outcome), IdempotencyKey: lastIdempotencyKey(tx)}); err != nil {
+			return Transaction{}, err
+		}
+	default:
+		return r.recoveryNeedsReview(ctx, tx, errors.New("Runtime could not prove publication outcome"))
 	}
 	return tx, nil
+}
+
+func (r *Registry) appendEvent(ctx context.Context, tx *Transaction, event TransactionEvent) error {
+	version := transactionVersion(*tx)
+	event.Sequence = version + 1
+	tx.Events = append(tx.Events, event)
+	ok, err := r.transactions.CompareAndSwapRegistryTransaction(ctx, tx.Plan.TransactionID, version, *tx)
+	if err != nil || !ok {
+		return fail(FailureUnavailable, tx.Plan.TransactionID, true, err)
+	}
+	return nil
+}
+func (r *Registry) recoveryNeedsReview(ctx context.Context, tx Transaction, cause error) (Transaction, error) {
+	if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateNeedsReview, EvidenceDigest: tx.Plan.MutationDigest, IdempotencyKey: lastIdempotencyKey(tx)}); err != nil {
+		return Transaction{}, err
+	}
+	return tx, fail(FailureRepairRequired, tx.Plan.TransactionID, true, cause)
 }
 
 func (r *Registry) sourceContext(id string) (RegistrySource, TrustPolicy, SourceClient, bool) {
@@ -1100,6 +1458,29 @@ func matchesRange(version, expr string, prerelease bool) bool {
 func validIdentity(value ArtifactIdentity) bool {
 	return (value.Kind == ArtifactPack || value.Kind == ArtifactTemplate) && value.CanonicalID != "" && value.Version != ""
 }
+func immutableReleaseBinding(a, b ArtifactRelease) bool {
+	return a.Identity == b.Identity && a.SourceID == b.SourceID && a.PublisherID == b.PublisherID && a.Digest == b.Digest && a.ManifestDigest == b.ManifestDigest && a.DependencyMetadataDigest == b.DependencyMetadataDigest && a.ProvenanceDigest == b.ProvenanceDigest && digestJSON(a.Dependencies) == digestJSON(b.Dependencies)
+}
+func mutationSemanticDigest(value ProjectMutationPlan) string {
+	value.RegistryTransactionID = ""
+	value.PlanDigest = ""
+	value.HostOperationImpactDigest = ""
+	value.EvaluationDigest = ""
+	return digestJSON(value)
+}
+func decisionBindsMutation(decision accessprotocol.AuthoringDecision, impact semantic.AuthoringImpact, host accessprotocol.HostOperationImpact) bool {
+	if decision.AuthoringImpactDigest == nil || string(*decision.AuthoringImpactDigest) != string(impact.ImpactDigest) || len(decision.HostOperationImpactDigests) != 1 || string(decision.HostOperationImpactDigests[0]) != string(host.ImpactDigest) {
+		return false
+	}
+	required := map[string]bool{string(semantic.AuthoringCapabilityPackageManage): true}
+	for _, capability := range impact.RequiredCapabilities {
+		required[string(capability)] = true
+	}
+	for _, capability := range decision.RequiredCapabilities {
+		delete(required, string(capability))
+	}
+	return len(required) == 0
+}
 func validAction(action Action) bool {
 	switch action {
 	case ActionInstall, ActionUpdate, ActionPin, ActionRemove, ActionRepair, ActionCreateFromTemplate:
@@ -1108,21 +1489,29 @@ func validAction(action Action) bool {
 		return false
 	}
 }
-func findLocked(snapshot ProjectDependencySnapshot, canonicalID string) (LockedArtifact, bool) {
+func findLocked(snapshot ProjectDependencySnapshot, identity ArtifactIdentity) (LockedArtifact, bool) {
 	for _, item := range snapshot.Installs {
-		if item.Identity.CanonicalID == canonicalID {
+		if item.Identity.Kind == identity.Kind && item.Identity.CanonicalID == identity.CanonicalID {
 			return item, true
 		}
 	}
 	return LockedArtifact{}, false
 }
 func lockedFromPlan(item PlanArtifact, pinned bool) LockedArtifact {
-	return LockedArtifact{Identity: item.Release.Identity, SourceID: item.Release.SourceID, Digest: item.Release.Digest, Pinned: pinned}
+	dependencies := make([]ArtifactIdentity, 0, len(item.Release.Dependencies))
+	for _, dependency := range item.Release.Dependencies {
+		kind := dependency.Kind
+		if kind == "" {
+			kind = ArtifactPack
+		}
+		dependencies = append(dependencies, ArtifactIdentity{Kind: kind, CanonicalID: dependency.CanonicalID, Version: dependency.VersionRange})
+	}
+	return LockedArtifact{Identity: item.Release.Identity, SourceID: item.Release.SourceID, PublisherID: item.Release.PublisherID, Digest: item.Release.Digest, ProvenanceDigest: item.Release.ProvenanceDigest, DependencyMetadataDigest: item.Release.DependencyMetadataDigest, Dependencies: dependencies, Pinned: pinned}
 }
 func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved map[string]PlanArtifact, requested ArtifactIdentity) ResolvedLockDelta {
 	delta := ResolvedLockDelta{Added: []LockedArtifact{}, Updated: []LockedArtifact{}, Removed: []LockedArtifact{}, Pinned: []LockedArtifact{}}
 	if action == ActionRemove {
-		if installed, ok := findLocked(snapshot, requested.CanonicalID); ok {
+		if installed, ok := findLocked(snapshot, requested); ok {
 			delta.Removed = append(delta.Removed, installed)
 		}
 		return delta
@@ -1135,7 +1524,7 @@ func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved 
 	for _, key := range keys {
 		item := resolved[key]
 		lock := lockedFromPlan(item, action == ActionPin && item.Release.Identity.CanonicalID == requested.CanonicalID)
-		if prior, ok := findLocked(snapshot, item.Release.Identity.CanonicalID); ok {
+		if prior, ok := findLocked(snapshot, item.Release.Identity); ok {
 			if action == ActionPin {
 				delta.Pinned = append(delta.Pinned, lock)
 			} else if prior.Digest != lock.Digest || prior.Identity.Version != lock.Identity.Version {
@@ -1145,7 +1534,45 @@ func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved 
 			delta.Added = append(delta.Added, lock)
 		}
 	}
+	if action == ActionUpdate || action == ActionRepair {
+		old := lockedDependencyClosure(snapshot, requested)
+		for key, item := range old {
+			if _, stillResolved := resolved[key]; !stillResolved && key != artifactKey(requested) {
+				delta.Removed = append(delta.Removed, item)
+			}
+		}
+		sort.Slice(delta.Removed, func(i, j int) bool {
+			return artifactKey(delta.Removed[i].Identity) < artifactKey(delta.Removed[j].Identity)
+		})
+	}
 	return delta
+}
+func artifactKey(identity ArtifactIdentity) string {
+	return string(identity.Kind) + ":" + identity.CanonicalID
+}
+func lockedDependencyClosure(snapshot ProjectDependencySnapshot, root ArtifactIdentity) map[string]LockedArtifact {
+	byKey := map[string]LockedArtifact{}
+	for _, item := range snapshot.Installs {
+		byKey[artifactKey(item.Identity)] = item
+	}
+	out := map[string]LockedArtifact{}
+	var visit func(ArtifactIdentity)
+	visit = func(identity ArtifactIdentity) {
+		key := artifactKey(identity)
+		if _, seen := out[key]; seen {
+			return
+		}
+		item, ok := byKey[key]
+		if !ok {
+			return
+		}
+		out[key] = item
+		for _, dependency := range item.Dependencies {
+			visit(dependency)
+		}
+	}
+	visit(root)
+	return out
 }
 func hostImpactAction(action Action) string {
 	switch action {
@@ -1162,6 +1589,7 @@ func capabilitiesToStrings(values []semantic.AuthoringCapability) []string {
 	for i, value := range values {
 		out[i] = string(value)
 	}
+	sort.Strings(out)
 	return out
 }
 func containsString(values []string, want string) bool {
@@ -1205,7 +1633,11 @@ func digestJSON(value any) string {
 	}
 	return digestBytes(data)
 }
-func digestPlan(plan InstallPlan) string { plan.PlanDigest = ""; return digestJSON(plan) }
+func digestPlan(plan InstallPlan) string {
+	plan.PlanDigest = ""
+	plan.ProjectMutationPlan.PlanDigest = ""
+	return digestJSON(plan)
+}
 func digestTrust(policy TrustPolicy) string {
 	keys := make([]string, 0, len(policy.PublicKeys))
 	for key, value := range policy.PublicKeys {
@@ -1277,11 +1709,31 @@ func clonePlan(value InstallPlan) InstallPlan {
 	out.RequiredCapabilities = append([]string{}, value.RequiredCapabilities...)
 	out.TrustPolicyDigests = append([]string{}, value.TrustPolicyDigests...)
 	out.AuthoringImpactDigests = append([]string{}, value.AuthoringImpactDigests...)
+	out.SourceBindings = append([]SourcePlanBinding{}, value.SourceBindings...)
+	out.DependencySnapshot = cloneDependencySnapshot(value.DependencySnapshot)
+	out.ProjectMutationPlan.SourceEdits = append([]SourceEdit{}, value.ProjectMutationPlan.SourceEdits...)
+	out.ProjectMutationPlan.ResolvedLockDelta = cloneLockDelta(value.ProjectMutationPlan.ResolvedLockDelta)
 	return out
 }
 func cloneTransaction(value Transaction) Transaction {
 	value.Plan = clonePlan(value.Plan)
 	value.Events = append([]TransactionEvent{}, value.Events...)
+	if value.RuntimeInput != nil {
+		input := *value.RuntimeInput
+		input.Plan = clonePlan(input.Plan)
+		value.RuntimeInput = &input
+	}
+	if value.RuntimeResult != nil {
+		result := *value.RuntimeResult
+		value.RuntimeResult = &result
+	}
+	return value
+}
+func cloneLockDelta(value ResolvedLockDelta) ResolvedLockDelta {
+	value.Added = append([]LockedArtifact{}, value.Added...)
+	value.Updated = append([]LockedArtifact{}, value.Updated...)
+	value.Removed = append([]LockedArtifact{}, value.Removed...)
+	value.Pinned = append([]LockedArtifact{}, value.Pinned...)
 	return value
 }
 func transactionVersion(value Transaction) uint64 {
@@ -1314,12 +1766,24 @@ func validateTransactionAppend(current, next Transaction) error {
 	from, to := transactionState(current), transactionState(next)
 	allowed := false
 	switch from {
+	case StatePlanned:
+		allowed = to == StateDownloading || to == StateRolledBack
+	case StateDownloading:
+		allowed = to == StateVerified || to == StateRolledBack
+	case StateVerified:
+		allowed = to == StateExpandedStaged || to == StateRolledBack
+	case StateExpandedStaged:
+		allowed = to == StateCompiled || to == StateRolledBack
+	case StateCompiled:
+		allowed = to == StateAwaitingConfirmation || to == StateRolledBack
 	case StateAwaitingConfirmation:
-		allowed = to == StateApplying
+		allowed = to == StateApplying || to == StateRolledBack
 	case StateApplying:
 		allowed = to == StateCommitted || to == StateRolledBack || to == StateRepairRequired
 	case StateRepairRequired:
-		allowed = to == StateCommitted || to == StateNeedsReview
+		allowed = to == StateRepairing || to == StateNeedsReview
+	case StateRepairing:
+		allowed = to == StateCommitted || to == StateSuperseded || to == StateNeedsReview
 	}
 	if !allowed {
 		return fmt.Errorf("invalid registry transaction transition %s -> %s", from, to)

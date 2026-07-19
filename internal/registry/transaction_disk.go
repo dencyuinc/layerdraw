@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -62,6 +63,20 @@ func (s *DiskTransactionStore) CreateRegistryTransaction(ctx context.Context, tx
 	}
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
+	}
+	if err == nil {
+		dir, openErr := os.Open(s.root)
+		if openErr != nil {
+			return openErr
+		}
+		syncErr := dir.Sync()
+		closeErr := dir.Close()
+		if syncErr != nil {
+			return syncErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
 	}
 	return err
 }
@@ -177,16 +192,51 @@ func (s *DiskTransactionStore) getUnlocked(id string) (Transaction, bool, error)
 func (s *DiskTransactionStore) path(id string) string { return filepath.Join(s.root, id+".json") }
 func (s *DiskTransactionStore) lock(ctx context.Context) (func(), error) {
 	s.mu.Lock()
+	select {
+	case <-ctx.Done():
+		s.mu.Unlock()
+		return nil, ctx.Err()
+	default:
+	}
 	lockPath := filepath.Join(s.root, "transactions.lock")
 	for {
 		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
-			_ = file.Close()
+			metadata, _ := json.Marshal(struct {
+				PID        int       `json:"pid"`
+				AcquiredAt time.Time `json:"acquired_at"`
+			}{os.Getpid(), time.Now().UTC()})
+			_, writeErr := file.Write(metadata)
+			syncErr := file.Sync()
+			closeErr := file.Close()
+			if writeErr != nil || syncErr != nil || closeErr != nil {
+				_ = os.Remove(lockPath)
+				s.mu.Unlock()
+				if writeErr != nil {
+					return nil, writeErr
+				}
+				if syncErr != nil {
+					return nil, syncErr
+				}
+				return nil, closeErr
+			}
 			return func() { _ = os.Remove(lockPath); s.mu.Unlock() }, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
 			s.mu.Unlock()
 			return nil, err
+		}
+		data, readErr := os.ReadFile(lockPath)
+		var owner struct {
+			PID        int       `json:"pid"`
+			AcquiredAt time.Time `json:"acquired_at"`
+		}
+		decodeErr := json.Unmarshal(data, &owner)
+		stale := readErr == nil && (decodeErr != nil || owner.PID <= 0 || time.Since(owner.AcquiredAt) > 30*time.Second || !processAlive(owner.PID))
+		if stale {
+			if removeErr := os.Remove(lockPath); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+				continue
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -195,6 +245,13 @@ func (s *DiskTransactionStore) lock(ctx context.Context) (func(), error) {
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
+}
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 func ensureJSONEOF(decoder *json.Decoder) error {
 	var extra any

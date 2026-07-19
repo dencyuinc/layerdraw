@@ -3,11 +3,13 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -69,8 +71,19 @@ func (m *memoryClient) Download(_ context.Context, _ RegistrySource, release Art
 	}
 	return append([]byte{}, value...), nil
 }
+func (m *memoryClient) OpenArtifact(ctx context.Context, source RegistrySource, release ArtifactRelease) (io.ReadCloser, error) {
+	value, err := m.Download(ctx, source, release)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(value)), nil
+}
 
-type validator struct{ fail, mismatch, nilImpact, migration bool }
+type validator struct {
+	fail, mismatch, nilImpact, migration bool
+	aggregateCapabilities                []semantic.AuthoringCapability
+	mutationInvalid                      string
+}
 
 func (v *validator) ValidateRegistryArtifact(_ context.Context, release ArtifactRelease, _ []byte) (ValidatedArtifact, error) {
 	if v.fail {
@@ -92,6 +105,27 @@ func (v *validator) ValidateRegistryArtifact(_ context.Context, release Artifact
 		migrationDigest = testDigest('e')
 	}
 	return ValidatedArtifact{Identity: release.Identity, CanonicalDigest: canonical, StagedTreeManifest: testDigest('6'), ResolvedLockDigest: testDigest('7'), MutationDigest: testDigest('8'), AuthoringImpactDigest: string(impact.ImpactDigest), AuthoringImpact: impact, AddressMigrationPlanDigest: migrationDigest, Diagnostics: []string{}}, nil
+}
+func (v *validator) BuildRegistryMutationPlan(_ context.Context, input RegistryMutationBuildInput) (ProjectMutationPlan, error) {
+	if v.fail {
+		return ProjectMutationPlan{}, errors.New("invalid mutation")
+	}
+	caps := v.aggregateCapabilities
+	if len(caps) == 0 {
+		caps = []semantic.AuthoringCapability{semantic.AuthoringCapabilitySchemaWrite}
+	}
+	impact := semantic.AuthoringImpact{BaseDefinitionHash: protocolcommon.Digest(testDigest('1')), ResultingDefinitionHash: protocolcommon.Digest(testDigest('2')), SemanticDiffHash: protocolcommon.Digest(testDigest('3')), SourceDiffHash: protocolcommon.Digest(testDigest('4')), ImpactDigest: protocolcommon.Digest(testDigest('5')), RequiredCapabilities: append([]semantic.AuthoringCapability{}, caps...), Entries: []semantic.AuthoringImpactEntry{}}
+	result := ProjectMutationPlan{BaseProjectRevision: input.Project.Revision, ExpectedDefinitionHash: input.Project.DefinitionHash, ExpectedResolvedLockDigest: input.Project.DependencySnapshot.ResolvedLockDigest, StagedTreeManifest: testDigest('6'), ResolvedLockDelta: input.ResolvedLockDelta, SourceEdits: []SourceEdit{}, MutationDigest: digestJSON(struct {
+		Action Action
+		Delta  ResolvedLockDelta
+	}{input.Action, input.ResolvedLockDelta}), AuthoringImpact: impact, AuthoringImpactDigest: string(impact.ImpactDigest), TrustPolicyDigest: testDigest('a')}
+	switch v.mutationInvalid {
+	case "digest":
+		result.AuthoringImpactDigest = ""
+	case "precondition":
+		result.BaseProjectRevision = "wrong"
+	}
+	return result, nil
 }
 
 type accessPort struct {
@@ -132,12 +166,14 @@ func (a *accessPort) EvaluateRegistryPlan(_ context.Context, input accessprotoco
 }
 
 type projectPort struct {
-	mu    sync.RWMutex
-	state ProjectState
-	err   error
+	mu           sync.RWMutex
+	state        ProjectState
+	err          error
+	currentCalls atomic.Int64
 }
 
 func (p *projectPort) CurrentRegistryProjectState(_ context.Context, _ string) (ProjectState, error) {
+	p.currentCalls.Add(1)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	state := p.state
@@ -145,15 +181,31 @@ func (p *projectPort) CurrentRegistryProjectState(_ context.Context, _ string) (
 	state.DependencySnapshot = cloneDependencySnapshot(p.state.DependencySnapshot)
 	return state, p.err
 }
+func (p *projectPort) NewRegistryDocumentState(_ context.Context, _ ArtifactIdentity) (ProjectState, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	state := p.state
+	state.ProjectID = "new-project"
+	state.DocumentID = "new-document"
+	state.Revision = ""
+	state.DefinitionHash = ""
+	state.DependencySnapshot = ProjectDependencySnapshot{}
+	state.RuntimeSessionID = "runtime-session-template"
+	return state, p.err
+}
 
 type runtimePort struct {
-	calls atomic.Int64
-	err   error
-	block chan struct{}
+	calls       atomic.Int64
+	err         error
+	block       chan struct{}
+	recovery    RuntimeRegistryOutcome
+	recoveryErr error
+	last        RuntimeCommitInput
 }
 
 func (r *runtimePort) CommitRegistryPlan(_ context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
 	r.calls.Add(1)
+	r.last = input
 	if r.block != nil {
 		<-r.block
 	}
@@ -163,7 +215,18 @@ func (r *runtimePort) CommitRegistryPlan(_ context.Context, input RuntimeCommitI
 	if input.AccessDecision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || len(input.HostOperationImpacts) != 1 {
 		return RuntimeCommitResult{}, errors.New("missing typed authorization binding")
 	}
-	return RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID}, nil
+	result := RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID}
+	if input.Plan.CreatesNewDocument {
+		result.DocumentID = input.Plan.NewDocumentID
+		result.InitialCommittedRevision = true
+	}
+	return result, nil
+}
+func (r *runtimePort) LookupRegistryCommit(_ context.Context, _ string, _ string, _ string) (RuntimeRegistryOutcome, error) {
+	if r.recovery.Status == "" {
+		return RuntimeRegistryOutcome{Status: RuntimeRegistryUnknown}, r.recoveryErr
+	}
+	return r.recovery, r.recoveryErr
 }
 
 type credentialBroker struct {
@@ -181,11 +244,15 @@ type connector struct {
 	calls atomic.Int64
 	err   error
 	seen  []byte
+	block chan struct{}
 }
 
 func (c *connector) ProbeRegistrySource(_ context.Context, _ RegistrySource, lease CredentialLease) error {
 	c.calls.Add(1)
 	c.seen = append([]byte{}, lease.Credential...)
+	if c.block != nil {
+		<-c.block
+	}
 	return c.err
 }
 
@@ -218,7 +285,7 @@ func newTestEnv(t *testing.T, store TransactionStore) *testEnv {
 	}
 	v := &validator{}
 	access := &accessPort{}
-	project := &projectPort{state: ProjectState{ProjectID: "p", DocumentID: "doc", LocalScopeID: "local", Revision: "r1", DefinitionHash: testDigest('1'), DependencySnapshot: ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{}}, PackTreeManifest: testDigest('9'), HostCapabilities: []string{"render.svg"}, GrantSnapshot: accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: protocolcommon.Digest(testDigest('a')), ActorRef: accessprotocol.ActorRef{ActorID: "user", Kind: "user"}, GrantedCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage, semantic.AuthoringCapabilitySchemaWrite}, HostDocumentID: "doc", IssuedAt: protocolcommon.Rfc3339Time(testNow.Format(time.RFC3339)), LocalScopeID: "local", MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}}}
+	project := &projectPort{state: ProjectState{ProjectID: "p", DocumentID: "doc", LocalScopeID: "local", Revision: "r1", DefinitionHash: testDigest('1'), DependencySnapshot: ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{}}, PackTreeManifest: testDigest('9'), HostCapabilities: []string{"render.svg"}, RuntimeSessionID: "runtime-session-project", LeaseToken: "lease-token-project", GrantSnapshot: accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: protocolcommon.Digest(testDigest('a')), ActorRef: accessprotocol.ActorRef{ActorID: "user", Kind: "user"}, GrantedCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage, semantic.AuthoringCapabilitySchemaWrite}, HostDocumentID: "doc", IssuedAt: protocolcommon.Rfc3339Time(testNow.Format(time.RFC3339)), LocalScopeID: "local", MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}}}
 	runtime := &runtimePort{}
 	broker := credentialBroker{lease: CredentialLease{Credential: []byte("opaque"), ExpiresAt: testNow.Add(time.Hour)}}
 	registry, err := New(v, access, runtime, project, broker, store)
@@ -237,6 +304,9 @@ func newTestEnv(t *testing.T, store TransactionStore) *testEnv {
 	registry.RegisterClient(SourceOfficial, client)
 	connector := &connector{}
 	registry.RegisterConnector(SourceOfficial, connector)
+	if err := registry.ConnectSource(context.Background(), "official", "credential:official"); err != nil {
+		t.Fatal(err)
+	}
 	return &testEnv{registry: registry, client: client, validator: v, access: access, project: project, runtime: runtime, connector: connector, privateKey: privateKey, store: store}
 }
 
