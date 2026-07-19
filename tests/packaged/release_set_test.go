@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -73,13 +74,18 @@ func TestFixedReleaseSetNativeUsesVerifiedSidecarIdentity(t *testing.T) {
 	}
 	desktopRoot := t.TempDir()
 	extractDesktopNative(t, desktopArchive, desktopRoot)
-	desktopCommand := exec.Command(
+	desktopCommand := offlineCommand(t,
 		filepath.Join(desktopRoot, "layerdraw-host-native"),
 		"native-search-check",
 		"--database", filepath.Join(t.TempDir(), "offline-search.lbug"),
 		"--fts-extension", filepath.Join(desktopRoot, "libfts.lbug_extension"),
 	)
-	desktopCommand.Env = []string{"HOME=" + t.TempDir(), "HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:1", "NO_PROXY=*"}
+	desktopCommand.Env = []string{
+		"HOME=" + t.TempDir(),
+		"HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:1", "ALL_PROXY=http://127.0.0.1:1",
+		"http_proxy=http://127.0.0.1:1", "https_proxy=http://127.0.0.1:1", "all_proxy=http://127.0.0.1:1",
+		"NO_PROXY=", "no_proxy=",
+	}
 	if output, err := desktopCommand.CombinedOutput(); err != nil || !bytes.Contains(output, []byte("ladybug 0.17.0 fts loaded")) {
 		t.Fatalf("offline Desktop native check: output=%q err=%v", output, err)
 	}
@@ -131,6 +137,22 @@ func TestFixedReleaseSetNativeUsesVerifiedSidecarIdentity(t *testing.T) {
 	if err := command.Wait(); err != nil || stderr.Len() != 0 {
 		t.Fatalf("release binary exit=%v stderr=%q", err, stderr.String())
 	}
+}
+
+func offlineCommand(t *testing.T, binary string, arguments ...string) *exec.Cmd {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		if sandbox, err := exec.LookPath("sandbox-exec"); err == nil {
+			return exec.Command(sandbox, append([]string{"-p", "(version 1) (allow default) (deny network*)", binary}, arguments...)...)
+		}
+	}
+	if runtime.GOOS == "linux" {
+		if unshare, err := exec.LookPath("unshare"); err == nil && exec.Command(unshare, "-n", "true").Run() == nil {
+			return exec.Command(unshare, append([]string{"-n", binary}, arguments...)...)
+		}
+	}
+	t.Log("OS network namespace enforcement is unavailable; invalid all-proxy settings and an empty bypass list remain active")
+	return exec.Command(binary, arguments...)
 }
 
 func extractDesktopNative(t *testing.T, archivePath, destination string) {

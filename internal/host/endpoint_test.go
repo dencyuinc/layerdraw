@@ -5,6 +5,7 @@ package host
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -27,13 +28,13 @@ func (searchSurfaceStub) Capabilities(context.Context) (layerruntime.SearchCapab
 	return layerruntime.SearchCapabilityManifest{QueryAvailable: true, SearchAvailable: true, AnalysisAvailable: true}, nil
 }
 func (searchSurfaceStub) Search(context.Context, layerruntime.SearchRequest) ([]byte, error) {
-	return []byte("same"), nil
+	return []byte(`{"surface":"search"}`), nil
 }
 func (searchSurfaceStub) ExecuteQuery(context.Context, port.BoundExecutionRequest) ([]byte, error) {
-	return []byte("same"), nil
+	return []byte(`{"surface":"query"}`), nil
 }
 func (searchSurfaceStub) ExecuteAnalysis(context.Context, port.BoundExecutionRequest) ([]byte, error) {
-	return []byte("same"), nil
+	return []byte(`{"surface":"analysis"}`), nil
 }
 
 type emptyBlobSource struct {
@@ -151,6 +152,41 @@ func TestRuntimeTerminalResponsesCoverEveryAdvertisedOperation(t *testing.T) {
 	}
 	if !composite.Supports("engine.compile") {
 		t.Fatal("wired Engine operation reported as unsupported")
+	}
+}
+
+func TestSearchOperationsDispatchThroughTheWiredSurface(t *testing.T) {
+	composite := newSearchTestEndpoint(t)
+	protocol := runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}
+	requests := []struct {
+		operation string
+		payload   any
+		want      string
+	}{
+		{OperationSearch, layerruntime.SearchRequest{}, `"surface":"search"`},
+		{OperationExecuteQuery, port.BoundExecutionRequest{}, `"surface":"query"`},
+		{OperationAnalyzeGraph, port.BoundExecutionRequest{}, `"surface":"analysis"`},
+	}
+	for _, testCase := range requests {
+		t.Run(testCase.operation, func(t *testing.T) {
+			if !composite.Supports(testCase.operation) {
+				t.Fatal("wired Search operation is not supported")
+			}
+			control, err := json.Marshal(map[string]any{"operation": testCase.operation, "protocol": protocol, "request_id": "search_request", "payload": testCase.payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := executeRuntimeControl(t, composite, testCase.operation, control, emptyBlobSource{})
+			if response.Outcome != protocolcommon.OutcomeSuccess || !strings.Contains(string(response.Control), testCase.want) {
+				t.Fatalf("response=%s", response.Control)
+			}
+			if cancelled, err := composite.CancellationResponse(testCase.operation, "cancel"); err != nil || cancelled.Outcome != protocolcommon.OutcomeCancelled {
+				t.Fatalf("cancelled=%+v err=%v", cancelled, err)
+			}
+		})
+	}
+	if _, _, err := composite.Prepare(context.Background(), OperationExecuteQuery, []byte(`{"operation":"runtime.execute_query","protocol":{"name":"runtime","version":"1.0"},"request_id":"x","payload":{},"unknown":true}`)); err == nil {
+		t.Fatal("open Search envelope accepted unknown fields")
 	}
 }
 
@@ -436,6 +472,14 @@ func fmtHex(value []byte) string {
 }
 
 func newTestEndpoint(t *testing.T) *Endpoint {
+	return newEndpointWithSearch(t, nil)
+}
+
+func newSearchTestEndpoint(t *testing.T) *Endpoint {
+	return newEndpointWithSearch(t, searchSurfaceStub{})
+}
+
+func newEndpointWithSearch(t *testing.T, search ConsumerSearchSurface) *Endpoint {
 	t.Helper()
 	digest := protocolcommon.Digest("sha256:" + strings.Repeat("a", 64))
 	local, err := localdocument.New(localdocument.Config{
@@ -450,7 +494,7 @@ func newTestEndpoint(t *testing.T) *Endpoint {
 	if err != nil {
 		t.Fatal(err)
 	}
-	composite, err := New(Config{LocalHost: local, Engine: engineFacade})
+	composite, err := New(Config{LocalHost: local, Engine: engineFacade, Search: search})
 	if err != nil {
 		t.Fatal(err)
 	}

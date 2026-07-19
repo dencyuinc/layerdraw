@@ -99,7 +99,7 @@ func serve(ctx context.Context, root string, stdin io.Reader, stdout io.Writer) 
 	if err != nil {
 		return &transport.SessionError{Code: transport.SessionErrorConfiguration}
 	}
-	endpoint, shutdown, err := hostendpoint.NewLocal(hostendpoint.LocalConfig{
+	endpoint, shutdown, err := openLocalEndpoint(hostendpoint.LocalConfig{
 		Root: root, ReleaseVersion: releaseVersion, SourceRevision: sourceRevision,
 		ReleaseManifestDigest: digest, EndpointInstanceID: instanceID, TransportID: transport.TransportID,
 	})

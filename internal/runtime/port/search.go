@@ -167,6 +167,20 @@ type SearchDocumentBatchVerifier interface {
 	VerifySearchDocumentBatch(context.Context, SearchDocumentBatch) error
 }
 
+// SearchDocumentBatchProducer is an Engine/Access-owned high-level issuer.
+// Callers provide generation inputs; they never receive a primitive capable of
+// signing an already-constructed SearchDocumentBatch.
+type SearchDocumentBatchProducer interface {
+	ProduceSearchDocumentBatch(context.Context, SearchDocumentBatchRequest) (SearchDocumentBatch, error)
+}
+
+type SearchDocumentBatchRequest struct {
+	Snapshot               DocumentSnapshotRef
+	AccessProjectionDigest string
+	EmbeddingProfileDigest string
+	Documents              []SearchDocumentInput
+}
+
 type EmbeddingProfile struct {
 	ProfileID     string
 	ModelID       string

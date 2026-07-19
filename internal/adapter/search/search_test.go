@@ -194,6 +194,12 @@ func TestHMACPlanAndConcreteLadybugDriver(t *testing.T) {
 
 type authorityEngineStub struct{}
 
+type documentProducerStub struct{ batch port.SearchDocumentBatch }
+
+func (p documentProducerStub) ProduceSearchDocumentBatch(context.Context, port.SearchDocumentBatchRequest) (port.SearchDocumentBatch, error) {
+	return p.batch, nil
+}
+
 func (authorityEngineStub) PrepareSearchIndex(context.Context, port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
 	return validPlan(port.PlanSearchIndex), nil
 }
@@ -256,6 +262,26 @@ func TestBoundEngineAuthoritySignsOnlyEnginePreparedPlans(t *testing.T) {
 	}
 	if _, _, err := BindEnginePlanAuthority(authorityEngineStub{}, []byte("short")); !errors.Is(err, ErrInvalidPlan) {
 		t.Fatalf("short key accepted: %v", err)
+	}
+}
+
+func TestBoundDocumentAuthoritySignsOnlyEngineProducedBatches(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	produced := port.SearchDocumentBatch{Snapshot: identity("r1").DocumentSnapshotRef, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: "sha256:model", Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "allowed"}}}
+	producer, verifier, err := BindEngineSearchDocumentAuthority(documentProducerStub{batch: produced}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := producer.ProduceSearchDocumentBatch(context.Background(), port.SearchDocumentBatchRequest{})
+	if err != nil || batch.Token == "" || verifier.VerifySearchDocumentBatch(context.Background(), batch) != nil {
+		t.Fatalf("batch=%+v err=%v", batch, err)
+	}
+	batch.Documents[0].Text = "unauthorized"
+	if verifier.VerifySearchDocumentBatch(context.Background(), batch) == nil {
+		t.Fatal("modified Engine-produced batch retained authority")
+	}
+	if _, _, err := BindEngineSearchDocumentAuthority(nil, key); err == nil {
+		t.Fatal("nil Engine producer accepted")
 	}
 }
 

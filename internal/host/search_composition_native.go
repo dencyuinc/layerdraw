@@ -4,9 +4,15 @@
 package host
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	enginesearch "github.com/dencyuinc/layerdraw/internal/adapter/enginesearch"
 	searchadapter "github.com/dencyuinc/layerdraw/internal/adapter/search"
+	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
+	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 // NativeDesktopSearchComposition owns the production Ladybug session used by
@@ -14,6 +20,47 @@ import (
 type NativeDesktopSearchComposition struct {
 	DesktopSearchComposition
 	ladybug *searchadapter.GoLadybugSession
+}
+
+type DesktopNativeConfig struct {
+	LocalConfig
+	DatabasePath, FTSExtensionPath string
+	PlanKey, SearchDocumentKey     []byte
+	EmbeddingProfile               port.EmbeddingProfile
+	LocalModelSeed                 []byte
+	MaxRows, MaxBytes              int
+}
+
+// OpenDesktopNativeEndpoint is the production in-process composition root used
+// by the Wails Desktop backend and the native host transport. Both consumers
+// receive the same Endpoint and Search surface; neither can substitute a stub.
+func OpenDesktopNativeEndpoint(config DesktopNativeConfig) (*Endpoint, *NativeDesktopSearchComposition, func(context.Context) error, error) {
+	localHost, err := localdocument.New(localdocument.Config{Root: config.Root, ReleaseVersion: protocolcommon.ReleaseVersion(config.ReleaseVersion), EndpointInstanceID: protocolcommon.EndpointInstanceID(config.EndpointInstanceID), ReleaseManifestDigest: protocolcommon.Digest(config.ReleaseManifestDigest)})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	engineFacade, err := engineendpoint.NewHostEngineFacade(config.ReleaseVersion, config.SourceRevision, config.ReleaseManifestDigest, config.EndpointInstanceID, config.TransportID)
+	if err != nil {
+		_ = localHost.Shutdown(context.Background())
+		return nil, nil, nil, err
+	}
+	engineSearch := enginesearch.New(engineFacade.Compiler())
+	search, err := OpenDesktopNativeSearchComposition(DesktopSearchConfig{Root: config.Root, Engine: engineSearch, DocumentProducer: engineSearch, PlanKey: config.PlanKey, SearchDocumentKey: config.SearchDocumentKey, EmbeddingProfile: config.EmbeddingProfile, LocalModelSeed: config.LocalModelSeed, PlanProtocolVersion: "v1", MaxRows: config.MaxRows, MaxBytes: config.MaxBytes}, config.DatabasePath, config.FTSExtensionPath)
+	if err != nil {
+		_ = localHost.Shutdown(context.Background())
+		return nil, nil, nil, err
+	}
+	endpoint, err := New(Config{LocalHost: localHost, Engine: engineFacade, Search: search.Surface})
+	if err != nil {
+		search.Close()
+		_ = localHost.Shutdown(context.Background())
+		return nil, nil, nil, err
+	}
+	shutdown := func(ctx context.Context) error {
+		search.Close()
+		return localHost.Shutdown(ctx)
+	}
+	return endpoint, search, shutdown, nil
 }
 
 // OpenDesktopNativeSearchComposition wires the actual go-ladybug v0.17 native

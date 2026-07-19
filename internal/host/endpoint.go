@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -19,6 +21,8 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 const (
@@ -90,6 +94,9 @@ func New(config Config) (*Endpoint, error) {
 }
 
 func (e *Endpoint) Supports(operation string) bool {
+	if e.search != nil && (operation == OperationSearch || operation == OperationExecuteQuery || operation == OperationAnalyzeGraph) {
+		return true
+	}
 	for _, candidate := range runtimeOperations {
 		if operation == candidate {
 			return true
@@ -236,6 +243,27 @@ func (p *runtimePlan) ExecuteDispatch(ctx context.Context, source engineendpoint
 func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control []byte) (engineendpoint.DispatchPlan, *engineendpoint.DispatchResponse, error) {
 	plan := &runtimePlan{endpoint: e, operation: operation}
 	switch operation {
+	case OperationSearch:
+		request, err := decodeSearchOperationRequest[layerruntime.SearchRequest](control, operation)
+		if err != nil {
+			return nil, nil, err
+		}
+		plan.requestID = request.RequestID
+		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
+			return e.search.Search(ctx, request.Payload)
+		}
+	case OperationExecuteQuery, OperationAnalyzeGraph:
+		request, err := decodeSearchOperationRequest[port.BoundExecutionRequest](control, operation)
+		if err != nil {
+			return nil, nil, err
+		}
+		plan.requestID = request.RequestID
+		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
+			if operation == OperationExecuteQuery {
+				return e.search.ExecuteQuery(ctx, request.Payload)
+			}
+			return e.search.ExecuteAnalysis(ctx, request.Payload)
+		}
 	case "runtime.open_document":
 		request, err := runtimeprotocol.DecodeOpenDocumentRequestEnvelope(control)
 		if err != nil {
@@ -517,10 +545,53 @@ func (e *Endpoint) runtimeResponse(operation, requestID string, payload any, out
 			value.Payload = &result
 		}
 		control, err = runtimeprotocol.EncodeRecoverOperationsResponseEnvelope(value)
+	case OperationSearch, OperationExecuteQuery, OperationAnalyzeGraph:
+		var raw json.RawMessage
+		if payload != nil {
+			bytes, ok := payload.([]byte)
+			if !ok || !json.Valid(bytes) {
+				return engineendpoint.DispatchResponse{}, errors.New("invalid Search response payload")
+			}
+			raw = append(json.RawMessage(nil), bytes...)
+		}
+		control, err = json.Marshal(searchOperationResponse{Operation: operation, Protocol: runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}, RequestID: requestID, HostRelease: e.release, Outcome: outcome, Payload: raw, Failure: protocolFailure})
 	default:
 		return engineendpoint.DispatchResponse{}, errors.New("unsupported Runtime response")
 	}
 	return engineendpoint.DispatchResponse{Operation: operation, RequestID: requestID, Control: control, Outcome: outcome, Failure: protocolFailure}, err
+}
+
+type searchOperationRequest[T any] struct {
+	Operation string                             `json:"operation"`
+	Payload   T                                  `json:"payload"`
+	Protocol  runtimeprotocol.RuntimeProtocolRef `json:"protocol"`
+	RequestID string                             `json:"request_id"`
+}
+
+type searchOperationResponse struct {
+	Operation   string                             `json:"operation"`
+	Protocol    runtimeprotocol.RuntimeProtocolRef `json:"protocol"`
+	RequestID   string                             `json:"request_id"`
+	HostRelease protocolcommon.ReleaseVersion      `json:"host_release"`
+	Outcome     protocolcommon.Outcome             `json:"outcome"`
+	Payload     json.RawMessage                    `json:"payload,omitempty"`
+	Failure     *protocolcommon.ProtocolFailure    `json:"failure,omitempty"`
+}
+
+func decodeSearchOperationRequest[T any](control []byte, operation string) (searchOperationRequest[T], error) {
+	var request searchOperationRequest[T]
+	decoder := json.NewDecoder(strings.NewReader(string(control)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return request, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return request, errors.New("Search request has trailing content")
+	}
+	if request.Operation != operation || request.RequestID == "" || request.Protocol.Name != runtimeprotocol.RuntimeProtocolRefNameValue || request.Protocol.Version != "1.0" {
+		return request, errors.New("Search request envelope mismatch")
+	}
+	return request, nil
 }
 
 func failure(code string, category protocolcommon.ProtocolFailureCategory) *protocolcommon.ProtocolFailure {

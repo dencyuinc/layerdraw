@@ -58,7 +58,13 @@ printf '{"ladybug_version":"0.17.0","platform":"%s","fts_extension":"libfts.lbug
 go run ./tools/licensecheck bundle \
   -binary "$temporary/desktop-native-stage/layerdraw-host-native" \
   -output "$temporary/desktop-native-legal" \
-  -version "$version"
+  -version "$version" \
+  -bundled-name "LadybugDB FTS extension" \
+  -bundled-version "0.17.0" \
+  -bundled-file "$native_dir/libfts.lbug_extension" \
+  -bundled-license "MIT" \
+  -bundled-license-file "docs/legal/licenses/LadybugDB-MIT.txt" \
+  -bundled-license-sha256 "c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0"
 cp "$temporary/desktop-native-legal/LICENSE" \
   "$temporary/desktop-native-legal/NOTICE" \
   "$temporary/desktop-native-legal/LICENSING.md" \

@@ -350,6 +350,22 @@ func TestBuildRejectsPackagePostinstall(t *testing.T) {
 	}
 }
 
+func TestDesktopFTSComponentBindsPackagedExtensionDigest(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	ref := "pkg:generic/ladybugdb-fts-extension@0.17.0"
+	component := cyclonedxComponent{Type: "library", BOMRef: ref, Name: "LadybugDB FTS extension", Version: "0.17.0", PURL: ref, Hashes: []cyclonedxHash{{Algorithm: "SHA-256", Content: digest}}, Licenses: licenses("MIT")}
+	closure := cyclonedxAuthority{Components: map[string]cyclonedxComponent{ref: component}}
+	authority := desktopNativeAuthority{LadybugVersion: "0.17.0", FTSSHA256: digest}
+	if err := validateDesktopFTSComponent(closure, authority); err != nil {
+		t.Fatal(err)
+	}
+	component.Hashes[0].Content = strings.Repeat("b", 64)
+	closure.Components[ref] = component
+	if err := validateDesktopFTSComponent(closure, authority); err == nil {
+		t.Fatal("forged FTS component digest was accepted")
+	}
+}
+
 func TestVerifyRejectsUnknownAndIncompleteManifestShapes(t *testing.T) {
 	output, nativeSBOM, nativeNotices := releaseFixture(t, testVersion)
 	if err := build(".", output, testVersion, testRevision, testBuiltAt, nativeSBOM, nativeNotices); err != nil {
@@ -420,14 +436,28 @@ func releaseFixture(t *testing.T, packageVersion string) (string, string, string
 	if err := os.MkdirAll(desktopLegal, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(desktopLegal, "layerdraw-host-native.cdx.json"), cycloneDXBytesWithDependency(t, "layerdraw-host-native", testVersion, "github.com/LadybugDB/go-ladybug", "v0.17.0", "MIT"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(desktopLegal, "THIRD_PARTY_NOTICES.txt"), []byte("github.com/LadybugDB/go-ladybug v0.17.0\nLicense: MIT\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	ftsExtension := []byte("verified extension")
 	ftsDigest := sha256.Sum256(ftsExtension)
+	desktopSBOM := cycloneDXBytesWithDependency(t, "layerdraw-host-native", testVersion, "LadybugDB FTS extension", "0.17.0", "MIT")
+	var desktopDocument cyclonedxDocument
+	if err := json.Unmarshal(desktopSBOM, &desktopDocument); err != nil {
+		t.Fatal(err)
+	}
+	desktopDocument.Components[0].BOMRef = "pkg:generic/ladybugdb-fts-extension@0.17.0"
+	desktopDocument.Components[0].PURL = desktopDocument.Components[0].BOMRef
+	desktopDocument.Components[0].Hashes = []cyclonedxHash{{Algorithm: "SHA-256", Content: hex.EncodeToString(ftsDigest[:])}}
+	desktopDocument.Dependencies[0].DependsOn[0] = desktopDocument.Components[0].BOMRef
+	desktopDocument.Dependencies[1].Ref = desktopDocument.Components[0].BOMRef
+	desktopSBOM, err := canonicalJSON(desktopDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(desktopLegal, "layerdraw-host-native.cdx.json"), desktopSBOM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(desktopLegal, "THIRD_PARTY_NOTICES.txt"), []byte("LadybugDB FTS extension 0.17.0\nLicense: MIT\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	desktopAuthority, err := json.Marshal(desktopNativeAuthority{
 		LadybugVersion: "0.17.0",
 		Platform:       runtime.GOOS + "/" + runtime.GOARCH,

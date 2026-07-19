@@ -140,6 +140,33 @@ func NewSearchDocumentBatchVerifier(key []byte) (port.SearchDocumentBatchVerifie
 	return newHMACSearchDocumentAuthority(key)
 }
 
+type authorizedSearchDocumentProducer struct {
+	producer  port.SearchDocumentBatchProducer
+	authority *hmacSearchDocumentAuthority
+}
+
+// BindEngineSearchDocumentAuthority signs only batches returned by the bound
+// Engine/Access producer. It deliberately exposes no arbitrary-batch signing
+// method to Wails, MCP, Runtime, or adapter callers.
+func BindEngineSearchDocumentAuthority(producer port.SearchDocumentBatchProducer, key []byte) (port.SearchDocumentBatchProducer, port.SearchDocumentBatchVerifier, error) {
+	if producer == nil {
+		return nil, nil, ErrEmbeddingProfileMismatch
+	}
+	authority, err := newHMACSearchDocumentAuthority(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &authorizedSearchDocumentProducer{producer: producer, authority: authority}, authority, nil
+}
+
+func (p *authorizedSearchDocumentProducer) ProduceSearchDocumentBatch(ctx context.Context, request port.SearchDocumentBatchRequest) (port.SearchDocumentBatch, error) {
+	batch, err := p.producer.ProduceSearchDocumentBatch(ctx, request)
+	if err != nil {
+		return port.SearchDocumentBatch{}, err
+	}
+	return p.authority.issue(batch)
+}
+
 // LocalProjectionModel is a concrete, deterministic, offline embedding model.
 // Its version/digest are fixed by the EmbeddingProfile supplied at composition.
 type LocalProjectionModel struct {

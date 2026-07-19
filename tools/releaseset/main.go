@@ -498,6 +498,9 @@ func verify(root, output string) error {
 			if authority.LadybugVersion != "0.17.0" || authority.Platform != runtime.GOOS+"/"+runtime.GOARCH || authority.FTSExtension != "libfts.lbug_extension" || authority.Host != "layerdraw-host-native" || authority.FTSSHA256 != hex.EncodeToString(ftsDigest[:]) {
 				return errors.New("Desktop native authority mismatch")
 			}
+			if err := validateDesktopFTSComponent(closure, authority); err != nil {
+				return errors.New("Desktop FTS extension is not bound to its CycloneDX component")
+			}
 		} else {
 			versionOutput, err := exec.Command(filepath.Join(output, filepath.FromSlash(artifact.Path)), "--version").CombinedOutput()
 			if err != nil || !strings.HasPrefix(string(versionOutput), "layerdraw-engine "+manifest.ReleaseVersion+" (") {
@@ -513,6 +516,14 @@ func verify(root, output string) error {
 		return err
 	}
 	_ = root
+	return nil
+}
+
+func validateDesktopFTSComponent(closure cyclonedxAuthority, authority desktopNativeAuthority) error {
+	ftsComponent, exists := closure.Components["pkg:generic/ladybugdb-fts-extension@0.17.0"]
+	if !exists || ftsComponent.Name != "LadybugDB FTS extension" || ftsComponent.Version != authority.LadybugVersion || componentLicense(ftsComponent) != "MIT" || len(ftsComponent.Hashes) != 1 || ftsComponent.Hashes[0].Algorithm != "SHA-256" || ftsComponent.Hashes[0].Content != authority.FTSSHA256 {
+		return errors.New("FTS component authority mismatch")
+	}
 	return nil
 }
 

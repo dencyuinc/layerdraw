@@ -12,6 +12,10 @@ import (
 
 type compositionEngine struct{}
 
+func (compositionEngine) ProduceSearchDocumentBatch(_ context.Context, request port.SearchDocumentBatchRequest) (port.SearchDocumentBatch, error) {
+	return port.SearchDocumentBatch{Snapshot: request.Snapshot, AccessProjectionDigest: request.AccessProjectionDigest, EmbeddingProfileDigest: request.EmbeddingProfileDigest, Documents: append([]port.SearchDocumentInput(nil), request.Documents...)}, nil
+}
+
 func (compositionEngine) PrepareSearchIndex(context.Context, port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
 	return port.ExecutionPlan{}, nil
 }
@@ -58,7 +62,7 @@ func (s *compositionLadybug) InspectIndex(_ context.Context, ref port.PhysicalIn
 
 func TestDesktopSearchCompositionProvidesOneWailsMCPSurface(t *testing.T) {
 	profile := port.EmbeddingProfile{ProfileID: "local", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}
-	composition, err := NewDesktopSearchComposition(DesktopSearchConfig{Root: t.TempDir(), Engine: compositionEngine{}, Ladybug: &compositionLadybug{}, PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"), EmbeddingProfile: profile, LocalModelSeed: []byte("0123456789012345"), BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096})
+	composition, err := NewDesktopSearchComposition(DesktopSearchConfig{Root: t.TempDir(), Engine: compositionEngine{}, DocumentProducer: compositionEngine{}, Ladybug: &compositionLadybug{}, PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"), EmbeddingProfile: profile, LocalModelSeed: []byte("0123456789012345"), BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096})
 	if err != nil {
 		t.Fatal(err)
 	}
