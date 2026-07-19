@@ -1314,3 +1314,17 @@ func TestCriticalPlanningJournalFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestCriticalNeedsReviewPersistenceFailure(t *testing.T) {
+	base := NewMemoryTransactionStore()
+	env := newTestEnv(t, base)
+	plan := InstallPlan{TransactionID: "needs-review-persistence", PlanDigest: "plan", MutationDigest: testDigest('m')}
+	tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StateRepairRequired, Sequence: 1}}}
+	if err := base.CreateRegistryTransaction(context.Background(), tx); err != nil {
+		t.Fatal(err)
+	}
+	env.registry.transactions = &faultStore{base: base, casErr: errors.New("disk unavailable")}
+	if _, err := env.registry.recoveryNeedsReview(context.Background(), tx, errors.New("unknown publication")); !IsFailure(err, FailureUnavailable) {
+		t.Fatalf("needs-review persistence failure lost: %v", err)
+	}
+}
