@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -873,7 +875,7 @@ func TestCriticalTemplateNewDocumentAndAuthoritativeRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	env2.runtime.recovery = RuntimeRegistryOutcome{Status: RuntimeRegistryCommitted, Result: RuntimeCommitResult{CommittedRevision: "runtime-r2", OperationResultID: "runtime-op"}}
+	env2.runtime.recovery = RuntimeRegistryOutcome{Status: RuntimeRegistryCommitted, Result: RuntimeCommitResult{CommittedRevision: "runtime-r2", OperationResultID: "recover-op"}}
 	recovered, err := env2.registry.RecoverTransaction(context.Background(), recoverPlan.TransactionID)
 	if err != nil || transactionState(recovered) != StateCommitted || recovered.CommittedRevision != "runtime-r2" || env2.runtime.calls.Load() != 0 {
 		t.Fatalf("authoritative recovery: %#v %v", recovered, err)
@@ -1171,9 +1173,6 @@ func TestCriticalPlanAndCommitFreshnessBranches(t *testing.T) {
 }
 
 func TestCriticalDiskTransactionFailureAndLivenessBranches(t *testing.T) {
-	if !processAlive(os.Getpid()) || processAlive(-1) {
-		t.Fatal("process liveness detection failed")
-	}
 	root := t.TempDir()
 	store, err := NewDiskTransactionStore(root)
 	if err != nil {
@@ -1227,14 +1226,17 @@ func TestCriticalDiskTransactionFailureAndLivenessBranches(t *testing.T) {
 		t.Fatal("trailing transaction JSON accepted")
 	}
 
-	liveLock, err := json.Marshal(struct {
-		PID        int       `json:"pid"`
-		AcquiredAt time.Time `json:"acquired_at"`
-	}{os.Getpid(), time.Now()})
+	holder, err := NewDiskTransactionStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "transactions.lock"), liveLock, 0o600); err != nil {
+	release, err := holder.lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	contender, err := NewDiskTransactionStore(root)
+	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1242,7 +1244,7 @@ func TestCriticalDiskTransactionFailureAndLivenessBranches(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 		cancel()
 	}()
-	if _, err := store.lock(ctx); !errors.Is(err, context.Canceled) {
+	if _, err := contender.lock(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled lock wait=%v", err)
 	}
 	rootFile := filepath.Join(t.TempDir(), "not-a-directory")
@@ -1305,7 +1307,7 @@ func TestCriticalRecoveryRejectsFreshTrustRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	recovered, err := env.registry.RecoverTransaction(context.Background(), plan.TransactionID)
-	if !IsFailure(err, FailureRepairRequired) || transactionState(recovered) != StateNeedsReview || env.runtime.calls.Load() != 0 {
+	if !IsFailure(err, FailurePlanStale) || transactionState(recovered) != StateNeedsReview || env.runtime.calls.Load() != 0 {
 		t.Fatalf("revoked recovery replay accepted: %#v %v", recovered, err)
 	}
 }
@@ -1401,6 +1403,120 @@ func TestCriticalTemplateRecoveryAndCommitRequireAllocator(t *testing.T) {
 	if _, err := env.registry.refreshRecoveryRuntimeInput(context.Background(), tx, RuntimeCommitInput{Plan: plan, OperationID: "allocator", IdempotencyKey: "allocator"}); err == nil {
 		t.Fatal("recovery without template allocator accepted")
 	}
+}
+
+func TestCriticalRecoveryRejectsChangedAccessEvaluationDigest(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	data := []byte("recovery-access-digest")
+	release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/recovery-access-digest", Version: "1.0.0"}, data, nil)
+	addRelease(env, release, data)
+	plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, release.Identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := RuntimeCommitInput{Plan: plan, OperationID: "access-op", IdempotencyKey: "access-id"}
+	tx, _, _ := env.store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+	version := transactionVersion(tx)
+	tx.RuntimeInput = &input
+	tx.Events = append(tx.Events, TransactionEvent{State: StateApplying, EvidenceDigest: plan.EvaluationDigest, Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
+	if ok, err := env.store.CompareAndSwapRegistryTransaction(context.Background(), plan.TransactionID, version, tx); err != nil || !ok {
+		t.Fatal(err)
+	}
+	env.project.state.GrantSnapshot.MembershipVersion = "changed-membership"
+	recovered, err := env.registry.RecoverTransaction(context.Background(), plan.TransactionID)
+	if !IsFailure(err, FailurePlanStale) || transactionState(recovered) != StateNeedsReview || env.runtime.calls.Load() != 0 || env.access.calls.Load() != 2 {
+		t.Fatalf("changed Access evaluation replayed stale plan: %#v %v", recovered, err)
+	}
+}
+
+func TestCriticalRuntimeCommittedOutcomeValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		template bool
+		result   RuntimeCommitResult
+	}{
+		{"existing missing revision", false, RuntimeCommitResult{OperationResultID: "bound-op"}},
+		{"existing missing operation result", false, RuntimeCommitResult{CommittedRevision: "r2"}},
+		{"existing wrong operation result", false, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "other-op"}},
+		{"existing marked initial", false, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op", InitialCommittedRevision: true}},
+		{"template missing revision", true, RuntimeCommitResult{OperationResultID: "bound-op", DocumentID: "new-document", InitialCommittedRevision: true}},
+		{"template wrong operation result", true, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "other-op", DocumentID: "new-document", InitialCommittedRevision: true}},
+		{"template wrong document", true, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op", DocumentID: "other-document", InitialCommittedRevision: true}},
+		{"template not initial", true, RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op", DocumentID: "new-document"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name+" normal", func(t *testing.T) {
+			env := newTestEnv(t, NewMemoryTransactionStore())
+			kind, action := ArtifactPack, ActionInstall
+			if tc.template {
+				kind, action = ArtifactTemplate, ActionCreateFromTemplate
+			}
+			data := []byte("runtime-result-" + tc.name)
+			release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: kind, CanonicalID: "critical/" + strings.ReplaceAll(tc.name, " ", "-"), Version: "1.0.0"}, data, nil)
+			addRelease(env, release, data)
+			request := planRequest(env, action, release.Identity)
+			if tc.template {
+				request = PlanRequest{Action: action, Requested: release.Identity, DependencySnapshot: ProjectDependencySnapshot{}}
+			}
+			plan, err := env.registry.Plan(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			env.runtime.result = &tc.result
+			if _, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "bound-op", IdempotencyKey: "bound-id"}); !IsFailure(err, FailureRepairRequired) {
+				t.Fatalf("invalid Runtime result converged: %v", err)
+			}
+			tx, _ := env.registry.Transaction(plan.TransactionID)
+			if transactionState(tx) != StateRepairRequired || tx.CommittedRevision != "" || tx.RuntimeResult != nil {
+				t.Fatalf("invalid Runtime result persisted as committed: %#v", tx)
+			}
+		})
+
+		t.Run(tc.name+" recovery", func(t *testing.T) {
+			env := newTestEnv(t, NewMemoryTransactionStore())
+			kind, action := ArtifactPack, ActionInstall
+			if tc.template {
+				kind, action = ArtifactTemplate, ActionCreateFromTemplate
+			}
+			data := []byte("runtime-recovery-result-" + tc.name)
+			release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: kind, CanonicalID: "critical/recovery-" + strings.ReplaceAll(tc.name, " ", "-"), Version: "1.0.0"}, data, nil)
+			addRelease(env, release, data)
+			request := planRequest(env, action, release.Identity)
+			if tc.template {
+				request = PlanRequest{Action: action, Requested: release.Identity, DependencySnapshot: ProjectDependencySnapshot{}}
+			}
+			plan, err := env.registry.Plan(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := RuntimeCommitInput{Plan: plan, OperationID: "bound-op", IdempotencyKey: "bound-id"}
+			tx, _, _ := env.store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+			version := transactionVersion(tx)
+			tx.RuntimeInput = &input
+			tx.Events = append(tx.Events, TransactionEvent{State: StateApplying, EvidenceDigest: plan.EvaluationDigest, Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
+			if ok, err := env.store.CompareAndSwapRegistryTransaction(context.Background(), plan.TransactionID, version, tx); err != nil || !ok {
+				t.Fatal(err)
+			}
+			env.runtime.recovery = RuntimeRegistryOutcome{Status: RuntimeRegistryCommitted, Result: tc.result}
+			recovered, err := env.registry.RecoverTransaction(context.Background(), plan.TransactionID)
+			if !IsFailure(err, FailureRepairRequired) || transactionState(recovered) != StateNeedsReview || recovered.CommittedRevision != "" || recovered.RuntimeResult != nil {
+				t.Fatalf("invalid recovered Runtime result converged: %#v %v", recovered, err)
+			}
+		})
+	}
+	t.Run("recovery missing durable operation binding", func(t *testing.T) {
+		env := newTestEnv(t, NewMemoryTransactionStore())
+		plan := InstallPlan{TransactionID: "missing-runtime-input", PlanDigest: "plan", MutationDigest: testDigest('m')}
+		tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StateRepairRequired, Sequence: 1, IdempotencyKey: "bound-id"}}}
+		if err := env.store.CreateRegistryTransaction(context.Background(), tx); err != nil {
+			t.Fatal(err)
+		}
+		env.runtime.recovery = RuntimeRegistryOutcome{Status: RuntimeRegistryCommitted, Result: RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "bound-op"}}
+		recovered, err := env.registry.RecoverTransaction(context.Background(), plan.TransactionID)
+		if !IsFailure(err, FailureRepairRequired) || transactionState(recovered) != StateNeedsReview {
+			t.Fatalf("unbound recovered Runtime result converged: %#v %v", recovered, err)
+		}
+	})
 }
 
 func TestCriticalRecoveryPersistenceFailures(t *testing.T) {
@@ -1534,6 +1650,48 @@ func TestCriticalResolverLockAndRootHardening(t *testing.T) {
 		}
 	})
 
+	t.Run("locked dependency requires exact authority binding", func(t *testing.T) {
+		prepare := func(t *testing.T) (*testEnv, ArtifactRelease, ArtifactIdentity) {
+			t.Helper()
+			env := newTestEnv(t, NewMemoryTransactionStore())
+			childData, rootData := []byte("authority-child"), []byte("authority-root")
+			child := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/authority-child", Version: "1.0.0"}, childData, nil)
+			rootID := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/authority-root", Version: "1.0.0"}
+			root := signedRelease(t, env.privateKey, rootID, rootData, []Dependency{{Kind: ArtifactPack, CanonicalID: child.Identity.CanonicalID, VersionRange: child.Identity.Version, DigestConstraint: child.Digest}})
+			env.project.state.DependencySnapshot = ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{lockedFromPlan(PlanArtifact{Release: child}, false)}}
+			addRelease(env, child, childData)
+			addRelease(env, root, rootData)
+			return env, child, rootID
+		}
+		mutations := map[string]func(*LockedArtifact){
+			"source":                     func(lock *LockedArtifact) { lock.SourceID = "other-source" },
+			"publisher":                  func(lock *LockedArtifact) { lock.PublisherID = "other-publisher" },
+			"provenance digest":          func(lock *LockedArtifact) { lock.ProvenanceDigest = testDigest('e') },
+			"dependency metadata digest": func(lock *LockedArtifact) { lock.DependencyMetadataDigest = testDigest('e') },
+		}
+		for name, mutate := range mutations {
+			t.Run(name, func(t *testing.T) {
+				env, _, rootID := prepare(t)
+				mutate(&env.project.state.DependencySnapshot.Installs[0])
+				if _, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, rootID)); !IsFailure(err, FailureDependencyConflict) {
+					t.Fatalf("dependency authority drift accepted: %v", err)
+				}
+			})
+		}
+		t.Run("unchanged", func(t *testing.T) {
+			env, child, rootID := prepare(t)
+			plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, rootID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, updated := range plan.ResolvedLockDelta.Updated {
+				if artifactKey(updated.Identity) == artifactKey(child.Identity) {
+					t.Fatalf("unchanged dependency appeared in lock update: %#v", updated)
+				}
+			}
+		})
+	})
+
 	t.Run("requested root is not artifact ordering", func(t *testing.T) {
 		env := newTestEnv(t, NewMemoryTransactionStore())
 		childData, rootData := []byte("ordered-child"), []byte("ordered-root")
@@ -1626,24 +1784,76 @@ func TestCriticalDeepCloneAndLiveLockOwnership(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	store, err := NewDiskTransactionStore(root)
+	lockPath := filepath.Join(root, "transactions.lock")
+	holder, err := NewDiskTransactionStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	release, err := holder.lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	old := time.Now().Add(-time.Hour)
 	metadata, _ := json.Marshal(struct {
 		PID        int       `json:"pid"`
 		AcquiredAt time.Time `json:"acquired_at"`
-	}{os.Getpid(), time.Now().Add(-time.Hour)})
-	lockPath := filepath.Join(root, "transactions.lock")
+	}{os.Getpid(), old})
 	if err := os.WriteFile(lockPath, metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contender, err := NewDiskTransactionStore(root)
+	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if _, err := store.lock(ctx); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := contender.lock(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("old live lock was stolen: %v", err)
 	}
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("live lock removed: %v", err)
+	}
+}
+
+func TestCriticalDiskLockNeverOverlapsAcrossStoreInstances(t *testing.T) {
+	root := t.TempDir()
+	stores := make([]*DiskTransactionStore, 12)
+	for i := range stores {
+		store, err := NewDiskTransactionStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[i] = store
+	}
+	var inside atomic.Int64
+	var overlap atomic.Bool
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, store := range stores {
+		store := store
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 40; i++ {
+				release, err := store.lock(context.Background())
+				if err != nil {
+					overlap.Store(true)
+					return
+				}
+				if inside.Add(1) != 1 {
+					overlap.Store(true)
+				}
+				time.Sleep(time.Microsecond)
+				inside.Add(-1)
+				release()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if overlap.Load() || inside.Load() != 0 {
+		t.Fatal("disk transaction lock allowed overlapping critical sections")
 	}
 }

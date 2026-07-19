@@ -12,8 +12,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
-	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 var transactionIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -217,59 +218,44 @@ func (s *DiskTransactionStore) lock(ctx context.Context) (func(), error) {
 	default:
 	}
 	lockPath := filepath.Join(s.root, "transactions.lock")
+	fd, err := unix.Open(lockPath, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), lockPath)
 	for {
-		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			metadata, _ := json.Marshal(struct {
 				PID        int       `json:"pid"`
 				AcquiredAt time.Time `json:"acquired_at"`
 			}{os.Getpid(), time.Now().UTC()})
-			_, writeErr := file.Write(metadata)
-			syncErr := file.Sync()
-			closeErr := file.Close()
-			if writeErr != nil || syncErr != nil || closeErr != nil {
-				_ = os.Remove(lockPath)
+			// Metadata is diagnostic only. flock ownership is authoritative, so a
+			// partial diagnostic write can never make a contender enter.
+			_ = file.Truncate(0)
+			_, _ = file.Seek(0, io.SeekStart)
+			_, _ = file.Write(metadata)
+			_ = file.Sync()
+			return func() {
+				_ = unix.Flock(fd, unix.LOCK_UN)
+				_ = file.Close()
 				s.mu.Unlock()
-				if writeErr != nil {
-					return nil, writeErr
-				}
-				if syncErr != nil {
-					return nil, syncErr
-				}
-				return nil, closeErr
-			}
-			return func() { _ = os.Remove(lockPath); s.mu.Unlock() }, nil
+			}, nil
 		}
-		if !errors.Is(err, os.ErrExist) {
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			_ = file.Close()
 			s.mu.Unlock()
 			return nil, err
 		}
-		data, readErr := os.ReadFile(lockPath)
-		var owner struct {
-			PID        int       `json:"pid"`
-			AcquiredAt time.Time `json:"acquired_at"`
-		}
-		decodeErr := json.Unmarshal(data, &owner)
-		stale := readErr == nil && (decodeErr != nil || owner.PID <= 0 || !processAlive(owner.PID))
-		if stale {
-			if removeErr := os.Remove(lockPath); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
-				continue
-			}
-		}
 		select {
 		case <-ctx.Done():
+			_ = file.Close()
 			s.mu.Unlock()
 			return nil, ctx.Err()
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
-}
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 func ensureJSONEOF(decoder *json.Decoder) error {
 	var extra any

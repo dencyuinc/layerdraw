@@ -207,6 +207,7 @@ func (p *projectPort) NewRegistryDocumentState(_ context.Context, _ ArtifactIden
 type runtimePort struct {
 	calls       atomic.Int64
 	err         error
+	result      *RuntimeCommitResult
 	block       chan struct{}
 	recovery    RuntimeRegistryOutcome
 	recoveryErr error
@@ -221,6 +222,9 @@ func (r *runtimePort) CommitRegistryPlan(_ context.Context, input RuntimeCommitI
 	}
 	if r.err != nil {
 		return RuntimeCommitResult{}, r.err
+	}
+	if r.result != nil {
+		return *r.result, nil
 	}
 	if input.AccessDecision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || len(input.HostOperationImpacts) != 1 {
 		return RuntimeCommitResult{}, errors.New("missing typed authorization binding")
