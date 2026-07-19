@@ -49,3 +49,47 @@ func TestProductionEngineAdapterRejectsUnboundDocumentGeneration(t *testing.T) {
 		t.Fatal("duplicate Search documents were issued")
 	}
 }
+
+func TestProductionEngineAdapterBuildsIndexSearchAndCompletionPlans(t *testing.T) {
+	adapter := New(engine.New(engine.BuildInfo{}))
+	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: "doc", CommittedRevision: "r1", DefinitionHash: "sha256:def"}
+	document := port.SearchDocumentInput{SubjectAddress: "ldl:project:p:entity:e", ContentHash: "sha256:content", Text: "layer draw"}
+	physical := port.PhysicalIndexRef{IdentityDigest: "sha256:identity", ContentDigest: "sha256:content", BackendVersion: "0.17.0"}
+	request, err := json.Marshal(map[string]any{"physical_index": physical})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := adapter.PrepareSearchIndex(context.Background(), port.SearchIndexPreparationInput{Batch: port.SearchDocumentBatch{Documents: []port.SearchDocumentInput{document}}, Request: request})
+	if err != nil || plan.Kind != port.PlanSearchIndex || plan.MaxRows != 1 || !json.Valid(plan.Payload) {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	prepared, err := adapter.PrepareSearch(context.Background(), port.SearchPreparationInput{
+		BoundExecutionRequest: port.BoundExecutionRequest{Snapshot: snapshot, Request: []byte(`{"kind":"search_documents","query_text":"layer"}`), MaxOutputBytes: 4096},
+		SearchProfile:         port.SearchProfile{MaxHits: 10},
+	})
+	if err != nil || prepared.Plan.Kind != port.PlanSearch || prepared.QueryDigest == "" {
+		t.Fatalf("prepared=%+v err=%v", prepared, err)
+	}
+	rows := port.ExecutionResult{Complete: true, Rows: []port.RawRow{{"address": {Kind: "string", Value: "a"}}}, Bytes: 1}
+	searchResult, err := adapter.CompleteSearch(context.Background(), port.CompleteSearchInput{Rows: rows})
+	if err != nil || string(searchResult) != `{"hits":[{"address":{"Kind":"string","Value":"a"}}]}` {
+		t.Fatalf("search result=%s err=%v", searchResult, err)
+	}
+	analysisResult, err := adapter.CompleteAnalysis(context.Background(), port.CompleteExecutionInput{Rows: rows})
+	if err != nil || string(analysisResult) != `{"analysis":[{"address":{"Kind":"string","Value":"a"}}]}` {
+		t.Fatalf("analysis result=%s err=%v", analysisResult, err)
+	}
+}
+
+func TestProductionEngineAdapterRejectsInvalidPlansAndRows(t *testing.T) {
+	adapter := New(engine.New(engine.BuildInfo{}))
+	if _, err := adapter.PrepareSearchIndex(context.Background(), port.SearchIndexPreparationInput{Request: []byte(`{"physical_index":{}}`)}); err == nil {
+		t.Fatal("invalid physical index was accepted")
+	}
+	if _, err := adapter.PrepareSearch(context.Background(), port.SearchPreparationInput{BoundExecutionRequest: port.BoundExecutionRequest{Request: []byte(`{"kind":"search_documents"}`), MaxOutputBytes: 1}}); err == nil {
+		t.Fatal("empty search text was accepted")
+	}
+	if _, err := adapter.CompleteAnalysis(context.Background(), port.CompleteExecutionInput{Rows: port.ExecutionResult{Truncated: true}}); err == nil {
+		t.Fatal("truncated analysis was accepted")
+	}
+}

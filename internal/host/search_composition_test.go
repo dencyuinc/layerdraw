@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	searchadapter "github.com/dencyuinc/layerdraw/internal/adapter/search"
+	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -72,5 +73,19 @@ func TestDesktopSearchCompositionProvidesOneWailsMCPSurface(t *testing.T) {
 	}
 	if !manifest.SearchAvailable || !manifest.QueryAvailable || !manifest.AnalysisAvailable || !manifest.EmbeddingAvailable {
 		t.Fatalf("manifest=%#v", manifest)
+	}
+	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: "doc", CommittedRevision: "r1", DefinitionHash: "sha256:def"}
+	searchProfile := port.SearchProfile{ProfileID: "default", SpecificationDigest: "sha256:search", MaxHits: 1, LexicalCandidateLimit: 1, SemanticCandidateLimit: 1}
+	identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: searchProfile.ProfileID, SearchProfileDigest: searchProfile.SpecificationDigest, EmbeddingProfileID: profile.ProfileID, EmbeddingProfileDigest: profile.ModelDigest, AccessProjectionDigest: "sha256:access", LadybugBackendVersion: "1", IndexSchemaVersion: "1"}
+	_, err = composition.RebuildIndex(context.Background(), layerruntime.SearchIndexBuildRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity}, port.SearchDocumentBatchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: profile.ModelDigest, Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "sha256:content", Text: "searchable"}}})
+	if err == nil {
+		t.Fatal("invalid stub physical plan unexpectedly rebuilt an index")
+	}
+}
+
+func TestDesktopSearchCompositionRejectsUnboundRebuildInput(t *testing.T) {
+	composition := DesktopSearchComposition{}
+	if _, err := composition.RebuildIndex(context.Background(), layerruntime.SearchIndexBuildRequest{}, port.SearchDocumentBatchRequest{}); err == nil {
+		t.Fatal("unbound rebuild input was accepted")
 	}
 }
