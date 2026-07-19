@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "bindings": [
+    ["ReviewSubmit","review_client","Submit","review.submit"],
+    ["HostExport","host_client","Export","host.export"],
+    ["AccessAuthorizeRead","access_client","AuthorizeRead","access.authorize_read"],
+    ["AccessManageAgentScope","access_client","ManageAgentScope","access.manage_agent_scope"],
+    ["NativeExecuteQuery","native_query_client","ExecuteQuery","native.execute_query"],
+    ["NativeExecuteSearch","native_query_client","ExecuteSearch","native.execute_search"],
+    ["NativeExecuteAnalysis","native_query_client","ExecuteAnalysis","native.execute_analysis"],
+    ["SearchIndexInspect","search_index_client","Inspect","search_index.inspect"],
+    ["SearchIndexUpdate","search_index_client","Update","search_index.update"],
+    ["SearchIndexSearch","search_index_client","Search","search_index.search"],
+    ["EmbeddingDocument","embedding_client","EmbedDocument","embedding.document"],
+    ["EmbeddingQuery","embedding_client","EmbedQuery","embedding.query"],
+    ["MCPInvokeTool","mcp_client","InvokeTool","mcp.invoke_tool"],
+    ["MCPReadResource","mcp_client","ReadResource","mcp.read_resource"],
+    ["MCPConnect","mcp_client","Connect","mcp.connect"],
+    ["MCPDisconnect","mcp_client","Disconnect","mcp.disconnect"]
+  ]
+}

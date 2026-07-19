@@ -7,28 +7,31 @@
       "target": "engine_client",
       "client_method": "Compile",
       "operation": "engine.compile",
-      "request_fixture": "schemas/fixtures/engine/compile-request.json"
+      "browser_request_fixture": "schemas/fixtures/engine/compile-request.json",
+      "desktop_request_fixture": "schemas/fixtures/desktop/engine-compile-request-v1.json"
     },
     {
       "generated_method": "RuntimeHandshake",
       "target": "runtime_client",
       "client_method": "Handshake",
       "operation": "runtime.handshake",
-      "request_fixture": "schemas/fixtures/runtime/handshake-request.json"
+      "browser_request_fixture": "schemas/fixtures/runtime/handshake-request.json",
+      "desktop_request_fixture": "schemas/fixtures/desktop/runtime-handshake-request-v1.json"
     },
     {
       "generated_method": "RegistryListSources",
       "target": "registry_client",
       "client_method": "ListSources",
       "operation": "registry.list_sources",
-      "request_fixture": "schemas/fixtures/desktop/registry-list-sources-request-v1.json"
+      "browser_request_fixture": "schemas/fixtures/desktop/registry-list-sources-browser-v1.json",
+      "desktop_request_fixture": "schemas/fixtures/desktop/registry-list-sources-request-v1.json"
     }
   ],
   "outcomes": [
-    {"decoder": "compile", "browser_fixture": "schemas/fixtures/engine/compile-success.json", "desktop_fixture": "schemas/fixtures/engine/compile-success.json", "outcome": "success"},
-    {"decoder": "compile", "browser_fixture": "schemas/fixtures/engine/compile-rejected.json", "desktop_fixture": "schemas/fixtures/engine/compile-rejected.json", "outcome": "rejected"},
-    {"decoder": "handshake", "browser_fixture": "schemas/fixtures/engine/handshake-failed-response.json", "desktop_fixture": "schemas/fixtures/engine/handshake-failed-response.json", "outcome": "failed"},
-    {"decoder": "handshake", "browser_fixture": "schemas/fixtures/engine/handshake-cancelled-response.json", "desktop_fixture": "schemas/fixtures/engine/handshake-cancelled-response.json", "outcome": "cancelled"}
+    {"browser_decoder":"compile","desktop_decoder":"execute_query","browser_fixture":"schemas/fixtures/engine/compile-success.json","desktop_fixture":"schemas/fixtures/engine/execute-query-success.json","outcome":"success"},
+    {"browser_decoder":"compile","desktop_decoder":"execute_query","browser_fixture":"schemas/fixtures/engine/compile-rejected.json","desktop_fixture":"schemas/fixtures/engine/execute-query-rejected.json","outcome":"rejected"},
+    {"browser_decoder":"handshake","desktop_decoder":"open_document","browser_fixture":"schemas/fixtures/engine/handshake-failed-response.json","desktop_fixture":"schemas/fixtures/engine/workbench-failed-execution-response.json","outcome":"failed"},
+    {"browser_decoder":"handshake","desktop_decoder":"open_document","browser_fixture":"schemas/fixtures/engine/handshake-cancelled-response.json","desktop_fixture":"schemas/fixtures/engine/workbench-cancelled-response.json","outcome":"cancelled"}
   ],
   "capability_statuses": [
     {"capability_id": "desktop.authoring", "enabled": true, "protocol_version": "1.0"},

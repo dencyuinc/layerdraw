@@ -3,8 +3,11 @@
 package desktopcontract
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -63,14 +66,16 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 		Version  int      `json:"version"`
 		Surfaces []string `json:"surfaces"`
 		Bindings []struct {
-			GeneratedMethod string        `json:"generated_method"`
-			Target          BindingTarget `json:"target"`
-			ClientMethod    string        `json:"client_method"`
-			Operation       string        `json:"operation"`
-			RequestFixture  string        `json:"request_fixture"`
+			GeneratedMethod       string        `json:"generated_method"`
+			Target                BindingTarget `json:"target"`
+			ClientMethod          string        `json:"client_method"`
+			Operation             string        `json:"operation"`
+			BrowserRequestFixture string        `json:"browser_request_fixture"`
+			DesktopRequestFixture string        `json:"desktop_request_fixture"`
 		} `json:"bindings"`
 		Outcomes []struct {
-			Decoder        string                 `json:"decoder"`
+			BrowserDecoder string                 `json:"browser_decoder"`
+			DesktopDecoder string                 `json:"desktop_decoder"`
 			BrowserFixture string                 `json:"browser_fixture"`
 			DesktopFixture string                 `json:"desktop_fixture"`
 			Outcome        protocolcommon.Outcome `json:"outcome"`
@@ -84,12 +89,18 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 		t.Fatal("empty compatibility fixture")
 	}
 	for _, vector := range value.Bindings {
-		binding, err := ValidateExchange(vector.GeneratedMethod, Exchange{Operation: vector.Operation, Control: fixture(t, vector.RequestFixture)})
-		if err != nil {
-			t.Fatalf("%s: %v", vector.GeneratedMethod, err)
+		browser, desktop := fixture(t, vector.BrowserRequestFixture), fixture(t, vector.DesktopRequestFixture)
+		if bytes.Equal(browser, desktop) {
+			t.Fatalf("%s uses identical Browser/Desktop bytes", vector.GeneratedMethod)
 		}
-		if binding.Target != vector.Target || binding.ClientMethod != vector.ClientMethod {
-			t.Fatalf("binding drift: %+v", binding)
+		for _, control := range [][]byte{browser, desktop} {
+			binding, err := ValidateExchange(vector.GeneratedMethod, Exchange{Operation: vector.Operation, Control: control})
+			if err != nil {
+				t.Fatalf("%s: %v", vector.GeneratedMethod, err)
+			}
+			if binding.Target != vector.Target || binding.ClientMethod != vector.ClientMethod {
+				t.Fatalf("binding drift: %+v", binding)
+			}
 		}
 	}
 	wantOutcomes := []protocolcommon.Outcome{protocolcommon.OutcomeSuccess, protocolcommon.OutcomeRejected, protocolcommon.OutcomeFailed, protocolcommon.OutcomeCancelled}
@@ -97,9 +108,14 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 		t.Fatal("outcome fixture is incomplete")
 	}
 	for index, vector := range value.Outcomes {
-		for _, fixtureName := range []string{vector.BrowserFixture, vector.DesktopFixture} {
+		browserBytes, desktopBytes := fixture(t, vector.BrowserFixture), fixture(t, vector.DesktopFixture)
+		if bytes.Equal(browserBytes, desktopBytes) {
+			t.Fatalf("outcome %s uses identical bytes", vector.Outcome)
+		}
+		for surfaceIndex, fixtureName := range []string{vector.BrowserFixture, vector.DesktopFixture} {
+			decoder := []string{vector.BrowserDecoder, vector.DesktopDecoder}[surfaceIndex]
 			var outcome protocolcommon.Outcome
-			switch vector.Decoder {
+			switch decoder {
 			case "compile":
 				decoded, err := engineprotocol.DecodeCompileResponseEnvelope(fixture(t, fixtureName))
 				if err != nil {
@@ -112,8 +128,20 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 					t.Fatal(err)
 				}
 				outcome = decoded.Outcome
+			case "execute_query":
+				decoded, err := engineprotocol.DecodeExecuteQueryResponseEnvelope(fixture(t, fixtureName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				outcome = decoded.Outcome
+			case "open_document":
+				decoded, err := engineprotocol.DecodeOpenDocumentResponseEnvelope(fixture(t, fixtureName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				outcome = decoded.Outcome
 			default:
-				t.Fatalf("unknown generated decoder %q", vector.Decoder)
+				t.Fatalf("unknown generated decoder %q", decoder)
 			}
 			if outcome != vector.Outcome || outcome != wantOutcomes[index] {
 				t.Fatalf("outcome drift: %q", outcome)
@@ -138,7 +166,7 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 
 func TestEveryApprovedBindingHasExactDecoderAndRejectsEmptyEnvelope(t *testing.T) {
 	table := GeneratedBindingTable()
-	if len(table) != 50 {
+	if len(table) != 66 {
 		t.Fatalf("binding closure = %d", len(table))
 	}
 	seenMethod, seenOperation := map[string]bool{}, map[string]bool{}
@@ -180,6 +208,10 @@ func completeClientSet() ClientSet {
 	fill := func(value any) {
 		fields := reflect.ValueOf(value).Elem()
 		for index := 0; index < fields.NumField(); index++ {
+			if fields.Field(index).Kind() == reflect.Interface {
+				fields.Field(index).Set(reflect.ValueOf(OwnerDecoder(strictOwnerDecoder{})))
+				continue
+			}
 			fields.Field(index).Set(reflect.ValueOf(method))
 		}
 	}
@@ -189,7 +221,74 @@ func completeClientSet() ClientSet {
 	fill(&clients.Registry)
 	fill(&clients.Review)
 	fill(&clients.Host)
+	fill(&clients.Access)
+	fill(&clients.NativeQuery)
+	fill(&clients.SearchIndex)
+	fill(&clients.Embedding)
+	fill(&clients.MCP)
 	return clients
+}
+
+type strictOwnerDecoder struct{}
+
+func (strictOwnerDecoder) Decode(expected string, control []byte) (OwnerEnvelopeIdentity, error) {
+	var envelope struct {
+		Operation string         `json:"operation"`
+		RequestID string         `json:"request_id"`
+		Payload   map[string]any `json:"payload"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(control))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return OwnerEnvelopeIdentity{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return OwnerEnvelopeIdentity{}, errors.New("trailing owner envelope")
+	}
+	if envelope.Operation != expected || envelope.RequestID == "" || envelope.Payload == nil {
+		return OwnerEnvelopeIdentity{}, errors.New("invalid owner envelope")
+	}
+	return OwnerEnvelopeIdentity{Operation: envelope.Operation, RequestID: envelope.RequestID}, nil
+}
+
+func TestOwnerBindingsAreCompleteUsableAndDistinctAcrossSurfaces(t *testing.T) {
+	var fixtureValue struct {
+		Version  int         `json:"version"`
+		Bindings [][4]string `json:"bindings"`
+	}
+	if err := json.Unmarshal(fixture(t, "schemas/fixtures/desktop/owner-binding-parity-v1.json"), &fixtureValue); err != nil {
+		t.Fatal(err)
+	}
+	if fixtureValue.Version != 1 || len(fixtureValue.Bindings) != 16 {
+		t.Fatal("owner binding closure incomplete")
+	}
+	clients := completeClientSet()
+	seen := map[string]bool{}
+	for _, vector := range fixtureValue.Bindings {
+		method, target, clientMethod, operation := vector[0], BindingTarget(vector[1]), vector[2], vector[3]
+		if seen[method] {
+			t.Fatalf("duplicate owner binding %s", method)
+		}
+		seen[method] = true
+		binding, err := findBinding(method, operation)
+		if err != nil || binding.Target != target || binding.ClientMethod != clientMethod {
+			t.Fatalf("binding %s: %+v %v", method, binding, err)
+		}
+		browser := []byte(`{"operation":"` + operation + `","request_id":"browser-` + method + `","payload":{}}`)
+		desktop := []byte(`{"operation":"` + operation + `","request_id":"desktop-` + method + `","payload":{}}`)
+		if bytes.Equal(browser, desktop) {
+			t.Fatal("owner surface bytes are identical")
+		}
+		for _, control := range [][]byte{browser, desktop} {
+			if _, err := clients.Invoke(context.Background(), method, Exchange{Operation: operation, Control: control}); err != nil {
+				t.Fatalf("%s: %v", method, err)
+			}
+		}
+	}
+	if _, err := clients.Invoke(context.Background(), "ReviewSubmit", Exchange{Operation: "review.other", Control: []byte(`{"operation":"review.other","request_id":"x","payload":{}}`)}); err == nil {
+		t.Fatal("replaced owner operation accepted")
+	}
 }
 
 func TestClientSetInvokesOnlyExactValidatedMethods(t *testing.T) {
@@ -263,6 +362,9 @@ func TestCapabilityNegotiationFailsClosed(t *testing.T) {
 		{func(_ *Manifest, s *[]protocolcommon.RequestedCapabilityStatus) {
 			(*s)[1].CapabilityID = (*s)[0].CapabilityID
 		}, FailureProtocolIncompatible},
+		{func(_ *Manifest, s *[]protocolcommon.RequestedCapabilityStatus) {
+			(*s)[0].CapabilityID = "desktop.unknown"
+		}, FailureProtocolIncompatible},
 		{func(_ *Manifest, s *[]protocolcommon.RequestedCapabilityStatus) { (*s)[0].ProtocolVersion = "2.0" }, FailureProtocolIncompatible},
 		{func(_ *Manifest, s *[]protocolcommon.RequestedCapabilityStatus) {
 			(*s)[0].Enabled = false
@@ -316,37 +418,55 @@ func TestLocalOwnerAndDelegationUseAccessContracts(t *testing.T) {
 	now := time.Date(2026, 7, 20, 1, 2, 3, 0, time.UTC)
 	request := LocalOwnerGrantRequest{Actor: accessprotocol.ActorRef{ActorID: "local-user", Kind: "user"}, Scope: accessprotocol.HostResourceScope{DocumentID: "doc", LocalScopeID: "local"}, IssuedAt: protocolcommon.Rfc3339Time(now.Format(time.RFC3339Nano))}
 	grant := accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ActorRef: request.Actor, GrantedCapabilities: accesscore.FullAuthoringCapabilities(), HostDocumentID: "doc", IssuedAt: request.IssuedAt, LocalScopeID: "local", MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}
-	if !ValidateLocalOwnerGrant(request, grant) {
+	grant.AccessFingerprint = accesscore.Fingerprint(grant)
+	if !ValidateLocalOwnerGrant(request, grant, now) {
 		t.Fatal("valid full-authoring local owner rejected")
 	}
 	grant.GrantedCapabilities = grant.GrantedCapabilities[1:]
-	if ValidateLocalOwnerGrant(request, grant) {
+	if ValidateLocalOwnerGrant(request, grant, now) {
 		t.Fatal("partial local owner grant accepted")
 	}
 	grant.GrantedCapabilities = accesscore.FullAuthoringCapabilities()
+	grant.AccessFingerprint = accesscore.Fingerprint(grant)
+	forged := grant
+	forged.AccessFingerprint = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if ValidateLocalOwnerGrant(request, forged, now) {
+		t.Fatal("forged fingerprint accepted")
+	}
+	expiredAt := protocolcommon.Rfc3339Time(now.Add(-time.Second).Format(time.RFC3339Nano))
+	expired := grant
+	expired.ExpiresAt = &expiredAt
+	expired.AccessFingerprint = accesscore.Fingerprint(expired)
+	if ValidateLocalOwnerGrant(request, expired, now) {
+		t.Fatal("expired local owner accepted")
+	}
 	delegation := accesscore.Delegation{ID: "delegation", ParentActor: request.Actor, Agent: accessprotocol.ActorRef{ActorID: "agent", Kind: "agent"}, DocumentID: "doc", LocalScopeID: "local", AuthoringCapabilities: accesscore.FullAuthoringCapabilities(), Permissions: accesscore.AgentPermissions{Read: true, Export: true, Propose: true, Apply: true}, IssuedAt: now, ExpiresAt: now.Add(time.Hour), Generation: 3}
 	requestDelegation := delegation
 	requestDelegation.Generation = 0
-	if !ValidateDelegationRequest(grant, requestDelegation) {
+	if !ValidateDelegationRequest(grant, requestDelegation, now) {
 		t.Fatal("typed delegation request rejected")
 	}
 	requestDelegation.Permissions = accesscore.AgentPermissions{}
-	if ValidateDelegationRequest(grant, requestDelegation) {
+	if ValidateDelegationRequest(grant, requestDelegation, now) {
 		t.Fatal("permissionless delegation accepted")
 	}
 	requestDelegation = delegation
 	requestDelegation.Generation = 0
 	requestDelegation.DocumentID = "other"
-	if ValidateDelegationRequest(grant, requestDelegation) {
+	if ValidateDelegationRequest(grant, requestDelegation, now) {
 		t.Fatal("cross-document delegation accepted")
 	}
 	fence := DelegationFence{DelegationID: "delegation", DocumentID: "doc", LocalScopeID: "local", Generation: "3"}
-	if !ValidateDelegationFence(fence, delegation) {
+	if !ValidateDelegationFence(fence, delegation, grant, now) {
 		t.Fatal("valid generation fence rejected")
 	}
 	fence.Generation = "2"
-	if ValidateDelegationFence(fence, delegation) {
+	if ValidateDelegationFence(fence, delegation, grant, now) {
 		t.Fatal("stale generation fence accepted")
+	}
+	fence.Generation = "3"
+	if ValidateDelegationFence(fence, delegation, grant, now.Add(2*time.Hour)) {
+		t.Fatal("expired delegation fence accepted")
 	}
 }
 

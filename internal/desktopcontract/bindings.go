@@ -15,11 +15,16 @@ import (
 type BindingTarget string
 
 const (
-	TargetEngine   BindingTarget = "engine_client"
-	TargetRuntime  BindingTarget = "runtime_client"
-	TargetRegistry BindingTarget = "registry_client"
-	TargetReview   BindingTarget = "review_client"
-	TargetHost     BindingTarget = "host_client"
+	TargetEngine      BindingTarget = "engine_client"
+	TargetRuntime     BindingTarget = "runtime_client"
+	TargetRegistry    BindingTarget = "registry_client"
+	TargetReview      BindingTarget = "review_client"
+	TargetHost        BindingTarget = "host_client"
+	TargetAccess      BindingTarget = "access_client"
+	TargetNativeQuery BindingTarget = "native_query_client"
+	TargetSearchIndex BindingTarget = "search_index_client"
+	TargetEmbedding   BindingTarget = "embedding_client"
+	TargetMCP         BindingTarget = "mcp_client"
 )
 
 type Exchange struct {
@@ -66,22 +71,74 @@ type RegistryClient struct {
 	ListSources, ConfigureSource, ConnectSource, DisconnectSource, Search,
 	PlanInstall, CommitPlan, GetTransaction, RecoverTransaction, AuthorArtifact ClientMethod
 }
-type ReviewClient struct{ Submit ClientMethod }
-type HostClient struct{ Export ClientMethod }
+type OwnerEnvelopeIdentity struct{ Operation, RequestID string }
+type OwnerDecoder interface {
+	Decode(expectedOperation string, control []byte) (OwnerEnvelopeIdentity, error)
+}
+type ReviewClient struct {
+	Decoder OwnerDecoder
+	Submit  ClientMethod
+}
+type HostClient struct {
+	Decoder OwnerDecoder
+	Export  ClientMethod
+}
+type AccessClient struct {
+	Decoder                         OwnerDecoder
+	AuthorizeRead, ManageAgentScope ClientMethod
+}
+type NativeQueryClient struct {
+	Decoder                                      OwnerDecoder
+	ExecuteQuery, ExecuteSearch, ExecuteAnalysis ClientMethod
+}
+type SearchIndexClient struct {
+	Decoder                 OwnerDecoder
+	Inspect, Update, Search ClientMethod
+}
+type EmbeddingClient struct {
+	Decoder                   OwnerDecoder
+	EmbedDocument, EmbedQuery ClientMethod
+}
+type MCPClient struct {
+	Decoder                                       OwnerDecoder
+	InvokeTool, ReadResource, Connect, Disconnect ClientMethod
+}
 
 type ClientSet struct {
-	Engine   EngineClient
-	Runtime  RuntimeClient
-	Registry RegistryClient
-	Review   ReviewClient
-	Host     HostClient
+	Engine      EngineClient
+	Runtime     RuntimeClient
+	Registry    RegistryClient
+	Review      ReviewClient
+	Host        HostClient
+	Access      AccessClient
+	NativeQuery NativeQueryClient
+	SearchIndex SearchIndexClient
+	Embedding   EmbeddingClient
+	MCP         MCPClient
 }
 
 func (c ClientSet) Validate() error {
-	if !allMethodsPresent(c.Engine) || !allMethodsPresent(c.Runtime) || !allMethodsPresent(c.Registry) || !allMethodsPresent(c.Review) || !allMethodsPresent(c.Host) {
+	if !allMethodsPresent(c.Engine) || !allMethodsPresent(c.Runtime) || !allMethodsPresent(c.Registry) || !ownerMethodsPresent(c.Review) || !ownerMethodsPresent(c.Host) || !ownerMethodsPresent(c.Access) || !ownerMethodsPresent(c.NativeQuery) || !ownerMethodsPresent(c.SearchIndex) || !ownerMethodsPresent(c.Embedding) || !ownerMethodsPresent(c.MCP) {
 		return errors.New("desktop contract: complete typed client set is required")
 	}
 	return nil
+}
+
+func ownerMethodsPresent(value any) bool {
+	fields := reflect.ValueOf(value)
+	for index := 0; index < fields.NumField(); index++ {
+		field := fields.Field(index)
+		if field.Kind() == reflect.Interface {
+			if field.IsNil() {
+				return false
+			}
+			continue
+		}
+		if field.IsNil() {
+			return false
+		}
+	}
+	return true
 }
 
 func allMethodsPresent(value any) bool {
@@ -152,6 +209,22 @@ var generatedBindingTable = []BindingMethod{
 	{"RegistryGetTransaction", TargetRegistry, "GetTransaction", string(registry.WireGetTransaction)},
 	{"RegistryRecoverTransaction", TargetRegistry, "RecoverTransaction", string(registry.WireRecoverTransaction)},
 	{"RegistryAuthorArtifact", TargetRegistry, "AuthorArtifact", string(registry.WireAuthorArtifact)},
+	{"ReviewSubmit", TargetReview, "Submit", "review.submit"},
+	{"HostExport", TargetHost, "Export", "host.export"},
+	{"AccessAuthorizeRead", TargetAccess, "AuthorizeRead", "access.authorize_read"},
+	{"AccessManageAgentScope", TargetAccess, "ManageAgentScope", "access.manage_agent_scope"},
+	{"NativeExecuteQuery", TargetNativeQuery, "ExecuteQuery", "native.execute_query"},
+	{"NativeExecuteSearch", TargetNativeQuery, "ExecuteSearch", "native.execute_search"},
+	{"NativeExecuteAnalysis", TargetNativeQuery, "ExecuteAnalysis", "native.execute_analysis"},
+	{"SearchIndexInspect", TargetSearchIndex, "Inspect", "search_index.inspect"},
+	{"SearchIndexUpdate", TargetSearchIndex, "Update", "search_index.update"},
+	{"SearchIndexSearch", TargetSearchIndex, "Search", "search_index.search"},
+	{"EmbeddingDocument", TargetEmbedding, "EmbedDocument", "embedding.document"},
+	{"EmbeddingQuery", TargetEmbedding, "EmbedQuery", "embedding.query"},
+	{"MCPInvokeTool", TargetMCP, "InvokeTool", "mcp.invoke_tool"},
+	{"MCPReadResource", TargetMCP, "ReadResource", "mcp.read_resource"},
+	{"MCPConnect", TargetMCP, "Connect", "mcp.connect"},
+	{"MCPDisconnect", TargetMCP, "Disconnect", "mcp.disconnect"},
 }
 
 func GeneratedBindingTable() []BindingMethod {
@@ -165,7 +238,7 @@ func (c ClientSet) Invoke(ctx context.Context, generatedMethod string, exchange 
 	if err := c.Validate(); err != nil {
 		return ExchangeResult{}, err
 	}
-	binding, err := ValidateExchange(generatedMethod, exchange)
+	binding, err := findBinding(generatedMethod, exchange.Operation)
 	if err != nil {
 		return ExchangeResult{}, err
 	}
@@ -177,8 +250,32 @@ func (c ClientSet) Invoke(ctx context.Context, generatedMethod string, exchange 
 		owner = c.Runtime
 	case TargetRegistry:
 		owner = c.Registry
+	case TargetReview:
+		owner = c.Review
+	case TargetHost:
+		owner = c.Host
+	case TargetAccess:
+		owner = c.Access
+	case TargetNativeQuery:
+		owner = c.NativeQuery
+	case TargetSearchIndex:
+		owner = c.SearchIndex
+	case TargetEmbedding:
+		owner = c.Embedding
+	case TargetMCP:
+		owner = c.MCP
 	default:
 		return ExchangeResult{}, errors.New("desktop contract: binding target is not executable")
+	}
+	if err := decodeExact(binding, exchange.Control); err != nil {
+		decoder := ownerDecoder(owner)
+		if decoder == nil {
+			return ExchangeResult{}, errors.New("desktop contract: owner decoder is unavailable")
+		}
+		identity, decodeErr := decoder.Decode(binding.Operation, exchange.Control)
+		if decodeErr != nil || identity.Operation != binding.Operation || identity.RequestID == "" {
+			return ExchangeResult{}, errors.New("desktop contract: owner envelope identity is invalid")
+		}
 	}
 	field := reflect.ValueOf(owner).FieldByName(binding.ClientMethod)
 	if !field.IsValid() || field.IsNil() {
@@ -191,18 +288,35 @@ func (c ClientSet) Invoke(ctx context.Context, generatedMethod string, exchange 
 	return method(ctx, exchange)
 }
 
+func ownerDecoder(owner any) OwnerDecoder {
+	field := reflect.ValueOf(owner).FieldByName("Decoder")
+	if !field.IsValid() || field.IsNil() {
+		return nil
+	}
+	decoder, _ := field.Interface().(OwnerDecoder)
+	return decoder
+}
+
 // ValidateExchange prevents a confused deputy: the generated method, outer
 // operation and exact generated envelope operation must all identify one row.
 func ValidateExchange(method string, exchange Exchange) (BindingMethod, error) {
+	binding, err := findBinding(method, exchange.Operation)
+	if err != nil {
+		return BindingMethod{}, err
+	}
+	if err := decodeExact(binding, exchange.Control); err != nil {
+		return BindingMethod{}, errors.New("desktop contract: generated request envelope is invalid")
+	}
+	return binding, nil
+}
+
+func findBinding(method, operation string) (BindingMethod, error) {
 	for _, binding := range generatedBindingTable {
 		if binding.GeneratedMethod != method {
 			continue
 		}
-		if exchange.Operation != binding.Operation {
+		if operation != binding.Operation {
 			return BindingMethod{}, errors.New("desktop contract: outer operation does not match generated method")
-		}
-		if err := decodeExact(binding, exchange.Control); err != nil {
-			return BindingMethod{}, errors.New("desktop contract: generated request envelope is invalid")
 		}
 		return binding, nil
 	}

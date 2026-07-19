@@ -5,6 +5,7 @@ package desktopcontract
 import (
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -14,11 +15,11 @@ import (
 
 // ValidateLocalOwnerGrant binds the Desktop default to the established Access
 // grant contract. It does not create an Organization/Workspace membership.
-func ValidateLocalOwnerGrant(request LocalOwnerGrantRequest, grant accessprotocol.AuthoringGrantSnapshot) bool {
+func ValidateLocalOwnerGrant(request LocalOwnerGrantRequest, grant accessprotocol.AuthoringGrantSnapshot, now time.Time) bool {
 	if request.Actor.Kind != "user" || request.Actor.ActorID == "" || grant.ActorRef != request.Actor ||
 		grant.HostDocumentID != request.Scope.DocumentID || grant.LocalScopeID != request.Scope.LocalScopeID ||
 		request.Scope.OrganizationScopeID != nil || grant.OrganizationScopeID != nil ||
-		grant.AgentDelegationDigest != nil || grant.IssuedAt != request.IssuedAt || grant.MembershipVersion != protocolcommon.CanonicalUint64("1") {
+		grant.AgentDelegationDigest != nil || grant.IssuedAt != request.IssuedAt || grant.MembershipVersion != protocolcommon.CanonicalUint64("1") || grant.AccessFingerprint != accesscore.Fingerprint(grant) || !grantActive(grant, now) {
 		return false
 	}
 	if _, err := accessprotocol.EncodeAuthoringGrantSnapshot(grant); err != nil {
@@ -36,8 +37,11 @@ func canonicalAuthoringCapabilities(value []semantic.AuthoringCapability) []sema
 // ValidateDelegationRequest delegates validation to the established Access
 // store contract and additionally rejects a pre-issued generation or a grant
 // with no usable action permission.
-func ValidateDelegationRequest(parent accessprotocol.AuthoringGrantSnapshot, requested accesscore.Delegation) bool {
+func ValidateDelegationRequest(parent accessprotocol.AuthoringGrantSnapshot, requested accesscore.Delegation, now time.Time) bool {
 	if requested.Generation != 0 || (!requested.Permissions.Read && !requested.Permissions.Export && !requested.Permissions.Propose && !requested.Permissions.Apply) {
+		return false
+	}
+	if !grantActive(parent, now) || requested.IssuedAt.After(now) || !now.Before(requested.ExpiresAt) {
 		return false
 	}
 	issued, err := accesscore.NewDelegationStore().Delegate(parent, requested)
@@ -46,11 +50,24 @@ func ValidateDelegationRequest(parent accessprotocol.AuthoringGrantSnapshot, req
 
 // ValidateDelegationFence ensures revocation/expiry publication checks cannot
 // be redirected to another document, local scope, or generation.
-func ValidateDelegationFence(fence DelegationFence, delegation accesscore.Delegation) bool {
+func ValidateDelegationFence(fence DelegationFence, delegation accesscore.Delegation, parent accessprotocol.AuthoringGrantSnapshot, now time.Time) bool {
 	return fence.DelegationID != "" && fence.DelegationID == delegation.ID &&
 		fence.DocumentID == delegation.DocumentID && fence.LocalScopeID == delegation.LocalScopeID &&
 		fence.Generation == protocolcommon.CanonicalUint64(formatGeneration(delegation.Generation)) &&
-		delegation.Agent.Kind == "agent" && delegation.Generation > 0 && delegation.ExpiresAt.After(delegation.IssuedAt)
+		delegation.ParentActor == parent.ActorRef && delegation.DocumentID == parent.HostDocumentID && delegation.LocalScopeID == parent.LocalScopeID &&
+		delegation.Agent.Kind == "agent" && delegation.Generation > 0 && delegation.ExpiresAt.After(delegation.IssuedAt) && now.Before(delegation.ExpiresAt) && grantActive(parent, now)
+}
+
+func grantActive(grant accessprotocol.AuthoringGrantSnapshot, now time.Time) bool {
+	issued, err := time.Parse(time.RFC3339Nano, string(grant.IssuedAt))
+	if err != nil || issued.After(now) {
+		return false
+	}
+	if grant.ExpiresAt == nil {
+		return true
+	}
+	expires, err := time.Parse(time.RFC3339Nano, string(*grant.ExpiresAt))
+	return err == nil && now.Before(expires)
 }
 
 func formatGeneration(value uint64) string {
