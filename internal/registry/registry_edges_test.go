@@ -1579,6 +1579,103 @@ func TestCriticalRuntimeCommittedOutcomeValidation(t *testing.T) {
 	})
 }
 
+func TestCriticalPlanBoundDocumentIDRejectsCurrentDocumentDrift(t *testing.T) {
+	prepare := func(t *testing.T) (*testEnv, InstallPlan, RuntimeCommitInput) {
+		t.Helper()
+		env := newTestEnv(t, NewMemoryTransactionStore())
+		data := []byte("document-drift")
+		release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/document-drift", Version: "1.0.0"}, data, nil)
+		addRelease(env, release, data)
+		plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, release.Identity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return env, plan, RuntimeCommitInput{Plan: plan, OperationID: "document-drift", IdempotencyKey: "document-drift"}
+	}
+	driftProject := func(env *testEnv) {
+		env.project.mu.Lock()
+		env.project.state.DocumentID = "replacement-document"
+		env.project.mu.Unlock()
+	}
+
+	t.Run("normal publication", func(t *testing.T) {
+		env, plan, input := prepare(t)
+		driftProject(env)
+		env.runtime.result = &RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID, DocumentID: "replacement-document"}
+		if _, err := env.registry.Commit(context.Background(), input); !IsFailure(err, FailurePlanStale) {
+			t.Fatalf("replacement Document reached normal publication for plan %s: %v", plan.TransactionID, err)
+		}
+		if env.runtime.calls.Load() != 0 {
+			t.Fatal("Document drift reached Runtime")
+		}
+	})
+
+	t.Run("recovery outcome", func(t *testing.T) {
+		env, plan, input := prepare(t)
+		tx, _, _ := env.store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+		version := transactionVersion(tx)
+		tx.RuntimeInput = &input
+		tx.Events = append(tx.Events, TransactionEvent{State: StateApplying, EvidenceDigest: plan.EvaluationDigest, Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
+		if ok, err := env.store.CompareAndSwapRegistryTransaction(context.Background(), plan.TransactionID, version, tx); err != nil || !ok {
+			t.Fatal(err)
+		}
+		driftProject(env)
+		env.runtime.recovery = RuntimeRegistryOutcome{Status: RuntimeRegistryCommitted, Result: RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID, DocumentID: "replacement-document"}}
+		recovered, err := env.registry.RecoverTransaction(context.Background(), plan.TransactionID)
+		if !IsFailure(err, FailureRepairRequired) || transactionState(recovered) != StateNeedsReview || recovered.RuntimeResult != nil {
+			t.Fatalf("replacement Document converged during recovery: %#v %v", recovered, err)
+		}
+	})
+
+	t.Run("recovery replay", func(t *testing.T) {
+		env, plan, input := prepare(t)
+		tx, _, _ := env.store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+		version := transactionVersion(tx)
+		tx.RuntimeInput = &input
+		tx.Events = append(tx.Events, TransactionEvent{State: StateApplying, EvidenceDigest: plan.EvaluationDigest, Sequence: version + 1, IdempotencyKey: input.IdempotencyKey})
+		if ok, err := env.store.CompareAndSwapRegistryTransaction(context.Background(), plan.TransactionID, version, tx); err != nil || !ok {
+			t.Fatal(err)
+		}
+		driftProject(env)
+		recovered, err := env.registry.RecoverTransaction(context.Background(), plan.TransactionID)
+		if !IsFailure(err, FailurePlanStale) || transactionState(recovered) != StateNeedsReview || env.runtime.calls.Load() != 0 {
+			t.Fatalf("replacement Document reached recovery replay: %#v %v", recovered, err)
+		}
+	})
+
+	t.Run("idempotent legacy reconstruction", func(t *testing.T) {
+		env, plan, input := prepare(t)
+		if _, err := env.registry.Commit(context.Background(), input); err != nil {
+			t.Fatal(err)
+		}
+		memory := env.store.(*MemoryTransactionStore)
+		memory.mu.Lock()
+		tx := memory.transactions[plan.TransactionID]
+		tx.RuntimeResult = nil
+		memory.transactions[plan.TransactionID] = tx
+		memory.mu.Unlock()
+		driftProject(env)
+		if _, err := env.registry.Commit(context.Background(), input); !IsFailure(err, FailurePlanStale) {
+			t.Fatalf("legacy result reconstructed against replacement Document: %v", err)
+		}
+	})
+
+	t.Run("CAS winner", func(t *testing.T) {
+		env, plan, input := prepare(t)
+		awaiting, _, _ := env.store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+		latest := cloneTransaction(awaiting)
+		latest.CommittedRevision = "r2"
+		latest.OperationResultID = input.OperationID
+		latest.RuntimeResult = &RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: input.OperationID, DocumentID: "replacement-document"}
+		latest.Events = append(latest.Events, TransactionEvent{State: StateCommitted, EvidenceDigest: testDigest('r'), Sequence: transactionVersion(latest) + 1, IdempotencyKey: input.IdempotencyKey})
+		env.registry.transactions = &commitRaceStore{first: awaiting, latest: latest}
+		driftProject(env)
+		if _, err := env.registry.Commit(context.Background(), input); !IsFailure(err, FailurePlanStale) {
+			t.Fatalf("CAS winner from replacement Document accepted: %v", err)
+		}
+	})
+}
+
 func TestCriticalRecoveryPersistenceFailures(t *testing.T) {
 	for _, state := range []TransactionState{StatePlanned, StateApplying, StateRepairRequired} {
 		t.Run(string(state), func(t *testing.T) {
@@ -1800,6 +1897,80 @@ func TestCriticalResolverLockAndRootHardening(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit root update persists complete lock binding", func(t *testing.T) {
+		mutations := map[string]func(*LockedArtifact){
+			"dependency metadata": func(lock *LockedArtifact) { lock.DependencyMetadataDigest = testDigest('e') },
+			"direct dependencies": func(lock *LockedArtifact) {
+				lock.Dependencies = []ArtifactIdentity{{Kind: ArtifactPack, CanonicalID: "critical/binding-child", Version: "1.2.2"}}
+			},
+			"source authority":    func(lock *LockedArtifact) { lock.SourceID = "other-source" },
+			"publisher authority": func(lock *LockedArtifact) { lock.PublisherID = "other-publisher" },
+			"provenance":          func(lock *LockedArtifact) { lock.ProvenanceDigest = testDigest('e') },
+		}
+		for name, mutate := range mutations {
+			t.Run(name, func(t *testing.T) {
+				env := newTestEnv(t, NewMemoryTransactionStore())
+				childData, rootData := []byte("binding-child"), []byte("binding-root")
+				child := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/binding-child", Version: "1.2.3"}, childData, nil)
+				root := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/binding-root", Version: "1.0.0"}, rootData, []Dependency{{Kind: ArtifactPack, CanonicalID: child.Identity.CanonicalID, VersionRange: "^1.0.0"}})
+				resolved := map[string]PlanArtifact{artifactKey(root.Identity): {Release: root}, artifactKey(child.Identity): {Release: child}}
+				rootLock, err := lockedFromPlan(resolved[artifactKey(root.Identity)], true, resolved)
+				if err != nil {
+					t.Fatal(err)
+				}
+				childLock, err := lockedFromPlan(resolved[artifactKey(child.Identity)], false, resolved)
+				if err != nil {
+					t.Fatal(err)
+				}
+				mutate(&rootLock)
+				env.project.state.DependencySnapshot = ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{rootLock, childLock}}
+				addRelease(env, child, childData)
+				addRelease(env, root, rootData)
+
+				plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionUpdate, root.Identity))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(plan.ResolvedLockDelta.Updated) != 1 {
+					t.Fatalf("complete binding drift omitted from update: %#v", plan.ResolvedLockDelta)
+				}
+				updated := plan.ResolvedLockDelta.Updated[0]
+				expected, err := lockedFromPlan(resolved[artifactKey(root.Identity)], true, resolved)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !lockedArtifactBindingMatches(updated, expected) || !updated.Pinned || len(updated.Dependencies) != 1 || updated.Dependencies[0] != child.Identity {
+					t.Fatalf("updated lock did not persist exact graph and pin: %#v", updated)
+				}
+				built := env.validator.capturedLastBuild()
+				persisted, _, err := env.store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+				if err != nil || digestJSON(built.ResolvedLockDelta) != digestJSON(plan.ResolvedLockDelta) || digestJSON(persisted.Plan.ResolvedLockDelta) != digestJSON(plan.ResolvedLockDelta) {
+					t.Fatalf("complete lock graph not persisted across plan boundaries: %#v %#v %v", built.ResolvedLockDelta, persisted.Plan.ResolvedLockDelta, err)
+				}
+			})
+		}
+	})
+
+	t.Run("pin action only pins requested root", func(t *testing.T) {
+		child := PlanArtifact{Release: ArtifactRelease{Identity: ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/pin-child", Version: "1.0.0"}, SourceID: "official", PublisherID: "layerdraw", Digest: testDigest('c'), ProvenanceDigest: testDigest('p'), DependencyMetadataDigest: testDigest('m')}}
+		root := PlanArtifact{Release: ArtifactRelease{Identity: ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/pin-root", Version: "1.0.0"}, SourceID: "official", PublisherID: "layerdraw", Digest: testDigest('r'), ProvenanceDigest: testDigest('q'), DependencyMetadataDigest: testDigest('n'), Dependencies: []Dependency{{Kind: ArtifactPack, CanonicalID: child.Release.Identity.CanonicalID, VersionRange: child.Release.Identity.Version}}}}
+		resolved := map[string]PlanArtifact{artifactKey(root.Release.Identity): root, artifactKey(child.Release.Identity): child}
+		rootLock, _ := lockedFromPlan(root, false, resolved)
+		childLock, _ := lockedFromPlan(child, true, resolved)
+		delta, err := buildLockDelta(ActionPin, ProjectDependencySnapshot{Installs: []LockedArtifact{rootLock, childLock}}, resolved, root.Release.Identity)
+		if err != nil || len(delta.Pinned) != 1 || delta.Pinned[0].Identity != root.Release.Identity || !delta.Pinned[0].Pinned || len(delta.Updated) != 0 {
+			t.Fatalf("pin semantics changed dependency pins: %#v %v", delta, err)
+		}
+		delta, err = buildLockDelta(ActionPin, ProjectDependencySnapshot{Installs: []LockedArtifact{rootLock}}, resolved, root.Release.Identity)
+		if err != nil || len(delta.Pinned) != 1 || len(delta.Added) != 1 || delta.Added[0].Identity != child.Release.Identity || delta.Added[0].Pinned {
+			t.Fatalf("pin semantics implicitly pinned a new dependency: %#v %v", delta, err)
+		}
+		delta, err = buildLockDelta(ActionPin, ProjectDependencySnapshot{}, resolved, root.Release.Identity)
+		if err != nil || len(delta.Pinned) != 1 || delta.Pinned[0].Identity != root.Release.Identity || len(delta.Added) != 1 {
+			t.Fatalf("pin delta lost its explicit root classification: %#v %v", delta, err)
+		}
+	})
+
 	t.Run("incomplete resolved dependency graph fails closed", func(t *testing.T) {
 		identity := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/incomplete-root", Version: "1.0.0"}
 		root := PlanArtifact{Release: ArtifactRelease{Identity: identity, Dependencies: []Dependency{{Kind: ArtifactPack, CanonicalID: "critical/missing-child", VersionRange: "^1.0.0"}}}}
@@ -1869,12 +2040,15 @@ func TestCriticalOperationIdentityAndSemverHardening(t *testing.T) {
 	if compareVersions("1.0.0-beta.11", "1.0.0-beta.2") <= 0 {
 		t.Fatal("numeric prerelease length precedence reversed")
 	}
-	if _, err := env.registry.runtimeResultDocumentID(context.Background(), InstallPlan{CreatesNewDocument: true}); err == nil {
+	if _, err := planBoundDocumentID(InstallPlan{CreatesNewDocument: true}); err == nil {
 		t.Fatal("template without Document identity accepted")
 	}
-	env.project.err = errors.New("project unavailable")
-	if _, err := env.registry.runtimeResultDocumentID(context.Background(), InstallPlan{ProjectID: "p"}); err == nil {
-		t.Fatal("unavailable existing Document identity accepted")
+	if _, err := planBoundDocumentID(InstallPlan{HostOperationImpacts: []accessprotocol.HostOperationImpact{{ImpactDigest: protocolcommon.Digest(testDigest('h')), ResourceScope: accessprotocol.HostResourceScope{DocumentID: "doc"}}}}); err == nil {
+		t.Fatal("host impact outside the plan digest binding accepted")
+	}
+	boundImpact := accessprotocol.HostOperationImpact{ImpactDigest: protocolcommon.Digest(testDigest('h')), ResourceScope: accessprotocol.HostResourceScope{DocumentID: "doc"}}
+	if _, err := planBoundDocumentID(InstallPlan{CreatesNewDocument: true, NewDocumentID: "other-document", HostOperationImpactDigest: string(boundImpact.ImpactDigest), HostOperationImpacts: []accessprotocol.HostOperationImpact{boundImpact}}); err == nil {
+		t.Fatal("template Document identity outside its host impact accepted")
 	}
 	if _, err := persistedRuntimeCommitResult(Transaction{Plan: InstallPlan{}, CommittedRevision: "r2", OperationResultID: "op", RuntimeResult: &RuntimeCommitResult{CommittedRevision: "other", OperationResultID: "op", DocumentID: "doc"}}, RuntimeCommitInput{OperationID: "op"}, "doc"); err == nil {
 		t.Fatal("mismatched persisted Runtime convergence fields accepted")
