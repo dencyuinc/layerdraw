@@ -1,53 +1,39 @@
 {
   "version": 1,
+  "surfaces": ["browser", "desktop"],
   "bindings": [
     {
-      "generated_method": "EngineExchange",
+      "generated_method": "EngineCompile",
       "target": "engine_client",
+      "client_method": "Compile",
       "operation": "engine.compile",
-      "browser_outcome": "success",
-      "desktop_outcome": "success"
+      "request_fixture": "schemas/fixtures/engine/compile-request.json"
     },
     {
-      "generated_method": "RuntimeExchange",
+      "generated_method": "RuntimeHandshake",
       "target": "runtime_client",
-      "operation": "runtime.open_document",
-      "browser_outcome": "success",
-      "desktop_outcome": "success"
-    },
-    {
-      "generated_method": "RegistryExchange",
-      "target": "registry_client",
-      "operation": "registry.resolve",
-      "browser_outcome": "failed",
-      "desktop_outcome": "failed"
-    },
-    {
-      "generated_method": "ReviewExchange",
-      "target": "review_client",
-      "operation": "review.submit",
-      "browser_outcome": "cancelled",
-      "desktop_outcome": "cancelled"
-    },
-    {
-      "generated_method": "HostExchange",
-      "target": "host_client",
-      "operation": "host.export",
-      "browser_outcome": "success",
-      "desktop_outcome": "success"
+      "client_method": "Handshake",
+      "operation": "runtime.handshake",
+      "request_fixture": "schemas/fixtures/runtime/handshake-request.json"
     }
   ],
-  "capabilities": [
-    {"capability_id": "desktop.authoring", "browser_outcome": "success", "desktop_outcome": "success"},
-    {"capability_id": "desktop.query", "browser_outcome": "success", "desktop_outcome": "success"},
-    {"capability_id": "desktop.search", "browser_outcome": "success", "desktop_outcome": "success"},
-    {"capability_id": "desktop.analysis", "browser_outcome": "success", "desktop_outcome": "success"},
-    {"capability_id": "desktop.registry", "browser_outcome": "failed", "desktop_outcome": "failed"},
-    {"capability_id": "desktop.review", "browser_outcome": "cancelled", "desktop_outcome": "cancelled"},
-    {"capability_id": "desktop.export", "browser_outcome": "success", "desktop_outcome": "success"},
-    {"capability_id": "desktop.external_storage", "browser_outcome": "failed", "desktop_outcome": "failed"},
-    {"capability_id": "desktop.mcp.tools", "browser_outcome": "success", "desktop_outcome": "success"},
-    {"capability_id": "desktop.mcp.resources", "browser_outcome": "success", "desktop_outcome": "success"},
-    {"capability_id": "desktop.agent_scope_management", "browser_outcome": "success", "desktop_outcome": "success"}
+  "outcomes": [
+    {"decoder": "compile", "fixture": "schemas/fixtures/engine/compile-success.json", "outcome": "success"},
+    {"decoder": "compile", "fixture": "schemas/fixtures/engine/compile-rejected.json", "outcome": "rejected"},
+    {"decoder": "handshake", "fixture": "schemas/fixtures/engine/handshake-failed-response.json", "outcome": "failed"},
+    {"decoder": "handshake", "fixture": "schemas/fixtures/engine/handshake-cancelled-response.json", "outcome": "cancelled"}
+  ],
+  "capability_statuses": [
+    {"capability_id": "desktop.authoring", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.query", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.search", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.analysis", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.registry", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.review", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.export", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.mcp.tools", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.mcp.resources", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.agent_scope_management", "enabled": true, "protocol_version": "1.0"},
+    {"capability_id": "desktop.external_storage", "enabled": false, "protocol_version": "1.0", "unavailable_reason": "not_configured"}
   ]
 }

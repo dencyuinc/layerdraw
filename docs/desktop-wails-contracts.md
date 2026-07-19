@@ -21,8 +21,11 @@ optional and must report a typed unavailable status when it is not configured.
 
 ## Binding and ownership
 
-Generated methods select Engine, Runtime, Registry, Review, or Host clients and
-forward the existing operation, control envelope, and protocol blobs unchanged.
+Generated methods select one exact Engine or Runtime client method and forward
+the existing operation, control envelope, and protocol blobs unchanged only
+after the matching generated decoder accepts the envelope. Registry, Review,
+and Host owner methods may be exposed only with the same exact generated-decoder
+registration; no prefix or opaque generic dispatch exists.
 They do not infer capability from method presence, interpret LDL, rewrite
 source, classify authoring impact, make Access decisions, resolve Registry
 semantics, plan exports, or implement MCP semantics. Browser and Desktop retain
@@ -46,8 +49,12 @@ and locks, and publishes `stopped`. Corrupt or incompatible state publishes
 Startup, shutdown, credential, local-actor, agent-delegation, MCP transport,
 native-dialog cancellation, backend panic, reconnect, adapter-unavailable, and
 protocol-incompatible outcomes use the closed typed failure codes in
-`internal/desktopcontract`. Failure details must never include credentials,
-document content, native paths, provider error text, or panic values.
+`internal/desktopcontract`. Component and recovery values are also closed
+enums. The common outcome and capability handshake/status values are reused
+directly from generated protocol bindings, including `rejected`; Desktop does
+not define parallel wire vocabularies. Failure values have no arbitrary details
+surface and never include credentials, document content, native paths, provider
+error text, or panic values.
 
 ## Local authority
 

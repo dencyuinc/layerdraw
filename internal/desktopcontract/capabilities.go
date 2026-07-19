@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 )
 
-// ComponentID is a linked Desktop backend component, not a feature inferred
-// from the presence of a generated method.
 type ComponentID string
 
 const (
@@ -35,7 +35,6 @@ var desktopBackendClosure = []ComponentID{
 	ComponentLocalStorage, ComponentExternalStorage, ComponentBindingShell,
 }
 
-// FrontendAssetID is a package embedded into the Desktop React asset closure.
 type FrontendAssetID string
 
 const (
@@ -57,137 +56,52 @@ var desktopFrontendClosure = []FrontendAssetID{
 	AssetReact, AssetLibrary,
 }
 
-// CapabilityID identifies a user-observable negotiated Desktop capability.
-type CapabilityID string
+const DesktopProtocolVersion protocolcommon.ProtocolVersion = "1.0"
 
 const (
-	CapabilityAuthoring       CapabilityID = "desktop.authoring"
-	CapabilityQuery           CapabilityID = "desktop.query"
-	CapabilitySearch          CapabilityID = "desktop.search"
-	CapabilityAnalysis        CapabilityID = "desktop.analysis"
-	CapabilityRegistry        CapabilityID = "desktop.registry"
-	CapabilityReview          CapabilityID = "desktop.review"
-	CapabilityExport          CapabilityID = "desktop.export"
-	CapabilityExternalStorage CapabilityID = "desktop.external_storage"
-	CapabilityMCPTools        CapabilityID = "desktop.mcp.tools"
-	CapabilityMCPResources    CapabilityID = "desktop.mcp.resources"
-	CapabilityAgentScope      CapabilityID = "desktop.agent_scope_management"
+	CapabilityAuthoring       protocolcommon.CapabilityID = "desktop.authoring"
+	CapabilityQuery           protocolcommon.CapabilityID = "desktop.query"
+	CapabilitySearch          protocolcommon.CapabilityID = "desktop.search"
+	CapabilityAnalysis        protocolcommon.CapabilityID = "desktop.analysis"
+	CapabilityRegistry        protocolcommon.CapabilityID = "desktop.registry"
+	CapabilityReview          protocolcommon.CapabilityID = "desktop.review"
+	CapabilityExport          protocolcommon.CapabilityID = "desktop.export"
+	CapabilityExternalStorage protocolcommon.CapabilityID = "desktop.external_storage"
+	CapabilityMCPTools        protocolcommon.CapabilityID = "desktop.mcp.tools"
+	CapabilityMCPResources    protocolcommon.CapabilityID = "desktop.mcp.resources"
+	CapabilityAgentScope      protocolcommon.CapabilityID = "desktop.agent_scope_management"
 )
 
-type Requirement string
-
-const (
-	Required Requirement = "required"
-	Optional Requirement = "optional"
-)
-
-// CapabilityRequirement is supplied by the frontend during startup. Required
-// capabilities fail negotiation; optional capabilities remain typed disabled.
-type CapabilityRequirement struct {
-	ID          CapabilityID `json:"capability_id"`
-	Requirement Requirement  `json:"requirement"`
+var requiredCapabilities = []protocolcommon.CapabilityID{
+	CapabilityAuthoring, CapabilityQuery, CapabilitySearch, CapabilityAnalysis,
+	CapabilityRegistry, CapabilityReview, CapabilityExport, CapabilityMCPTools,
+	CapabilityMCPResources, CapabilityAgentScope,
 }
 
-type Availability string
+var optionalCapabilities = []protocolcommon.CapabilityID{CapabilityExternalStorage}
 
-const (
-	Available   Availability = "available"
-	Unavailable Availability = "unavailable"
-)
-
-type UnavailableReason string
-
-const (
-	UnavailableAdapter       UnavailableReason = "adapter_unavailable"
-	UnavailableConfiguration UnavailableReason = "not_configured"
-	UnavailableCredential    UnavailableReason = "credential_unavailable"
-	UnavailablePolicy        UnavailableReason = "policy_denied"
-	UnavailableProtocol      UnavailableReason = "protocol_incompatible"
-)
-
-type CapabilityStatus struct {
-	ID                CapabilityID       `json:"capability_id"`
-	Availability      Availability       `json:"availability"`
-	ProtocolVersion   string             `json:"protocol_version"`
-	UnavailableReason *UnavailableReason `json:"unavailable_reason,omitempty"`
-}
-
-// NegotiateCapabilities validates an effective status for every requested
-// capability. A missing or unavailable required capability fails closed;
-// optional capabilities remain visible with a typed unavailable reason.
-func NegotiateCapabilities(manifest Manifest, statuses []CapabilityStatus) Result[[]CapabilityStatus] {
-	if err := manifest.Validate(); err != nil {
-		return failedCapabilities(FailureProtocolIncompatible)
-	}
-	if len(statuses) != len(manifest.Capabilities) {
-		return failedCapabilities(FailureProtocolIncompatible)
-	}
-	seen := make(map[CapabilityID]CapabilityStatus, len(statuses))
-	for _, status := range statuses {
-		if _, duplicate := seen[status.ID]; duplicate || status.ProtocolVersion == "" {
-			return failedCapabilities(FailureProtocolIncompatible)
-		}
-		switch status.Availability {
-		case Available:
-			if status.UnavailableReason != nil {
-				return failedCapabilities(FailureProtocolIncompatible)
-			}
-		case Unavailable:
-			if status.UnavailableReason == nil {
-				return failedCapabilities(FailureProtocolIncompatible)
-			}
-		default:
-			return failedCapabilities(FailureProtocolIncompatible)
-		}
-		seen[status.ID] = status
-	}
-	for _, requested := range manifest.Capabilities {
-		status, exists := seen[requested.ID]
-		if !exists {
-			return failedCapabilities(FailureProtocolIncompatible)
-		}
-		if requested.Requirement == Required && status.Availability != Available {
-			return failedCapabilities(FailureAdapterUnavailable)
-		}
-	}
-	copy := append([]CapabilityStatus(nil), statuses...)
-	return Result[[]CapabilityStatus]{Outcome: OutcomeSuccess, Value: &copy}
-}
-
-func failedCapabilities(code FailureCode) Result[[]CapabilityStatus] {
-	return Result[[]CapabilityStatus]{Outcome: OutcomeFailed, Failure: &Failure{Code: code}}
-}
-
-// Manifest freezes bundle closure separately from effective capability status.
-// Linking code is not sufficient to mark a capability available.
+// Manifest freezes bundle closure and canonical handshake requirements. The
+// effective availability itself is read from generated HandshakeResult.
 type Manifest struct {
-	Version      uint32                  `json:"version"`
-	Components   []ComponentID           `json:"components"`
-	Frontend     []FrontendAssetID       `json:"frontend_assets"`
-	Capabilities []CapabilityRequirement `json:"capabilities"`
+	Version              uint32                        `json:"version"`
+	Components           []ComponentID                 `json:"components"`
+	Frontend             []FrontendAssetID             `json:"frontend_assets"`
+	RequiredCapabilities []protocolcommon.CapabilityID `json:"required_capabilities"`
+	OptionalCapabilities []protocolcommon.CapabilityID `json:"optional_capabilities"`
 }
 
 func RequiredBackendClosure() []ComponentID {
 	return append([]ComponentID(nil), desktopBackendClosure...)
 }
-
 func RequiredFrontendClosure() []FrontendAssetID {
 	return append([]FrontendAssetID(nil), desktopFrontendClosure...)
 }
 
 func DefaultManifest() Manifest {
 	return Manifest{
-		Version:    1,
-		Components: RequiredBackendClosure(),
-		Frontend:   RequiredFrontendClosure(),
-		Capabilities: []CapabilityRequirement{
-			{CapabilityAuthoring, Required}, {CapabilityQuery, Required},
-			{CapabilitySearch, Required}, {CapabilityAnalysis, Required},
-			{CapabilityRegistry, Required}, {CapabilityReview, Required},
-			{CapabilityExport, Required}, {CapabilityExternalStorage, Optional},
-			{CapabilityMCPTools, Required}, {CapabilityMCPResources, Required},
-			{CapabilityAgentScope, Required},
-		},
+		Version: 1, Components: RequiredBackendClosure(), Frontend: RequiredFrontendClosure(),
+		RequiredCapabilities: append([]protocolcommon.CapabilityID(nil), requiredCapabilities...),
+		OptionalCapabilities: append([]protocolcommon.CapabilityID(nil), optionalCapabilities...),
 	}
 }
 
@@ -201,26 +115,73 @@ func (m Manifest) Validate() error {
 	if err := exactSet("frontend asset", m.Frontend, desktopFrontendClosure); err != nil {
 		return err
 	}
-	want := DefaultManifest().Capabilities
-	if len(m.Capabilities) != len(want) {
-		return errors.New("desktop contract: capability closure is incomplete")
+	if err := exactSet("required capability", m.RequiredCapabilities, requiredCapabilities); err != nil {
+		return err
 	}
-	seen := map[CapabilityID]Requirement{}
-	for _, capability := range m.Capabilities {
-		if capability.Requirement != Required && capability.Requirement != Optional {
-			return fmt.Errorf("desktop contract: invalid requirement for %q", capability.ID)
-		}
-		if _, duplicate := seen[capability.ID]; duplicate {
-			return fmt.Errorf("desktop contract: duplicate capability %q", capability.ID)
-		}
-		seen[capability.ID] = capability.Requirement
+	if err := exactSet("optional capability", m.OptionalCapabilities, optionalCapabilities); err != nil {
+		return err
 	}
-	for _, capability := range want {
-		if seen[capability.ID] != capability.Requirement {
-			return fmt.Errorf("desktop contract: capability %q requirement changed", capability.ID)
+	seen := map[protocolcommon.CapabilityID]bool{}
+	for _, id := range append(append([]protocolcommon.CapabilityID(nil), m.RequiredCapabilities...), m.OptionalCapabilities...) {
+		if seen[id] {
+			return fmt.Errorf("desktop contract: duplicate capability %q", id)
 		}
+		if _, err := protocolcommon.EncodeCapabilityID(id); err != nil {
+			return fmt.Errorf("desktop contract: invalid capability %q", id)
+		}
+		seen[id] = true
 	}
 	return nil
+}
+
+// NegotiateCapabilities accepts only the generated handshake result and
+// publishes a generated-codec deep copy. No status or version is reconstructed.
+func NegotiateCapabilities(manifest Manifest, handshake protocolcommon.HandshakeResult) Result[protocolcommon.HandshakeResult] {
+	if err := manifest.Validate(); err != nil {
+		return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+	}
+	encoded, err := protocolcommon.EncodeHandshakeResult(handshake)
+	if err != nil {
+		return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+	}
+	clone, err := protocolcommon.DecodeHandshakeResult(encoded)
+	if err != nil {
+		return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+	}
+	if len(clone.NegotiatedProtocols) == 0 {
+		return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+	}
+	for _, negotiated := range clone.NegotiatedProtocols {
+		if negotiated.Version != DesktopProtocolVersion {
+			return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+		}
+	}
+	want := append(append([]protocolcommon.CapabilityID(nil), manifest.RequiredCapabilities...), manifest.OptionalCapabilities...)
+	if len(clone.CapabilityStatuses) != len(want) {
+		return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+	}
+	statuses := make(map[protocolcommon.CapabilityID]protocolcommon.RequestedCapabilityStatus, len(want))
+	for _, status := range clone.CapabilityStatuses {
+		if status.ProtocolVersion != DesktopProtocolVersion || statuses[status.CapabilityID].CapabilityID != "" {
+			return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+		}
+		statuses[status.CapabilityID] = status
+	}
+	for _, id := range want {
+		if statuses[id].CapabilityID == "" {
+			return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+		}
+	}
+	for _, id := range manifest.RequiredCapabilities {
+		if !statuses[id].Enabled {
+			return failedHandshake(FailureAdapterUnavailable, ComponentBindingShell, RecoveryConfigureAdapter)
+		}
+	}
+	return Result[protocolcommon.HandshakeResult]{Outcome: protocolcommon.OutcomeSuccess, Value: clone}
+}
+
+func failedHandshake(code FailureCode, component ComponentID, recovery RecoveryAction) Result[protocolcommon.HandshakeResult] {
+	return Result[protocolcommon.HandshakeResult]{Outcome: protocolcommon.OutcomeFailed, Failure: &Failure{Code: code, Component: component, Recovery: recovery}}
 }
 
 type ordered interface{ ~string }

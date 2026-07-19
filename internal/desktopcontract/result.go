@@ -2,15 +2,7 @@
 
 package desktopcontract
 
-// Outcome is transport-neutral and preserves cancellation separately from
-// failure. Wails bindings must not reconstruct it from thrown exceptions.
-type Outcome string
-
-const (
-	OutcomeSuccess   Outcome = "success"
-	OutcomeCancelled Outcome = "cancelled"
-	OutcomeFailed    Outcome = "failed"
-)
+import "github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 
 type FailureCode string
 
@@ -28,29 +20,78 @@ const (
 	FailureProtocolIncompatible FailureCode = "desktop.protocol_incompatible"
 )
 
-// Failure contains only stable, non-secret fields. Credentials, document
-// bytes, OS paths, panic values, and provider error text never cross bindings.
+type RecoveryAction string
+
+const (
+	RecoveryRetry            RecoveryAction = "retry"
+	RecoveryReconnect        RecoveryAction = "reconnect"
+	RecoveryConfigureAdapter RecoveryAction = "configure_adapter"
+	RecoveryOpenRecovery     RecoveryAction = "open_recovery"
+	RecoveryUpgrade          RecoveryAction = "upgrade"
+	RecoveryExit             RecoveryAction = "exit"
+)
+
+// Failure is a closed shell failure. It has no arbitrary message, details,
+// path, provider text, panic value, or credential surface.
 type Failure struct {
-	Code      FailureCode `json:"code"`
-	Retryable bool        `json:"retryable"`
-	Component ComponentID `json:"component,omitempty"`
-	Recovery  string      `json:"recovery,omitempty"`
+	Code      FailureCode    `json:"code"`
+	Retryable bool           `json:"retryable"`
+	Component ComponentID    `json:"component"`
+	Recovery  RecoveryAction `json:"recovery"`
 }
 
+func (f Failure) Validate() bool {
+	return validFailureCode(f.Code) && validComponent(f.Component) && validRecovery(f.Recovery)
+}
+
+func validFailureCode(value FailureCode) bool {
+	switch value {
+	case FailureStartup, FailureShutdown, FailureCredential, FailureLocalActor,
+		FailureAgentDelegation, FailureMCPTransport, FailureDialogCancelled,
+		FailureBackendPanic, FailureReconnect, FailureAdapterUnavailable,
+		FailureProtocolIncompatible:
+		return true
+	default:
+		return false
+	}
+}
+
+func validComponent(value ComponentID) bool {
+	for _, candidate := range desktopBackendClosure {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func validRecovery(value RecoveryAction) bool {
+	switch value {
+	case RecoveryRetry, RecoveryReconnect, RecoveryConfigureAdapter,
+		RecoveryOpenRecovery, RecoveryUpgrade, RecoveryExit:
+		return true
+	default:
+		return false
+	}
+}
+
+// Result preserves the generated common outcome vocabulary, including
+// rejected. Value is by-value; owners of slice-bearing generated values must
+// publish a codec round-tripped copy.
 type Result[T any] struct {
-	Outcome Outcome  `json:"outcome"`
-	Value   *T       `json:"value,omitempty"`
-	Failure *Failure `json:"failure,omitempty"`
+	Outcome protocolcommon.Outcome `json:"outcome"`
+	Value   T                      `json:"value,omitempty"`
+	Failure *Failure               `json:"failure,omitempty"`
 }
 
 func (r Result[T]) Validate() bool {
 	switch r.Outcome {
-	case OutcomeSuccess:
-		return r.Value != nil && r.Failure == nil
-	case OutcomeCancelled:
-		return r.Value == nil && r.Failure != nil && r.Failure.Code == FailureDialogCancelled
-	case OutcomeFailed:
-		return r.Value == nil && r.Failure != nil && r.Failure.Code != FailureDialogCancelled
+	case protocolcommon.OutcomeSuccess, protocolcommon.OutcomeRejected:
+		return r.Failure == nil
+	case protocolcommon.OutcomeCancelled:
+		return r.Failure != nil && r.Failure.Validate() && r.Failure.Code == FailureDialogCancelled
+	case protocolcommon.OutcomeFailed:
+		return r.Failure != nil && r.Failure.Validate() && r.Failure.Code != FailureDialogCancelled
 	default:
 		return false
 	}

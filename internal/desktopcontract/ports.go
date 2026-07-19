@@ -2,7 +2,13 @@
 
 package desktopcontract
 
-import "context"
+import (
+	"context"
+
+	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
+)
 
 type LifecycleState string
 
@@ -59,22 +65,31 @@ type CredentialPort interface {
 	Resolve(context.Context, CredentialRef) Result[[]byte]
 }
 
-type LocalActor struct {
-	ActorID string `json:"actor_id"`
-	Kind    string `json:"kind"`
-}
-
 type LocalActorPort interface {
-	ResolveLocalActor(context.Context) Result[LocalActor]
+	ResolveLocalActor(context.Context) Result[accessprotocol.ActorRef]
 }
 
-type DelegationRequest struct {
-	Control []byte `json:"control"`
+type LocalOwnerGrantRequest struct {
+	Actor    accessprotocol.ActorRef          `json:"actor"`
+	Scope    accessprotocol.HostResourceScope `json:"scope"`
+	IssuedAt protocolcommon.Rfc3339Time       `json:"issued_at"`
+}
+
+type LocalOwnerGrantPort interface {
+	IssueLocalOwnerGrant(context.Context, LocalOwnerGrantRequest) Result[accessprotocol.AuthoringGrantSnapshot]
+}
+
+type DelegationFence struct {
+	DelegationID string                         `json:"delegation_id"`
+	DocumentID   string                         `json:"document_id"`
+	LocalScopeID string                         `json:"local_scope_id"`
+	Generation   protocolcommon.CanonicalUint64 `json:"generation"`
 }
 
 type AgentDelegationPort interface {
-	Delegate(context.Context, DelegationRequest) Result[[]byte]
-	Revoke(context.Context, DelegationRequest) Result[[]byte]
+	Delegate(context.Context, accessprotocol.AuthoringGrantSnapshot, accesscore.Delegation) Result[accesscore.Delegation]
+	Resolve(context.Context, DelegationFence) Result[accesscore.Delegation]
+	Revoke(context.Context, DelegationFence) Result[accesscore.DelegationSnapshot]
 }
 
 type MCPTransportPort interface {
@@ -99,6 +114,7 @@ type ShellPorts struct {
 type HostPorts struct {
 	Credentials CredentialPort
 	LocalActor  LocalActorPort
+	LocalOwner  LocalOwnerGrantPort
 	Delegations AgentDelegationPort
 	MCP         MCPTransportPort
 }
