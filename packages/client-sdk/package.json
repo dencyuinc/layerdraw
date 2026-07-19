@@ -1,0 +1,29 @@
+{
+  "name": "@layerdraw/client-sdk",
+  "version": "0.0.0",
+  "description": "Transport-neutral LayerDraw Viewer and Browser Editor SDK facade contracts.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "LICENSE", "README.md"],
+  "exports": {
+    ".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"},
+    "./editor": {"types": "./dist/editor.d.ts", "import": "./dist/editor.js"}
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build:types": "tsc -p tsconfig.build.json",
+    "generate": "node -e \"\"",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-test-coverage --test-coverage-include=dist/**/*.js --test-coverage-lines=85 --test-coverage-functions=85 --test-coverage-branches=80 test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@layerdraw/composer": "workspace:*",
+    "@layerdraw/engine-client": "workspace:*",
+    "@layerdraw/protocol": "workspace:*"
+  },
+  "devDependencies": {"typescript": "7.0.2"},
+  "engines": {"node": ">=24.18.0 <25"},
+  "publishConfig": {"access": "public", "provenance": true}
+}

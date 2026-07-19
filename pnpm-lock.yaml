@@ -15,6 +15,32 @@ importers:
         specifier: 2.10.4
         version: 2.10.4
 
+  packages/client-sdk:
+    dependencies:
+      '@layerdraw/composer':
+        specifier: workspace:*
+        version: link:../composer
+      '@layerdraw/engine-client':
+        specifier: workspace:*
+        version: link:../engine-client
+      '@layerdraw/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/composer:
+    dependencies:
+      '@layerdraw/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
   packages/engine-client:
     dependencies:
       '@layerdraw/protocol':
