@@ -69,7 +69,4 @@ func TestDesktopSearchCompositionProvidesOneWailsMCPSurface(t *testing.T) {
 	if !manifest.SearchAvailable || !manifest.QueryAvailable || !manifest.AnalysisAvailable || !manifest.EmbeddingAvailable {
 		t.Fatalf("manifest=%#v", manifest)
 	}
-	if composition.PlanAuthority == nil || composition.SearchDocumentAuthority == nil {
-		t.Fatal("Engine issuance authorities missing")
-	}
 }

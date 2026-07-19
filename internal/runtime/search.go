@@ -193,7 +193,7 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 			}
 			return nil, ErrSearchEmbeddingUnavailable
 		}
-		if len(queryEmbedding) != input.EmbeddingProfile.Dimensions {
+		if len(queryEmbedding) != input.EmbeddingProfile.Dimensions || !finiteVector(queryEmbedding) {
 			return nil, ErrSearchEmbeddingProfile
 		}
 	}
@@ -216,6 +216,15 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 		return nil, fmt.Errorf("%w: Engine result exceeded bound", ErrSearchInvalidRequest)
 	}
 	return result, nil
+}
+
+func finiteVector(values []float32) bool {
+	for _, value := range values {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *SearchService) ExecuteQuery(ctx context.Context, input port.BoundExecutionRequest) ([]byte, error) {

@@ -95,17 +95,18 @@ func (p *ConfiguredEmbeddingProvider) EmbedDocuments(ctx context.Context, profil
 	return result, nil
 }
 
-// HMACSearchDocumentAuthority cryptographically binds the exact ordered batch
-// to snapshot, Access projection and Embedding Profile.
-type HMACSearchDocumentAuthority struct{ key []byte }
+// hmacSearchDocumentAuthority cryptographically binds the exact ordered batch
+// to snapshot, Access projection and Embedding Profile. Its issuer is private;
+// host consumers receive only a verifier.
+type hmacSearchDocumentAuthority struct{ key []byte }
 
-func NewHMACSearchDocumentAuthority(key []byte) (*HMACSearchDocumentAuthority, error) {
+func newHMACSearchDocumentAuthority(key []byte) (*hmacSearchDocumentAuthority, error) {
 	if len(key) < 32 {
 		return nil, ErrEmbeddingProfileMismatch
 	}
-	return &HMACSearchDocumentAuthority{key: append([]byte(nil), key...)}, nil
+	return &hmacSearchDocumentAuthority{key: append([]byte(nil), key...)}, nil
 }
-func (a *HMACSearchDocumentAuthority) Issue(batch port.SearchDocumentBatch) (port.SearchDocumentBatch, error) {
+func (a *hmacSearchDocumentAuthority) issue(batch port.SearchDocumentBatch) (port.SearchDocumentBatch, error) {
 	batch.Token = ""
 	data, err := json.Marshal(batch)
 	if err != nil {
@@ -116,7 +117,7 @@ func (a *HMACSearchDocumentAuthority) Issue(batch port.SearchDocumentBatch) (por
 	batch.Token = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return batch, nil
 }
-func (a *HMACSearchDocumentAuthority) VerifySearchDocumentBatch(_ context.Context, batch port.SearchDocumentBatch) error {
+func (a *hmacSearchDocumentAuthority) VerifySearchDocumentBatch(_ context.Context, batch port.SearchDocumentBatch) error {
 	token := batch.Token
 	batch.Token = ""
 	data, err := json.Marshal(batch)
@@ -133,6 +134,10 @@ func (a *HMACSearchDocumentAuthority) VerifySearchDocumentBatch(_ context.Contex
 		return ErrEmbeddingProfileMismatch
 	}
 	return nil
+}
+
+func NewSearchDocumentBatchVerifier(key []byte) (port.SearchDocumentBatchVerifier, error) {
+	return newHMACSearchDocumentAuthority(key)
 }
 
 // LocalProjectionModel is a concrete, deterministic, offline embedding model.

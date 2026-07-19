@@ -40,17 +40,17 @@ type PlanVerifier interface {
 	VerifyPlan(context.Context, port.ExecutionPlan) error
 }
 
-// HMACPlanAuthority is concrete Engine-to-adapter provenance. The signing half
-// belongs in Engine composition; native consumers receive only the verifier.
-type HMACPlanAuthority struct{ key []byte }
+// hmacPlanAuthority never leaves this package. Callers can bind an Engine to
+// it, but cannot obtain a raw signer for caller-constructed plans.
+type hmacPlanAuthority struct{ key []byte }
 
-func NewHMACPlanAuthority(key []byte) (*HMACPlanAuthority, error) {
+func newHMACPlanAuthority(key []byte) (*hmacPlanAuthority, error) {
 	if len(key) < 32 {
 		return nil, ErrInvalidPlan
 	}
-	return &HMACPlanAuthority{key: append([]byte(nil), key...)}, nil
+	return &hmacPlanAuthority{key: append([]byte(nil), key...)}, nil
 }
-func (a *HMACPlanAuthority) Sign(plan port.ExecutionPlan) (port.ExecutionPlan, error) {
+func (a *hmacPlanAuthority) sign(plan port.ExecutionPlan) (port.ExecutionPlan, error) {
 	plan.Token = ""
 	data, err := json.Marshal(plan)
 	if err != nil {
@@ -61,7 +61,7 @@ func (a *HMACPlanAuthority) Sign(plan port.ExecutionPlan) (port.ExecutionPlan, e
 	plan.Token = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return plan, nil
 }
-func (a *HMACPlanAuthority) VerifyPlan(_ context.Context, plan port.ExecutionPlan) error {
+func (a *hmacPlanAuthority) VerifyPlan(_ context.Context, plan port.ExecutionPlan) error {
 	token := plan.Token
 	plan.Token = ""
 	data, err := json.Marshal(plan)
@@ -78,6 +78,64 @@ func (a *HMACPlanAuthority) VerifyPlan(_ context.Context, plan port.ExecutionPla
 		return ErrInvalidPlan
 	}
 	return nil
+}
+
+type authorizedSearchEngine struct {
+	engine    port.SearchEngine
+	authority *hmacPlanAuthority
+}
+
+// BindEnginePlanAuthority returns an Engine decorator and a verify-only
+// adapter capability. The HMAC signing primitive is intentionally not
+// exported, so Wails/MCP/host callers cannot authorize arbitrary payloads.
+func BindEnginePlanAuthority(engine port.SearchEngine, key []byte) (port.SearchEngine, PlanVerifier, error) {
+	if engine == nil {
+		return nil, nil, ErrInvalidPlan
+	}
+	authority, err := newHMACPlanAuthority(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &authorizedSearchEngine{engine: engine, authority: authority}, authority, nil
+}
+
+func (e *authorizedSearchEngine) PrepareSearchIndex(ctx context.Context, input port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
+	plan, err := e.engine.PrepareSearchIndex(ctx, input)
+	if err != nil {
+		return port.ExecutionPlan{}, err
+	}
+	return e.authority.sign(plan)
+}
+func (e *authorizedSearchEngine) PrepareSearch(ctx context.Context, input port.SearchPreparationInput) (port.PreparedSearch, error) {
+	prepared, err := e.engine.PrepareSearch(ctx, input)
+	if err != nil {
+		return port.PreparedSearch{}, err
+	}
+	prepared.Plan, err = e.authority.sign(prepared.Plan)
+	return prepared, err
+}
+func (e *authorizedSearchEngine) CompleteSearch(ctx context.Context, input port.CompleteSearchInput) ([]byte, error) {
+	return e.engine.CompleteSearch(ctx, input)
+}
+func (e *authorizedSearchEngine) PrepareQuery(ctx context.Context, input port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	plan, err := e.engine.PrepareQuery(ctx, input)
+	if err != nil {
+		return port.ExecutionPlan{}, err
+	}
+	return e.authority.sign(plan)
+}
+func (e *authorizedSearchEngine) CompleteQuery(ctx context.Context, input port.CompleteExecutionInput) ([]byte, error) {
+	return e.engine.CompleteQuery(ctx, input)
+}
+func (e *authorizedSearchEngine) PrepareAnalysis(ctx context.Context, input port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	plan, err := e.engine.PrepareAnalysis(ctx, input)
+	if err != nil {
+		return port.ExecutionPlan{}, err
+	}
+	return e.authority.sign(plan)
+}
+func (e *authorizedSearchEngine) CompleteAnalysis(ctx context.Context, input port.CompleteExecutionInput) ([]byte, error) {
+	return e.engine.CompleteAnalysis(ctx, input)
 }
 
 type NativeExecutor struct {

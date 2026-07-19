@@ -174,14 +174,14 @@ func TestNativeExecutorRejectsUnverifiedAndMalformedPlans(t *testing.T) {
 }
 
 func TestHMACPlanAndConcreteLadybugDriver(t *testing.T) {
-	authority, _ := NewHMACPlanAuthority([]byte("01234567890123456789012345678901"))
+	authority, _ := newHMACPlanAuthority([]byte("01234567890123456789012345678901"))
 	session := &ladybugSessionStub{rows: []port.RawRow{{"x": {Kind: "string", Value: "y"}}}}
 	driver, _ := NewLadybugNativeDriver(session)
 	executor, _ := NewNativeExecutor(capability(), driver, authority)
 	payload, _ := json.Marshal(LadybugPlan{Statements: []LadybugStatement{{Query: "MATCH (n) RETURN n.name", Parameters: map[string]port.RawValue{}}}})
 	plan := validPlan(port.PlanQuery)
 	plan.Payload = payload
-	plan, _ = authority.Sign(plan)
+	plan, _ = authority.sign(plan)
 	result, err := executor.Execute(context.Background(), plan)
 	if err != nil || !result.Complete || len(result.Rows) != 1 {
 		t.Fatalf("result=%#v err=%v", result, err)
@@ -222,9 +222,9 @@ func (m *modelStub) Embed(_ context.Context, text string) ([]float32, error) {
 func embeddingCapability(remote bool) port.EmbeddingCapability {
 	return port.EmbeddingCapability{ProviderID: "provider", Available: true, Remote: remote, Profiles: []port.EmbeddingProfile{{ProfileID: "default", ModelID: "m", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 2, Normalization: "unit", MaxInputBytes: 32}}}
 }
-func batchAuthority(t *testing.T) *HMACSearchDocumentAuthority {
+func batchAuthority(t *testing.T) *hmacSearchDocumentAuthority {
 	t.Helper()
-	a, err := NewHMACSearchDocumentAuthority([]byte("01234567890123456789012345678901"))
+	a, err := newHMACSearchDocumentAuthority([]byte("01234567890123456789012345678901"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func batchAuthority(t *testing.T) *HMACSearchDocumentAuthority {
 }
 func signedBatch(t *testing.T, profile port.EmbeddingProfile, docs []port.SearchDocumentInput) port.SearchDocumentBatch {
 	t.Helper()
-	batch, err := batchAuthority(t).Issue(port.SearchDocumentBatch{Snapshot: identity("r1").DocumentSnapshotRef, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: profile.ModelDigest, Documents: docs})
+	batch, err := batchAuthority(t).issue(port.SearchDocumentBatch{Snapshot: identity("r1").DocumentSnapshotRef, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: profile.ModelDigest, Documents: docs})
 	if err != nil {
 		t.Fatal(err)
 	}

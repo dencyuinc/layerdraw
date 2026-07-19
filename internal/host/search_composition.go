@@ -22,9 +22,7 @@ type DesktopSearchConfig struct {
 	MaxRows, MaxBytes                   int
 }
 type DesktopSearchComposition struct {
-	Surface                 ConsumerSearchSurface
-	PlanAuthority           *searchadapter.HMACPlanAuthority
-	SearchDocumentAuthority *searchadapter.HMACSearchDocumentAuthority
+	Surface ConsumerSearchSurface
 }
 
 // NewDesktopSearchComposition constructs the exact shared instance injected
@@ -34,11 +32,11 @@ func NewDesktopSearchComposition(config DesktopSearchConfig) (DesktopSearchCompo
 	if config.Root == "" || !filepath.IsAbs(config.Root) || config.Engine == nil || config.Ladybug == nil {
 		return DesktopSearchComposition{}, fmt.Errorf("incomplete Desktop Search composition")
 	}
-	planAuthority, err := searchadapter.NewHMACPlanAuthority(config.PlanKey)
+	authorizedEngine, planVerifier, err := searchadapter.BindEnginePlanAuthority(config.Engine, config.PlanKey)
 	if err != nil {
 		return DesktopSearchComposition{}, err
 	}
-	documentAuthority, err := searchadapter.NewHMACSearchDocumentAuthority(config.SearchDocumentKey)
+	documentVerifier, err := searchadapter.NewSearchDocumentBatchVerifier(config.SearchDocumentKey)
 	if err != nil {
 		return DesktopSearchComposition{}, err
 	}
@@ -47,7 +45,7 @@ func NewDesktopSearchComposition(config DesktopSearchConfig) (DesktopSearchCompo
 		return DesktopSearchComposition{}, err
 	}
 	capability := port.QueryAdapterCapability{AdapterID: "layerdraw.ladybug.native", Backend: "ladybug_native", BackendVersion: config.BackendVersion, PlanProtocolVersion: config.PlanProtocolVersion, Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...), MaxRows: config.MaxRows, MaxBytes: config.MaxBytes}
-	executor, err := searchadapter.NewNativeExecutor(capability, driver, planAuthority)
+	executor, err := searchadapter.NewNativeExecutor(capability, driver, planVerifier)
 	if err != nil {
 		return DesktopSearchComposition{}, err
 	}
@@ -59,10 +57,10 @@ func NewDesktopSearchComposition(config DesktopSearchConfig) (DesktopSearchCompo
 	if err != nil {
 		return DesktopSearchComposition{}, err
 	}
-	embedding, err := searchadapter.NewEmbeddingProvider(port.EmbeddingCapability{ProviderID: "layerdraw.local.projection", Available: true, Profiles: []port.EmbeddingProfile{config.EmbeddingProfile}}, map[string]searchadapter.VectorModel{config.EmbeddingProfile.ProfileID: model}, false, documentAuthority)
+	embedding, err := searchadapter.NewEmbeddingProvider(port.EmbeddingCapability{ProviderID: "layerdraw.local.projection", Available: true, Profiles: []port.EmbeddingProfile{config.EmbeddingProfile}}, map[string]searchadapter.VectorModel{config.EmbeddingProfile.ProfileID: model}, false, documentVerifier)
 	if err != nil {
 		return DesktopSearchComposition{}, err
 	}
-	service := layerruntime.NewVerifiedSearchService(config.Engine, executor, indexes, embedding, documentAuthority)
-	return DesktopSearchComposition{Surface: service, PlanAuthority: planAuthority, SearchDocumentAuthority: documentAuthority}, nil
+	service := layerruntime.NewVerifiedSearchService(authorizedEngine, executor, indexes, embedding, documentVerifier)
+	return DesktopSearchComposition{Surface: service}, nil
 }

@@ -5,6 +5,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
@@ -215,6 +216,25 @@ func TestSearchRejectsStaleUnavailableAndProviderFailure(t *testing.T) {
 	s := NewSearchService(&searchEngineStub{}, executorStub{}, active, nil)
 	if _, err := s.Search(context.Background(), r); !errors.Is(err, ErrSearchIndexStale) {
 		t.Fatal(err)
+	}
+}
+
+func TestSearchRejectsNonFiniteQueryEmbeddingBeforeEngine(t *testing.T) {
+	for name, values := range map[string][]float32{
+		"nan":          {float32(math.NaN()), 1},
+		"positive-inf": {float32(math.Inf(1)), 1},
+		"negative-inf": {float32(math.Inf(-1)), 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			engine := &searchEngineStub{}
+			service := NewSearchService(engine, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: testIdentity(), State: "active"}}, embeddingStub{values: values})
+			if _, err := service.Search(context.Background(), testRequest("semantic")); !errors.Is(err, ErrSearchEmbeddingProfile) {
+				t.Fatalf("err=%v", err)
+			}
+			if len(engine.prepared.QueryEmbedding) != 0 || engine.prepared.Request != nil {
+				t.Fatal("non-finite embedding reached Engine")
+			}
+		})
 	}
 }
 
