@@ -89,6 +89,7 @@ export interface RegistryInstallPlan {
   readonly new_document_id?:string;
   readonly runtime_session_id:string;
   readonly lease_token?:string;
+  readonly requested_root: RegistryArtifactIdentity;
 }
 export type RegistryTransactionState="planned"|"downloading"|"verified"|"expanded_staged"|"compiled"|"awaiting_confirmation"|"applying_project_change"|"committed"|"rolled_back"|"repair_required"|"repairing"|"superseded"|"needs_review";
 export interface RegistryTransactionEvent { readonly state: RegistryTransactionState; readonly evidence_digest: string; readonly sequence: number; readonly idempotency_key?: string }

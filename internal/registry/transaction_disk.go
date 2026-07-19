@@ -50,35 +50,53 @@ func (s *DiskTransactionStore) CreateRegistryTransaction(ctx context.Context, tx
 	}
 	defer release()
 	path := s.path(tx.Plan.TransactionID)
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
+	if _, err := os.Stat(path); err == nil {
+		return os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	data, err := json.Marshal(tx)
-	if err == nil {
-		_, err = file.Write(data)
+	if err != nil {
+		return err
 	}
-	if syncErr := file.Sync(); err == nil {
-		err = syncErr
+	temp, err := os.CreateTemp(s.root, ".create-"+tx.Plan.TransactionID+"-*")
+	if err != nil {
+		return err
 	}
-	if closeErr := file.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		dir, openErr := os.Open(s.root)
-		if openErr != nil {
-			return openErr
+	tempName := temp.Name()
+	committed := false
+	defer func() {
+		_ = temp.Close()
+		if !committed {
+			_ = os.Remove(tempName)
 		}
-		syncErr := dir.Sync()
-		closeErr := dir.Close()
-		if syncErr != nil {
-			return syncErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return err
 	}
-	return err
+	if _, err := temp.Write(data); err != nil {
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempName, path); err != nil {
+		return err
+	}
+	committed = true
+	dir, err := os.Open(s.root)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 func (s *DiskTransactionStore) GetRegistryTransaction(ctx context.Context, id string) (Transaction, bool, error) {
 	if !transactionIDPattern.MatchString(id) {
@@ -232,7 +250,7 @@ func (s *DiskTransactionStore) lock(ctx context.Context) (func(), error) {
 			AcquiredAt time.Time `json:"acquired_at"`
 		}
 		decodeErr := json.Unmarshal(data, &owner)
-		stale := readErr == nil && (decodeErr != nil || owner.PID <= 0 || time.Since(owner.AcquiredAt) > 30*time.Second || !processAlive(owner.PID))
+		stale := readErr == nil && (decodeErr != nil || owner.PID <= 0 || !processAlive(owner.PID))
 		if stale {
 			if removeErr := os.Remove(lockPath); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
 				continue

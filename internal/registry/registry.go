@@ -344,6 +344,7 @@ type InstallPlan struct {
 	NewDocumentID              string                               `json:"new_document_id,omitempty"`
 	RuntimeSessionID           string                               `json:"runtime_session_id"`
 	LeaseToken                 string                               `json:"lease_token,omitempty"`
+	RequestedRoot              ArtifactIdentity                     `json:"requested_root"`
 }
 
 type RuntimeCommitInput struct {
@@ -662,7 +663,7 @@ func (r *Registry) Search(ctx context.Context, input SearchInput) ([]ArtifactRel
 			found = r.cachedReleases(source.SourceID, input)
 		}
 		for _, release := range found {
-			if release.SourceID != source.SourceID || !validIdentity(release.Identity) || (input.Kind != nil && release.Identity.Kind != *input.Kind) {
+			if release.SourceID != source.SourceID || !validReleaseIdentity(release.Identity) || (input.Kind != nil && release.Identity.Kind != *input.Kind) {
 				continue
 			}
 			_, policy, _, ok := r.sourceContext(source.SourceID)
@@ -853,7 +854,7 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 			return InstallPlan{}, fail(FailurePlanStale, transactionID, true, nil)
 		}
 	} else {
-		tx = Transaction{Plan: InstallPlan{TransactionID: transactionID, PlanDigest: planningDigest, Action: request.Action, ProjectID: request.ProjectID}, PlanningRequest: &planningRequest, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: digestJSON(request), Sequence: 1}}}
+		tx = Transaction{Plan: InstallPlan{TransactionID: transactionID, PlanDigest: planningDigest, Action: request.Action, ProjectID: request.ProjectID, RequestedRoot: request.Requested}, PlanningRequest: &planningRequest, Events: []TransactionEvent{{State: StatePlanned, EvidenceDigest: digestJSON(request), Sequence: 1}}}
 		if err := r.transactions.CreateRegistryTransaction(ctx, tx); err != nil {
 			return InstallPlan{}, fail(FailureUnavailable, transactionID, true, err)
 		}
@@ -927,6 +928,14 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].SourceID < bindings[j].SourceID })
 	hostCapabilities := append([]string{}, state.HostCapabilities...)
 	sort.Strings(hostCapabilities)
+	for _, prior := range state.DependencySnapshot.Installs {
+		if artifactKey(prior.Identity) == artifactKey(request.Requested) {
+			continue
+		}
+		if candidate, ok := resolved[artifactKey(prior.Identity)]; ok && (candidate.Release.Identity.Version != prior.Identity.Version || candidate.Release.Digest != prior.Digest) {
+			return InstallPlan{}, fail(FailureDependencyConflict, prior.Identity.CanonicalID, true, errors.New("installed dependency requires an explicit update transaction"))
+		}
+	}
 	delta := buildLockDelta(request.Action, state.DependencySnapshot, resolved, request.Requested)
 	mutationPlan, err := r.validator.BuildRegistryMutationPlan(ctx, RegistryMutationBuildInput{Action: request.Action, Project: state, Artifacts: artifacts, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, Requested: request.Requested, NewDocumentID: func() string {
 		if request.Action == ActionCreateFromTemplate {
@@ -953,7 +962,7 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || !decisionBindsMutation(decision, *authoringImpact, hostImpact) {
 		return InstallPlan{}, fail(FailurePolicyDenied, request.ProjectID, true, err)
 	}
-	plan := InstallPlan{Action: request.Action, ProjectID: request.ProjectID, BaseRevision: state.Revision, ExpectedDefinitionHash: state.DefinitionHash, ExpectedResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, Artifacts: artifacts, RequiredCapabilities: capabilitiesToStrings(decision.RequiredCapabilities), TrustPolicyDigests: trust, SourceBindings: bindings, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, RollbackCheckpoint: RollbackCheckpoint{BaseProjectRevision: state.Revision, BaseDefinitionHash: state.DefinitionHash, BaseResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, CurrentPackTreeManifest: state.PackTreeManifest}, ExpiresAt: r.now().Add(15 * time.Minute), MigrationRequired: migrationRequired, CreatesNewDocument: request.Action == ActionCreateFromTemplate, MutationDigest: mutation, AuthoringImpactDigests: []string{mutationPlan.AuthoringImpactDigest}, HostOperationImpactDigest: string(hostImpactDigest), EvaluationDigest: string(decision.EvaluationDigest), AuthoringImpact: authoringImpact, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, AccessDecision: decision, HostCapabilitiesDigest: digestJSON(hostCapabilities), ProjectMutationPlan: mutationPlan, RuntimeSessionID: state.RuntimeSessionID, LeaseToken: state.LeaseToken}
+	plan := InstallPlan{Action: request.Action, ProjectID: request.ProjectID, BaseRevision: state.Revision, ExpectedDefinitionHash: state.DefinitionHash, ExpectedResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, Artifacts: artifacts, RequiredCapabilities: capabilitiesToStrings(decision.RequiredCapabilities), TrustPolicyDigests: trust, SourceBindings: bindings, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, RollbackCheckpoint: RollbackCheckpoint{BaseProjectRevision: state.Revision, BaseDefinitionHash: state.DefinitionHash, BaseResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, CurrentPackTreeManifest: state.PackTreeManifest}, ExpiresAt: r.now().Add(15 * time.Minute), MigrationRequired: migrationRequired, CreatesNewDocument: request.Action == ActionCreateFromTemplate, MutationDigest: mutation, AuthoringImpactDigests: []string{mutationPlan.AuthoringImpactDigest}, HostOperationImpactDigest: string(hostImpactDigest), EvaluationDigest: string(decision.EvaluationDigest), AuthoringImpact: authoringImpact, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, AccessDecision: decision, HostCapabilitiesDigest: digestJSON(hostCapabilities), ProjectMutationPlan: mutationPlan, RuntimeSessionID: state.RuntimeSessionID, LeaseToken: state.LeaseToken, RequestedRoot: request.Requested}
 	if request.Action == ActionCreateFromTemplate {
 		plan.NewDocumentID = state.DocumentID
 	}
@@ -1012,6 +1021,11 @@ func (r *Registry) resolve(ctx context.Context, identity ArtifactIdentity, prere
 	if selected == nil {
 		return fail(FailureDependencyConflict, identity.CanonicalID, true, nil)
 	}
+	for _, candidate := range releases {
+		if candidate.Identity == selected.Identity && candidate.Digest != selected.Digest {
+			return fail(FailureDependencyConflict, identity.CanonicalID, true, errors.New("same artifact identity resolved to divergent digests"))
+		}
+	}
 	source, policy, client, ok := r.sourceContext(selected.SourceID)
 	if !ok || !source.Connected || client == nil {
 		return fail(FailureUnavailable, selected.SourceID, true, nil)
@@ -1069,6 +1083,9 @@ func (r *Registry) resolveVersion(ctx context.Context, dependency Dependency, pr
 }
 
 func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
+	if input.OperationID == "" || input.IdempotencyKey == "" {
+		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, errors.New("operation_id and idempotency_key are required"))
+	}
 	tx, ok, loadErr := r.transactions.GetRegistryTransaction(ctx, input.Plan.TransactionID)
 	if loadErr != nil || !ok || tx.Plan.PlanDigest != input.Plan.PlanDigest || digestPlan(input.Plan) != input.Plan.PlanDigest {
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
@@ -1083,7 +1100,7 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		if !ok {
 			return RuntimeCommitResult{}, fail(FailurePlanStale, "template_document_allocator", true, nil)
 		}
-		requested := tx.Plan.Artifacts[0].Release.Identity
+		requested := tx.Plan.RequestedRoot
 		state, err = allocator.NewRegistryDocumentState(ctx, requested)
 		if err != nil || state.DocumentID != tx.Plan.NewDocumentID {
 			return RuntimeCommitResult{}, fail(FailurePlanStale, tx.Plan.NewDocumentID, true, err)
@@ -1127,15 +1144,7 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 			}
 		}
 	}
-	freshMutation, mutationErr := r.validator.BuildRegistryMutationPlan(ctx, RegistryMutationBuildInput{Action: tx.Plan.Action, Project: state, Artifacts: tx.Plan.Artifacts, DependencySnapshot: tx.Plan.DependencySnapshot, ResolvedLockDelta: tx.Plan.ResolvedLockDelta, Requested: func() ArtifactIdentity {
-		if len(tx.Plan.Artifacts) > 0 {
-			return tx.Plan.Artifacts[0].Release.Identity
-		}
-		if len(tx.Plan.ResolvedLockDelta.Removed) > 0 {
-			return tx.Plan.ResolvedLockDelta.Removed[0].Identity
-		}
-		return ArtifactIdentity{}
-	}(), NewDocumentID: tx.Plan.NewDocumentID})
+	freshMutation, mutationErr := r.validator.BuildRegistryMutationPlan(ctx, RegistryMutationBuildInput{Action: tx.Plan.Action, Project: state, Artifacts: tx.Plan.Artifacts, DependencySnapshot: tx.Plan.DependencySnapshot, ResolvedLockDelta: tx.Plan.ResolvedLockDelta, Requested: tx.Plan.RequestedRoot, NewDocumentID: tx.Plan.NewDocumentID})
 	if mutationErr != nil || mutationSemanticDigest(freshMutation) != mutationSemanticDigest(tx.Plan.ProjectMutationPlan) {
 		return RuntimeCommitResult{}, fail(FailurePlanStale, "project_mutation_plan", true, mutationErr)
 	}
@@ -1161,7 +1170,7 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
 	expectedVersion := transactionVersion(tx)
-	input.MutationPlan = tx.Plan.ProjectMutationPlan
+	input.MutationPlan = cloneJSONValue(tx.Plan.ProjectMutationPlan)
 	input.RuntimeSessionID = state.RuntimeSessionID
 	input.LeaseToken = state.LeaseToken
 	input.AuthoringImpact = &freshMutation.AuthoringImpact
@@ -1277,7 +1286,7 @@ func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transacti
 			return Transaction{}, err
 		}
 	}
-	if transactionState(tx) != StateApplying && transactionState(tx) != StateRepairRequired {
+	if transactionState(tx) != StateApplying && transactionState(tx) != StateRepairRequired && transactionState(tx) != StateRepairing {
 		return tx, nil
 	}
 	if transactionState(tx) == StateApplying {
@@ -1285,8 +1294,10 @@ func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transacti
 			return Transaction{}, err
 		}
 	}
-	if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateRepairing, EvidenceDigest: tx.Plan.MutationDigest, IdempotencyKey: lastIdempotencyKey(tx)}); err != nil {
-		return Transaction{}, err
+	if transactionState(tx) == StateRepairRequired {
+		if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateRepairing, EvidenceDigest: tx.Plan.MutationDigest, IdempotencyKey: lastIdempotencyKey(tx)}); err != nil {
+			return Transaction{}, err
+		}
 	}
 	recovery, ok := r.runtime.(RuntimeRecoveryPort)
 	if !ok {
@@ -1302,7 +1313,12 @@ func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transacti
 		return r.recoveryNeedsReview(ctx, tx, lookupErr)
 	}
 	if outcome.Status == RuntimeRegistryUnknown && tx.RuntimeInput != nil {
-		result, replayErr := r.runtime.CommitRegistryPlan(ctx, *tx.RuntimeInput)
+		freshInput, refreshErr := r.refreshRecoveryRuntimeInput(ctx, tx, *tx.RuntimeInput)
+		if refreshErr != nil {
+			return r.recoveryNeedsReview(ctx, tx, refreshErr)
+		}
+		tx.RuntimeInput = &freshInput
+		result, replayErr := r.runtime.CommitRegistryPlan(ctx, freshInput)
 		if replayErr != nil {
 			return r.recoveryNeedsReview(ctx, tx, replayErr)
 		}
@@ -1325,6 +1341,82 @@ func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transacti
 		return r.recoveryNeedsReview(ctx, tx, errors.New("Runtime could not prove publication outcome"))
 	}
 	return tx, nil
+}
+
+func (r *Registry) refreshRecoveryRuntimeInput(ctx context.Context, tx Transaction, input RuntimeCommitInput) (RuntimeCommitInput, error) {
+	if input.OperationID == "" || input.IdempotencyKey == "" {
+		return RuntimeCommitInput{}, errors.New("recovery replay is missing operation identity")
+	}
+	var state ProjectState
+	var err error
+	if tx.Plan.CreatesNewDocument {
+		allocator, ok := r.projectState.(TemplateDocumentPort)
+		if !ok {
+			return RuntimeCommitInput{}, errors.New("template document allocator unavailable")
+		}
+		state, err = allocator.NewRegistryDocumentState(ctx, tx.Plan.RequestedRoot)
+		if err != nil || state.DocumentID != tx.Plan.NewDocumentID {
+			return RuntimeCommitInput{}, errors.New("template document allocation changed during recovery")
+		}
+	} else {
+		state, err = r.projectState.CurrentRegistryProjectState(ctx, tx.Plan.ProjectID)
+		if err != nil || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
+			return RuntimeCommitInput{}, errors.New("project preconditions changed during recovery")
+		}
+	}
+	hostCapabilities := append([]string{}, state.HostCapabilities...)
+	sort.Strings(hostCapabilities)
+	if state.RuntimeSessionID == "" || digestJSON(hostCapabilities) != tx.Plan.HostCapabilitiesDigest {
+		return RuntimeCommitInput{}, errors.New("Runtime session or host capabilities changed during recovery")
+	}
+	for _, binding := range tx.Plan.SourceBindings {
+		source, policy, client, ok := r.sourceContext(binding.SourceID)
+		if !ok || digestJSON(source) != binding.SourceDigest || digestTrust(policy) != binding.TrustPolicyDigest {
+			return RuntimeCommitInput{}, errors.New("Registry source or trust policy changed during recovery")
+		}
+		for _, artifact := range tx.Plan.Artifacts {
+			if artifact.Release.SourceID != binding.SourceID {
+				continue
+			}
+			if _, err := verifyTrust(r.now(), source, policy, artifact.Release); err != nil {
+				return RuntimeCommitInput{}, err
+			}
+			kind := artifact.Release.Identity.Kind
+			fresh, err := client.Search(ctx, source, SearchInput{Query: artifact.Release.Identity.CanonicalID, Kind: &kind, IncludePrerelease: true})
+			if err != nil {
+				return RuntimeCommitInput{}, err
+			}
+			matched := false
+			for _, candidate := range fresh {
+				if immutableReleaseBinding(candidate, artifact.Release) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return RuntimeCommitInput{}, errors.New("artifact metadata changed during recovery")
+			}
+		}
+	}
+	freshMutation, err := r.validator.BuildRegistryMutationPlan(ctx, RegistryMutationBuildInput{Action: tx.Plan.Action, Project: state, Artifacts: tx.Plan.Artifacts, DependencySnapshot: tx.Plan.DependencySnapshot, ResolvedLockDelta: tx.Plan.ResolvedLockDelta, Requested: tx.Plan.RequestedRoot, NewDocumentID: tx.Plan.NewDocumentID})
+	if err != nil || mutationSemanticDigest(freshMutation) != mutationSemanticDigest(tx.Plan.ProjectMutationPlan) {
+		return RuntimeCommitInput{}, errors.New("Engine mutation changed during recovery")
+	}
+	if len(tx.Plan.HostOperationImpacts) != 1 {
+		return RuntimeCommitInput{}, errors.New("recovery requires one bound host impact")
+	}
+	decision, err := r.access.EvaluateRegistryPlan(ctx, accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &freshMutation.AuthoringImpact, GrantSnapshot: state.GrantSnapshot, HostOperationImpacts: append([]accessprotocol.HostOperationImpact{}, tx.Plan.HostOperationImpacts...), RequestIntent: "apply"})
+	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || !decisionBindsMutation(decision, freshMutation.AuthoringImpact, tx.Plan.HostOperationImpacts[0]) {
+		return RuntimeCommitInput{}, errors.New("fresh Access evaluation denied recovery replay")
+	}
+	input.Plan = clonePlan(tx.Plan)
+	input.MutationPlan = tx.Plan.ProjectMutationPlan
+	input.RuntimeSessionID = state.RuntimeSessionID
+	input.LeaseToken = state.LeaseToken
+	input.AuthoringImpact = cloneAuthoringImpact(&freshMutation.AuthoringImpact)
+	input.HostOperationImpacts = cloneHostImpacts(tx.Plan.HostOperationImpacts)
+	input.AccessDecision = cloneAccessDecision(decision)
+	return input, nil
 }
 
 func (r *Registry) appendEvent(ctx context.Context, tx *Transaction, event TransactionEvent) error {
@@ -1386,10 +1478,7 @@ func verifyTrust(now time.Time, source RegistrySource, policy TrustPolicy, relea
 		if source.Kind == SourceLocalDirectory && policy.AllowUnsignedLocal {
 			return TrustDecision{Status: TrustUnsignedAllowed, PolicyDigest: policyDigest, EvidenceDigest: digestJSON(release.Identity)}, nil
 		}
-		if policy.RequiredSignature {
-			return TrustDecision{}, fail(FailureSignatureMissing, release.Identity.CanonicalID, true, nil)
-		}
-		return TrustDecision{Status: TrustUnsignedAllowed, PolicyDigest: policyDigest, EvidenceDigest: digestJSON(release.Identity)}, nil
+		return TrustDecision{}, fail(FailureSignatureMissing, release.Identity.CanonicalID, true, nil)
 	}
 	envelope := release.Signature
 	if policy.RevokedKeys[envelope.KeyID] {
@@ -1408,11 +1497,21 @@ func verifyTrust(now time.Time, source RegistrySource, policy TrustPolicy, relea
 
 type semanticVersion struct {
 	major, minor, patch int
-	prerelease          string
+	prerelease          []string
 }
 
 func parseVersion(value string) (semanticVersion, bool) {
-	main, pre, _ := strings.Cut(value, "-")
+	if value == "" || strings.Count(value, "+") > 1 {
+		return semanticVersion{}, false
+	}
+	withoutBuild, build, hasBuild := strings.Cut(value, "+")
+	if hasBuild && !validSemverIdentifiers(build, false) {
+		return semanticVersion{}, false
+	}
+	main, pre, hasPre := strings.Cut(withoutBuild, "-")
+	if hasPre && !validSemverIdentifiers(pre, true) {
+		return semanticVersion{}, false
+	}
 	parts := strings.Split(main, ".")
 	if len(parts) != 3 {
 		return semanticVersion{}, false
@@ -1428,7 +1527,38 @@ func parseVersion(value string) (semanticVersion, bool) {
 		}
 		nums[i] = n
 	}
-	return semanticVersion{nums[0], nums[1], nums[2], pre}, true
+	prerelease := []string(nil)
+	if hasPre {
+		prerelease = strings.Split(pre, ".")
+	}
+	return semanticVersion{nums[0], nums[1], nums[2], prerelease}, true
+}
+func validSemverIdentifiers(value string, rejectNumericLeadingZero bool) bool {
+	if value == "" {
+		return false
+	}
+	for _, identifier := range strings.Split(value, ".") {
+		if identifier == "" || (rejectNumericLeadingZero && len(identifier) > 1 && identifier[0] == '0' && isASCIIDigits(identifier)) {
+			return false
+		}
+		for _, ch := range identifier {
+			if !((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+func isASCIIDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 func compareVersions(a, b string) int {
 	av, aok := parseVersion(a)
@@ -1444,20 +1574,49 @@ func compareVersions(a, b string) int {
 			return 1
 		}
 	}
-	if av.prerelease == bv.prerelease {
+	if len(av.prerelease) == 0 && len(bv.prerelease) == 0 {
 		return 0
 	}
-	if av.prerelease == "" {
+	if len(av.prerelease) == 0 {
 		return 1
 	}
-	if bv.prerelease == "" {
+	if len(bv.prerelease) == 0 {
 		return -1
 	}
-	return strings.Compare(av.prerelease, bv.prerelease)
+	for i := 0; i < len(av.prerelease) && i < len(bv.prerelease); i++ {
+		aPart, bPart := av.prerelease[i], bv.prerelease[i]
+		if aPart == bPart {
+			continue
+		}
+		aNumeric, bNumeric := isASCIIDigits(aPart), isASCIIDigits(bPart)
+		if aNumeric && bNumeric {
+			if len(aPart) != len(bPart) {
+				if len(aPart) < len(bPart) {
+					return -1
+				}
+				return 1
+			}
+			return strings.Compare(aPart, bPart)
+		}
+		if aNumeric {
+			return -1
+		}
+		if bNumeric {
+			return 1
+		}
+		return strings.Compare(aPart, bPart)
+	}
+	if len(av.prerelease) < len(bv.prerelease) {
+		return -1
+	}
+	if len(av.prerelease) > len(bv.prerelease) {
+		return 1
+	}
+	return 0
 }
 func matchesRange(version, expr string, prerelease bool) bool {
 	v, ok := parseVersion(version)
-	if !ok || (!prerelease && v.prerelease != "") {
+	if !ok || (!prerelease && len(v.prerelease) != 0) {
 		return false
 	}
 	expr = strings.TrimSpace(expr)
@@ -1485,10 +1644,16 @@ func matchesRange(version, expr string, prerelease bool) bool {
 	if strings.HasPrefix(expr, ">=") {
 		return compareVersions(version, strings.TrimSpace(strings.TrimPrefix(expr, ">="))) >= 0
 	}
-	return version == expr
+	_, expressionValid := parseVersion(expr)
+	return expressionValid && compareVersions(version, expr) == 0
 }
 func validIdentity(value ArtifactIdentity) bool {
-	return (value.Kind == ArtifactPack || value.Kind == ArtifactTemplate) && value.CanonicalID != "" && value.Version != ""
+	_, versionOK := parseVersion(value.Version)
+	return (value.Kind == ArtifactPack || value.Kind == ArtifactTemplate) && value.CanonicalID != "" && (value.Version == "latest" || versionOK)
+}
+func validReleaseIdentity(value ArtifactIdentity) bool {
+	_, versionOK := parseVersion(value.Version)
+	return (value.Kind == ArtifactPack || value.Kind == ArtifactTemplate) && value.CanonicalID != "" && versionOK
 }
 func immutableReleaseBinding(a, b ArtifactRelease) bool {
 	return a.Identity == b.Identity && a.SourceID == b.SourceID && a.PublisherID == b.PublisherID && a.Digest == b.Digest && a.ManifestDigest == b.ManifestDigest && a.DependencyMetadataDigest == b.DependencyMetadataDigest && a.ProvenanceDigest == b.ProvenanceDigest && digestJSON(a.Dependencies) == digestJSON(b.Dependencies)
@@ -1633,8 +1798,7 @@ func containsString(values []string, want string) bool {
 	return false
 }
 func cloneDependencySnapshot(value ProjectDependencySnapshot) ProjectDependencySnapshot {
-	value.Installs = append([]LockedArtifact{}, value.Installs...)
-	return value
+	return cloneJSONValue(value)
 }
 func sortReleases(releases []ArtifactRelease, sources []RegistrySource) {
 	priority := map[string]int{}
@@ -1728,54 +1892,40 @@ func clonePolicy(p TrustPolicy) TrustPolicy {
 	return out
 }
 func cloneRelease(value ArtifactRelease) ArtifactRelease {
-	out := value
-	out.Dependencies = append([]Dependency{}, value.Dependencies...)
-	out.Compatibility = append([]CompatibilityDecision{}, value.Compatibility...)
-	if value.Signature != nil {
-		s := *value.Signature
-		s.Statement = append([]byte{}, s.Statement...)
-		s.Signature = append([]byte{}, s.Signature...)
-		out.Signature = &s
-	}
-	return out
+	return cloneJSONValue(value)
 }
 func clonePlan(value InstallPlan) InstallPlan {
-	out := value
-	out.Artifacts = append([]PlanArtifact{}, value.Artifacts...)
-	out.RequiredCapabilities = append([]string{}, value.RequiredCapabilities...)
-	out.TrustPolicyDigests = append([]string{}, value.TrustPolicyDigests...)
-	out.AuthoringImpactDigests = append([]string{}, value.AuthoringImpactDigests...)
-	out.SourceBindings = append([]SourcePlanBinding{}, value.SourceBindings...)
-	out.DependencySnapshot = cloneDependencySnapshot(value.DependencySnapshot)
-	out.ProjectMutationPlan.SourceEdits = append([]SourceEdit{}, value.ProjectMutationPlan.SourceEdits...)
-	out.ProjectMutationPlan.ResolvedLockDelta = cloneLockDelta(value.ProjectMutationPlan.ResolvedLockDelta)
-	return out
+	return cloneJSONValue(value)
 }
 func cloneTransaction(value Transaction) Transaction {
-	value.Plan = clonePlan(value.Plan)
-	value.Events = append([]TransactionEvent{}, value.Events...)
-	if value.PlanningRequest != nil {
-		request := *value.PlanningRequest
-		request.DependencySnapshot = cloneDependencySnapshot(request.DependencySnapshot)
-		value.PlanningRequest = &request
-	}
-	if value.RuntimeInput != nil {
-		input := *value.RuntimeInput
-		input.Plan = clonePlan(input.Plan)
-		value.RuntimeInput = &input
-	}
-	if value.RuntimeResult != nil {
-		result := *value.RuntimeResult
-		value.RuntimeResult = &result
-	}
-	return value
+	return cloneJSONValue(value)
 }
 func cloneLockDelta(value ResolvedLockDelta) ResolvedLockDelta {
-	value.Added = append([]LockedArtifact{}, value.Added...)
-	value.Updated = append([]LockedArtifact{}, value.Updated...)
-	value.Removed = append([]LockedArtifact{}, value.Removed...)
-	value.Pinned = append([]LockedArtifact{}, value.Pinned...)
-	return value
+	return cloneJSONValue(value)
+}
+func cloneAuthoringImpact(value *semantic.AuthoringImpact) *semantic.AuthoringImpact {
+	if value == nil {
+		return nil
+	}
+	cloned := cloneJSONValue(*value)
+	return &cloned
+}
+func cloneHostImpacts(value []accessprotocol.HostOperationImpact) []accessprotocol.HostOperationImpact {
+	return cloneJSONValue(value)
+}
+func cloneAccessDecision(value accessprotocol.AuthoringDecision) accessprotocol.AuthoringDecision {
+	return cloneJSONValue(value)
+}
+func cloneJSONValue[T any](value T) T {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(fmt.Sprintf("registry clone marshal: %v", err))
+	}
+	var out T
+	if err := json.Unmarshal(data, &out); err != nil {
+		panic(fmt.Sprintf("registry clone unmarshal: %v", err))
+	}
+	return out
 }
 func transactionVersion(value Transaction) uint64 {
 	if len(value.Events) == 0 {

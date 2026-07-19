@@ -83,6 +83,7 @@ type validator struct {
 	fail, mismatch, nilImpact, migration bool
 	aggregateCapabilities                []semantic.AuthoringCapability
 	mutationInvalid                      string
+	lastBuild                            RegistryMutationBuildInput
 }
 
 func (v *validator) ValidateRegistryArtifact(_ context.Context, release ArtifactRelease, _ []byte) (ValidatedArtifact, error) {
@@ -107,6 +108,7 @@ func (v *validator) ValidateRegistryArtifact(_ context.Context, release Artifact
 	return ValidatedArtifact{Identity: release.Identity, CanonicalDigest: canonical, StagedTreeManifest: testDigest('6'), ResolvedLockDigest: testDigest('7'), MutationDigest: testDigest('8'), AuthoringImpactDigest: string(impact.ImpactDigest), AuthoringImpact: impact, AddressMigrationPlanDigest: migrationDigest, Diagnostics: []string{}}, nil
 }
 func (v *validator) BuildRegistryMutationPlan(_ context.Context, input RegistryMutationBuildInput) (ProjectMutationPlan, error) {
+	v.lastBuild = cloneJSONValue(input)
 	if v.fail {
 		return ProjectMutationPlan{}, errors.New("invalid mutation")
 	}
