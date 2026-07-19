@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
-	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 )
 
 const (
@@ -485,6 +485,12 @@ func (s *MemoryTransactionStore) CompareAndSwapRegistryTransaction(_ context.Con
 	if !ok {
 		return false, nil
 	}
+	if err := validateStoredTransaction(current); err != nil {
+		return false, err
+	}
+	if err := validateStoredTransaction(next); err != nil {
+		return false, err
+	}
 	if transactionVersion(current) != expected {
 		return false, nil
 	}
@@ -848,6 +854,9 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 	}
 	if exists {
 		if transactionState(tx) == StateAwaitingConfirmation {
+			if err := validateFinalizedPlan(tx.Plan); err != nil {
+				return InstallPlan{}, fail(FailurePlanStale, transactionID, true, err)
+			}
 			return clonePlan(tx.Plan), nil
 		}
 		if tx.PlanningRequest == nil || digestPlanningRequest(*tx.PlanningRequest) != digestPlanningRequest(request) || (transactionState(tx) != StatePlanned && transactionState(tx) != StateDownloading) {
@@ -936,7 +945,7 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 			return InstallPlan{}, fail(FailureDependencyConflict, prior.Identity.CanonicalID, true, errors.New("installed dependency requires an explicit update transaction"))
 		}
 	}
-	delta, err := buildLockDelta(request.Action, state.DependencySnapshot, resolved, request.Requested)
+	delta, err := buildLockDelta(request.Action, state.DependencySnapshot, resolved, request.Requested, request.RequestedPin)
 	if err != nil {
 		return InstallPlan{}, fail(FailureArtifactCorrupt, request.Requested.CanonicalID, true, err)
 	}
@@ -953,19 +962,17 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 		return InstallPlan{}, fail(FailureArtifactCorrupt, request.Requested.CanonicalID, true, errors.New("Engine mutation plan preconditions or lock delta mismatch"))
 	}
 	authoringImpact := &mutationPlan.AuthoringImpact
-	hostImpactDigest := protocolcommon.Digest(digestJSON(struct {
-		Action    Action
-		ProjectID string
-		Delta     ResolvedLockDelta
-	}{request.Action, request.ProjectID, delta}))
-	hostImpact := accessprotocol.HostOperationImpact{Action: hostImpactAction(request.Action), ImpactDigest: hostImpactDigest, OperationKind: accessprotocol.HostOperationKindPackageTransaction, RequiredAuthoringCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage}, ResourceRefs: []string{request.Requested.CanonicalID}, ResourceScope: accessprotocol.HostResourceScope{DocumentID: state.DocumentID, LocalScopeID: state.LocalScopeID, OrganizationScopeID: state.OrganizationScopeID}}
+	hostImpact, err := accesscore.HostOperationImpact(accessprotocol.HostOperationKindPackageTransaction, hostImpactAction(request.Action), accessprotocol.HostResourceScope{DocumentID: state.DocumentID, LocalScopeID: state.LocalScopeID, OrganizationScopeID: state.OrganizationScopeID}, []string{request.Requested.CanonicalID})
+	if err != nil {
+		return InstallPlan{}, fail(FailureArtifactCorrupt, request.Requested.CanonicalID, true, err)
+	}
 	mutation := mutationPlan.MutationDigest
 	evaluate := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: authoringImpact, GrantSnapshot: state.GrantSnapshot, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, RequestIntent: "apply"}
 	decision, err := r.access.EvaluateRegistryPlan(ctx, evaluate)
 	if err != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || !decisionBindsMutation(decision, *authoringImpact, hostImpact) {
 		return InstallPlan{}, fail(FailurePolicyDenied, request.ProjectID, true, err)
 	}
-	plan := InstallPlan{Action: request.Action, ProjectID: request.ProjectID, BaseRevision: state.Revision, ExpectedDefinitionHash: state.DefinitionHash, ExpectedResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, Artifacts: artifacts, RequiredCapabilities: capabilitiesToStrings(decision.RequiredCapabilities), TrustPolicyDigests: trust, SourceBindings: bindings, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, RollbackCheckpoint: RollbackCheckpoint{BaseProjectRevision: state.Revision, BaseDefinitionHash: state.DefinitionHash, BaseResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, CurrentPackTreeManifest: state.PackTreeManifest}, ExpiresAt: r.now().Add(15 * time.Minute), MigrationRequired: migrationRequired, CreatesNewDocument: request.Action == ActionCreateFromTemplate, MutationDigest: mutation, AuthoringImpactDigests: []string{mutationPlan.AuthoringImpactDigest}, HostOperationImpactDigest: string(hostImpactDigest), EvaluationDigest: string(decision.EvaluationDigest), AuthoringImpact: authoringImpact, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, AccessDecision: decision, HostCapabilitiesDigest: digestJSON(hostCapabilities), ProjectMutationPlan: mutationPlan, RuntimeSessionID: state.RuntimeSessionID, LeaseToken: state.LeaseToken, RequestedRoot: request.Requested}
+	plan := InstallPlan{Action: request.Action, ProjectID: request.ProjectID, BaseRevision: state.Revision, ExpectedDefinitionHash: state.DefinitionHash, ExpectedResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, Artifacts: artifacts, RequiredCapabilities: capabilitiesToStrings(decision.RequiredCapabilities), TrustPolicyDigests: trust, SourceBindings: bindings, DependencySnapshot: cloneDependencySnapshot(state.DependencySnapshot), ResolvedLockDelta: delta, RollbackCheckpoint: RollbackCheckpoint{BaseProjectRevision: state.Revision, BaseDefinitionHash: state.DefinitionHash, BaseResolvedLockDigest: state.DependencySnapshot.ResolvedLockDigest, CurrentPackTreeManifest: state.PackTreeManifest}, ExpiresAt: r.now().Add(15 * time.Minute), MigrationRequired: migrationRequired, CreatesNewDocument: request.Action == ActionCreateFromTemplate, MutationDigest: mutation, AuthoringImpactDigests: []string{mutationPlan.AuthoringImpactDigest}, HostOperationImpactDigest: string(hostImpact.ImpactDigest), EvaluationDigest: string(decision.EvaluationDigest), AuthoringImpact: authoringImpact, HostOperationImpacts: []accessprotocol.HostOperationImpact{hostImpact}, AccessDecision: decision, HostCapabilitiesDigest: digestJSON(hostCapabilities), ProjectMutationPlan: mutationPlan, RuntimeSessionID: state.RuntimeSessionID, LeaseToken: state.LeaseToken, RequestedRoot: request.Requested}
 	if request.Action == ActionCreateFromTemplate {
 		plan.NewDocumentID = state.DocumentID
 	}
@@ -975,6 +982,9 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 	plan.ProjectMutationPlan.EvaluationDigest = plan.EvaluationDigest
 	plan.PlanDigest = digestPlan(plan)
 	plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
+	if err := validateFinalizedPlan(plan); err != nil {
+		return InstallPlan{}, fail(FailureArtifactCorrupt, plan.TransactionID, true, err)
+	}
 	tx.Plan = plan
 	for _, step := range []TransactionEvent{{State: StateVerified, EvidenceDigest: digestJSON(plan.TrustPolicyDigests)}, {State: StateExpandedStaged, EvidenceDigest: plan.ProjectMutationPlan.StagedTreeManifest}, {State: StateCompiled, EvidenceDigest: plan.ProjectMutationPlan.AuthoringImpactDigest}, {State: StateAwaitingConfirmation, EvidenceDigest: plan.EvaluationDigest}} {
 		version := transactionVersion(tx)
@@ -1090,7 +1100,7 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, errors.New("operation_id and idempotency_key are required"))
 	}
 	tx, ok, loadErr := r.transactions.GetRegistryTransaction(ctx, input.Plan.TransactionID)
-	if loadErr != nil || !ok || tx.Plan.PlanDigest != input.Plan.PlanDigest || digestPlan(input.Plan) != input.Plan.PlanDigest {
+	if loadErr != nil || !ok || validateFinalizedPlan(tx.Plan) != nil || validateFinalizedPlan(input.Plan) != nil || tx.Plan.PlanDigest != input.Plan.PlanDigest {
 		return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, nil)
 	}
 	if !tx.Plan.ExpiresAt.After(r.now()) {
@@ -1299,6 +1309,9 @@ func (r *Registry) RecoverTransaction(ctx context.Context, id string) (Transacti
 	}
 	if transactionState(tx) != StateApplying && transactionState(tx) != StateRepairRequired && transactionState(tx) != StateRepairing {
 		return tx, nil
+	}
+	if planErr := validateFinalizedPlan(tx.Plan); planErr != nil {
+		return tx, fail(FailureRepairRequired, id, true, planErr)
 	}
 	if transactionState(tx) == StateApplying {
 		if err := r.appendEvent(ctx, &tx, TransactionEvent{State: StateRepairRequired, EvidenceDigest: tx.Plan.MutationDigest, IdempotencyKey: lastIdempotencyKey(tx)}); err != nil {
@@ -1775,7 +1788,7 @@ func planBoundDocumentID(plan InstallPlan) (string, error) {
 	}
 	impact := plan.HostOperationImpacts[0]
 	documentID := impact.ResourceScope.DocumentID
-	if strings.TrimSpace(documentID) == "" || string(impact.ImpactDigest) != plan.HostOperationImpactDigest {
+	if strings.TrimSpace(documentID) == "" || accesscore.ValidateHostOperationImpact(impact) != nil || string(impact.ImpactDigest) != plan.HostOperationImpactDigest {
 		return "", errors.New("plan host impact is missing its bound Document identity")
 	}
 	if plan.CreatesNewDocument && plan.NewDocumentID != documentID {
@@ -1798,7 +1811,7 @@ func validRuntimeOperationID(value string) bool {
 func isASCIIAlphaNumeric(value byte) bool {
 	return (value >= '0' && value <= '9') || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
 }
-func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved map[string]PlanArtifact, requested ArtifactIdentity) (ResolvedLockDelta, error) {
+func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved map[string]PlanArtifact, requested ArtifactIdentity, requestedPin bool) (ResolvedLockDelta, error) {
 	delta := ResolvedLockDelta{Added: []LockedArtifact{}, Updated: []LockedArtifact{}, Removed: []LockedArtifact{}, Pinned: []LockedArtifact{}}
 	if action == ActionRemove {
 		if installed, ok := findLocked(snapshot, requested); ok {
@@ -1818,6 +1831,8 @@ func buildLockDelta(action Action, snapshot ProjectDependencySnapshot, resolved 
 		pinned := installed && prior.Pinned
 		if action == ActionPin && isRequested {
 			pinned = true
+		} else if isRequested && (action == ActionInstall || action == ActionUpdate) {
+			pinned = requestedPin
 		}
 		lock, err := lockedFromPlan(item, pinned, resolved)
 		if err != nil {
@@ -1951,6 +1966,37 @@ func digestPlan(plan InstallPlan) string {
 	plan.ProjectMutationPlan.PlanDigest = ""
 	return digestJSON(plan)
 }
+func validateFinalizedPlan(plan InstallPlan) error {
+	if plan.PlanDigest == "" || plan.ProjectMutationPlan.PlanDigest != plan.PlanDigest || digestPlan(plan) != plan.PlanDigest {
+		return errors.New("registry finalized plan digest does not bind its complete body")
+	}
+	if plan.ProjectMutationPlan.RegistryTransactionID != plan.TransactionID || plan.ProjectMutationPlan.HostOperationImpactDigest != plan.HostOperationImpactDigest || plan.ProjectMutationPlan.EvaluationDigest != plan.EvaluationDigest {
+		return errors.New("registry finalized plan contains inconsistent owner bindings")
+	}
+	if _, err := planBoundDocumentID(plan); err != nil {
+		return err
+	}
+	return nil
+}
+func transactionRequiresFinalizedPlan(tx Transaction) bool {
+	switch transactionState(tx) {
+	case StateVerified, StateExpandedStaged, StateCompiled, StateAwaitingConfirmation, StateApplying, StateRepairRequired, StateRepairing, StateCommitted, StateSuperseded, StateNeedsReview:
+		return true
+	case StateRolledBack:
+		return planHasFinalizedBody(tx.Plan)
+	default:
+		return false
+	}
+}
+func planHasFinalizedBody(plan InstallPlan) bool {
+	return plan.MutationDigest != "" || plan.HostOperationImpactDigest != "" || plan.EvaluationDigest != "" || plan.AuthoringImpact != nil || len(plan.HostOperationImpacts) > 0 || plan.ProjectMutationPlan.PlanDigest != ""
+}
+func validateStoredTransaction(tx Transaction) error {
+	if transactionRequiresFinalizedPlan(tx) || planHasFinalizedBody(tx.Plan) {
+		return validateFinalizedPlan(tx.Plan)
+	}
+	return nil
+}
 func digestPlanningRequest(request PlanRequest) string {
 	request.DependencySnapshot = cloneDependencySnapshot(request.DependencySnapshot)
 	return digestJSON(request)
@@ -2070,6 +2116,12 @@ func validateTransactionAppend(current, next Transaction) error {
 	}
 	if transactionVersion(next) != transactionVersion(current)+1 {
 		return errors.New("registry transaction sequence mismatch")
+	}
+	if err := validateStoredTransaction(current); err != nil {
+		return fmt.Errorf("registry transaction current record is corrupt: %w", err)
+	}
+	if err := validateStoredTransaction(next); err != nil {
+		return fmt.Errorf("registry transaction next record is corrupt: %w", err)
 	}
 	from, to := transactionState(current), transactionState(next)
 	planFinalized := from == StateDownloading && to == StateVerified && current.PlanningRequest != nil && next.PlanningRequest != nil && digestPlanningRequest(*current.PlanningRequest) == digestPlanningRequest(*next.PlanningRequest) && current.Plan.PlanDigest != next.Plan.PlanDigest && next.Plan.PlanDigest == digestPlan(next.Plan)

@@ -20,7 +20,23 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 )
+
+func testFinalizedPlan(t *testing.T, id string) InstallPlan {
+	t.Helper()
+	impact, err := accesscore.HostOperationImpact(accessprotocol.HostOperationKindPackageTransaction, "update", accessprotocol.HostResourceScope{DocumentID: "doc", LocalScopeID: "local"}, []string{"test/package"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := InstallPlan{TransactionID: id, EvaluationDigest: testDigest('e'), HostOperationImpactDigest: string(impact.ImpactDigest), HostOperationImpacts: []accessprotocol.HostOperationImpact{impact}}
+	plan.ProjectMutationPlan.RegistryTransactionID = id
+	plan.ProjectMutationPlan.HostOperationImpactDigest = plan.HostOperationImpactDigest
+	plan.ProjectMutationPlan.EvaluationDigest = plan.EvaluationDigest
+	plan.PlanDigest = digestPlan(plan)
+	plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
+	return plan
+}
 
 func dispatchForTest(t *testing.T, binding *HostBinding, operation WireOperation, input any) WireResponse {
 	t.Helper()
@@ -646,7 +662,7 @@ func TestDiskStoreCancellationCorruptionAndCAS(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	tx := Transaction{Plan: InstallPlan{TransactionID: id, PlanDigest: "p"}, Events: []TransactionEvent{{State: StateAwaitingConfirmation, Sequence: 1}}}
+	tx := Transaction{Plan: testFinalizedPlan(t, id), Events: []TransactionEvent{{State: StateAwaitingConfirmation, Sequence: 1}}}
 	if err := store.CreateRegistryTransaction(context.Background(), tx); err != nil {
 		t.Fatal(err)
 	}
@@ -677,6 +693,255 @@ func TestDiskStoreCancellationCorruptionAndCAS(t *testing.T) {
 	if _, err := store.CompareAndSwapRegistryTransaction(context.Background(), id, 2, next); err == nil {
 		t.Fatal("corrupt CAS")
 	}
+}
+
+func TestCriticalFinalizedPlanRejectsHostImpactDocumentCorruption(t *testing.T) {
+	t.Run("disk read", func(t *testing.T) {
+		store, err := NewDiskTransactionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		env := newTestEnv(t, store)
+		data := []byte("disk-impact-corruption")
+		release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/disk-impact-corruption", Version: "1.0.0"}, data, nil)
+		addRelease(env, release, data)
+		plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, release.Identity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, ok, err := store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+		if err != nil || !ok {
+			t.Fatal(err)
+		}
+		tx.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+		encoded, err := json.Marshal(tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(store.path(plan.TransactionID), encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.GetRegistryTransaction(context.Background(), plan.TransactionID); err == nil {
+			t.Fatal("Disk store accepted a DocumentID-only impact mutation")
+		}
+		if _, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "disk-corrupt", IdempotencyKey: "disk-corrupt"}); err == nil || env.runtime.calls.Load() != 0 {
+			t.Fatalf("corrupt Disk plan reached Runtime: %v", err)
+		}
+		if _, err := env.registry.RecoverTransaction(context.Background(), plan.TransactionID); err == nil || env.runtime.calls.Load() != 0 {
+			t.Fatalf("corrupt Disk plan reached recovery Runtime: %v", err)
+		}
+	})
+
+	t.Run("CAS current and next", func(t *testing.T) {
+		for _, corruptCurrent := range []bool{true, false} {
+			name := "next"
+			if corruptCurrent {
+				name = "current"
+			}
+			t.Run(name, func(t *testing.T) {
+				store := NewMemoryTransactionStore()
+				env := newTestEnv(t, store)
+				data := []byte("cas-impact-corruption-" + name)
+				release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/cas-impact-corruption-" + name, Version: "1.0.0"}, data, nil)
+				addRelease(env, release, data)
+				plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, release.Identity))
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, _, _ := store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+				next := cloneTransaction(current)
+				next.Events = append(next.Events, TransactionEvent{State: StateApplying, Sequence: transactionVersion(next) + 1, IdempotencyKey: "corrupt"})
+				if corruptCurrent {
+					store.mu.Lock()
+					corrupt := store.transactions[plan.TransactionID]
+					corrupt.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+					store.transactions[plan.TransactionID] = corrupt
+					store.mu.Unlock()
+				} else {
+					next.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+				}
+				if ok, err := store.CompareAndSwapRegistryTransaction(context.Background(), plan.TransactionID, transactionVersion(current), next); err == nil || ok {
+					t.Fatalf("CAS accepted %s DocumentID-only impact mutation: %v", name, err)
+				}
+				if env.runtime.calls.Load() != 0 {
+					t.Fatal("corrupt CAS plan reached Runtime")
+				}
+			})
+		}
+	})
+}
+
+func TestCriticalFinalizedPlanIntegrityBranches(t *testing.T) {
+	rebind := func(plan InstallPlan) InstallPlan {
+		plan.PlanDigest = digestPlan(plan)
+		plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
+		return plan
+	}
+	base := testFinalizedPlan(t, "integrity-plan")
+
+	inconsistent := base
+	inconsistent.ProjectMutationPlan.EvaluationDigest = testDigest('x')
+	inconsistent = rebind(inconsistent)
+	if validateFinalizedPlan(inconsistent) == nil {
+		t.Fatal("inconsistent owner bindings passed finalized plan validation")
+	}
+
+	invalidImpact := clonePlan(base)
+	invalidImpact.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+	invalidImpact = rebind(invalidImpact)
+	if validateFinalizedPlan(invalidImpact) == nil {
+		t.Fatal("invalid closed impact passed a recomputed plan digest")
+	}
+
+	current := Transaction{Plan: base, Events: []TransactionEvent{{State: StateAwaitingConfirmation, Sequence: 1}}}
+	next := cloneTransaction(current)
+	next.Events = append(next.Events, TransactionEvent{State: StateApplying, Sequence: 2})
+	corruptCurrent := cloneTransaction(current)
+	corruptCurrent.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+	if validateTransactionAppend(corruptCurrent, next) == nil {
+		t.Fatal("append accepted a corrupt current finalized plan")
+	}
+	corruptNext := cloneTransaction(next)
+	corruptNext.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+	if validateTransactionAppend(current, corruptNext) == nil {
+		t.Fatal("append accepted a corrupt next finalized plan")
+	}
+	changedNext := cloneTransaction(next)
+	changedNext.Plan.RuntimeSessionID = "changed-session"
+	changedNext.Plan = rebind(changedNext.Plan)
+	if validateTransactionAppend(current, changedNext) == nil {
+		t.Fatal("append accepted a rebound plan outside finalization")
+	}
+	invalidTransition := cloneTransaction(current)
+	invalidTransition.Events = append(invalidTransition.Events, TransactionEvent{State: StateCommitted, Sequence: 2})
+	if validateTransactionAppend(current, invalidTransition) == nil {
+		t.Fatal("append accepted an invalid finalized transition")
+	}
+
+	disk, err := NewDiskTransactionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	diskID := "dddddddddddddddddddddddddddddddd"
+	diskPlan := testFinalizedPlan(t, diskID)
+	corruptDiskPlan := clonePlan(diskPlan)
+	corruptDiskPlan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+	if err := disk.CreateRegistryTransaction(context.Background(), Transaction{Plan: corruptDiskPlan, Events: []TransactionEvent{{State: StateAwaitingConfirmation, Sequence: 1}}}); err == nil {
+		t.Fatal("Disk create accepted a corrupt finalized plan")
+	}
+	diskCurrent := Transaction{Plan: diskPlan, Events: []TransactionEvent{{State: StateAwaitingConfirmation, Sequence: 1}}}
+	if err := disk.CreateRegistryTransaction(context.Background(), diskCurrent); err != nil {
+		t.Fatal(err)
+	}
+	diskNext := cloneTransaction(diskCurrent)
+	diskNext.Events = append(diskNext.Events, TransactionEvent{State: StateApplying, Sequence: 2})
+	diskNext.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+	if ok, err := disk.CompareAndSwapRegistryTransaction(context.Background(), diskID, 1, diskNext); err == nil || ok {
+		t.Fatalf("Disk CAS accepted a corrupt next finalized plan: %v", err)
+	}
+	invalidDiskTransition := cloneTransaction(diskCurrent)
+	invalidDiskTransition.Events = append(invalidDiskTransition.Events, TransactionEvent{State: StateCommitted, Sequence: 2})
+	if ok, err := disk.CompareAndSwapRegistryTransaction(context.Background(), diskID, 1, invalidDiskTransition); err == nil || ok {
+		t.Fatalf("Disk CAS accepted an invalid finalized transition: %v", err)
+	}
+
+	memory := NewMemoryTransactionStore()
+	memoryCurrent := Transaction{Plan: testFinalizedPlan(t, "memory-integrity"), Events: []TransactionEvent{{State: StateAwaitingConfirmation, Sequence: 1}}}
+	if err := memory.CreateRegistryTransaction(context.Background(), memoryCurrent); err != nil {
+		t.Fatal(err)
+	}
+	memoryNext := cloneTransaction(memoryCurrent)
+	memoryNext.Events = append(memoryNext.Events, TransactionEvent{State: StateCommitted, Sequence: 2})
+	if ok, err := memory.CompareAndSwapRegistryTransaction(context.Background(), "memory-integrity", 1, memoryNext); err == nil || ok {
+		t.Fatalf("Memory CAS accepted an invalid finalized transition: %v", err)
+	}
+
+	wrongIdentity := diskCurrent
+	wrongIdentity.Plan.TransactionID = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	encoded, _ := json.Marshal(wrongIdentity)
+	if err := os.WriteFile(disk.path(diskID), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := disk.getUnlocked(diskID); err == nil {
+		t.Fatal("unlocked Disk read accepted a mismatched transaction identity")
+	}
+	corruptUnlocked := diskCurrent
+	corruptUnlocked.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+	encoded, _ = json.Marshal(corruptUnlocked)
+	if err := os.WriteFile(disk.path(diskID), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := disk.getUnlocked(diskID); err == nil {
+		t.Fatal("unlocked Disk read accepted a corrupt finalized plan")
+	}
+	markerStripped := diskCurrent
+	markerStripped.Events = append(markerStripped.Events, TransactionEvent{State: StateRolledBack, Sequence: 2})
+	markerStripped.Plan.HostOperationImpacts = nil
+	markerStripped.Plan.ProjectMutationPlan.PlanDigest = ""
+	encoded, _ = json.Marshal(markerStripped)
+	if err := os.WriteFile(disk.path(diskID), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := disk.GetRegistryTransaction(context.Background(), diskID); err == nil {
+		t.Fatal("Disk read accepted a finalized rolled-back plan with stripped integrity markers")
+	}
+	markerStrippedNext := cloneTransaction(markerStripped)
+	markerStrippedNext.Events = append(markerStrippedNext.Events, TransactionEvent{State: StateRolledBack, Sequence: 3})
+	if ok, err := disk.CompareAndSwapRegistryTransaction(context.Background(), diskID, 2, markerStrippedNext); err == nil || ok {
+		t.Fatalf("Disk CAS accepted a finalized rolled-back plan with stripped integrity markers: %v", err)
+	}
+
+	readErrorDisk, err := NewDiskTransactionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	readErrorID := "ffffffffffffffffffffffffffffffff"
+	if err := os.Mkdir(readErrorDisk.path(readErrorID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readErrorDisk.GetRegistryTransaction(context.Background(), readErrorID); err == nil {
+		t.Fatal("Disk read error was ignored")
+	}
+
+	t.Run("Plan retry and recovery reject in-memory corruption", func(t *testing.T) {
+		env := newTestEnv(t, NewMemoryTransactionStore())
+		data := []byte("memory-plan-corruption")
+		release := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/memory-plan-corruption", Version: "1.0.0"}, data, nil)
+		addRelease(env, release, data)
+		request := planRequest(env, ActionInstall, release.Identity)
+		plan, err := env.registry.Plan(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		memoryStore := env.store.(*MemoryTransactionStore)
+		memoryStore.mu.Lock()
+		corrupt := memoryStore.transactions[plan.TransactionID]
+		corrupt.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+		memoryStore.transactions[plan.TransactionID] = corrupt
+		memoryStore.mu.Unlock()
+		if _, err := env.registry.Plan(context.Background(), request); !IsFailure(err, FailurePlanStale) {
+			t.Fatalf("Plan retry accepted an in-memory impact mutation: %v", err)
+		}
+
+		recoveryEnv := newTestEnv(t, NewMemoryTransactionStore())
+		data = []byte("memory-recovery-corruption")
+		release = signedRelease(t, recoveryEnv.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/memory-recovery-corruption", Version: "1.0.0"}, data, nil)
+		addRelease(recoveryEnv, release, data)
+		plan, err = recoveryEnv.registry.Plan(context.Background(), planRequest(recoveryEnv, ActionInstall, release.Identity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		recoveryStore := recoveryEnv.store.(*MemoryTransactionStore)
+		recoveryStore.mu.Lock()
+		corrupt = recoveryStore.transactions[plan.TransactionID]
+		corrupt.Events = append(corrupt.Events, TransactionEvent{State: StateApplying, Sequence: transactionVersion(corrupt) + 1, IdempotencyKey: "corrupt"})
+		corrupt.Plan.HostOperationImpacts[0].ResourceScope.DocumentID = "replacement-document"
+		recoveryStore.transactions[plan.TransactionID] = corrupt
+		recoveryStore.mu.Unlock()
+		if _, err := recoveryEnv.registry.RecoverTransaction(context.Background(), plan.TransactionID); !IsFailure(err, FailureRepairRequired) || recoveryEnv.runtime.calls.Load() != 0 {
+			t.Fatalf("Recovery accepted an in-memory impact mutation: %v", err)
+		}
+	})
 }
 
 func TestRemainingNormativeBranches(t *testing.T) {
@@ -749,7 +1014,7 @@ func TestRemainingNormativeBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	current := Transaction{Plan: InstallPlan{TransactionID: "tx", PlanDigest: "p"}, Events: []TransactionEvent{{State: StateRepairRequired, Sequence: 1}}}
+	current := Transaction{Plan: testFinalizedPlan(t, "tx"), Events: []TransactionEvent{{State: StateRepairRequired, Sequence: 1}}}
 	next := cloneTransaction(current)
 	next.Events = append(next.Events, TransactionEvent{State: StateNeedsReview, Sequence: 2})
 	if err := validateTransactionAppend(current, next); err != nil {
@@ -951,7 +1216,11 @@ func TestCriticalRecoveryIntermediateReplayAndTransportFallbacks(t *testing.T) {
 		store := NewMemoryTransactionStore()
 		env := newTestEnv(t, store)
 		id := fmt.Sprintf("resume-%d", index)
-		plan := InstallPlan{TransactionID: id, PlanDigest: "plan", EvaluationDigest: testDigest('e'), ProjectMutationPlan: ProjectMutationPlan{StagedTreeManifest: testDigest('s'), AuthoringImpactDigest: testDigest('a')}}
+		plan := testFinalizedPlan(t, id)
+		plan.ProjectMutationPlan.StagedTreeManifest = testDigest('s')
+		plan.ProjectMutationPlan.AuthoringImpactDigest = testDigest('a')
+		plan.PlanDigest = digestPlan(plan)
+		plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
 		tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: state, Sequence: 1}}}
 		if err := store.CreateRegistryTransaction(context.Background(), tx); err != nil {
 			t.Fatal(err)
@@ -963,7 +1232,10 @@ func TestCriticalRecoveryIntermediateReplayAndTransportFallbacks(t *testing.T) {
 	}
 	makeRepair := func(t *testing.T) (*testEnv, Transaction) {
 		env := newTestEnv(t, NewMemoryTransactionStore())
-		plan := InstallPlan{TransactionID: "repair-tx", PlanDigest: "plan", MutationDigest: testDigest('m')}
+		plan := testFinalizedPlan(t, "repair-tx")
+		plan.MutationDigest = testDigest('m')
+		plan.PlanDigest = digestPlan(plan)
+		plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
 		tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StateRepairRequired, Sequence: 1, IdempotencyKey: "repair-id"}}}
 		if err := env.store.CreateRegistryTransaction(context.Background(), tx); err != nil {
 			t.Fatal(err)
@@ -1047,7 +1319,7 @@ func TestCriticalHelperAndStaleLockBranches(t *testing.T) {
 		t.Fatal("missing closure")
 	}
 	resolved := map[string]PlanArtifact{artifactKey(root): {Release: ArtifactRelease{Identity: root, Digest: "new"}}}
-	delta, err := buildLockDelta(ActionUpdate, snapshot, resolved, root)
+	delta, err := buildLockDelta(ActionUpdate, snapshot, resolved, root, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1566,7 +1838,10 @@ func TestCriticalRuntimeCommittedOutcomeValidation(t *testing.T) {
 	}
 	t.Run("recovery missing durable operation binding", func(t *testing.T) {
 		env := newTestEnv(t, NewMemoryTransactionStore())
-		plan := InstallPlan{TransactionID: "missing-runtime-input", PlanDigest: "plan", MutationDigest: testDigest('m')}
+		plan := testFinalizedPlan(t, "missing-runtime-input")
+		plan.MutationDigest = testDigest('m')
+		plan.PlanDigest = digestPlan(plan)
+		plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
 		tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: StateRepairRequired, Sequence: 1, IdempotencyKey: "bound-id"}}}
 		if err := env.store.CreateRegistryTransaction(context.Background(), tx); err != nil {
 			t.Fatal(err)
@@ -1683,6 +1958,12 @@ func TestCriticalRecoveryPersistenceFailures(t *testing.T) {
 			env := newTestEnv(t, base)
 			id := strings.Repeat(string(state[0]), 32)
 			plan := InstallPlan{TransactionID: id, PlanDigest: "plan", MutationDigest: testDigest('m')}
+			if state != StatePlanned {
+				plan = testFinalizedPlan(t, id)
+				plan.MutationDigest = testDigest('m')
+				plan.PlanDigest = digestPlan(plan)
+				plan.ProjectMutationPlan.PlanDigest = plan.PlanDigest
+			}
 			tx := Transaction{Plan: plan, Events: []TransactionEvent{{State: state, Sequence: 1, IdempotencyKey: "persist"}}}
 			if err := base.CreateRegistryTransaction(context.Background(), tx); err != nil {
 				t.Fatal(err)
@@ -1777,6 +2058,69 @@ func TestCriticalNeedsReviewPersistenceFailure(t *testing.T) {
 }
 
 func TestCriticalResolverLockAndRootHardening(t *testing.T) {
+	t.Run("requested pin persists for install and update roots", func(t *testing.T) {
+		for _, action := range []Action{ActionInstall, ActionUpdate} {
+			for _, requestedPin := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s-%t", action, requestedPin), func(t *testing.T) {
+					env := newTestEnv(t, NewMemoryTransactionStore())
+					childData, rootData := []byte("requested-pin-child"), []byte("requested-pin-root")
+					child := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/requested-pin-child", Version: "1.0.0"}, childData, nil)
+					root := signedRelease(t, env.privateKey, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/requested-pin-root", Version: "1.0.0"}, rootData, []Dependency{{Kind: ArtifactPack, CanonicalID: child.Identity.CanonicalID, VersionRange: child.Identity.Version}})
+					resolved := map[string]PlanArtifact{artifactKey(root.Identity): {Release: root}, artifactKey(child.Identity): {Release: child}}
+					if action == ActionUpdate {
+						rootLock, err := lockedFromPlan(resolved[artifactKey(root.Identity)], !requestedPin, resolved)
+						if err != nil {
+							t.Fatal(err)
+						}
+						childLock, err := lockedFromPlan(resolved[artifactKey(child.Identity)], true, resolved)
+						if err != nil {
+							t.Fatal(err)
+						}
+						rootLock.Dependencies = []ArtifactIdentity{child.Identity}
+						env.project.state.DependencySnapshot = ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{rootLock, childLock}}
+					}
+					addRelease(env, child, childData)
+					addRelease(env, root, rootData)
+					request := planRequest(env, action, root.Identity)
+					request.RequestedPin = requestedPin
+					plan, err := env.registry.Plan(context.Background(), request)
+					if err != nil {
+						t.Fatal(err)
+					}
+					rootLocks := plan.ResolvedLockDelta.Added
+					if action == ActionUpdate {
+						rootLocks = plan.ResolvedLockDelta.Updated
+					}
+					var rootResult *LockedArtifact
+					for index := range rootLocks {
+						if artifactKey(rootLocks[index].Identity) == artifactKey(root.Identity) {
+							rootResult = &rootLocks[index]
+						}
+					}
+					if rootResult == nil || rootResult.Pinned != requestedPin {
+						t.Fatalf("requested root pin was not applied: %#v", plan.ResolvedLockDelta)
+					}
+					for _, lock := range append(append([]LockedArtifact{}, plan.ResolvedLockDelta.Added...), plan.ResolvedLockDelta.Updated...) {
+						if artifactKey(lock.Identity) == artifactKey(child.Identity) && lock.Pinned != (action == ActionUpdate) {
+							t.Fatalf("dependency pin was not preserved independently: %#v", lock)
+						}
+					}
+					if action == ActionUpdate {
+						lockedChild, ok := findLocked(plan.DependencySnapshot, child.Identity)
+						if !ok || !lockedChild.Pinned {
+							t.Fatalf("existing dependency pin was lost from the bound snapshot: %#v", plan.DependencySnapshot)
+						}
+					}
+					retry, err := env.registry.Plan(context.Background(), request)
+					persisted, _, loadErr := env.store.GetRegistryTransaction(context.Background(), plan.TransactionID)
+					if err != nil || loadErr != nil || retry.PlanDigest != plan.PlanDigest || persisted.PlanningRequest == nil || persisted.PlanningRequest.RequestedPin != requestedPin || digestJSON(persisted.Plan.ResolvedLockDelta) != digestJSON(plan.ResolvedLockDelta) {
+						t.Fatalf("requested pin did not survive retry/store: %#v %#v %v %v", retry, persisted, err, loadErr)
+					}
+				})
+			}
+		}
+	})
+
 	t.Run("divergent digest for one identity", func(t *testing.T) {
 		env := newTestEnv(t, NewMemoryTransactionStore())
 		identity := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/divergent", Version: "1.0.0"}
@@ -1935,11 +2279,11 @@ func TestCriticalResolverLockAndRootHardening(t *testing.T) {
 					t.Fatalf("complete binding drift omitted from update: %#v", plan.ResolvedLockDelta)
 				}
 				updated := plan.ResolvedLockDelta.Updated[0]
-				expected, err := lockedFromPlan(resolved[artifactKey(root.Identity)], true, resolved)
+				expected, err := lockedFromPlan(resolved[artifactKey(root.Identity)], false, resolved)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !lockedArtifactBindingMatches(updated, expected) || !updated.Pinned || len(updated.Dependencies) != 1 || updated.Dependencies[0] != child.Identity {
+				if !lockedArtifactBindingMatches(updated, expected) || updated.Pinned || len(updated.Dependencies) != 1 || updated.Dependencies[0] != child.Identity {
 					t.Fatalf("updated lock did not persist exact graph and pin: %#v", updated)
 				}
 				built := env.validator.capturedLastBuild()
@@ -1957,15 +2301,15 @@ func TestCriticalResolverLockAndRootHardening(t *testing.T) {
 		resolved := map[string]PlanArtifact{artifactKey(root.Release.Identity): root, artifactKey(child.Release.Identity): child}
 		rootLock, _ := lockedFromPlan(root, false, resolved)
 		childLock, _ := lockedFromPlan(child, true, resolved)
-		delta, err := buildLockDelta(ActionPin, ProjectDependencySnapshot{Installs: []LockedArtifact{rootLock, childLock}}, resolved, root.Release.Identity)
+		delta, err := buildLockDelta(ActionPin, ProjectDependencySnapshot{Installs: []LockedArtifact{rootLock, childLock}}, resolved, root.Release.Identity, false)
 		if err != nil || len(delta.Pinned) != 1 || delta.Pinned[0].Identity != root.Release.Identity || !delta.Pinned[0].Pinned || len(delta.Updated) != 0 {
 			t.Fatalf("pin semantics changed dependency pins: %#v %v", delta, err)
 		}
-		delta, err = buildLockDelta(ActionPin, ProjectDependencySnapshot{Installs: []LockedArtifact{rootLock}}, resolved, root.Release.Identity)
+		delta, err = buildLockDelta(ActionPin, ProjectDependencySnapshot{Installs: []LockedArtifact{rootLock}}, resolved, root.Release.Identity, false)
 		if err != nil || len(delta.Pinned) != 1 || len(delta.Added) != 1 || delta.Added[0].Identity != child.Release.Identity || delta.Added[0].Pinned {
 			t.Fatalf("pin semantics implicitly pinned a new dependency: %#v %v", delta, err)
 		}
-		delta, err = buildLockDelta(ActionPin, ProjectDependencySnapshot{}, resolved, root.Release.Identity)
+		delta, err = buildLockDelta(ActionPin, ProjectDependencySnapshot{}, resolved, root.Release.Identity, false)
 		if err != nil || len(delta.Pinned) != 1 || delta.Pinned[0].Identity != root.Release.Identity || len(delta.Added) != 1 {
 			t.Fatalf("pin delta lost its explicit root classification: %#v %v", delta, err)
 		}
@@ -1974,7 +2318,7 @@ func TestCriticalResolverLockAndRootHardening(t *testing.T) {
 	t.Run("incomplete resolved dependency graph fails closed", func(t *testing.T) {
 		identity := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "critical/incomplete-root", Version: "1.0.0"}
 		root := PlanArtifact{Release: ArtifactRelease{Identity: identity, Dependencies: []Dependency{{Kind: ArtifactPack, CanonicalID: "critical/missing-child", VersionRange: "^1.0.0"}}}}
-		if _, err := buildLockDelta(ActionInstall, ProjectDependencySnapshot{}, map[string]PlanArtifact{artifactKey(identity): root}, identity); err == nil {
+		if _, err := buildLockDelta(ActionInstall, ProjectDependencySnapshot{}, map[string]PlanArtifact{artifactKey(identity): root}, identity, false); err == nil {
 			t.Fatal("incomplete resolved dependency graph produced a lock delta")
 		}
 	})

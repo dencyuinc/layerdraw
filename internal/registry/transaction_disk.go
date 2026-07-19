@@ -45,6 +45,9 @@ func (s *DiskTransactionStore) CreateRegistryTransaction(ctx context.Context, tx
 	if !transactionIDPattern.MatchString(tx.Plan.TransactionID) || len(tx.Events) == 0 {
 		return errors.New("invalid registry transaction record")
 	}
+	if err := validateStoredTransaction(tx); err != nil {
+		return err
+	}
 	release, err := s.lock(ctx)
 	if err != nil {
 		return err
@@ -127,6 +130,9 @@ func (s *DiskTransactionStore) GetRegistryTransaction(ctx context.Context, id st
 	if tx.Plan.TransactionID != id || len(tx.Events) == 0 {
 		return Transaction{}, false, errors.New("registry transaction record identity mismatch")
 	}
+	if err := validateStoredTransaction(tx); err != nil {
+		return Transaction{}, false, err
+	}
 	return cloneTransaction(tx), true, nil
 }
 func (s *DiskTransactionStore) CompareAndSwapRegistryTransaction(ctx context.Context, id string, expected uint64, next Transaction) (bool, error) {
@@ -140,6 +146,9 @@ func (s *DiskTransactionStore) CompareAndSwapRegistryTransaction(ctx context.Con
 	defer release()
 	current, ok, err := s.getUnlocked(id)
 	if err != nil || !ok {
+		return false, err
+	}
+	if err := validateStoredTransaction(next); err != nil {
 		return false, err
 	}
 	if transactionVersion(current) != expected {
@@ -204,6 +213,12 @@ func (s *DiskTransactionStore) getUnlocked(id string) (Transaction, bool, error)
 	}
 	var tx Transaction
 	if err := json.Unmarshal(data, &tx); err != nil {
+		return Transaction{}, false, err
+	}
+	if tx.Plan.TransactionID != id || len(tx.Events) == 0 {
+		return Transaction{}, false, errors.New("registry transaction record identity mismatch")
+	}
+	if err := validateStoredTransaction(tx); err != nil {
 		return Transaction{}, false, err
 	}
 	return tx, true, nil

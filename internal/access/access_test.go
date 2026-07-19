@@ -441,6 +441,14 @@ func TestHostOperationImpactDerivesClosedCapabilities(t *testing.T) {
 	if _, err := HostOperationImpact(accessprotocol.HostOperationKindAssetStage, "stage", scope, []string{"asset", "asset"}); err == nil {
 		t.Fatal("duplicate operation resource accepted")
 	}
+	impact, err := HostOperationImpact(accessprotocol.HostOperationKindPackageTransaction, "update", scope, []string{"package"})
+	if err != nil || ValidateHostOperationImpact(impact) != nil {
+		t.Fatalf("canonical owner impact failed validation: %+v %v", impact, err)
+	}
+	impact.ResourceScope.DocumentID = "replacement-document"
+	if ValidateHostOperationImpact(impact) == nil {
+		t.Fatal("host impact digest did not bind the complete resource scope")
+	}
 }
 
 func ownerGrant(now time.Time, caps []semantic.AuthoringCapability) accessprotocol.AuthoringGrantSnapshot {
