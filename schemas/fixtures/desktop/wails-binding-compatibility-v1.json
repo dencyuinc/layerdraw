@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "generated_method": "EngineExchange",
+      "target": "engine_client",
+      "operation": "engine.compile",
+      "browser_outcome": "success",
+      "desktop_outcome": "success"
+    },
+    {
+      "generated_method": "RuntimeExchange",
+      "target": "runtime_client",
+      "operation": "runtime.open_document",
+      "browser_outcome": "success",
+      "desktop_outcome": "success"
+    },
+    {
+      "generated_method": "RegistryExchange",
+      "target": "registry_client",
+      "operation": "registry.resolve",
+      "browser_outcome": "failed",
+      "desktop_outcome": "failed"
+    },
+    {
+      "generated_method": "ReviewExchange",
+      "target": "review_client",
+      "operation": "review.submit",
+      "browser_outcome": "cancelled",
+      "desktop_outcome": "cancelled"
+    },
+    {
+      "generated_method": "HostExchange",
+      "target": "host_client",
+      "operation": "host.export",
+      "browser_outcome": "success",
+      "desktop_outcome": "success"
+    }
+  ],
+  "capabilities": [
+    {"capability_id": "desktop.authoring", "browser_outcome": "success", "desktop_outcome": "success"},
+    {"capability_id": "desktop.query", "browser_outcome": "success", "desktop_outcome": "success"},
+    {"capability_id": "desktop.search", "browser_outcome": "success", "desktop_outcome": "success"},
+    {"capability_id": "desktop.analysis", "browser_outcome": "success", "desktop_outcome": "success"},
+    {"capability_id": "desktop.registry", "browser_outcome": "failed", "desktop_outcome": "failed"},
+    {"capability_id": "desktop.review", "browser_outcome": "cancelled", "desktop_outcome": "cancelled"},
+    {"capability_id": "desktop.export", "browser_outcome": "success", "desktop_outcome": "success"},
+    {"capability_id": "desktop.external_storage", "browser_outcome": "failed", "desktop_outcome": "failed"},
+    {"capability_id": "desktop.mcp.tools", "browser_outcome": "success", "desktop_outcome": "success"},
+    {"capability_id": "desktop.mcp.resources", "browser_outcome": "success", "desktop_outcome": "success"},
+    {"capability_id": "desktop.agent_scope_management", "browser_outcome": "success", "desktop_outcome": "success"}
+  ]
+}
