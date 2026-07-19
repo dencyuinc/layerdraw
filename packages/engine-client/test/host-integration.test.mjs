@@ -128,7 +128,7 @@ test("local host exposes generated Runtime operations and the existing Engine fa
   });
   assert.equal(opened.outcome, "success");
   let session = opened.payload.session;
-  let documentId = opened.payload.committed_revision.document_id;
+  let documentId;
 
   const inspected = await client.inspectDocument({ session });
   assert.equal(inspected.outcome, "success");
