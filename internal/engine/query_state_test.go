@@ -12,6 +12,66 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/semantic/definition"
 )
 
+func TestStateFieldRegistryAuthority(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		"system.created_at",
+		"system.updated_at",
+		"system.created_by.kind",
+		"system.created_by.id",
+		"system.created_by.display_name",
+		"system.updated_by.kind",
+		"system.updated_by.id",
+		"system.updated_by.display_name",
+		"system.created_revision",
+		"system.updated_revision",
+		"provenance.source.kind",
+		"provenance.source.label",
+		"provenance.source.uri",
+		"provenance.source.external_id",
+		"provenance.observed_at",
+		"provenance.verified_at",
+		"provenance.stale_after",
+		"provenance.verified_by.kind",
+		"provenance.verified_by.id",
+		"provenance.verified_by.display_name",
+		"provenance.confidence",
+	}
+
+	registry := StateFieldRegistry()
+	if !reflect.DeepEqual(registry, want) {
+		t.Fatalf("StateFieldRegistry() = %v\nwant %v", registry, want)
+	}
+	registry[0] = "mutated"
+	if got := StateFieldRegistry(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("StateFieldRegistry() after caller mutation = %v\nwant %v", got, want)
+	}
+}
+
+func TestCompareStableAddressesAuthority(t *testing.T) {
+	t.Parallel()
+	ordered := []string{
+		"ldl:project:p:entity:z",
+		"ldl:project:p:relation:a",
+		"ldl:project:p:entity:z:row:a",
+		"ldl:pack:pub:name:query:a",
+	}
+	for index := 0; index < len(ordered)-1; index++ {
+		left, right := ordered[index], ordered[index+1]
+		if got := CompareStableAddresses(left, right); got >= 0 {
+			t.Fatalf("CompareStableAddresses(%q, %q) = %d, want < 0", left, right, got)
+		}
+		if got := CompareStableAddresses(right, left); got <= 0 {
+			t.Fatalf("CompareStableAddresses(%q, %q) = %d, want > 0", right, left, got)
+		}
+	}
+	for _, address := range ordered {
+		if got := CompareStableAddresses(address, address); got != 0 {
+			t.Fatalf("CompareStableAddresses(%q, itself) = %d, want 0", address, got)
+		}
+	}
+}
+
 func TestExecuteQueryEvaluatesTypedStateForEveryGraphSubjectKind(t *testing.T) {
 	t.Parallel()
 	compiled := compileQueryExecutionFixture(t, allStateSubjectKindsQuerySource())
@@ -235,6 +295,43 @@ func TestStateQuerySnapshotHashIsCanonicalAndStable(t *testing.T) {
 	const want = "sha256:5fa29d4d1f7a3bc0fe1503d44bdc272deb7eb7b6ae08bf67845a023ac6f3e139"
 	if first != want {
 		t.Fatalf("canonical hash = %s want %s", first, want)
+	}
+}
+
+func TestCanonicalizeStateQuerySnapshotRejectsInvalidClosedFieldValues(t *testing.T) {
+	t.Parallel()
+	compiled := compileQueryExecutionFixture(t, requiredStateQuerySource())
+	entity := compiled.TypedAST.Graph.Entities[0]
+	base := validStateQuerySnapshot(t, compiled, []StateQuerySubject{
+		stateSubject(entity.Address, stateFields("system.updated_at", datetimeScalar("2026-01-01T00:00:00Z"))),
+	})
+	if _, _, err := CanonicalizeStateQuerySnapshot(base); err != nil {
+		t.Fatalf("valid snapshot rejected: %v", err)
+	}
+	tests := []struct {
+		name  string
+		path  string
+		value TypedScalar
+	}{
+		{name: "valid datetime has wrong scalar kind for actor id", path: "system.updated_by.id", value: datetimeScalar("2026-01-01T00:00:00Z")},
+		{name: "invalid actor enum", path: "system.updated_by.kind", value: enumScalar("robot")},
+		{name: "invalid source enum", path: "provenance.source.kind", value: enumScalar("robot")},
+		{name: "confidence above bound", path: "provenance.confidence", value: numberScalar(2)},
+		{name: "noncanonical datetime", path: "system.updated_at", value: datetimeScalar("2026-01-01T09:00:00+09:00")},
+		{name: "malformed datetime", path: "system.updated_at", value: datetimeScalar("2026-02-30T00:00:00Z")},
+		{name: "noncanonical string", path: "system.updated_by.id", value: stringScalar("e\u0301")},
+		{name: "unknown field", path: "provider.token", value: stringScalar("secret")},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			state := cloneStateSnapshot(base)
+			state.Subjects[0].Fields = map[string]TypedScalar{test.path: test.value}
+			if _, _, err := CanonicalizeStateQuerySnapshot(state); err == nil {
+				t.Fatalf("CanonicalizeStateQuerySnapshot accepted %s=%+v", test.path, test.value)
+			}
+		})
 	}
 }
 

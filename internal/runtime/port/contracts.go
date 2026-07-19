@@ -214,8 +214,77 @@ type ReadStateInput struct {
 }
 
 type StateSnapshot struct {
-	Head     StateHead
-	Contents protocolcommon.BlobRef
+	Head                   StateHead
+	Contents               protocolcommon.BlobRef
+	InaccessibleFieldPaths []semantic.StateFieldPath
+	Records                []StateRecord
+}
+
+// StateRecord is the provider-neutral durable record projected by Runtime.
+// Fields outside the closed Language 1 StateFieldPath registry may be retained
+// by an adapter under ProviderFields, but Runtime never exposes them to Engine.
+type StateRecord struct {
+	SubjectAddress     semantic.StableAddress
+	SubjectKind        semantic.StateSubjectKind
+	OwnSubjectHash     protocolcommon.Digest
+	Fields             map[string]semantic.RecipeScalar
+	ProviderFields     map[string]any
+	RedactedFieldPaths []semantic.StateFieldPath
+	Tombstoned         bool
+}
+
+type BackendBindingKind string
+
+const (
+	BackendBindingNone     BackendBindingKind = "none"
+	BackendBindingLocal    BackendBindingKind = "local"
+	BackendBindingPackaged BackendBindingKind = "packaged_state"
+)
+
+// BackendBinding is resolved exclusively from trusted host input. BindingID
+// is an opaque adapter-owned identifier, never an LDL field or package member.
+type BackendBinding struct {
+	Kind      BackendBindingKind
+	BindingID string
+}
+
+type ResolveStateBackendInput struct {
+	Scope   runtimeprotocol.RuntimeScope
+	Binding BackendBinding
+}
+
+// StateBackendBindingResolver selects an already configured local or packaged
+// backend. It does not parse LDL or portable container content for config.
+type StateBackendBindingResolver interface {
+	ResolveStateBackend(context.Context, ResolveStateBackendInput) (StateBackend, error)
+}
+
+type StateQueryAuthorizationSubject struct {
+	SubjectAddress semantic.StableAddress
+	SubjectKind    semantic.StateSubjectKind
+}
+
+type StateQueryAuthorizationInput struct {
+	Scope                    runtimeprotocol.RuntimeScope
+	DefinitionProjectAddress semantic.ProjectRootAddress
+	DefinitionHash           protocolcommon.Digest
+	GraphHash                protocolcommon.Digest
+	FieldPaths               []semantic.StateFieldPath
+	Subjects                 []StateQueryAuthorizationSubject
+}
+
+// StateQueryAuthorizationDecision is fail-closed: inaccessible paths apply
+// across the actor scope, while redacted paths apply to one subject. All other
+// closed-registry paths are allowed. Raw values are never decision inputs.
+type StateQueryAuthorizationDecision struct {
+	AccessFingerprint      protocolcommon.Digest
+	DecisionDigest         protocolcommon.Digest
+	InaccessibleFieldPaths []semantic.StateFieldPath
+	RedactedFieldPaths     map[semantic.StableAddress][]semantic.StateFieldPath
+}
+
+type StateQueryAuthorization interface {
+	EvaluateStateQuery(context.Context, StateQueryAuthorizationInput) (StateQueryAuthorizationDecision, error)
 }
 
 type WriteStateInput struct {

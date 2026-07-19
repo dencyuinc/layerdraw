@@ -340,6 +340,7 @@ type ExecuteDocumentQueryInput struct {
 	DocumentGeneration DocumentGeneration     `json:"document_generation"`
 	Limits             WorkbenchLimits        `json:"limits"`
 	QueryAddress       string                 `json:"query_address"`
+	StateSnapshot      *StateQuerySnapshot    `json:"state_snapshot,omitempty"`
 }
 
 type ExecuteDocumentQueryResult struct {

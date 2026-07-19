@@ -962,6 +962,12 @@ func stringsToAny(values []string) []any {
 	return out
 }
 
+// CompareStableAddresses exposes the Engine-owned Language 1 StableAddress
+// ordering without exposing planner internals.
+func CompareStableAddresses(left, right string) int {
+	return compareStableAddressText(left, right)
+}
+
 func compareStableAddressText(left, right string) int {
 	leftOrigin, leftComponents, leftPath, leftOK := stableAddressTupleForPlanner(left)
 	rightOrigin, rightComponents, rightPath, rightOK := stableAddressTupleForPlanner(right)

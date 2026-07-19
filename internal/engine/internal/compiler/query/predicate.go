@@ -529,6 +529,17 @@ var stateFieldRegistry = []stateFieldDefinition{
 	{StateProvenanceConfidence, boundedNumber(0, 1)},
 }
 
+// StateFieldRegistry returns the complete closed Language 1 state-field
+// registry in canonical state-read order. The returned slice is independently
+// owned so callers cannot mutate the compiler's ordering authority.
+func StateFieldRegistry() []StateFieldPath {
+	result := make([]StateFieldPath, len(stateFieldRegistry))
+	for index, field := range stateFieldRegistry {
+		result[index] = field.path
+	}
+	return result
+}
+
 func enumColumn(values ...string) definition.Column {
 	return definition.Column{ValueType: definition.ScalarEnum, EnumValues: values, ReservedEnumValues: []string{}}
 }

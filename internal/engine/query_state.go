@@ -47,6 +47,17 @@ const (
 	StateQuerySnapshotSchemaVersion = 1
 )
 
+// StateFieldRegistry returns the complete closed Language 1 state-field
+// registry in the canonical order owned by the Query compiler.
+func StateFieldRegistry() []string {
+	registry := query.StateFieldRegistry()
+	result := make([]string, len(registry))
+	for index, path := range registry {
+		result[index] = string(path)
+	}
+	return result
+}
+
 // QueryDefinitionIdentity is the immutable subset of a compiled definition
 // needed to validate state records against the graph being evaluated.
 type QueryDefinitionIdentity struct {
@@ -210,14 +221,14 @@ func (e *queryExecutor) validateStateSnapshot(snapshot StateQuerySnapshot) bool 
 			if redacted[path] {
 				return e.invalidStateInput("state field is both present and redacted", subject.SubjectAddress)
 			}
-			value, valid := query.NormalizeStateFieldValue(path, subject.Fields[string(path)], e.charge)
+			value, valid, canonical := normalizeCanonicalStateFieldValue(path, subject.Fields[string(path)], e.charge)
 			if !valid {
 				if e.err != nil {
 					return false
 				}
 				return e.invalidStateInput("state field is unknown, non-canonical, or has an invalid typed value", subject.SubjectAddress)
 			}
-			if value != subject.Fields[string(path)] {
+			if !canonical {
 				return e.invalidStateInput("state field value is not canonical", subject.SubjectAddress)
 			}
 			fields[path] = value
@@ -353,6 +364,11 @@ func (e *queryExecutor) chargeString(value string) bool {
 	return e.charge(int64(len(value)))
 }
 
+func normalizeCanonicalStateFieldValue(path query.StateFieldPath, value definition.Scalar, observe definition.ScalarWorkObserver) (definition.Scalar, bool, bool) {
+	normalized, valid := query.NormalizeStateFieldValue(path, value, observe)
+	return normalized, valid, valid && normalized == value
+}
+
 func validSemanticHash(value string) bool {
 	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
 		return false
@@ -367,7 +383,13 @@ func validSemanticHash(value string) bool {
 	return true
 }
 
-func stateQuerySnapshotHash(snapshot StateQuerySnapshot) (string, error) {
+// CanonicalizeStateQuerySnapshot is the Engine-owned authority for the
+// complete Language 1 snapshot value and its domain-separated semantic hash.
+// The returned bytes are RFC 8785 JSON without an artifact-level trailing LF.
+func CanonicalizeStateQuerySnapshot(snapshot StateQuerySnapshot) ([]byte, string, error) {
+	if err := validateCanonicalStateQueryProjection(snapshot); err != nil {
+		return nil, "", err
+	}
 	payload := stateQuerySnapshotHashPayload{
 		Format:                 snapshot.Format,
 		SchemaVersion:          snapshot.SchemaVersion,
@@ -391,11 +413,76 @@ func stateQuerySnapshotHash(snapshot StateQuerySnapshot) (string, error) {
 			RedactedFieldPaths: stateFieldPaths(subject.RedactedFieldPaths),
 		}
 	}
+	canonical, err := materialize.Canonicalize(payload)
+	if err != nil {
+		return nil, "", fmt.Errorf("canonicalize StateQuerySnapshot: %w", err)
+	}
 	hash, err := materialize.SemanticHash(materialize.DomainStateQuery, payload)
 	if err != nil {
-		return "", fmt.Errorf("hash StateQuerySnapshot: %w", err)
+		return nil, "", fmt.Errorf("hash StateQuerySnapshot: %w", err)
 	}
-	return hash, nil
+	return canonical, hash, nil
+}
+
+func validateCanonicalStateQueryProjection(snapshot StateQuerySnapshot) error {
+	if snapshot.InaccessibleFieldPaths == nil || snapshot.Subjects == nil {
+		return fmt.Errorf("StateQuerySnapshot collections must be present")
+	}
+	inaccessible, err := canonicalStateFieldSet(snapshot.InaccessibleFieldPaths)
+	if err != nil {
+		return fmt.Errorf("inaccessible_field_paths: %w", err)
+	}
+	for _, subject := range snapshot.Subjects {
+		if subject.Fields == nil || subject.RedactedFieldPaths == nil {
+			return fmt.Errorf("StateQuerySubject collections must be present: %s", subject.SubjectAddress)
+		}
+		redacted, err := canonicalStateFieldSet(subject.RedactedFieldPaths)
+		if err != nil {
+			return fmt.Errorf("redacted_field_paths for %s: %w", subject.SubjectAddress, err)
+		}
+		for rawPath, value := range subject.Fields {
+			path := query.StateFieldPath(rawPath)
+			if inaccessible[path] {
+				return fmt.Errorf("inaccessible state field contains a value: %s", rawPath)
+			}
+			if redacted[path] {
+				return fmt.Errorf("state field is both present and redacted: %s", rawPath)
+			}
+			_, valid, canonical := normalizeCanonicalStateFieldValue(path, value, nil)
+			if !valid {
+				return fmt.Errorf("state field has an unknown path or invalid typed value: %s", rawPath)
+			}
+			if !canonical {
+				return fmt.Errorf("state field value is not canonical: %s", rawPath)
+			}
+		}
+		if len(subject.Fields) == 0 && len(redacted) == 0 {
+			return fmt.Errorf("empty StateQuerySubject records must be omitted: %s", subject.SubjectAddress)
+		}
+	}
+	return nil
+}
+
+func canonicalStateFieldSet(paths []string) (map[query.StateFieldPath]bool, error) {
+	result := make(map[query.StateFieldPath]bool, len(paths))
+	var previous query.StateFieldPath
+	for index, rawPath := range paths {
+		path := query.StateFieldPath(rawPath)
+		if _, exists := query.LookupStateFieldSchema(path); !exists {
+			return nil, fmt.Errorf("unknown state field %q", rawPath)
+		}
+		if index != 0 && query.CompareStateFieldPaths(previous, path) >= 0 {
+			return nil, fmt.Errorf("paths are not in canonical unique registry order")
+		}
+		previous = path
+		result[path] = true
+	}
+	return result, nil
+}
+
+func stateQuerySnapshotHash(snapshot StateQuerySnapshot) (string, error) {
+	_, hash, err := CanonicalizeStateQuerySnapshot(snapshot)
+	return hash, err
 }
 
 func stateFieldPaths(values []string) []query.StateFieldPath {

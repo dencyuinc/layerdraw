@@ -66,6 +66,13 @@ func mapExecuteQueryInput(input engineprotocol.ExecuteQueryInput) (engine.Execut
 		}
 		result.Arguments[address] = scalar
 	}
+	if input.StateSnapshot != nil {
+		snapshot, err := stateQuerySnapshotFromProtocol(*input.StateSnapshot)
+		if err != nil {
+			return engine.ExecuteDocumentQueryInput{}, err
+		}
+		result.StateSnapshot = &snapshot
+	}
 	return result, nil
 }
 

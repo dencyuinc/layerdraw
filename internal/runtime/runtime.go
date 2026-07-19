@@ -64,17 +64,19 @@ type ListRevisionsOperation interface {
 // Ports is the complete provider-neutral dependency set. Port presence
 // describes storage support but never implies that an operation handler exists.
 type Ports struct {
-	Workbench  port.Workbench
-	Grants     port.GrantSource
-	Scopes     port.ScopeSource
-	Documents  port.DocumentStore
-	State      port.StateBackend
-	Assets     port.AssetStore
-	History    port.HistoryStore
-	Recovery   port.RecoveryJournal
-	Authoring  port.AuthoringDecision
-	Clock      port.Clock
-	Identities port.IdentityGenerator
+	Workbench     port.Workbench
+	Grants        port.GrantSource
+	Scopes        port.ScopeSource
+	Documents     port.DocumentStore
+	State         port.StateBackend
+	StateBindings port.StateBackendBindingResolver
+	StateAccess   port.StateQueryAuthorization
+	Assets        port.AssetStore
+	History       port.HistoryStore
+	Recovery      port.RecoveryJournal
+	Authoring     port.AuthoringDecision
+	Clock         port.Clock
+	Identities    port.IdentityGenerator
 }
 
 type Config struct {
