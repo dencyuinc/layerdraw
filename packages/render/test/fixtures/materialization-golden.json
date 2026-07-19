@@ -21,13 +21,14 @@
     "primitive_counts": { "columns": 4, "rows": 1, "cells": 4 }
   },
   "matrix": {
-    "render_data_digest": "sha256:9fb16e735f73b1b6edf65e7d325d11e638945e7ced0daadaad1006b8a4fb5d6b",
+    "render_data_digest": "sha256:4eccd81d0fece374d36cae1b5c7fefedf75171cae66af1d480913997bfc7d869",
     "render_input_hash": "sha256:35bbb4cb908a37b55c6e5bf2f18122fb68874c221123c2ce0509d1cf9f0ea4b7",
     "bounds": { "x": 0, "y": 0, "width": 302, "height": 144 },
     "primitive_counts": {
       "row_axes": 2,
       "column_axes": 2,
       "cells": 4,
+      "legends": 0,
       "totals": 0
     }
   },
@@ -55,10 +56,10 @@
     }
   },
   "context": {
-    "render_data_digest": "sha256:23f1f831c12462ace5190569728f58a113c9ec388024749985ab6a7d72211931",
+    "render_data_digest": "sha256:d2e698d3d8fa648d6d2d87a5ffdd910c862e4cd776b0a9a3f7defde355735b06",
     "render_input_hash": "sha256:589fed250ee9b7d22c8c649342b61875f26a5106d7a67b2a105cca28c7c81168",
     "bounds": { "x": 0, "y": 0, "width": 232, "height": 312 },
-    "primitive_counts": { "groups": 1, "facts": 3, "relation_summaries": 2 }
+    "primitive_counts": { "groups": 1, "facts": 3, "relation_summaries": 2, "truncation_markers": 0 }
   },
   "diff": {
     "render_data_digest": "sha256:6b40ece094c8b5e07bca3ee4f4a377a843b1a0bc3e0ee6b4d3297756a605f755",

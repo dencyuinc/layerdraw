@@ -223,9 +223,13 @@ export type MatrixCellPrimitive = VisualPrimitive &
   }>;
 export type MatrixTotalPrimitive = VisualPrimitive &
   Readonly<{ bounds: RenderBounds; axis_key: string; text: string }>;
+export type MatrixLegendPrimitive = VisualPrimitive &
+  Readonly<{ bounds: RenderBounds; label: string }>;
 export type ContextGroupPrimitive = VisualPrimitive &
   Readonly<{ bounds: RenderBounds; label: string }>;
 export type ContextFactPrimitive = VisualPrimitive &
+  Readonly<{ bounds: RenderBounds; group_key: string; text: string }>;
+export type ContextTruncationPrimitive = VisualPrimitive &
   Readonly<{ bounds: RenderBounds; group_key: string; text: string }>;
 export type DiffSidePrimitive = VisualPrimitive &
   Readonly<{ bounds: RenderBounds; label: string }>;
@@ -239,7 +243,7 @@ export type DiffChangePrimitive = VisualPrimitive &
         after_key?: never;
       }>
     | Readonly<{
-        change_kind: "updated" | "moved" | "moved_updated";
+        change_kind: "updated" | "moved" | "moved_updated" | "unchanged";
         before_key: string;
         after_key: string;
       }>
@@ -294,6 +298,7 @@ export type MatrixRenderData = RenderDataBase &
     row_axes: readonly MatrixAxisPrimitive[];
     column_axes: readonly MatrixAxisPrimitive[];
     cells: readonly MatrixCellPrimitive[];
+    legends?: readonly MatrixLegendPrimitive[];
     totals: readonly MatrixTotalPrimitive[];
   }>;
 export type TreeRenderData = RenderDataBase &
@@ -319,6 +324,7 @@ export type ContextRenderData = RenderDataBase &
     groups: readonly ContextGroupPrimitive[];
     facts: readonly ContextFactPrimitive[];
     relation_summaries: readonly ContextFactPrimitive[];
+    truncation_markers?: readonly ContextTruncationPrimitive[];
   }>;
 export type DiffRenderData = RenderDataBase &
   Readonly<{
@@ -541,6 +547,10 @@ export function assertRenderData(value: unknown): asserts value is RenderData {
   const primitiveKeys = new Set<string>();
   for (const field of shapeFields) {
     const occurrences = data[field];
+    if (occurrences === undefined && optionalRenderDataCollections.has(field)) {
+      collections[field] = new Map();
+      continue;
+    }
     if (!Array.isArray(occurrences))
       invalid("render.data_invalid", `${field} must be an array`);
     const collection = new Map<string, Record<string, unknown>>();
@@ -663,6 +673,7 @@ const primitiveFields: Readonly<
     row_axes: ["render_key", "bounds", "label"],
     column_axes: ["render_key", "bounds", "label"],
     cells: ["render_key", "bounds", "row_axis_key", "column_axis_key", "text"],
+    legends: ["render_key", "bounds", "label"],
     totals: ["render_key", "bounds", "axis_key", "text"],
   },
   tree: {
@@ -706,6 +717,7 @@ const primitiveFields: Readonly<
     groups: ["render_key", "bounds", "label"],
     facts: ["render_key", "bounds", "group_key", "text"],
     relation_summaries: ["render_key", "bounds", "group_key", "text"],
+    truncation_markers: ["render_key", "bounds", "group_key", "text"],
   },
   diff: {
     before: ["render_key", "bounds", "label"],
@@ -721,6 +733,11 @@ const primitiveFields: Readonly<
     ],
   },
 };
+
+const optionalRenderDataCollections = new Set([
+  "legends",
+  "truncation_markers",
+]);
 
 const optionalPrimitiveFields = new Set([
   "label_key",
@@ -808,7 +825,7 @@ function validatePrimitive(
   if (keys.includes("change_kind")) {
     enumeration(
       primitive.change_kind,
-      ["added", "removed", "updated", "moved", "moved_updated"],
+      ["added", "removed", "updated", "moved", "moved_updated", "unchanged"],
       `${name}.change_kind`,
       "render.data_invalid"
     );
@@ -819,7 +836,7 @@ function validatePrimitive(
     if (primitive.change_kind === "removed" && (!before || after))
       invalid("render.data_invalid", `${name}.removed requires before only`);
     if (
-      ["updated", "moved", "moved_updated"].includes(
+      ["updated", "moved", "moved_updated", "unchanged"].includes(
         String(primitive.change_kind)
       ) &&
       (!before || !after)
@@ -935,7 +952,9 @@ function validatePrimitiveReferences(
       );
   } else if (
     shape === "context" &&
-    (field === "facts" || field === "relation_summaries")
+    (field === "facts" ||
+      field === "relation_summaries" ||
+      field === "truncation_markers")
   ) {
     one("group_key", "groups");
   } else if (shape === "diff") {
@@ -1209,3 +1228,17 @@ export {
   type VisualSurfaceLimits,
   type VisualSurfaceOptions,
 } from "./visual.js";
+export {
+  renderContextVisualSurface,
+  renderDiffVisualSurface,
+  renderMatrixVisualSurface,
+  renderTableVisualSurface,
+  type HeadlessSurfaceItem,
+  type StructuredNavigationModel,
+  type StructuredOverflowModel,
+  type StructuredVirtualizationModel,
+  type StructuredVirtualWindow,
+  type StructuredVisualShape,
+  type StructuredVisualSurface,
+  type StructuredVisualSurfaceOptions,
+} from "./structured.js";

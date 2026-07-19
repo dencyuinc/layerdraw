@@ -1,0 +1,6 @@
+{
+  "table": { "svg_sha256": "70aee43833284c158d3b9f64944b068ade60e5449f65441bc55a0ea4401ad821", "svg_bytes": 3816 },
+  "matrix": { "svg_sha256": "cc31fd97ae092f587748a50eaecd42e4b8f0b29a310ecf1a53bc85449c2a5f7f", "svg_bytes": 3921 },
+  "context": { "svg_sha256": "181aeb0c16e993533a178f922b34e961b75e84c9e922af8f8dd05190f3a1b282", "svg_bytes": 2450 },
+  "diff": { "svg_sha256": "c3fd7fdfa14d9734ac55ec258dbf5f904f70c5a522a4ec0b33483f721c5a17fa", "svg_bytes": 8803 }
+}

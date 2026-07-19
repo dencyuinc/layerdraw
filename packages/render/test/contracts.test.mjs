@@ -211,6 +211,7 @@ const primitiveSets = {
         text: "1",
       },
     ],
+    legends: [{ render_key: "legend", bounds, label: "Direct relation" }],
     totals: [{ render_key: "total", bounds, axis_key: "row-axis", text: "1" }],
   },
   tree: {
@@ -263,6 +264,9 @@ const primitiveSets = {
     facts: [{ render_key: "fact", bounds, group_key: "group", text: "Fact" }],
     relation_summaries: [
       { render_key: "summary", bounds, group_key: "group", text: "Summary" },
+    ],
+    truncation_markers: [
+      { render_key: "truncated", bounds, group_key: "group", text: "2 more" },
     ],
   },
   diff: {
@@ -667,6 +671,7 @@ test("diff change kinds close before and after presence", () => {
     { change_kind: "updated", before_key: "before", after_key: "after" },
     { change_kind: "moved", before_key: "before", after_key: "after" },
     { change_kind: "moved_updated", before_key: "before", after_key: "after" },
+    { change_kind: "unchanged", before_key: "before", after_key: "after" },
   ];
   for (const change of valid) {
     const value = renderData("diff");
@@ -689,6 +694,7 @@ test("diff change kinds close before and after presence", () => {
     { change_kind: "updated", after_key: "after" },
     { change_kind: "moved", before_key: "before" },
     { change_kind: "moved_updated" },
+    { change_kind: "unchanged", before_key: "before" },
   ]) {
     const value = renderData("diff");
     value.changes = [{ render_key: "change", bounds, ...change }];

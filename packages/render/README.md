@@ -34,3 +34,26 @@ The adapters are pure and use the supplied RenderData coordinates, bounds, route
 Diagram labels use a closed anchor discriminant and may target an occurrence or edge path. Diagram overlays and badges use the closed occurrence-or-container decoration target union. Support geometry carries its support kind and display identity without a decoration target. Tree duplicate and cycle references and Flow connector/cycle kinds receive visibly distinct SVG treatments while preserving the supplied reference routes.
 
 These SVG surfaces are visual adapters, not the Issue #87 export serializer: they do not create `ExportArtifact`, Source Manifest, PNG bytes, business documents, or persistence state.
+
+## Structured visual surfaces
+
+Table, Matrix, Context, and Diff adapters are available from the root and the corresponding `@layerdraw/render/table`, `/matrix`, `/context`, and `/diff` entrypoints. Each pure adapter returns deterministic SVG plus a framework-neutral headless model containing ARIA roles, stable hit identities, reversible source bindings, keyboard focus order, overflow policy, and explicit virtualization boundaries:
+
+```ts
+import { renderTableVisualSurface } from "@layerdraw/render/table";
+
+const surface = renderTableVisualSurface(renderData, {
+  virtual_window: { start: 100, count: 50 },
+  label_overflow: { mode: "ellipsis", max_scalars: 128 },
+});
+
+surface.svg;
+surface.headless_items;
+surface.navigation;
+surface.virtualization;
+surface.interaction.source_bindings;
+```
+
+Table preserves supplied metadata/source columns and readonly row/cell presentation. Matrix preserves supplied axes, direct/path/empty cell text, legends, totals, and cell source relations; it never derives a missing cell, legend, or total. Context preserves supplied groups, facts, relation summaries, truncation markers, and source references. For RenderData schema v1 compatibility, `legends` and `truncation_markers` may be absent and are normalized to empty collections by these adapters. Diff presents only explicit added, removed, updated, moved, moved-and-updated, or unchanged RenderData with the supplied before/after bindings and performs no rename or move inference.
+
+`virtual_window` is a closed zero-based unit window: rows for Table and Matrix, groups for Context, and changes for Diff. Headers and supplied legend/total context remain available while unit content is bounded; the returned model records total, preceding, rendered, and following unit counts. Empty states, viewport clipping, scalar-based label overflow, complete focus order, and package hard limits require no React or host state. As with graph surfaces, every exposed primitive must have an exact source binding, malformed input fails closed, and the implementation has no DOM, ambient locale, clock, or random dependency.
