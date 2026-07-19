@@ -25,10 +25,10 @@
     }
   ],
   "outcomes": [
-    {"decoder": "compile", "fixture": "schemas/fixtures/engine/compile-success.json", "outcome": "success"},
-    {"decoder": "compile", "fixture": "schemas/fixtures/engine/compile-rejected.json", "outcome": "rejected"},
-    {"decoder": "handshake", "fixture": "schemas/fixtures/engine/handshake-failed-response.json", "outcome": "failed"},
-    {"decoder": "handshake", "fixture": "schemas/fixtures/engine/handshake-cancelled-response.json", "outcome": "cancelled"}
+    {"decoder": "compile", "browser_fixture": "schemas/fixtures/engine/compile-success.json", "desktop_fixture": "schemas/fixtures/engine/compile-success.json", "outcome": "success"},
+    {"decoder": "compile", "browser_fixture": "schemas/fixtures/engine/compile-rejected.json", "desktop_fixture": "schemas/fixtures/engine/compile-rejected.json", "outcome": "rejected"},
+    {"decoder": "handshake", "browser_fixture": "schemas/fixtures/engine/handshake-failed-response.json", "desktop_fixture": "schemas/fixtures/engine/handshake-failed-response.json", "outcome": "failed"},
+    {"decoder": "handshake", "browser_fixture": "schemas/fixtures/engine/handshake-cancelled-response.json", "desktop_fixture": "schemas/fixtures/engine/handshake-cancelled-response.json", "outcome": "cancelled"}
   ],
   "capability_statuses": [
     {"capability_id": "desktop.authoring", "enabled": true, "protocol_version": "1.0"},

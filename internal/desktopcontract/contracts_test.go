@@ -70,9 +70,10 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 			RequestFixture  string        `json:"request_fixture"`
 		} `json:"bindings"`
 		Outcomes []struct {
-			Decoder string                 `json:"decoder"`
-			Fixture string                 `json:"fixture"`
-			Outcome protocolcommon.Outcome `json:"outcome"`
+			Decoder        string                 `json:"decoder"`
+			BrowserFixture string                 `json:"browser_fixture"`
+			DesktopFixture string                 `json:"desktop_fixture"`
+			Outcome        protocolcommon.Outcome `json:"outcome"`
 		} `json:"outcomes"`
 		CapabilityStatuses []json.RawMessage `json:"capability_statuses"`
 	}
@@ -96,25 +97,27 @@ func TestGeneratedBindingFixtureUsesExactGeneratedDecoders(t *testing.T) {
 		t.Fatal("outcome fixture is incomplete")
 	}
 	for index, vector := range value.Outcomes {
-		var outcome protocolcommon.Outcome
-		switch vector.Decoder {
-		case "compile":
-			decoded, err := engineprotocol.DecodeCompileResponseEnvelope(fixture(t, vector.Fixture))
-			if err != nil {
-				t.Fatal(err)
+		for _, fixtureName := range []string{vector.BrowserFixture, vector.DesktopFixture} {
+			var outcome protocolcommon.Outcome
+			switch vector.Decoder {
+			case "compile":
+				decoded, err := engineprotocol.DecodeCompileResponseEnvelope(fixture(t, fixtureName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				outcome = decoded.Outcome
+			case "handshake":
+				decoded, err := engineprotocol.DecodeHandshakeResponseEnvelope(fixture(t, fixtureName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				outcome = decoded.Outcome
+			default:
+				t.Fatalf("unknown generated decoder %q", vector.Decoder)
 			}
-			outcome = decoded.Outcome
-		case "handshake":
-			decoded, err := engineprotocol.DecodeHandshakeResponseEnvelope(fixture(t, vector.Fixture))
-			if err != nil {
-				t.Fatal(err)
+			if outcome != vector.Outcome || outcome != wantOutcomes[index] {
+				t.Fatalf("outcome drift: %q", outcome)
 			}
-			outcome = decoded.Outcome
-		default:
-			t.Fatalf("unknown generated decoder %q", vector.Decoder)
-		}
-		if outcome != vector.Outcome || outcome != wantOutcomes[index] {
-			t.Fatalf("outcome drift: %q", outcome)
 		}
 	}
 	if len(value.CapabilityStatuses) != len(DefaultManifest().RequiredCapabilities)+len(DefaultManifest().OptionalCapabilities) {
