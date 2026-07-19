@@ -1482,7 +1482,9 @@ func portableRelativePath(fromDirectory, locator string) string {
 	for common < len(from) && common < len(to) && from[common] == to[common] {
 		common++
 	}
-	parts := make([]string, 0, len(from)-common+len(to)-common)
+	// A single existing slice length is a safe capacity hint. append handles a
+	// longer relative path without combined size arithmetic.
+	parts := make([]string, 0, len(from))
 	for index := common; index < len(from); index++ {
 		parts = append(parts, "..")
 	}

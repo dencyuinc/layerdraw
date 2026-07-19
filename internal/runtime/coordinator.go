@@ -41,6 +41,37 @@ type sessionState struct {
 	grant   accessprotocol.AuthoringGrantSummary
 }
 
+func (c *Coordinator) CloseDocument(ctx context.Context, session runtimeprotocol.RuntimeSessionRef) *ContractError {
+	c.mu.RLock()
+	state, ok := c.sessions[session.RuntimeSessionID]
+	if ok {
+		if rejection := ValidateSessionUse(session, state.binding, state.binding.Session.Scope, c.runtime.config.Ports.Clock.Now()); rejection != nil {
+			c.mu.RUnlock()
+			return rejection
+		}
+	}
+	c.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	if closer, ok := c.runtime.config.Ports.Workbench.(port.WorkingDocumentCloser); ok {
+		if err := closer.Close(ctx, state.working); err != nil {
+			return portFailure("close working document", err)
+		}
+	}
+	c.mu.Lock()
+	if c.sessions[session.RuntimeSessionID] == state {
+		delete(c.sessions, session.RuntimeSessionID)
+		for key := range c.cancels {
+			if key.sessionID == session.RuntimeSessionID {
+				delete(c.cancels, key)
+			}
+		}
+	}
+	c.mu.Unlock()
+	return nil
+}
+
 type cancelState struct {
 	token              runtimeprotocol.CancellationToken
 	cancelled          bool
@@ -219,7 +250,8 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 	if rejection := c.checkCancellation(ctx, input); rejection != nil {
 		return c.finalRejected(ctx, input, rejection, decision, prepared.AuthoringImpact)
 	}
-	staged, err := p.Documents.StageRevision(ctx, port.StageRevisionInput{Scope: input.Session.Scope, OperationID: input.OperationID, IdempotencyKey: input.IdempotencyKey, BaseRevision: head.Revision, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, SourceBlobs: prepared.Sources, Manifest: prepared.Manifest, DecisionDigest: decision.DecisionDigest, EvaluationDigest: decision.EvaluationDigest, Actor: grant.ActorRef, Trigger: input.Trigger, CancellationToken: input.CancellationToken})
+	previewEvaluation := runtimeprotocol.PreviewEvaluation{AuthoringImpact: prepared.AuthoringImpact, AuthoringDecision: decision}
+	staged, err := p.Documents.StageRevision(ctx, port.StageRevisionInput{Scope: input.Session.Scope, OperationID: input.OperationID, IdempotencyKey: input.IdempotencyKey, BaseRevision: head.Revision, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, SourceBlobs: prepared.Sources, Manifest: prepared.Manifest, DecisionDigest: decision.DecisionDigest, EvaluationDigest: decision.EvaluationDigest, Actor: grant.ActorRef, Trigger: input.Trigger, CancellationToken: input.CancellationToken, PreviewEvaluation: &previewEvaluation})
 	if err != nil {
 		return c.abandonPending(ctx, input, portFailure("stage revision", err))
 	}
@@ -229,7 +261,7 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 		}
 		return c.abandonPending(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "document store returned an invalid staged revision"))
 	}
-	if _, rejection = c.advanceEvaluated(ctx, input, decision); rejection != nil {
+	if _, rejection = c.advanceEvaluated(ctx, input, decision, prepared.AuthoringImpact); rejection != nil {
 		_ = p.Documents.AbortStagedRevision(ctx, port.AbortStagedRevisionInput{Scope: input.Session.Scope, StageID: staged.StageID})
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}
@@ -261,10 +293,10 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 	if err != nil || !published.Published {
 		return c.resolvePublication(ctx, input, staged, prepared, decision, err)
 	}
-	if _, encodeErr := runtimeprotocol.EncodeCommittedRevisionRef(published.Revision); encodeErr != nil || !reflect.DeepEqual(published.Revision, staged.Revision) {
+	if _, encodeErr := runtimeprotocol.EncodeCommittedRevisionRef(published.Revision); encodeErr != nil || !samePublishedRevision(published.Revision, staged.Revision) {
 		return c.resolvePublication(ctx, input, staged, prepared, decision, port.ErrIndeterminate)
 	}
-	return c.afterPublication(ctx, input, s, prepared, decision, published.Revision)
+	return c.afterPublication(ctx, input, s, staged.StageID, prepared, decision, published.Revision)
 }
 
 func (c *Coordinator) resolvePendingConflict(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, payload protocolcommon.Digest) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
@@ -374,7 +406,7 @@ func (c *Coordinator) ListRevisions(ctx context.Context, input runtimeprotocol.L
 	return page, nil
 }
 
-func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, s sessionState, prepared port.PreparedRevision, decision accessprotocol.AuthoringDecision, revision runtimeprotocol.CommittedRevisionRef) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
+func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, s sessionState, stageID string, prepared port.PreparedRevision, decision accessprotocol.AuthoringDecision, revision runtimeprotocol.CommittedRevisionRef) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
 	p := c.runtime.config.Ports
 	_, publicationAdvanceErr := c.advance(context.WithoutCancel(ctx), in, runtimeprotocol.RecoveryPhasePublicationPending, runtimeprotocol.RecoveryPhasePublished, &revision, &decision)
 	status := runtimeprotocol.OperationResultStatusCommitted
@@ -416,6 +448,10 @@ func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.R
 	if rejection := c.finalizeRecovery(ctx, in, commitResult, runtimeprotocol.RecoveryPhaseFinal, "finalize published operation"); rejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}
+	// Publication and its terminal result are durable before the disposable
+	// candidate is removed. A crash between these steps leaves an orphan that
+	// the local recovery driver can safely garbage-collect.
+	_ = p.Documents.AbortStagedRevision(context.WithoutCancel(ctx), port.AbortStagedRevisionInput{Scope: in.Session.Scope, StageID: stageID})
 	checkpoint, err := p.Workbench.Checkpoint(context.WithoutCancel(ctx), port.CheckpointWorkingDocumentInput{Document: s.working, Prepared: prepared, Revision: revision})
 	if err == nil {
 		c.mu.Lock()
@@ -431,9 +467,9 @@ func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.R
 
 func (c *Coordinator) resolvePublication(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, staged port.StagedRevision, prepared port.PreparedRevision, decision accessprotocol.AuthoringDecision, publishErr error) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
 	head, headErr := c.runtime.config.Ports.Documents.GetHead(context.WithoutCancel(ctx), port.GetDocumentHeadInput{Scope: in.Session.Scope})
-	if headErr == nil && validDocumentHead(head) && reflect.DeepEqual(head.Revision, staged.Revision) {
+	if headErr == nil && validDocumentHead(head) && samePublishedRevision(head.Revision, staged.Revision) {
 		s, _ := c.session(in.Session)
-		return c.afterPublication(context.WithoutCancel(ctx), in, s, prepared, decision, staged.Revision)
+		return c.afterPublication(context.WithoutCancel(ctx), in, s, staged.StageID, prepared, decision, head.Revision)
 	}
 	if headErr == nil && validDocumentHead(head) && (errors.Is(publishErr, port.ErrConflict) || (publishErr == nil && !reflect.DeepEqual(head.Revision, staged.Revision))) {
 		_ = c.runtime.config.Ports.Documents.AbortStagedRevision(context.WithoutCancel(ctx), port.AbortStagedRevisionInput{Scope: in.Session.Scope, StageID: staged.StageID})
@@ -453,6 +489,11 @@ func (c *Coordinator) resolvePublication(ctx context.Context, in runtimeprotocol
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}
 	return commitResult, nil
+}
+
+func samePublishedRevision(published, staged runtimeprotocol.CommittedRevisionRef) bool {
+	staged.ProviderVersion = published.ProviderVersion
+	return reflect.DeepEqual(published, staged)
 }
 
 func (c *Coordinator) session(ref runtimeprotocol.RuntimeSessionRef) (sessionState, *ContractError) {
@@ -896,8 +937,9 @@ func (c *Coordinator) advance(ctx context.Context, in runtimeprotocol.RuntimeCom
 	return record, nil
 }
 
-func (c *Coordinator) advanceEvaluated(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, decision accessprotocol.AuthoringDecision) (port.RecoveryRecord, *ContractError) {
-	record, err := c.runtime.config.Ports.Recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: in.Session.Scope, OperationID: in.OperationID, ExpectedPhase: runtimeprotocol.RecoveryPhasePending, NextPhase: runtimeprotocol.RecoveryPhaseStaged, EvaluationDigest: &decision.EvaluationDigest, DecisionDigest: &decision.DecisionDigest})
+func (c *Coordinator) advanceEvaluated(ctx context.Context, in runtimeprotocol.RuntimeCommitInput, decision accessprotocol.AuthoringDecision, impact semantic.AuthoringImpact) (port.RecoveryRecord, *ContractError) {
+	preview := runtimeprotocol.PreviewEvaluation{AuthoringImpact: impact, AuthoringDecision: decision}
+	record, err := c.runtime.config.Ports.Recovery.Advance(ctx, port.AdvanceRecoveryRecordInput{Scope: in.Session.Scope, OperationID: in.OperationID, ExpectedPhase: runtimeprotocol.RecoveryPhasePending, NextPhase: runtimeprotocol.RecoveryPhaseStaged, EvaluationDigest: &decision.EvaluationDigest, DecisionDigest: &decision.DecisionDigest, PreviewEvaluation: &preview})
 	if err != nil {
 		return port.RecoveryRecord{}, portFailure("bind operation evaluation", err)
 	}
@@ -988,6 +1030,14 @@ func operationResult(in runtimeprotocol.RuntimeCommitInput, status runtimeprotoc
 	}
 	result.ResultDigest = digestOperationResult(result)
 	return result
+}
+
+// RecoveryCommitResult constructs the canonical terminal result used by a
+// host recovery driver after it has reconciled trusted journal and head
+// evidence. It does not decide an outcome or mutate storage.
+func RecoveryCommitResult(operationID runtimeprotocol.OperationID, idempotencyKey runtimeprotocol.IdempotencyKey, status runtimeprotocol.OperationResultStatus, revision *runtimeprotocol.CommittedRevisionRef, stateVersion *protocolcommon.CanonicalNonNegativeInt64, failure runtimeprotocol.RuntimeFailureCode) runtimeprotocol.RuntimeCommitResult {
+	input := runtimeprotocol.RuntimeCommitInput{OperationID: operationID, IdempotencyKey: idempotencyKey}
+	return runtimeprotocol.RuntimeCommitResult{OperationResult: operationResult(input, status, revision, stateVersion, failure)}
 }
 
 func terminalDiagnostic(code, messageKey string) []semantic.Diagnostic {
@@ -1102,6 +1152,13 @@ func appendCanonicalRuntimeJSON(destination []byte, value any) ([]byte, error) {
 }
 
 func logicalCommitDigest(input runtimeprotocol.RuntimeCommitInput) protocolcommon.Digest {
+	return RetryRequestDigest(input)
+}
+
+// RetryRequestDigest is the durable idempotency identity shared by Runtime and
+// framework-neutral hosts. It excludes only the process-local Workbench handle
+// and generation; every portable request fact remains hash-bound.
+func RetryRequestDigest(input runtimeprotocol.RuntimeCommitInput) protocolcommon.Digest {
 	type logicalBlob struct {
 		Digest    protocolcommon.Digest          `json:"digest"`
 		MediaType string                         `json:"media_type"`
@@ -1123,13 +1180,15 @@ func logicalCommitDigest(input runtimeprotocol.RuntimeCommitInput) protocolcommo
 			MutationDigest:       input.StateMutation.MutationDigest,
 		}
 	}
+	batch := input.OperationBatch
+	batch.Preconditions.DocumentGeneration = engineprotocol.DocumentGeneration{}
 	projection := struct {
 		DocumentID     runtimeprotocol.DocumentID            `json:"document_id"`
 		OperationBatch runtimeprotocol.RuntimeOperationBatch `json:"operation_batch"`
 		OperationID    runtimeprotocol.OperationID           `json:"operation_id"`
 		StateMutation  *logicalStateMutation                 `json:"state_mutation,omitempty"`
 		Trigger        runtimeprotocol.CommitTrigger         `json:"trigger"`
-	}{input.Session.Scope.DocumentID, input.OperationBatch, input.OperationID, stateMutation, input.Trigger}
+	}{input.Session.Scope.DocumentID, batch, input.OperationID, stateMutation, input.Trigger}
 	return digestValue(projection)
 }
 

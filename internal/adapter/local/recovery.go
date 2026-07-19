@@ -233,6 +233,13 @@ func (s *Recovery) Advance(ctx context.Context, in port.AdvanceRecoveryRecordInp
 			}
 			entry.Record.EvaluationDigest = in.EvaluationDigest
 			entry.Record.DecisionDigest = in.DecisionDigest
+			if in.PreviewEvaluation != nil {
+				if _, encodeErr := runtimeprotocol.EncodePreviewEvaluation(*in.PreviewEvaluation); encodeErr != nil || in.PreviewEvaluation.AuthoringDecision.EvaluationDigest != *in.EvaluationDigest || in.PreviewEvaluation.AuthoringDecision.DecisionDigest != *in.DecisionDigest {
+					return port.ErrConflict
+				}
+				value := *in.PreviewEvaluation
+				entry.Record.PreviewEvaluation = &value
+			}
 		} else if in.EvaluationDigest != nil || in.DecisionDigest != nil {
 			return port.ErrConflict
 		}

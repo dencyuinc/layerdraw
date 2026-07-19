@@ -1537,6 +1537,60 @@ type coordinatorHost struct {
 	mutateReadSources, mutatePreparedSources                                                func(*port.SourceBlobSet)
 	createPendingArrived                                                                    chan struct{}
 	createPendingRelease                                                                    <-chan struct{}
+	closeCalls                                                                              int
+	closeErr                                                                                error
+}
+
+func TestCoordinatorCloseAndRecoveryResult(t *testing.T) {
+	host, rt := newCoordinatorFixture(t)
+	opened := openCoordinatorFixture(t, rt)
+	invalid := opened.Session
+	invalid.SessionGeneration = "2"
+	if rejection := rt.CloseDocument(context.Background(), invalid); rejection == nil {
+		t.Fatal("invalid session close was accepted")
+	}
+	if rejection := rt.CloseDocument(context.Background(), opened.Session); rejection != nil || host.closeCalls != 1 {
+		t.Fatalf("close rejection=%v calls=%d", rejection, host.closeCalls)
+	}
+	if rejection := rt.CloseDocument(context.Background(), opened.Session); rejection != nil || host.closeCalls != 1 {
+		t.Fatalf("repeated close rejection=%v calls=%d", rejection, host.closeCalls)
+	}
+
+	host, rt = newCoordinatorFixture(t)
+	opened = openCoordinatorFixture(t, rt)
+	host.closeErr = errors.New("close unavailable")
+	if rejection := rt.CloseDocument(context.Background(), opened.Session); rejection == nil {
+		t.Fatal("workbench close failure was hidden")
+	}
+	host.closeErr = nil
+	if rejection := rt.CloseDocument(context.Background(), opened.Session); rejection != nil || host.closeCalls != 2 {
+		t.Fatalf("close retry rejection=%v calls=%d", rejection, host.closeCalls)
+	}
+
+	revision := host.base
+	stateVersion := protocolcommon.CanonicalNonNegativeInt64("5")
+	result := RecoveryCommitResult("operation_recovered", "idempotency_recovered", runtimeprotocol.OperationResultStatusCommittedStateStale, &revision, &stateVersion, runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable)
+	if result.OperationResult.ResultDigest == "" || result.OperationResult.CommittedRevision == nil || len(result.OperationResult.Diagnostics) != 1 {
+		t.Fatalf("recovery result=%+v", result)
+	}
+}
+
+func TestRetryRequestDigestIgnoresAccessAndWorkingContext(t *testing.T) {
+	host, rt := newCoordinatorFixture(t)
+	opened := openCoordinatorFixture(t, rt)
+	input := commitFixture(opened.Session, host)
+	want := RetryRequestDigest(input)
+	input.Session.Scope.AccessFingerprint = digest('0')
+	input.Session.Scope.LocalScopeID = "renewed-local-scope"
+	input.OperationBatch.Preconditions.DocumentGeneration.DocumentHandle.Value = "document_restarted_123456"
+	input.OperationBatch.Preconditions.DocumentGeneration.Value = "99"
+	if got := RetryRequestDigest(input); got != want {
+		t.Fatalf("access or working context changed retry digest: got=%s want=%s", got, want)
+	}
+	input.OperationBatch.Operations = engineprotocol.SemanticOperationBatch{Operations: []engineprotocol.SemanticOperation{}}
+	if got := RetryRequestDigest(input); got == want {
+		t.Fatal("portable operation payload did not change retry digest")
+	}
 }
 
 func newCoordinatorFixture(t *testing.T) (*coordinatorHost, *Runtime) {
@@ -1699,6 +1753,11 @@ func (h *coordinatorHost) Open(_ context.Context, input port.OpenWorkingDocument
 		result.DefinitionHash = digest('0')
 	}
 	return result, nil
+}
+
+func (h *coordinatorHost) Close(context.Context, port.WorkingDocument) error {
+	h.closeCalls++
+	return h.closeErr
 }
 func (h *coordinatorHost) Preview(_ context.Context, input port.PreviewWorkingDocumentInput) (port.PreparedRevision, error) {
 	h.mu.Lock()

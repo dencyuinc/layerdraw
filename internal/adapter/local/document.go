@@ -152,6 +152,11 @@ func validateSourceSet(in port.StageRevisionInput) error {
 	if !validDigest(in.DefinitionHash) || !validDigest(in.GraphHash) || !validBlobRef(in.Manifest) {
 		return port.ErrConflict
 	}
+	if in.PreviewEvaluation != nil {
+		if _, err := runtimeprotocol.EncodePreviewEvaluation(*in.PreviewEvaluation); err != nil || in.PreviewEvaluation.AuthoringDecision.DecisionDigest != in.DecisionDigest || in.PreviewEvaluation.AuthoringDecision.EvaluationDigest != in.EvaluationDigest {
+			return port.ErrConflict
+		}
+	}
 	return nil
 }
 

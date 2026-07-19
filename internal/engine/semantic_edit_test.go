@@ -2972,6 +2972,31 @@ func removeExpectedHash(values []ExpectedSemanticHash, address string) []Expecte
 	return out
 }
 
+func TestRewriteAllocationHintsPreserveBoundaryBehavior(t *testing.T) {
+	replacement := []byte(strings.Repeat("x", 64<<10))
+	input := CompileInput{ProjectSourceTree: map[string][]byte{"document.ldl": []byte("abc")}}
+	replaceSourceRange(&input, "document.ldl", 1, 2, replacement)
+	want := append(append([]byte("a"), replacement...), 'c')
+	if !bytes.Equal(input.ProjectSourceTree["document.ldl"], want) {
+		t.Fatal("growing replacement changed rewrite bytes")
+	}
+	before := bytes.Clone(input.ProjectSourceTree["document.ldl"])
+	replaceSourceRange(&input, "document.ldl", -1, 0, []byte("ignored"))
+	if !bytes.Equal(input.ProjectSourceTree["document.ldl"], before) {
+		t.Fatal("invalid replacement range mutated source")
+	}
+
+	for _, test := range []struct{ from, to, want string }{
+		{".", "assets/icon.png", "assets/icon.png"},
+		{"a/b", "a/b/icon.png", "icon.png"},
+		{"a/b/c", "x/y/z/icon.png", "../../../x/y/z/icon.png"},
+	} {
+		if got := portableRelativePath(test.from, test.to); got != test.want {
+			t.Fatalf("portableRelativePath(%q, %q)=%q want=%q", test.from, test.to, got, test.want)
+		}
+	}
+}
+
 func removeExpectedChildSet(values []ExpectedSemanticChildSet, owner string, kind SemanticSubjectKind) []ExpectedSemanticChildSet {
 	out := make([]ExpectedSemanticChildSet, 0, len(values))
 	for _, value := range values {
