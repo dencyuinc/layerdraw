@@ -356,8 +356,10 @@ class BrowserEditorImpl implements BrowserEditor {
         applied = { persistence: "host_callback", receipt };
       }
     }
-    await this.#options.approval_handler?.reportResult(applied, signal);
-    this.#assertOperation(signal);
+    if (preview.authoring_impact !== undefined && this.#options.approval_handler !== undefined) {
+      await this.#options.approval_handler.reportResult(applied, signal);
+      this.#assertOperation(signal);
+    }
     return applied;
   }
 

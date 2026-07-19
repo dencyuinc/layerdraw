@@ -369,6 +369,75 @@ test("approval_required fails closed without a trusted handler in Engine and Run
   await hosted.close();
 });
 
+test("approval boundaries are never called when Engine and Runtime declare no authoring impact", async () => {
+  const noImpactPreview = { ...validPreview };
+  delete noImpactPreview.authoring_impact;
+  delete noImpactPreview.authoring_impact_digest;
+  delete noImpactPreview.required_authoring_capabilities;
+  let localApprovalCalls = 0;
+  const engine = makeEngine({ previewOperations: async () => success(noImpactPreview) });
+  const local = createBrowserEditor({
+    engine_client: engine.client, asset_resolver: assetResolver(),
+    approval_handler: {
+      requestApproval: async () => { localApprovalCalls++; return "approved"; },
+      reportResult: async () => { localApprovalCalls++; },
+    },
+  });
+  await local.open({ authority: "engine", input: { compile_input: {}, requested_limits: {} } });
+  await local.preview(edit);
+  await local.apply(edit);
+  assert.equal(localApprovalCalls, 0);
+  await local.close();
+
+  let runtimeApprovalCalls = 0;
+  const runtimeSession = { session: { session_id: "session-no-impact" }, committed_revision: {}, working_document: { base_revision: {} } };
+  const runtime = {
+    getCapabilities: () => runtimeManifest, openDocument: async () => runtimeSession,
+    previewEditor: async () => ({ preview: noImpactPreview, authoring_proof: {}, operation_batch: {}, authoring_decision: { outcome: "allow" }, grant_summary: {} }),
+    commitOperations: async () => ({ operation_result: { status: "rejected", diagnostics: [] } }),
+    materializeView: async () => viewData, closeDocument: async () => {},
+  };
+  const hosted = createBrowserEditor({
+    engine_client: makeEngine().client, runtime_client: runtime, asset_resolver: assetResolver(), runtime_commit_input_factory: () => commitMetadata,
+    approval_handler: {
+      requestApproval: async () => { runtimeApprovalCalls++; return "approved"; },
+      reportResult: async () => { runtimeApprovalCalls++; },
+    },
+  });
+  await hosted.open({ authority: "runtime", input: { document_id: "doc-no-impact" } });
+  await hosted.preview(edit);
+  await hosted.apply(edit);
+  assert.equal(runtimeApprovalCalls, 0);
+  await hosted.close();
+});
+
+test("Engine and Runtime adapters preserve one semantic request and normalized preview result", async () => {
+  const engine = makeEngine();
+  const local = createBrowserEditor({ engine_client: engine.client, asset_resolver: assetResolver() });
+  await local.open({ authority: "engine", input: { compile_input: {}, requested_limits: {} } });
+  const localResult = await local.preview(edit);
+  assert.strictEqual(engine.calls.find(([name]) => name === "preview")[1], edit.request);
+
+  let runtimeEdit;
+  const runtimeSession = { session: { session_id: "session-cross-adapter" }, committed_revision: {}, working_document: { base_revision: {} } };
+  const runtime = {
+    getCapabilities: () => runtimeManifest, openDocument: async () => runtimeSession,
+    previewEditor: async (received) => {
+      runtimeEdit = received;
+      return { preview: validPreview, authoring_proof: {}, operation_batch: {}, authoring_decision: { outcome: "allow" }, grant_summary: {} };
+    },
+    commitOperations: async () => ({ operation_result: { status: "rejected", diagnostics: [] } }),
+    materializeView: async () => viewData, closeDocument: async () => {},
+  };
+  const hosted = createBrowserEditor({ engine_client: makeEngine().client, runtime_client: runtime, asset_resolver: assetResolver(), runtime_commit_input_factory: () => commitMetadata });
+  await hosted.open({ authority: "runtime", input: { document_id: "doc-cross-adapter" } });
+  const runtimeResult = await hosted.preview(edit);
+  assert.strictEqual(runtimeEdit, edit);
+  const normalize = ({ preview, conflicts, diagnostics }) => ({ preview, conflicts, diagnostics });
+  assert.deepEqual(normalize(runtimeResult), normalize(localResult));
+  await Promise.all([local.close(), hosted.close()]);
+});
+
 test("open exposes authoritative optional capability availability", async () => {
   const engine = makeEngine();
   const editor = createBrowserEditor({
