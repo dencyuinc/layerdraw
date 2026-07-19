@@ -325,6 +325,22 @@ func (c *Coordinator) commitOperations(ctx context.Context, input runtimeprotoco
 	} else if rejection != nil {
 		return c.finalRejectedFrom(ctx, input, rejection, decision, prepared.AuthoringImpact)
 	}
+	// Authorization is a publication precondition, not a staging permit. Resolve
+	// the grant and evaluate the complete impact again after every potentially
+	// slow stage/adapter call so policy, delegation expiry/revocation, and agent
+	// scope changes reject before the head or external provider is published.
+	currentGrant, _, grantErr := p.Grants.ResolveGrant(ctx, input.Session.Scope)
+	if grantErr != nil {
+		return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring grant changed before publication"), decision, prepared.AuthoringImpact)
+	}
+	publicationEvaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: currentGrant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "publish"}
+	publicationDecision, publicationRejection := c.runtime.Authorize(ctx, AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: head.Revision, Evaluation: publicationEvaluation})
+	if publicationRejection != nil || publicationDecision.AccessFingerprint != decision.AccessFingerprint || publicationDecision.RequiredCapabilities == nil || !reflect.DeepEqual(publicationDecision.RequiredCapabilities, decision.RequiredCapabilities) {
+		if publicationRejection != nil {
+			return c.finalRejectedFrom(ctx, input, publicationRejection, decision, prepared.AuthoringImpact)
+		}
+		return c.finalRejectedFrom(ctx, input, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationStale, "authoring decision changed before publication"), decision, prepared.AuthoringImpact)
+	}
 	if _, rejection = c.advancePublicationPending(ctx, input, decision, externalStage, expectedExternal); rejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -240,6 +241,21 @@ func (h *Host) StageAsset(ctx context.Context, input runtimeprotocol.StageAssetI
 	}
 	ref := input.ContentBlob
 	if ref.Lifetime != protocolcommon.BlobLifetimeRequest || ref.Size != protocolcommon.CanonicalUint64(strconv.Itoa(len(contents))) {
+		return runtimeprotocol.StageAssetResult{}, port.ErrConflict
+	}
+	grant, _, err := h.authority.ResolveGrant(ctx, session.Open.Session.Scope)
+	if err != nil {
+		return runtimeprotocol.StageAssetResult{}, err
+	}
+	impact, err := accesscore.HostOperationImpact(accessprotocol.HostOperationKindAssetStage, "stage", accessprotocol.HostResourceScope{DocumentID: string(session.Open.Session.Scope.DocumentID), LocalScopeID: session.Open.Session.Scope.LocalScopeID, OrganizationScopeID: session.Open.Session.Scope.OrganizationScopeID}, []string{ref.BlobID})
+	if err != nil {
+		return runtimeprotocol.StageAssetResult{}, err
+	}
+	decision, rejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: session.Open.Session.Scope, CurrentRevision: session.Open.CommittedRevision, Evaluation: accessprotocol.EvaluateAuthoringInput{GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{impact}, RequestIntent: "publish"}})
+	if rejection != nil || decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow {
+		if rejection != nil {
+			return runtimeprotocol.StageAssetResult{}, rejection
+		}
 		return runtimeprotocol.StageAssetResult{}, port.ErrConflict
 	}
 	metadata, err := h.assets.PutIfAbsent(ctx, port.PutAssetInput{Scope: session.Open.Session.Scope, ExpectedDigest: ref.Digest, MediaType: ref.MediaType, Size: protocolcommon.CanonicalUint64(ref.Size), Contents: bytes.NewReader(contents)})
