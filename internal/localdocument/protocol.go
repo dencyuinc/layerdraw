@@ -119,7 +119,9 @@ func (h *Host) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitIn
 	if rejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}
-	h.applyCommit(session, result)
+	if err := h.applyCommit(session, result); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
@@ -135,17 +137,28 @@ func (h *Host) SaveRuntime(ctx context.Context, input runtimeprotocol.RuntimeCom
 	return h.Save(ctx, saveInput(session, input, runtimeprotocol.CommitTriggerExplicitSave))
 }
 
-func (h *Host) applyCommit(session *Session, result runtimeprotocol.RuntimeCommitResult) {
-	if result.OperationResult.CommittedRevision == nil {
-		return
+func (h *Host) applyCommit(session *Session, result runtimeprotocol.RuntimeCommitResult) error {
+	if result.OperationResult.CommittedRevision != nil {
+		revision := *result.OperationResult.CommittedRevision
+		session.Open.CommittedRevision = revision
+		session.Open.WorkingDocument.BaseRevision = revision
+		if working, ok := h.workbench.Working(session.working.Handle, revision); ok {
+			session.working = working
+			session.Open.WorkingDocument.WorkingGeneration = runtimeprotocol.WorkingGeneration(working.Generation)
+		}
 	}
-	revision := *result.OperationResult.CommittedRevision
-	session.Open.CommittedRevision = revision
-	session.Open.WorkingDocument.BaseRevision = revision
-	if working, ok := h.workbench.Working(session.working.Handle, revision); ok {
-		session.working = working
-		session.Open.WorkingDocument.WorkingGeneration = runtimeprotocol.WorkingGeneration(working.Generation)
+	if external := result.OperationResult.ExternalMaterialization; external != nil && external.State == runtimeprotocol.ExternalMaterializationStatePublished {
+		digest, ok := h.workbench.SourceDigest(session.working.Handle)
+		if !ok {
+			return errors.New("published external source baseline is unavailable")
+		}
+		// The journal result and external receipt are already durable. Baseline
+		// metadata is a conservative change-detection cache: a write failure may
+		// cause a later reopen to require review, but must never change the
+		// published terminal result.
+		_ = h.acceptSessionSourceBaseline(session, digest)
 	}
+	return nil
 }
 
 func (h *Host) ControlAutosave(ctx context.Context, input runtimeprotocol.AutosaveControlInput) (runtimeprotocol.AutosaveControlResult, error) {

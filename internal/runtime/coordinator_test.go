@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -102,69 +103,115 @@ func TestCoordinatorRaceHasExactlyOnePublicationPoint(t *testing.T) {
 }
 
 func TestCoordinatorCancellationConflictAndPortFailuresNeverPublishPartially(t *testing.T) {
-	tests := []struct {
-		name        string
-		configure   func(*coordinatorHost)
-		cancel      bool
-		want        runtimeprotocol.OperationResultStatus
-		wantPublish int
-		wantPreview bool
-	}{
-		{"cancelled before publication", func(*coordinatorHost) {}, true, runtimeprotocol.OperationResultStatusRejected, 0, false},
-		{"preview failure", func(h *coordinatorHost) { h.previewErr = errors.New("injected") }, false, runtimeprotocol.OperationResultStatusRejected, 0, false},
-		{"conditional conflict", func(h *coordinatorHost) { h.publishErr = port.ErrConflict }, false, runtimeprotocol.OperationResultStatusRejected, 0, true},
-		{"conflict without trusted head evidence", func(h *coordinatorHost) { h.publishErr = port.ErrConflict; h.failHeadOnCall = 3 }, false, runtimeprotocol.OperationResultStatusNeedsReview, 0, true},
-		{"invalid lease", func(h *coordinatorHost) { h.leaseErr = port.ErrConflict; h.includeLease = true }, false, runtimeprotocol.OperationResultStatusRejected, 0, false},
-		{"lease fenced before publication", func(h *coordinatorHost) { h.failLeaseOnCall = 2; h.includeLease = true }, false, runtimeprotocol.OperationResultStatusRejected, 0, true},
-		{"indeterminate response after publication", func(h *coordinatorHost) { h.publishErr = port.ErrIndeterminate; h.publishDespiteError = true }, false, runtimeprotocol.OperationResultStatusCommitted, 1, true},
-		{"state write failure after publication", func(h *coordinatorHost) { h.stateWriteErr = errors.New("injected"); h.includeStateMutation = true }, false, runtimeprotocol.OperationResultStatusCommittedStateStale, 1, true},
-		{"history failure after publication", func(h *coordinatorHost) { h.historyErr = errors.New("injected") }, false, runtimeprotocol.OperationResultStatusCommittedStateStale, 1, true},
-	}
+	tests := runtimePersistenceFaultCases(t, "in_memory")
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.ID, func(t *testing.T) {
 			host, rt := newCoordinatorFixture(t)
-			tc.configure(host)
+			cancel := configurePersistenceFault(t, host, tc.Injection)
 			opened := openCoordinatorFixture(t, rt)
 			input := commitFixture(opened.Session, host)
 			ctx := context.Background()
-			if tc.cancel {
+			if cancel {
 				cancelled, cancel := context.WithCancel(ctx)
 				cancel()
 				ctx = cancelled
 			}
 			result, rejection := rt.CommitOperations(ctx, input)
-			if rejection != nil || result.OperationResult.Status != tc.want {
+			if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatus(tc.ExpectedStatus) {
 				t.Fatalf("result=%+v rejection=%v", result, rejection)
 			}
 			assertCommitResultEncodes(t, result)
-			if (result.PreviewEvaluation != nil) != tc.wantPreview {
-				t.Fatalf("preview evaluation presence=%t want=%t", result.PreviewEvaluation != nil, tc.wantPreview)
+			if (result.PreviewEvaluation != nil) != tc.ExpectedPreview {
+				t.Fatalf("preview evaluation presence=%t want=%t", result.PreviewEvaluation != nil, tc.ExpectedPreview)
 			}
 			host.mu.Lock()
 			publications := host.successfulPublishes
 			previews := host.previewCalls
 			host.mu.Unlock()
-			if publications != tc.wantPublish {
-				t.Fatalf("publications=%d want=%d", publications, tc.wantPublish)
+			if publications != tc.ExpectedPublications {
+				t.Fatalf("publications=%d want=%d", publications, tc.ExpectedPublications)
 			}
-			if (tc.name == "cancelled before publication" || tc.name == "invalid lease") && previews != 0 {
+			if (tc.Injection == "cancel_before_publication" || tc.Injection == "invalid_lease") && previews != 0 {
 				t.Fatalf("pre-preview rejection reached Engine preview: %d", previews)
 			}
-			if tc.name == "cancelled before publication" || tc.name == "preview failure" || tc.name == "invalid lease" || tc.name == "conditional conflict" || tc.name == "lease fenced before publication" {
+			if tc.RetryStable {
 				retry, retryRejection := rt.CommitOperations(context.Background(), input)
 				if retryRejection != nil || !reflect.DeepEqual(retry, result) {
 					t.Fatalf("post-pending retry changed result: retry=%+v rejection=%v", retry, retryRejection)
 				}
 				assertCommitResultEncodes(t, retry)
 			}
-			if tc.name == "conflict without trusted head evidence" {
+			if tc.ExpectedRecoveryPhase != "" {
 				status, statusRejection := rt.GetOperationResult(context.Background(), runtimeprotocol.GetOperationResultInput{Session: opened.Session, LookupBy: "operation_id", OperationID: &input.OperationID})
-				if statusRejection != nil || status.Phase != runtimeprotocol.RecoveryPhaseNeedsReview {
+				if statusRejection != nil || status.Phase != runtimeprotocol.RecoveryPhase(tc.ExpectedRecoveryPhase) {
 					t.Fatalf("needs_review journal phase=%s rejection=%v", status.Phase, statusRejection)
 				}
 			}
 		})
 	}
+}
+
+type runtimePersistenceFaultCase struct {
+	ID                    string `json:"id"`
+	Surface               string `json:"surface"`
+	Injection             string `json:"injection"`
+	ExpectedStatus        string `json:"expected_status"`
+	ExpectedPublications  int    `json:"expected_publications"`
+	ExpectedPreview       bool   `json:"expected_preview"`
+	ExpectedRecoveryPhase string `json:"expected_recovery_phase"`
+	RetryStable           bool   `json:"retry_stable"`
+}
+
+func runtimePersistenceFaultCases(t *testing.T, surface string) []runtimePersistenceFaultCase {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "tests", "conformance", "testdata", "local_runtime_persistence_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion int                           `json:"schema_version"`
+		FaultMatrix   []runtimePersistenceFaultCase `json:"fault_matrix"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil || corpus.SchemaVersion != 1 {
+		t.Fatalf("invalid persistence fault corpus: version=%d err=%v", corpus.SchemaVersion, err)
+	}
+	result := make([]runtimePersistenceFaultCase, 0, len(corpus.FaultMatrix))
+	for _, fault := range corpus.FaultMatrix {
+		if fault.Surface == surface {
+			result = append(result, fault)
+		}
+	}
+	if len(result) == 0 {
+		t.Fatalf("persistence fault corpus has no %s cases", surface)
+	}
+	return result
+}
+
+func configurePersistenceFault(t *testing.T, host *coordinatorHost, injection string) bool {
+	t.Helper()
+	switch injection {
+	case "cancel_before_publication":
+		return true
+	case "preview_failure":
+		host.previewErr = errors.New("injected")
+	case "conditional_conflict":
+		host.publishErr = port.ErrConflict
+	case "conflict_without_trusted_head":
+		host.publishErr, host.failHeadOnCall = port.ErrConflict, 3
+	case "invalid_lease":
+		host.leaseErr, host.includeLease = port.ErrConflict, true
+	case "lease_fenced_before_publication":
+		host.failLeaseOnCall, host.includeLease = 2, true
+	case "indeterminate_publication":
+		host.publishErr, host.publishDespiteError = port.ErrIndeterminate, true
+	case "state_failure_after_publication":
+		host.stateWriteErr, host.includeStateMutation = errors.New("injected"), true
+	case "history_failure_after_publication":
+		host.historyErr = errors.New("injected")
+	default:
+		t.Fatalf("unknown in-memory persistence fault %q", injection)
+	}
+	return false
 }
 
 func TestCoordinatorRecoveryAdvanceFailuresRemainRecoverableTransportFailures(t *testing.T) {

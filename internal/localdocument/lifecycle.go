@@ -541,24 +541,8 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 	if rejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
 	}
-	if result.OperationResult.CommittedRevision != nil {
-		input.Session.Open.CommittedRevision = *result.OperationResult.CommittedRevision
-		input.Session.Open.WorkingDocument.BaseRevision = *result.OperationResult.CommittedRevision
-		if working, ok := h.workbench.Working(input.Session.working.Handle, *result.OperationResult.CommittedRevision); ok {
-			input.Session.working = working
-			input.Session.Open.WorkingDocument.WorkingGeneration = runtimeprotocol.WorkingGeneration(working.Generation)
-		}
-	}
-	if external := result.OperationResult.ExternalMaterialization; external != nil && external.State == runtimeprotocol.ExternalMaterializationStatePublished {
-		digest, ok := h.workbench.SourceDigest(input.Session.working.Handle)
-		if !ok {
-			return result, errors.New("published external source baseline is unavailable")
-		}
-		// The journal result and external receipt are already durable. Baseline
-		// metadata is a conservative change-detection cache: a write failure may
-		// cause a later reopen to require review, but must never turn this
-		// published operation into a transport-level rejection.
-		_ = h.acceptSessionSourceBaseline(input.Session, digest)
+	if err := h.applyCommit(input.Session, result); err != nil {
+		return result, err
 	}
 	return result, nil
 }
