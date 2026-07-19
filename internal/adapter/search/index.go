@@ -12,15 +12,18 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 type DurableIndexStore struct {
-	root     string
-	executor port.QueryExecutionPort
-	now      func() time.Time
+	root      string
+	executor  port.QueryExecutionPort
+	now       func() time.Time
+	inspector port.PhysicalIndexInspector
+	mu        sync.Mutex
 }
 
 type persistedIndex struct {
@@ -29,7 +32,8 @@ type persistedIndex struct {
 }
 
 func NewDurableIndexStore(root string, executor port.QueryExecutionPort, now func() time.Time) (*DurableIndexStore, error) {
-	if root == "" || !filepath.IsAbs(root) || executor == nil {
+	inspector, ok := executor.(port.PhysicalIndexInspector)
+	if root == "" || !filepath.IsAbs(root) || executor == nil || !ok {
 		return nil, fmt.Errorf("invalid search index store configuration")
 	}
 	if now == nil {
@@ -45,10 +49,12 @@ func NewDurableIndexStore(root string, executor port.QueryExecutionPort, now fun
 	if err := os.Chmod(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &DurableIndexStore{root: filepath.Clean(root), executor: executor, now: now}, nil
+	return &DurableIndexStore{root: filepath.Clean(root), executor: executor, inspector: inspector, now: now}, nil
 }
 
-func (s *DurableIndexStore) Describe(_ context.Context, identity port.SearchIndexIdentity) (port.SearchIndexStatus, error) {
+func (s *DurableIndexStore) Describe(ctx context.Context, identity port.SearchIndexIdentity) (port.SearchIndexStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key, err := identityKey(identity)
 	if err != nil {
 		return port.SearchIndexStatus{}, port.ErrConflict
@@ -58,6 +64,9 @@ func (s *DurableIndexStore) Describe(_ context.Context, identity port.SearchInde
 		if readErr == nil {
 			if !reflect.DeepEqual(stored.Status.Identity, identity) {
 				return port.SearchIndexStatus{}, port.ErrConflict
+			}
+			if state == "active" && (stored.Status.PhysicalIndex == nil || s.inspector.InspectPhysicalIndex(ctx, *stored.Status.PhysicalIndex) != nil) {
+				return port.SearchIndexStatus{}, port.ErrNotFound
 			}
 			return stored.Status, nil
 		}
@@ -69,6 +78,8 @@ func (s *DurableIndexStore) Describe(_ context.Context, identity port.SearchInde
 }
 
 func (s *DurableIndexStore) ApplyPlan(ctx context.Context, identity port.SearchIndexIdentity, plan port.ExecutionPlan) (port.SearchIndexApplyResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if plan.Kind != port.PlanSearchIndex {
 		return port.SearchIndexApplyResult{}, port.ErrConflict
 	}
@@ -78,16 +89,30 @@ func (s *DurableIndexStore) ApplyPlan(ctx context.Context, identity port.SearchI
 	}
 	digest := sha256.Sum256(plan.Payload)
 	status := port.SearchIndexStatus{Identity: identity, State: "building", PlanID: plan.PlanID, UpdatedAt: s.now().UTC()}
-	if err := s.write(filepath.Join(s.root, key+".building.json"), persistedIndex{Status: status, PayloadDigest: hex.EncodeToString(digest[:])}); err != nil {
+	path := filepath.Join(s.root, key+".building.json")
+	if err := s.write(path, persistedIndex{Status: status, PayloadDigest: hex.EncodeToString(digest[:])}); err != nil {
 		return port.SearchIndexApplyResult{}, err
 	}
-	if _, err := s.executor.Execute(ctx, plan); err != nil {
+	execution, err := s.executor.Execute(ctx, plan)
+	if err != nil {
 		return port.SearchIndexApplyResult{}, err
 	}
-	return port.SearchIndexApplyResult{Identity: identity, PlanID: plan.PlanID}, nil
+	if execution.Truncated || !execution.Complete || execution.PhysicalIndex == nil || execution.PhysicalIndex.IdentityDigest != key || execution.PhysicalIndex.BackendVersion != identity.LadybugBackendVersion || execution.PhysicalIndex.ContentDigest == "" {
+		return port.SearchIndexApplyResult{}, port.ErrConflict
+	}
+	if err := s.inspector.InspectPhysicalIndex(ctx, *execution.PhysicalIndex); err != nil {
+		return port.SearchIndexApplyResult{}, port.ErrConflict
+	}
+	status.PhysicalIndex = execution.PhysicalIndex
+	if err := s.write(path, persistedIndex{Status: status, PayloadDigest: hex.EncodeToString(digest[:])}); err != nil {
+		return port.SearchIndexApplyResult{}, err
+	}
+	return port.SearchIndexApplyResult{Identity: identity, PlanID: plan.PlanID, PhysicalIndex: *execution.PhysicalIndex}, nil
 }
 
-func (s *DurableIndexStore) Activate(_ context.Context, input port.SearchIndexApplyResult) (port.SearchIndexStatus, error) {
+func (s *DurableIndexStore) Activate(ctx context.Context, input port.SearchIndexApplyResult) (port.SearchIndexStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key, err := identityKey(input.Identity)
 	if err != nil {
 		return port.SearchIndexStatus{}, port.ErrConflict
@@ -97,7 +122,7 @@ func (s *DurableIndexStore) Activate(_ context.Context, input port.SearchIndexAp
 	if err != nil {
 		return port.SearchIndexStatus{}, err
 	}
-	if stored.Status.PlanID != input.PlanID || !reflect.DeepEqual(stored.Status.Identity, input.Identity) {
+	if stored.Status.PlanID != input.PlanID || !reflect.DeepEqual(stored.Status.Identity, input.Identity) || stored.Status.PhysicalIndex == nil || *stored.Status.PhysicalIndex != input.PhysicalIndex || s.inspector.InspectPhysicalIndex(ctx, input.PhysicalIndex) != nil {
 		return port.SearchIndexStatus{}, port.ErrConflict
 	}
 	stored.Status.State = "active"
@@ -113,6 +138,8 @@ func (s *DurableIndexStore) Activate(_ context.Context, input port.SearchIndexAp
 }
 
 func (s *DurableIndexStore) Invalidate(_ context.Context, identity port.SearchIndexIdentity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key, err := identityKey(identity)
 	if err != nil {
 		return port.ErrConflict

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
@@ -33,10 +34,15 @@ type SearchCapabilityManifest struct {
 }
 
 type SearchService struct {
-	engine   port.SearchEngine
-	executor port.QueryExecutionPort
-	indexes  port.SearchIndexStore
-	embedder port.EmbeddingProvider
+	engine        port.SearchEngine
+	executor      port.QueryExecutionPort
+	indexes       port.SearchIndexStore
+	embedder      port.EmbeddingProvider
+	batchVerifier port.SearchDocumentBatchVerifier
+}
+
+func NewVerifiedSearchService(engine port.SearchEngine, executor port.QueryExecutionPort, indexes port.SearchIndexStore, embedder port.EmbeddingProvider, verifier port.SearchDocumentBatchVerifier) *SearchService {
+	return &SearchService{engine: engine, executor: executor, indexes: indexes, embedder: embedder, batchVerifier: verifier}
 }
 
 func NewSearchService(engine port.SearchEngine, executor port.QueryExecutionPort, indexes port.SearchIndexStore, embedder port.EmbeddingProvider) *SearchService {
@@ -88,7 +94,7 @@ type SearchIndexBuildRequest struct {
 	SearchProfile          port.SearchProfile
 	EmbeddingProfile       *port.EmbeddingProfile
 	IndexIdentity          port.SearchIndexIdentity
-	Documents              []port.SearchDocumentInput
+	Batch                  port.SearchDocumentBatch
 	EngineRequest          []byte
 }
 
@@ -107,26 +113,40 @@ func (s *SearchService) RebuildIndex(ctx context.Context, input SearchIndexBuild
 	var embeddings []port.EmbeddingVector
 	var err error
 	if input.EmbeddingProfile != nil {
-		if s.embedder == nil {
+		if s.embedder == nil || s.batchVerifier == nil {
 			return port.SearchIndexStatus{}, ErrSearchEmbeddingUnavailable
 		}
-		embeddings, err = s.embedder.EmbedDocuments(ctx, *input.EmbeddingProfile, input.Documents)
+		if input.Batch.Snapshot != input.Snapshot || input.Batch.AccessProjectionDigest != input.AccessProjectionDigest || input.Batch.EmbeddingProfileDigest != input.EmbeddingProfile.ModelDigest {
+			return port.SearchIndexStatus{}, ErrSearchEmbeddingProfile
+		}
+		if err := s.batchVerifier.VerifySearchDocumentBatch(ctx, input.Batch); err != nil {
+			return port.SearchIndexStatus{}, ErrSearchEmbeddingProfile
+		}
+		embeddings, err = s.embedder.EmbedDocuments(ctx, *input.EmbeddingProfile, input.Batch)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return port.SearchIndexStatus{}, ErrSearchCancelled
 			}
 			return port.SearchIndexStatus{}, ErrSearchEmbeddingUnavailable
 		}
-		if len(embeddings) != len(input.Documents) {
+		if len(embeddings) != len(input.Batch.Documents) {
 			return port.SearchIndexStatus{}, ErrSearchEmbeddingProfile
 		}
-		for _, vector := range embeddings {
-			if len(vector.Values) != input.EmbeddingProfile.Dimensions {
+		seen := map[string]bool{}
+		for index, vector := range embeddings {
+			document := input.Batch.Documents[index]
+			if vector.SubjectAddress != document.SubjectAddress || vector.ContentHash != document.ContentHash || seen[vector.SubjectAddress] || len(vector.Values) != input.EmbeddingProfile.Dimensions {
 				return port.SearchIndexStatus{}, ErrSearchEmbeddingProfile
+			}
+			seen[vector.SubjectAddress] = true
+			for _, value := range vector.Values {
+				if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+					return port.SearchIndexStatus{}, ErrSearchEmbeddingProfile
+				}
 			}
 		}
 	}
-	plan, err := s.engine.PrepareSearchIndex(ctx, port.SearchIndexPreparationInput{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, SearchProfile: input.SearchProfile, EmbeddingProfile: input.EmbeddingProfile, IndexIdentity: input.IndexIdentity, Documents: append([]port.SearchDocumentInput(nil), input.Documents...), Embeddings: embeddings, Request: append([]byte(nil), input.EngineRequest...)})
+	plan, err := s.engine.PrepareSearchIndex(ctx, port.SearchIndexPreparationInput{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, SearchProfile: input.SearchProfile, EmbeddingProfile: input.EmbeddingProfile, IndexIdentity: input.IndexIdentity, Batch: input.Batch, Embeddings: embeddings, Request: append([]byte(nil), input.EngineRequest...)})
 	if err != nil {
 		return port.SearchIndexStatus{}, ErrSearchInvalidRequest
 	}

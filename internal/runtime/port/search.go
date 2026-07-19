@@ -73,9 +73,22 @@ type RawValue struct {
 type RawRow map[string]RawValue
 
 type ExecutionResult struct {
-	Rows      []RawRow
-	Truncated bool
-	Bytes     int
+	Rows          []RawRow
+	Truncated     bool
+	Complete      bool
+	Bytes         int
+	PhysicalIndex *PhysicalIndexRef
+}
+
+type ExecutionLimits struct{ MaxRows, MaxBytes int }
+type RowSink interface{ Push(RawRow) error }
+type PhysicalIndexRef struct {
+	IdentityDigest string `json:"identity_digest"`
+	ContentDigest  string `json:"content_digest"`
+	BackendVersion string `json:"backend_version"`
+}
+type PhysicalIndexInspector interface {
+	InspectPhysicalIndex(context.Context, PhysicalIndexRef) error
 }
 
 type QueryExecutionPort interface {
@@ -112,15 +125,17 @@ type SearchIndexIdentity struct {
 }
 
 type SearchIndexStatus struct {
-	Identity  SearchIndexIdentity `json:"identity"`
-	State     string              `json:"state"`
-	PlanID    string              `json:"plan_id,omitempty"`
-	UpdatedAt time.Time           `json:"updated_at"`
+	Identity      SearchIndexIdentity `json:"identity"`
+	State         string              `json:"state"`
+	PlanID        string              `json:"plan_id,omitempty"`
+	UpdatedAt     time.Time           `json:"updated_at"`
+	PhysicalIndex *PhysicalIndexRef   `json:"physical_index,omitempty"`
 }
 
 type SearchIndexApplyResult struct {
-	Identity SearchIndexIdentity
-	PlanID   string
+	Identity      SearchIndexIdentity
+	PlanID        string
+	PhysicalIndex PhysicalIndexRef
 }
 
 type SearchIndexStore interface {
@@ -136,6 +151,20 @@ type SearchDocumentInput struct {
 	SubjectAddress string
 	ContentHash    string
 	Text           string
+}
+
+// SearchDocumentBatch is opaque evidence issued after Engine generation and
+// Access projection. Runtime verifies Token before any provider sees Text.
+type SearchDocumentBatch struct {
+	Snapshot               DocumentSnapshotRef
+	AccessProjectionDigest string
+	EmbeddingProfileDigest string
+	Documents              []SearchDocumentInput
+	Token                  string
+}
+
+type SearchDocumentBatchVerifier interface {
+	VerifySearchDocumentBatch(context.Context, SearchDocumentBatch) error
 }
 
 type EmbeddingProfile struct {
@@ -163,7 +192,7 @@ type EmbeddingVector struct {
 
 type EmbeddingProvider interface {
 	Describe(context.Context) (EmbeddingCapability, error)
-	EmbedDocuments(context.Context, EmbeddingProfile, []SearchDocumentInput) ([]EmbeddingVector, error)
+	EmbedDocuments(context.Context, EmbeddingProfile, SearchDocumentBatch) ([]EmbeddingVector, error)
 	EmbedQuery(context.Context, EmbeddingProfile, string) ([]float32, error)
 }
 
@@ -185,7 +214,7 @@ type SearchIndexPreparationInput struct {
 	SearchProfile          SearchProfile
 	EmbeddingProfile       *EmbeddingProfile
 	IndexIdentity          SearchIndexIdentity
-	Documents              []SearchDocumentInput
+	Batch                  SearchDocumentBatch
 	Embeddings             []EmbeddingVector
 	Request                []byte
 }

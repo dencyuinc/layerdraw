@@ -17,7 +17,24 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
+
+type searchSurfaceStub struct{}
+
+func (searchSurfaceStub) Capabilities(context.Context) (layerruntime.SearchCapabilityManifest, error) {
+	return layerruntime.SearchCapabilityManifest{QueryAvailable: true, SearchAvailable: true, AnalysisAvailable: true}, nil
+}
+func (searchSurfaceStub) Search(context.Context, layerruntime.SearchRequest) ([]byte, error) {
+	return []byte("same"), nil
+}
+func (searchSurfaceStub) ExecuteQuery(context.Context, port.BoundExecutionRequest) ([]byte, error) {
+	return []byte("same"), nil
+}
+func (searchSurfaceStub) ExecuteAnalysis(context.Context, port.BoundExecutionRequest) ([]byte, error) {
+	return []byte("same"), nil
+}
 
 type emptyBlobSource struct {
 	definitions []engineendpoint.BlobDefinition
@@ -50,7 +67,7 @@ func TestHandshakeAdvertisesOnlyWiredRuntimeAndEngineOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	composite, err := New(Config{
-		LocalHost: local, Engine: engineFacade,
+		LocalHost: local, Engine: engineFacade, Search: searchSurfaceStub{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +77,7 @@ func TestHandshakeAdvertisesOnlyWiredRuntimeAndEngineOperations(t *testing.T) {
 	for _, operation := range runtimeOperations {
 		required = append(required, protocolcommon.CapabilityID(operation))
 	}
+	required = append(required, OperationSearch, OperationExecuteQuery, OperationAnalyzeGraph)
 	request := runtimeprotocol.RuntimeHandshakeRequestEnvelope{
 		Operation: runtimeprotocol.RuntimeHandshakeRequestEnvelopeOperationValue,
 		Protocol:  runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"},
@@ -83,10 +101,15 @@ func TestHandshakeAdvertisesOnlyWiredRuntimeAndEngineOperations(t *testing.T) {
 		t.Fatalf("response=%s err=%v", response.Control, err)
 	}
 	operations := decoded.Payload.CapabilityManifest.Operations
-	for _, operation := range append([]string{"runtime.handshake", "engine.compile", "engine.open_document", "engine.execute_query", "engine.materialize_view", "engine.plan_export"}, runtimeOperations...) {
+	wired := append([]string{"runtime.handshake", "engine.compile", "engine.open_document", "engine.execute_query", "engine.materialize_view", "engine.plan_export"}, runtimeOperations...)
+	wired = append(wired, OperationSearch, OperationExecuteQuery, OperationAnalyzeGraph)
+	for _, operation := range wired {
 		if capability, ok := operations[operation]; !ok || !capability.Enabled {
 			t.Errorf("wired operation %q missing", operation)
 		}
+	}
+	if composite.SearchSurface() == nil {
+		t.Fatal("Desktop/MCP shared search surface not retained")
 	}
 	for operation := range operations {
 		lower := strings.ToLower(operation)

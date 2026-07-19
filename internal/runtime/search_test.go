@@ -91,6 +91,7 @@ func (i indexStub) Invalidate(context.Context, port.SearchIndexIdentity) error {
 
 type embeddingStub struct {
 	values    []float32
+	vectors   []port.EmbeddingVector
 	err       error
 	available bool
 }
@@ -98,11 +99,23 @@ type embeddingStub struct {
 func (e embeddingStub) Describe(context.Context) (port.EmbeddingCapability, error) {
 	return port.EmbeddingCapability{ProviderID: "p", Available: e.available}, e.err
 }
-func (e embeddingStub) EmbedDocuments(context.Context, port.EmbeddingProfile, []port.SearchDocumentInput) ([]port.EmbeddingVector, error) {
-	return []port.EmbeddingVector{{SubjectAddress: "a", Values: e.values}}, e.err
+func (e embeddingStub) EmbedDocuments(_ context.Context, _ port.EmbeddingProfile, b port.SearchDocumentBatch) ([]port.EmbeddingVector, error) {
+	if e.vectors != nil {
+		return e.vectors, e.err
+	}
+	if len(b.Documents) == 0 {
+		return nil, e.err
+	}
+	return []port.EmbeddingVector{{SubjectAddress: b.Documents[0].SubjectAddress, ContentHash: b.Documents[0].ContentHash, Values: e.values}}, e.err
 }
 func (e embeddingStub) EmbedQuery(context.Context, port.EmbeddingProfile, string) ([]float32, error) {
 	return e.values, e.err
+}
+
+type batchVerifierStub struct{ err error }
+
+func (v batchVerifierStub) VerifySearchDocumentBatch(context.Context, port.SearchDocumentBatch) error {
+	return v.err
 }
 
 func testPlan(kind port.PlanKind) port.ExecutionPlan {
@@ -298,8 +311,9 @@ func TestQueryAndAnalysisEngineFailures(t *testing.T) {
 func TestRebuildIndexEmbedsFilteredDocumentsAndActivates(t *testing.T) {
 	id := testIdentity()
 	profile := testRequest("semantic").EmbeddingProfile
-	request := SearchIndexBuildRequest{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, SearchProfile: testRequest("lexical").SearchProfile, EmbeddingProfile: profile, IndexIdentity: id, Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "allowed"}}}
-	service := NewSearchService(&searchEngineStub{}, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id, State: "active"}}, embeddingStub{values: []float32{1, 2}})
+	batch := port.SearchDocumentBatch{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, EmbeddingProfileDigest: profile.ModelDigest, Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "allowed"}}, Token: "verified"}
+	request := SearchIndexBuildRequest{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, SearchProfile: testRequest("lexical").SearchProfile, EmbeddingProfile: profile, IndexIdentity: id, Batch: batch}
+	service := NewVerifiedSearchService(&searchEngineStub{}, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id, State: "active"}}, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{})
 	status, err := service.RebuildIndex(context.Background(), request)
 	if err != nil || status.State != "active" {
 		t.Fatalf("status=%#v err=%v", status, err)
@@ -308,7 +322,15 @@ func TestRebuildIndexEmbedsFilteredDocumentsAndActivates(t *testing.T) {
 	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchEmbeddingUnavailable) {
 		t.Fatal(err)
 	}
-	service = NewSearchService(&searchEngineStub{}, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id}}, embeddingStub{values: []float32{1}})
+	service = NewVerifiedSearchService(&searchEngineStub{}, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id}}, embeddingStub{values: []float32{1}}, batchVerifierStub{})
+	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchEmbeddingProfile) {
+		t.Fatal(err)
+	}
+	service = NewVerifiedSearchService(&searchEngineStub{}, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id}}, embeddingStub{vectors: []port.EmbeddingVector{{SubjectAddress: "wrong", ContentHash: "h", Values: []float32{1, 2}}}}, batchVerifierStub{})
+	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchEmbeddingProfile) {
+		t.Fatal(err)
+	}
+	service = NewVerifiedSearchService(&searchEngineStub{}, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id}}, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{err: errors.New("tampered")})
 	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchEmbeddingProfile) {
 		t.Fatal(err)
 	}
@@ -317,7 +339,8 @@ func TestRebuildIndexEmbedsFilteredDocumentsAndActivates(t *testing.T) {
 func TestRebuildIndexNormalizesFailures(t *testing.T) {
 	id := testIdentity()
 	profile := testRequest("semantic").EmbeddingProfile
-	request := SearchIndexBuildRequest{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, SearchProfile: testRequest("lexical").SearchProfile, EmbeddingProfile: profile, IndexIdentity: id, Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "allowed"}}}
+	batch := port.SearchDocumentBatch{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, EmbeddingProfileDigest: profile.ModelDigest, Documents: []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "allowed"}}, Token: "verified"}
+	request := SearchIndexBuildRequest{Snapshot: id.DocumentSnapshotRef, AccessProjectionDigest: id.AccessProjectionDigest, SearchProfile: testRequest("lexical").SearchProfile, EmbeddingProfile: profile, IndexIdentity: id, Batch: batch}
 	if _, err := NewSearchService(nil, nil, nil, nil).RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchCapabilityMissing) {
 		t.Fatal(err)
 	}
@@ -326,23 +349,23 @@ func TestRebuildIndexNormalizesFailures(t *testing.T) {
 	if _, err := NewSearchService(&searchEngineStub{}, nil, indexStub{}, nil).RebuildIndex(context.Background(), bad); !errors.Is(err, ErrSearchInvalidRequest) {
 		t.Fatal(err)
 	}
-	service := NewSearchService(&searchEngineStub{}, nil, indexStub{}, embeddingStub{err: context.Canceled})
+	service := NewVerifiedSearchService(&searchEngineStub{}, nil, indexStub{}, embeddingStub{err: context.Canceled}, batchVerifierStub{})
 	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchCancelled) {
 		t.Fatal(err)
 	}
-	service = NewSearchService(&searchEngineStub{}, nil, indexStub{}, embeddingStub{err: errors.New("offline")})
+	service = NewVerifiedSearchService(&searchEngineStub{}, nil, indexStub{}, embeddingStub{err: errors.New("offline")}, batchVerifierStub{})
 	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchEmbeddingUnavailable) {
 		t.Fatal(err)
 	}
-	service = NewSearchService(&searchEngineStub{prepareErr: errors.New("bad")}, nil, indexStub{}, embeddingStub{values: []float32{1, 2}})
+	service = NewVerifiedSearchService(&searchEngineStub{prepareErr: errors.New("bad")}, nil, indexStub{}, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{})
 	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchInvalidRequest) {
 		t.Fatal(err)
 	}
-	service = NewSearchService(&searchEngineStub{}, nil, buildIndexStub{applyErr: errors.New("disk")}, embeddingStub{values: []float32{1, 2}})
+	service = NewVerifiedSearchService(&searchEngineStub{}, nil, buildIndexStub{applyErr: errors.New("disk")}, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{})
 	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchBackendFailed) {
 		t.Fatal(err)
 	}
-	service = NewSearchService(&searchEngineStub{}, nil, buildIndexStub{activateErr: errors.New("disk")}, embeddingStub{values: []float32{1, 2}})
+	service = NewVerifiedSearchService(&searchEngineStub{}, nil, buildIndexStub{activateErr: errors.New("disk")}, embeddingStub{values: []float32{1, 2}}, batchVerifierStub{})
 	if _, err := service.RebuildIndex(context.Background(), request); !errors.Is(err, ErrSearchBackendFailed) {
 		t.Fatal(err)
 	}

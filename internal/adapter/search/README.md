@@ -12,10 +12,10 @@ The boundary follows `docs/search-query-and-analysis.md`:
 - `DurableIndexStore` records build/active metadata under a complete
   `SearchIndexIdentity`. Activation is atomic; a process restart observes an
   unfinished build as `building`, never as the requested active revision.
-- `ConfiguredEmbeddingProvider` accepts only the Engine-produced,
-  Access-filtered document text supplied by Runtime. Remote models require an
-  explicit host-policy opt-in. Provider/model/profile identity and vector
-  dimensions are fixed before use.
+- `ConfiguredEmbeddingProvider` accepts only an HMAC-authenticated batch bound
+  to the Engine snapshot, Access projection, and Embedding Profile. Remote
+  models require an explicit host-policy opt-in. Provider/model/profile
+  identity and vector dimensions are fixed before use.
 - `runtime.SearchService` binds the snapshot, Access projection, Search and
   Embedding profiles, backend version, index schema, and provider output before
   asking Engine to prepare a plan. Engine remains the owner of filtering,
@@ -27,7 +27,12 @@ Official Desktop composition must provide all values in
 capability for lexical-only consumers; semantic/hybrid requests fail rather
 than silently degrading to lexical search.
 
-The concrete Ladybug driver and local model distribution are release artifacts
-injected through `NativeBackend` and `VectorModel`. This keeps native library
-code testable and prevents framework shells from acquiring database-native
-query or corpus APIs.
+`LadybugNativeDriver` provides bounded prepared-statement streaming, physical
+index evidence, cancellation, and restart inspection. Release builds enable
+`ladybug_native` to use `GoLadybugSession`, backed by the pinned official Go/C
+binding. The official binding's platform library is installed by its pinned
+`download_lbug.sh`; static builds also link the platform OpenSSL libraries.
+`LocalProjectionModel` is the built-in deterministic offline model.
+`host.ConsumerSearchSurface` is the single concrete capability surface injected
+into Desktop/Wails and MCP composition; the host handshake advertises its three
+operations from that same instance.

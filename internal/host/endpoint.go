@@ -46,6 +46,7 @@ type Endpoint struct {
 	descriptor *engineendpoint.Descriptor
 	negotiated *engineendpoint.NegotiatedContext
 	release    protocolcommon.ReleaseVersion
+	search     ConsumerSearchSurface
 
 	mu         sync.Mutex
 	handshaken bool
@@ -55,10 +56,12 @@ type Endpoint struct {
 type Config struct {
 	LocalHost *localdocument.Host
 	Engine    *engineendpoint.HostEngineFacade
+	Search    ConsumerSearchSurface
 }
 
 type LocalConfig struct {
 	Root, ReleaseVersion, SourceRevision, ReleaseManifestDigest, EndpointInstanceID, TransportID string
+	Search                                                                                       ConsumerSearchSurface
 }
 
 func NewLocal(config LocalConfig) (*Endpoint, func(context.Context) error, error) {
@@ -71,7 +74,7 @@ func NewLocal(config LocalConfig) (*Endpoint, func(context.Context) error, error
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, err
 	}
-	result, err := New(Config{LocalHost: localHost, Engine: engineFacade})
+	result, err := New(Config{LocalHost: localHost, Engine: engineFacade, Search: config.Search})
 	if err != nil {
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, err
@@ -83,7 +86,7 @@ func New(config Config) (*Endpoint, error) {
 	if config.LocalHost == nil || config.Engine == nil {
 		return nil, errors.New("host composition requires Runtime and Engine")
 	}
-	return &Endpoint{host: config.LocalHost, engine: config.Engine.Dispatcher(), descriptor: config.Engine.Descriptor(), negotiated: config.Engine.Negotiated(), release: protocolcommon.ReleaseVersion(config.Engine.ReleaseVersion())}, nil
+	return &Endpoint{host: config.LocalHost, engine: config.Engine.Dispatcher(), descriptor: config.Engine.Descriptor(), negotiated: config.Engine.Negotiated(), release: protocolcommon.ReleaseVersion(config.Engine.ReleaseVersion()), search: config.Search}, nil
 }
 
 func (e *Endpoint) Supports(operation string) bool {
@@ -124,6 +127,13 @@ func (e *Endpoint) Handshake(_ context.Context, control []byte) (engineendpoint.
 	manifest.Operations["runtime.handshake"] = protocolcommon.OperationCapability{Enabled: true, ProtocolVersion: "1.0"}
 	for _, operation := range e.descriptor.Operations() {
 		manifest.Operations[operation] = protocolcommon.OperationCapability{Enabled: true, ProtocolVersion: "1.0"}
+	}
+	if e.search != nil {
+		if searchManifest, searchErr := e.search.Capabilities(context.Background()); searchErr == nil {
+			manifest.Operations[OperationSearch] = protocolcommon.OperationCapability{Enabled: searchManifest.SearchAvailable, ProtocolVersion: "1.0"}
+			manifest.Operations[OperationExecuteQuery] = protocolcommon.OperationCapability{Enabled: searchManifest.QueryAvailable, ProtocolVersion: "1.0"}
+			manifest.Operations[OperationAnalyzeGraph] = protocolcommon.OperationCapability{Enabled: searchManifest.AnalysisAvailable, ProtocolVersion: "1.0"}
+		}
 	}
 	manifest.ManifestEtag = runtimeManifestETag(manifest)
 	enabled := func(id protocolcommon.CapabilityID) bool {

@@ -4,6 +4,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,15 +16,66 @@ import (
 )
 
 type backendStub struct {
-	rows      []port.RawRow
-	err       error
-	cancelled string
+	rows       []port.RawRow
+	err        error
+	cancelled  string
+	physical   *port.PhysicalIndexRef
+	inspectErr error
+}
+type endlessBackend struct{ pushed int }
+
+func (b *endlessBackend) ExecutePlan(_ context.Context, _ port.PlanKind, _ []byte, _ port.ExecutionLimits, sink port.RowSink) (BackendExecution, error) {
+	for {
+		b.pushed++
+		if err := sink.Push(port.RawRow{"x": {Kind: "string", Value: "value"}}); err != nil {
+			return BackendExecution{}, err
+		}
+	}
+}
+func (*endlessBackend) Cancel(context.Context, string) error                              { return nil }
+func (*endlessBackend) InspectPhysicalIndex(context.Context, port.PhysicalIndexRef) error { return nil }
+
+type ladybugSessionStub struct {
+	rows        []port.RawRow
+	interrupted bool
+	physical    map[port.PhysicalIndexRef]bool
 }
 
-func (b *backendStub) ExecutePlan(_ context.Context, _ port.PlanKind, _ []byte) ([]port.RawRow, error) {
-	return b.rows, b.err
+func (s *ladybugSessionStub) ExecutePrepared(_ context.Context, _ LadybugStatement, _ port.ExecutionLimits, sink port.RowSink) error {
+	for _, row := range s.rows {
+		if err := sink.Push(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (s *ladybugSessionStub) Interrupt() { s.interrupted = true }
+func (s *ladybugSessionStub) InspectIndex(_ context.Context, ref port.PhysicalIndexRef) error {
+	if !s.physical[ref] {
+		return ErrPhysicalIndexMissing
+	}
+	return nil
+}
+func (s *ladybugSessionStub) RecordPhysicalIndex(_ context.Context, ref port.PhysicalIndexRef) error {
+	if s.physical == nil {
+		s.physical = map[port.PhysicalIndexRef]bool{}
+	}
+	s.physical[ref] = true
+	return nil
+}
+
+func (b *backendStub) ExecutePlan(_ context.Context, _ port.PlanKind, _ []byte, _ port.ExecutionLimits, sink port.RowSink) (BackendExecution, error) {
+	for _, row := range b.rows {
+		if err := sink.Push(row); err != nil {
+			return BackendExecution{}, err
+		}
+	}
+	return BackendExecution{Complete: true, PhysicalIndex: b.physical}, b.err
 }
 func (b *backendStub) Cancel(_ context.Context, id string) error { b.cancelled = id; return b.err }
+func (b *backendStub) InspectPhysicalIndex(context.Context, port.PhysicalIndexRef) error {
+	return b.inspectErr
+}
 
 type verifierStub struct{ err error }
 
@@ -84,6 +136,18 @@ func TestNativeExecutorBoundsLargeProjectsAndWholeRows(t *testing.T) {
 	}
 }
 
+func TestNativeExecutorStopsEndlessBackendAtSinkLimit(t *testing.T) {
+	backend := &endlessBackend{}
+	executor, _ := NewNativeExecutor(capability(), backend, verifierStub{})
+	result, err := executor.Execute(context.Background(), validPlan(port.PlanSearch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Truncated || backend.pushed > 3 {
+		t.Fatalf("result=%#v pushed=%d", result, backend.pushed)
+	}
+}
+
 func TestNativeExecutorRejectsUnverifiedAndMalformedPlans(t *testing.T) {
 	for name, plan := range map[string]port.ExecutionPlan{"empty": {}, "raw-kind": validPlan("raw_cypher"), "wrong-version": func() port.ExecutionPlan { p := validPlan(port.PlanQuery); p.ProtocolVersion = "v2"; return p }(), "unbounded": func() port.ExecutionPlan { p := validPlan(port.PlanQuery); p.MaxRows = 0; return p }()} {
 		t.Run(name, func(t *testing.T) {
@@ -109,6 +173,42 @@ func TestNativeExecutorRejectsUnverifiedAndMalformedPlans(t *testing.T) {
 	}
 }
 
+func TestHMACPlanAndConcreteLadybugDriver(t *testing.T) {
+	authority, _ := NewHMACPlanAuthority([]byte("01234567890123456789012345678901"))
+	session := &ladybugSessionStub{rows: []port.RawRow{{"x": {Kind: "string", Value: "y"}}}}
+	driver, _ := NewLadybugNativeDriver(session)
+	executor, _ := NewNativeExecutor(capability(), driver, authority)
+	payload, _ := json.Marshal(LadybugPlan{Statements: []LadybugStatement{{Query: "MATCH (n) RETURN n.name", Parameters: map[string]port.RawValue{}}}})
+	plan := validPlan(port.PlanQuery)
+	plan.Payload = payload
+	plan, _ = authority.Sign(plan)
+	result, err := executor.Execute(context.Background(), plan)
+	if err != nil || !result.Complete || len(result.Rows) != 1 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	plan.Payload = append(plan.Payload, ' ')
+	if _, err := executor.Execute(context.Background(), plan); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatal(err)
+	}
+}
+
+func TestLocalProjectionModelIsDeterministicAndCancellable(t *testing.T) {
+	model, _ := NewLocalProjectionModel(16, []byte("0123456789012345"))
+	left, err := model.Embed(context.Background(), "Ｃafé graph graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, _ := model.Embed(context.Background(), "Ｃafé graph graph")
+	if !reflect.DeepEqual(left, right) {
+		t.Fatal("model not deterministic")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := model.Embed(ctx, "cancel"); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
 type modelStub struct {
 	values []float32
 	err    error
@@ -122,15 +222,31 @@ func (m *modelStub) Embed(_ context.Context, text string) ([]float32, error) {
 func embeddingCapability(remote bool) port.EmbeddingCapability {
 	return port.EmbeddingCapability{ProviderID: "provider", Available: true, Remote: remote, Profiles: []port.EmbeddingProfile{{ProfileID: "default", ModelID: "m", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 2, Normalization: "unit", MaxInputBytes: 32}}}
 }
+func batchAuthority(t *testing.T) *HMACSearchDocumentAuthority {
+	t.Helper()
+	a, err := NewHMACSearchDocumentAuthority([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+func signedBatch(t *testing.T, profile port.EmbeddingProfile, docs []port.SearchDocumentInput) port.SearchDocumentBatch {
+	t.Helper()
+	batch, err := batchAuthority(t).Issue(port.SearchDocumentBatch{Snapshot: identity("r1").DocumentSnapshotRef, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: profile.ModelDigest, Documents: docs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return batch
+}
 
 func TestEmbeddingProviderAcceptsOnlyConfiguredBoundedInputs(t *testing.T) {
 	m := &modelStub{values: []float32{1, 2}}
-	p, err := NewEmbeddingProvider(embeddingCapability(false), map[string]VectorModel{"default": m}, false)
+	p, err := NewEmbeddingProvider(embeddingCapability(false), map[string]VectorModel{"default": m}, false, batchAuthority(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	profile := embeddingCapability(false).Profiles[0]
-	docs, err := p.EmbedDocuments(context.Background(), profile, []port.SearchDocumentInput{{SubjectAddress: "ldl:a", ContentHash: "sha256:a", Text: "allowed text"}})
+	docs, err := p.EmbedDocuments(context.Background(), profile, signedBatch(t, profile, []port.SearchDocumentInput{{SubjectAddress: "ldl:a", ContentHash: "sha256:a", Text: "allowed text"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,20 +267,33 @@ func TestEmbeddingProviderAcceptsOnlyConfiguredBoundedInputs(t *testing.T) {
 	if _, err := p.EmbedQuery(context.Background(), bad, "x"); !errors.Is(err, ErrEmbeddingProfileMismatch) {
 		t.Fatal(err)
 	}
-	if _, err := p.EmbedDocuments(context.Background(), profile, []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: string([]byte{0xff})}}); !errors.Is(err, ErrEmbeddingProfileMismatch) {
+	if _, err := p.EmbedDocuments(context.Background(), profile, signedBatch(t, profile, []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: string([]byte{0xff})}})); !errors.Is(err, ErrEmbeddingProfileMismatch) {
+		t.Fatal(err)
+	}
+	tampered := signedBatch(t, profile, []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "allowed"}})
+	tampered.Documents[0].Text = "secret not authorized"
+	before := len(m.seen)
+	if _, err := p.EmbedDocuments(context.Background(), profile, tampered); !errors.Is(err, ErrEmbeddingProfileMismatch) {
+		t.Fatal(err)
+	}
+	if len(m.seen) != before {
+		t.Fatal("tampered batch reached provider")
+	}
+	duplicate := signedBatch(t, profile, []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "one"}, {SubjectAddress: "a", ContentHash: "h2", Text: "two"}})
+	if _, err := p.EmbedDocuments(context.Background(), profile, duplicate); !errors.Is(err, ErrEmbeddingProfileMismatch) {
 		t.Fatal(err)
 	}
 }
 
 func TestEmbeddingProviderRemoteAndFailurePolicies(t *testing.T) {
-	if _, err := NewEmbeddingProvider(embeddingCapability(true), map[string]VectorModel{"default": &modelStub{}}, false); !errors.Is(err, ErrRemoteEmbeddingDenied) {
+	if _, err := NewEmbeddingProvider(embeddingCapability(true), map[string]VectorModel{"default": &modelStub{}}, false, batchAuthority(t)); !errors.Is(err, ErrRemoteEmbeddingDenied) {
 		t.Fatal(err)
 	}
-	if _, err := NewEmbeddingProvider(port.EmbeddingCapability{}, nil, false); !errors.Is(err, ErrEmbeddingUnavailable) {
+	if _, err := NewEmbeddingProvider(port.EmbeddingCapability{}, nil, false, batchAuthority(t)); !errors.Is(err, ErrEmbeddingUnavailable) {
 		t.Fatal(err)
 	}
 	m := &modelStub{values: []float32{1}}
-	p, _ := NewEmbeddingProvider(embeddingCapability(false), map[string]VectorModel{"default": m}, false)
+	p, _ := NewEmbeddingProvider(embeddingCapability(false), map[string]VectorModel{"default": m}, false, batchAuthority(t))
 	if _, err := p.EmbedQuery(context.Background(), embeddingCapability(false).Profiles[0], "x"); !errors.Is(err, ErrEmbeddingProfileMismatch) {
 		t.Fatal(err)
 	}
@@ -172,8 +301,9 @@ func TestEmbeddingProviderRemoteAndFailurePolicies(t *testing.T) {
 		t.Fatalf("described=%#v err=%v", described, err)
 	}
 	failing := &modelStub{values: []float32{1, 2}, err: errors.New("offline")}
-	p, _ = NewEmbeddingProvider(embeddingCapability(false), map[string]VectorModel{"default": failing}, false)
-	if _, err := p.EmbedDocuments(context.Background(), embeddingCapability(false).Profiles[0], []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "x"}}); err == nil {
+	p, _ = NewEmbeddingProvider(embeddingCapability(false), map[string]VectorModel{"default": failing}, false, batchAuthority(t))
+	profile := embeddingCapability(false).Profiles[0]
+	if _, err := p.EmbedDocuments(context.Background(), profile, signedBatch(t, profile, []port.SearchDocumentInput{{SubjectAddress: "a", ContentHash: "h", Text: "x"}})); err == nil {
 		t.Fatal("model failure lost")
 	}
 }
@@ -181,10 +311,14 @@ func TestEmbeddingProviderRemoteAndFailurePolicies(t *testing.T) {
 func identity(revision string) port.SearchIndexIdentity {
 	return port.SearchIndexIdentity{DocumentSnapshotRef: port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: "doc", CommittedRevision: revision, DefinitionHash: "sha256:def"}, SearchProfileID: "default", SearchProfileDigest: "sha256:search", EmbeddingProfileID: "embed", EmbeddingProfileDigest: "sha256:model", AccessProjectionDigest: "sha256:access", LadybugBackendVersion: "1", IndexSchemaVersion: "1"}
 }
+func indexBackend(revision string) *backendStub {
+	key, _ := identityKey(identity(revision))
+	return &backendStub{physical: &port.PhysicalIndexRef{IdentityDigest: key, ContentDigest: "sha256:physical", BackendVersion: "1"}}
+}
 
 func TestDurableIndexBuildActivateRestartInvalidate(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "index")
-	backend := &backendStub{}
+	backend := indexBackend("r1")
 	executor, _ := NewNativeExecutor(capability(), backend, verifierStub{})
 	clock := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
 	store, err := NewDurableIndexStore(root, executor, func() time.Time { return clock })
@@ -224,7 +358,7 @@ func TestDurableIndexBuildActivateRestartInvalidate(t *testing.T) {
 
 func TestDurableIndexRejectsInvalidAndCorruptState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "index")
-	executor, _ := NewNativeExecutor(capability(), &backendStub{}, verifierStub{})
+	executor, _ := NewNativeExecutor(capability(), indexBackend("r1"), verifierStub{})
 	store, _ := NewDurableIndexStore(root, executor, nil)
 	if _, err := store.ApplyPlan(context.Background(), identity("r1"), validPlan(port.PlanQuery)); !errors.Is(err, port.ErrConflict) {
 		t.Fatal(err)
@@ -252,9 +386,27 @@ func TestDurableIndexRejectsInvalidAndCorruptState(t *testing.T) {
 	}
 }
 
+func TestDurableIndexRejectsTruncatedAndMissingPhysicalIndex(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "index")
+	backend := indexBackend("r1")
+	backend.rows = []port.RawRow{{"x": {Kind: "s", Value: "1"}}, {"x": {Kind: "s", Value: "2"}}, {"x": {Kind: "s", Value: "3"}}}
+	executor, _ := NewNativeExecutor(capability(), backend, verifierStub{})
+	store, _ := NewDurableIndexStore(root, executor, nil)
+	if _, err := store.ApplyPlan(context.Background(), identity("r1"), validPlan(port.PlanSearchIndex)); !errors.Is(err, port.ErrConflict) {
+		t.Fatal(err)
+	}
+	backend.rows = nil
+	backend.inspectErr = ErrPhysicalIndexMissing
+	if _, err := store.ApplyPlan(context.Background(), identity("r1"), validPlan(port.PlanSearchIndex)); !errors.Is(err, port.ErrConflict) {
+		t.Fatal(err)
+	}
+}
+
 func TestDurableIndexRetainsRecoverableBuildingStateOnBackendFailure(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "index")
-	executor, _ := NewNativeExecutor(capability(), &backendStub{err: errors.New("interrupted")}, verifierStub{})
+	b := indexBackend("r1")
+	b.err = errors.New("interrupted")
+	executor, _ := NewNativeExecutor(capability(), b, verifierStub{})
 	store, _ := NewDurableIndexStore(root, executor, nil)
 	if _, err := store.ApplyPlan(context.Background(), identity("r1"), validPlan(port.PlanSearchIndex)); err == nil {
 		t.Fatal("backend failure lost")
