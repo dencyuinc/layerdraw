@@ -24,6 +24,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/adapter/local"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
@@ -70,6 +71,10 @@ type Config struct {
 	MaxProjectFiles       int
 	MaxProjectBytes       int64
 	AdapterOptions        local.Options
+	// LocalActor resolves the stable OS/host identity used for local-owner
+	// grants. It must not assert organization membership. The default preserves
+	// the host-local owner identity for headless and embedded callers.
+	LocalActor accesscore.LocalActorResolver
 }
 
 type Host struct {
@@ -85,10 +90,13 @@ type Host struct {
 	authority *localAuthority
 	workbench *runtimeWorkbench
 	mu        sync.Mutex
-	metadata  lifecycleMetadata
-	sessions  map[runtimeprotocol.RuntimeSessionID]*Session
-	autosaves map[runtimeprotocol.RuntimeSessionID]func()
-	closed    bool
+	// delegationMu serializes durable delegation snapshots independently from
+	// session lifecycle locking.
+	delegationMu sync.Mutex
+	metadata     lifecycleMetadata
+	sessions     map[runtimeprotocol.RuntimeSessionID]*Session
+	autosaves    map[runtimeprotocol.RuntimeSessionID]func()
+	closed       bool
 }
 
 type lifecycleMetadata struct {
@@ -113,6 +121,14 @@ type Session struct {
 	working       port.WorkingDocument
 	sourceInput   engineendpoint.LocalSource
 	closed        bool
+	delegationID  string
+}
+
+func (h *Host) accessContext(ctx context.Context, session *Session) context.Context {
+	if session != nil && session.delegationID != "" {
+		return withDelegation(ctx, session.delegationID)
+	}
+	return ctx
 }
 
 type ExternalChange struct {
@@ -221,7 +237,19 @@ func New(config Config) (*Host, error) {
 	instance := engineendpoint.NewLocalDocumentEngine()
 	endpointID := config.EndpointInstanceID
 	workbench := &runtimeWorkbench{bridge: instance.NewRuntimeEngineBridge(endpointID), engine: instance, kinds: map[runtimeprotocol.DocumentID]port.ExternalFileKind{}}
-	authority := newLocalAuthority(config.Clock, config.Random)
+	resolver := config.LocalActor
+	if resolver == nil {
+		resolver = accesscore.StaticLocalActorResolver{ActorID: "local-owner"}
+	}
+	actor, err := resolver.ResolveLocalActor(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	delegations, err := loadDelegations(config.Root)
+	if err != nil {
+		return nil, err
+	}
+	authority := newLocalAuthorityWithDelegations(config.Clock, config.Random, actor, delegations)
 	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]func(){}}
 	metadata, err := host.loadMetadata()
 	if err != nil {
@@ -476,6 +504,7 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 	if closed {
 		return runtimeprotocol.RuntimeCommitResult{}, errors.New("session is closed or unknown")
 	}
+	ctx = h.accessContext(ctx, input.Session)
 	if input.Trigger == "" {
 		input.Trigger = runtimeprotocol.CommitTriggerExplicitSave
 	}
@@ -530,7 +559,7 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 	if err != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, err
 	}
-	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"}
+	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "propose"}
 	decision, authorizationRejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: input.Session.Open.Session.Scope, CurrentRevision: current, Evaluation: evaluation})
 	if authorizationRejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, authorizationRejection
@@ -592,6 +621,14 @@ func (h *Host) acceptDocumentSourceBaselineLocked(documentID runtimeprotocol.Doc
 func (h *Host) GetOperationStatus(ctx context.Context, session *Session, operation runtimeprotocol.OperationID) (runtimeprotocol.RuntimeOperationStatus, error) {
 	if session == nil {
 		return runtimeprotocol.RuntimeOperationStatus{}, errors.New("session is required")
+	}
+	resolved, err := h.SessionFor(session.Open.Session)
+	if err != nil || resolved != session {
+		return runtimeprotocol.RuntimeOperationStatus{}, errors.New("session is closed or unknown")
+	}
+	ctx = h.accessContext(ctx, session)
+	if err := h.authority.AuthorizeRead(ctx, session.Open.Session.Scope, accesscore.SurfaceReview); err != nil {
+		return runtimeprotocol.RuntimeOperationStatus{}, err
 	}
 	status, rejection := h.runtime.GetOperationResult(ctx, runtimeprotocol.GetOperationResultInput{Session: session.Open.Session, LookupBy: "operation_id", OperationID: &operation})
 	if rejection != nil {

@@ -9,3 +9,7 @@ and embedding adapter composition are documented in
 [`adapter/search/README.md`](adapter/search/README.md). Runtime owns revision,
 Access, profile, and provider orchestration; Engine continues to own all domain
 semantics.
+
+- `access/` owns local Actor resolution, authoring decisions, bounded agent
+  delegation, and trusted-boundary redaction. It consumes Engine and host
+  protocol impacts but does not parse LDL or publish resources.
