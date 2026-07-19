@@ -1,0 +1,42 @@
+{
+  "name": "@layerdraw/react",
+  "version": "0.0.0",
+  "description": "Accessible React editor foundations over the injected LayerDraw Browser Editor facade.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "sideEffects": ["./dist/styles.css"],
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "dist/**/*.css", "LICENSE", "README.md"],
+  "exports": {
+    ".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"},
+    "./provider": {"types": "./dist/provider.d.ts", "import": "./dist/provider.js"},
+    "./controls": {"types": "./dist/controls.d.ts", "import": "./dist/controls.js"},
+    "./layout": {"types": "./dist/layout.d.ts", "import": "./dist/layout.js"},
+    "./styles.css": "./dist/styles.css"
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && cp src/styles.css dist/styles.css",
+    "build:types": "tsc -p tsconfig.build.json && cp src/styles.css dist/styles.css",
+    "generate": "node -e \"\"",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-test-coverage --test-coverage-include=dist/**/*.js --test-coverage-lines=75 --test-coverage-functions=75 --test-coverage-branches=70 test/*.test.mjs && node test/browser-e2e.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@layerdraw/client-sdk": "workspace:*",
+    "@layerdraw/composer": "workspace:*",
+    "@layerdraw/protocol": "workspace:*"
+  },
+  "peerDependencies": {"react": ">=19.0.0 <20", "react-dom": ">=19.0.0 <20"},
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-test-renderer": "19.2.7",
+    "@types/react-test-renderer": "19.1.0",
+    "typescript": "7.0.2"
+  },
+  "engines": {"node": ">=24.18.0 <25"},
+  "publishConfig": {"access": "public", "provenance": true}
+}
