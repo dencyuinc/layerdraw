@@ -17,11 +17,19 @@ import (
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 )
 
-func delegationPath(root string) string { return filepath.Join(root, "access-delegations.json") }
+const delegationFilename = "access-delegations.json"
+
+func delegationPath(root string) string { return filepath.Join(root, delegationFilename) }
 
 func loadDelegations(root string) (*accesscore.DelegationStore, error) {
-	path := delegationPath(root)
-	info, err := os.Lstat(path)
+	directory, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer directory.Close()
+	// Keep the untrusted configured root confined behind os.Root. The child
+	// name is a compile-time constant and cannot escape through symlinks.
+	info, err := directory.Lstat(delegationFilename)
 	if errors.Is(err, fs.ErrNotExist) {
 		return accesscore.NewDelegationStore(), nil
 	}
@@ -31,7 +39,7 @@ func loadDelegations(root string) (*accesscore.DelegationStore, error) {
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 4<<20 {
 		return nil, fmt.Errorf("localdocument: insecure delegation snapshot")
 	}
-	data, err := os.ReadFile(path)
+	data, err := directory.ReadFile(delegationFilename)
 	if err != nil {
 		return nil, err
 	}
