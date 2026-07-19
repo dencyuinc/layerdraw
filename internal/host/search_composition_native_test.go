@@ -5,6 +5,7 @@ package host
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -12,6 +13,10 @@ import (
 )
 
 func TestDesktopNativeSearchCompositionUsesProductionLadybugBinding(t *testing.T) {
+	ftsExtensionPath := os.Getenv("LAYERDRAW_LADYBUG_FTS_EXTENSION")
+	if !filepath.IsAbs(ftsExtensionPath) {
+		t.Fatal("LAYERDRAW_LADYBUG_FTS_EXTENSION must be an absolute verified path")
+	}
 	profile := port.EmbeddingProfile{ProfileID: "local", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}
 	composition, err := OpenDesktopNativeSearchComposition(DesktopSearchConfig{
 		Root:                t.TempDir(),
@@ -23,7 +28,7 @@ func TestDesktopNativeSearchCompositionUsesProductionLadybugBinding(t *testing.T
 		PlanProtocolVersion: "v1",
 		MaxRows:             100,
 		MaxBytes:            4096,
-	}, filepath.Join(t.TempDir(), "desktop-search.lbug"))
+	}, filepath.Join(t.TempDir(), "desktop-search.lbug"), ftsExtensionPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,5 +39,12 @@ func TestDesktopNativeSearchCompositionUsesProductionLadybugBinding(t *testing.T
 	}
 	if !manifest.SearchAvailable || !manifest.QueryAvailable || !manifest.AnalysisAvailable {
 		t.Fatalf("manifest=%#v", manifest)
+	}
+}
+
+func TestDesktopNativeSearchCompositionRejectsMissingFTSExtension(t *testing.T) {
+	_, err := OpenDesktopNativeSearchComposition(DesktopSearchConfig{}, filepath.Join(t.TempDir(), "desktop-search.lbug"), "")
+	if err == nil {
+		t.Fatal("expected missing bundled FTS extension to fail closed")
 	}
 }

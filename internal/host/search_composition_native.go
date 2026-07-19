@@ -19,11 +19,14 @@ type NativeDesktopSearchComposition struct {
 // OpenDesktopNativeSearchComposition wires the actual go-ladybug v0.17 native
 // binding. Callers cannot substitute a non-production Ladybug session or claim
 // a backend version that was not read from the opened database.
-func OpenDesktopNativeSearchComposition(config DesktopSearchConfig, databasePath string) (*NativeDesktopSearchComposition, error) {
+func OpenDesktopNativeSearchComposition(config DesktopSearchConfig, databasePath, ftsExtensionPath string) (*NativeDesktopSearchComposition, error) {
 	if config.Ladybug != nil || config.BackendVersion != "" {
 		return nil, fmt.Errorf("native Desktop composition owns Ladybug configuration")
 	}
-	ladybug, err := searchadapter.OpenGoLadybugSession(databasePath)
+	if ftsExtensionPath == "" {
+		return nil, fmt.Errorf("native Desktop composition requires a bundled FTS extension")
+	}
+	ladybug, err := searchadapter.OpenGoLadybugSessionWithFTS(databasePath, ftsExtensionPath)
 	if err != nil {
 		return nil, err
 	}

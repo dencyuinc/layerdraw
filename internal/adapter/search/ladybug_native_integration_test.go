@@ -6,6 +6,7 @@ package search
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -102,16 +103,8 @@ func buildPhysicalFTSIndex(t *testing.T, databasePath string) port.PhysicalIndex
 
 func createFTSFixture(t *testing.T, databasePath string) *GoLadybugSession {
 	t.Helper()
-	session, err := OpenGoLadybugSession(databasePath)
+	session, err := OpenGoLadybugSessionWithFTS(databasePath, testFTSExtension(t))
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := session.controlLocked("INSTALL FTS"); err != nil {
-		session.Close()
-		t.Fatal(err)
-	}
-	if err := session.controlLocked("LOAD FTS"); err != nil {
-		session.Close()
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
@@ -129,15 +122,20 @@ func createFTSFixture(t *testing.T, databasePath string) *GoLadybugSession {
 
 func openFTSSession(t *testing.T, databasePath string) *GoLadybugSession {
 	t.Helper()
-	session, err := OpenGoLadybugSession(databasePath)
+	session, err := OpenGoLadybugSessionWithFTS(databasePath, testFTSExtension(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := session.controlLocked("LOAD FTS"); err != nil {
-		session.Close()
-		t.Fatal(err)
-	}
 	return session
+}
+
+func testFTSExtension(t *testing.T) string {
+	t.Helper()
+	path := os.Getenv("LAYERDRAW_LADYBUG_FTS_EXTENSION")
+	if !filepath.IsAbs(path) {
+		t.Fatal("LAYERDRAW_LADYBUG_FTS_EXTENSION must be an absolute verified path")
+	}
+	return path
 }
 
 func testFTSEvidence() LadybugIndexEvidence {

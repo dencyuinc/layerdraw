@@ -5,10 +5,13 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -38,7 +41,7 @@ func TestBuildAndVerifyFixedReleaseSet(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Artifacts) != 4 || manifest.ReleaseVersion != testVersion || manifest.Protocols[0].Versions[0].SchemaDigest != engineprotocol.SchemaDigest {
+	if len(manifest.Artifacts) != 5 || manifest.ReleaseVersion != testVersion || manifest.Protocols[0].Versions[0].SchemaDigest != engineprotocol.SchemaDigest {
 		t.Fatalf("manifest=%+v", manifest)
 	}
 	for _, artifact := range manifest.Artifacts {
@@ -413,6 +416,33 @@ func releaseFixture(t *testing.T, packageVersion string) (string, string, string
 	if err := os.WriteFile(nativeNotices, []byte("example.com/native v1.0.0\nLicense: MIT\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	desktopLegal := filepath.Join(output, "desktop-native-legal")
+	if err := os.MkdirAll(desktopLegal, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(desktopLegal, "layerdraw-host-native.cdx.json"), cycloneDXBytesWithDependency(t, "layerdraw-host-native", testVersion, "github.com/LadybugDB/go-ladybug", "v0.17.0", "MIT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(desktopLegal, "THIRD_PARTY_NOTICES.txt"), []byte("github.com/LadybugDB/go-ladybug v0.17.0\nLicense: MIT\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ftsExtension := []byte("verified extension")
+	ftsDigest := sha256.Sum256(ftsExtension)
+	desktopAuthority, err := json.Marshal(desktopNativeAuthority{
+		LadybugVersion: "0.17.0",
+		Platform:       runtime.GOOS + "/" + runtime.GOARCH,
+		FTSExtension:   "libfts.lbug_extension",
+		FTSSHA256:      hex.EncodeToString(ftsDigest[:]),
+		Host:           "layerdraw-host-native",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeArchive(t, filepath.Join(output, "artifacts", "layerdraw-host-native-"+testVersion+".tar.gz"), map[string][]byte{
+		"layerdraw-host-native": []byte("#!/bin/sh\nprintf 'layerdraw-host " + testVersion + " (test)\\n'\n"),
+		"libfts.lbug_extension": ftsExtension,
+		"ladybug-native.json":   append(desktopAuthority, '\n'),
+	})
 	writePackage(t, filepath.Join(output, "artifacts", "layerdraw-protocol-"+testVersion+".tgz"), packageAuthority{Name: "@layerdraw/protocol", Version: packageVersion, License: "Apache-2.0"}, nil)
 	wasmSBOM := cycloneDXBytesWithDependency(t, "@layerdraw/engine-wasm", testVersion, "example.com/wasm", "v2.0.0", "BSD-3-Clause")
 	writePackage(t, filepath.Join(output, "artifacts", "layerdraw-engine-wasm-"+testVersion+".tgz"), packageAuthority{Name: "@layerdraw/engine-wasm", Version: packageVersion, License: "SEE LICENSE IN LICENSE"}, map[string][]byte{"package/dist/engine-wasm.cdx.json": wasmSBOM, "package/THIRD_PARTY_NOTICES.txt": []byte("example.com/wasm v2.0.0\nLicense: BSD-3-Clause\n")})

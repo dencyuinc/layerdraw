@@ -28,6 +28,9 @@ func main() {
 }
 
 func runIO(args []string, stdin io.Reader, stdout, stderr io.Writer, signals <-chan os.Signal) int {
+	if handled, code := runNativeSearchCheck(args, stdout, stderr); handled {
+		return code
+	}
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "version") {
 		fmt.Fprintf(stdout, "layerdraw-host %s (%s)\n", releaseVersion, sourceRevision)
 		return 0

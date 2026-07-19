@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -35,8 +36,15 @@ type GoLadybugSession struct {
 }
 
 func OpenGoLadybugSession(databasePath string) (*GoLadybugSession, error) {
+	return OpenGoLadybugSessionWithFTS(databasePath, "")
+}
+
+func OpenGoLadybugSessionWithFTS(databasePath, ftsExtensionPath string) (*GoLadybugSession, error) {
 	if databasePath == "" || databasePath == ":memory:" || !strings.HasPrefix(databasePath, "/") {
 		return nil, fmt.Errorf("absolute on-disk Ladybug path required")
+	}
+	if ftsExtensionPath != "" && (!filepath.IsAbs(ftsExtensionPath) || strings.Contains(ftsExtensionPath, "'")) {
+		return nil, fmt.Errorf("absolute Ladybug FTS extension path required")
 	}
 	db, err := lbug.OpenDatabase(databasePath, lbug.DefaultSystemConfig())
 	if err != nil {
@@ -47,7 +55,14 @@ func OpenGoLadybugSession(databasePath string) (*GoLadybugSession, error) {
 		db.Close()
 		return nil, err
 	}
-	return &GoLadybugSession{db: db, conn: conn}, nil
+	session := &GoLadybugSession{db: db, conn: conn}
+	if ftsExtensionPath != "" {
+		if err := session.controlLocked("LOAD EXTENSION '" + ftsExtensionPath + "'"); err != nil {
+			session.Close()
+			return nil, err
+		}
+	}
+	return session, nil
 }
 
 func (s *GoLadybugSession) Close() {
