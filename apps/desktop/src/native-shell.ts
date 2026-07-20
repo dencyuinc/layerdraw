@@ -80,5 +80,9 @@ export function installAccessibilityProbe(eventsOn: (name: string, listener: (..
     void auditAccessibility(profile as AccessibilityProfile)
       .then((report) => nativeShell().SubmitAccessibilityReport(id, report));
   });
-	void nativeShell().AccessibilityProbeReady();
+}
+
+export async function signalAccessibilityProbeReady(): Promise<void> {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await nativeShell().AccessibilityProbeReady();
 }

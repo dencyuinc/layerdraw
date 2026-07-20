@@ -66,4 +66,5 @@ jobs:
           else
             "$executable" --packaged-ui-probe "$ui_probe"
           fi
+          cat "$ui_probe"
           go run "${go_args[@]}" ./tools/desktopprobe -require-dom -input "$ui_probe" verify
