@@ -4,6 +4,12 @@ import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
 import { build } from "esbuild-wasm";
 
+const AUTHORING_PERFORMANCE_BUDGETS = Object.freeze({
+  largeDocumentNavigationMs: 1_500,
+  largeDocumentSearchMs: 1_500,
+  previewDispatchMs: 1_000,
+});
+
 const bundled = await build({
   entryPoints: [new URL("./browser-fixture.mjs", import.meta.url).pathname],
   bundle: true,
@@ -54,6 +60,7 @@ try {
 
   const outline = page.getByRole("listbox", { name: "Document outline results" });
   assert.equal(await outline.getByRole("option").count(), 40, "large Engine result sets stay bounded");
+  const navigationStarted = await page.evaluate(() => performance.now());
   await outline.focus();
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(() => window.editorWorkflow.navigation().selection.address?.endsWith("item_0000"));
@@ -61,14 +68,22 @@ try {
   await page.waitForFunction(() => window.editorWorkflow.navigation().selection.address?.endsWith("item_0039"));
   await page.keyboard.press("Enter");
   assert.equal((await page.evaluate(() => window.editorWorkflow.navigation().source.address)).endsWith("item_0039"), true);
+  const navigationElapsed = await page.evaluate((started) => performance.now() - started, navigationStarted);
+  assert.ok(navigationElapsed <= AUTHORING_PERFORMANCE_BUDGETS.largeDocumentNavigationMs, `large-document navigation exceeded ${AUTHORING_PERFORMANCE_BUDGETS.largeDocumentNavigationMs}ms: ${navigationElapsed}ms`);
   const search = page.getByRole("searchbox", { name: "Search structure" });
-  await search.fill("Engine item 299");
-  await outline.getByRole("option", { name: /Engine item 299/ }).waitFor();
+  const searchStarted = await page.evaluate(() => performance.now());
+  await search.fill("Engine item 9999");
+  await outline.getByRole("option", { name: /Engine item 9999/ }).waitFor();
   assert.equal(await outline.getByRole("option").count(), 1);
+  const searchElapsed = await page.evaluate((started) => performance.now() - started, searchStarted);
+  assert.ok(searchElapsed <= AUTHORING_PERFORMANCE_BUDGETS.largeDocumentSearchMs, `large-document search exceeded ${AUTHORING_PERFORMANCE_BUDGETS.largeDocumentSearchMs}ms: ${searchElapsed}ms`);
   const inspectorDraft = page.getByRole("textbox", { name: "Name" });
   await inspectorDraft.fill("Host controlled draft");
+  const previewStarted = await page.evaluate(() => performance.now());
   await page.getByRole("button", { name: "Preview change" }).first().click();
   await page.waitForFunction(() => window.editorWorkflow.navigation().calls.some(([name]) => name === "preview"));
+  const previewElapsed = await page.evaluate((started) => performance.now() - started, previewStarted);
+  assert.ok(previewElapsed <= AUTHORING_PERFORMANCE_BUDGETS.previewDispatchMs, `preview dispatch exceeded ${AUTHORING_PERFORMANCE_BUDGETS.previewDispatchMs}ms: ${previewElapsed}ms`);
   assert.equal(await page.evaluate(() => window.editorWorkflow.navigation().calls.at(-1)[1].kind), "fragment");
   assert.equal(await page.evaluate(() => window.editorWorkflow.navigation().calls.at(-1)[1].request.fragment), "Host controlled draft");
 
@@ -111,7 +126,7 @@ try {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const motion = await apply.evaluate((element) => Number.parseFloat(getComputedStyle(element).transitionDuration));
   assert.equal(motion, 0.00001);
-  console.log("React editor workflow E2E passed with query/view, recovery, responsive, capability, keyboard, focus, and motion coverage.");
+  console.log("React editor workflow E2E passed with query/view, recovery, responsive, capability, denial, failure, keyboard, focus, motion, and enforced large-document performance budgets.");
 } finally {
   await browser.close();
 }

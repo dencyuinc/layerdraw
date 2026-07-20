@@ -71,7 +71,7 @@ let approvalAvailable = true;
 const recoveryCalls = [];
 let navigationSelection = { stale: false };
 let lastSourceNavigation;
-const navigationItems = Array.from({ length: 300 }, (_, index) => ({
+const navigationItems = Array.from({ length: 10_000 }, (_, index) => ({
   address: `project:p:entity:item_${String(index).padStart(4, "0")}`,
   display_name: `Engine item ${index}`,
   kind: index % 3 === 0 ? "relation" : "entity",

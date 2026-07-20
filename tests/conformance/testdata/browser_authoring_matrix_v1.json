@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "required_paths": [
+    "browser_composed",
+    "engine_local",
+    "engine_runtime_parity",
+    "runtime_host"
+  ],
+  "assertions": [
+    "accessibility_and_responsive_states",
+    "authoritative_preview_parity",
+    "capability_fail_closed",
+    "engine_semantics_excluded_from_ui",
+    "framework_neutral_package_graph",
+    "large_document_latency_budgets",
+    "persistence_truth",
+    "typed_recovery_lifecycle"
+  ],
+  "paths": [
+    {
+      "id": "engine_local",
+      "authority": {"path": "packages/client-sdk/test/browser-editor.test.mjs", "test": "local Engine lifecycle preserves requests and reports only ephemeral authority"}
+    },
+    {
+      "id": "runtime_host",
+      "authority": {"path": "packages/client-sdk/test/browser-editor.test.mjs", "test": "Runtime mode commits the exact preview proof and reports authoritative revision"}
+    },
+    {
+      "id": "engine_runtime_parity",
+      "authority": {"path": "packages/client-sdk/test/browser-editor.test.mjs", "test": "Engine and Runtime adapters preserve one semantic request and normalized preview result"}
+    },
+    {
+      "id": "browser_composed",
+      "authority": {"path": "packages/react/test/browser-e2e.mjs", "test": "enforced large-document performance budgets"}
+    }
+  ],
+  "failure_classes": [
+    {"id": "approval_cancellation", "authority": {"path": "packages/react/test/recovery.test.mjs", "test": "approval cancellation remains not-applied"}},
+    {"id": "conflict", "authority": {"path": "packages/react/test/recovery.test.mjs", "test": "stale and repeated conflict recovery preserve intent"}},
+    {"id": "denial", "authority": {"path": "packages/react/test/recovery.test.mjs", "test": "denied grants expose no apply or retry escape hatch"}},
+    {"id": "disposal", "authority": {"path": "packages/client-sdk/test/browser-editor.test.mjs", "test": "close aborts pending work, releases every dependency, and prevents reopen"}},
+    {"id": "optional_unavailable", "authority": {"path": "packages/client-sdk/test/browser-editor.test.mjs", "test": "open exposes authoritative optional capability availability"}},
+    {"id": "reconnect", "authority": {"path": "packages/react/test/recovery.test.mjs", "test": "disconnected Runtime offers safe reopen"}},
+    {"id": "required_capability", "authority": {"path": "packages/client-sdk/test/browser-editor.test.mjs", "test": "required capability options cannot suppress the Browser Editor baseline"}},
+    {"id": "stale_revision", "authority": {"path": "packages/react/test/recovery.test.mjs", "test": "workflow classifier keeps denied, stale, conflict, disconnected"}}
+  ],
+  "package_boundaries": [
+    {"path": "packages/client-sdk/test/package-boundary.test.mjs", "test": "client SDK editor contract has no React, Wails, Registry, MCP, server, or realtime dependency"},
+    {"path": "packages/composer/test/package-boundary.test.mjs", "test": "Composer is framework-neutral and depends only on generated protocol contracts"},
+    {"path": "packages/react/test/package-boundary.test.mjs", "test": "package exposes composable React-only entrypoints and no product shell dependency"}
+  ]
+}

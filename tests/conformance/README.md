@@ -1,5 +1,7 @@
 # Portable Engine conformance
 
+Browser authoring closure is indexed by `testdata/browser_authoring_matrix_v1.json`; see `docs/browser-authoring-conformance.md` for its trust, persistence, accessibility, and latency boundaries.
+
 このディレクトリは、同一のLDL入力が実行形態によって別の意味へ解釈されないことを保証する適合試験の正本である。
 
 ## 正本
