@@ -76,6 +76,7 @@ if [[ "$platform" == "darwin" ]]; then
 fi
 if [[ "$platform" == "windows" ]]; then binary="$binary.exe"; fi
 go run "$repository_root/tools/licensecheck" bundle -binary "$binary" -output "$temporary/legal" -version "$version" -include-production-npm
+desktop_sbom="$temporary/legal/$(basename "$binary").cdx.json"
 host="$temporary/runtime/layerdraw-host"
 if [[ "$platform" == "windows" ]]; then host="$host.exe"; fi
 CGO_ENABLED=0 go build -trimpath -buildvcs=false \
@@ -83,9 +84,10 @@ CGO_ENABLED=0 go build -trimpath -buildvcs=false \
   -o "$host" ./cmd/layerdraw-host
 mkdir -p "$temporary/legal/host"
 go run "$repository_root/tools/licensecheck" bundle -binary "$host" -output "$temporary/legal/host" -version "$version"
+companion_sbom="$temporary/legal/host/$(basename "$host").cdx.json"
 go run "$repository_root/tools/desktoprelease" merge-sbom \
-  -desktop "$temporary/legal/LayerDraw.cdx.json" \
-  -companion "$temporary/legal/host/layerdraw-host.cdx.json" \
+  -desktop "$desktop_sbom" \
+  -companion "$companion_sbom" \
   -output "$temporary/legal/LayerDraw-bundle.cdx.json"
 cp "$repository_root/deploy/desktop-capabilities.json" "$temporary/legal/"
 
