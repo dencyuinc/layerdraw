@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import { mountDesktopShell } from "../../src/mount.js";
-import { installAccessibilityProbe, signalAccessibilityProbeReady } from "../../src/native-shell.js";
-import { createDesktopWailsComposition } from "../../src/wails-bootstrap.js";
+import { installAccessibilityProbe, isPackagedProbeMode, signalAccessibilityProbeReady } from "../../src/native-shell.js";
+import { createDesktopWailsComposition, createUnopenedViewer } from "../../src/wails-bootstrap.js";
 import { Invoke, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { EventsOff, EventsOn } from "../wailsjs/runtime/runtime.js";
 
@@ -10,6 +10,21 @@ async function start(): Promise<void> {
   installAccessibilityProbe(EventsOn);
   const root = document.querySelector("#root");
   if (root === null) throw new Error("Desktop root is unavailable");
+  if (await isPackagedProbeMode()) {
+    mountDesktopShell(root, {
+      lifecycle: {
+        getSnapshot: () => ({ sequence: 0, phase: "ready", capabilities: {} }),
+        subscribe: () => () => {},
+        async selectView() {},
+        async showRecoveryOptions() {},
+      },
+      viewer: createUnopenedViewer(),
+      viewSelectionCapability: "engine.materialize_view",
+      editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
+    });
+    await signalAccessibilityProbeReady();
+    return;
+  }
   const composition = await createDesktopWailsComposition(
     { State },
     { EventsOn, EventsOff },

@@ -59,7 +59,8 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 			extension(configured)
 		}
 	}
-	configured.Bind = append([]any{frontend, newShellBinding(native.Shell, bridge)}, configured.Bind...)
+	probeOutput := os.Getenv("LAYERDRAW_DESKTOP_UI_PROBE_OUTPUT")
+	configured.Bind = append([]any{frontend, newShellBinding(native.Shell, bridge, probeOutput != "")}, configured.Bind...)
 	configured.Menu = nativeMenu(native.Shell, bridge)
 	configured.SingleInstanceLock = &options.SingleInstanceLock{
 		UniqueId: "dev.layerdraw.desktop",
@@ -69,7 +70,6 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 			runtime.ShowWindow(bridge.context())
 		},
 	}
-	probeOutput := os.Getenv("LAYERDRAW_DESKTOP_UI_PROBE_OUTPUT")
 	startupReady := make(chan struct{})
 	previousDOMReady := configured.OnDomReady
 	configured.OnDomReady = func(ctx context.Context) {

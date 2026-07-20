@@ -12,13 +12,16 @@ import (
 // must acquire the lifecycle context from the production bridge instead of
 // exposing it on the generated method surface.
 type ShellBinding struct {
-	shell  *desktopapp.NativeShell
-	bridge *WailsShellBridge
+	shell         *desktopapp.NativeShell
+	bridge        *WailsShellBridge
+	packagedProbe bool
 }
 
-func newShellBinding(shell *desktopapp.NativeShell, bridge *WailsShellBridge) *ShellBinding {
-	return &ShellBinding{shell: shell, bridge: bridge}
+func newShellBinding(shell *desktopapp.NativeShell, bridge *WailsShellBridge, packagedProbe ...bool) *ShellBinding {
+	return &ShellBinding{shell: shell, bridge: bridge, packagedProbe: len(packagedProbe) != 0 && packagedProbe[0]}
 }
+
+func (b *ShellBinding) PackagedProbeMode() bool { return b.packagedProbe }
 
 func (b *ShellBinding) CommandStatus() desktopcontract.Result[[]desktopcontract.CommandStatus] {
 	return b.shell.CommandStatus(b.bridge.context())

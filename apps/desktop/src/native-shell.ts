@@ -16,6 +16,7 @@ interface CommandStatus {
 }
 
 interface NativeShellBinding {
+  PackagedProbeMode(): Promise<boolean>;
   CommandStatus(): Promise<ShellResult<readonly CommandStatus[]>>;
   InvokeCommand(input: Readonly<{id: string; source: string; status_generation: string}>): Promise<ShellResult<CommandStatus>>;
   AccessibilityProbeReady(): Promise<void>;
@@ -85,4 +86,8 @@ export function installAccessibilityProbe(eventsOn: (name: string, listener: (..
 export async function signalAccessibilityProbeReady(): Promise<void> {
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await nativeShell().AccessibilityProbeReady();
+}
+
+export async function isPackagedProbeMode(): Promise<boolean> {
+  return nativeShell().PackagedProbeMode();
 }

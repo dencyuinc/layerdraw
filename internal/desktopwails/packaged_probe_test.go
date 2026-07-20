@@ -284,6 +284,16 @@ func TestContextFreeShellBindingRoutesWailsCalls(t *testing.T) {
 	}
 }
 
+func TestShellBindingPublishesPackagedProbeMode(t *testing.T) {
+	_, bridge, native, _ := newBindingFixture(t, nil)
+	if !newShellBinding(native.Shell, bridge, true).PackagedProbeMode() {
+		t.Fatal("packaged probe mode was not published to the frontend")
+	}
+	if newShellBinding(native.Shell, bridge).PackagedProbeMode() {
+		t.Fatal("normal Desktop falsely published packaged probe mode")
+	}
+}
+
 func TestNativeCommandInvocationUsesCurrentBackendGeneration(t *testing.T) {
 	binding, _, _, _ := newBindingFixture(t, nil)
 	invokeNativeCommand(context.Background(), binding.shell, desktopcontract.CommandSettings, desktopcontract.CommandSourceMenu)
