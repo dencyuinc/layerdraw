@@ -67,6 +67,9 @@ jobs:
       - name: Bootstrap workspace
         run: make bootstrap
 
+      - name: Install React editor browser test dependency
+        run: corepack pnpm --filter @layerdraw/react exec playwright install --with-deps chromium
+
       - name: Verify repository
         env:
           COVERAGE_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
