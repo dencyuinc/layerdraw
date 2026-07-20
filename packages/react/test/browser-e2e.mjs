@@ -52,6 +52,26 @@ try {
   await page.waitForFunction(() => window.editorWorkflow.listenerCounts().previous === 0 && window.editorWorkflow.listenerCounts().current === 1);
   assert.deepEqual(await page.evaluate(() => window.editorWorkflow.listenerCounts()), { previous: 0, current: 1 });
 
+  const outline = page.getByRole("listbox", { name: "Document outline results" });
+  assert.equal(await page.getByRole("option").count(), 40, "large Engine result sets stay bounded");
+  await outline.focus();
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => window.editorWorkflow.navigation().selection.address?.endsWith("item_0000"));
+  await page.keyboard.press("End");
+  await page.waitForFunction(() => window.editorWorkflow.navigation().selection.address?.endsWith("item_0039"));
+  await page.keyboard.press("Enter");
+  assert.equal((await page.evaluate(() => window.editorWorkflow.navigation().source.address)).endsWith("item_0039"), true);
+  const search = page.getByRole("searchbox", { name: "Search structure" });
+  await search.fill("Engine item 299");
+  await page.getByRole("option", { name: /Engine item 299/ }).waitFor();
+  assert.equal(await page.getByRole("option").count(), 1);
+  const inspectorDraft = page.getByRole("textbox", { name: "Name" });
+  await inspectorDraft.fill("Host controlled draft");
+  await page.getByRole("button", { name: "Preview change" }).first().click();
+  await page.waitForFunction(() => window.editorWorkflow.navigation().calls.some(([name]) => name === "preview"));
+  assert.equal(await page.evaluate(() => window.editorWorkflow.navigation().calls.at(-1)[1].kind), "fragment");
+  assert.equal(await page.evaluate(() => window.editorWorkflow.navigation().calls.at(-1)[1].request.fragment), "Host controlled draft");
+
   const desktop = await page.locator(".ld-editor-workspace").evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   assert.ok(desktop.split(" ").length >= 2);
   await page.setViewportSize({ width: 390, height: 844 });
