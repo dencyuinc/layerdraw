@@ -1120,14 +1120,18 @@ func (h *Host) saveRelocationJournalLocked(value relocationJournal) error {
 }
 
 func (h *Host) removeRelocationJournalLocked() error {
-	if err := os.Remove(h.relocationPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	// The path is a fixed filename beneath the absolute host-owned Root that New
+	// validates before any metadata access.
+	if err := os.Remove(h.relocationPath()); err != nil && !errors.Is(err, fs.ErrNotExist) { // lgtm[go/path-injection]
 		return err
 	}
 	return syncDirectory(h.config.Root)
 }
 
 func syncDirectory(root string) error {
-	dir, err := os.Open(root)
+	// Callers pass the absolute host-owned Root validated by New, never a project
+	// or protocol-provided path.
+	dir, err := os.Open(root) // lgtm[go/path-injection]
 	if err != nil {
 		return err
 	}
@@ -1136,7 +1140,9 @@ func syncDirectory(root string) error {
 }
 
 func (h *Host) recoverRelocation(ctx context.Context) error {
-	data, err := os.ReadFile(h.relocationPath())
+	// The path is a fixed filename beneath the absolute host-owned Root that New
+	// validates before any metadata access.
+	data, err := os.ReadFile(h.relocationPath()) // lgtm[go/path-injection]
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}

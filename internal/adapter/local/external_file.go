@@ -876,7 +876,9 @@ func canonicalExternalLocator(kind port.ExternalFileKind, path string) (string, 
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Lstat(real)
+	// The locator is an explicit native-picker capability. Keep all filesystem
+	// access behind the audited trusted-path boundary after canonicalization.
+	info, err := trustedPathLstat(real)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 {
 		return "", port.ErrConflict
 	}
