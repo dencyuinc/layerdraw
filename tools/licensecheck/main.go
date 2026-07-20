@@ -240,10 +240,10 @@ func bundleProductionNPMDependencies(root string, p policy) ([]bundledModule, er
 	if err != nil {
 		return nil, err
 	}
-	return bundleProductionNPMReport(p, report)
+	return bundleProductionNPMReport(root, p, report)
 }
 
-func bundleProductionNPMReport(p policy, report map[string][]npmPackage) ([]bundledModule, error) {
+func bundleProductionNPMReport(root string, p policy, report map[string][]npmPackage) ([]bundledModule, error) {
 	allowed := stringSet(p.AllowedLicenseExpressions)
 	denied := stringSet(p.DeniedLicenseExpressions)
 	overrides := make(map[string]npmOverride, len(p.NPMOverrides))
@@ -253,7 +253,7 @@ func bundleProductionNPMReport(p policy, report map[string][]npmPackage) ([]bund
 	var modules []bundledModule
 	for _, packages := range report {
 		for _, dependency := range packages {
-			pathsByVersion, pathErr := npmPathsByVersion(dependency.Paths)
+			pathsByVersion, pathErr := npmPathsByVersion(root, dependency.Paths)
 			if pathErr != nil {
 				return nil, pathErr
 			}
@@ -624,7 +624,7 @@ func checkNPMDependencies(root string, p policy) ([]dependencyRecord, error) {
 	var records []dependencyRecord
 	for _, packages := range all {
 		for _, dependency := range packages {
-			pathsByVersion, err := npmPathsByVersion(dependency.Paths)
+			pathsByVersion, err := npmPathsByVersion(root, dependency.Paths)
 			if err != nil {
 				return nil, err
 			}
@@ -776,10 +776,34 @@ func npmPackageKeys(report map[string][]npmPackage) map[string]bool {
 	return keys
 }
 
-func npmPathsByVersion(paths []string) (map[string]string, error) {
+func npmPathsByVersion(root string, paths []string) (map[string]string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
 	result := make(map[string]string)
 	for _, path := range paths {
-		data, err := os.ReadFile(filepath.Join(path, "package.json"))
+		clean, err := filepath.Abs(path)
+		if err != nil {
+			return nil, err
+		}
+		relative, err := filepath.Rel(root, clean)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("npm package path escapes repository root: %s", path)
+		}
+		clean, err = filepath.EvalSymlinks(clean)
+		if err != nil {
+			return nil, err
+		}
+		resolvedRelative, err := filepath.Rel(resolvedRoot, clean)
+		if err != nil || resolvedRelative == ".." || strings.HasPrefix(resolvedRelative, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("npm package path resolves outside repository root: %s", path)
+		}
+		data, err := os.ReadFile(filepath.Join(clean, "package.json"))
 		if err != nil {
 			return nil, fmt.Errorf("read npm package manifest %s: %w", path, err)
 		}
@@ -787,7 +811,7 @@ func npmPathsByVersion(paths []string) (map[string]string, error) {
 		if err := json.Unmarshal(data, &manifest); err != nil {
 			return nil, fmt.Errorf("decode npm package manifest %s: %w", path, err)
 		}
-		result[manifest.Version] = path
+		result[manifest.Version] = clean
 	}
 	return result, nil
 }

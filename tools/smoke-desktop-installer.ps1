@@ -10,9 +10,11 @@ $root = Join-Path $env:RUNNER_TEMP ("layerdraw-desktop-smoke-" + [guid]::NewGuid
 $install = Join-Path $root "LayerDraw"
 $data = Join-Path $root "AppData"
 $probe = Join-Path $root "probe.json"
+$probeStateKey = [guid]::NewGuid().ToString("N")
+$probeStateRoot = Join-Path ([IO.Path]::GetTempPath()) ("layerdraw-desktop-probe-state-" + $probeStateKey)
 New-Item -ItemType Directory -Force -Path $install, $data | Out-Null
 $env:APPDATA = $data
-$env:LAYERDRAW_DESKTOP_PROBE_STATE_ROOT = Join-Path $data "LayerDraw\upgrade-smoke"
+$env:LAYERDRAW_DESKTOP_PROBE_STATE_KEY = $probeStateKey
 
 function Invoke-Probe([string]$Executable, [string]$Action) {
   $env:LAYERDRAW_DESKTOP_PROBE_ACTION = $Action
@@ -66,8 +68,9 @@ try {
   $removed = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
   if ($removed.ExitCode -ne 0) { throw "uninstall failed: $($removed.ExitCode)" }
   if (Test-Path $executable) { throw "uninstall left the application executable behind" }
-  if (-not (Test-Path (Join-Path $env:LAYERDRAW_DESKTOP_PROBE_STATE_ROOT "settings-v1.json"))) { throw "upgrade lost LayerDraw settings" }
-  if (-not (Test-Path (Join-Path $env:LAYERDRAW_DESKTOP_PROBE_STATE_ROOT "projects\upgrade-probe\document.ldl"))) { throw "upgrade lost LayerDraw project data" }
+  if (-not (Test-Path (Join-Path $probeStateRoot "settings-v1.json"))) { throw "upgrade lost LayerDraw settings" }
+  if (-not (Test-Path (Join-Path $probeStateRoot "projects\upgrade-probe\document.ldl"))) { throw "upgrade lost LayerDraw project data" }
 } finally {
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $root
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $probeStateRoot
 }

@@ -242,6 +242,19 @@ func TestValidateTargetAndVersions(t *testing.T) {
 	}
 }
 
+func TestLocalArtifactPathRejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"../installer.dmg", `nested\\installer.dmg`, "...dmg", ""} {
+		if _, err := localArtifactPath(root, name); err == nil {
+			t.Fatalf("unsafe artifact path %q accepted", name)
+		}
+	}
+	path, err := localArtifactPath(root, "LayerDraw.dmg")
+	if err != nil || path != filepath.Join(root, "LayerDraw.dmg") {
+		t.Fatalf("safe artifact path=%q err=%v", path, err)
+	}
+}
+
 func TestBetaChannelAcceptsMonotonicPrerelease(t *testing.T) {
 	root := t.TempDir()
 	files := fixtureFiles(t, root)

@@ -163,7 +163,7 @@ func TestBundleProductionNPMDependenciesClosesInstalledGraph(t *testing.T) {
 		}
 		report["MIT"] = append(report["MIT"], npmPackage{Name: fixture.name, Versions: []string{fixture.version}, Paths: []string{path}, License: "MIT"})
 	}
-	modules, err := bundleProductionNPMReport(policy{AllowedLicenseExpressions: []string{"MIT"}}, report)
+	modules, err := bundleProductionNPMReport(root, policy{AllowedLicenseExpressions: []string{"MIT"}}, report)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +184,18 @@ func TestBundleProductionNPMDependenciesClosesInstalledGraph(t *testing.T) {
 		if !strings.Contains(notices, expected) {
 			t.Fatalf("notices are missing %s", expected)
 		}
+	}
+}
+
+func TestBundleProductionNPMDependenciesRejectsPathsOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "package.json"), []byte(`{"name":"escape","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report := map[string][]npmPackage{"MIT": {{Name: "escape", Versions: []string{"1.0.0"}, Paths: []string{outside}, License: "MIT"}}}
+	if _, err := bundleProductionNPMReport(root, policy{AllowedLicenseExpressions: []string{"MIT"}}, report); err == nil {
+		t.Fatal("production npm package outside repository root was accepted")
 	}
 }
 

@@ -406,15 +406,23 @@ func verifyCommand(args []string) error {
 		files = append(files, *manifest.PlatformSignature)
 	}
 	for _, file := range files {
-		if file.Path == "" || filepath.Base(file.Path) != file.Path {
-			return errors.New("artifact path must be a local basename")
+		artifactPath, err := localArtifactPath(*root, file.Path)
+		if err != nil {
+			return err
 		}
-		actual, err := describeFile(filepath.Join(*root, filepath.FromSlash(file.Path)))
+		actual, err := describeFile(artifactPath)
 		if err != nil || actual.Size != file.Size || actual.SHA256 != file.SHA256 {
 			return fmt.Errorf("artifact digest mismatch for %s", file.Path)
 		}
 	}
 	return nil
+}
+
+func localArtifactPath(root, name string) (string, error) {
+	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `/\\`) || filepath.Base(name) != name {
+		return "", errors.New("artifact path must be a local basename")
+	}
+	return filepath.Join(root, name), nil
 }
 
 func validateChannelVersion(channel, releaseVersion string) error {

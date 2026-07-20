@@ -7,17 +7,22 @@ set -euo pipefail
 platform="${1:?usage: smoke-desktop-installer.sh PLATFORM PREVIOUS_INSTALLER [CURRENT_INSTALLER]}"
 previous_installer="${2:?usage: smoke-desktop-installer.sh PLATFORM PREVIOUS_INSTALLER [CURRENT_INSTALLER]}"
 current_installer="${3:-$previous_installer}"
-temporary="$(mktemp -d "${TMPDIR:-/tmp}/layerdraw-desktop-smoke.XXXXXX")"
+temporary_base="${TMPDIR:-/tmp}"
+temporary_base="${temporary_base%/}"
+temporary="$(mktemp -d "$temporary_base/layerdraw-desktop-smoke.XXXXXX")"
+probe_state_key="$(openssl rand -hex 16)"
+probe_state_root="$temporary_base/layerdraw-desktop-probe-state-$probe_state_key"
 cleanup() {
   if [[ -n "${mounted_volume:-}" ]]; then hdiutil detach -quiet "$mounted_volume" >/dev/null 2>&1 || true; fi
   chmod -R u+w "$temporary" >/dev/null 2>&1 || true
   rm -rf "$temporary"
+  rm -rf "$probe_state_root"
 }
 trap cleanup EXIT
 
 export XDG_CONFIG_HOME="$temporary/config"
-export LAYERDRAW_DESKTOP_PROBE_STATE_ROOT="$temporary/user-data/LayerDraw"
-mkdir -p "$XDG_CONFIG_HOME" "$LAYERDRAW_DESKTOP_PROBE_STATE_ROOT"
+export LAYERDRAW_DESKTOP_PROBE_STATE_KEY="$probe_state_key"
+mkdir -p "$XDG_CONFIG_HOME"
 
 verify_probe() {
   local executable="$1"
@@ -110,5 +115,5 @@ case "$platform" in
   *) printf 'Unsupported smoke-test platform: %s\n' "$platform" >&2; exit 1 ;;
 esac
 
-test -f "$LAYERDRAW_DESKTOP_PROBE_STATE_ROOT/settings-v1.json"
-test -f "$LAYERDRAW_DESKTOP_PROBE_STATE_ROOT/projects/upgrade-probe/document.ldl"
+test -f "$probe_state_root/settings-v1.json"
+test -f "$probe_state_root/projects/upgrade-probe/document.ldl"

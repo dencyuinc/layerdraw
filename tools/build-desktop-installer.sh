@@ -56,7 +56,9 @@ else
   corepack pnpm exec turbo run build
 fi
 
-build_args=(-clean -trimpath -s -skipbindings -o LayerDraw)
+output_name="LayerDraw"
+if [[ "$platform" == "windows" ]]; then output_name="LayerDraw.exe"; fi
+build_args=(-clean -trimpath -s -skipbindings -o "$output_name")
 if [[ "$platform" == "linux" ]]; then build_args+=(-tags webkit2_41); fi
 (
   cd "$repository_root/apps/desktop"

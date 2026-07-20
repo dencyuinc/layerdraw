@@ -4,6 +4,7 @@ package desktopwails
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -33,34 +34,34 @@ func RunPackagedProbe(output io.Writer) error {
 	if output == nil || !CurrentPlatform().Validate() {
 		return errors.New("packaged Desktop probe unavailable")
 	}
-	root := os.Getenv("LAYERDRAW_DESKTOP_PROBE_STATE_ROOT")
-	cleanup := false
-	if root == "" {
-		var err error
-		root, err = os.MkdirTemp("", "layerdraw-desktop-probe-*")
-		if err != nil {
-			return err
-		}
-		cleanup = true
-	} else if !filepath.IsAbs(root) || filepath.Clean(root) != root {
-		return errors.New("packaged Desktop probe state root is invalid")
+	result, err := executePackagedProbe()
+	if err != nil {
+		return err
 	}
-	if cleanup {
+	return json.NewEncoder(output).Encode(result)
+}
+
+func executePackagedProbe() (PackagedProbeResult, error) {
+	root, persistent, err := packagedProbeStateRoot()
+	if err != nil {
+		return PackagedProbeResult{}, err
+	}
+	if !persistent {
 		defer os.RemoveAll(root)
 	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return err
+	if err := ensurePackagedProbeRoot(root); err != nil {
+		return PackagedProbeResult{}, err
 	}
 	action := os.Getenv("LAYERDRAW_DESKTOP_PROBE_ACTION")
 	if action == "" {
 		action = "initialize"
 	}
 	if action != "initialize" && action != "verify" {
-		return errors.New("packaged Desktop probe action is invalid")
+		return PackagedProbeResult{}, errors.New("packaged Desktop probe action is invalid")
 	}
 	store, err := desktopadapter.NewAtomicSettingsStore(filepath.Join(root, "settings-v1.json"))
 	if err != nil {
-		return err
+		return PackagedProbeResult{}, err
 	}
 	state := desktopcontract.PersistedShellState{
 		Settings: desktopcontract.DesktopSettings{SchemaVersion: 1, Theme: desktopcontract.ThemeSystem, ZoomPercent: 100},
@@ -68,43 +69,73 @@ func RunPackagedProbe(output io.Writer) error {
 	}
 	if action == "initialize" {
 		if err := store.Save(context.Background(), state); err != nil {
-			return err
+			return PackagedProbeResult{}, err
 		}
 	}
 	loaded, err := store.Load(context.Background())
 	if err != nil || loaded != state {
-		return errors.New("packaged Desktop settings probe failed")
+		return PackagedProbeResult{}, errors.New("packaged Desktop settings probe failed")
 	}
 	if _, err := desktopadapter.NewSystemExternalOpener(CurrentPlatform()); err != nil {
-		return err
+		return PackagedProbeResult{}, err
 	}
 	projectRoot := filepath.Join(root, "projects", "upgrade-probe")
 	associated := filepath.Join(projectRoot, "document.ldl")
 	projectSource := []byte("project upgrade_probe \"Upgrade Probe\" {}\n")
 	if action == "initialize" {
 		if err := os.MkdirAll(projectRoot, 0o700); err != nil {
-			return err
+			return PackagedProbeResult{}, err
 		}
 		if err := os.WriteFile(associated, projectSource, 0o600); err != nil {
-			return err
+			return PackagedProbeResult{}, err
 		}
 	}
 	actualProject, err := os.ReadFile(associated)
 	if err != nil || string(actualProject) != string(projectSource) {
-		return errors.New("packaged Desktop project probe failed")
+		return PackagedProbeResult{}, errors.New("packaged Desktop project probe failed")
 	}
 	broker := desktopadapter.NewAssociationBroker()
 	if err := broker.AcceptOSPath(associated); err != nil {
-		return err
+		return PackagedProbeResult{}, err
 	}
 	handoff, err := broker.Next(context.Background())
 	if err != nil {
-		return err
+		return PackagedProbeResult{}, err
 	}
 	bridge := NewWailsShellBridge()
 	var _ desktopadapter.WailsRuntimeBridge = bridge
-	return json.NewEncoder(output).Encode(PackagedProbeResult{
+	return PackagedProbeResult{
 		SchemaVersion: 1, Platform: CurrentPlatform(), WailsRuntimeBridge: true,
 		SettingsRoundTrip: true, ProjectRoundTrip: true, AssociationHandoff: handoff.Kind,
-	})
+	}, nil
+}
+
+func ensurePackagedProbeRoot(root string) error {
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.Mkdir(root, 0o700)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("packaged Desktop probe state root is unsafe")
+	}
+	return nil
+}
+
+func packagedProbeStateRoot() (string, bool, error) {
+	key := os.Getenv("LAYERDRAW_DESKTOP_PROBE_STATE_KEY")
+	if key != "" {
+		decoded, err := hex.DecodeString(key)
+		if err != nil || len(decoded) != 16 {
+			return "", false, errors.New("packaged Desktop probe state key is invalid")
+		}
+		// Re-encode fixed-size decoded bytes so the filesystem component cannot
+		// retain caller-controlled separators or alternate representations.
+		safeKey := hex.EncodeToString(decoded)
+		return filepath.Join(os.TempDir(), "layerdraw-desktop-probe-state-"+safeKey), true, nil
+	}
+	root, err := os.MkdirTemp("", "layerdraw-desktop-probe-*")
+	return root, false, err
 }
