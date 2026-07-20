@@ -1,7 +1,7 @@
 {
   "name": "@layerdraw/react",
   "version": "0.0.0",
-  "description": "Accessible React editor foundations over the injected LayerDraw Browser Editor facade.",
+  "description": "Accessible React editor and live Viewer foundations over injected LayerDraw facades.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "sideEffects": ["./dist/styles.css"],
@@ -12,6 +12,7 @@
     "./controls": {"types": "./dist/controls.d.ts", "import": "./dist/controls.js"},
     "./layout": {"types": "./dist/layout.d.ts", "import": "./dist/layout.js"},
     "./navigation": {"types": "./dist/navigation.d.ts", "import": "./dist/navigation.js"},
+    "./query-viewer": {"types": "./dist/query-viewer.d.ts", "import": "./dist/query-viewer.js"},
     "./styles.css": "./dist/styles.css"
   },
   "scripts": {
@@ -25,7 +26,8 @@
   "dependencies": {
     "@layerdraw/client-sdk": "workspace:*",
     "@layerdraw/composer": "workspace:*",
-    "@layerdraw/protocol": "workspace:*"
+    "@layerdraw/protocol": "workspace:*",
+    "@layerdraw/viewer": "workspace:*"
   },
   "peerDependencies": {"react": ">=19.0.0 <20", "react-dom": ">=19.0.0 <20"},
   "devDependencies": {

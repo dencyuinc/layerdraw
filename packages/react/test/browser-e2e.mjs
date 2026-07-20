@@ -53,7 +53,7 @@ try {
   assert.deepEqual(await page.evaluate(() => window.editorWorkflow.listenerCounts()), { previous: 0, current: 1 });
 
   const outline = page.getByRole("listbox", { name: "Document outline results" });
-  assert.equal(await page.getByRole("option").count(), 40, "large Engine result sets stay bounded");
+  assert.equal(await outline.getByRole("option").count(), 40, "large Engine result sets stay bounded");
   await outline.focus();
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(() => window.editorWorkflow.navigation().selection.address?.endsWith("item_0000"));
@@ -63,8 +63,8 @@ try {
   assert.equal((await page.evaluate(() => window.editorWorkflow.navigation().source.address)).endsWith("item_0039"), true);
   const search = page.getByRole("searchbox", { name: "Search structure" });
   await search.fill("Engine item 299");
-  await page.getByRole("option", { name: /Engine item 299/ }).waitFor();
-  assert.equal(await page.getByRole("option").count(), 1);
+  await outline.getByRole("option", { name: /Engine item 299/ }).waitFor();
+  assert.equal(await outline.getByRole("option").count(), 1);
   const inspectorDraft = page.getByRole("textbox", { name: "Name" });
   await inspectorDraft.fill("Host controlled draft");
   await page.getByRole("button", { name: "Preview change" }).first().click();
@@ -72,15 +72,30 @@ try {
   assert.equal(await page.evaluate(() => window.editorWorkflow.navigation().calls.at(-1)[1].kind), "fragment");
   assert.equal(await page.evaluate(() => window.editorWorkflow.navigation().calls.at(-1)[1].request.fragment), "Host controlled draft");
 
+  await page.getByText("Empty view").waitFor();
+  await page.evaluate(() => window.editorWorkflow.viewer("loading"));
+  await page.waitForFunction(() => document.querySelector(".ld-live-viewer")?.getAttribute("aria-busy") === "true");
+  await page.evaluate(() => window.editorWorkflow.viewer("error"));
+  await page.getByRole("alert").waitFor();
+  await page.evaluate(() => window.editorWorkflow.viewer("partial"));
+  await page.getByText("Partial view").waitFor();
+  await page.evaluate(() => window.editorWorkflow.viewer("dense"));
+  await page.waitForFunction(() => document.querySelector("[data-item-count='200']") !== null);
+  await page.evaluate(() => window.editorWorkflow.viewer("2d"));
+  await page.waitForFunction(() => document.querySelector("[data-render-shape='2d']") !== null);
+  await page.evaluate(() => window.editorWorkflow.viewer("3d"));
+  await page.waitForFunction(() => document.querySelector("[data-render-shape='3d']") !== null);
+
   const desktop = await page.locator(".ld-editor-workspace").evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   assert.ok(desktop.split(" ").length >= 2);
   await page.setViewportSize({ width: 390, height: 844 });
   const mobile = await page.locator(".ld-editor-workspace").evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   assert.equal(mobile.split(" ").length, 1);
+  assert.equal(await page.locator(".ld-query-view-actions").evaluate((element) => getComputedStyle(element).flexDirection), "column");
   await page.emulateMedia({ reducedMotion: "reduce" });
   const motion = await apply.evaluate((element) => Number.parseFloat(getComputedStyle(element).transitionDuration));
   assert.equal(motion, 0.00001);
-  console.log("React editor workflow E2E passed with capability, denial, failure, keyboard, focus, replacement, responsive, and motion coverage.");
+  console.log("React editor workflow E2E passed with query/view empty, loading, error, partial, dense, 2D, 3D, responsive, capability, keyboard, focus, and motion coverage.");
 } finally {
   await browser.close();
 }

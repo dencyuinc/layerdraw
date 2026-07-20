@@ -491,6 +491,37 @@ test("close joins abort-ignoring materialization and prevents late success", asy
   await closing;
 });
 
+test("materialization composes a caller cancellation signal into the owned transport operation", async () => {
+  let transportSignal;
+  const engine = makeEngine({
+    materializeView: async (_input, options) => {
+      transportSignal = options.signal;
+      return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true }));
+    },
+  });
+  const editor = createBrowserEditor({ engine_client: engine.client, asset_resolver: assetResolver() });
+  await editor.open({ authority: "engine", input: { compile_input: {}, requested_limits: {} } });
+  const controller = new AbortController();
+  const materialized = editor.materializeView({ kind: "query" }, { signal: controller.signal });
+  await Promise.resolve();
+  assert.equal(transportSignal.aborted, false);
+  controller.abort();
+  await assert.rejects(materialized, (error) => error.code === "editor.cancelled");
+  assert.equal(transportSignal.aborted, true);
+  await editor.close();
+});
+
+test("pre-cancelled materialization never reaches the Engine transport", async () => {
+  const engine = makeEngine();
+  const editor = createBrowserEditor({ engine_client: engine.client, asset_resolver: assetResolver() });
+  await editor.open({ authority: "engine", input: { compile_input: {}, requested_limits: {} } });
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(editor.materializeView({ kind: "query" }, { signal: controller.signal }), (error) => error.code === "editor.cancelled");
+  assert.equal(engine.calls.some(([name]) => name === "view"), false);
+  await editor.close();
+});
+
 test("close joins an abort-ignoring provider write and prevents late apply success", async () => {
   const gate = deferred();
   const engine = makeEngine();

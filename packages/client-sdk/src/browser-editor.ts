@@ -214,10 +214,11 @@ class BrowserEditorImpl implements BrowserEditor {
   subscribe(listener: (snapshot: ComposerSnapshot) => void): () => void { return this.#composer.subscribe(listener); }
   getCapabilities(): BrowserEditorCapabilityState | undefined { return this.#capabilities; }
 
-  async materializeView(input: MaterializeViewInput): Promise<ViewData> {
+  async materializeView(input: MaterializeViewInput, options: Readonly<{ signal?: AbortSignal }> = {}): Promise<ViewData> {
     const session = this.#requireSession();
     return this.#withController(async (signal) => {
       try {
+      this.#assertOperation(signal);
       if (session.authority === "runtime") {
         const view = await this.#options.runtime_client!.materializeView(input, session.session.session, { signal });
         this.#assertOperation(signal);
@@ -230,7 +231,7 @@ class BrowserEditorImpl implements BrowserEditor {
     } catch (error) {
       throw transportError(error);
       }
-    });
+    }, options.signal);
   }
 
   async close(): Promise<void> {
@@ -407,10 +408,11 @@ class BrowserEditorImpl implements BrowserEditor {
     this.#flights.add(tracked);
     return tracked;
   }
-  #withController<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  #withController<T>(operation: (signal: AbortSignal) => Promise<T>, externalSignal?: AbortSignal): Promise<T> {
     const controller = new AbortController();
     this.#controllers.add(controller);
-    return this.#track(Promise.resolve().then(() => operation(controller.signal)).finally(() => {
+    const signal = externalSignal === undefined ? controller.signal : AbortSignal.any([controller.signal, externalSignal]);
+    return this.#track(Promise.resolve().then(() => operation(signal)).finally(() => {
       this.#controllers.delete(controller);
     }));
   }
