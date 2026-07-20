@@ -242,7 +242,7 @@ func compose(base desktopapp.Config, runtime NativeRuntime, providers map[string
 	base.ProjectStorage = NewProjectStorageAdapter(vault)
 	nativeInterchange, err := NewNativeInterchangeAdapter(vault, base.Root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	base.NativeInterchange = nativeInterchange
 	if base.Adapters == nil {

@@ -70,10 +70,11 @@ func (a *NativeInterchangeAdapter) Serialize(ctx context.Context, input nativeex
 }
 
 func (a *NativeInterchangeAdapter) Publish(ctx context.Context, token, artifactID string) error {
-	destination, err := a.vault.consume(token)
+	selection, err := a.vault.consume(token)
 	if err != nil {
 		return err
 	}
+	destination := selection.path
 	a.mu.Lock()
 	result, ok := a.staged[artifactID]
 	if ok {
@@ -103,10 +104,14 @@ func (a *NativeInterchangeAdapter) Publish(ctx context.Context, token, artifactI
 }
 
 func (a *NativeInterchangeAdapter) Import(ctx context.Context, token, profile string) (nativeexport.ImportPreview, error) {
-	path, err := a.vault.consume(token)
+	selection, err := a.vault.consume(token)
 	if err != nil {
 		return nativeexport.ImportPreview{}, err
 	}
+	if err := validateIdentity(selection); err != nil {
+		return nativeexport.ImportPreview{}, err
+	}
+	path := selection.path
 	if profile != nativeexport.OperationsJSONProfile {
 		return nativeexport.ImportPreview{}, errors.New("external import profile unavailable")
 	}
