@@ -798,6 +798,11 @@ Editor、Runtime、Viewer、Library UIを含めない。
 
 ### 10.5 Desktop Wails backend
 
+The normative framework-neutral transport, lifecycle, native-dialog,
+capability-negotiation, and composition contracts are frozen in
+[desktop-wails-contracts.md](desktop-wails-contracts.md) and enforced by
+`internal/desktopcontract` conformance tests.
+
 ```text
 Wails backend
   Engine

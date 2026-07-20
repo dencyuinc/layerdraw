@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "surfaces": ["browser", "desktop"],
+  "bindings": [
+    {
+      "generated_method": "EngineCompile",
+      "target": "engine_client",
+      "client_method": "Compile",
+      "operation": "engine.compile",
+      "browser_request_fixture": "schemas/fixtures/engine/compile-request.json",
+      "desktop_request_fixture": "schemas/fixtures/desktop/engine-compile-request-v1.json"
+    },
+    {
+      "generated_method": "RuntimeHandshake",
+      "target": "runtime_client",
+      "client_method": "Handshake",
+      "operation": "runtime.handshake",
+      "browser_request_fixture": "schemas/fixtures/runtime/handshake-request.json",
+      "desktop_request_fixture": "schemas/fixtures/desktop/runtime-handshake-request-v1.json"
+    },
+    {
+      "generated_method": "RegistryListSources",
+      "target": "registry_client",
+      "client_method": "ListSources",
+      "operation": "registry.list_sources",
+      "browser_request_fixture": "schemas/fixtures/desktop/registry-list-sources-browser-v1.json",
+      "desktop_request_fixture": "schemas/fixtures/desktop/registry-list-sources-request-v1.json"
+    }
+  ]
+}
