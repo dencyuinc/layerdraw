@@ -10,6 +10,8 @@ export interface AccessibilityProfile {
   readonly window_height?: number;
 }
 
+let focusPresentationInstalled = false;
+
 interface ShellResult<T> {
   readonly outcome: string;
   readonly value: T;
@@ -51,7 +53,6 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
   const modeControl = [...document.querySelectorAll<HTMLButtonElement>(".ld-desktop-view-mode button")].find((button) => button.textContent?.trim().toLowerCase() === mode);
   modeControl?.click();
   await waitForPaint();
-  window.focus();
   const controls = [...document.querySelectorAll<HTMLElement>("button,input,select,textarea,a[href],[tabindex]")]
     .filter((node) => node.tabIndex >= 0 && !node.hasAttribute("disabled"));
   const labelsComplete = controls.every((node) =>
@@ -59,10 +60,8 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     ("labels" in node && Array.from((node as HTMLInputElement).labels ?? []).some((label) => (label.textContent?.trim().length ?? 0) > 0)) ||
     (node.closest("label")?.textContent?.trim().length ?? 0) > 0);
   const focusFailures: string[] = [];
-  const focusResults: boolean[] = [];
-  for (const [index, node] of controls.entries()) {
+  const focusOrderValid = controls.map((node, index) => {
     node.focus();
-	await waitForPaint();
 	const previous = controls[index - 1];
 	const followsPrevious = node.tabIndex === 0 && (index === 0 || (previous !== undefined && Boolean(previous.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)));
 	const outlineVisible = getComputedStyle(node).outlineStyle !== "none";
@@ -70,10 +69,9 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
 	const strokeVisible = focusRect !== null && Number.parseFloat(getComputedStyle(focusRect).strokeWidth) >= 3;
     const active = document.activeElement === node;
     const visible = outlineVisible || strokeVisible;
-    if (!active || !followsPrevious || !visible) focusFailures.push(`${node.tagName}.${node.className}:active=${active},ordered=${followsPrevious},visible=${visible}`);
-    focusResults.push(active && followsPrevious && visible);
-  }
-  const focusOrderValid = focusResults.every(Boolean);
+    if (!active || !followsPrevious || !visible) focusFailures.push(`${node.tagName}.${node.className}:${node.textContent?.trim()}:active=${active},ordered=${followsPrevious},visible=${visible}`);
+    return active && followsPrevious && visible;
+  }).every(Boolean);
   const keyboardWorkflowValid = !profile.keyboard_only || await invokeSettings();
   document.documentElement.dataset.reducedMotion = String(Boolean(profile.reduced_motion));
   const reducedMotionHonored = !profile.reduced_motion || [...document.querySelectorAll<HTMLElement>(".ld-desktop-shell, .ld-desktop-shell *, .ld-desktop-shell *::before, .ld-desktop-shell *::after")]
@@ -162,6 +160,17 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
 }
 
 export function installAccessibilityProbe(eventsOn: (name: string, listener: (...data: unknown[]) => void) => unknown): void {
+  if (!focusPresentationInstalled) {
+    focusPresentationInstalled = true;
+    document.addEventListener("focusin", (event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement || target instanceof SVGElement) target.dataset.focusVisible = "true";
+    });
+    document.addEventListener("focusout", (event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement || target instanceof SVGElement) delete target.dataset.focusVisible;
+    });
+  }
   eventsOn("layerdraw:accessibility-probe", (...data: unknown[]) => {
     const [id, profile] = data;
     if (typeof id !== "string" || typeof profile !== "object" || profile === null) return;

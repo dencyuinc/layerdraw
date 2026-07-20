@@ -85,7 +85,7 @@
 .ld-desktop-viewer-item text { fill: var(--ld-ink); font-size: 13px; pointer-events: none; }
 .ld-desktop-viewer-item[data-selected="true"] rect { fill: var(--ld-accent-soft); stroke: var(--ld-accent); stroke-width: 2.5; }
 .ld-desktop-viewer-item:focus { outline: none; }
-.ld-desktop-viewer-item:focus rect { stroke: #111; stroke-width: 3; }
+.ld-desktop-viewer-item:focus rect, .ld-desktop-viewer-item[data-focus-visible="true"] rect { stroke: #111; stroke-width: 3; }
 .ld-desktop-table-scroll { overflow: auto; }
 .ld-desktop-table-scroll table { width: 100%; border-collapse: collapse; }
 .ld-desktop-table-scroll th, .ld-desktop-table-scroll td { padding: .65rem; border-bottom: 1px solid var(--ld-line); text-align: left; }
@@ -104,4 +104,4 @@
 @media (max-width: 30rem) { .ld-desktop-editor .ld-editor-toolbar { flex-wrap: nowrap; overflow-x: auto; } .ld-desktop-editor .ld-editor-toolbar > * { flex: 0 0 auto; } }
 @media (prefers-reduced-motion: reduce) { .ld-desktop-shell *, .ld-desktop-shell *::before, .ld-desktop-shell *::after { scroll-behavior: auto !important; transition-duration: .00001ms !important; animation-duration: .00001ms !important; } }
 :root[data-reduced-motion="true"] .ld-desktop-shell *, :root[data-reduced-motion="true"] .ld-desktop-shell *::before, :root[data-reduced-motion="true"] .ld-desktop-shell *::after { scroll-behavior: auto !important; transition-duration: .00001ms !important; animation-duration: .00001ms !important; }
-.ld-desktop-shell :focus { outline: 3px solid var(--ld-accent); outline-offset: 2px; }
+.ld-desktop-shell :focus, .ld-desktop-shell [data-focus-visible="true"] { outline: 3px solid var(--ld-accent); outline-offset: 2px; }
