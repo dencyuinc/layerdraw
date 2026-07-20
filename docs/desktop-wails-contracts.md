@@ -125,3 +125,27 @@ and expiry are re-evaluated at publication.
 
 Desktop does not invent an Organization, Workspace, membership, sharing, or
 realtime model. A connected server remains authoritative for those concepts.
+
+## React shell synchronization
+
+The Desktop React shell receives its Browser Editor, Viewer, and project
+lifecycle through explicit injected ports. It does not discover Wails globals
+or construct clients from generated method presence. One lifecycle publication
+contains the selected project and view, open-session generation, authoritative
+Runtime revision token, Browser Editor session, Access summary, storage origin,
+persistence state, and negotiated capability statuses.
+
+Each Viewer snapshot or ordered update carries the same project, session,
+selected-view, and authoritative-revision context. The shell rejects a frame
+whose context differs from the current lifecycle publication and ignores stale
+lifecycle and Viewer sequences. Close or dependency replacement fences late
+work and cancels Viewer materialization. Reopen of the same stable project ID
+uses a new host-issued session generation so pre-close frames cannot reappear.
+
+UI actions are rendered from the effective capability status supplied by the
+host. A linked package or generated binding never makes an action available by
+itself. Closed localized shell failures do not expose native locations,
+credentials, document content, provider errors, or panic values. Lifecycle
+implementations own native dialogs, storage, recovery, leases, and revision
+rules; the React shell owns only interaction, focus, accessibility, responsive
+layout, and presentation of owner-produced Viewer render data.
