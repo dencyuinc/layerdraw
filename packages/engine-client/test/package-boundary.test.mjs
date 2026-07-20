@@ -35,11 +35,11 @@ function digest(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-test("export map is closed and isolates root, host, stdio, and WASM environments", async () => {
+test("export map is closed and isolates root, host, stdio, WASM, and Wails environments", async () => {
   const manifest = JSON.parse(
     await readFile(join(packageRoot, "package.json"), "utf8"),
   );
-  assert.deepEqual(Object.keys(manifest.exports), [".", "./stdio", "./host", "./wasm"]);
+  assert.deepEqual(Object.keys(manifest.exports), [".", "./stdio", "./host", "./wasm", "./wails"]);
   assert.equal(manifest.sideEffects, false);
   assert.equal(manifest.type, "module");
   assert.equal(manifest.license, "Apache-2.0");
@@ -68,12 +68,18 @@ test("export map is closed and isolates root, host, stdio, and WASM environments
   const stdio = await import("@layerdraw/engine-client/stdio");
   const host = await import("@layerdraw/engine-client/host");
   const wasm = await import("@layerdraw/engine-client/wasm");
+  const wails = await import("@layerdraw/engine-client/wails");
   assert.equal(typeof root.EngineClientInputError, "function");
   assert.equal(typeof stdio.createStdioEngineClient, "function");
   assert.equal(typeof host.createLocalHostClient, "function");
   assert.equal(typeof wasm.createWasmEngineClient, "function");
+  assert.equal(typeof wails.createWailsEngineClient, "function");
   const wasmSource = await readFile(join(packageRoot, "dist/wasm.js"), "utf8");
   assert.equal(/from ["']node:/.test(wasmSource), false);
+  const wailsSource = await readFile(join(packageRoot, "dist/wails.js"), "utf8");
+  const wailsDeclarations = await readFile(join(packageRoot, "dist/wails.d.ts"), "utf8");
+  assert.equal(/from ["']node:|@wailsapp|window\.|globalThis\./.test(wailsSource), false);
+  assert.doesNotMatch(wailsDeclarations, /internal\//);
   assert.match(await readFile(join(packageRoot, "dist/stdio.js"), "utf8"), /node:child_process/);
   await assert.rejects(
     import("@layerdraw/engine-client/internal/client"),
@@ -113,6 +119,7 @@ test("pack is deterministic, legal-complete, and installable offline", async () 
     assert.match(listing, /package\/dist\/stdio\.js/);
     assert.match(listing, /package\/dist\/host\.js/);
     assert.match(listing, /package\/dist\/wasm\.js/);
+    assert.match(listing, /package\/dist\/wails\.js/);
     assert.doesNotMatch(listing, /package\/src\//);
     assert.doesNotMatch(listing, /package\/test\//);
 
