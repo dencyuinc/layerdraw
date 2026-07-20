@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -162,10 +163,13 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 }
 
 func writeExclusivePackagedProbe(output string, encoded []byte) error {
+	volumeRoot := filepath.VolumeName(output) + string(os.PathSeparator)
+	if !strings.HasPrefix(output, volumeRoot) {
+		return errors.New("packaged Desktop UI probe path escapes its volume")
+	}
 	// This path is accepted only by the explicit packaged-probe CLI mode and is
 	// required to be clean and absolute above. O_EXCL prevents an existing file
 	// or symlink from being followed or overwritten.
-	// codeql[go/path-injection]
 	file, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err

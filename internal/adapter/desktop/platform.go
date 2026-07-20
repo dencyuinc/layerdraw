@@ -337,10 +337,13 @@ func (s *JSONLogStore) Write(_ context.Context, record desktopcontract.Structure
 }
 
 func openRegularFile(path string, flag int, perm os.FileMode) (*os.File, os.FileInfo, error) {
+	volumeRoot := filepath.VolumeName(path) + string(os.PathSeparator)
+	if !strings.HasPrefix(path, volumeRoot) {
+		return nil, nil, errors.New("desktop private file path escapes its volume")
+	}
 	// The path is intentionally supplied by the native OS file picker/association
 	// boundary. The descriptor and pathname identities are compared below, and
 	// every caller pins/revalidates the identity before consuming content.
-	// codeql[go/path-injection]
 	file, err := os.OpenFile(path, flag, perm)
 	if err != nil {
 		return nil, nil, err
@@ -354,7 +357,6 @@ func openRegularFile(path string, flag int, perm os.FileMode) (*os.File, os.File
 		return closeFailure(err)
 	}
 	// See the descriptor/path identity validation rationale above.
-	// codeql[go/path-injection]
 	linked, err := os.Lstat(path)
 	if err != nil {
 		return closeFailure(err)
