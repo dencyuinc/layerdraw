@@ -89,7 +89,7 @@ func (p *shellWindowPort) ApplySettings(_ context.Context, value desktopcontract
 }
 func (p *shellWindowPort) VerifyPackagedAccessibility(context.Context, desktopcontract.AccessibilityProfile) (desktopcontract.AccessibilityReport, error) {
 	return desktopcontract.AccessibilityReport{
-		LabelsComplete: true, FocusOrderValid: true, KeyboardWorkflowValid: true,
+		LabelsComplete: true, ScreenReaderSemantics: true, FocusOrderValid: true, KeyboardWorkflowValid: true,
 		ReducedMotionHonored: true, MinimumContrast: 7, ZoomLayoutValid: true,
 	}, nil
 }
@@ -233,7 +233,7 @@ func newShellFixture(t *testing.T, platform desktopcontract.DesktopPlatform) (*N
 		crash:    &shellCrashPort{ref: desktopcontract.RecoveryRef{ID: "recovery-opaque-1"}},
 		errors:   &shellErrorPort{},
 		access: &shellAccessibilityPort{report: desktopcontract.AccessibilityReport{
-			LabelsComplete: true, FocusOrderValid: true, KeyboardWorkflowValid: true,
+			LabelsComplete: true, ScreenReaderSemantics: true, FocusOrderValid: true, KeyboardWorkflowValid: true,
 			ReducedMotionHonored: true, MinimumContrast: 7, ZoomLayoutValid: true,
 		}},
 		logs: &shellLogPort{},

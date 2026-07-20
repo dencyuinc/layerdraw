@@ -176,7 +176,7 @@ func (b *WailsShellBridge) ApplySettings(ctx context.Context, value desktopcontr
 	case desktopcontract.ThemeDark:
 		b.runtime.setDarkTheme(ctx)
 	}
-	b.runtime.execJS(ctx, fmt.Sprintf("document.documentElement.dataset.theme=%q;document.documentElement.style.colorScheme=%q;document.documentElement.style.zoom=%q", value.Theme, colorScheme, fmt.Sprintf("%d%%", value.ZoomPercent)))
+	b.runtime.execJS(ctx, fmt.Sprintf("document.documentElement.dataset.theme=%q;document.documentElement.dataset.zoomed=%q;document.documentElement.style.colorScheme=%q;document.documentElement.style.zoom=%q", value.Theme, fmt.Sprintf("%t", value.ZoomPercent >= 175), colorScheme, fmt.Sprintf("%d%%", value.ZoomPercent)))
 	b.mu.Lock()
 	b.settings = value
 	b.mu.Unlock()
@@ -184,7 +184,8 @@ func (b *WailsShellBridge) ApplySettings(ctx context.Context, value desktopcontr
 }
 
 func (b *WailsShellBridge) VerifyPackagedAccessibility(ctx context.Context, profile desktopcontract.AccessibilityProfile) (desktopcontract.AccessibilityReport, error) {
-	if !profile.Platform.Validate() || profile.Platform != CurrentPlatform() || profile.ZoomPercent < 50 || profile.ZoomPercent > 300 {
+	if !profile.Platform.Validate() || profile.Platform != CurrentPlatform() || profile.ZoomPercent < 50 || profile.ZoomPercent > 300 ||
+		(profile.ViewerMode != "" && (profile.ProbeID == "" || (profile.ViewerMode != "2d" && profile.ViewerMode != "2.5d") || profile.WindowWidth < 960 || profile.WindowHeight < 640)) {
 		return desktopcontract.AccessibilityReport{}, errors.New("packaged accessibility profile invalid")
 	}
 	b.mu.Lock()

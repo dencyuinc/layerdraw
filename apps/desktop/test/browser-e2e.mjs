@@ -40,10 +40,66 @@ try {
   assert.equal(await inventory.getAttribute("aria-current"), "page");
   assert.equal(await page.getByRole("heading", { name: "Desktop roadmap" }).evaluate((element) => element === document.activeElement), true);
 
-  const product = page.getByRole("button", { name: "Product" });
+  const product = page.getByRole("button", { name: "Product", exact: true });
   await product.focus();
   await page.keyboard.press("Enter");
   assert.deepEqual(await page.evaluate(() => window.desktopWorkflow.calls.at(-1)), ["viewer", "node:one"]);
+
+  await page.getByRole("button", { name: "2.5D" }).click();
+  const threeCanvas = page.getByRole("img", { name: /Diagram 2\.5D view/ });
+  await threeCanvas.waitFor();
+  await page.waitForFunction(() => document.querySelector(".ld-desktop-viewer-three-canvas")?.dataset.renderReady === "true");
+  assert.equal(await threeCanvas.evaluate((canvas) => {
+    const gl = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+    return gl !== null && !gl.isContextLost() && gl.drawingBufferWidth > 0 && String(gl.getParameter(gl.VERSION)).includes("WebGL");
+  }), true);
+  assert.equal(await threeCanvas.getAttribute("data-relation-count"), "1");
+  assert.equal(await threeCanvas.getAttribute("data-cross-layer-relation-count"), "1");
+  const originalCamera = await threeCanvas.getAttribute("data-camera");
+  const canvasBounds = await threeCanvas.boundingBox();
+  assert.ok(canvasBounds);
+  await page.mouse.move(canvasBounds.x + canvasBounds.width * .4, canvasBounds.y + canvasBounds.height * .4);
+  await page.mouse.down();
+  await page.mouse.move(canvasBounds.x + canvasBounds.width * .65, canvasBounds.y + canvasBounds.height * .55, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForFunction((previous) => document.querySelector(".ld-desktop-viewer-three-canvas")?.dataset.camera !== previous, originalCamera);
+  await page.getByRole("button", { name: "Delivery", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  assert.deepEqual(await page.evaluate(() => window.desktopWorkflow.calls.at(-1)), ["viewer", "node:two"]);
+  await page.getByRole("button", { name: "2D" }).click();
+  await page.getByRole("group", { name: "diagram view" }).waitFor();
+  for (const profile of [
+    { probe_id: "browser-2d", viewer_mode: "2d", theme: "light", zoom_percent: 100, screen_reader: true, keyboard_only: true, reduced_motion: false, window_width: 1440, window_height: 900 },
+    { probe_id: "browser-zoom-2d", viewer_mode: "2d", theme: "light", zoom_percent: 200, screen_reader: true, keyboard_only: true, reduced_motion: true, window_width: 1440, window_height: 900 },
+    { probe_id: "browser-2.5d", viewer_mode: "2.5d", theme: "dark", zoom_percent: 100, screen_reader: true, keyboard_only: true, reduced_motion: true, window_width: 1440, window_height: 900 },
+  ]) {
+    await page.evaluate((value) => {
+      document.documentElement.dataset.theme = value.theme;
+      document.documentElement.dataset.zoomed = String(value.zoom_percent >= 175);
+      document.documentElement.style.zoom = `${value.zoom_percent}%`;
+    }, profile);
+    const report = await page.evaluate((value) => window.desktopWorkflow.audit(value), profile);
+    assert.equal(report.labels_complete, true);
+    assert.equal(report.screen_reader_semantics, true);
+    assert.equal(report.focus_order_valid, true);
+    assert.equal(report.keyboard_workflow_valid, true);
+    assert.ok(report.minimum_contrast >= 4.5, `contrast ${report.minimum_contrast}`);
+    assert.equal(report.zoom_layout_valid, true);
+    assert.equal(report.viewer_mode, profile.viewer_mode);
+    assert.equal(report.viewer_keyboard_selection, true);
+    assert.ok(report.viewer_item_count >= 2);
+    assert.ok(report.viewer_relation_count >= 1);
+    if (profile.viewer_mode === "2.5d") {
+      assert.equal(report.renderer_backend, "three.js");
+      assert.equal(report.webgl_verified, true);
+      assert.equal(report.reduced_motion_honored, true);
+      assert.equal(report.viewer_cross_layer_relation_count, 1);
+    } else {
+      assert.equal(report.renderer_backend, "svg");
+    }
+  }
+  await page.evaluate(() => { document.documentElement.dataset.theme = "light"; document.documentElement.dataset.zoomed = "false"; document.documentElement.style.zoom = "100%"; });
+  await page.getByRole("button", { name: "2D" }).click();
 
   await page.evaluate(() => window.desktopWorkflow.capability(false));
   await page.waitForFunction(() => document.querySelector("button[aria-label^='System map']")?.disabled === true);

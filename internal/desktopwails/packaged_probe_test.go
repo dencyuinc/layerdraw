@@ -418,16 +418,27 @@ func TestPackagedUIProbeWritesRealAccessibilityRoundTrip(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 	binding.AccessibilityProbeReady()
-	var event []any
-	select {
-	case event = <-bridgeRuntime.emitted:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for packaged UI probe event")
-	}
-	id := event[0].(string)
-	report := desktopcontract.AccessibilityReport{LabelsComplete: true, FocusOrderValid: true, KeyboardWorkflowValid: true, ReducedMotionHonored: true, MinimumContrast: 7, ZoomLayoutValid: true}
-	if err := binding.SubmitAccessibilityReport(id, report); err != nil {
-		t.Fatal(err)
+	for index := 0; index < 4; index++ {
+		var event []any
+		select {
+		case event = <-bridgeRuntime.emitted:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for packaged UI probe event")
+		}
+		id := event[0].(string)
+		profile := event[1].(desktopcontract.AccessibilityProfile)
+		report := desktopcontract.AccessibilityReport{
+			LabelsComplete: true, ScreenReaderSemantics: true, FocusOrderValid: true, KeyboardWorkflowValid: true,
+			ReducedMotionHonored: true, MinimumContrast: 7, ZoomLayoutValid: true,
+			ViewportWidth: profile.WindowWidth, ViewportHeight: profile.WindowHeight, ViewerMode: profile.ViewerMode,
+			ViewerItemCount: 4, ViewerRelationCount: 2, ViewerKeyboardSelect: true, RendererBackend: "svg",
+		}
+		if profile.ViewerMode == "2.5d" {
+			report.RendererBackend, report.WebGLVerified, report.ViewerCrossLayerCount = "three.js", true, 2
+		}
+		if err := binding.SubmitAccessibilityReport(id, report); err != nil {
+			t.Fatal(err)
+		}
 	}
 	select {
 	case <-done:
@@ -439,7 +450,7 @@ func TestPackagedUIProbeWritesRealAccessibilityRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result PackagedProbeResult
-	if err := json.Unmarshal(encoded, &result); err != nil || !result.ProjectRoundTrip || !result.DOMRoundTrip || result.Accessibility == nil || !result.Accessibility.KeyboardWorkflowValid || !runtime.quit {
+	if err := json.Unmarshal(encoded, &result); err != nil || !result.ProjectRoundTrip || !result.DOMRoundTrip || len(result.UIMatrix) != 4 || result.Accessibility == nil || !result.Accessibility.KeyboardWorkflowValid || !runtime.quit {
 		t.Fatalf("probe=%+v runtime=%+v err=%v", result, runtime, err)
 	}
 }

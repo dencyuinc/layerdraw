@@ -336,15 +336,29 @@ type AccessibilityProfile struct {
 	KeyboardOnly  bool            `json:"keyboard_only"`
 	ReducedMotion bool            `json:"reduced_motion"`
 	ZoomPercent   uint16          `json:"zoom_percent"`
+	ProbeID       string          `json:"probe_id,omitempty"`
+	ViewerMode    string          `json:"viewer_mode,omitempty"`
+	WindowWidth   uint16          `json:"window_width,omitempty"`
+	WindowHeight  uint16          `json:"window_height,omitempty"`
 }
 
 type AccessibilityReport struct {
 	LabelsComplete        bool    `json:"labels_complete"`
+	ScreenReaderSemantics bool    `json:"screen_reader_semantics"`
 	FocusOrderValid       bool    `json:"focus_order_valid"`
 	KeyboardWorkflowValid bool    `json:"keyboard_workflow_valid"`
 	ReducedMotionHonored  bool    `json:"reduced_motion_honored"`
 	MinimumContrast       float64 `json:"minimum_contrast"`
 	ZoomLayoutValid       bool    `json:"zoom_layout_valid"`
+	ViewportWidth         uint16  `json:"viewport_width,omitempty"`
+	ViewportHeight        uint16  `json:"viewport_height,omitempty"`
+	ViewerMode            string  `json:"viewer_mode,omitempty"`
+	RendererBackend       string  `json:"renderer_backend,omitempty"`
+	ViewerItemCount       uint32  `json:"viewer_item_count,omitempty"`
+	ViewerRelationCount   uint32  `json:"viewer_relation_count,omitempty"`
+	ViewerCrossLayerCount uint32  `json:"viewer_cross_layer_relation_count,omitempty"`
+	ViewerKeyboardSelect  bool    `json:"viewer_keyboard_selection"`
+	WebGLVerified         bool    `json:"webgl_verified"`
 }
 
 type AccessibilityProbe interface {

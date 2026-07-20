@@ -157,16 +157,45 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 	if err := bridge.waitAccessibilityProbeReady(readyCtx); err != nil {
 		return
 	}
-	settings := desktopcontract.DesktopSettings{SchemaVersion: 1, Theme: desktopcontract.ThemeLight, ZoomPercent: 200}
-	if result := shell.UpdateSettings(ctx, settings); result.Outcome != protocolcommon.OutcomeSuccess {
-		return
+	type matrixCase struct {
+		id      string
+		width   uint16
+		height  uint16
+		theme   desktopcontract.Theme
+		zoom    uint16
+		mode    string
+		reduced bool
 	}
-	profile := desktopcontract.AccessibilityProfile{Platform: CurrentPlatform(), ScreenReader: true, KeyboardOnly: true, ReducedMotion: true, ZoomPercent: 200}
-	report, err := bridge.VerifyPackagedAccessibility(ctx, profile)
-	if err != nil {
-		return
+	cases := []matrixCase{
+		{id: "standard-light-2d", width: 1280, height: 800, theme: desktopcontract.ThemeLight, zoom: 100, mode: "2d"},
+		{id: "minimum-light-2.5d", width: 960, height: 640, theme: desktopcontract.ThemeLight, zoom: 100, mode: "2.5d", reduced: true},
+		{id: "standard-light-zoom200-2d", width: 1280, height: 800, theme: desktopcontract.ThemeLight, zoom: 200, mode: "2d", reduced: true},
+		{id: "large-dark-2.5d", width: 1440, height: 900, theme: desktopcontract.ThemeDark, zoom: 100, mode: "2.5d"},
 	}
-	probe.DOMRoundTrip, probe.Accessibility = true, &report
+	for _, current := range cases {
+		window := desktopcontract.WindowState{SchemaVersion: 1, Bounds: desktopcontract.Rectangle{Width: int(current.width), Height: int(current.height)}}
+		if err := bridge.ApplyWindow(ctx, window); err != nil {
+			return
+		}
+		settings := desktopcontract.DesktopSettings{SchemaVersion: 1, Theme: current.theme, ZoomPercent: current.zoom}
+		if result := shell.UpdateSettings(ctx, settings); result.Outcome != protocolcommon.OutcomeSuccess {
+			return
+		}
+		profile := desktopcontract.AccessibilityProfile{
+			Platform: CurrentPlatform(), ScreenReader: true, KeyboardOnly: true, ReducedMotion: current.reduced, ZoomPercent: current.zoom,
+			ProbeID: current.id, ViewerMode: current.mode, WindowWidth: current.width, WindowHeight: current.height,
+		}
+		reportResult := shell.VerifyAccessibility(ctx, profile)
+		if reportResult.Outcome != protocolcommon.OutcomeSuccess {
+			return
+		}
+		probe.UIMatrix = append(probe.UIMatrix, PackagedUIProbeResult{ID: current.id, Window: window, Settings: settings, Profile: profile, Accessibility: reportResult.Value})
+	}
+	probe.DOMRoundTrip = len(probe.UIMatrix) == len(cases)
+	if probe.DOMRoundTrip {
+		last := probe.UIMatrix[len(probe.UIMatrix)-1].Accessibility
+		probe.Accessibility = &last
+	}
 }
 
 func writeExclusivePackagedProbe(output string, encoded []byte) (err error) {

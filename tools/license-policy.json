@@ -1241,6 +1241,14 @@
   ],
   "npm_overrides": [
     {
+      "package": "three",
+      "version": "0.179.1",
+      "reported_license": "MIT",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601"
+    },
+    {
       "package": "spawndamnit",
       "version": "3.0.1",
       "reported_license": "Unknown",
