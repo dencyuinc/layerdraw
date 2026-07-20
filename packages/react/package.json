@@ -13,6 +13,7 @@
     "./layout": {"types": "./dist/layout.d.ts", "import": "./dist/layout.js"},
     "./navigation": {"types": "./dist/navigation.d.ts", "import": "./dist/navigation.js"},
     "./query-viewer": {"types": "./dist/query-viewer.d.ts", "import": "./dist/query-viewer.js"},
+    "./recovery": {"types": "./dist/recovery.d.ts", "import": "./dist/recovery.js"},
     "./styles.css": "./dist/styles.css"
   },
   "scripts": {

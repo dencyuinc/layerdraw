@@ -19,7 +19,7 @@ try {
   await page.addScriptTag({ content: bundled.outputFiles[0].text });
   await page.waitForFunction(() => window.editorWorkflow !== undefined);
 
-  const apply = page.getByRole("button", { name: "Apply" });
+  const apply = page.locator("button[aria-label='Apply']");
   const undo = page.getByRole("button", { name: "Undo" });
   const cancel = page.getByRole("button", { name: "Cancel preview" });
   assert.equal(await apply.getAttribute("data-action-state"), "durable");
@@ -86,16 +86,32 @@ try {
   await page.evaluate(() => window.editorWorkflow.viewer("3d"));
   await page.waitForFunction(() => document.querySelector("[data-render-shape='3d']") !== null);
 
+  await page.evaluate(() => window.editorWorkflow.recovery("approval-unavailable"));
+  const approvalApply = page.getByRole("button", { name: "Request approval and apply" });
+  await approvalApply.waitFor();
+  assert.equal(await approvalApply.isDisabled(), true);
+  await page.evaluate(() => window.editorWorkflow.recovery("conflict"));
+  await page.getByText("The authoring intent conflicts with the current document.").waitFor();
+  await page.getByRole("button", { name: "Refresh" }).click();
+  assert.deepEqual(await page.evaluate(() => window.editorWorkflow.recoveryCalls().at(-1)), ["refresh", "browser-e2e"]);
+  await page.evaluate(() => window.editorWorkflow.recovery("disconnected"));
+  await page.getByText("Runtime restarted").waitFor();
+  await page.getByRole("button", { name: "Reopen session" }).click();
+  await page.waitForFunction(() => document.querySelector(".ld-authoring-recovery")?.dataset.workflowStatus === "review");
+  assert.deepEqual(await page.evaluate(() => window.editorWorkflow.recoveryCalls().at(-1)), ["reopen"]);
+  await page.evaluate(() => window.editorWorkflow.recovery("conflict"));
+
   const desktop = await page.locator(".ld-editor-workspace").evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   assert.ok(desktop.split(" ").length >= 2);
   await page.setViewportSize({ width: 390, height: 844 });
   const mobile = await page.locator(".ld-editor-workspace").evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   assert.equal(mobile.split(" ").length, 1);
   assert.equal(await page.locator(".ld-query-view-actions").evaluate((element) => getComputedStyle(element).flexDirection), "column");
+  assert.equal(await page.locator(".ld-recovery-actions").evaluate((element) => getComputedStyle(element).flexDirection), "column");
   await page.emulateMedia({ reducedMotion: "reduce" });
   const motion = await apply.evaluate((element) => Number.parseFloat(getComputedStyle(element).transitionDuration));
   assert.equal(motion, 0.00001);
-  console.log("React editor workflow E2E passed with query/view empty, loading, error, partial, dense, 2D, 3D, responsive, capability, keyboard, focus, and motion coverage.");
+  console.log("React editor workflow E2E passed with query/view, recovery, responsive, capability, keyboard, focus, and motion coverage.");
 } finally {
   await browser.close();
 }

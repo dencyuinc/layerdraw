@@ -56,6 +56,11 @@
 .ld-live-viewer { container-type: inline-size; min-block-size: 12rem; overflow: auto; }
 .ld-viewer-dense { display: grid; gap: 0.25rem; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); }
 
+.ld-authoring-recovery { display: grid; gap: 0.75rem; padding: 0.75rem; }
+.ld-operation-context { display: grid; gap: 0.25rem 0.75rem; grid-template-columns: max-content minmax(0, 1fr); margin: 0; }
+.ld-operation-context :is(dt, dd) { margin: 0; overflow-wrap: anywhere; }
+.ld-recovery-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
 .ld-visually-hidden {
   block-size: 1px;
   clip: rect(0 0 0 0);
@@ -80,6 +85,8 @@
 @media (max-width: 30rem) {
   .ld-editor-toolbar { align-items: stretch; overflow-x: auto; flex-wrap: nowrap; }
   .ld-editor-toolbar > * { flex: 0 0 auto; }
+  .ld-recovery-actions { align-items: stretch; flex-direction: column; }
+  .ld-recovery-actions > button { inline-size: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
