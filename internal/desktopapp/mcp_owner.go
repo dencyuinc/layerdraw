@@ -53,10 +53,14 @@ func (o *DesktopMCPOwner) Capabilities(ctx context.Context) (mcphost.CapabilityS
 }
 func (o *DesktopMCPOwner) Invoke(ctx context.Context, request mcphost.OwnerRequest) (mcphost.OwnerResponse, error) {
 	method := o.methods[request.Operation]
-	if method == "" || len(request.Continuation) != 0 {
+	if method == "" {
 		return mcphost.OwnerResponse{}, &mcphost.OwnerError{Code: mcphost.ErrorCapabilityUnavailable}
 	}
-	result, err := o.clients.Invoke(ctx, method, desktopcontract.Exchange{Operation: request.Operation, Control: append([]byte(nil), request.Arguments...), Blobs: []desktopcontract.Blob{}})
+	control, err := adaptMCPPageRequest(request.Operation, request.Arguments, request.Continuation)
+	if err != nil {
+		return mcphost.OwnerResponse{}, &mcphost.OwnerError{Code: mcphost.ErrorInvalidCursor}
+	}
+	result, err := o.clients.Invoke(ctx, method, desktopcontract.Exchange{Operation: request.Operation, Control: control, Blobs: []desktopcontract.Blob{}})
 	if err != nil {
 		return mcphost.OwnerResponse{}, err
 	}
@@ -64,7 +68,11 @@ func (o *DesktopMCPOwner) Invoke(ctx context.Context, request mcphost.OwnerReque
 	if err != nil {
 		return mcphost.OwnerResponse{}, err
 	}
-	return mcphost.OwnerResponse{Content: append(json.RawMessage(nil), result.Control...), Outcome: outcome}, nil
+	items, nextCursor, err := inspectMCPPage(request.Operation, result.Control)
+	if err != nil {
+		return mcphost.OwnerResponse{}, err
+	}
+	return mcphost.OwnerResponse{Content: append(json.RawMessage(nil), result.Control...), NextCursor: nextCursor, Items: items, Outcome: outcome}, nil
 }
 func (o *DesktopMCPOwner) ReadResource(ctx context.Context, request mcphost.ResourceRequest) (mcphost.ResourceResponse, error) {
 	if o.resources == nil {

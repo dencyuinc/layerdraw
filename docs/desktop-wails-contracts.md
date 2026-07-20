@@ -99,6 +99,13 @@ credentials, or provider text. The typed owner adapter still performs generated
 request validation and the final Runtime/Access/Review revalidation; MCP tool
 visibility is never an authorization boundary.
 
+For generated paginated operations, the Desktop owner adapter uses a closed
+operation table to decode the exact response page, enforce the aggregate item
+limit, retain the owner continuation behind an opaque MCP cursor, and inject it
+through the typed generated request codec on the next call. Capability
+discovery advertises an explicit bounded schema matching the returned effective
+snapshot and AuthoringGrantSummary.
+
 Startup resolves the configured credential references and live delegation
 fences through the typed `HostPorts`; credential bytes are discarded before
 adapter startup. Injected-port panics are contained as

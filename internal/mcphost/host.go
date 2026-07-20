@@ -182,7 +182,7 @@ func (h *Host) ListTools(ctx context.Context) ([]Tool, *Failure) {
 	if failure != nil {
 		return nil, failure
 	}
-	tools := []Tool{{Name: "layerdraw.get_capabilities", Description: "Read effective Desktop capabilities and AuthoringGrantSummary.", InputSchema: objectSchema(), OutputSchema: objectSchema()}}
+	tools := []Tool{{Name: "layerdraw.get_capabilities", Description: "Read effective Desktop capabilities and AuthoringGrantSummary.", InputSchema: objectSchema(), OutputSchema: capabilitySnapshotSchema(h.config.Limits)}}
 	for _, mapping := range toolCatalog {
 		capability, ok := mappingCapability(snapshot, mapping)
 		if !ok {
@@ -611,6 +611,9 @@ func mapOwnerError(ctx context.Context, err error) *Failure {
 }
 func objectSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":false}`)
+}
+func capabilitySnapshotSchema(limits Limits) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"manifest_etag":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"operations":{"type":"object","maxProperties":%[1]d,"additionalProperties":{"type":"object","properties":{"enabled":{"type":"boolean"},"input_schema":{"type":"object"},"output_schema":{"type":"object"}},"required":["enabled","input_schema","output_schema"],"additionalProperties":false}},"resources":{"type":"array","maxItems":%[1]d,"items":{"type":"object","properties":{"uri":{"type":"string","minLength":1,"maxLength":%[2]d},"name":{"type":"string","minLength":1,"maxLength":%[2]d},"description":{"type":"string","maxLength":%[2]d},"mime_type":{"type":"string","minLength":1,"maxLength":%[2]d},"schema":{"type":"object"},"bound":{"type":"boolean"}},"required":["uri","name","description","mime_type","schema","bound"],"additionalProperties":false}},"authoring_grant_summary":{"type":"object","properties":{"access_fingerprint":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"constrained_capabilities":{"type":"array","maxItems":%[1]d,"items":{"type":"string","maxLength":%[2]d}},"expires_at":{"type":"string","maxLength":30},"granted_capabilities":{"type":"array","maxItems":%[1]d,"items":{"type":"string","maxLength":%[2]d}},"policy_etag":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}},"required":["access_fingerprint","constrained_capabilities","granted_capabilities","policy_etag"],"additionalProperties":false}},"required":["manifest_etag","operations","resources","authoring_grant_summary"],"additionalProperties":false}`, limits.MaxItems, limits.MaxOutputBytes))
 }
 func workflowSchema(preview, commit json.RawMessage) json.RawMessage {
 	value := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"preview", "commit"}, "properties": map[string]json.RawMessage{"preview": clone(preview), "commit": clone(commit)}}

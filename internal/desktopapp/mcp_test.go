@@ -5,12 +5,15 @@ package desktopapp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
@@ -115,16 +118,30 @@ func TestCanonicalDesktopCompositionUsesGeneratedOwnerEnvelopeWithWailsParity(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := engineprotocol.ListModulesResponseEnvelope{Diagnostics: []semantic.Diagnostic{}, EngineRelease: "1.0.0", Outcome: protocolcommon.OutcomeSuccess, Payload: &engineprotocol.ListModulesResult{DocumentGeneration: generation, Items: []engineprotocol.ModuleReadItem{}, Page: engineprotocol.ModulePageInfo{ReturnedBytes: "221", ReturnedItems: "0", Truncation: engineprotocol.TruncationOutcomeComplete}}, Protocol: request.Protocol, RequestID: request.RequestID}
-	responseBytes, err := engineprotocol.EncodeListModulesResponseEnvelope(response)
-	if err != nil {
-		t.Fatal(err)
+	next := engineprotocol.ModuleCursor{DocumentGeneration: generation, Value: "list_modules_cursor_abcdefghijklmnop"}
+	responseBytes := encodeListModulesPage(t, request, nil, &next, engineprotocol.TruncationOutcomeItemLimit)
+	secondBytes := encodeListModulesPage(t, request, nil, nil, engineprotocol.TruncationOutcomeComplete)
+	overflowItems := make([]engineprotocol.ModuleReadItem, mcphost.DefaultLimits().MaxItems+1)
+	for index := range overflowItems {
+		overflowItems[index] = engineprotocol.ModuleReadItem{ByteLength: "1", Digest: testMCPDigest(), Module: semantic.ModuleRef{ModulePath: fmt.Sprintf("module/%04d.ldl", index), Origin: semantic.SourceOrigin{Kind: semantic.OriginKindProject}}}
 	}
+	overflowBytes := encodeListModulesPage(t, request, overflowItems, nil, engineprotocol.TruncationOutcomeComplete)
+	overflow := false
 	clients.Engine.ListModules = func(_ context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
-		if string(exchange.Control) != string(requestBytes) {
-			t.Fatalf("generated request changed\n got %s\nwant %s", exchange.Control, requestBytes)
+		decoded, decodeErr := engineprotocol.DecodeListModulesRequestEnvelope(exchange.Control)
+		if decodeErr != nil {
+			t.Fatalf("generated request invalid: %v", decodeErr)
 		}
-		return desktopcontract.ExchangeResult{Operation: string(engineprotocol.ListModulesRequestEnvelopeOperationValue), Control: append([]byte(nil), responseBytes...), Blobs: []desktopcontract.Blob{}}, nil
+		control := responseBytes
+		if overflow {
+			control = overflowBytes
+		} else if decoded.Payload.Cursor != nil {
+			if *decoded.Payload.Cursor != next {
+				t.Fatalf("injected cursor=%+v want=%+v", decoded.Payload.Cursor, next)
+			}
+			control = secondBytes
+		}
+		return desktopcontract.ExchangeResult{Operation: string(engineprotocol.ListModulesRequestEnvelopeOperationValue), Control: append([]byte(nil), control...), Blobs: []desktopcontract.Blob{}}, nil
 	}
 	digest := protocolcommon.Digest("sha256:0000000000000000000000000000000000000000000000000000000000000000")
 	snapshot := mcphost.CapabilitySnapshot{ManifestETag: protocolcommon.ManifestETag(digest), Operations: map[string]mcphost.OperationCapability{string(engineprotocol.ListModulesRequestEnvelopeOperationValue): {Enabled: true, InputSchema: json.RawMessage(`{"type":"object"}`), OutputSchema: json.RawMessage(`{"type":"object"}`)}}, Resources: []mcphost.ResourceCapability{}, GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest}}
@@ -147,13 +164,44 @@ func TestCanonicalDesktopCompositionUsesGeneratedOwnerEnvelopeWithWailsParity(t 
 		t.Fatal(err)
 	}
 	result := app.MCPCallTool(context.Background(), mcphost.CallToolRequest{Name: "layerdraw.list_modules", RequestID: "request", Arguments: requestBytes, Binding: &mcphost.Binding{DocumentID: "document-1", RevisionDigest: digest, AccessFingerprint: digest}})
-	if result.Failure != nil || string(result.Content) != string(direct.Control) {
+	if result.Failure != nil || result.Cursor == "" || string(result.Content) != string(direct.Control) {
 		t.Fatalf("MCP=%+v direct=%s", result, direct.Control)
+	}
+	second := app.MCPCallTool(context.Background(), mcphost.CallToolRequest{Name: "layerdraw.list_modules", RequestID: "request", Arguments: requestBytes, Cursor: result.Cursor, Binding: &mcphost.Binding{DocumentID: "document-1", RevisionDigest: digest, AccessFingerprint: digest}})
+	if second.Failure != nil || second.Cursor != "" || string(second.Content) != string(secondBytes) {
+		t.Fatalf("second=%+v", second)
+	}
+	overflow = true
+	exhausted := app.MCPCallTool(context.Background(), mcphost.CallToolRequest{Name: "layerdraw.list_modules", RequestID: "overflow", Arguments: requestBytes, Binding: &mcphost.Binding{DocumentID: "document-1", RevisionDigest: digest, AccessFingerprint: digest}})
+	if exhausted.Failure == nil || exhausted.Failure.Code != mcphost.ErrorResourceExhausted || len(exhausted.Content) != 0 {
+		t.Fatalf("overflow=%+v", exhausted)
 	}
 	tools, failure := app.MCPListTools(context.Background())
 	if failure != nil || len(tools) != 2 || tools[1].Name != "layerdraw.list_modules" {
 		t.Fatalf("tools=%+v failure=%+v", tools, failure)
 	}
+}
+
+func testMCPDigest() protocolcommon.Digest {
+	return protocolcommon.Digest("sha256:0000000000000000000000000000000000000000000000000000000000000000")
+}
+
+func encodeListModulesPage(t *testing.T, request engineprotocol.ListModulesRequestEnvelope, items []engineprotocol.ModuleReadItem, cursor *engineprotocol.ModuleCursor, truncation engineprotocol.TruncationOutcome) []byte {
+	t.Helper()
+	if items == nil {
+		items = []engineprotocol.ModuleReadItem{}
+	}
+	payload := engineprotocol.ListModulesResult{DocumentGeneration: request.Payload.DocumentGeneration, Items: items, Page: engineprotocol.ModulePageInfo{NextCursor: cursor, ReturnedBytes: "0", ReturnedItems: protocolcommon.CanonicalUint64(strconv.Itoa(len(items))), Truncation: truncation}}
+	logical, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload.Page.ReturnedBytes = engineprotocol.LogicalResponseByteCount(strconv.Itoa(len(logical)))
+	encoded, err := engineprotocol.EncodeListModulesResponseEnvelope(engineprotocol.ListModulesResponseEnvelope{Diagnostics: []semantic.Diagnostic{}, EngineRelease: "1.0.0", Outcome: protocolcommon.OutcomeSuccess, Payload: &payload, Protocol: request.Protocol, RequestID: request.RequestID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func TestCanonicalMCPRoutesUseOnlyClosedDesktopOwnerCatalog(t *testing.T) {
@@ -185,5 +233,41 @@ func TestCanonicalMCPRoutesUseOnlyClosedDesktopOwnerCatalog(t *testing.T) {
 				t.Fatalf("%s routes to non-catalog owner %s", route.Name, operation)
 			}
 		}
+	}
+}
+
+func TestGeneratedPageAdapterCatalogIsClosedAndHandlesTerminalPages(t *testing.T) {
+	engineDiagnostic := semantic.Diagnostic{Arguments: map[string]semantic.DiagnosticArgumentValue{}, Code: "LDL1801", MessageKey: "workbench_not_found_rejected", ProtocolVersion: 1, Related: []semantic.DiagnosticRelated{}, Severity: semantic.DiagnosticSeverityError}
+	engineTerminal, err := engineprotocol.EncodeListModulesResponseEnvelope(engineprotocol.ListModulesResponseEnvelope{Diagnostics: []semantic.Diagnostic{engineDiagnostic}, EngineRelease: "1.0.0", Outcome: protocolcommon.OutcomeRejected, Protocol: engineprotocol.EngineProtocolRef{Name: engineprotocol.EngineProtocolRefNameValue, Version: engineprotocol.EngineProtocolRefVersionValue}, RequestID: "terminal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDiagnostic := protocolcommon.ProtocolDiagnostic{Code: "runtime.rejected", Message: "rejected", Related: []protocolcommon.ProtocolDiagnosticRelated{}, Severity: protocolcommon.ProtocolDiagnosticSeverityError}
+	runtimeTerminal, err := runtimeprotocol.EncodeListRevisionsResponseEnvelope(runtimeprotocol.ListRevisionsResponseEnvelope{Diagnostics: []protocolcommon.ProtocolDiagnostic{runtimeDiagnostic}, HostRelease: "1.0.0", Outcome: protocolcommon.OutcomeRejected, Protocol: runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}, RequestID: "terminal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"engine.list_modules": true, "engine.find_symbols": true, "engine.read_declarations": true, "engine.read_rows": true, "engine.get_neighbors": true, "engine.inspect_subgraph": true, "engine.find_usages": true, "engine.list_references": true, "engine.read_references": true, "runtime.list_revisions": true}
+	if len(mcpPageAdapters) != len(want) {
+		t.Fatalf("adapters=%d", len(mcpPageAdapters))
+	}
+	for operation, adapter := range mcpPageAdapters {
+		if !want[operation] {
+			t.Fatalf("unexpected adapter %s", operation)
+		}
+		control := engineTerminal
+		if operation == "runtime.list_revisions" {
+			control = runtimeTerminal
+		}
+		items, cursor, inspectErr := adapter.inspect(control)
+		if inspectErr != nil || items != 0 || len(cursor) != 0 {
+			t.Fatalf("%s terminal page: items=%d cursor=%s err=%v", operation, items, cursor, inspectErr)
+		}
+	}
+	if _, err = adaptMCPPageRequest("engine.preview_fragment", json.RawMessage(`{}`), json.RawMessage(`"cursor"`)); err == nil {
+		t.Fatal("unsupported continuation accepted")
+	}
+	if items, cursor, err := inspectMCPPage("engine.preview_fragment", json.RawMessage(`{}`)); err != nil || items != 0 || cursor != nil {
+		t.Fatalf("non-page result=%d,%s,%v", items, cursor, err)
 	}
 }

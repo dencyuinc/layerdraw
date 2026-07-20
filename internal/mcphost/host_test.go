@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -783,6 +785,100 @@ func TestLocalTransportUsesOnlyActiveHandlerGeneration(t *testing.T) {
 	if _, failure := transport.ListResources(context.Background()); failure == nil || failure.Code != ErrorTransport {
 		t.Fatalf("poststop=%v", failure)
 	}
+}
+
+func TestCapabilitiesResponseConformsToAdvertisedSchema(t *testing.T) {
+	host, _ := newRunning(t, &ownerStub{snapshot: snapshot("engine.list_modules")}, DefaultLimits())
+	tools, failure := host.ListTools(context.Background())
+	if failure != nil || len(tools) == 0 || tools[0].Name != "layerdraw.get_capabilities" {
+		t.Fatalf("tools=%+v failure=%+v", tools, failure)
+	}
+	result := host.CallTool(context.Background(), CallToolRequest{Name: tools[0].Name, RequestID: "capabilities", Arguments: json.RawMessage(`{}`)})
+	if result.Failure != nil {
+		t.Fatalf("result=%+v", result)
+	}
+	var schema, value any
+	if json.Unmarshal(tools[0].OutputSchema, &schema) != nil || json.Unmarshal(result.Content, &value) != nil {
+		t.Fatal("schema or response is not JSON")
+	}
+	assertSchemaValue(t, schema.(map[string]any), value, "$")
+}
+
+func assertSchemaValue(t *testing.T, schema map[string]any, value any, path string) {
+	t.Helper()
+	switch schema["type"] {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("%s is not object", path)
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		for _, required := range stringValues(schema["required"]) {
+			if _, ok := object[required]; !ok {
+				t.Fatalf("%s.%s is required", path, required)
+			}
+		}
+		if maximum, ok := schema["maxProperties"].(float64); ok && len(object) > int(maximum) {
+			t.Fatalf("%s has too many properties", path)
+		}
+		for key, child := range object {
+			childSchema, known := properties[key].(map[string]any)
+			if !known {
+				if additional, ok := schema["additionalProperties"].(map[string]any); ok {
+					childSchema = additional
+				} else if schema["additionalProperties"] == false {
+					t.Fatalf("%s.%s is additional", path, key)
+				} else {
+					continue
+				}
+			}
+			assertSchemaValue(t, childSchema, child, path+"."+key)
+		}
+	case "array":
+		array, ok := value.([]any)
+		if !ok {
+			t.Fatalf("%s is not array", path)
+		}
+		if maximum, ok := schema["maxItems"].(float64); ok && len(array) > int(maximum) {
+			t.Fatalf("%s has too many items", path)
+		}
+		if itemSchema, ok := schema["items"].(map[string]any); ok {
+			for index, item := range array {
+				assertSchemaValue(t, itemSchema, item, fmt.Sprintf("%s[%d]", path, index))
+			}
+		}
+	case "string":
+		text, ok := value.(string)
+		if !ok {
+			t.Fatalf("%s is not string", path)
+		}
+		if maximum, ok := schema["maxLength"].(float64); ok && len(text) > int(maximum) {
+			t.Fatalf("%s is too long", path)
+		}
+		if minimum, ok := schema["minLength"].(float64); ok && len(text) < int(minimum) {
+			t.Fatalf("%s is too short", path)
+		}
+		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(text) {
+			t.Fatalf("%s does not match", path)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			t.Fatalf("%s is not boolean", path)
+		}
+	default:
+		t.Fatalf("%s has unsupported schema type %v", path, schema["type"])
+	}
+}
+
+func stringValues(value any) []string {
+	values, _ := value.([]any)
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
 }
 
 var _ = errors.New
