@@ -58,6 +58,12 @@ func (a *Application) openSelected(ctx context.Context, component desktopcontrac
 	if err != nil {
 		return mapProjectOpenFailure[ProjectOpenResult](err, desktopcontract.ComponentRuntime)
 	}
+	if a.config.NativeSearchLifecycle != nil {
+		if err := a.config.NativeSearchLifecycle.RefreshSearchIndex(ctx, opened.Session); err != nil {
+			_ = host.Close(context.Background(), opened.Session)
+			return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentNativeQuery, true, desktopcontract.RecoveryRetry)
+		}
+	}
 	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil)
 	if trackErr != nil {
 		_ = host.Close(ctx, opened.Session)
@@ -96,6 +102,12 @@ func (a *Application) reloadProject(ctx context.Context, documentID runtimeproto
 	opened, err := host.OpenDocument(ctx, documentID)
 	if err != nil {
 		return mapProjectOpenFailure[ProjectOpenResult](err, desktopcontract.ComponentRuntime)
+	}
+	if a.config.NativeSearchLifecycle != nil {
+		if err := a.config.NativeSearchLifecycle.RefreshSearchIndex(ctx, opened.Session); err != nil {
+			_ = host.Close(context.Background(), opened.Session)
+			return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentNativeQuery, true, desktopcontract.RecoveryRetry)
+		}
 	}
 	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil)
 	if trackErr != nil {

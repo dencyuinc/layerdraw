@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -79,7 +80,12 @@ type Config struct {
 	ExternalLifecycle             ExternalLifecycleAdapter
 	ExternalPublication           ExternalPublicationGate
 	NativeInterchange             NativeInterchangePort
+	NativeSearchLifecycle         NativeSearchLifecycle
 	Now                           func() time.Time
+}
+
+type NativeSearchLifecycle interface {
+	RefreshSearchIndex(context.Context, *localdocument.Session) error
 }
 
 // ProjectOpenResult contains generated Runtime values only. The local session
@@ -355,6 +361,14 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 			a.started = append(a.started, id)
 			continue
 		}
+		if consumer, ok := a.config.Adapters[id].(localHostConsumer); ok && !a.adapterAlreadyStarted(a.config.Adapters[id]) {
+			a.mu.Lock()
+			host := a.host
+			a.mu.Unlock()
+			if host == nil || consumer.BindLocalHost(host) != nil {
+				return a.failStartWith(ctx, desktopcontract.FailureStartup, id, true, desktopcontract.RecoveryRetry)
+			}
+		}
 		if err := safeAdapterStart(ctx, a.config.Adapters[id]); err != nil {
 			code := desktopcontract.FailureStartup
 			recovery := desktopcontract.RecoveryRetry
@@ -402,7 +416,7 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 				err = errors.New("MCP transport start failed")
 			}
 		} else {
-			if consumer, ok := a.config.Adapters[id].(localHostConsumer); ok {
+			if consumer, ok := a.config.Adapters[id].(localHostConsumer); ok && !a.adapterAlreadyStarted(a.config.Adapters[id]) {
 				a.mu.Lock()
 				host := a.host
 				a.mu.Unlock()
@@ -441,6 +455,20 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 	a.state = desktopcontract.LifecycleReady
 	a.mu.Unlock()
 	return desktopcontract.Result[protocolcommon.HandshakeResult]{Outcome: protocolcommon.OutcomeSuccess, Value: negotiated.Value}
+}
+
+func (a *Application) adapterAlreadyStarted(candidate Adapter) bool {
+	candidateValue := reflect.ValueOf(candidate)
+	if !candidateValue.IsValid() || !candidateValue.Type().Comparable() {
+		return false
+	}
+	for _, id := range a.started {
+		value := reflect.ValueOf(a.config.Adapters[id])
+		if value.IsValid() && value.Type() == candidateValue.Type() && value.Type().Comparable() && value.Interface() == candidateValue.Interface() {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Application) componentDisabled(id desktopcontract.ComponentID) bool {

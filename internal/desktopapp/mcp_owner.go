@@ -77,6 +77,9 @@ func (o *DesktopMCPOwner) Invoke(ctx context.Context, request mcphost.OwnerReque
 		}
 		return mcphost.OwnerResponse{}, &mcphost.OwnerError{Code: mcphost.ErrorCapabilityUnavailable}
 	}
+	if err := validateNativeMCPBinding(request); err != nil {
+		return mcphost.OwnerResponse{}, err
+	}
 	control, err := adaptMCPPageRequest(request.Operation, request.Arguments, request.Continuation)
 	if err != nil {
 		return mcphost.OwnerResponse{}, &mcphost.OwnerError{Code: mcphost.ErrorInvalidCursor}

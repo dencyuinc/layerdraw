@@ -40,6 +40,46 @@ type DesktopNativeConfig struct {
 	MaxRows, MaxBytes                      int
 }
 
+// DesktopNativeSearchConfig binds the native Search owners to an already
+// constructed Desktop Runtime and Engine. This is the composition used by the
+// Wails process, which must not create a second localdocument.Host for the same
+// data root.
+type DesktopNativeSearchConfig struct {
+	Root, DatabasePath                    string
+	FTSExtensionPath, VectorExtensionPath string
+	AlgoExtensionPath                     string
+	PlanKey, SearchDocumentKey            []byte
+	EmbeddingProfile                      port.EmbeddingProfile
+	LocalModelSeed                        []byte
+	MaxRows, MaxBytes                     int
+	LocalHost                             *localdocument.Host
+	Engine                                *engineendpoint.HostEngineFacade
+}
+
+func OpenDesktopNativeSearch(config DesktopNativeSearchConfig) (*NativeDesktopSearchComposition, error) {
+	if config.LocalHost == nil || config.Engine == nil {
+		return nil, fmt.Errorf("native Desktop Search requires the shared Runtime and Engine owners")
+	}
+	projection := enginesearch.NewSessionAccessProjection()
+	engineSearch := enginesearch.New(config.Engine.Compiler(), projection)
+	search, err := openDesktopNativeSearchComposition(DesktopSearchConfig{
+		Root: config.Root, Engine: engineSearch, DocumentProducer: engineSearch,
+		PlanKey: config.PlanKey, SearchDocumentKey: config.SearchDocumentKey,
+		EmbeddingProfile: config.EmbeddingProfile, LocalModelSeed: config.LocalModelSeed,
+		PlanProtocolVersion: "v1", MaxRows: config.MaxRows, MaxBytes: config.MaxBytes,
+		Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...),
+	}, config.DatabasePath, []string{config.FTSExtensionPath, config.VectorExtensionPath, config.AlgoExtensionPath}, true)
+	if err != nil {
+		return nil, err
+	}
+	search.engineSearch, search.projection, search.localHost = engineSearch, projection, config.LocalHost
+	if config.EmbeddingProfile.ProfileID != "" {
+		profile := config.EmbeddingProfile
+		search.profile = &profile
+	}
+	return search, nil
+}
+
 // OpenDesktopNativeEndpoint is the production in-process composition root used
 // by the Wails Desktop backend and the native host transport. Both consumers
 // receive the same Endpoint and Search surface; neither can substitute a stub.
@@ -53,18 +93,16 @@ func OpenDesktopNativeEndpoint(config DesktopNativeConfig) (*Endpoint, *NativeDe
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, nil, err
 	}
-	projection := enginesearch.NewSessionAccessProjection()
-	engineSearch := enginesearch.New(engineFacade.Compiler(), projection)
-	search, err := openDesktopNativeSearchComposition(DesktopSearchConfig{Root: config.Root, Engine: engineSearch, DocumentProducer: engineSearch, PlanKey: config.PlanKey, SearchDocumentKey: config.SearchDocumentKey, EmbeddingProfile: config.EmbeddingProfile, LocalModelSeed: config.LocalModelSeed, PlanProtocolVersion: "v1", MaxRows: config.MaxRows, MaxBytes: config.MaxBytes, Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...)}, config.DatabasePath, []string{config.FTSExtensionPath, config.VectorExtensionPath, config.AlgoExtensionPath}, true)
+	search, err := OpenDesktopNativeSearch(DesktopNativeSearchConfig{
+		Root: config.Root, DatabasePath: config.DatabasePath,
+		FTSExtensionPath: config.FTSExtensionPath, VectorExtensionPath: config.VectorExtensionPath, AlgoExtensionPath: config.AlgoExtensionPath,
+		PlanKey: config.PlanKey, SearchDocumentKey: config.SearchDocumentKey,
+		EmbeddingProfile: config.EmbeddingProfile, LocalModelSeed: config.LocalModelSeed,
+		MaxRows: config.MaxRows, MaxBytes: config.MaxBytes, LocalHost: localHost, Engine: engineFacade,
+	})
 	if err != nil {
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, nil, err
-	}
-	search.engineSearch = engineSearch
-	search.projection, search.localHost = projection, localHost
-	if config.EmbeddingProfile.ProfileID != "" {
-		profile := config.EmbeddingProfile
-		search.profile = &profile
 	}
 	endpoint, err := New(Config{LocalHost: localHost, Engine: engineFacade, Search: search.Surface, SearchLifecycle: search})
 	if err != nil {

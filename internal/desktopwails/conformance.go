@@ -22,6 +22,8 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
+	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 const packagedConformanceIterations = 5
@@ -389,7 +391,7 @@ func conformanceSearchAnalysis(ctx context.Context) error {
 		return fmt.Errorf("Wails query failed: desktop=%s owner=%s failure=%+v diagnostics=%+v decode=%v", result.Outcome, queryResponse.Outcome, queryResponse.Failure, queryResponse.Diagnostics, err)
 	}
 	workbench.query = queryResponse.Payload.Result
-	inspect := engineprotocol.InspectSubgraphRequestEnvelope{Operation: engineprotocol.InspectSubgraphRequestEnvelopeOperationValue, Protocol: conformanceEngineProtocol(), RequestID: "conformance-analysis", Payload: engineprotocol.InspectSubgraphInput{Depth: 2, DocumentGeneration: workbench.generation, Limits: conformanceLimits(), RootAddresses: []semantic.EntityAddress{"ldl:project:p:entity:a"}}}
+	inspect := engineprotocol.InspectSubgraphRequestEnvelope{Operation: engineprotocol.InspectSubgraphRequestEnvelopeOperationValue, Protocol: conformanceEngineProtocol(), RequestID: "conformance-analysis", Payload: engineprotocol.InspectSubgraphInput{Depth: 2, DocumentGeneration: workbench.generation, Limits: conformanceLimits(), RootAddresses: []semantic.EntityAddress{"ldl:project:p:entity:alpha"}}}
 	control, _ = engineprotocol.EncodeInspectSubgraphRequestEnvelope(inspect)
 	result = workbench.instance.app.Invoke(ctx, "EngineInspectSubgraph", desktopcontract.Exchange{Operation: string(inspect.Operation), Control: control})
 	analysis, err := engineprotocol.DecodeInspectSubgraphResponseEnvelope(result.Value.Control)
@@ -456,6 +458,20 @@ func conformanceMCP(ctx context.Context) error {
 			return fmt.Errorf("bundled MCP tool %s is absent from %v", name, names)
 		}
 	}
+	if packagedNativeSearchEnabled() {
+		for _, name := range []string{"layerdraw.search", "layerdraw.run_query", "layerdraw.analyze_graph"} {
+			found := false
+			for _, tool := range tools {
+				found = found || tool.Name == name
+			}
+			if !found {
+				return fmt.Errorf("bundled native MCP tool %s is absent", name)
+			}
+		}
+		if err := conformanceNativeMCP(ctx, workbench.instance); err != nil {
+			return err
+		}
+	}
 	capabilities := workbench.instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "conformance-capabilities", Arguments: json.RawMessage(`{}`)})
 	if capabilities.Failure != nil || len(capabilities.Content) == 0 {
 		return errors.New("bundled MCP capability read failed")
@@ -490,6 +506,46 @@ func conformanceMCP(ctx context.Context) error {
 		return errors.New("bundled MCP resource read failed")
 	}
 	return nil
+}
+
+func conformanceNativeMCP(ctx context.Context, instance *conformanceInstance) error {
+	opened, err := instance.openProject(ctx, conformanceProjectSource)
+	if err != nil {
+		return fmt.Errorf("native MCP project open failed: %w", err)
+	}
+	revision := opened.Open.CommittedRevision
+	accessDigest := string(opened.Open.AccessSummary.AccessFingerprint)
+	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: string(revision.DocumentID), CommittedRevision: string(revision.RevisionID), DefinitionHash: string(revision.DefinitionHash)}
+	binding := &mcphost.Binding{DocumentID: opened.Open.Session.Scope.DocumentID, RevisionDigest: revision.DefinitionHash, AccessFingerprint: opened.Open.Session.Scope.AccessFingerprint}
+	call := func(name, operation, requestID string, payload any) error {
+		payloadBytes, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		raw, marshalErr := json.Marshal(nativeSearchEnvelope{Operation: operation, Payload: payloadBytes, Protocol: runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}, RequestID: requestID})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		result := instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: name, RequestID: requestID, Arguments: raw, Binding: binding})
+		var response nativeSearchResponseEnvelope
+		if result.Failure != nil || decodeExactBytes(result.Content, &response) != nil || response.Outcome != protocolcommon.OutcomeSuccess || len(response.Payload) == 0 {
+			return fmt.Errorf("native MCP tool %s failed: %+v", name, result.Failure)
+		}
+		return nil
+	}
+	bound := func(request []byte) port.BoundExecutionRequest {
+		return port.BoundExecutionRequest{Session: &opened.Open.Session, Snapshot: snapshot, AccessProjectionDigest: accessDigest, Request: request, MaxOutputBytes: 1 << 20}
+	}
+	if err := call("layerdraw.run_query", "native.execute_query", "conformance-native-query", bound([]byte(`{"kind":"structural_query","root_addresses":["ldl:project:p:entity:alpha"]}`))); err != nil {
+		return err
+	}
+	profile, embedding := packagedSearchProfile(), packagedEmbeddingProfile()
+	search := layerruntime.SearchRequest{Session: &opened.Open.Session, Snapshot: snapshot, AccessProjectionDigest: accessDigest, SearchProfile: profile, EmbeddingProfile: &embedding, IndexIdentity: packagedSearchIdentity(snapshot, accessDigest), Mode: "lexical", QueryText: "Service", EngineRequest: []byte(`{"kind":"search_documents","mode":"lexical","query_text":"Service"}`), MaxOutputBytes: 1 << 20}
+	if err := call("layerdraw.search", "native.execute_search", "conformance-native-search", search); err != nil {
+		return err
+	}
+	analysis := bound([]byte(`{"kind":"analyze_graph","algorithm":"page_rank","entity_addresses":["ldl:project:p:entity:alpha","ldl:project:p:entity:beta"],"relation_addresses":["ldl:project:p:relation:alpha_beta"],"parameters":{}}`))
+	return call("layerdraw.analyze_graph", "native.execute_analysis", "conformance-native-analysis", analysis)
 }
 
 type conformanceProvider struct{}
@@ -560,8 +616,25 @@ entity_type service "Service" {
   representation shape rect
 }
 
+relation_type calls "Calls" data_flow {
+  allow_self false
+  duplicate_policy allow
+  from caller types [service] layers [app]
+  to callee types [service] layers [app]
+  cardinality {
+    to_per_from 0..*
+    from_per_to 0..*
+  }
+  label "calls"
+}
+
 entities service @app {
-  a "Service A"
+  alpha "Service A"
+  beta "Service B"
+}
+
+relations calls {
+  alpha_beta: alpha -> beta
 }
 
 query all "All" {
