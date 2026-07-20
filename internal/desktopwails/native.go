@@ -8,8 +8,10 @@ package desktopwails
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,15 +65,37 @@ func patterns(extensions []string) string {
 
 type selectionVault struct {
 	mu    sync.Mutex
-	paths map[string]string
+	paths map[string]selectionPath
 }
 
-func newSelectionVault() *selectionVault { return &selectionVault{paths: map[string]string{}} }
+type selectionPath struct {
+	path      string
+	identity  os.FileInfo
+	digest    [sha256.Size]byte
+	digestSet bool
+}
+
+const maxPinnedAssociationBytes int64 = 64 << 20
+
+func newSelectionVault() *selectionVault { return &selectionVault{paths: map[string]selectionPath{}} }
 
 func (v *selectionVault) issue(path string) (string, error) {
+	return v.issuePinned(path, nil)
+}
+
+func (v *selectionVault) issuePinned(path string, identity os.FileInfo) (string, error) {
 	canonical, err := filepath.Abs(path)
 	if err != nil || canonical == "" || filepath.Clean(canonical) != canonical {
 		return "", errors.New("native selection is invalid")
+	}
+	selection := selectionPath{path: canonical, identity: identity}
+	if identity != nil {
+		content, err := pinnedContent(selection)
+		if err != nil {
+			return "", err
+		}
+		selection.digest = sha256.Sum256(content)
+		selection.digestSet = true
 	}
 	bytes := make([]byte, 24)
 	if _, err := rand.Read(bytes); err != nil {
@@ -79,18 +103,18 @@ func (v *selectionVault) issue(path string) (string, error) {
 	}
 	token := hex.EncodeToString(bytes)
 	v.mu.Lock()
-	v.paths[token] = canonical
+	v.paths[token] = selection
 	v.mu.Unlock()
 	return token, nil
 }
 
-func (v *selectionVault) consume(token string) (string, error) {
+func (v *selectionVault) consume(token string) (selectionPath, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	path, ok := v.paths[token]
 	delete(v.paths, token)
 	if !ok {
-		return "", os.ErrNotExist
+		return selectionPath{}, os.ErrNotExist
 	}
 	return path, nil
 }
@@ -144,10 +168,11 @@ func NewProjectStorageAdapter(vault *selectionVault) *ProjectStorageAdapter {
 }
 
 func (a *ProjectStorageAdapter) Create(_ context.Context, token string) (desktopapp.ProjectLocation, error) {
-	path, err := a.vault.consume(token)
+	selection, err := a.vault.consume(token)
 	if err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
+	path := selection.path
 	if filepath.Ext(path) == "" {
 		path += ".ldl"
 	}
@@ -175,16 +200,25 @@ func (a *ProjectStorageAdapter) Create(_ context.Context, token string) (desktop
 }
 
 func (a *ProjectStorageAdapter) Open(_ context.Context, token string) (desktopapp.ProjectLocation, error) {
-	path, err := a.vault.consume(token)
+	selection, err := a.vault.consume(token)
 	if err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
-	return projectLocation(path)
+	location, err := projectLocationPinned(selection)
+	if err != nil {
+		return desktopapp.ProjectLocation{}, err
+	}
+	location.PinnedContent, err = pinnedContent(selection)
+	return location, err
 }
 
 func (a *ProjectStorageAdapter) Import(_ context.Context, token string) (desktopapp.ProjectLocation, error) {
-	path, err := a.vault.consume(token)
+	selection, err := a.vault.consume(token)
 	if err != nil {
+		return desktopapp.ProjectLocation{}, err
+	}
+	path := selection.path
+	if err := validateIdentity(selection); err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
 	if strings.ToLower(filepath.Ext(path)) != ".layerdraw" {
@@ -193,18 +227,30 @@ func (a *ProjectStorageAdapter) Import(_ context.Context, token string) (desktop
 	if err := regularFile(path); err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
-	return desktopapp.ProjectLocation{Root: path, Kind: "container"}, nil
-}
-
-func (a *ProjectStorageAdapter) Relocate(_ context.Context, _ runtimeprotocol.DocumentID, token string) (desktopapp.ProjectLocation, error) {
-	path, err := a.vault.consume(token)
+	content, err := pinnedContent(selection)
 	if err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
-	return projectLocation(path)
+	return desktopapp.ProjectLocation{Root: path, Kind: "container", PinnedContent: content}, nil
+}
+
+func (a *ProjectStorageAdapter) Relocate(_ context.Context, _ runtimeprotocol.DocumentID, token string) (desktopapp.ProjectLocation, error) {
+	selection, err := a.vault.consume(token)
+	if err != nil {
+		return desktopapp.ProjectLocation{}, err
+	}
+	return projectLocationPinned(selection)
 }
 
 func projectLocation(path string) (desktopapp.ProjectLocation, error) {
+	return projectLocationPinned(selectionPath{path: path})
+}
+
+func projectLocationPinned(selection selectionPath) (desktopapp.ProjectLocation, error) {
+	path := selection.path
+	if err := validateIdentity(selection); err != nil {
+		return desktopapp.ProjectLocation{}, err
+	}
 	if err := regularFile(path); err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
@@ -216,6 +262,51 @@ func projectLocation(path string) (desktopapp.ProjectLocation, error) {
 	default:
 		return desktopapp.ProjectLocation{}, errors.New("unsupported project selection")
 	}
+}
+
+func validateIdentity(selection selectionPath) error {
+	if selection.identity == nil {
+		return nil
+	}
+	current, err := os.Lstat(selection.path)
+	if err != nil || !current.Mode().IsRegular() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(selection.identity, current) {
+		return errors.New("native selection target changed")
+	}
+	if selection.digestSet {
+		if _, err := pinnedContent(selection); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pinnedContent(selection selectionPath) ([]byte, error) {
+	if selection.identity == nil {
+		return nil, nil
+	}
+	file, err := os.Open(selection.path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	current, err := file.Stat()
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(selection.identity, current) {
+		return nil, errors.New("native selection target changed")
+	}
+	if current.Size() > maxPinnedAssociationBytes {
+		return nil, errors.New("native selection target is too large")
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxPinnedAssociationBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > maxPinnedAssociationBytes {
+		return nil, errors.New("native selection target is too large")
+	}
+	if selection.digestSet && sha256.Sum256(content) != selection.digest {
+		return nil, errors.New("native selection target changed")
+	}
+	return content, nil
 }
 
 func regularFile(path string) error {

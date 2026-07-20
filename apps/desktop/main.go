@@ -4,7 +4,9 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 var frontend embed.FS
 
 var userConfigDir = os.UserConfigDir
+var runPackagedProbe = func(output io.Writer) error { return desktopwails.RunPackagedProbe(output) }
 var startDesktop = func(config desktopapp.Config, assets fs.FS) error {
 	return desktopwails.Run(config, assets, nil)
 }
@@ -29,6 +32,18 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) == 2 && os.Args[1] == "--packaged-probe" {
+		return runPackagedProbe(os.Stdout)
+	}
+	if len(os.Args) == 3 && os.Args[1] == "--packaged-ui-probe" {
+		output, err := filepath.Abs(os.Args[2])
+		if err != nil || filepath.Clean(output) != output {
+			return errors.New("packaged Desktop UI probe output is invalid")
+		}
+		if err := os.Setenv("LAYERDRAW_DESKTOP_UI_PROBE_OUTPUT", output); err != nil {
+			return err
+		}
+	}
 	configRoot, err := userConfigDir()
 	if err != nil {
 		return err

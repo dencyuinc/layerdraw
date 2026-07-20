@@ -27,6 +27,7 @@ import (
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/adapter/local"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -192,6 +193,7 @@ type OpenResult struct {
 type OpenProjectInput struct {
 	Root                 string
 	EntryPath            string
+	PinnedEntry          []byte
 	InstalledPackTree    map[string][]byte
 	ResolvedDependencies engineendpoint.LocalResolvedDependencies
 	ReferencedAssets     []engineendpoint.LocalAssetInput
@@ -335,6 +337,9 @@ func (h *Host) OpenProject(ctx context.Context, input OpenProjectInput) (OpenRes
 	if _, ok := tree[input.EntryPath]; !ok {
 		return OpenResult{}, fmt.Errorf("entry module is unavailable: %w", port.ErrNotFound)
 	}
+	if input.PinnedEntry != nil {
+		tree[input.EntryPath] = append([]byte(nil), input.PinnedEntry...)
+	}
 	resolved := input.ResolvedDependencies
 	if resolved.Format == "" {
 		resolved = engineendpoint.LocalResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1}
@@ -348,6 +353,20 @@ func (h *Host) OpenProject(ctx context.Context, input OpenProjectInput) (OpenRes
 
 func (h *Host) OpenContainer(ctx context.Context, path string) (OpenResult, error) {
 	return h.openContainer(ctx, path, false)
+}
+
+// OpenContainerContent opens handle-bound container bytes while retaining the
+// canonical source path as the durable local locator.
+func (h *Host) OpenContainerContent(ctx context.Context, path string, data []byte, importAsNew bool) (OpenResult, error) {
+	locator, err := canonicalLocalPath(path, false)
+	if err != nil {
+		return OpenResult{}, err
+	}
+	document, err := h.engine.ReadContainer(ctx, append([]byte(nil), data...))
+	if err != nil {
+		return OpenResult{}, err
+	}
+	return h.openSource(ctx, "container", locator, document, importAsNew)
 }
 
 // OpenDocument reopens an already host-bound document by its host identity.
@@ -1147,7 +1166,7 @@ func syncRootDirectory(root *os.Root) error {
 		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	return privatefs.SyncDirectory(dir)
 }
 
 func (h *Host) recoverRelocation(ctx context.Context) error {
@@ -1269,5 +1288,5 @@ func (h *Host) saveMetadataLocked() error {
 		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	return privatefs.SyncDirectory(dir)
 }

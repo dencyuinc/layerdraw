@@ -16,6 +16,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -905,7 +906,7 @@ func cleanManagedPath(value string) (string, error) {
 		return "", port.ErrConflict
 	}
 	clean := filepath.Clean(filepath.FromSlash(value))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if clean == "." || !filepath.IsLocal(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", port.ErrConflict
 	}
 	return filepath.ToSlash(clean), nil
@@ -1132,7 +1133,7 @@ func syncExternalDir(path string) error {
 		return err
 	}
 	defer directory.Close()
-	return directory.Sync()
+	return privatefs.SyncDirectory(directory)
 }
 
 var _ port.ExternalFileStore = (*ExternalFileStore)(nil)

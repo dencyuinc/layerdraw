@@ -1,0 +1,94 @@
+name: Desktop packaged probes
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-packaged-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packaged-desktop:
+    name: Packaged Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .node-version
+
+      - name: Build packaged Desktop frontend
+        shell: bash
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            pnpm --filter @layerdraw/engine-wasm exec tsc -p tsconfig.build.json
+            pnpm --filter @layerdraw/protocol build
+            pnpm --filter @layerdraw/composer build
+            pnpm --filter @layerdraw/render build
+            pnpm --filter @layerdraw/viewer build
+            pnpm --filter @layerdraw/engine-client build
+            pnpm --filter @layerdraw/client-sdk build
+            pnpm --filter @layerdraw/react build
+            pnpm --filter @layerdraw/desktop build
+          else
+            pnpm exec turbo run build
+          fi
+
+      - name: Install Linux WebKit build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev xvfb
+
+      - name: Test Desktop platform adapters
+        shell: bash
+        run: |
+          go_args=()
+          if [[ "$RUNNER_OS" == "Linux" ]]; then go_args=(-tags webkit2_41); fi
+          go test -timeout 3m "${go_args[@]}" ./internal/privatefs ./internal/adapter/desktop ./internal/adapter/local ./internal/localdocument ./internal/desktopapp ./internal/desktopcontract ./internal/desktopwails ./apps/desktop
+          if [[ "$RUNNER_OS" == "Windows" ]]; then go test -timeout 30s ./internal/registry -run TestWindowsTransactionLockSerializesStores -count=1; fi
+
+      - name: Build and execute packaged Desktop probe
+        shell: bash
+        run: |
+          wails_args=(-clean -trimpath -s -skipbindings)
+          if [[ "$RUNNER_OS" == "Linux" ]]; then wails_args+=(-tags webkit2_41); fi
+          (cd apps/desktop && go run github.com/wailsapp/wails/v2/cmd/wails@v2.12.0 build "${wails_args[@]}")
+          executable="apps/desktop/build/bin/LayerDraw"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then executable="$(find apps/desktop/build/bin -type f -path '*/Contents/MacOS/LayerDraw' -print -quit)"; fi
+          if [[ "$RUNNER_OS" == "Windows" ]]; then executable="apps/desktop/build/bin/LayerDraw.exe"; fi
+          "$executable" --packaged-probe | tee desktop-probe.json
+          go_args=()
+          if [[ "$RUNNER_OS" == "Linux" ]]; then go_args=(-tags webkit2_41); fi
+          go run "${go_args[@]}" ./tools/desktopprobe -input desktop-probe.json verify
+          ui_probe="$PWD/desktop-ui-probe.json"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a "$executable" --packaged-ui-probe "$ui_probe"
+          else
+            "$executable" --packaged-ui-probe "$ui_probe"
+          fi
+          cat "$ui_probe"
+          go run "${go_args[@]}" ./tools/desktopprobe -require-dom -input "$ui_probe" verify

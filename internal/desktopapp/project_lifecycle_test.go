@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -471,8 +472,8 @@ func TestLifecycleMetadataRejectsUnsafeOrMalformedFiles(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"version":1,"projects":{},"recoveries":{}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newProjectLifecycle(root, time.Now); err == nil {
-		t.Fatal("permissive metadata accepted")
+	if _, err := newProjectLifecycle(root, time.Now); runtime.GOOS != "windows" && err == nil {
+		t.Fatal("permissive Unix metadata accepted")
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)

@@ -25,6 +25,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -132,7 +133,7 @@ func secureRoot(root string) error {
 			}
 			if p == root {
 				existed = true
-				if info.Mode().Perm() != dirMode {
+				if !privatefs.PermissionsMatch(info, dirMode) {
 					entries, readErr := trustedPathReadDir(root)
 					if readErr != nil {
 						return classify(readErr)
@@ -167,7 +168,7 @@ func secureRoot(root string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("unsafe local adapter root: %w", port.ErrConflict)
 	}
-	if info.Mode().Perm() != dirMode {
+	if !privatefs.PermissionsMatch(info, dirMode) {
 		return fmt.Errorf("local adapter root permissions are not private: %w", port.ErrConflict)
 	}
 	return nil
@@ -196,7 +197,7 @@ func (s *Store) ensureDir(path string) error {
 	if err != nil {
 		return classify(err)
 	}
-	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 || rootInfo.Mode().Perm() != dirMode {
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 || !privatefs.PermissionsMatch(rootInfo, dirMode) {
 		return fmt.Errorf("unsafe root boundary: %w", port.ErrConflict)
 	}
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
@@ -206,7 +207,7 @@ func (s *Store) ensureDir(path string) error {
 		cur = filepath.Join(cur, part)
 		info, statErr := os.Lstat(cur)
 		if statErr == nil {
-			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != dirMode {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !privatefs.PermissionsMatch(info, dirMode) {
 				return fmt.Errorf("unsafe directory boundary: %w", port.ErrConflict)
 			}
 			continue
@@ -243,7 +244,7 @@ func (s *Store) validateParents(path string) error {
 		if e != nil {
 			return classify(e)
 		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != dirMode {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !privatefs.PermissionsMatch(info, dirMode) {
 			return fmt.Errorf("unsafe directory boundary: %w", port.ErrConflict)
 		}
 	}
@@ -261,7 +262,7 @@ func (s *Store) validateFile(path string) (fs.FileInfo, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("unsafe file boundary: %w", port.ErrConflict)
 	}
-	if info.Mode().Perm() != fileMode {
+	if !privatefs.PermissionsMatch(info, fileMode) {
 		return nil, fmt.Errorf("file permissions are not private: %w", port.ErrConflict)
 	}
 	return info, nil
@@ -420,7 +421,7 @@ func (s *Store) atomicWrite(path string, r io.Reader, size int64) (retErr error)
 	}
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("symlink target rejected: %w", port.ErrConflict)
-	} else if err == nil && (!info.Mode().IsRegular() || info.Mode().Perm() != fileMode) {
+	} else if err == nil && (!info.Mode().IsRegular() || !privatefs.PermissionsMatch(info, fileMode)) {
 		return fmt.Errorf("unsafe file target: %w", port.ErrConflict)
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return classify(err)
@@ -485,7 +486,7 @@ func (s *Store) atomicWrite(path string, r io.Reader, size int64) (retErr error)
 			return fmt.Errorf("directory sync after rename: %w: %w", port.ErrIndeterminate, err)
 		}
 	}
-	if err = d.Sync(); err != nil {
+	if err = privatefs.SyncDirectory(d); err != nil {
 		return fmt.Errorf("directory sync after rename: %w: %w", port.ErrIndeterminate, err)
 	}
 	return nil
@@ -505,7 +506,7 @@ func (s *Store) syncDirAfterMutation(dir string) error {
 		return fmt.Errorf("directory open after mutation: %w: %w", port.ErrIndeterminate, err)
 	}
 	defer d.Close()
-	if err := d.Sync(); err != nil {
+	if err := privatefs.SyncDirectory(d); err != nil {
 		return fmt.Errorf("directory sync after mutation: %w: %w", port.ErrIndeterminate, err)
 	}
 	return nil
@@ -522,7 +523,7 @@ func (s *Store) withLock(scope runtimeprotocol.RuntimeScope, fn func(string) err
 	}
 	var prior fs.FileInfo
 	if info, statErr := os.Lstat(lockPath); statErr == nil {
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != fileMode {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !privatefs.PermissionsMatch(info, fileMode) {
 			return fmt.Errorf("unsafe lock file: %w", port.ErrConflict)
 		}
 		prior = info
@@ -538,13 +539,14 @@ func (s *Store) withLock(scope runtimeprotocol.RuntimeScope, fn func(string) err
 	if err != nil {
 		return classify(err)
 	}
-	if !opened.Mode().IsRegular() || opened.Mode().Perm() != fileMode || (prior != nil && !os.SameFile(prior, opened)) {
+	if !opened.Mode().IsRegular() || !privatefs.PermissionsMatch(opened, fileMode) || (prior != nil && !os.SameFile(prior, opened)) {
 		return fmt.Errorf("unsafe lock file open: %w", port.ErrConflict)
 	}
-	if err := lockFile(f); err != nil {
+	unlock, err := lockFile(f)
+	if err != nil {
 		return classify(err)
 	}
-	defer unlockFile(f)
+	defer unlock()
 	return fn(dir)
 }
 

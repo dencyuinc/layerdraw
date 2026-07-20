@@ -227,8 +227,13 @@ func externalFailure[T any](retryable bool, recovery desktopcontract.RecoveryAct
 // Compose installs the concrete Wails/native adapters into the shared Desktop
 // composition and is the production, non-test caller of desktopapp.New.
 func Compose(base desktopapp.Config, runtime NativeRuntime, providers map[string]ExternalProvider) (*desktopapp.Application, error) {
+	application, _, err := compose(base, runtime, providers)
+	return application, err
+}
+
+func compose(base desktopapp.Config, runtime NativeRuntime, providers map[string]ExternalProvider) (*desktopapp.Application, *selectionVault, error) {
 	if runtime == nil {
-		return nil, errors.New("desktop Wails runtime is unavailable")
+		return nil, nil, errors.New("desktop Wails runtime is unavailable")
 	}
 	vault := newSelectionVault()
 	base.Lifecycle = LifecycleAdapter{runtime: runtime}
@@ -243,8 +248,9 @@ func Compose(base desktopapp.Config, runtime NativeRuntime, providers map[string
 			base.Adapters = map[desktopcontract.ComponentID]desktopapp.Adapter{}
 		}
 		if base.Adapters[desktopcontract.ComponentExternalStorage] == nil {
-			return nil, errors.New("external lifecycle requires its capability adapter")
+			return nil, nil, errors.New("external lifecycle requires its capability adapter")
 		}
 	}
-	return desktopapp.New(base)
+	application, err := desktopapp.New(base)
+	return application, vault, err
 }

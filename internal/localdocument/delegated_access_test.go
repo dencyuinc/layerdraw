@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +37,9 @@ func TestDelegationSnapshotLoadingFailsClosed(t *testing.T) {
 		{name: "invalid snapshot", content: `{"version":2,"records":[],"revoked":{}}`, mode: 0o600},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.name == "permissive" && runtime.GOOS == "windows" {
+				t.Skip("Windows privacy is enforced by ACLs, not FileMode permission bits")
+			}
 			root := t.TempDir()
 			if err := os.WriteFile(delegationPath(root), []byte(test.content), test.mode); err != nil {
 				t.Fatal(err)

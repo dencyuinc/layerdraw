@@ -6,6 +6,8 @@ import "github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 
 type FailureCode string
 
+func (c FailureCode) Validate() bool { return validFailureCode(c) }
+
 const (
 	FailureStartup              FailureCode = "desktop.startup_failed"
 	FailureShutdown             FailureCode = "desktop.shutdown_failed"
@@ -15,9 +17,16 @@ const (
 	FailureMCPTransport         FailureCode = "desktop.mcp_transport_failed"
 	FailureDialogCancelled      FailureCode = "desktop.native_dialog_cancelled"
 	FailureBackendPanic         FailureCode = "desktop.backend_panic"
+	FailureFrontendCrash        FailureCode = "desktop.frontend_crashed"
 	FailureReconnect            FailureCode = "desktop.reconnect_failed"
 	FailureAdapterUnavailable   FailureCode = "desktop.adapter_unavailable"
 	FailureProtocolIncompatible FailureCode = "desktop.protocol_incompatible"
+	FailureWindowState          FailureCode = "desktop.window_state_invalid"
+	FailureSettings             FailureCode = "desktop.settings_invalid"
+	FailureExternalTarget       FailureCode = "desktop.external_target_denied"
+	FailureCommandUnavailable   FailureCode = "desktop.command_unavailable"
+	FailureAccessibility        FailureCode = "desktop.accessibility_failed"
+	FailureCrashRecovery        FailureCode = "desktop.crash_recovery_failed"
 	FailureProjectMissing       FailureCode = "desktop.project_missing"
 	FailurePermissionDenied     FailureCode = "desktop.permission_denied"
 	FailureProjectConflict      FailureCode = "desktop.project_conflict"
@@ -55,8 +64,10 @@ func validFailureCode(value FailureCode) bool {
 	switch value {
 	case FailureStartup, FailureShutdown, FailureCredential, FailureLocalActor,
 		FailureAgentDelegation, FailureMCPTransport, FailureDialogCancelled,
-		FailureBackendPanic, FailureReconnect, FailureAdapterUnavailable,
-		FailureProtocolIncompatible, FailureProjectMissing, FailurePermissionDenied,
+		FailureBackendPanic, FailureFrontendCrash, FailureReconnect, FailureAdapterUnavailable,
+		FailureProtocolIncompatible, FailureWindowState, FailureSettings,
+		FailureExternalTarget, FailureCommandUnavailable, FailureAccessibility,
+		FailureCrashRecovery, FailureProjectMissing, FailurePermissionDenied,
 		FailureProjectConflict, FailureRecoveryRequired, FailureReconcilePending:
 		return true
 	default:

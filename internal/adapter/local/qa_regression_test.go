@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -131,6 +132,9 @@ func TestFinalFileSymlinkAndReopenedPermissionsRejected(t *testing.T) {
 	}
 	if e = os.Remove(link); e != nil {
 		t.Fatal(e)
+	}
+	if runtime.GOOS == "windows" {
+		return
 	}
 	if e = os.WriteFile(link, []byte("{}"), 0o666); e != nil {
 		t.Fatal(e)

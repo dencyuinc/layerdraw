@@ -45,6 +45,66 @@ and frontend asset embedding. Native dialogs return opaque host-issued tokens,
 not native paths. The storage adapter resolves those tokens inside the trusted
 backend.
 
+## Native window, settings, and OS boundary
+
+`internal/desktopapp.NativeShell` is the framework-neutral native shell
+facade. Wails adapters supply displays, atomic settings storage, native window
+application, safe OS URL opening, opaque file-association handoff, structured
+logs, packaged accessibility probes, and crash recovery. Project lifecycle and
+UI command routing remain injected owner ports so this facade cannot acquire
+Runtime, Composer, or BrowserEditor semantics.
+
+The production entrypoint is `internal/desktopapp.NewPlatformNativeShell`.
+It wires `internal/adapter/desktop`'s private atomic JSON settings store,
+fixed-executable OS URL opener, Wails runtime bridge, single-use opaque file
+association broker, packaged accessibility bridge, and closed JSONL log store.
+The Desktop frontend uses `@layerdraw/engine-client/wails`; neither the native
+shell nor these adapters add a second Engine transport or interpret owner
+responses. The #123 recovery owner and #124 command owner remain explicit
+injected ports.
+
+`apps/desktop` composes that native shell into the real Wails v2 executable.
+`internal/desktopwails` supplies build-tag-selected macOS, Windows, and Linux
+identities, Wails display/window/theme/zoom calls, native menu and
+single-instance file-association routing, and a packaged DOM accessibility
+round trip. Embedded visible controls and the native menu obtain the same
+status generation and invoke the same `NativeShell` command route. Commands
+whose Composer/BrowserEditor owner is not packaged remain explicitly
+unavailable.
+
+The executable's `--packaged-probe` mode exercises the concrete per-OS adapter
+linkage, private settings round trip, and opaque association handoff without
+launching another application. The `Desktop packaged probes` CI matrix builds
+and executes that same binary on macOS, Windows, and Linux.
+
+Persisted window bounds are schema-versioned and normalized against the live
+display work areas. Invalid, oversized, or off-screen bounds recover onto a
+usable primary display; theme and zoom use closed values and zoom is bounded to
+50--300 percent. Menu, shortcut, and visible-control invocations use the same
+typed command route. Pending, denied, and unavailable commands are never
+invoked by the shell. A canonical status generation is returned with each menu
+snapshot and the owner performs status re-evaluation and invocation atomically;
+a stale generation cannot race a capability or Access-state change.
+
+Restore snapshots the currently applied native state before mutation. Window,
+settings, and durable-settings stages compensate to that snapshot on failure.
+Settings updates likewise compensate the applied theme/zoom if atomic
+persistence fails. A failed compensation always preserves recovery data when
+possible and presents the closed recovery surface.
+
+External web links are restricted to credential-free HTTPS URLs and email
+handoff to query-free `mailto:` addresses. File associations and native dialogs
+cross the frontend boundary only as opaque host tokens; OS paths never do. The
+OS adapter must call native open APIs directly and must not invoke a command
+shell. Structured shell logs have no arbitrary message/details field and cannot
+contain document content, credentials, tokens, URLs, or native paths.
+
+Unexpected frontend or backend failures are converted to a closed error
+surface. A project-lifecycle recovery adapter may attach an opaque recovery
+reference, but raw failure text is never presented. Packaged accessibility
+probes verify labels, focus order, keyboard-only operation, reduced motion,
+contrast, and zoom on the supported macOS, Windows, and Linux profiles.
+
 ## Lifecycle and failure boundary
 
 Startup resolves a stable local actor, loads credentials and live agent

@@ -16,6 +16,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 const projectLifecycleVersion = 2
@@ -188,7 +189,7 @@ func newProjectLifecycle(root string, now func() time.Time) (*projectLifecycle, 
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 1<<20 {
+	if !info.Mode().IsRegular() || !privatefs.PermissionsMatch(info, 0o600) || info.Size() > 1<<20 {
 		return nil, fmt.Errorf("desktop lifecycle metadata requires recovery")
 	}
 	data, err := os.ReadFile(value.path)
@@ -736,7 +737,7 @@ func (l *projectLifecycle) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	err = dir.Sync()
+	err = privatefs.SyncDirectory(dir)
 	_ = dir.Close()
 	if err != nil {
 		return err

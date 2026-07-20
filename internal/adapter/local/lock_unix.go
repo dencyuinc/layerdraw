@@ -17,5 +17,9 @@ func openLockFile(path string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), path), nil
 }
 
-func lockFile(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX) }
-func unlockFile(f *os.File)     { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN) }
+func lockFile(f *os.File) (func(), error) {
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		return nil, err
+	}
+	return func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN) }, nil
+}

@@ -5,6 +5,10 @@
   --ld-panel: #fff; --ld-accent: #0f6b58; --ld-accent-soft: #dcefe9;
   min-height: 100dvh; color: var(--ld-ink); background: var(--ld-paper); font: 500 14px/1.45 ui-sans-serif, system-ui, sans-serif;
 }
+:root[data-theme="dark"] .ld-desktop-shell {
+  --ld-ink: #e8f1ee; --ld-muted: #aab9b4; --ld-line: #3c4c47; --ld-paper: #121916;
+  --ld-panel: #1b2521; --ld-accent: #72d5bd; --ld-accent-soft: #213f37;
+}
 .ld-desktop-shell button { font: inherit; }
 .ld-desktop-centered { display: grid; place-content: center; justify-items: center; gap: 1rem; text-align: center; }
 .ld-desktop-titlebar { min-height: 4.75rem; padding: .8rem 1.25rem; border-bottom: 1px solid var(--ld-line); background: color-mix(in srgb, var(--ld-panel) 92%, transparent); display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
@@ -67,3 +71,5 @@
 @media (max-width: 42rem) { .ld-desktop-titlebar { align-items: flex-start; flex-direction: column; } .ld-desktop-statuses { justify-content: flex-start; } .ld-desktop-workspace { display: block; } .ld-desktop-sidebar { border-right: 0; border-bottom: 1px solid var(--ld-line); overflow-x: auto; } .ld-desktop-sidebar ul { display: flex; } .ld-desktop-sidebar li { min-width: 9rem; } .ld-desktop-viewer { min-height: 24rem; } }
 @media (max-width: 30rem) { .ld-desktop-editor .ld-editor-toolbar { flex-wrap: nowrap; overflow-x: auto; } .ld-desktop-editor .ld-editor-toolbar > * { flex: 0 0 auto; } }
 @media (prefers-reduced-motion: reduce) { .ld-desktop-shell *, .ld-desktop-shell *::before, .ld-desktop-shell *::after { scroll-behavior: auto !important; transition-duration: .00001ms !important; animation-duration: .00001ms !important; } }
+:root[data-reduced-motion="true"] .ld-desktop-shell *, :root[data-reduced-motion="true"] .ld-desktop-shell *::before, :root[data-reduced-motion="true"] .ld-desktop-shell *::after { scroll-behavior: auto !important; transition-duration: .00001ms !important; animation-duration: .00001ms !important; }
+.ld-desktop-shell :focus { outline: 3px solid var(--ld-accent); outline-offset: 2px; }
