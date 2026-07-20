@@ -25,6 +25,39 @@ func TestPackagedProbeRunsFromDesktopExecutable(t *testing.T) {
 	}
 }
 
+func TestPackagedConformanceRunsFromDesktopExecutable(t *testing.T) {
+	originalArgs := os.Args
+	originalConformance := runPackagedConformance
+	t.Cleanup(func() { os.Args, runPackagedConformance = originalArgs, originalConformance })
+	output := filepath.Join(t.TempDir(), "conformance.json")
+	os.Args = []string{"LayerDraw", "--packaged-conformance", output}
+	called := false
+	runPackagedConformance = func(got string) error {
+		called = true
+		if got != output {
+			t.Fatalf("output = %q, want %q", got, output)
+		}
+		return nil
+	}
+	if err := run(); err != nil || !called {
+		t.Fatalf("conformance dispatch called=%v err=%v", called, err)
+	}
+}
+
+func TestPackagedConformanceRejectsRelativeOutput(t *testing.T) {
+	originalArgs := os.Args
+	originalConformance := runPackagedConformance
+	t.Cleanup(func() { os.Args, runPackagedConformance = originalArgs, originalConformance })
+	os.Args = []string{"LayerDraw", "--packaged-conformance", "relative.json"}
+	runPackagedConformance = func(string) error {
+		t.Fatal("invalid output reached conformance runner")
+		return nil
+	}
+	if err := run(); err == nil {
+		t.Fatal("relative conformance output was accepted")
+	}
+}
+
 func TestRunBuildsPackagedDesktopComposition(t *testing.T) {
 	root := t.TempDir()
 	originalDir, originalStart := userConfigDir, startDesktop
