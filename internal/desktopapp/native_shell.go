@@ -255,13 +255,19 @@ func (s *NativeShell) PresentUnexpectedFailure(ctx context.Context, origin deskt
 func (s *NativeShell) VerifyAccessibility(ctx context.Context, profile desktopcontract.AccessibilityProfile) (result desktopcontract.Result[desktopcontract.AccessibilityReport]) {
 	defer finishShellResult(s, ctx, &result)
 	defer containShellPanic(s, ctx, &result)
-	if profile.Platform != s.config.Platform || profile.ZoomPercent < 50 || profile.ZoomPercent > 300 {
+	if profile.Platform != s.config.Platform || profile.ZoomPercent < 50 || profile.ZoomPercent > 300 ||
+		(profile.ViewerMode != "" && (profile.ProbeID == "" || (profile.ViewerMode != "2d" && profile.ViewerMode != "2.5d") || profile.WindowWidth < 960 || profile.WindowHeight < 640)) {
 		return shellFailed[desktopcontract.AccessibilityReport](desktopcontract.FailureAccessibility, false, desktopcontract.RecoveryRetry)
 	}
 	report, err := s.config.Accessibility.VerifyPackaged(ctx, profile)
 	if err != nil || !report.LabelsComplete || !report.FocusOrderValid || !report.KeyboardWorkflowValid ||
+		(profile.ScreenReader && !report.ScreenReaderSemantics) ||
 		(profile.ReducedMotion && !report.ReducedMotionHonored) || math.IsNaN(report.MinimumContrast) || math.IsInf(report.MinimumContrast, 0) ||
-		report.MinimumContrast < 4.5 || report.MinimumContrast > 21 || !report.ZoomLayoutValid {
+		report.MinimumContrast < 4.5 || report.MinimumContrast > 21 || !report.ZoomLayoutValid ||
+		(profile.ViewerMode != "" && (report.ViewerMode != profile.ViewerMode || report.ViewportWidth == 0 || report.ViewportHeight == 0 ||
+			report.ViewerItemCount == 0 || report.ViewerRelationCount == 0 || !report.ViewerKeyboardSelect ||
+			(profile.ViewerMode == "2d" && report.RendererBackend != "svg") ||
+			(profile.ViewerMode == "2.5d" && (report.RendererBackend != "three.js" || !report.WebGLVerified || report.ViewerCrossLayerCount == 0)))) {
 		return shellFailed[desktopcontract.AccessibilityReport](desktopcontract.FailureAccessibility, false, desktopcontract.RecoveryRetry)
 	}
 	return desktopcontract.Result[desktopcontract.AccessibilityReport]{Outcome: protocolcommon.OutcomeSuccess, Value: report}

@@ -2,7 +2,8 @@
 
 import { mountDesktopShell } from "../../src/mount.js";
 import { installAccessibilityProbe, isPackagedProbeMode, signalAccessibilityProbeReady } from "../../src/native-shell.js";
-import { createDesktopWailsComposition, createUnopenedViewer } from "../../src/wails-bootstrap.js";
+import { mountPackagedProbeShell } from "../../src/packaged-probe.js";
+import { createDesktopWailsComposition } from "../../src/wails-bootstrap.js";
 import { CreateMCPConnection, Invoke, ListMCPConnections, MCPStatus, RestartMCP, RevokeMCPConnection, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { EventsOff, EventsOn } from "../wailsjs/runtime/runtime.js";
 
@@ -11,17 +12,7 @@ async function start(): Promise<void> {
   const root = document.querySelector("#root");
   if (root === null) throw new Error("Desktop root is unavailable");
   if (await isPackagedProbeMode()) {
-    mountDesktopShell(root, {
-      lifecycle: {
-        getSnapshot: () => ({ sequence: 0, phase: "ready", capabilities: {} }),
-        subscribe: () => () => {},
-        async selectView() {},
-        async showRecoveryOptions() {},
-      },
-      viewer: createUnopenedViewer(),
-      viewSelectionCapability: "engine.materialize_view",
-      editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
-    });
+    mountPackagedProbeShell(root);
     await signalAccessibilityProbeReady();
     return;
   }

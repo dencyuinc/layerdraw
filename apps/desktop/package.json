@@ -29,12 +29,14 @@
     "@layerdraw/review": "workspace:*",
     "@layerdraw/viewer": "workspace:*",
     "react": ">=19.0.0 <20",
-    "react-dom": ">=19.0.0 <20"
+    "react-dom": ">=19.0.0 <20",
+    "three": "0.179.1"
   },
   "devDependencies": {
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@playwright/test": "1.61.1",
+    "@types/three": "0.179.0",
     "esbuild-wasm": "0.25.12",
     "react": "19.2.7",
     "react-dom": "19.2.7",

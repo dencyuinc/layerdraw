@@ -24,6 +24,21 @@ type PackagedProbeResult struct {
 	AssociationHandoff desktopcontract.FileAssociationKind  `json:"association_handoff"`
 	DOMRoundTrip       bool                                 `json:"dom_round_trip,omitempty"`
 	Accessibility      *desktopcontract.AccessibilityReport `json:"accessibility,omitempty"`
+	UIMatrix           []PackagedUIProbeResult              `json:"ui_matrix,omitempty"`
+	Failure            *PackagedUIProbeFailure              `json:"failure,omitempty"`
+}
+
+type PackagedUIProbeFailure struct {
+	ID            string                               `json:"id"`
+	Accessibility *desktopcontract.AccessibilityReport `json:"accessibility,omitempty"`
+}
+
+type PackagedUIProbeResult struct {
+	ID            string                               `json:"id"`
+	Window        desktopcontract.WindowState          `json:"window"`
+	Settings      desktopcontract.DesktopSettings      `json:"settings"`
+	Profile       desktopcontract.AccessibilityProfile `json:"profile"`
+	Accessibility desktopcontract.AccessibilityReport  `json:"accessibility"`
 }
 
 // RunPackagedProbe is executed from the packaged desktop binary on each OS CI

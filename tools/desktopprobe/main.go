@@ -33,9 +33,43 @@ func main() {
 	}
 	if *requireDOM && (!value.DOMRoundTrip || value.Accessibility == nil || !value.Accessibility.LabelsComplete ||
 		!value.Accessibility.FocusOrderValid || !value.Accessibility.KeyboardWorkflowValid ||
-		!value.Accessibility.ReducedMotionHonored || value.Accessibility.MinimumContrast < 4.5 || !value.Accessibility.ZoomLayoutValid) {
+		!value.Accessibility.ScreenReaderSemantics || value.Accessibility.MinimumContrast < 4.5 || !value.Accessibility.ZoomLayoutValid || !validUIMatrix(value)) {
 		fail("Desktop DOM probe output invalid")
 	}
+}
+
+func validUIMatrix(value desktopwails.PackagedProbeResult) bool {
+	required := map[string]bool{
+		"standard-light-2d": false, "minimum-light-2.5d": false,
+		"standard-light-zoom200-2d": false, "large-dark-2.5d": false,
+	}
+	if len(value.UIMatrix) != len(required) {
+		return false
+	}
+	for _, entry := range value.UIMatrix {
+		if _, ok := required[entry.ID]; !ok || required[entry.ID] || entry.Profile.ProbeID != entry.ID ||
+			entry.Profile.Platform != value.Platform || entry.Profile.WindowWidth != uint16(entry.Window.Bounds.Width) ||
+			entry.Profile.WindowHeight != uint16(entry.Window.Bounds.Height) || entry.Profile.ZoomPercent != entry.Settings.ZoomPercent ||
+			!entry.Window.Validate() || !entry.Settings.Validate() {
+			return false
+		}
+		report := entry.Accessibility
+		if !report.LabelsComplete || !report.ScreenReaderSemantics || !report.FocusOrderValid || !report.KeyboardWorkflowValid ||
+			(entry.Profile.ReducedMotion && !report.ReducedMotionHonored) || report.MinimumContrast < 4.5 || report.MinimumContrast > 21 ||
+			!report.ZoomLayoutValid || report.ViewportWidth == 0 || report.ViewportHeight == 0 || report.ViewerMode != entry.Profile.ViewerMode ||
+			report.ViewerItemCount == 0 || report.ViewerRelationCount == 0 || !report.ViewerKeyboardSelect ||
+			(entry.Profile.ViewerMode == "2d" && report.RendererBackend != "svg") ||
+			(entry.Profile.ViewerMode == "2.5d" && (report.RendererBackend != "three.js" || !report.WebGLVerified || report.ViewerCrossLayerCount == 0)) {
+			return false
+		}
+		required[entry.ID] = true
+	}
+	for _, found := range required {
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func fail(message string) {

@@ -2,7 +2,8 @@
 
 import type { RenderBounds, RenderData } from "@layerdraw/render";
 import type { ViewerPublication, ViewerState } from "@layerdraw/viewer";
-import { createElement, type KeyboardEvent, type ReactNode } from "react";
+import { createElement, useState, type KeyboardEvent, type ReactNode } from "react";
+import { DesktopThreeViewer } from "./viewer-three.js";
 
 export interface DesktopViewerSurfaceProps {
   readonly state: ViewerState;
@@ -56,10 +57,11 @@ function table(publication: ViewerPublication, onSelectionChange: (keys: readonl
       }))))));
 }
 
-function publicationSurface(publication: ViewerPublication, onSelectionChange: (keys: readonly string[]) => void): ReactNode {
+function publicationSurface(publication: ViewerPublication, mode: "2d" | "2.5d", onSelectionChange: (keys: readonly string[]) => void): ReactNode {
   const data = publication.render_data;
   if (data.kind === "table") return table(publication, onSelectionChange);
   const selected = new Set(publication.presentation.selection_keys);
+  if (mode === "2.5d" && data.kind === "diagram") return createElement(DesktopThreeViewer, { data, selected, onSelectionChange });
   const connections = data.kind === "diagram" ? data.edge_paths.map((item) => path(item.render_key, item.points))
     : data.kind === "tree" ? [...data.duplicate_refs, ...data.cycle_refs].map((item) => path(item.render_key, item.points))
       : data.kind === "flow" ? [...data.connectors, ...data.cycle_refs].map((item) => path(item.render_key, item.points)) : [];
@@ -70,11 +72,15 @@ function publicationSurface(publication: ViewerPublication, onSelectionChange: (
 }
 
 export function DesktopViewerSurface({ state, onSelectionChange }: DesktopViewerSurfaceProps): ReactNode {
+  const [mode, setMode] = useState<"2d" | "2.5d">("2d");
   if (state.status === "loading" || state.status === "cancelling") return createElement("p", { role: "status", "aria-live": "polite" }, "Loading view…");
   if (state.status === "empty") return createElement("p", { className: "ld-desktop-empty" }, state.reason === "view_empty" ? "This view is empty." : "Select a view to begin.");
   if (state.status === "disposed") return createElement("p", { role: "status" }, "Viewer closed.");
   const publication = "publication" in state ? state.publication : state.previous;
   return createElement("div", { className: "ld-desktop-viewer", "data-viewer-state": state.status },
-    publication === undefined ? null : publicationSurface(publication, onSelectionChange),
+    publication?.render_data.kind !== "diagram" ? null : createElement("div", { className: "ld-desktop-view-mode", role: "toolbar", "aria-label": "Viewer dimension" },
+      createElement("button", { type: "button", "aria-pressed": mode === "2d", onClick: () => setMode("2d") }, "2D"),
+      createElement("button", { type: "button", "aria-pressed": mode === "2.5d", onClick: () => setMode("2.5d") }, "2.5D")),
+    publication === undefined ? null : publicationSurface(publication, mode, onSelectionChange),
     state.status === "ready" ? null : createElement("p", { role: "status", className: "ld-desktop-viewer-status" }, "The view needs attention."));
 }

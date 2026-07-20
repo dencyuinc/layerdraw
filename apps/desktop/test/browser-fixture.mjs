@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import { mountDesktopShell } from "../dist/index.js";
+import { auditAccessibility } from "../dist/native-shell.js";
 
 const listeners = new Set();
 const renderData = {
   kind: "diagram", shape: "diagram", bounds: { x: 0, y: 0, width: 800, height: 500 },
-  containers: [], ports: [], overlays: [], badges: [], support_geometry: [], diagnostics: [], source_bindings: [],
+  containers: [
+    { render_key: "layer:product", bounds: { x: 30, y: 30, width: 300, height: 180 }, child_keys: ["node:one"] },
+    { render_key: "layer:delivery", bounds: { x: 430, y: 240, width: 300, height: 180 }, child_keys: ["node:two"] },
+  ],
+  ports: [
+    { render_key: "from", position: { x: 260, y: 115 }, occurrence_key: "node:one" },
+    { render_key: "to", position: { x: 480, y: 315 }, occurrence_key: "node:two" },
+  ], overlays: [], badges: [], support_geometry: [], diagnostics: [], source_bindings: [],
   occurrences: [
     { render_key: "node:one", bounds: { x: 80, y: 80, width: 180, height: 70 }, port_keys: [], label_key: "label:one" },
     { render_key: "node:two", bounds: { x: 480, y: 280, width: 180, height: 70 }, port_keys: [], label_key: "label:two" },
@@ -16,7 +24,8 @@ const renderData = {
   ],
   edge_paths: [{ render_key: "edge:one", points: [{ x: 260, y: 115 }, { x: 480, y: 315 }], from_port_key: "from", to_port_key: "to" }],
 };
-const viewer = { status: "ready", publication: { render_data: renderData, presentation: { selection_keys: [] } } };
+let viewerSelection = [];
+const viewerState = () => ({ status: "ready", publication: { render_data: renderData, presentation: { selection_keys: viewerSelection } } });
 const editorManifest = { operations: { "engine.preview_operations": { enabled: true }, "runtime.commit_operations": { enabled: true } } };
 const editorSession = { authority: "runtime", persistence: "durable", session: {}, capabilities: { authority: "runtime", manifest: editorManifest, selection: { available: [], optional_unavailable: [] } } };
 let editorSnapshot = { phase: "idle", sequence: 0, can_undo: true, can_redo: false };
@@ -46,7 +55,7 @@ const lifecycle = {
   async selectView(address) { calls.push(["select", address]); lifecycleSnapshot = makeLifecycle(address); for (const listener of listeners) listener(); },
 };
 const viewerPort = {
-  getState: () => viewer, setSelection(keys) { calls.push(["viewer", ...keys]); }, async cancel() {},
+  getState: viewerState, setSelection(keys) { viewerSelection = [...keys]; calls.push(["viewer", ...keys]); }, async cancel() {},
 };
 let mcpEnabled = false;
 let mcpGeneration = 1;
@@ -63,7 +72,12 @@ mountDesktopShell(document.querySelector("#root"), {
 	lifecycle, viewer: viewerPort, mcp, viewSelectionCapability: "engine.materialize_view",
   editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
 });
+window.go = { desktopwails: { ShellBinding: {
+  async CommandStatus() { return { outcome: "success", value: [{ id: "desktop.settings", generation: "1" }] }; },
+  async InvokeCommand() { return { outcome: "success", value: { id: "desktop.settings", generation: "1" } }; },
+} } };
 window.desktopWorkflow = {
   calls,
+  audit: auditAccessibility,
   capability(value) { available = value; lifecycleSnapshot = makeLifecycle(lifecycleSnapshot.project.selected_view_address); for (const listener of listeners) listener(); },
 };

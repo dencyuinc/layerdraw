@@ -35,7 +35,7 @@ func (r *packagedDesktopRuntime) ApplySettings(_ context.Context, value desktopc
 }
 func (r *packagedDesktopRuntime) VerifyPackagedAccessibility(_ context.Context, profile desktopcontract.AccessibilityProfile) (desktopcontract.AccessibilityReport, error) {
 	return desktopcontract.AccessibilityReport{
-		LabelsComplete: true, FocusOrderValid: true, KeyboardWorkflowValid: profile.KeyboardOnly,
+		LabelsComplete: true, ScreenReaderSemantics: profile.ScreenReader, FocusOrderValid: true, KeyboardWorkflowValid: profile.KeyboardOnly,
 		ReducedMotionHonored: profile.ReducedMotion, MinimumContrast: 7, ZoomLayoutValid: profile.ZoomPercent == 200,
 	}, nil
 }

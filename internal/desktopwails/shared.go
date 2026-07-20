@@ -282,9 +282,9 @@ func closedFailure[T any](code desktopcontract.FailureCode) desktopcontract.Resu
 	return desktopcontract.Result[T]{Outcome: protocolcommon.OutcomeFailed, Failure: &desktopcontract.Failure{Code: code, Component: desktopcontract.ComponentAccess, Recovery: desktopcontract.RecoveryConfigureAdapter}}
 }
 
-type nativeCapabilities struct{}
+type nativeCapabilities struct{ externalStorage bool }
 
-func (nativeCapabilities) Negotiate(ctx context.Context, manifest desktopcontract.Manifest) (protocolcommon.HandshakeResult, error) {
+func (capabilities nativeCapabilities) Negotiate(ctx context.Context, manifest desktopcontract.Manifest) (protocolcommon.HandshakeResult, error) {
 	descriptor, err := engineendpoint.NewDescriptor(engineendpoint.DescriptorConfig{
 		EngineRelease: desktopRelease, SourceRevision: "unknown",
 		ReleaseManifestDigest: desktopDigest, EndpointInstanceID: desktopEndpoint,
@@ -307,6 +307,9 @@ func (nativeCapabilities) Negotiate(ctx context.Context, manifest desktopcontrac
 	enabled := make(map[protocolcommon.CapabilityID]bool, len(packagedCapabilities))
 	for _, id := range packagedCapabilities {
 		enabled[id] = true
+	}
+	if capabilities.externalStorage {
+		enabled[desktopcontract.CapabilityExternalStorage] = true
 	}
 	ids := append(append([]protocolcommon.CapabilityID(nil), manifest.RequiredCapabilities...), manifest.OptionalCapabilities...)
 	value.CapabilityStatuses = make([]protocolcommon.RequestedCapabilityStatus, 0, len(ids))

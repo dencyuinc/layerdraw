@@ -263,6 +263,12 @@ func compose(base desktopapp.Config, runtime NativeRuntime, providers map[string
 		if base.Adapters[desktopcontract.ComponentExternalStorage] == nil {
 			return nil, nil, errors.New("external lifecycle requires its capability adapter")
 		}
+		capabilities, ok := base.Capabilities.(nativeCapabilities)
+		if !ok {
+			return nil, nil, errors.New("external lifecycle requires the native capability owner")
+		}
+		capabilities.externalStorage = true
+		base.Capabilities = capabilities
 	}
 	if base.MCPCapabilities != nil {
 		application, err := desktopapp.NewCanonical(base)
