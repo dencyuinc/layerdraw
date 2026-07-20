@@ -584,6 +584,38 @@ test("public option and generated-binding boundaries snapshot once and fail clos
   );
 });
 
+test("Desktop shutdown coordination validates and unwinds hostile subscriptions", async () => {
+  const bindings = generatedBindings({
+    EngineHandshake: async (exchange) => handshakeResponse(exchange),
+    RuntimeHandshake: async (exchange) => runtimeHandshakeResponse(exchange),
+  });
+  for (const shutdown of [
+    { subscribe() { return 42; } },
+    { subscribe() { throw new Error("/private/shutdown secret"); } },
+  ]) {
+    await assert.rejects(
+      createWailsDesktopClient({
+        ...options(bindings, { shutdown }),
+        expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+      }),
+      (error) => error instanceof EngineClientInputError && error.code === "INVALID_ARGUMENT" && !String(error).includes("private"),
+    );
+  }
+  let active = 0;
+  const synchronousShutdown = {
+    subscribe(listener) {
+      active++;
+      listener();
+      return () => { active--; };
+    },
+  };
+  await assert.rejects(createWailsDesktopClient({
+    ...options(bindings, { shutdown: synchronousShutdown }),
+    expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+  }));
+  assert.equal(active, 0);
+});
+
 test("Abort rejects the pending Wails exchange and ignores its late callback", async () => {
   let release;
   let compileCalls = 0;

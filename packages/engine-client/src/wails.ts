@@ -548,7 +548,23 @@ function coordinatedShutdown(upstream?: WailsShutdownSource): { readonly source:
         return () => undefined;
       }
       listeners.add(listener);
-      if (listeners.size === 1 && upstream !== undefined) unsubscribeUpstream = upstream.subscribe(stop);
+      if (listeners.size === 1 && upstream !== undefined) {
+        let candidate: unknown;
+        try { candidate = upstream.subscribe(stop); } catch {
+          stop();
+          throw new EngineClientInputError("INVALID_ARGUMENT");
+        }
+        if (typeof candidate !== "function") {
+          stop();
+          throw new EngineClientInputError("INVALID_ARGUMENT");
+        }
+        const unsubscribe = candidate as () => void;
+        if (stopped) {
+          try { unsubscribe(); } catch { /* Host cleanup failures are never exposed. */ }
+        } else {
+          unsubscribeUpstream = unsubscribe;
+        }
+      }
       let active = true;
       return () => {
         if (!active) return;
