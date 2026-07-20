@@ -23,6 +23,8 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/engine"
 )
 
+var desktopTestNow = time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+
 type lifecycleRecorder struct {
 	mu      sync.Mutex
 	states  []desktopcontract.LifecycleState
@@ -151,11 +153,31 @@ func (c credentialFailure) Resolve(context.Context, desktopcontract.CredentialRe
 
 type localOwnerPortStub struct{}
 
-func (localOwnerPortStub) IssueLocalOwnerGrant(context.Context, desktopcontract.LocalOwnerGrantRequest) desktopcontract.Result[accessprotocol.AuthoringGrantSnapshot] {
+func (localOwnerPortStub) IssueLocalOwnerGrant(_ context.Context, request desktopcontract.LocalOwnerGrantRequest) desktopcontract.Result[accessprotocol.AuthoringGrantSnapshot] {
+	grant := accessprotocol.AuthoringGrantSnapshot{
+		ActorRef: request.Actor, GrantedCapabilities: accesscore.FullAuthoringCapabilities(),
+		HostDocumentID: request.Scope.DocumentID, IssuedAt: request.IssuedAt,
+		LocalScopeID: request.Scope.LocalScopeID, MembershipVersion: "1",
+		PolicyRefs: []accessprotocol.PolicyRef{},
+	}
+	grant.AccessFingerprint = accesscore.Fingerprint(grant)
+	return desktopcontract.Result[accessprotocol.AuthoringGrantSnapshot]{Outcome: protocolcommon.OutcomeSuccess, Value: grant}
+}
+
+type localOwnerFailure struct{ panic bool }
+
+func (p localOwnerFailure) IssueLocalOwnerGrant(context.Context, desktopcontract.LocalOwnerGrantRequest) desktopcontract.Result[accessprotocol.AuthoringGrantSnapshot] {
+	if p.panic {
+		panic("private")
+	}
 	return desktopcontract.Result[accessprotocol.AuthoringGrantSnapshot]{Outcome: protocolcommon.OutcomeSuccess}
 }
 
 type delegationPortStub struct{}
+
+type delegationValueStub struct {
+	delegation accesscore.Delegation
+}
 
 func (delegationPortStub) Delegate(context.Context, accessprotocol.AuthoringGrantSnapshot, accesscore.Delegation) desktopcontract.Result[accesscore.Delegation] {
 	return desktopcontract.Result[accesscore.Delegation]{Outcome: protocolcommon.OutcomeSuccess}
@@ -175,10 +197,29 @@ func (d delegationFailure) Resolve(context.Context, desktopcontract.DelegationFe
 func (delegationFailure) Revoke(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.DelegationSnapshot] {
 	return failed[accesscore.DelegationSnapshot](desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryOpenRecovery)
 }
-func (delegationPortStub) Resolve(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.Delegation] {
-	return desktopcontract.Result[accesscore.Delegation]{Outcome: protocolcommon.OutcomeSuccess}
+func (delegationPortStub) Resolve(_ context.Context, fence desktopcontract.DelegationFence) desktopcontract.Result[accesscore.Delegation] {
+	return desktopcontract.Result[accesscore.Delegation]{Outcome: protocolcommon.OutcomeSuccess, Value: accesscore.Delegation{
+		ID: fence.DelegationID, ParentActor: accessprotocol.ActorRef{ActorID: "desktop-test-owner", Kind: "user"},
+		Agent:      accessprotocol.ActorRef{ActorID: "desktop-test-agent", Kind: "agent"},
+		DocumentID: fence.DocumentID, LocalScopeID: fence.LocalScopeID,
+		AuthoringCapabilities: accesscore.FullAuthoringCapabilities(),
+		Permissions:           accesscore.AgentPermissions{Read: true}, IssuedAt: desktopTestNow.Add(-time.Minute),
+		ExpiresAt: desktopTestNow.Add(time.Hour), Generation: 1,
+	}}
 }
 func (delegationPortStub) Revoke(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.DelegationSnapshot] {
+	return desktopcontract.Result[accesscore.DelegationSnapshot]{Outcome: protocolcommon.OutcomeSuccess}
+}
+
+func (d delegationValueStub) Delegate(context.Context, accessprotocol.AuthoringGrantSnapshot, accesscore.Delegation) desktopcontract.Result[accesscore.Delegation] {
+	return desktopcontract.Result[accesscore.Delegation]{Outcome: protocolcommon.OutcomeSuccess, Value: d.delegation}
+}
+
+func (d delegationValueStub) Resolve(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.Delegation] {
+	return desktopcontract.Result[accesscore.Delegation]{Outcome: protocolcommon.OutcomeSuccess, Value: d.delegation}
+}
+
+func (delegationValueStub) Revoke(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.DelegationSnapshot] {
 	return desktopcontract.Result[accesscore.DelegationSnapshot]{Outcome: protocolcommon.OutcomeSuccess}
 }
 
@@ -331,6 +372,7 @@ func testConfig(t *testing.T, root, project string) Config {
 		},
 		Lifecycle: &lifecycleRecorder{}, ProjectStorage: storageStub{ProjectLocation{Root: project, EntryPath: "document.ldl"}},
 		Capabilities: negotiatorStub{value: validHandshake(t)}, Bindings: completeClients(t), Adapters: adapters,
+		Now: func() time.Time { return desktopTestNow },
 	}
 }
 
@@ -524,6 +566,65 @@ func TestCredentialAndDelegationStartupSuccess(t *testing.T) {
 		t.Fatalf("typed startup=%+v", result)
 	}
 	_ = app.Shutdown(context.Background())
+}
+
+func TestDelegationStartupValidatesOwnerGrantAndFence(t *testing.T) {
+	newConfig := func(name string) Config {
+		root := filepath.Join(t.TempDir(), name)
+		config := testConfig(t, root, writeProject(t, root))
+		config.DelegationFences = []desktopcontract.DelegationFence{{DelegationID: "delegation", DocumentID: "document", LocalScopeID: "local", Generation: "1"}}
+		return config
+	}
+	for _, owner := range []desktopcontract.LocalOwnerGrantPort{localOwnerFailure{}, localOwnerFailure{panic: true}} {
+		config := newConfig("owner")
+		config.HostPorts.LocalOwner = owner
+		app, _ := New(config)
+		result := app.Start(context.Background())
+		if result.Failure == nil || (result.Failure.Code != desktopcontract.FailureAgentDelegation && result.Failure.Code != desktopcontract.FailureBackendPanic) {
+			t.Fatalf("invalid owner grant accepted: %+v", result)
+		}
+	}
+
+	valid := accesscore.Delegation{
+		ID: "delegation", ParentActor: accessprotocol.ActorRef{ActorID: "desktop-test-owner", Kind: "user"},
+		Agent:      accessprotocol.ActorRef{ActorID: "desktop-test-agent", Kind: "agent"},
+		DocumentID: "document", LocalScopeID: "local", AuthoringCapabilities: accesscore.FullAuthoringCapabilities(),
+		Permissions: accesscore.AgentPermissions{Read: true}, IssuedAt: desktopTestNow.Add(-time.Minute),
+		ExpiresAt: desktopTestNow.Add(time.Hour), Generation: 1,
+	}
+	invalid := []accesscore.Delegation{valid, valid, valid}
+	invalid[0].DocumentID = "other"
+	invalid[1].Generation = 2
+	invalid[2].ExpiresAt = desktopTestNow
+	for index, delegation := range invalid {
+		config := newConfig("fence")
+		config.HostPorts.Delegations = delegationValueStub{delegation: delegation}
+		app, _ := New(config)
+		result := app.Start(context.Background())
+		if result.Failure == nil || result.Failure.Code != desktopcontract.FailureAgentDelegation {
+			t.Fatalf("invalid delegation %d accepted: %+v", index, result)
+		}
+	}
+}
+
+func TestStartupRollbackFailureRetainsInventoryForShutdownRetry(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(t, root, writeProject(t, root))
+	failingStop := &adapterStub{id: desktopcontract.ComponentReview, stopErr: errors.New("private shutdown failure")}
+	config.Adapters[desktopcontract.ComponentReview] = failingStop
+	config.Adapters[desktopcontract.ComponentBindingShell] = &adapterStub{id: desktopcontract.ComponentBindingShell, startErr: errors.New("private startup failure")}
+	app, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := app.Start(context.Background())
+	if started.Failure == nil || started.Failure.Code != desktopcontract.FailureShutdown || started.Failure.Component != desktopcontract.ComponentReview || app.State() != desktopcontract.LifecycleDraining {
+		t.Fatalf("rollback failure lost: result=%+v state=%s", started, app.State())
+	}
+	failingStop.stopErr = nil
+	if stopped := app.Shutdown(context.Background()); stopped.Outcome != protocolcommon.OutcomeSuccess || app.State() != desktopcontract.LifecycleStopped {
+		t.Fatalf("rollback retry failed: result=%+v state=%s", stopped, app.State())
+	}
 }
 
 func TestAdditionalStartupPanicsAndCapabilityMismatchFailClosed(t *testing.T) {

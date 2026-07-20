@@ -8,6 +8,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -56,6 +57,7 @@ type Config struct {
 	Bindings              desktopcontract.ClientSet
 	Adapters              map[desktopcontract.ComponentID]Adapter
 	Recovery              RecoveryReporter
+	Now                   func() time.Time
 }
 
 // ProjectOpenResult contains generated Runtime values only. The local session
@@ -115,6 +117,9 @@ func New(config Config) (*Application, error) {
 		if config.Adapters[id] == nil {
 			return nil, errors.New("desktop required adapter is unavailable")
 		}
+	}
+	if config.Now == nil {
+		config.Now = time.Now
 	}
 	return &Application{config: config, state: desktopcontract.LifecycleStopped}, nil
 }
@@ -178,11 +183,29 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 		clear(credential.Value)
 	}
 	for _, fence := range a.config.DelegationFences {
+		now := a.config.Now()
+		grantRequest := desktopcontract.LocalOwnerGrantRequest{
+			Actor: actorResult.Value,
+			Scope: accessprotocol.HostResourceScope{
+				DocumentID:   fence.DocumentID,
+				LocalScopeID: fence.LocalScopeID,
+			},
+			IssuedAt: protocolcommon.Rfc3339Time(now.Format(time.RFC3339Nano)),
+		}
+		grant := safeIssueLocalOwnerGrant(ctx, a.config.HostPorts.LocalOwner, grantRequest)
+		if isBackendPanic(grant.Failure) {
+			return a.failStartWith(ctx, desktopcontract.FailureBackendPanic, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryExit)
+		}
+		if !grant.Validate() || grant.Outcome != protocolcommon.OutcomeSuccess ||
+			!desktopcontract.ValidateLocalOwnerGrant(grantRequest, grant.Value, now) {
+			return a.failStartWith(ctx, desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryOpenRecovery)
+		}
 		delegation := safeResolveDelegation(ctx, a.config.HostPorts.Delegations, fence)
 		if isBackendPanic(delegation.Failure) {
 			return a.failStartWith(ctx, desktopcontract.FailureBackendPanic, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryExit)
 		}
-		if !delegation.Validate() || delegation.Outcome != protocolcommon.OutcomeSuccess {
+		if !delegation.Validate() || delegation.Outcome != protocolcommon.OutcomeSuccess ||
+			!desktopcontract.ValidateDelegationFence(fence, delegation.Value, grant.Value, now) {
 			return a.failStartWith(ctx, desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryOpenRecovery)
 		}
 	}
@@ -426,16 +449,21 @@ func (a *Application) begin(component desktopcontract.ComponentID) (func(), *des
 }
 
 func (a *Application) failStartWith(ctx context.Context, code desktopcontract.FailureCode, component desktopcontract.ComponentID, retryable bool, recovery desktopcontract.RecoveryAction) desktopcontract.Result[protocolcommon.HandshakeResult] {
-	a.rollback(ctx)
 	value := failure(code, component, retryable, recovery)
 	a.report(ctx, value)
+	if cleanup := a.rollback(ctx); cleanup != nil {
+		a.report(ctx, *cleanup)
+		return desktopcontract.Result[protocolcommon.HandshakeResult]{Outcome: protocolcommon.OutcomeFailed, Failure: cleanup}
+	}
 	return desktopcontract.Result[protocolcommon.HandshakeResult]{Outcome: protocolcommon.OutcomeFailed, Failure: &value}
 }
 
 func (a *Application) enterRecovery(ctx context.Context, component desktopcontract.ComponentID) desktopcontract.Result[protocolcommon.HandshakeResult] {
-	a.rollbackAdapters(ctx)
+	if cleanup := a.rollback(ctx); cleanup != nil {
+		a.report(ctx, *cleanup)
+		return desktopcontract.Result[protocolcommon.HandshakeResult]{Outcome: protocolcommon.OutcomeFailed, Failure: cleanup}
+	}
 	a.mu.Lock()
-	a.host = nil
 	a.state = desktopcontract.LifecycleRecovery
 	a.mu.Unlock()
 	_ = safeLifecyclePublish(context.WithoutCancel(ctx), a.config.Lifecycle, desktopcontract.LifecycleEvent{State: desktopcontract.LifecycleRecovery})
@@ -444,28 +472,63 @@ func (a *Application) enterRecovery(ctx context.Context, component desktopcontra
 	return desktopcontract.Result[protocolcommon.HandshakeResult]{Outcome: protocolcommon.OutcomeFailed, Failure: &value}
 }
 
-func (a *Application) rollback(ctx context.Context) {
-	a.rollbackAdapters(ctx)
+func (a *Application) rollback(ctx context.Context) *desktopcontract.Failure {
+	a.shutdown.Lock()
+	defer a.shutdown.Unlock()
 	a.mu.Lock()
-	if a.host != nil {
-		_ = a.host.Shutdown(context.WithoutCancel(ctx))
-	}
-	a.host = nil
-	a.started = nil
-	a.state = desktopcontract.LifecycleStopped
+	a.state = desktopcontract.LifecycleDraining
 	a.mu.Unlock()
-	_ = safeLifecyclePublish(context.WithoutCancel(ctx), a.config.Lifecycle, desktopcontract.LifecycleEvent{State: desktopcontract.LifecycleStopped})
-}
-
-func (a *Application) rollbackAdapters(ctx context.Context) {
+	cleanupCtx := context.WithoutCancel(ctx)
 	for index := len(a.started) - 1; index >= 0; index-- {
 		id := a.started[index]
+		if isCore(id) {
+			continue
+		}
 		if id == desktopcontract.ComponentMCPHost {
-			_ = safeMCPShutdown(context.WithoutCancel(ctx), a.config.HostPorts.MCP)
-		} else if !isCore(id) && a.config.Adapters[id] != nil {
-			_ = safeAdapterShutdown(context.WithoutCancel(ctx), a.config.Adapters[id])
+			stopped := safeMCPShutdown(cleanupCtx, a.config.HostPorts.MCP)
+			if isBackendPanic(stopped.Failure) {
+				value := failure(desktopcontract.FailureBackendPanic, id, false, desktopcontract.RecoveryExit)
+				return &value
+			}
+			if !stopped.Validate() || stopped.Outcome != protocolcommon.OutcomeSuccess {
+				value := failure(desktopcontract.FailureShutdown, id, true, desktopcontract.RecoveryRetry)
+				return &value
+			}
+			continue
+		}
+		if adapter := a.config.Adapters[id]; adapter != nil {
+			if err := safeAdapterShutdown(cleanupCtx, adapter); err != nil {
+				code, retryable, recovery := desktopcontract.FailureShutdown, true, desktopcontract.RecoveryRetry
+				if errors.Is(err, errInjectedPanic) {
+					code, retryable, recovery = desktopcontract.FailureBackendPanic, false, desktopcontract.RecoveryExit
+				}
+				value := failure(code, id, retryable, recovery)
+				return &value
+			}
 		}
 	}
+	a.mu.Lock()
+	host := a.host
+	a.mu.Unlock()
+	if host != nil && host.Shutdown(cleanupCtx) != nil {
+		value := failure(desktopcontract.FailureShutdown, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
+		return &value
+	}
+	a.mu.Lock()
+	a.host = nil
+	a.started = nil
+	a.handshake = protocolcommon.HandshakeResult{}
+	a.state = desktopcontract.LifecycleStopped
+	a.mu.Unlock()
+	if err := safeLifecyclePublish(cleanupCtx, a.config.Lifecycle, desktopcontract.LifecycleEvent{State: desktopcontract.LifecycleStopped}); err != nil {
+		code := desktopcontract.FailureShutdown
+		if errors.Is(err, errInjectedPanic) {
+			code = desktopcontract.FailureBackendPanic
+		}
+		value := failure(code, desktopcontract.ComponentBindingShell, false, desktopcontract.RecoveryExit)
+		return &value
+	}
+	return nil
 }
 
 func (a *Application) report(ctx context.Context, value desktopcontract.Failure) {

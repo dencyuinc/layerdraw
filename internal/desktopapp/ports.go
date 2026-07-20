@@ -87,6 +87,15 @@ func safeResolveCredential(ctx context.Context, port desktopcontract.CredentialP
 	return port.Resolve(ctx, ref)
 }
 
+func safeIssueLocalOwnerGrant(ctx context.Context, port desktopcontract.LocalOwnerGrantPort, request desktopcontract.LocalOwnerGrantRequest) (result desktopcontract.Result[accessprotocol.AuthoringGrantSnapshot]) {
+	defer func() {
+		if recover() != nil {
+			result = failed[accessprotocol.AuthoringGrantSnapshot](desktopcontract.FailureBackendPanic, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryExit)
+		}
+	}()
+	return port.IssueLocalOwnerGrant(ctx, request)
+}
+
 func safeResolveDelegation(ctx context.Context, port desktopcontract.AgentDelegationPort, fence desktopcontract.DelegationFence) (result desktopcontract.Result[accesscore.Delegation]) {
 	defer func() {
 		if recover() != nil {
