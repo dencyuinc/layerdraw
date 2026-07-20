@@ -103,4 +103,22 @@ func TestFrontendBridgeDelegatesProjectSurfaceWithFallbackContext(t *testing.T) 
 	if result := bridge.ImportExternalDialog(desktopapp.ExternalImportRequest{}); result.Failure == nil {
 		t.Fatalf("invalid external import=%+v", result)
 	}
+	if status := bridge.MCPStatus(); status.Enabled {
+		t.Fatalf("MCP unexpectedly enabled: %+v", status)
+	}
+	if result := bridge.SetMCPEnabled(true, desktopapp.MCPTransportKind("invalid")); result.Failure == nil {
+		t.Fatalf("invalid MCP transport=%+v", result)
+	}
+	if result := bridge.CreateMCPConnection(desktopapp.MCPConnectRequest{}); result.Failure == nil {
+		t.Fatalf("invalid MCP connection=%+v", result)
+	}
+	if connections := bridge.ListMCPConnections(); len(connections) != 0 {
+		t.Fatalf("unexpected MCP connections=%+v", connections)
+	}
+	if result := bridge.RevokeMCPConnection("missing"); result.Failure == nil {
+		t.Fatalf("missing MCP revoke=%+v", result)
+	}
+	if result := bridge.RestartMCP(); result.Failure == nil {
+		t.Fatalf("MCP restart before startup=%+v", result)
+	}
 }
