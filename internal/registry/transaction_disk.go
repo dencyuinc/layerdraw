@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 var transactionIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -92,7 +94,7 @@ func (s *DiskTransactionStore) CreateRegistryTransaction(ctx context.Context, tx
 	if err != nil {
 		return err
 	}
-	syncErr := dir.Sync()
+	syncErr := privatefs.SyncDirectory(dir)
 	closeErr := dir.Close()
 	if syncErr != nil {
 		return syncErr
@@ -190,7 +192,7 @@ func (s *DiskTransactionStore) CompareAndSwapRegistryTransaction(ctx context.Con
 	if err != nil {
 		return false, err
 	}
-	syncErr := dir.Sync()
+	syncErr := privatefs.SyncDirectory(dir)
 	closeErr := dir.Close()
 	if syncErr != nil {
 		return false, syncErr

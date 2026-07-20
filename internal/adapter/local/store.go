@@ -486,7 +486,7 @@ func (s *Store) atomicWrite(path string, r io.Reader, size int64) (retErr error)
 			return fmt.Errorf("directory sync after rename: %w: %w", port.ErrIndeterminate, err)
 		}
 	}
-	if err = d.Sync(); err != nil {
+	if err = privatefs.SyncDirectory(d); err != nil {
 		return fmt.Errorf("directory sync after rename: %w: %w", port.ErrIndeterminate, err)
 	}
 	return nil
@@ -506,7 +506,7 @@ func (s *Store) syncDirAfterMutation(dir string) error {
 		return fmt.Errorf("directory open after mutation: %w: %w", port.ErrIndeterminate, err)
 	}
 	defer d.Close()
-	if err := d.Sync(); err != nil {
+	if err := privatefs.SyncDirectory(d); err != nil {
 		return fmt.Errorf("directory sync after mutation: %w: %w", port.ErrIndeterminate, err)
 	}
 	return nil

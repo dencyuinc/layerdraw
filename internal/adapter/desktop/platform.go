@@ -102,7 +102,7 @@ func (s *AtomicSettingsStore) Save(_ context.Context, value desktopcontract.Pers
 	}
 	committed = true
 	if directoryHandle, err := os.Open(directory); err == nil {
-		_ = directoryHandle.Sync()
+		_ = privatefs.SyncDirectory(directoryHandle)
 		_ = directoryHandle.Close()
 	}
 	return nil

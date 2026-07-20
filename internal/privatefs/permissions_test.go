@@ -22,3 +22,27 @@ func TestPermissionsMatchUsesNativeSecurityModel(t *testing.T) {
 		t.Fatal("mismatched Unix permissions accepted")
 	}
 }
+
+func TestSyncDirectoryUsesNativeDurabilityBoundary(t *testing.T) {
+	directory, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := SyncDirectory(directory); err != nil {
+		t.Fatalf("sync directory: %v", err)
+	}
+
+	filePath := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(filePath, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if runtime.GOOS == "windows" && SyncDirectory(file) == nil {
+		t.Fatal("Windows accepted a non-directory handle")
+	}
+}

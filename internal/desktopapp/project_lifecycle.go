@@ -737,7 +737,7 @@ func (l *projectLifecycle) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	err = dir.Sync()
+	err = privatefs.SyncDirectory(dir)
 	_ = dir.Close()
 	if err != nil {
 		return err

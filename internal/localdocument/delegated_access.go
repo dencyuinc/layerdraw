@@ -90,7 +90,7 @@ func (h *Host) saveDelegations(snapshot accesscore.DelegationSnapshot) error {
 		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	return privatefs.SyncDirectory(dir)
 }
 
 func (h *Host) DelegateAgent(ctx context.Context, session *Session, requested accesscore.Delegation) (accesscore.Delegation, error) {

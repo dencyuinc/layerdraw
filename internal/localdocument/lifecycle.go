@@ -27,6 +27,7 @@ import (
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/adapter/local"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -1165,7 +1166,7 @@ func syncRootDirectory(root *os.Root) error {
 		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	return privatefs.SyncDirectory(dir)
 }
 
 func (h *Host) recoverRelocation(ctx context.Context) error {
