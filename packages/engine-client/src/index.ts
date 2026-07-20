@@ -235,6 +235,10 @@ export interface EngineWorkbenchClient {
     input: EngineProtocol.PreviewFragmentInput,
     options?: WorkbenchOptions,
   ): Promise<WorkbenchOutcome<EngineProtocol.PreviewFragmentResponseEnvelope>>;
+  previewOperations(
+    input: EngineProtocol.PreviewOperationsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PreviewOperationsResponseEnvelope>>;
   previewSourcePatch(
     input: EngineProtocol.PreviewSourcePatchInput,
     options?: WorkbenchOptions,

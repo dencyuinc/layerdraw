@@ -36,7 +36,7 @@ import {
   schemaDigest,
 } from "@layerdraw/protocol/runtime";
 import type { EngineClient, EngineClientCreationOptions } from "./index.js";
-import { EngineClientInputError, EngineClientTransportError } from "./index.js";
+import { EngineClientBackpressureError, EngineClientInputError, EngineClientTransportError } from "./index.js";
 import {
   createStdioByteTransport,
   createStdioEngineClient,
@@ -114,6 +114,7 @@ class LocalHostClientImpl implements LocalHostClient {
   private transport: InternalByteTransport;
   private manifest: Runtime.RuntimeCapabilityManifest;
   private counter = 0;
+  private activeExchange = false;
 
   constructor(
     private readonly options: CreateLocalHostClientOptions,
@@ -142,25 +143,33 @@ class LocalHostClientImpl implements LocalHostClient {
   private async exchange<T>(operation: string, control: string, decode: (value: string) => T, blobs: readonly InternalTransportBlob[], options?: LocalHostRequestOptions): Promise<T> {
     if (this.state !== "ready") throw new EngineClientTransportError("PROCESS_EXITED");
     if (!this.hasCapability(operation)) throw new EngineClientTransportError("NEGOTIATION_REJECTED", false);
+    if (this.activeExchange) throw new EngineClientBackpressureError("SINGLE_FLIGHT_BUSY");
+    this.activeExchange = true;
     let exchange: InternalTransportExchange;
     try { exchange = this.transport.request({ exchangeId: operation, control: buffer(control), blobs }); }
     catch {
-      if (this.state === "ready") this.state = "failed";
+      this.activeExchange = false;
+      this.state = "failed";
       throw new EngineClientTransportError("BROKEN_PIPE");
     }
-    const abort = (): void => { void exchange.cancel(); };
-    if (options?.signal?.aborted) abort();
-    else options?.signal?.addEventListener("abort", abort, { once: true });
+    const abort = (): void => { try { void exchange.cancel(); } catch { /* cancellation remains best-effort */ } };
+    let listening = false;
     try {
+      if (options?.signal?.aborted) abort();
+      else if (options?.signal !== undefined) {
+        options.signal.addEventListener("abort", abort, { once: true });
+        listening = true;
+      }
       const response = await exchange.response;
       if (response.blobs.length !== 0) throw new EngineClientTransportError("BROKEN_PIPE", false);
       return decode(decoder.decode(response.control));
     } catch (error) {
+      this.state = "failed";
       if (error instanceof EngineClientTransportError) throw error;
-      if (this.state === "ready") this.state = "failed";
       throw new EngineClientTransportError("PROCESS_EXITED");
     } finally {
-      options?.signal?.removeEventListener("abort", abort);
+      if (listening) options!.signal!.removeEventListener("abort", abort);
+      this.activeExchange = false;
     }
   }
 

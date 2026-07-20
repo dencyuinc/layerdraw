@@ -8,7 +8,8 @@
   "files": ["dist/**/*.js", "dist/**/*.d.ts", "LICENSE", "README.md"],
   "exports": {
     ".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"},
-    "./editor": {"types": "./dist/editor.d.ts", "import": "./dist/editor.js"}
+    "./editor": {"types": "./dist/editor.d.ts", "import": "./dist/editor.js"},
+    "./browser-editor": {"types": "./dist/browser-editor.d.ts", "import": "./dist/browser-editor.js"}
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",

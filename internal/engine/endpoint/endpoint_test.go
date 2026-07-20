@@ -66,6 +66,7 @@ func expectedOperations() []string {
 		OperationOrganizeWorkspace,
 		OperationPlanExport,
 		OperationPreviewFragment,
+		OperationPreviewOperations,
 		OperationPreviewSourcePatch,
 		OperationReadDeclarations,
 		OperationReadModules,
