@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -248,7 +249,7 @@ func (s *DurableIndexStore) read(path string) (persistedIndex, error) {
 	if err != nil {
 		return persistedIndex{}, err
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !privatefs.PermissionsMatch(info, 0o600) {
 		return persistedIndex{}, port.ErrConflict
 	}
 	data, err := os.ReadFile(path)

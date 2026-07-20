@@ -16,6 +16,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -325,7 +326,7 @@ func (s *Document) AbortStagedRevision(ctx context.Context, in port.AbortStagedR
 		if err != nil {
 			return classify(err)
 		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != dirMode {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !privatefs.PermissionsMatch(info, dirMode) {
 			return port.ErrConflict
 		}
 		if err = os.RemoveAll(stageDir); err != nil {

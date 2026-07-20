@@ -19,6 +19,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 const referenceExternalStateVersion = 1
@@ -329,7 +330,7 @@ func (a *ReferenceExternalStorage) ApplyReconcile(_ context.Context, plan Extern
 
 func (a *ReferenceExternalStorage) load() error {
 	info, statErr := os.Lstat(a.statePath)
-	if statErr == nil && (!info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 4<<20) {
+	if statErr == nil && (!info.Mode().IsRegular() || !privatefs.PermissionsMatch(info, 0o600) || info.Size() > 4<<20) {
 		return errors.New("external storage state requires recovery")
 	}
 	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
