@@ -33,6 +33,30 @@ type Workbench interface {
 	Checkpoint(context.Context, CheckpointWorkingDocumentInput) (WorkingDocument, error)
 }
 
+type RegistryStagedObjectRef struct {
+	ObjectID  string
+	Digest    protocolcommon.Digest
+	Size      protocolcommon.CanonicalUint64
+	MediaType string
+}
+
+type PrepareRegistryRevisionInput struct {
+	Scope                      runtimeprotocol.RuntimeScope
+	BaseRevision               runtimeprotocol.CommittedRevisionRef
+	RegistryTransactionID      string
+	PlanDigest                 protocolcommon.Digest
+	MutationDigest             protocolcommon.Digest
+	ExpectedResolvedLockDigest protocolcommon.Digest
+	StagedObjects              []RegistryStagedObjectRef
+}
+
+// RegistryRevisionPreparer is the Engine-owned handoff from verified staged
+// package bytes to a complete Runtime PreparedRevision. Runtime never parses
+// LDL, expands archives, or fabricates source blobs from plan metadata.
+type RegistryRevisionPreparer interface {
+	PrepareRegistryRevision(context.Context, PrepareRegistryRevisionInput) (PreparedRevision, error)
+}
+
 // WorkingDocumentCloser is optional because some remote Engine facades expire
 // handles server-side. Local hosts implement it to release retained bytes on
 // bounded close and repeated open/close cycles.

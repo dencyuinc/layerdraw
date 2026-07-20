@@ -1891,7 +1891,7 @@ func newCoordinatorFixture(t *testing.T) (*coordinatorHost, *Runtime) {
 	stateHead := port.StateHead{StateVersion: "4", BackendVersion: "state-4", DefinitionHash: base.DefinitionHash, GraphHash: base.GraphHash, CapturedAt: protocolcommon.Rfc3339Time(now.Format(time.RFC3339)), SubjectHashes: map[semantic.StableAddress]protocolcommon.Digest{}}
 	source := sourceBlobForContents("source-main", protocolcommon.BlobLifetimePersistent, "text/ldl", []byte("entity fixture {}\n"))
 	h := &coordinatorHost{now: now, base: base, head: port.DocumentHead{Revision: base, ProviderVersion: "provider-1", FencingToken: "1"}, stateHead: stateHead, working: port.WorkingDocument{Handle: "engine-handle", Generation: "0", BaseRevision: base, DefinitionHash: base.DefinitionHash, GraphHash: digest('7')}, source: source, impact: impact, grant: grant, summary: summary, decision: decision, records: map[runtimeprotocol.OperationID]port.RecoveryRecord{}, keys: map[runtimeprotocol.IdempotencyKey]runtimeprotocol.OperationID{}, staged: map[string]runtimeprotocol.CommittedRevisionRef{}}
-	rt, err := New(Config{ReleaseVersion: "0.0.0-dev", EndpointInstanceID: "runtime-coordinator", ReleaseManifestDigest: digest('f'), Limits: testLimits("100"), Ports: Ports{Workbench: h, Grants: h, Scopes: h, Documents: h, State: coordinatorState{h}, History: h, Recovery: h, Authoring: h, Clock: h, Identities: h}})
+	rt, err := New(Config{ReleaseVersion: "0.0.0-dev", EndpointInstanceID: "runtime-coordinator", ReleaseManifestDigest: digest('f'), Limits: testLimits("100"), Ports: Ports{Workbench: h, Registry: h, Grants: h, Scopes: h, Documents: h, State: coordinatorState{h}, History: h, Recovery: h, Authoring: h, Clock: h, Identities: h}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2107,6 +2107,21 @@ func (h *coordinatorHost) Preview(_ context.Context, input port.PreviewWorkingDo
 		}
 	}
 	return result, nil
+}
+
+func (h *coordinatorHost) PrepareRegistryRevision(_ context.Context, input port.PrepareRegistryRevisionInput) (port.PreparedRevision, error) {
+	if len(input.StagedObjects) == 0 {
+		return port.PreparedRevision{}, errors.New("missing staged Registry objects")
+	}
+	impact := h.impact
+	impact.BaseDefinitionHash = input.BaseRevision.DefinitionHash
+	return port.PreparedRevision{
+		AuthoringImpact: impact,
+		DefinitionHash:  impact.ResultingDefinitionHash,
+		GraphHash:       digest('c'),
+		Sources:         cloneSourceBlobSetForTest(port.SourceBlobSet{Revision: input.BaseRevision, Blobs: []port.SourceBlob{h.source}}),
+		Manifest:        protocolcommon.BlobRef{BlobID: "registry-manifest", Digest: digest('d'), Lifetime: protocolcommon.BlobLifetimeRequest, MediaType: "application/json", Size: "2"},
+	}, nil
 }
 
 type coordinatorExternalHost struct{ host *coordinatorHost }

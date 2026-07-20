@@ -39,6 +39,10 @@ type Operations struct {
 	CancelOperation    CancelOperationOperation
 	GetOperationResult GetOperationResultOperation
 	ListRevisions      ListRevisionsOperation
+	// RegistryCommit is an owner-only composition boundary. It is deliberately
+	// not advertised as a Runtime protocol operation: Registry already owns its
+	// versioned public contract and calls this typed host handoff in-process.
+	RegistryCommit RegistryCommitOperation
 }
 
 type OpenDocumentOperation interface {
@@ -61,10 +65,15 @@ type ListRevisionsOperation interface {
 	ListRevisions(context.Context, runtimeprotocol.ListRevisionsInput) (runtimeprotocol.RevisionPage, *ContractError)
 }
 
+type RegistryCommitOperation interface {
+	CommitRegistryPlan(context.Context, RegistryCommitInput) (runtimeprotocol.RuntimeCommitResult, *ContractError)
+}
+
 // Ports is the complete provider-neutral dependency set. Port presence
 // describes storage support but never implies that an operation handler exists.
 type Ports struct {
 	Workbench     port.Workbench
+	Registry      port.RegistryRevisionPreparer
 	Grants        port.GrantSource
 	Scopes        port.ScopeSource
 	Documents     port.DocumentStore
@@ -110,12 +119,15 @@ func New(config Config) (*Runtime, error) {
 	if operationsEmpty(config.Operations) && coordinatorPortsConfigured(config.Ports) {
 		coordinator := newCoordinator(r)
 		r.config.Operations = Operations{OpenDocument: coordinator, CommitOperations: coordinator, CancelOperation: coordinator, GetOperationResult: coordinator, ListRevisions: coordinator}
+		if config.Ports.Registry != nil {
+			r.config.Operations.RegistryCommit = coordinator
+		}
 	}
 	return r, nil
 }
 
 func operationsEmpty(operations Operations) bool {
-	return operations.OpenDocument == nil && operations.CommitOperations == nil && operations.CancelOperation == nil && operations.GetOperationResult == nil && operations.ListRevisions == nil
+	return operations.OpenDocument == nil && operations.CommitOperations == nil && operations.CancelOperation == nil && operations.GetOperationResult == nil && operations.ListRevisions == nil && operations.RegistryCommit == nil
 }
 
 func coordinatorPortsConfigured(ports Ports) bool {
@@ -257,6 +269,16 @@ func (r *Runtime) CommitOperations(ctx context.Context, input runtimeprotocol.Ru
 		return runtimeprotocol.RuntimeCommitResult{}, unavailableOperation(OperationCommitOperations)
 	}
 	return r.config.Operations.CommitOperations.CommitOperations(ctx, input)
+}
+
+// CommitRegistryPlan publishes a Registry-produced source closure through the
+// same Coordinator authority as operation commits, without fabricating an
+// Engine SemanticOperationBatch.
+func (r *Runtime) CommitRegistryPlan(ctx context.Context, input RegistryCommitInput) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
+	if r.config.Operations.RegistryCommit == nil {
+		return runtimeprotocol.RuntimeCommitResult{}, unavailableOperation("runtime.registry_install")
+	}
+	return r.config.Operations.RegistryCommit.CommitRegistryPlan(ctx, input)
 }
 
 func (r *Runtime) CancelOperation(ctx context.Context, input runtimeprotocol.CancelOperationInput) (runtimeprotocol.CancelOperationResult, *ContractError) {
