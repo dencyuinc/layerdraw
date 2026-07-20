@@ -37,7 +37,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "ajv": "8.18.0",
+    "ajv": "8.20.0",
     "typescript": "7.0.2"
   },
   "engines": {
