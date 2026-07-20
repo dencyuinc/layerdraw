@@ -325,8 +325,13 @@ func (h *Host) ListResources(ctx context.Context) ([]Resource, *Failure) {
 	if failure != nil {
 		return nil, failure
 	}
-	result := make([]Resource, 0, len(snapshot.Resources)+1)
-	result = append(result, Resource{URI: "layerdraw://capabilities", Name: "Desktop capabilities", Description: "Effective capabilities and grant summary.", MimeType: "application/json"})
+	// The built-in capabilities resource consumes one item. Check before any
+	// allocation or addition so an adversarial length cannot overflow a
+	// capacity computation and the configured aggregate bound stays exact.
+	if len(snapshot.Resources) >= h.config.Limits.MaxItems {
+		return nil, fail(ErrorResourceExhausted, false)
+	}
+	result := []Resource{{URI: "layerdraw://capabilities", Name: "Desktop capabilities", Description: "Effective capabilities and grant summary.", MimeType: "application/json"}}
 	for _, r := range snapshot.Resources {
 		result = append(result, Resource{URI: r.URI, Name: r.Name, Description: r.Description, MimeType: r.MimeType})
 	}

@@ -698,6 +698,18 @@ func TestCompleteEnvelopeAndAggregateLimits(t *testing.T) {
 	}
 }
 
+func TestListResourcesChecksBuiltInItemBeforeAllocation(t *testing.T) {
+	limits := DefaultLimits()
+	limits.MaxItems = 1
+	s := snapshot()
+	s.Resources = []ResourceCapability{{URI: "layerdraw://only", Name: "only", Description: "bounded", MimeType: "application/json", Schema: json.RawMessage(`{"type":"object"}`)}}
+	host, _ := newRunning(t, &ownerStub{snapshot: s}, limits)
+	resources, failure := host.ListResources(context.Background())
+	if resources != nil || failure == nil || failure.Code != ErrorResourceExhausted {
+		t.Fatalf("resources=%+v failure=%+v", resources, failure)
+	}
+}
+
 func TestGeneratedWorkflowRoutesPreviewBeforeCommitAndStopsOnRejection(t *testing.T) {
 	s := snapshot("runtime.preview_operations", "runtime.commit_operations")
 	owner := &ownerStub{snapshot: s}
