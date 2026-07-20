@@ -38,6 +38,11 @@ const (
 	metadataFileMode   = 0o600
 )
 
+// ErrStateRecoveryRequired identifies durable local metadata that must be
+// presented to an explicit recovery flow. Callers must not delete or recreate
+// the state in response to this error.
+var ErrStateRecoveryRequired = errors.New("local document state requires recovery")
+
 type Clock interface{ Now() time.Time }
 
 type systemClock struct{}
@@ -122,6 +127,24 @@ type Session struct {
 	sourceInput   engineendpoint.LocalSource
 	closed        bool
 	delegationID  string
+}
+
+// SearchBinding exposes only the trusted, detached Engine input and exact
+// committed Access authority needed by the host-owned native index lifecycle.
+func (h *Host) SearchBinding(s *Session) ([]byte, port.DocumentSnapshotRef, string, error) {
+	if s == nil || s.closed || s.Open.AccessSummary.AccessFingerprint == "" {
+		return nil, port.DocumentSnapshotRef{}, "", errors.New("search session binding unavailable")
+	}
+	h.mu.Lock()
+	tracked := h.sessions[s.Open.Session.RuntimeSessionID] == s
+	h.mu.Unlock()
+	input, available := h.workbench.SearchEncodedInput(s.working.Handle)
+	if !tracked || !available {
+		return nil, port.DocumentSnapshotRef{}, "", errors.New("search session source unavailable")
+	}
+	revision := s.Open.CommittedRevision
+	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: string(revision.DocumentID), CommittedRevision: string(revision.RevisionID), DefinitionHash: string(revision.DefinitionHash)}
+	return input, snapshot, string(s.Open.AccessSummary.AccessFingerprint), nil
 }
 
 func (h *Host) accessContext(ctx context.Context, session *Session) context.Context {
@@ -875,10 +898,10 @@ func (h *Host) loadMetadata() (lifecycleMetadata, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil || value.Version != metadataVersion || value.Bindings == nil {
-		return lifecycleMetadata{}, errors.New("corrupt local document bindings")
+		return lifecycleMetadata{}, fmt.Errorf("%w: local document bindings", ErrStateRecoveryRequired)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return lifecycleMetadata{}, errors.New("corrupt local document bindings")
+		return lifecycleMetadata{}, fmt.Errorf("%w: local document bindings", ErrStateRecoveryRequired)
 	}
 	seenDocuments := map[runtimeprotocol.DocumentID]bool{}
 	for key, binding := range value.Bindings {
@@ -888,7 +911,7 @@ func (h *Host) loadMetadata() (lifecycleMetadata, error) {
 		_, portableErr := semantic.EncodeProjectRootAddress(semantic.ProjectRootAddress(binding.PortableID))
 		_, digestErr := protocolcommon.EncodeDigest(binding.SourceDigest)
 		if documentErr != nil || portableErr != nil || digestErr != nil || seenDocuments[binding.DocumentID] || (binding.Kind != "project" && binding.Kind != "container") || !filepath.IsAbs(binding.Locator) || filepath.Clean(binding.Locator) != binding.Locator || (key != baseKey && key != importKey) {
-			return lifecycleMetadata{}, errors.New("corrupt local document bindings")
+			return lifecycleMetadata{}, fmt.Errorf("%w: local document bindings", ErrStateRecoveryRequired)
 		}
 		seenDocuments[binding.DocumentID] = true
 	}

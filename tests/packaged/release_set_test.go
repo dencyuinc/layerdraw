@@ -3,14 +3,19 @@
 package packaged_test
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -49,7 +54,7 @@ func TestFixedReleaseSetNativeUsesVerifiedSidecarIdentity(t *testing.T) {
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.ReleaseVersion == "" || len(manifest.Artifacts) != 4 {
+	if manifest.ReleaseVersion == "" || len(manifest.Artifacts) != 5 {
 		t.Fatalf("incomplete fixed release manifest: %+v", manifest)
 	}
 	for _, artifact := range manifest.Artifacts {
@@ -58,6 +63,32 @@ func TestFixedReleaseSetNativeUsesVerifiedSidecarIdentity(t *testing.T) {
 				t.Fatalf("%s release file %s: bytes=%d err=%v", artifact.ArtifactID, relative, len(data), err)
 			}
 		}
+	}
+	var desktopArchive string
+	for _, artifact := range manifest.Artifacts {
+		if artifact.ArtifactID == "layerdraw-host-native" {
+			desktopArchive = filepath.Join(root, filepath.FromSlash(artifact.Path))
+		}
+	}
+	if desktopArchive == "" {
+		t.Fatal("Desktop native artifact is absent")
+	}
+	desktopRoot := t.TempDir()
+	extractDesktopNative(t, desktopArchive, desktopRoot)
+	desktopCommand := offlineCommand(t,
+		filepath.Join(desktopRoot, "layerdraw-host-native"),
+		"native-search-check",
+		"--database", filepath.Join(t.TempDir(), "offline-search.lbug"),
+		"--fts-extension", filepath.Join(desktopRoot, "libfts.lbug_extension"),
+	)
+	desktopCommand.Env = []string{
+		"HOME=" + t.TempDir(),
+		"HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:1", "ALL_PROXY=http://127.0.0.1:1",
+		"http_proxy=http://127.0.0.1:1", "https_proxy=http://127.0.0.1:1", "all_proxy=http://127.0.0.1:1",
+		"NO_PROXY=", "no_proxy=",
+	}
+	if output, err := desktopCommand.CombinedOutput(); err != nil || !bytes.Contains(output, []byte("ladybug 0.17.0 search-query-analysis verified")) {
+		t.Fatalf("offline Desktop native check: output=%q err=%v", output, err)
 	}
 
 	binary := filepath.Join(root, "layerdraw-engine")
@@ -106,5 +137,70 @@ func TestFixedReleaseSetNativeUsesVerifiedSidecarIdentity(t *testing.T) {
 	_ = stdin.Close()
 	if err := command.Wait(); err != nil || stderr.Len() != 0 {
 		t.Fatalf("release binary exit=%v stderr=%q", err, stderr.String())
+	}
+}
+
+func offlineCommand(t *testing.T, binary string, arguments ...string) *exec.Cmd {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		if sandbox, err := exec.LookPath("sandbox-exec"); err == nil {
+			return exec.Command(sandbox, append([]string{"-p", "(version 1) (allow default) (deny network*)", binary}, arguments...)...)
+		}
+		t.Fatal("strict offline check requires sandbox-exec on darwin")
+	}
+	if runtime.GOOS == "linux" {
+		if unshare, err := exec.LookPath("unshare"); err == nil {
+			if exec.Command(unshare, "-n", "true").Run() == nil {
+				return exec.Command(unshare, append([]string{"-n", binary}, arguments...)...)
+			}
+			// Hosted Linux runners require root to create a network namespace. Drop
+			// back to the invoking user before starting the packaged binary so its
+			// database and search index remain owned (and removable) by the test.
+			identity := []string{"--setgid", strconv.Itoa(os.Getgid()), "--setuid", strconv.Itoa(os.Getuid())}
+			probe := append([]string{"-n", unshare, "-n"}, append(identity, "true")...)
+			if sudo, sudoErr := exec.LookPath("sudo"); sudoErr == nil && exec.Command(sudo, probe...).Run() == nil {
+				command := append([]string{"-n", unshare, "-n"}, append(identity, binary)...)
+				return exec.Command(sudo, append(command, arguments...)...)
+			}
+		}
+		t.Fatal("strict offline check requires an operational unshare network namespace on linux")
+	}
+	t.Fatalf("strict offline check has no network isolation mechanism for %s", runtime.GOOS)
+	return nil
+}
+
+func extractDesktopNative(t *testing.T, archivePath, destination string) {
+	t.Helper()
+	file, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	compressed, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compressed.Close()
+	archive := tar.NewReader(compressed)
+	allowed := map[string]bool{"layerdraw-host-native": true, "libfts.lbug_extension": true, "libvector.lbug_extension": true, "libalgo.lbug_extension": true, "ladybug-native.json": true, "LICENSE": true, "NOTICE": true, "LICENSING.md": true, "THIRD_PARTY_NOTICES.txt": true}
+	for {
+		header, err := archive.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil || !allowed[header.Name] || header.Typeflag != tar.TypeReg {
+			t.Fatalf("invalid Desktop native archive entry %q: %v", header.Name, err)
+		}
+		data, err := io.ReadAll(io.LimitReader(archive, 256<<20))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mode := os.FileMode(0o644)
+		if header.Name == "layerdraw-host-native" {
+			mode = 0o755
+		}
+		if err := os.WriteFile(filepath.Join(destination, header.Name), data, mode); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

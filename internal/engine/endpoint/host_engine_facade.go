@@ -16,6 +16,7 @@ type HostEngineFacade struct {
 	dispatcher *CompileDispatcher
 	negotiated *NegotiatedContext
 	release    string
+	compiler   engine.Engine
 }
 
 func NewHostEngineFacade(release, sourceRevision, manifestDigest, instanceID, transportID string) (*HostEngineFacade, error) {
@@ -29,10 +30,11 @@ func NewHostEngineFacade(release, sourceRevision, manifestDigest, instanceID, tr
 	if err != nil || negotiated == nil || response.Outcome != protocolcommon.OutcomeSuccess {
 		return nil, errors.New("host Engine bootstrap negotiation failed")
 	}
-	return &HostEngineFacade{descriptor: descriptor, dispatcher: NewCompileDispatcher(compiler), negotiated: negotiated, release: release}, nil
+	return &HostEngineFacade{descriptor: descriptor, dispatcher: NewCompileDispatcher(compiler), negotiated: negotiated, release: release, compiler: compiler}, nil
 }
 
 func (f *HostEngineFacade) Descriptor() *Descriptor        { return f.descriptor }
 func (f *HostEngineFacade) Dispatcher() *CompileDispatcher { return f.dispatcher }
 func (f *HostEngineFacade) Negotiated() *NegotiatedContext { return f.negotiated }
 func (f *HostEngineFacade) ReleaseVersion() string         { return f.release }
+func (f *HostEngineFacade) Compiler() engine.Engine        { return f.compiler }
