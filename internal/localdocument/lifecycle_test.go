@@ -130,6 +130,21 @@ func TestSearchBindingTracksOnlyLiveCommittedSession(t *testing.T) {
 	}
 }
 
+func TestOpenProjectUsesPinnedEntryContent(t *testing.T) {
+	root := t.TempDir()
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	project := writeProject(t, root, "not valid LDL")
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{
+		Root: project, PinnedEntry: []byte("project pinned \"Pinned\" {}\n"),
+	})
+	if err != nil || opened.Session == nil {
+		t.Fatalf("pinned project open=%+v err=%v", opened, err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRelocateProjectPreservesStableIdentityAndDetectsChangedSource(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -523,9 +538,12 @@ func TestContainerValidationImportIdentityAndNoPartialPublication(t *testing.T) 
 	if err != nil || !bytes.Contains(containerSource.ProjectSourceTree()["document.ldl"], []byte("container_saved")) {
 		t.Fatalf("container was not materialized through Engine: %q err=%v", containerSource.ProjectSourceTree()["document.ldl"], err)
 	}
-	imported, err := host.ImportContainer(context.Background(), path)
+	imported, err := host.OpenContainerContent(context.Background(), path, archive, true)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := host.OpenContainerContent(context.Background(), "relative.layerdraw", archive, true); err == nil {
+		t.Fatal("relative pinned container locator accepted")
 	}
 	if first.Session.PortableID != imported.Session.PortableID || first.Session.Open.Session.Scope.DocumentID == imported.Session.Open.Session.Scope.DocumentID {
 		t.Fatal("import identity contract failed")

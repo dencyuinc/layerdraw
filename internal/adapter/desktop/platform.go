@@ -244,18 +244,25 @@ func (b *AssociationBroker) Next(context.Context) (desktopcontract.FileAssociati
 // Resolve consumes a token inside the trusted backend. The path never crosses
 // the frontend binding and a token cannot be replayed.
 func (b *AssociationBroker) Resolve(token string) (string, error) {
+	path, _, err := b.ResolveIdentity(token)
+	return path, err
+}
+
+// ResolveIdentity consumes a handoff and preserves the OS file identity so the
+// storage boundary can revalidate it immediately before project resolution.
+func (b *AssociationBroker) ResolveIdentity(token string) (string, os.FileInfo, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	location, ok := b.locations[token]
 	if !ok {
-		return "", errors.New("file association token is invalid")
+		return "", nil, errors.New("file association token is invalid")
 	}
 	delete(b.locations, token)
 	current, err := os.Lstat(location.path)
 	if err != nil || !current.Mode().IsRegular() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(location.info, current) {
-		return "", errors.New("file association target changed")
+		return "", nil, errors.New("file association target changed")
 	}
-	return location.path, nil
+	return location.path, location.info, nil
 }
 
 type JSONLogStore struct {

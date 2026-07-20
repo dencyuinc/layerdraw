@@ -47,9 +47,13 @@ func (a *Application) openSelected(ctx context.Context, component desktopcontrac
 	}
 	var opened localdocument.OpenResult
 	if location.Kind == "container" {
-		opened, err = host.ImportContainer(ctx, location.Root)
+		if location.PinnedContent != nil {
+			opened, err = host.OpenContainerContent(ctx, location.Root, location.PinnedContent, true)
+		} else {
+			opened, err = host.ImportContainer(ctx, location.Root)
+		}
 	} else {
-		opened, err = host.OpenProject(ctx, localdocument.OpenProjectInput{Root: location.Root, EntryPath: location.EntryPath})
+		opened, err = host.OpenProject(ctx, localdocument.OpenProjectInput{Root: location.Root, EntryPath: location.EntryPath, PinnedEntry: location.PinnedContent})
 	}
 	if err != nil {
 		return mapProjectOpenFailure[ProjectOpenResult](err, desktopcontract.ComponentRuntime)

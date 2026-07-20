@@ -30,9 +30,10 @@ type Adapter interface {
 // ProjectLocation is a trusted backend-only local project reference. Native
 // paths never appear in a Wails request or response.
 type ProjectLocation struct {
-	Root      string
-	EntryPath string
-	Kind      string
+	Root          string
+	EntryPath     string
+	Kind          string
+	PinnedContent []byte
 }
 
 // ProjectStorage resolves opaque native-dialog tokens and owns project

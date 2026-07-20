@@ -63,6 +63,20 @@ shell nor these adapters add a second Engine transport or interpret owner
 responses. The #123 recovery owner and #124 command owner remain explicit
 injected ports.
 
+`apps/desktop` composes that native shell into the real Wails v2 executable.
+`internal/desktopwails` supplies build-tag-selected macOS, Windows, and Linux
+identities, Wails display/window/theme/zoom calls, native menu and
+single-instance file-association routing, and a packaged DOM accessibility
+round trip. Embedded visible controls and the native menu obtain the same
+status generation and invoke the same `NativeShell` command route. Commands
+whose Composer/BrowserEditor owner is not packaged remain explicitly
+unavailable.
+
+The executable's `--packaged-probe` mode exercises the concrete per-OS adapter
+linkage, private settings round trip, and opaque association handoff without
+launching another application. The `Desktop packaged probes` CI matrix builds
+and executes that same binary on macOS, Windows, and Linux.
+
 Persisted window bounds are schema-versioned and normalized against the live
 display work areas. Invalid, oversized, or off-screen bounds recover onto a
 usable primary display; theme and zoom use closed values and zoom is bounded to

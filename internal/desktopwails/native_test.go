@@ -3,6 +3,7 @@
 package desktopwails
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -230,7 +231,7 @@ func TestRunExposesPackagedNativeExtensionSeam(t *testing.T) {
 	called := false
 	runWails = func(config *options.App) error {
 		called = true
-		if config.Title != "Packaged LayerDraw" || len(config.Bind) != 2 || config.OnStartup == nil || config.OnShutdown == nil || config.OnBeforeClose == nil {
+		if config.Title != "Packaged LayerDraw" || len(config.Bind) != 3 || config.Menu == nil || config.SingleInstanceLock == nil || config.OnStartup == nil || config.OnShutdown == nil || config.OnBeforeClose == nil {
 			t.Fatalf("incomplete Wails config: %+v", config)
 		}
 		if config.OnBeforeClose(context.Background()) {
@@ -329,6 +330,96 @@ func TestNativeAdapterNegativeAndContainerBoundaries(t *testing.T) {
 	}
 	if !native.shown || !native.quit {
 		t.Fatalf("window bridge: %+v", native)
+	}
+}
+
+func TestProjectStorageRejectsPinnedAssociationReplacement(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := filepath.Join(root, "associated.ldl")
+	if err := os.WriteFile(path, []byte("project original \"Original\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := newSelectionVault()
+	token, err := vault.issuePinned(path, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(root, "replacement.ldl")
+	if err := os.WriteFile(replacement, []byte("project replacement \"Replacement\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewProjectStorageAdapter(vault).Open(context.Background(), token); err == nil {
+		t.Fatal("replaced association target accepted")
+	}
+}
+
+func TestProjectStorageReturnsHandleBoundAssociationContent(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "associated.ldl")
+	original := []byte("project original \"Original\" {}\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := newSelectionVault()
+	token, err := vault.issuePinned(path, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	location, err := NewProjectStorageAdapter(vault).Open(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not valid LDL"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(location.PinnedContent, original) {
+		t.Fatalf("pinned content changed: %q", location.PinnedContent)
+	}
+	if _, err := pinnedContent(selectionPath{path: filepath.Join(t.TempDir(), "missing.ldl"), identity: identity}); err == nil {
+		t.Fatal("missing pinned association content accepted")
+	}
+	large := filepath.Join(t.TempDir(), "large.ldl")
+	if err := os.WriteFile(large, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(large, maxPinnedAssociationBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	largeIdentity, err := os.Lstat(large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pinnedContent(selectionPath{path: large, identity: largeIdentity}); err == nil {
+		t.Fatal("oversized pinned association content accepted")
+	}
+	container := filepath.Join(t.TempDir(), "associated.layerdraw")
+	containerBytes := []byte("handle-bound container")
+	if err := os.WriteFile(container, containerBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	containerIdentity, err := os.Lstat(container)
+	if err != nil {
+		t.Fatal(err)
+	}
+	containerToken, err := vault.issuePinned(container, containerIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := NewProjectStorageAdapter(vault).Import(context.Background(), containerToken)
+	if err != nil || !bytes.Equal(imported.PinnedContent, containerBytes) {
+		t.Fatalf("pinned container=%+v err=%v", imported, err)
 	}
 }
 

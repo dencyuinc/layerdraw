@@ -4,12 +4,26 @@ package main
 
 import (
 	"errors"
+	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 )
+
+func TestPackagedProbeRunsFromDesktopExecutable(t *testing.T) {
+	originalArgs := os.Args
+	originalProbe := runPackagedProbe
+	t.Cleanup(func() { os.Args, runPackagedProbe = originalArgs, originalProbe })
+	os.Args = []string{"LayerDraw", "--packaged-probe"}
+	called := false
+	runPackagedProbe = func(io.Writer) error { called = true; return nil }
+	if err := run(); err != nil || !called {
+		t.Fatalf("probe dispatch called=%v err=%v", called, err)
+	}
+}
 
 func TestRunBuildsPackagedDesktopComposition(t *testing.T) {
 	root := t.TempDir()
