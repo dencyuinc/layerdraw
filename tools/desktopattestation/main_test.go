@@ -56,6 +56,31 @@ func TestResultRejectsShallowOrSelfAssertedMeasurements(t *testing.T) {
 	}
 }
 
+func TestMemoryBudgetFailureReportsOnlyMeasurements(t *testing.T) {
+	root := t.TempDir()
+	store, err := openArtifactStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	budgets := map[string]budget{"memory": {MaxMebibytes: 512, MinIterations: 5, Percentile: 95}}
+	for _, id := range scenarioIDs {
+		budgets[id] = budget{MaxMilliseconds: 100, MinIterations: 5, Percentile: 95}
+	}
+	writeJSON(t, filepath.Join(root, "closure.json"), closure{SchemaVersion: 1, Delivery: "desktop", PerformanceBudgets: budgets})
+	revision := strings.Repeat("a", 40)
+	result := scenarioResult{SchemaVersion: 1, SourceRevision: revision, Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]samples{}, Evidence: map[string]string{}, PeakRSSMiB: []int64{500, 510, 520, 530, 540}}
+	for _, id := range scenarioIDs {
+		result.Scenarios[id] = samples{Milliseconds: []int64{1, 2, 3, 4, 5}}
+		result.Evidence[id] = expectedEvidence[id]
+	}
+	writeJSON(t, filepath.Join(root, "result.json"), result)
+	err = validateResult(store, "closure.json", "result.json", revision, "linux")
+	if err == nil || err.Error() != "process-tree p95 RSS 540MiB exceeds 512MiB" {
+		t.Fatalf("memory failure=%v", err)
+	}
+}
+
 func TestReleaseClosureDecodesStrictly(t *testing.T) {
 	store, err := openArtifactStore(filepath.Join("..", "..", "deploy"))
 	if err != nil {

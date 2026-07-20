@@ -280,7 +280,7 @@ func validateResult(store *artifactStore, closurePath, resultPath, revision, pla
 	}
 	observed, err := percentile95(result.PeakRSSMiB)
 	if err != nil || observed > memory.MaxMebibytes {
-		return fmt.Errorf("process-tree p95 RSS exceeds %dMiB", memory.MaxMebibytes)
+		return fmt.Errorf("process-tree p95 RSS %dMiB exceeds %dMiB", observed, memory.MaxMebibytes)
 	}
 	return nil
 }
