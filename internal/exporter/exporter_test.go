@@ -242,6 +242,9 @@ func TestResourcesAssetsAndMissingAssetPreviewFallback(t *testing.T) {
 	if _, err := assets.Resolve(context.Background(), wrong); !IsFailure(err, FailureAssetMissing) {
 		t.Fatalf("missing resolve=%v", err)
 	}
+	if _, err := assets.Resolve(context.Background(), protocolcommon.Digest("sha256:../../outside")); !IsFailure(err, FailureAssetMissing) {
+		t.Fatalf("unsafe digest resolve=%v", err)
+	}
 
 	previews, err := NewPreviewStore(filepath.Join(root, "previews"), assets)
 	if err != nil {

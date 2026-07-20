@@ -5,6 +5,7 @@ package exporter
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -172,6 +173,8 @@ func (AtomicFileStore) PublishSet(ctx context.Context, files map[string][]byte) 
 
 type AssetStore struct{ root string }
 
+const assetDigestHexLength = 64
+
 func NewAssetStore(root string) (*AssetStore, error) {
 	if root == "" || !filepath.IsAbs(root) {
 		return nil, errors.New("asset store root must be absolute")
@@ -197,7 +200,10 @@ func (s *AssetStore) Import(ctx context.Context, mediaType string, value []byte,
 	if expected != nil && *expected != actual {
 		return "", failure(FailureDigestMismatch, nil)
 	}
-	path := filepath.Join(s.root, strings.TrimPrefix(string(actual), "sha256:"))
+	path, err := s.assetPath(actual)
+	if err != nil {
+		return "", err
+	}
 	if existing, err := os.ReadFile(path); err == nil {
 		if digest(existing) != actual {
 			return "", failure(FailureDigestMismatch, nil)
@@ -214,7 +220,10 @@ func (s *AssetStore) Resolve(ctx context.Context, value protocolcommon.Digest) (
 	if err := ctx.Err(); err != nil {
 		return nil, failure(FailureCancelled, err)
 	}
-	path := filepath.Join(s.root, strings.TrimPrefix(string(value), "sha256:"))
+	path, err := s.assetPath(value)
+	if err != nil {
+		return nil, err
+	}
 	loaded, err := os.ReadFile(path)
 	if err != nil {
 		return nil, failure(FailureAssetMissing, err)
@@ -223,6 +232,20 @@ func (s *AssetStore) Resolve(ctx context.Context, value protocolcommon.Digest) (
 		return nil, failure(FailureDigestMismatch, nil)
 	}
 	return loaded, nil
+}
+
+func (s *AssetStore) assetPath(value protocolcommon.Digest) (string, error) {
+	encoded, found := strings.CutPrefix(string(value), "sha256:")
+	if !found || len(encoded) != assetDigestHexLength || filepath.Base(encoded) != encoded {
+		return "", failure(FailureAssetMissing, nil)
+	}
+	decoded, err := hex.DecodeString(encoded)
+	if err != nil || len(decoded) != assetDigestHexLength/2 {
+		return "", failure(FailureAssetMissing, err)
+	}
+	// Re-encode the validated bytes so filesystem paths never contain caller-
+	// controlled separators or alternate representations.
+	return filepath.Join(s.root, hex.EncodeToString(decoded)), nil
 }
 
 func unsafeAsset(mediaType string, value []byte) bool {
