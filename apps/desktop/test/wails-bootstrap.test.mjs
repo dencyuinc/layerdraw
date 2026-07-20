@@ -39,8 +39,15 @@ test("unopened Viewer never accepts hostless publications", async () => {
 });
 
 test("Wails composition exposes the exact generated Engine and Runtime closure", async () => {
+  const application = {
+    async State() { return "ready"; },
+    async NativeExportProfiles() { return { outcome: "success", value: [{ format: "json", schema_version: 1, requires_shape: [] }] }; },
+    async SerializeNativeExport() { return { outcome: "success", value: { artifact: { artifact_id: "artifact", logical_path: "view.json", media_type: "application/json", content_digest: `sha256:${"a".repeat(64)}` }, source_manifest: {} } }; },
+    async PublishNativeExportDialog() { return { outcome: "success", value: { published: true } }; },
+    async ImportExternalDialog() { return { outcome: "success", value: { profile: "layerdraw.operations-json@1", media_type: "application/json", batch: { operations: [] }, source_hash: `sha256:${"b".repeat(64)}` } }; },
+  };
   const composition = await createDesktopWailsComposition(
-    { async State() { return "ready"; } },
+    application,
     { EventsOn() {}, EventsOff() {} },
     async (_method, exchange) => ({ outcome: "success", value: exchange }),
   );
@@ -48,4 +55,7 @@ test("Wails composition exposes the exact generated Engine and Runtime closure",
   assert.deepEqual(Object.keys(composition.generatedBindings).sort(), expected);
   assert.equal(composition.lifecycle.getSnapshot().phase, "ready");
   assert.equal(composition.viewer.getState().status, "empty");
+  assert.equal((await composition.nativeInterchange.profiles())[0].format, "json");
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(composition.nativeInterchange.publish({ request_id: "request", artifact_id: "artifact", extension: "json" }, controller.signal), { name: "AbortError" });
 });

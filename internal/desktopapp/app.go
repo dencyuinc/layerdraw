@@ -74,6 +74,7 @@ type Config struct {
 	Recovery                      RecoveryReporter
 	ExternalLifecycle             ExternalLifecycleAdapter
 	ExternalPublication           ExternalPublicationGate
+	NativeInterchange             NativeInterchangePort
 	Now                           func() time.Time
 }
 

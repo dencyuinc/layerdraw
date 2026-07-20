@@ -2,13 +2,17 @@
 
 import type { WailsGeneratedBindings } from "@layerdraw/engine-client/wails";
 import type { Viewer, ViewerPresentationState, ViewerState } from "@layerdraw/viewer";
-import type { DesktopLifecyclePhase, DesktopLifecycleSnapshot, DesktopProjectLifecyclePort } from "./contracts.js";
+import type { DesktopExternalImportPreview, DesktopLifecyclePhase, DesktopLifecycleSnapshot, DesktopNativeExportProfile, DesktopNativeInterchangePort, DesktopNativeSerializeResult, DesktopProjectLifecyclePort } from "./contracts.js";
 import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "./wails-bindings.js";
 
 export const desktopLifecycleEvent = "layerdraw:desktop-lifecycle";
 
 export interface DesktopWailsApplicationBinding {
   State(): Promise<unknown>;
+  NativeExportProfiles(): Promise<unknown>;
+  SerializeNativeExport(input: unknown): Promise<unknown>;
+  PublishNativeExportDialog(input: unknown): Promise<unknown>;
+  ImportExternalDialog(input: unknown): Promise<unknown>;
 }
 
 export interface DesktopWailsRuntimeBinding {
@@ -21,6 +25,33 @@ export interface DesktopWailsComposition {
   readonly viewer: Viewer;
   /** Exact Engine + Runtime method closure used by the Wails clients. */
   readonly generatedBindings: WailsGeneratedBindings;
+  readonly nativeInterchange: DesktopNativeInterchangePort;
+}
+
+type DesktopResult = Readonly<{ outcome?: unknown; value?: unknown }>;
+function successful(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("desktop native interchange failed");
+  const result = value as DesktopResult;
+  if (result.outcome !== "success" || result.value === undefined) throw new Error("desktop native interchange failed");
+  return result.value;
+}
+
+function nativeInterchange(application: DesktopWailsApplicationBinding): DesktopNativeInterchangePort {
+  return Object.freeze({
+    async profiles() { return successful(await application.NativeExportProfiles()) as readonly DesktopNativeExportProfile[]; },
+    async serialize(input: Parameters<DesktopNativeInterchangePort["serialize"]>[0], signal: AbortSignal) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      return successful(await application.SerializeNativeExport({ plan: input.export_plan, view_data: input.view_data, assets: [], fonts: [] })) as DesktopNativeSerializeResult;
+    },
+    async publish(input: Parameters<DesktopNativeInterchangePort["publish"]>[0], signal: AbortSignal) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      successful(await application.PublishNativeExportDialog(input));
+    },
+    async importOperations(input: Parameters<DesktopNativeInterchangePort["importOperations"]>[0], signal: AbortSignal) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      return successful(await application.ImportExternalDialog(input)) as DesktopExternalImportPreview;
+    },
+  });
 }
 
 function lifecyclePhase(value: unknown): DesktopLifecyclePhase {
@@ -72,6 +103,7 @@ export async function createDesktopWailsComposition(
     lifecycle,
     viewer,
     generatedBindings: createDesktopGeneratedBindings(invoke),
+    nativeInterchange: nativeInterchange(application),
   });
 }
 

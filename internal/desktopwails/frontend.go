@@ -9,6 +9,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
 )
 
 // FrontendBridge is the context-free Wails surface consumed by generated
@@ -88,4 +89,20 @@ func (b *FrontendBridge) PlanExternalReconcile(session runtimeprotocol.RuntimeSe
 
 func (b *FrontendBridge) ApplyExternalReconcile(session runtimeprotocol.RuntimeSessionRef, plan desktopapp.ExternalReconcilePlan, resolution string) desktopcontract.Result[desktopapp.ExternalReconcileResult] {
 	return b.app.ApplyExternalReconcile(b.context(), session, plan, resolution)
+}
+
+func (b *FrontendBridge) NativeExportProfiles() desktopcontract.Result[[]nativeexport.Profile] {
+	return b.app.NativeExportProfiles()
+}
+
+func (b *FrontendBridge) SerializeNativeExport(input nativeexport.SerializeInput) desktopcontract.Result[desktopapp.NativeSerializeResult] {
+	return b.app.SerializeNativeExport(b.context(), input)
+}
+
+func (b *FrontendBridge) PublishNativeExportDialog(input desktopapp.NativePublishRequest) desktopcontract.Result[desktopapp.NativePublishResult] {
+	return b.app.PublishNativeExportDialog(b.context(), input)
+}
+
+func (b *FrontendBridge) ImportExternalDialog(input desktopapp.ExternalImportRequest) desktopcontract.Result[nativeexport.ImportPreview] {
+	return b.app.ImportExternalDialog(b.context(), input)
 }
