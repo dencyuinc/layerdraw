@@ -50,12 +50,14 @@ func productionWailsShellRuntime() wailsShellRuntime {
 // window/settings boundary. The same object is bound into Wails so the
 // packaged frontend can return its DOM accessibility audit by opaque ID.
 type WailsShellBridge struct {
-	mu       sync.Mutex
-	settings desktopcontract.DesktopSettings
-	probes   map[string]*accessibilitySubmission
-	nextID   uint64
-	ctx      context.Context
-	runtime  wailsShellRuntime
+	mu             sync.Mutex
+	settings       desktopcontract.DesktopSettings
+	probes         map[string]*accessibilitySubmission
+	probeReady     chan struct{}
+	probeReadyOnce sync.Once
+	nextID         uint64
+	ctx            context.Context
+	runtime        wailsShellRuntime
 }
 
 func (b *WailsShellBridge) setContext(ctx context.Context) {
@@ -81,9 +83,23 @@ func (b *WailsShellBridge) contextReady() bool {
 
 func NewWailsShellBridge() *WailsShellBridge {
 	return &WailsShellBridge{
-		settings: desktopcontract.DesktopSettings{SchemaVersion: desktopcontract.SettingsSchemaVersion, Theme: desktopcontract.ThemeSystem, ZoomPercent: 100},
-		probes:   make(map[string]*accessibilitySubmission),
-		runtime:  productionWailsShellRuntime(),
+		settings:   desktopcontract.DesktopSettings{SchemaVersion: desktopcontract.SettingsSchemaVersion, Theme: desktopcontract.ThemeSystem, ZoomPercent: 100},
+		probes:     make(map[string]*accessibilitySubmission),
+		probeReady: make(chan struct{}),
+		runtime:    productionWailsShellRuntime(),
+	}
+}
+
+func (b *WailsShellBridge) markAccessibilityProbeReady() {
+	b.probeReadyOnce.Do(func() { close(b.probeReady) })
+}
+
+func (b *WailsShellBridge) waitAccessibilityProbeReady(ctx context.Context) error {
+	select {
+	case <-b.probeReady:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

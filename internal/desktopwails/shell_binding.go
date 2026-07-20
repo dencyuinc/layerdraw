@@ -32,6 +32,12 @@ func (b *ShellBinding) UpdateSettings(settings desktopcontract.DesktopSettings) 
 	return b.shell.UpdateSettings(b.bridge.context(), settings)
 }
 
+// AccessibilityProbeReady forms the frontend/backend readiness handshake so
+// packaged probes cannot emit before the DOM listener is installed.
+func (b *ShellBinding) AccessibilityProbeReady() {
+	b.bridge.markAccessibilityProbeReady()
+}
+
 func (b *ShellBinding) SubmitAccessibilityReport(id string, report desktopcontract.AccessibilityReport) error {
 	return b.bridge.SubmitAccessibilityReport(id, report)
 }

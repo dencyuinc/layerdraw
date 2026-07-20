@@ -342,6 +342,12 @@ func TestPackagedUIProbeWritesRealAccessibilityRoundTrip(t *testing.T) {
 		runPackagedUIProbe(context.Background(), output, binding.shell, bridge, runtime)
 		close(done)
 	}()
+	select {
+	case event := <-bridgeRuntime.emitted:
+		t.Fatalf("probe emitted before frontend readiness: %v", event)
+	case <-time.After(25 * time.Millisecond):
+	}
+	binding.AccessibilityProbeReady()
 	var event []any
 	select {
 	case event = <-bridgeRuntime.emitted:

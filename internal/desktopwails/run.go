@@ -150,6 +150,11 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 			_ = writeExclusivePackagedProbe(output, append(encoded, '\n'))
 		}
 	}()
+	readyCtx, cancelReady := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelReady()
+	if err := bridge.waitAccessibilityProbeReady(readyCtx); err != nil {
+		return
+	}
 	settings := desktopcontract.DesktopSettings{SchemaVersion: 1, Theme: desktopcontract.ThemeLight, ZoomPercent: 200}
 	if result := shell.UpdateSettings(ctx, settings); result.Outcome != protocolcommon.OutcomeSuccess {
 		return

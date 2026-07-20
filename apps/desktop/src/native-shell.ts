@@ -18,6 +18,7 @@ interface CommandStatus {
 interface NativeShellBinding {
   CommandStatus(): Promise<ShellResult<readonly CommandStatus[]>>;
   InvokeCommand(input: Readonly<{id: string; source: string; status_generation: string}>): Promise<ShellResult<CommandStatus>>;
+  AccessibilityProbeReady(): Promise<void>;
   SubmitAccessibilityReport(id: string, report: Readonly<Record<string, boolean | number>>): Promise<void>;
 }
 
@@ -79,4 +80,5 @@ export function installAccessibilityProbe(eventsOn: (name: string, listener: (..
     void auditAccessibility(profile as AccessibilityProfile)
       .then((report) => nativeShell().SubmitAccessibilityReport(id, report));
   });
+	void nativeShell().AccessibilityProbeReady();
 }
