@@ -298,7 +298,11 @@ func newConformanceInstance(ctx context.Context, external bool) (*conformanceIns
 	}
 	if started := app.Start(ctx); started.Outcome != protocolcommon.OutcomeSuccess {
 		os.RemoveAll(root)
-		return nil, &conformanceStageError{stage: "start", err: errors.New("canonical Desktop application did not start")}
+		stage := "start"
+		if started.Failure != nil && started.Failure.Validate() {
+			stage += "_" + string(started.Failure.Component)
+		}
+		return nil, &conformanceStageError{stage: stage, err: errors.New("canonical Desktop application did not start")}
 	}
 	return &conformanceInstance{root: root, app: app, vault: vault}, nil
 }
