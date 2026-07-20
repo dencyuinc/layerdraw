@@ -137,6 +137,14 @@ func (m Manifest) Validate() error {
 // NegotiateCapabilities accepts only the generated handshake result and
 // publishes a generated-codec deep copy. No status or version is reconstructed.
 func NegotiateCapabilities(manifest Manifest, handshake protocolcommon.HandshakeResult) Result[protocolcommon.HandshakeResult] {
+	return NegotiateCapabilitiesFor(manifest, handshake, manifest.RequiredCapabilities)
+}
+
+// NegotiateCapabilitiesFor validates the complete Desktop capability catalog
+// while requiring only the production owners packaged by this executable.
+// Disabled catalog entries remain explicit and cannot accidentally become
+// startup requirements.
+func NegotiateCapabilitiesFor(manifest Manifest, handshake protocolcommon.HandshakeResult, required []protocolcommon.CapabilityID) Result[protocolcommon.HandshakeResult] {
 	if err := manifest.Validate(); err != nil {
 		return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
 	}
@@ -172,7 +180,16 @@ func NegotiateCapabilities(manifest Manifest, handshake protocolcommon.Handshake
 			return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
 		}
 	}
+	allowed := make(map[protocolcommon.CapabilityID]bool, len(manifest.RequiredCapabilities))
 	for _, id := range manifest.RequiredCapabilities {
+		allowed[id] = true
+	}
+	seenRequired := make(map[protocolcommon.CapabilityID]bool, len(required))
+	for _, id := range required {
+		if !allowed[id] || seenRequired[id] {
+			return failedHandshake(FailureProtocolIncompatible, ComponentBindingShell, RecoveryUpgrade)
+		}
+		seenRequired[id] = true
 		if !statuses[id].Enabled {
 			return failedHandshake(FailureAdapterUnavailable, ComponentBindingShell, RecoveryConfigureAdapter)
 		}
