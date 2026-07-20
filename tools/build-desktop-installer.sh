@@ -62,6 +62,7 @@ fi
 output_name="LayerDraw"
 if [[ "$platform" == "windows" ]]; then output_name="LayerDraw.exe"; fi
 build_args=(-clean -trimpath -s -skipbindings -o "$output_name")
+if [[ "$platform" == "windows" ]]; then build_args+=(-nsis); fi
 if [[ "$platform" == "linux" ]]; then build_args+=(-tags webkit2_41); fi
 (
   cd "$repository_root/apps/desktop"
