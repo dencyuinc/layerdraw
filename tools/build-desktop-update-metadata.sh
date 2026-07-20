@@ -46,6 +46,7 @@ go run ./tools/desktoprelease build \
   -sbom "$artifacts/LayerDraw-$version.cdx.json" \
   -licenses "$artifacts/LayerDraw-$version-THIRD_PARTY_NOTICES.txt" \
   -capabilities "$artifacts/LayerDraw-$version-capabilities.json" \
+  -desktop-conformance "$artifacts/LayerDraw-$version-conformance.json" \
   -output "$manifest" -version "$version" -minimum-supported-version 0.0.0 \
   -platform "$platform" -format "$format" -source-revision "$commit" -built-at "$built_at" \
   "${build_args[@]}"

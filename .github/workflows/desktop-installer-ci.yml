@@ -61,6 +61,7 @@ jobs:
       - name: Build N and N+1 unsigned test installers
         shell: bash
         run: |
+          go run ./tools/desktopconformance -root . verify
           ./tools/build-desktop-installer.sh "${{ matrix.platform }}" 0.0.1 "$RUNNER_TEMP/desktop-previous"
           ./tools/build-desktop-installer.sh "${{ matrix.platform }}" 0.0.2 "$RUNNER_TEMP/desktop-current"
 

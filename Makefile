@@ -20,7 +20,7 @@ GO_PACKAGES := ./cmd/... ./internal/... ./tools/desktoprelease ./tools/protocolg
 
 .PHONY: bootstrap generate generate-check format format-check lint typecheck test coverage coverage-check license-check license-report security \
 	conformance integration build engine-wasm engine-wasm-check engine-wasm-reproducible ci-engine-wasm-check ci-engine-wasm-reproducible \
-	ladybug-native-bootstrap ladybug-native-check protocol-package-check package verify-packaged release-set release-set-check release-set-reproducible ci clean
+	ladybug-native-bootstrap ladybug-native-check desktop-conformance protocol-package-check package verify-packaged release-set release-set-check release-set-reproducible ci clean
 
 bootstrap:
 	$(GO) mod download all
@@ -87,6 +87,9 @@ security:
 
 conformance:
 	$(GO) test ./tests/conformance/...
+
+desktop-conformance:
+	$(GO) run ./tools/desktopconformance -root . verify
 
 integration:
 	$(GO) test ./tests/integration/...
@@ -173,7 +176,7 @@ release-set-check: ladybug-native-check release-set
 release-set-reproducible:
 	./tools/check-release-set-reproducible.sh
 
-ci: generate-check format-check lint typecheck coverage-check conformance integration license-check security protocol-package-check package verify-packaged ci-engine-wasm-check ci-engine-wasm-reproducible release-set-check release-set-reproducible
+ci: generate-check format-check lint typecheck coverage-check conformance desktop-conformance integration license-check security protocol-package-check package verify-packaged ci-engine-wasm-check ci-engine-wasm-reproducible release-set-check release-set-reproducible
 
 clean:
 	rm -rf dist coverage reports .turbo

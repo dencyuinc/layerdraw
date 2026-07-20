@@ -128,6 +128,7 @@ go run "$repository_root/tools/desktoprelease" merge-sbom \
   -companion "$companion_sbom" \
   -output "$temporary/legal/LayerDraw-bundle.cdx.json"
 cp "$repository_root/deploy/desktop-capabilities.json" "$temporary/legal/"
+cp "$repository_root/deploy/desktop-conformance.json" "$temporary/legal/"
 
 if [[ "$platform" == "windows" ]]; then
 	if [[ "${LAYERDRAW_RELEASE_SIGNING:-0}" == "1" ]]; then
@@ -205,3 +206,4 @@ esac
 cp "$temporary/legal/LayerDraw-bundle.cdx.json" "$output/LayerDraw-$version.cdx.json"
 cp "$temporary/legal/THIRD_PARTY_NOTICES.txt" "$output/LayerDraw-$version-THIRD_PARTY_NOTICES.txt"
 cp "$repository_root/deploy/desktop-capabilities.json" "$output/LayerDraw-$version-capabilities.json"
+cp "$repository_root/deploy/desktop-conformance.json" "$output/LayerDraw-$version-conformance.json"

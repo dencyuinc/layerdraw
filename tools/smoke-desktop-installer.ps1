@@ -41,6 +41,7 @@ try {
   $companionHost = Join-Path $install "runtime\layerdraw-host.exe"
   if (-not (Test-Path $companionHost)) { throw "packaged MCP Host is missing" }
   if (-not (Test-Path (Join-Path $install "legal\desktop-capabilities.json"))) { throw "capability declaration is missing" }
+  if (-not (Test-Path (Join-Path $install "legal\desktop-conformance.json"))) { throw "Desktop conformance declaration is missing" }
   if (-not (Test-Path (Join-Path $install "legal\host\layerdraw-host.exe.cdx.json"))) { throw "MCP Host SBOM is missing" }
   $developmentAssets = Get-ChildItem -Recurse -File $install | Where-Object { $_.Extension -eq ".map" -or $_.FullName -match "(testdata|test-fixtures)" }
   if ($developmentAssets) { throw "Windows installer contains development-only assets" }
