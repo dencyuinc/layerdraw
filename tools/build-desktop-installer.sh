@@ -110,12 +110,20 @@ if [[ "$platform" == "windows" ]]; then
   nsis_binary="$binary"
   if command -v cygpath >/dev/null 2>&1; then nsis_binary="$(cygpath -w "$binary")"; fi
 fi
+fts_component="$native_stage/libfts.lbug_extension"
+vector_component="$native_stage/libvector.lbug_extension"
+algo_component="$native_stage/libalgo.lbug_extension"
+if [[ "$platform" == "windows" ]] && command -v cygpath >/dev/null 2>&1; then
+  fts_component="$(cygpath -w "$fts_component")"
+  vector_component="$(cygpath -w "$vector_component")"
+  algo_component="$(cygpath -w "$algo_component")"
+fi
 go run "$repository_root/tools/licensecheck" bundle -binary "$binary" -output "$temporary/legal" -version "$version" \
-	-include-production-npm \
-	-bundled-component "three|0.179.1|apps/desktop/frontend/dist/app.js|MIT|apps/desktop/node_modules/three/LICENSE|bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601" \
-	-bundled-component "LadybugDB FTS extension|0.17.0|$native_stage/libfts.lbug_extension|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0" \
-	-bundled-component "LadybugDB Vector extension|0.17.0|$native_stage/libvector.lbug_extension|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0" \
-	-bundled-component "LadybugDB Algo extension|0.17.0|$native_stage/libalgo.lbug_extension|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0"
+		-include-production-npm \
+		-bundled-component "three|0.179.1|apps/desktop/frontend/dist/app.js|MIT|apps/desktop/node_modules/three/LICENSE|bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601" \
+		-bundled-component "LadybugDB FTS extension|0.17.0|$fts_component|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0" \
+		-bundled-component "LadybugDB Vector extension|0.17.0|$vector_component|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0" \
+		-bundled-component "LadybugDB Algo extension|0.17.0|$algo_component|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0"
 desktop_sbom="$temporary/legal/$(basename "$binary").cdx.json"
 host="$temporary/runtime/layerdraw-host"
 if [[ "$platform" == "windows" ]]; then host="$host.exe"; fi
