@@ -165,13 +165,16 @@ func conformanceRunners() map[string]func(context.Context) error {
 	}
 }
 
+var executeConformanceScenario = func(ctx context.Context, executable, name string) ([]byte, error) {
+	return exec.CommandContext(ctx, executable, "--packaged-conformance-scenario", name).Output()
+}
+
 var runConformanceScenarioProcess = func(ctx context.Context, name string) (int64, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return 0, errors.New("installed Desktop executable is unavailable")
 	}
-	command := exec.CommandContext(ctx, executable, "--packaged-conformance-scenario", name)
-	encoded, err := command.Output()
+	encoded, err := executeConformanceScenario(ctx, executable, name)
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {

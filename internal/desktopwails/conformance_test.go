@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,6 +54,10 @@ func TestPackagedConformanceFailureCodesAreClosed(t *testing.T) {
 	if got := PackagedConformanceFailureCode(errors.New(secret)); got != "" {
 		t.Fatalf("untyped failure exposed code=%q", got)
 	}
+	stage := &conformanceStageError{stage: "compose", err: errors.New("closed")}
+	if stage.Error() != "compose" || !errors.Is(stage, stage.err) || err.Error() != "scenario.cold_start" || !errors.Is(err, errors.Unwrap(err)) {
+		t.Fatal("closed conformance errors lost their code or cause")
+	}
 }
 
 func TestPackagedConformanceChildFailureParserIsClosed(t *testing.T) {
@@ -67,6 +72,34 @@ func TestPackagedConformanceChildFailureParserIsClosed(t *testing.T) {
 		if got := parseConformanceChildFailure([]byte(input), "cold_start"); got != "" {
 			t.Fatalf("unsafe child diagnostic accepted: %q", got)
 		}
+	}
+}
+
+func TestPackagedConformanceRejectsNonDesktopChildProcess(t *testing.T) {
+	rss, err := runConformanceScenarioProcess(context.Background(), "cold_start")
+	if err == nil || rss != 0 {
+		t.Fatalf("test binary impersonated installed Desktop: rss=%d err=%v", rss, err)
+	}
+}
+
+func TestPackagedConformanceParsesClosedChildResults(t *testing.T) {
+	original := executeConformanceScenario
+	t.Cleanup(func() { executeConformanceScenario = original })
+	executeConformanceScenario = func(context.Context, string, string) ([]byte, error) {
+		return []byte(`{"schema_version":1,"scenario":"cold_start","isolated_worker_peak_rss_mebibytes":64}`), nil
+	}
+	if rss, err := runConformanceScenarioProcess(context.Background(), "cold_start"); err != nil || rss != 64 {
+		t.Fatalf("child result rss=%d err=%v", rss, err)
+	}
+	executeConformanceScenario = func(context.Context, string, string) ([]byte, error) { return []byte(`{}`), nil }
+	if _, err := runConformanceScenarioProcess(context.Background(), "cold_start"); err == nil {
+		t.Fatal("invalid child result accepted")
+	}
+	executeConformanceScenario = func(context.Context, string, string) ([]byte, error) {
+		return nil, &exec.ExitError{Stderr: []byte("LayerDraw Desktop conformance failed [scenario.cold_start.compose]\n")}
+	}
+	if _, err := runConformanceScenarioProcess(context.Background(), "cold_start"); PackagedConformanceFailureCode(err) != "scenario.cold_start.compose" {
+		t.Fatalf("closed child failure=%v", err)
 	}
 }
 
@@ -254,5 +287,49 @@ func TestRunPackagedConformanceExecutesEveryIteration(t *testing.T) {
 		if len(report.Scenarios[name].SamplesMilliseconds) != packagedConformanceIterations || report.ScenarioEvidence[name] != evidence {
 			t.Fatalf("scenario %q is incomplete: samples=%+v evidence=%q", name, report.Scenarios[name], report.ScenarioEvidence[name])
 		}
+	}
+	if err := RunPackagedConformance(output); PackagedConformanceFailureCode(err) != "result.write" {
+		t.Fatalf("existing result was overwritten: %v", err)
+	}
+}
+
+func TestRunPackagedConformanceScenarioExecutesInstalledWorkflow(t *testing.T) {
+	var output bytes.Buffer
+	if err := RunPackagedConformanceScenario("cold_start", &output); err != nil {
+		t.Fatal(err)
+	}
+	var report packagedConformanceScenarioReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil || report.SchemaVersion != 1 || report.Scenario != "cold_start" || report.WorkerPeakRSS <= 0 {
+		t.Fatalf("scenario report=%+v err=%v", report, err)
+	}
+	if err := RunPackagedConformanceScenario("invalid", &output); PackagedConformanceFailureCode(err) != "scenario.invalid" {
+		t.Fatalf("invalid scenario err=%v", err)
+	}
+	if err := RunPackagedConformanceScenario("cold_start", nil); PackagedConformanceFailureCode(err) != "scenario.invalid" {
+		t.Fatalf("nil output err=%v", err)
+	}
+}
+
+func TestRunPackagedConformancePreservesClosedWorkerFailures(t *testing.T) {
+	t.Setenv("LAYERDRAW_CONFORMANCE_SOURCE_REVISION", "0123456789abcdef0123456789abcdef01234567")
+	original := runConformanceScenarioProcess
+	t.Cleanup(func() { runConformanceScenarioProcess = original })
+	output := func() string { return filepath.Join(t.TempDir(), "conformance.json") }
+
+	runConformanceScenarioProcess = func(context.Context, string) (int64, error) {
+		return 0, conformanceFailure("scenario.cold_start.compose", errors.New("closed"))
+	}
+	if err := RunPackagedConformance(output()); PackagedConformanceFailureCode(err) != "scenario.cold_start.compose" {
+		t.Fatalf("typed worker failure=%v", err)
+	}
+
+	runConformanceScenarioProcess = func(context.Context, string) (int64, error) { return 0, errors.New("closed") }
+	if err := RunPackagedConformance(output()); PackagedConformanceFailureCode(err) != "scenario.cold_start" {
+		t.Fatalf("untyped worker failure=%v", err)
+	}
+
+	runConformanceScenarioProcess = func(context.Context, string) (int64, error) { return 0, nil }
+	if err := RunPackagedConformance(output()); PackagedConformanceFailureCode(err) != "measurement.memory" {
+		t.Fatalf("missing worker measurement=%v", err)
 	}
 }
