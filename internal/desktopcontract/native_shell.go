@@ -4,6 +4,9 @@ package desktopcontract
 
 import (
 	"context"
+	"net/mail"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -84,6 +87,7 @@ type SettingsStore interface {
 // normalized state and never owns document or command semantics.
 type NativeWindowPort interface {
 	Displays(context.Context) ([]Display, error)
+	Snapshot(context.Context) (WindowState, DesktopSettings, error)
 	ApplyWindow(context.Context, WindowState) error
 	ApplySettings(context.Context, DesktopSettings) error
 }
@@ -137,20 +141,23 @@ func (s CommandSource) Validate() bool {
 }
 
 type CommandStatus struct {
-	ID    CommandID    `json:"id"`
-	State CommandState `json:"state"`
+	ID         CommandID    `json:"id"`
+	State      CommandState `json:"state"`
+	Generation uint64       `json:"generation"`
 }
 
 type CommandInvocation struct {
-	ID     CommandID     `json:"id"`
-	Source CommandSource `json:"source"`
+	ID               CommandID     `json:"id"`
+	Source           CommandSource `json:"source"`
+	StatusGeneration uint64        `json:"status_generation"`
 }
 
 // CommandRouter is injected by the Desktop UI composition (#124). Menus,
-// shortcuts and visible controls all call this exact owner route.
+// shortcuts and visible controls all call this exact owner route. Route must
+// atomically re-evaluate the generation and state before invoking semantics.
 type CommandRouter interface {
 	Status(context.Context) ([]CommandStatus, error)
-	Invoke(context.Context, CommandInvocation) error
+	Route(context.Context, CommandInvocation) (CommandStatus, error)
 }
 
 type ExternalTargetKind string
@@ -163,6 +170,28 @@ const (
 type ExternalTarget struct {
 	Kind  ExternalTargetKind `json:"kind"`
 	Value string             `json:"value"`
+}
+
+func (t ExternalTarget) Validate() bool {
+	if t.Value == "" || strings.ContainsAny(t.Value, "\r\n\x00") {
+		return false
+	}
+	parsed, err := url.ParseRequestURI(t.Value)
+	if err != nil || parsed.User != nil {
+		return false
+	}
+	switch t.Kind {
+	case ExternalWebLink:
+		return parsed.Scheme == "https" && parsed.Host != ""
+	case ExternalEmail:
+		if parsed.Scheme != "mailto" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return false
+		}
+		_, err := mail.ParseAddress(strings.TrimPrefix(t.Value, "mailto:"))
+		return err == nil
+	default:
+		return false
+	}
 }
 
 // ExternalOpenPort receives only a target accepted by the shell allowlist.
@@ -200,6 +229,8 @@ const (
 	EventExternalOpened    ShellEvent = "external.opened"
 	EventExternalDenied    ShellEvent = "external.denied"
 	EventFailurePresented  ShellEvent = "failure.presented"
+	EventOperationFailed   ShellEvent = "operation.failed"
+	EventOperationRejected ShellEvent = "operation.rejected"
 )
 
 type LogLevel string

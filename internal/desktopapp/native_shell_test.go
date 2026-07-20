@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"sync"
 	"testing"
@@ -44,11 +45,16 @@ func (s *shellSettingsStore) Save(_ context.Context, value desktopcontract.Persi
 
 type shellWindowPort struct {
 	displays        []desktopcontract.Display
+	snapshotWindow  desktopcontract.WindowState
+	snapshotSetting desktopcontract.DesktopSettings
 	windows         []desktopcontract.WindowState
 	settings        []desktopcontract.DesktopSettings
 	displayErr      error
+	snapshotErr     error
 	windowErr       error
 	settingsErr     error
+	windowErrors    []error
+	settingsErrors  []error
 	panicOnDisplays bool
 }
 
@@ -58,27 +64,52 @@ func (p *shellWindowPort) Displays(context.Context) ([]desktopcontract.Display, 
 	}
 	return append([]desktopcontract.Display(nil), p.displays...), p.displayErr
 }
+func (p *shellWindowPort) Snapshot(context.Context) (desktopcontract.WindowState, desktopcontract.DesktopSettings, error) {
+	return p.snapshotWindow, p.snapshotSetting, p.snapshotErr
+}
 func (p *shellWindowPort) ApplyWindow(_ context.Context, value desktopcontract.WindowState) error {
 	p.windows = append(p.windows, value)
+	if len(p.windowErrors) != 0 {
+		err := p.windowErrors[0]
+		p.windowErrors = p.windowErrors[1:]
+		return err
+	}
 	return p.windowErr
 }
 func (p *shellWindowPort) ApplySettings(_ context.Context, value desktopcontract.DesktopSettings) error {
 	p.settings = append(p.settings, value)
+	if len(p.settingsErrors) != 0 {
+		err := p.settingsErrors[0]
+		p.settingsErrors = p.settingsErrors[1:]
+		return err
+	}
 	return p.settingsErr
 }
 
 type shellCommandRouter struct {
 	statuses []desktopcontract.CommandStatus
 	calls    []desktopcontract.CommandInvocation
+	route    *desktopcontract.CommandStatus
 	err      error
 }
 
 func (r *shellCommandRouter) Status(context.Context) ([]desktopcontract.CommandStatus, error) {
 	return append([]desktopcontract.CommandStatus(nil), r.statuses...), r.err
 }
-func (r *shellCommandRouter) Invoke(_ context.Context, value desktopcontract.CommandInvocation) error {
+func (r *shellCommandRouter) Route(_ context.Context, value desktopcontract.CommandInvocation) (desktopcontract.CommandStatus, error) {
 	r.calls = append(r.calls, value)
-	return r.err
+	if r.err != nil {
+		return desktopcontract.CommandStatus{}, r.err
+	}
+	if r.route != nil {
+		return *r.route, nil
+	}
+	for _, status := range r.statuses {
+		if status.ID == value.ID {
+			return status, nil
+		}
+	}
+	return desktopcontract.CommandStatus{ID: value.ID, State: desktopcontract.CommandUnavailable, Generation: value.StatusGeneration}, nil
 }
 
 type shellExternalPort struct {
@@ -106,22 +137,36 @@ func (p shellAssociationPort) Next(context.Context) (desktopcontract.FileAssocia
 
 type shellCrashPort struct {
 	contexts []desktopcontract.CrashContext
+	bounded  []bool
 	ref      desktopcontract.RecoveryRef
 	err      error
+	panic    bool
 }
 
-func (p *shellCrashPort) Preserve(_ context.Context, value desktopcontract.CrashContext) (desktopcontract.RecoveryRef, error) {
+func (p *shellCrashPort) Preserve(ctx context.Context, value desktopcontract.CrashContext) (desktopcontract.RecoveryRef, error) {
 	p.contexts = append(p.contexts, value)
+	_, hasDeadline := ctx.Deadline()
+	p.bounded = append(p.bounded, hasDeadline)
+	if p.panic {
+		panic("private recovery path")
+	}
 	return p.ref, p.err
 }
 
 type shellErrorPort struct {
-	values []desktopcontract.ErrorSurface
-	err    error
+	values  []desktopcontract.ErrorSurface
+	bounded []bool
+	err     error
+	panic   bool
 }
 
-func (p *shellErrorPort) Present(_ context.Context, value desktopcontract.ErrorSurface) error {
+func (p *shellErrorPort) Present(ctx context.Context, value desktopcontract.ErrorSurface) error {
 	p.values = append(p.values, value)
+	_, hasDeadline := ctx.Deadline()
+	p.bounded = append(p.bounded, hasDeadline)
+	if p.panic {
+		panic("private presenter failure")
+	}
 	return p.err
 }
 
@@ -166,12 +211,15 @@ func validShellState() desktopcontract.PersistedShellState {
 func newShellFixture(t *testing.T, platform desktopcontract.DesktopPlatform) (*NativeShell, *shellFixture) {
 	t.Helper()
 	f := &shellFixture{
-		store:  &shellSettingsStore{value: validShellState()},
-		window: &shellWindowPort{displays: []desktopcontract.Display{{ID: "primary", Primary: true, Work: desktopcontract.Rectangle{Width: 1920, Height: 1080}}}},
+		store: &shellSettingsStore{value: validShellState()},
+		window: &shellWindowPort{
+			displays:       []desktopcontract.Display{{ID: "primary", Primary: true, Work: desktopcontract.Rectangle{Width: 1920, Height: 1080}}},
+			snapshotWindow: validShellState().Window, snapshotSetting: validShellState().Settings,
+		},
 		router: &shellCommandRouter{statuses: []desktopcontract.CommandStatus{
-			{ID: desktopcontract.CommandOpenProject, State: desktopcontract.CommandAvailable},
-			{ID: desktopcontract.CommandSaveProject, State: desktopcontract.CommandPending},
-			{ID: desktopcontract.CommandUndo, State: desktopcontract.CommandDenied},
+			{ID: desktopcontract.CommandOpenProject, State: desktopcontract.CommandAvailable, Generation: 1},
+			{ID: desktopcontract.CommandSaveProject, State: desktopcontract.CommandPending, Generation: 1},
+			{ID: desktopcontract.CommandUndo, State: desktopcontract.CommandDenied, Generation: 1},
 		}},
 		external: &shellExternalPort{},
 		crash:    &shellCrashPort{ref: desktopcontract.RecoveryRef{ID: "recovery-opaque-1"}},
@@ -267,10 +315,71 @@ func TestNativeShellSettingsSaveFailureRollsBackAppliedSetting(t *testing.T) {
 	}
 }
 
+func TestNativeShellRestoreCompensatesEveryMutationStage(t *testing.T) {
+	t.Run("snapshot", func(t *testing.T) {
+		shell, f := newShellFixture(t, desktopcontract.PlatformMacOS)
+		f.window.snapshotErr = errors.New("snapshot")
+		result := shell.Restore(context.Background())
+		if result.Outcome != protocolcommon.OutcomeFailed || len(f.window.windows) != 0 || len(f.window.settings) != 0 {
+			t.Fatalf("snapshot failure=%+v window=%+v settings=%+v", result, f.window.windows, f.window.settings)
+		}
+	})
+
+	t.Run("apply window", func(t *testing.T) {
+		shell, f := newShellFixture(t, desktopcontract.PlatformMacOS)
+		f.window.windowErrors = []error{errors.New("apply"), nil}
+		result := shell.Restore(context.Background())
+		if result.Outcome != protocolcommon.OutcomeFailed || len(f.window.windows) != 2 || f.window.windows[1] != f.window.snapshotWindow || len(f.window.settings) != 1 || f.window.settings[0] != f.window.snapshotSetting {
+			t.Fatalf("window compensation=%+v windows=%+v settings=%+v", result, f.window.windows, f.window.settings)
+		}
+	})
+
+	t.Run("apply settings", func(t *testing.T) {
+		shell, f := newShellFixture(t, desktopcontract.PlatformMacOS)
+		f.window.settingsErrors = []error{errors.New("apply"), nil}
+		result := shell.Restore(context.Background())
+		if result.Outcome != protocolcommon.OutcomeFailed || len(f.window.windows) != 2 || len(f.window.settings) != 2 || f.window.settings[1] != f.window.snapshotSetting {
+			t.Fatalf("settings compensation=%+v windows=%+v settings=%+v", result, f.window.windows, f.window.settings)
+		}
+	})
+
+	t.Run("persist", func(t *testing.T) {
+		shell, f := newShellFixture(t, desktopcontract.PlatformMacOS)
+		f.store.loadErr = errors.New("corrupt")
+		f.store.saveErr = errors.New("persist")
+		result := shell.Restore(context.Background())
+		if result.Outcome != protocolcommon.OutcomeFailed || len(f.window.windows) != 2 || len(f.window.settings) != 2 || f.window.windows[1] != f.window.snapshotWindow || f.window.settings[1] != f.window.snapshotSetting {
+			t.Fatalf("persist compensation=%+v windows=%+v settings=%+v", result, f.window.windows, f.window.settings)
+		}
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		shell, f := newShellFixture(t, desktopcontract.PlatformMacOS)
+		f.window.settingsErrors = []error{errors.New("apply"), errors.New("rollback")}
+		result := shell.Restore(context.Background())
+		if result.Outcome != protocolcommon.OutcomeFailed || result.Failure.Code != desktopcontract.FailureCrashRecovery || result.Failure.Recovery != desktopcontract.RecoveryOpenRecovery || len(f.crash.contexts) != 1 || len(f.errors.values) != 1 {
+			t.Fatalf("rollback recovery=%+v crash=%+v surface=%+v", result, f.crash.contexts, f.errors.values)
+		}
+	})
+}
+
+func TestNativeShellUpdateRollbackFailureOpensRecovery(t *testing.T) {
+	shell, f := newShellFixture(t, desktopcontract.PlatformLinux)
+	if result := shell.Restore(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatal(result)
+	}
+	f.store.saveErr = errors.New("persist")
+	f.window.settingsErrors = []error{nil, errors.New("rollback")}
+	result := shell.UpdateSettings(context.Background(), desktopcontract.DesktopSettings{SchemaVersion: 1, Theme: desktopcontract.ThemeLight, ZoomPercent: 150})
+	if result.Outcome != protocolcommon.OutcomeFailed || result.Failure.Code != desktopcontract.FailureCrashRecovery || len(f.errors.values) != 1 {
+		t.Fatalf("update recovery=%+v surfaces=%+v", result, f.errors.values)
+	}
+}
+
 func TestNativeShellRoutesMenusShortcutsAndControlsIdentically(t *testing.T) {
 	shell, f := newShellFixture(t, desktopcontract.PlatformMacOS)
 	for _, source := range []desktopcontract.CommandSource{desktopcontract.CommandSourceMenu, desktopcontract.CommandSourceShortcut, desktopcontract.CommandSourceControl} {
-		result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: desktopcontract.CommandOpenProject, Source: source})
+		result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: desktopcontract.CommandOpenProject, Source: source, StatusGeneration: 1})
 		if result.Outcome != protocolcommon.OutcomeSuccess {
 			t.Fatalf("source %s=%+v", source, result)
 		}
@@ -279,13 +388,27 @@ func TestNativeShellRoutesMenusShortcutsAndControlsIdentically(t *testing.T) {
 		t.Fatalf("router calls=%+v", f.router.calls)
 	}
 	for _, id := range []desktopcontract.CommandID{desktopcontract.CommandSaveProject, desktopcontract.CommandUndo, desktopcontract.CommandRedo} {
-		result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: id, Source: desktopcontract.CommandSourceShortcut})
+		result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: id, Source: desktopcontract.CommandSourceShortcut, StatusGeneration: 1})
 		if result.Outcome != protocolcommon.OutcomeRejected || result.Value.State == desktopcontract.CommandAvailable {
 			t.Fatalf("unavailable %s=%+v", id, result)
 		}
 	}
-	if len(f.router.calls) != 3 {
-		t.Fatal("pending/denied/unavailable command reached owner router")
+	if len(f.router.calls) != 6 {
+		t.Fatal("every source must use the one atomic owner route")
+	}
+}
+
+func TestNativeShellAtomicRouteRejectsStaleAvailability(t *testing.T) {
+	shell, f := newShellFixture(t, desktopcontract.PlatformWindows)
+	status := shell.CommandStatus(context.Background())
+	if status.Outcome != protocolcommon.OutcomeSuccess || status.Value[0].State != desktopcontract.CommandAvailable {
+		t.Fatal(status)
+	}
+	stale := desktopcontract.CommandStatus{ID: desktopcontract.CommandOpenProject, State: desktopcontract.CommandDenied, Generation: 2}
+	f.router.route = &stale
+	result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: desktopcontract.CommandOpenProject, Source: desktopcontract.CommandSourceShortcut, StatusGeneration: 1})
+	if result.Outcome != protocolcommon.OutcomeFailed || result.Failure.Code != desktopcontract.FailureCommandUnavailable || len(f.router.calls) != 1 {
+		t.Fatalf("stale route=%+v calls=%+v", result, f.router.calls)
 	}
 }
 
@@ -371,6 +494,9 @@ func TestNativeShellAccessibilityFailsClosedForEveryRequiredSignal(t *testing.T)
 		func(r *desktopcontract.AccessibilityReport) { r.KeyboardWorkflowValid = false },
 		func(r *desktopcontract.AccessibilityReport) { r.ReducedMotionHonored = false },
 		func(r *desktopcontract.AccessibilityReport) { r.MinimumContrast = 4.49 },
+		func(r *desktopcontract.AccessibilityReport) { r.MinimumContrast = math.NaN() },
+		func(r *desktopcontract.AccessibilityReport) { r.MinimumContrast = math.Inf(1) },
+		func(r *desktopcontract.AccessibilityReport) { r.MinimumContrast = 21.01 },
 		func(r *desktopcontract.AccessibilityReport) { r.ZoomLayoutValid = false },
 	}
 	for i, edit := range edits {
@@ -415,6 +541,9 @@ func TestNativeShellContainsAdapterPanicAndNeverReturnsPanicText(t *testing.T) {
 	if result.Outcome != protocolcommon.OutcomeFailed || result.Failure.Code != desktopcontract.FailureBackendPanic {
 		t.Fatalf("panic result=%+v", result)
 	}
+	if len(f.crash.contexts) != 1 || len(f.errors.values) != 1 || !f.crash.bounded[0] || !f.errors.bounded[0] {
+		t.Fatalf("panic did not preserve/present with bounded context: crash=%+v surface=%+v", f.crash, f.errors)
+	}
 	encoded, err := json.Marshal(result)
 	if err != nil || shellContains(string(encoded), "private native path") {
 		t.Fatalf("panic leaked: %s, %v", encoded, err)
@@ -425,5 +554,30 @@ func TestNativeShellContainsAdapterPanicAndNeverReturnsPanicText(t *testing.T) {
 	resultExternal := shell.OpenExternal(context.Background(), desktopcontract.ExternalTarget{Kind: desktopcontract.ExternalWebLink, Value: "https://layerdraw.com"})
 	if resultExternal.Outcome != protocolcommon.OutcomeFailed || resultExternal.Failure.Code != desktopcontract.FailureBackendPanic {
 		t.Fatalf("external panic=%+v", resultExternal)
+	}
+
+	shell, f = newShellFixture(t, desktopcontract.PlatformWindows)
+	f.window.panicOnDisplays = true
+	f.crash.panic = true
+	result = shell.Restore(context.Background())
+	if result.Outcome != protocolcommon.OutcomeFailed || len(f.errors.values) != 1 {
+		t.Fatalf("preserve panic prevented error presentation: result=%+v surfaces=%+v", result, f.errors.values)
+	}
+}
+
+func TestNativeShellEveryFailureProducesClosedRedactedLog(t *testing.T) {
+	shell, f := newShellFixture(t, desktopcontract.PlatformMacOS)
+	f.window.displayErr = errors.New("/Users/private/document.ldl token=secret")
+	result := shell.Restore(context.Background())
+	if result.Outcome != protocolcommon.OutcomeFailed || len(f.logs.values) == 0 {
+		t.Fatalf("failure log missing: result=%+v logs=%+v", result, f.logs.values)
+	}
+	last := f.logs.values[len(f.logs.values)-1]
+	if last.Event != desktopcontract.EventOperationFailed || last.Failure == nil || *last.Failure != desktopcontract.FailureWindowState {
+		t.Fatalf("closed failure log=%+v", last)
+	}
+	encoded, err := json.Marshal(f.logs.values)
+	if err != nil || shellContains(string(encoded), "Users/private") || shellContains(string(encoded), "secret") {
+		t.Fatalf("failure log leaked adapter text: %s", encoded)
 	}
 }

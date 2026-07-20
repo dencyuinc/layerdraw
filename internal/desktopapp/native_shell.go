@@ -4,9 +4,7 @@ package desktopapp
 
 import (
 	"context"
-	"net/mail"
-	"net/url"
-	"strings"
+	"math"
 	"sync"
 	"time"
 
@@ -62,7 +60,8 @@ func (*nativeShellConfigError) Error() string {
 }
 
 func (s *NativeShell) Restore(ctx context.Context) (result desktopcontract.Result[desktopcontract.PersistedShellState]) {
-	defer containShellPanic(&result)
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
 	s.persist.Lock()
 	defer s.persist.Unlock()
 	displays, err := s.config.Window.Displays(ctx)
@@ -73,6 +72,10 @@ func (s *NativeShell) Restore(ctx context.Context) (result desktopcontract.Resul
 	if primary == nil {
 		return shellFailed[desktopcontract.PersistedShellState](desktopcontract.FailureWindowState, false, desktopcontract.RecoveryExit)
 	}
+	previousWindow, previousSettings, err := s.config.Window.Snapshot(ctx)
+	if err != nil || !previousWindow.Validate() || !previousSettings.Validate() {
+		return shellFailed[desktopcontract.PersistedShellState](desktopcontract.FailureWindowState, true, desktopcontract.RecoveryRetry)
+	}
 	loaded, loadErr := s.config.Settings.Load(ctx)
 	recovered := loadErr != nil || !loaded.Validate()
 	if recovered {
@@ -81,13 +84,22 @@ func (s *NativeShell) Restore(ctx context.Context) (result desktopcontract.Resul
 	originalWindow := loaded.Window
 	loaded.Window = normalizeWindow(loaded.Window, validDisplays, *primary)
 	if err := s.config.Window.ApplyWindow(ctx, loaded.Window); err != nil {
+		if !s.rollbackNativeState(ctx, previousWindow, previousSettings) {
+			return compensationFailure[desktopcontract.PersistedShellState](s, ctx)
+		}
 		return shellFailed[desktopcontract.PersistedShellState](desktopcontract.FailureWindowState, true, desktopcontract.RecoveryRetry)
 	}
 	if err := s.config.Window.ApplySettings(ctx, loaded.Settings); err != nil {
+		if !s.rollbackNativeState(ctx, previousWindow, previousSettings) {
+			return compensationFailure[desktopcontract.PersistedShellState](s, ctx)
+		}
 		return shellFailed[desktopcontract.PersistedShellState](desktopcontract.FailureSettings, true, desktopcontract.RecoveryRetry)
 	}
 	if recovered || loaded.Window != originalWindow {
 		if err := s.config.Settings.Save(ctx, loaded); err != nil {
+			if !s.rollbackNativeState(ctx, previousWindow, previousSettings) {
+				return compensationFailure[desktopcontract.PersistedShellState](s, ctx)
+			}
 			return shellFailed[desktopcontract.PersistedShellState](desktopcontract.FailureSettings, true, desktopcontract.RecoveryRetry)
 		}
 	}
@@ -104,7 +116,8 @@ func (s *NativeShell) Restore(ctx context.Context) (result desktopcontract.Resul
 }
 
 func (s *NativeShell) UpdateSettings(ctx context.Context, settings desktopcontract.DesktopSettings) (result desktopcontract.Result[desktopcontract.DesktopSettings]) {
-	defer containShellPanic(&result)
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
 	s.persist.Lock()
 	defer s.persist.Unlock()
 	if !settings.Validate() {
@@ -123,7 +136,12 @@ func (s *NativeShell) UpdateSettings(ctx context.Context, settings desktopcontra
 		return shellFailed[desktopcontract.DesktopSettings](desktopcontract.FailureSettings, true, desktopcontract.RecoveryRetry)
 	}
 	if err := s.config.Settings.Save(ctx, next); err != nil {
-		_ = s.config.Window.ApplySettings(context.WithoutCancel(ctx), previous)
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		rollbackErr := s.config.Window.ApplySettings(rollbackCtx, previous)
+		cancel()
+		if rollbackErr != nil {
+			return compensationFailure[desktopcontract.DesktopSettings](s, ctx)
+		}
 		return shellFailed[desktopcontract.DesktopSettings](desktopcontract.FailureSettings, true, desktopcontract.RecoveryRetry)
 	}
 	s.mu.Lock()
@@ -134,7 +152,8 @@ func (s *NativeShell) UpdateSettings(ctx context.Context, settings desktopcontra
 }
 
 func (s *NativeShell) SaveWindow(ctx context.Context, state desktopcontract.WindowState) (result desktopcontract.Result[desktopcontract.WindowState]) {
-	defer containShellPanic(&result)
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
 	s.persist.Lock()
 	defer s.persist.Unlock()
 	displays, err := s.config.Window.Displays(ctx)
@@ -164,7 +183,8 @@ func (s *NativeShell) SaveWindow(ctx context.Context, state desktopcontract.Wind
 }
 
 func (s *NativeShell) CommandStatus(ctx context.Context) (result desktopcontract.Result[[]desktopcontract.CommandStatus]) {
-	defer containShellPanic(&result)
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
 	values, err := s.config.Commands.Status(ctx)
 	if err != nil || !validCommandStatuses(values) {
 		return shellFailed[[]desktopcontract.CommandStatus](desktopcontract.FailureCommandUnavailable, true, desktopcontract.RecoveryRetry)
@@ -174,32 +194,27 @@ func (s *NativeShell) CommandStatus(ctx context.Context) (result desktopcontract
 }
 
 func (s *NativeShell) InvokeCommand(ctx context.Context, invocation desktopcontract.CommandInvocation) (result desktopcontract.Result[desktopcontract.CommandStatus]) {
-	defer containShellPanic(&result)
-	if !invocation.ID.Validate() || !invocation.Source.Validate() {
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
+	if !invocation.ID.Validate() || !invocation.Source.Validate() || invocation.StatusGeneration == 0 {
 		return shellFailed[desktopcontract.CommandStatus](desktopcontract.FailureCommandUnavailable, false, desktopcontract.RecoveryRetry)
 	}
-	statuses, err := s.config.Commands.Status(ctx)
-	if err != nil || !validCommandStatuses(statuses) {
+	status, err := s.config.Commands.Route(ctx, invocation)
+	if err != nil || status.ID != invocation.ID || status.Generation != invocation.StatusGeneration || !status.State.Validate() {
 		return shellFailed[desktopcontract.CommandStatus](desktopcontract.FailureCommandUnavailable, true, desktopcontract.RecoveryRetry)
 	}
-	status, found := findCommand(statuses, invocation.ID)
-	if !found || status.State != desktopcontract.CommandAvailable {
-		if !found {
-			status = desktopcontract.CommandStatus{ID: invocation.ID, State: desktopcontract.CommandUnavailable}
-		}
+	if status.State != desktopcontract.CommandAvailable {
 		s.log(ctx, desktopcontract.LogWarn, desktopcontract.EventCommandRejected, nil, &invocation.ID)
 		return desktopcontract.Result[desktopcontract.CommandStatus]{Outcome: protocolcommon.OutcomeRejected, Value: status}
-	}
-	if err := s.config.Commands.Invoke(ctx, invocation); err != nil {
-		return shellFailed[desktopcontract.CommandStatus](desktopcontract.FailureCommandUnavailable, true, desktopcontract.RecoveryRetry)
 	}
 	s.log(ctx, desktopcontract.LogInfo, desktopcontract.EventCommandInvoked, nil, &invocation.ID)
 	return desktopcontract.Result[desktopcontract.CommandStatus]{Outcome: protocolcommon.OutcomeSuccess, Value: status}
 }
 
 func (s *NativeShell) OpenExternal(ctx context.Context, target desktopcontract.ExternalTarget) (result desktopcontract.Result[struct{}]) {
-	defer containShellPanic(&result)
-	if !safeExternalTarget(target) {
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
+	if !target.Validate() {
 		code := desktopcontract.FailureExternalTarget
 		s.log(ctx, desktopcontract.LogWarn, desktopcontract.EventExternalDenied, &code, nil)
 		return shellFailed[struct{}](code, false, desktopcontract.RecoveryRetry)
@@ -212,7 +227,8 @@ func (s *NativeShell) OpenExternal(ctx context.Context, target desktopcontract.E
 }
 
 func (s *NativeShell) NextFileAssociation(ctx context.Context) (result desktopcontract.Result[desktopcontract.FileAssociationHandoff]) {
-	defer containShellPanic(&result)
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
 	value, err := s.config.Associations.Next(ctx)
 	if err != nil || !validOpaqueReference(value.Token) ||
 		(value.Kind != desktopcontract.FileAssociationLDL && value.Kind != desktopcontract.FileAssociationLayerDraw) {
@@ -222,21 +238,13 @@ func (s *NativeShell) NextFileAssociation(ctx context.Context) (result desktopco
 }
 
 func (s *NativeShell) PresentUnexpectedFailure(ctx context.Context, origin desktopcontract.UnexpectedFailureOrigin, lifecycle desktopcontract.LifecycleState) (result desktopcontract.Result[desktopcontract.ErrorSurface]) {
-	defer containShellPanic(&result)
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
 	if (origin != desktopcontract.FailureOriginBackend && origin != desktopcontract.FailureOriginFrontend) || !lifecycle.Validate() {
 		return shellFailed[desktopcontract.ErrorSurface](desktopcontract.FailureCrashRecovery, false, desktopcontract.RecoveryExit)
 	}
-	ref, preserveErr := s.config.CrashRecovery.Preserve(ctx, desktopcontract.CrashContext{Origin: origin, Lifecycle: lifecycle, At: s.config.Now().UTC()})
-	failureCode := desktopcontract.FailureBackendPanic
-	if origin == desktopcontract.FailureOriginFrontend {
-		failureCode = desktopcontract.FailureFrontendCrash
-	}
-	surface := desktopcontract.ErrorSurface{Failure: failureCode, Recovery: desktopcontract.RecoveryRetry}
-	if preserveErr == nil && validOpaqueReference(ref.ID) {
-		surface.Recovery = desktopcontract.RecoveryOpenRecovery
-		surface.Ref = &ref
-	}
-	if err := s.config.Errors.Present(ctx, surface); err != nil {
+	surface, presented := s.recoverAndPresent(ctx, origin, lifecycle)
+	if !presented {
 		return shellFailed[desktopcontract.ErrorSurface](desktopcontract.FailureCrashRecovery, true, desktopcontract.RecoveryRetry)
 	}
 	code := surface.Failure
@@ -245,22 +253,82 @@ func (s *NativeShell) PresentUnexpectedFailure(ctx context.Context, origin deskt
 }
 
 func (s *NativeShell) VerifyAccessibility(ctx context.Context, profile desktopcontract.AccessibilityProfile) (result desktopcontract.Result[desktopcontract.AccessibilityReport]) {
-	defer containShellPanic(&result)
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
 	if profile.Platform != s.config.Platform || profile.ZoomPercent < 50 || profile.ZoomPercent > 300 {
 		return shellFailed[desktopcontract.AccessibilityReport](desktopcontract.FailureAccessibility, false, desktopcontract.RecoveryRetry)
 	}
 	report, err := s.config.Accessibility.VerifyPackaged(ctx, profile)
 	if err != nil || !report.LabelsComplete || !report.FocusOrderValid || !report.KeyboardWorkflowValid ||
-		(profile.ReducedMotion && !report.ReducedMotionHonored) || report.MinimumContrast < 4.5 || !report.ZoomLayoutValid {
+		(profile.ReducedMotion && !report.ReducedMotionHonored) || math.IsNaN(report.MinimumContrast) || math.IsInf(report.MinimumContrast, 0) ||
+		report.MinimumContrast < 4.5 || report.MinimumContrast > 21 || !report.ZoomLayoutValid {
 		return shellFailed[desktopcontract.AccessibilityReport](desktopcontract.FailureAccessibility, false, desktopcontract.RecoveryRetry)
 	}
 	return desktopcontract.Result[desktopcontract.AccessibilityReport]{Outcome: protocolcommon.OutcomeSuccess, Value: report}
 }
 
-func containShellPanic[T any](result *desktopcontract.Result[T]) {
+func containShellPanic[T any](s *NativeShell, ctx context.Context, result *desktopcontract.Result[T]) {
 	if recover() != nil {
+		_, _ = s.recoverAndPresent(ctx, desktopcontract.FailureOriginBackend, desktopcontract.LifecycleRecovery)
 		*result = shellFailed[T](desktopcontract.FailureBackendPanic, false, desktopcontract.RecoveryExit)
 	}
+}
+
+func finishShellResult[T any](s *NativeShell, ctx context.Context, result *desktopcontract.Result[T]) {
+	if result.Outcome == protocolcommon.OutcomeFailed && result.Failure != nil {
+		code := result.Failure.Code
+		s.log(ctx, desktopcontract.LogError, desktopcontract.EventOperationFailed, &code, nil)
+	} else if result.Outcome == protocolcommon.OutcomeRejected {
+		code := desktopcontract.FailureCommandUnavailable
+		s.log(ctx, desktopcontract.LogWarn, desktopcontract.EventOperationRejected, &code, nil)
+	}
+}
+
+func (s *NativeShell) recoverAndPresent(ctx context.Context, origin desktopcontract.UnexpectedFailureOrigin, lifecycle desktopcontract.LifecycleState) (desktopcontract.ErrorSurface, bool) {
+	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	failureCode := desktopcontract.FailureBackendPanic
+	if origin == desktopcontract.FailureOriginFrontend {
+		failureCode = desktopcontract.FailureFrontendCrash
+	}
+	surface := desktopcontract.ErrorSurface{Failure: failureCode, Recovery: desktopcontract.RecoveryRetry}
+	ref, err := safePreserveRecovery(bounded, s.config.CrashRecovery, desktopcontract.CrashContext{Origin: origin, Lifecycle: lifecycle, At: s.config.Now().UTC()})
+	if err == nil && validOpaqueReference(ref.ID) {
+		surface.Recovery = desktopcontract.RecoveryOpenRecovery
+		surface.Ref = &ref
+	}
+	return surface, safePresentError(bounded, s.config.Errors, surface) == nil
+}
+
+func safePreserveRecovery(ctx context.Context, port desktopcontract.CrashRecoveryPort, input desktopcontract.CrashContext) (result desktopcontract.RecoveryRef, err error) {
+	defer func() {
+		if recover() != nil {
+			result, err = desktopcontract.RecoveryRef{}, errInjectedPanic
+		}
+	}()
+	return port.Preserve(ctx, input)
+}
+
+func safePresentError(ctx context.Context, port desktopcontract.ErrorSurfacePort, input desktopcontract.ErrorSurface) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errInjectedPanic
+		}
+	}()
+	return port.Present(ctx, input)
+}
+
+func (s *NativeShell) rollbackNativeState(ctx context.Context, window desktopcontract.WindowState, settings desktopcontract.DesktopSettings) bool {
+	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	windowErr := s.config.Window.ApplyWindow(bounded, window)
+	settingsErr := s.config.Window.ApplySettings(bounded, settings)
+	return windowErr == nil && settingsErr == nil
+}
+
+func compensationFailure[T any](s *NativeShell, ctx context.Context) desktopcontract.Result[T] {
+	_, _ = s.recoverAndPresent(ctx, desktopcontract.FailureOriginBackend, desktopcontract.LifecycleRecovery)
+	return shellFailed[T](desktopcontract.FailureCrashRecovery, false, desktopcontract.RecoveryOpenRecovery)
 }
 
 func (s *NativeShell) log(ctx context.Context, level desktopcontract.LogLevel, event desktopcontract.ShellEvent, failure *desktopcontract.FailureCode, command *desktopcontract.CommandID) {
@@ -341,46 +409,12 @@ func intersectionArea(a, b desktopcontract.Rectangle) int {
 func validCommandStatuses(values []desktopcontract.CommandStatus) bool {
 	seen := make(map[desktopcontract.CommandID]bool, len(values))
 	for _, value := range values {
-		if !value.ID.Validate() || !value.State.Validate() || seen[value.ID] {
+		if !value.ID.Validate() || !value.State.Validate() || value.Generation == 0 || seen[value.ID] {
 			return false
 		}
 		seen[value.ID] = true
 	}
 	return true
-}
-
-func findCommand(values []desktopcontract.CommandStatus, id desktopcontract.CommandID) (desktopcontract.CommandStatus, bool) {
-	for _, value := range values {
-		if value.ID == id {
-			return value, true
-		}
-	}
-	return desktopcontract.CommandStatus{}, false
-}
-
-func safeExternalTarget(target desktopcontract.ExternalTarget) bool {
-	if target.Value == "" || strings.ContainsAny(target.Value, "\r\n\x00") {
-		return false
-	}
-	parsed, err := url.ParseRequestURI(target.Value)
-	if err != nil || parsed.User != nil || parsed.Host == "" {
-		if target.Kind != desktopcontract.ExternalEmail {
-			return false
-		}
-	}
-	switch target.Kind {
-	case desktopcontract.ExternalWebLink:
-		return parsed.Scheme == "https" && parsed.Host != ""
-	case desktopcontract.ExternalEmail:
-		if parsed.Scheme != "mailto" || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return false
-		}
-		address := strings.TrimPrefix(target.Value, "mailto:")
-		_, err := mail.ParseAddress(address)
-		return err == nil
-	default:
-		return false
-	}
 }
 
 func validOpaqueReference(value string) bool {
