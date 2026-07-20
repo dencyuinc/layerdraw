@@ -48,6 +48,14 @@
 .ld-inspector-field { display: grid; gap: 0.25rem; }
 .ld-source-navigation { list-style: none; margin: 0; padding: 0; }
 
+.ld-query-view-composer,
+.ld-live-viewer { min-inline-size: 0; padding: 0.75rem; }
+.ld-query-view-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.ld-query-view-field { display: grid; gap: 0.25rem; margin-block: 0.5rem; }
+.ld-query-view-field > :is(input, select) { box-sizing: border-box; inline-size: 100%; max-inline-size: 32rem; }
+.ld-live-viewer { container-type: inline-size; min-block-size: 12rem; overflow: auto; }
+.ld-viewer-dense { display: grid; gap: 0.25rem; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); }
+
 .ld-visually-hidden {
   block-size: 1px;
   clip: rect(0 0 0 0);
@@ -62,6 +70,11 @@
   .ld-editor-workspace { grid-template-columns: minmax(0, 1fr); overflow: auto; }
   .ld-editor-panel[data-placement="inspector"],
   .ld-editor-panel[data-placement="secondary"] { border-inline-start: 0; border-block-start: 1px solid currentColor; max-block-size: 45dvh; }
+}
+
+@container (max-width: 30rem) {
+  .ld-query-view-actions { align-items: stretch; flex-direction: column; }
+  .ld-query-view-actions > button { inline-size: 100%; }
 }
 
 @media (max-width: 30rem) {

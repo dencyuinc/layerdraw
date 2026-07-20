@@ -164,6 +164,9 @@ importers:
       '@layerdraw/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@layerdraw/viewer':
+        specifier: workspace:*
+        version: link:../viewer
     devDependencies:
       '@playwright/test':
         specifier: 1.61.1
