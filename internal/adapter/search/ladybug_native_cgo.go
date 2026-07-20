@@ -45,7 +45,7 @@ func OpenGoLadybugSessionWithFTS(databasePath, ftsExtensionPath string) (*GoLady
 }
 
 func OpenGoLadybugSessionWithExtensions(databasePath string, extensionPaths []string) (*GoLadybugSession, error) {
-	if databasePath == "" || databasePath == ":memory:" || !strings.HasPrefix(databasePath, "/") {
+	if databasePath == "" || databasePath == ":memory:" || !filepath.IsAbs(databasePath) {
 		return nil, fmt.Errorf("absolute on-disk Ladybug path required")
 	}
 	for _, extensionPath := range extensionPaths {
