@@ -346,9 +346,11 @@ type AccessibilityReport struct {
 	LabelsComplete        bool    `json:"labels_complete"`
 	ScreenReaderSemantics bool    `json:"screen_reader_semantics"`
 	FocusOrderValid       bool    `json:"focus_order_valid"`
+	FocusOrderFailures    string  `json:"focus_order_failures,omitempty"`
 	KeyboardWorkflowValid bool    `json:"keyboard_workflow_valid"`
 	ReducedMotionHonored  bool    `json:"reduced_motion_honored"`
 	MinimumContrast       float64 `json:"minimum_contrast"`
+	MinimumContrastTarget string  `json:"minimum_contrast_target,omitempty"`
 	ZoomLayoutValid       bool    `json:"zoom_layout_valid"`
 	ViewportWidth         uint16  `json:"viewport_width,omitempty"`
 	ViewportHeight        uint16  `json:"viewport_height,omitempty"`

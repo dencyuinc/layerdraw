@@ -57,15 +57,19 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     (node.textContent?.trim().length ?? 0) > 0 || node.hasAttribute("aria-label") || node.hasAttribute("aria-labelledby") ||
     ("labels" in node && Array.from((node as HTMLInputElement).labels ?? []).some((label) => (label.textContent?.trim().length ?? 0) > 0)) ||
     (node.closest("label")?.textContent?.trim().length ?? 0) > 0);
-  const focusOrderValid = controls.every((node, index) => {
+  const focusFailures: string[] = [];
+  const focusOrderValid = controls.map((node, index) => {
     node.focus();
 	const previous = controls[index - 1];
 	const followsPrevious = node.tabIndex === 0 && (index === 0 || (previous !== undefined && Boolean(previous.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)));
 	const outlineVisible = getComputedStyle(node).outlineStyle !== "none";
 	const focusRect = node.matches(".ld-desktop-viewer-item") ? node.querySelector<SVGElement>("rect") : null;
 	const strokeVisible = focusRect !== null && Number.parseFloat(getComputedStyle(focusRect).strokeWidth) >= 3;
-    return document.activeElement === node && followsPrevious && (outlineVisible || strokeVisible);
-  });
+    const active = document.activeElement === node;
+    const visible = outlineVisible || strokeVisible;
+    if (!active || !followsPrevious || !visible) focusFailures.push(`${node.tagName}.${node.className}:active=${active},ordered=${followsPrevious},visible=${visible}`);
+    return active && followsPrevious && visible;
+  }).every(Boolean);
   const keyboardWorkflowValid = !profile.keyboard_only || await invokeSettings();
   document.documentElement.dataset.reducedMotion = String(Boolean(profile.reduced_motion));
   const reducedMotionHonored = !profile.reduced_motion || [...document.querySelectorAll<HTMLElement>(".ld-desktop-shell, .ld-desktop-shell *, .ld-desktop-shell *::before, .ld-desktop-shell *::after")]
@@ -107,6 +111,7 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
       return (Math.max(foreground, behind) + .05) / (Math.min(foreground, behind) + .05);
     });
   const minimumContrast = ratios.length === 0 ? 0 : Math.min(...ratios);
+  const minimumNode = contrastNodes[ratios.indexOf(minimumContrast)];
   const landmarks = ["main", "nav[aria-label]", "section[aria-label]", "aside[aria-label]"]
     .every((selector) => document.querySelector(selector) !== null);
   const labelledGraphics = [...document.querySelectorAll<HTMLElement>("svg[role],canvas[role]")]
@@ -134,9 +139,11 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     labels_complete: labelsComplete,
     screen_reader_semantics: screenReaderSemantics,
     focus_order_valid: focusOrderValid,
+    focus_order_failures: focusFailures.join("|"),
     keyboard_workflow_valid: keyboardWorkflowValid,
     reduced_motion_honored: reducedMotionHonored,
     minimum_contrast: minimumContrast,
+    minimum_contrast_target: minimumNode === undefined ? "" : `${minimumNode.tagName}.${minimumNode.className}:${minimumNode.textContent?.trim()}:foreground=${getComputedStyle(minimumNode).color}:background=${background(minimumNode).join(",")}`,
     zoom_layout_valid: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
     viewport_width: Math.max(0, Math.min(window.innerWidth, 65535)),
     viewport_height: Math.max(0, Math.min(window.innerHeight, 65535)),
