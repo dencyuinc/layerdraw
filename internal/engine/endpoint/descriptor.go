@@ -148,6 +148,7 @@ func NewDescriptor(config DescriptorConfig) (*Descriptor, error) {
 			OperationOrganizeWorkspace,
 			OperationPlanExport,
 			OperationPreviewFragment,
+			OperationPreviewOperations,
 			OperationPreviewSourcePatch,
 			OperationReadDeclarations,
 			OperationReadModules,
