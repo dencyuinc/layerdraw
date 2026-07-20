@@ -5,9 +5,9 @@
 import {runtimeprotocol} from '../models.js';
 import {desktopapp} from '../models.js';
 import {desktopcontract} from '../models.js';
+import {desktopwails} from '../models.js';
 import {localdocument} from '../models.js';
 import {review} from '../models.js';
-import {desktopwails} from '../models.js';
 import {exporter} from '../models.js';
 
 export function AcquireExternalLease(arg1:runtimeprotocol.RuntimeSessionRef,arg2:desktopapp.ExternalBackendBinding):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ExternalLease_>;
@@ -31,6 +31,8 @@ export function Invoke(arg1:string,arg2:desktopcontract.Exchange):Promise<deskto
 export function ListMCPConnections():Promise<Array<desktopapp.MCPConnection>>;
 
 export function MCPStatus():Promise<desktopapp.MCPStatus>;
+
+export function MaterializeProjectView(arg1:runtimeprotocol.RuntimeSessionRef,arg2:string):Promise<desktopwails.ProjectViewMaterialization>;
 
 export function NativeExportProfiles():Promise<desktopcontract.Result___github_com_dencyuinc_layerdraw_internal_exporter_Profile_>;
 

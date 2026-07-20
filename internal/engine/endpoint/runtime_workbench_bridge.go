@@ -51,6 +51,71 @@ type BridgePrepared struct {
 	EncodedInput    []byte
 }
 
+type BridgeView struct {
+	Address, DisplayName, Shape string
+}
+
+func (w *RuntimeEngineBridge) Views(working BridgeWorking) ([]BridgeView, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	doc := w.docs[working.Handle]
+	if doc == nil || doc.working != working {
+		return nil, errors.New("stale working document")
+	}
+	result := make([]BridgeView, 0, len(doc.snapshot.TypedAST.Views))
+	for _, item := range doc.snapshot.TypedAST.Views {
+		if item.Source.Query == nil {
+			continue
+		}
+		result = append(result, BridgeView{Address: item.Address, DisplayName: item.DisplayName, Shape: string(item.Shape.Kind)})
+	}
+	return result, nil
+}
+
+func (w *RuntimeEngineBridge) MaterializeQueryView(ctx context.Context, working BridgeWorking, address string) (semantic.ViewData, error) {
+	w.mu.Lock()
+	doc := w.docs[working.Handle]
+	if doc == nil || doc.working != working {
+		w.mu.Unlock()
+		return semantic.ViewData{}, errors.New("stale working document")
+	}
+	snapshot := doc.snapshot
+	w.mu.Unlock()
+	var recipe *engine.CompiledViewRecipe
+	for index := range snapshot.TypedAST.Views {
+		if snapshot.TypedAST.Views[index].Address == address {
+			recipe = &snapshot.TypedAST.Views[index]
+			break
+		}
+	}
+	if recipe == nil || recipe.Source.Query == nil {
+		return semantic.ViewData{}, errors.New("query-backed view is unavailable")
+	}
+	var queryRecipe *engine.CompiledQueryRecipe
+	for index := range snapshot.TypedAST.Queries {
+		if snapshot.TypedAST.Queries[index].Address == recipe.Source.Query.QueryAddress {
+			queryRecipe = &snapshot.TypedAST.Queries[index]
+			break
+		}
+	}
+	if queryRecipe == nil || snapshot.TypedAST.Graph == nil {
+		return semantic.ViewData{}, errors.New("view query is unavailable")
+	}
+	arguments := map[string]engine.TypedScalar{}
+	for _, argument := range recipe.Source.Query.Arguments {
+		arguments[argument.ParameterAddress] = argument.Value
+	}
+	queryResult, err := w.engine.ExecuteQuery(ctx, engine.QueryExecutionInput{Recipe: *queryRecipe, Graph: *snapshot.TypedAST.Graph, Definition: snapshot.QueryDefinitionIdentity(), Arguments: arguments})
+	if err != nil || queryResult.Status != "ok" || queryResult.Result == nil {
+		return semantic.ViewData{}, errors.New("view query failed")
+	}
+	materialized := w.engine.MaterializeView(ctx, engine.ViewMaterializationInput{Recipe: *recipe, Query: &engine.QueryViewMaterializationInput{RevisionID: working.RevisionID, Snapshot: snapshot, QueryResult: *queryResult.Result}})
+	if materialized.Status != "ok" || materialized.Result == nil {
+		return semantic.ViewData{}, errors.New("view materialization failed")
+	}
+	return mapViewData(ctx, *materialized.Result)
+}
+
 func NewRuntimeEngineBridge(instance engine.Engine, endpointID protocolcommon.EndpointInstanceID) *RuntimeEngineBridge {
 	return &RuntimeEngineBridge{engine: instance, endpoint: endpointID, docs: map[string]*bridgeDocument{}, latest: map[string]string{}}
 }

@@ -59,7 +59,7 @@ export interface DesktopProjectContext {
 
 /** JSON-only project state emitted by Go. Executable editor/viewer objects are
  * attached by the trusted frontend owner after generated-client negotiation. */
-export interface DesktopProjectPublicationContextDTO extends Omit<DesktopProjectContext, "editor" | "editor_session" | "authoritative_revision_token" | "authoritative_revision_label" | "views" | "access" | "storage"> {
+export interface DesktopProjectPublicationContextDTO extends Omit<DesktopProjectContext, "editor" | "editor_session" | "authoritative_revision_token" | "authoritative_revision_label" | "access" | "storage"> {
   readonly authoritative_revision: CommittedRevisionRef;
   readonly open_input: OpenRuntimeDocumentInput;
 }

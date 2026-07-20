@@ -54,6 +54,51 @@ func TestAuthorizeHostOperationRevalidatesCurrentSessionRevisionAndImpact(t *tes
 	}
 }
 
+func TestProjectViewsListAndMaterializeQueryBackedViews(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root, `project p "P" {}
+entity_type service "Service" {
+  representation shape rect
+  columns {
+    environment "Environment" enum [prod, dev]
+  }
+}
+query services "Services" {
+  select {
+    entity_types [service]
+  }
+  result [seed_entities]
+}
+view catalog "Catalog" inventory {
+  source query services {}
+  table {
+    rows entity_rows
+    entity_types [service]
+    entity_id
+    column environment {
+      source attribute environment entity_types [service]
+    }
+  }
+}
+`)
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	views, err := host.ProjectViews(context.Background(), opened.Session.Open.Session)
+	if err != nil || len(views) != 1 || views[0].Address != "ldl:project:p:view:catalog" || views[0].Label != "Catalog" || views[0].Shape != "table" {
+		t.Fatalf("project views = %+v, %v", views, err)
+	}
+	materialized, err := host.MaterializeProjectView(context.Background(), opened.Session.Open.Session, views[0].Address)
+	if err != nil || string(materialized.ViewAddress) != views[0].Address || materialized.Kind != "table" {
+		t.Fatalf("materialized view = %+v, %v", materialized, err)
+	}
+	if _, err := host.MaterializeProjectView(context.Background(), opened.Session.Open.Session, "missing"); err == nil {
+		t.Fatal("missing view materialized")
+	}
+}
+
 func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *testing.T) {
 	root := t.TempDir()
 	source := "project p \"P\" {}\n"

@@ -7,6 +7,7 @@ import type { DesktopFeatureAvailability, DesktopLifecycleSnapshot, DesktopProje
 import type { PreviewOperationsInput, PreviewOperationsResult } from "@layerdraw/protocol/runtime";
 import type { AuthoringGrantSummary } from "@layerdraw/protocol/access";
 import type { WorkbenchPreviewResult } from "@layerdraw/protocol/engine";
+import type { ViewData } from "@layerdraw/protocol/semantic";
 
 export interface DesktopOwnerActionDTO {
   readonly project_id: string;
@@ -46,6 +47,7 @@ export interface DesktopEditorPreviewDTO {
 export interface DesktopProjectHostBinding {
   ProjectPublication(): Promise<DesktopProjectPublicationDTO>;
   PreviewEditor(input: PreviewOperationsInput): Promise<DesktopEditorPreviewDTO>;
+  MaterializeProjectView(session: PreviewOperationsInput["session"], address: string): Promise<Readonly<{ view_data: ViewData; view_data_hash: string }>>;
 }
 
 export interface DesktopRegistryHostBinding {

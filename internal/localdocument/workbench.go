@@ -12,6 +12,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -165,6 +166,14 @@ func (w *runtimeWorkbench) Preview(ctx context.Context, in port.PreviewWorkingDo
 		}
 	}
 	return result, nil
+}
+
+func (w *runtimeWorkbench) views(document port.WorkingDocument) ([]engineendpoint.BridgeView, error) {
+	return w.bridge.Views(engineendpoint.BridgeWorking{Handle: document.Handle, Generation: string(document.Generation), DocumentID: string(document.BaseRevision.DocumentID), RevisionID: string(document.BaseRevision.RevisionID), DefinitionHash: document.DefinitionHash, GraphHash: document.GraphHash})
+}
+
+func (w *runtimeWorkbench) materializeView(ctx context.Context, document port.WorkingDocument, address string) (semantic.ViewData, error) {
+	return w.bridge.MaterializeQueryView(ctx, engineendpoint.BridgeWorking{Handle: document.Handle, Generation: string(document.Generation), DocumentID: string(document.BaseRevision.DocumentID), RevisionID: string(document.BaseRevision.RevisionID), DefinitionHash: document.DefinitionHash, GraphHash: document.GraphHash}, address)
 }
 
 func (w *runtimeWorkbench) Checkpoint(ctx context.Context, in port.CheckpointWorkingDocumentInput) (port.WorkingDocument, error) {

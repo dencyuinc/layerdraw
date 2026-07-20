@@ -48,6 +48,10 @@ export function MCPStatus() {
   return window['go']['desktopwails']['FrontendBridge']['MCPStatus']();
 }
 
+export function MaterializeProjectView(arg1, arg2) {
+  return window['go']['desktopwails']['FrontendBridge']['MaterializeProjectView'](arg1, arg2);
+}
+
 export function NativeExportProfiles() {
   return window['go']['desktopwails']['FrontendBridge']['NativeExportProfiles']();
 }

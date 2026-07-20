@@ -4,11 +4,15 @@ package desktopwails
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
@@ -35,6 +39,7 @@ type registryDispatcher interface {
 
 type editorPreviewDispatcher interface {
 	PreviewEditor(context.Context, runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error)
+	MaterializeProjectView(context.Context, runtimeprotocol.RuntimeSessionRef, string) (semantic.ViewData, error)
 }
 
 func NewFrontendBridge(app *desktopapp.Application, dispatchers ...registryDispatcher) *FrontendBridge {
@@ -72,6 +77,27 @@ func (b *FrontendBridge) PreviewEditor(input runtimeprotocol.PreviewOperationsIn
 		return localdocument.EditorPreviewResult{}, errors.New("desktop editor preview is unavailable")
 	}
 	return b.preview.PreviewEditor(b.context(), input)
+}
+
+type ProjectViewMaterialization struct {
+	ViewData     semantic.ViewData     `json:"view_data"`
+	ViewDataHash protocolcommon.Digest `json:"view_data_hash"`
+}
+
+func (b *FrontendBridge) MaterializeProjectView(session runtimeprotocol.RuntimeSessionRef, address string) (ProjectViewMaterialization, error) {
+	if b.preview == nil {
+		return ProjectViewMaterialization{}, errors.New("desktop view materialization is unavailable")
+	}
+	viewData, err := b.preview.MaterializeProjectView(b.context(), session, address)
+	if err != nil {
+		return ProjectViewMaterialization{}, err
+	}
+	encoded, err := semantic.EncodeViewData(viewData)
+	if err != nil {
+		return ProjectViewMaterialization{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	return ProjectViewMaterialization{ViewData: viewData, ViewDataHash: protocolcommon.Digest(fmt.Sprintf("sha256:%x", digest))}, nil
 }
 
 func (b *FrontendBridge) Invoke(method string, exchange desktopcontract.Exchange) desktopapp.BindingResult {

@@ -388,6 +388,16 @@ func (o *sharedOwner) PreviewEditor(ctx context.Context, input runtimeprotocol.P
 	return local.PreviewEditor(ctx, input)
 }
 
+func (o *sharedOwner) MaterializeProjectView(ctx context.Context, session runtimeprotocol.RuntimeSessionRef, address string) (semantic.ViewData, error) {
+	o.mu.RLock()
+	local := o.local
+	o.mu.RUnlock()
+	if local == nil {
+		return semantic.ViewData{}, errors.New("desktop view materialization is unavailable")
+	}
+	return local.MaterializeProjectView(ctx, session, address)
+}
+
 func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
 	o.mu.RLock()
 	endpoint, engine, registryWire := o.endpoint, o.engine, o.registryWire

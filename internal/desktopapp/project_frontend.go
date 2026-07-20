@@ -24,6 +24,13 @@ type ProjectPublicationContext struct {
 	AuthoritativeRevision runtimeprotocol.CommittedRevisionRef     `json:"authoritative_revision"`
 	OpenInput             runtimeprotocol.OpenRuntimeDocumentInput `json:"open_input"`
 	Persistence           string                                   `json:"persistence"`
+	Views                 []ProjectViewDTO                         `json:"views"`
+}
+
+type ProjectViewDTO struct {
+	Address string `json:"address"`
+	Label   string `json:"label"`
+	Shape   string `json:"shape"`
 }
 
 func (a *Application) ProjectPublication(ctx context.Context) (ProjectPublicationDTO, error) {
@@ -42,11 +49,19 @@ func (a *Application) ProjectPublication(ctx context.Context) (ProjectPublicatio
 		return ProjectPublicationDTO{}, err
 	}
 	revision := opened.Open.CommittedRevision
+	views, err := host.ProjectViews(ctx, session)
+	if err != nil {
+		return ProjectPublicationDTO{}, err
+	}
+	viewDTOs := make([]ProjectViewDTO, 0, len(views))
+	for _, view := range views {
+		viewDTOs = append(viewDTOs, ProjectViewDTO{Address: view.Address, Label: view.Label, Shape: view.Shape})
+	}
 	publication.Project = &ProjectPublicationContext{
 		ProjectID: session.Scope.DocumentID, SessionGeneration: generation,
 		DisplayName: string(session.Scope.DocumentID), AuthoritativeRevision: revision,
 		OpenInput:   runtimeprotocol.OpenRuntimeDocumentInput{DocumentID: session.Scope.DocumentID},
-		Persistence: persistence,
+		Persistence: persistence, Views: viewDTOs,
 	}
 	return publication, nil
 }
