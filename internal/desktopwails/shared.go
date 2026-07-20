@@ -53,6 +53,7 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		Root: root, ReleaseVersion: desktopRelease, EndpointInstanceID: desktopEndpoint,
 		ReleaseManifestDigest: desktopDigest, Adapters: adapters, Bindings: clients,
 		Capabilities:                  nativeCapabilities{},
+		ExternalPublication:           owner,
 		EffectiveRequiredCapabilities: append([]protocolcommon.CapabilityID(nil), packagedCapabilities...),
 		DisabledComponents: []desktopcontract.ComponentID{
 			desktopcontract.ComponentNativeQuery, desktopcontract.ComponentSearchIndex,
@@ -61,7 +62,7 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 			desktopcontract.ComponentMCPHost,
 		},
 		HostPorts: desktopcontract.HostPorts{
-			Credentials: unavailableCredentials{}, LocalActor: platformActor{},
+			Credentials: newPlatformCredentialPort(), LocalActor: platformActor{},
 			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{}, MCP: disabledMCP{},
 		},
 	}, nil
@@ -80,6 +81,23 @@ type sharedOwner struct {
 	local    *localdocument.Host
 	endpoint *host.Endpoint
 	engine   *engineendpoint.HostEngineFacade
+}
+
+func (o *sharedOwner) RevalidateExternalPublication(ctx context.Context, intent desktopapp.ExternalPublicationIntent) desktopcontract.Result[struct{}] {
+	o.mu.RLock()
+	local := o.local
+	o.mu.RUnlock()
+	if local == nil || intent.Binding.BindingID == "" || intent.Binding.DocumentID != intent.Session.Scope.DocumentID || intent.Revision.DocumentID != intent.Session.Scope.DocumentID {
+		return closedFailure[struct{}](desktopcontract.FailurePermissionDenied)
+	}
+	refs := []string{intent.Binding.BindingID, intent.Binding.RemoteItemID}
+	if intent.Plan != nil {
+		refs = append(refs, intent.Plan.PlanID)
+	}
+	if err := local.AuthorizeHostOperation(ctx, intent.Session, intent.Revision, accessprotocol.HostOperationKindBackendConfigure, "update", refs); err != nil {
+		return closedFailure[struct{}](desktopcontract.FailurePermissionDenied)
+	}
+	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess, Value: struct{}{}}
 }
 
 func (o *sharedOwner) BindLocalHost(localHost *localdocument.Host) error {

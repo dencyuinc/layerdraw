@@ -26,6 +26,7 @@ function harness(initial) {
       calls.push(["recovery-options", signal]);
       if (recoveryFailure) throw new Error("provider details must not escape");
     },
+	async disconnectExternal(signal) { calls.push(["disconnect-external", signal]); },
   };
   const viewer = {
     getState: () => emptyViewer,
@@ -132,11 +133,24 @@ test("selection is constrained to advertised views and exposes only closed failu
   assert.doesNotMatch(JSON.stringify(h.controller.getSnapshot()), /native path/);
 });
 
+test("external disconnect is scoped to an external project and uses an abortable host action", async () => {
+  const h = harness(snapshot(0, { project: project({ storage: { kind: "external", status: "connected", label: "Reference" } }) }));
+  h.controller.start();
+  await h.controller.disconnectExternal();
+  assert.equal(h.calls[0][0], "disconnect-external");
+  assert.equal(h.calls[0][1] instanceof AbortSignal, true);
+  const local = harness(snapshot(0));
+  local.controller.start();
+  await local.controller.disconnectExternal();
+  assert.deepEqual(local.calls, []);
+});
+
 test("explicit recovery handoff, Viewer rejection, exceptions, and selection stay typed and recoverable", async () => {
   const h = harness(snapshot(0));
   h.controller.start();
   h.failRecovery();
   await h.controller.reviewRecovery();
+	await h.controller.disconnectExternal();
   assert.equal(h.controller.getSnapshot().failure.code, "desktop.lifecycle_failed");
   assert.doesNotMatch(JSON.stringify(h.controller.getSnapshot()), /provider details/);
 

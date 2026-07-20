@@ -70,6 +70,7 @@ type Config struct {
 	Adapters                      map[desktopcontract.ComponentID]Adapter
 	Recovery                      RecoveryReporter
 	ExternalLifecycle             ExternalLifecycleAdapter
+	ExternalPublication           ExternalPublicationGate
 	Now                           func() time.Time
 }
 

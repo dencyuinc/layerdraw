@@ -9,6 +9,8 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 )
 
@@ -63,5 +65,29 @@ func TestFrontendBridgeDelegatesProjectSurfaceWithFallbackContext(t *testing.T) 
 	}
 	if result := bridge.RecentProjects(); result.Outcome != protocolcommon.OutcomeSuccess || len(result.Value) != 0 {
 		t.Fatalf("recent projects were not delegated: %+v", result)
+	}
+	if result := bridge.ConnectExternal(desktopapp.ExternalConnectionRequest{}); result.Failure == nil {
+		t.Fatalf("connect external=%+v", result)
+	}
+	if result := bridge.InspectExternal(""); result.Failure == nil {
+		t.Fatalf("inspect external=%+v", result)
+	}
+	if result := bridge.RefreshExternal(""); result.Failure == nil {
+		t.Fatalf("refresh external=%+v", result)
+	}
+	if result := bridge.DisconnectExternal(""); result.Failure == nil {
+		t.Fatalf("disconnect external=%+v", result)
+	}
+	if result := bridge.SelectExternalRemote(desktopapp.ExternalRemoteSelectionRequest{}); result.Failure == nil {
+		t.Fatalf("select external=%+v", result)
+	}
+	if result := bridge.AcquireExternalLease(runtimeprotocol.RuntimeSessionRef{}, desktopapp.ExternalBackendBinding{}); result.Failure == nil {
+		t.Fatalf("lease external=%+v", result)
+	}
+	if result := bridge.PlanExternalReconcile(runtimeprotocol.RuntimeSessionRef{}, desktopapp.ExternalSyncRequest{}, false); result.Failure == nil {
+		t.Fatalf("plan external=%+v", result)
+	}
+	if result := bridge.ApplyExternalReconcile(runtimeprotocol.RuntimeSessionRef{}, desktopapp.ExternalReconcilePlan{}, ""); result.Failure == nil {
+		t.Fatalf("apply external=%+v", result)
 	}
 }

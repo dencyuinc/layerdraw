@@ -303,6 +303,42 @@ func (h *Host) StageAsset(ctx context.Context, input runtimeprotocol.StageAssetI
 	return runtimeprotocol.StageAssetResult{Asset: runtimeprotocol.RuntimeBlobRef{Blob: persistent, Scope: session.Open.Session.Scope, SessionGeneration: session.Open.Session.SessionGeneration}}, nil
 }
 
+// AuthorizeHostOperation re-evaluates one current host-owned publication
+// immediately before its side effect. The adapter never receives the grant or
+// decision and cannot classify its own Access impact.
+func (h *Host) AuthorizeHostOperation(ctx context.Context, sessionRef runtimeprotocol.RuntimeSessionRef, revision runtimeprotocol.CommittedRevisionRef, kind accessprotocol.HostOperationKind, action string, resourceRefs []string) error {
+	session, err := h.SessionFor(sessionRef)
+	if err != nil || session.Open.CommittedRevision != revision {
+		return port.ErrConflict
+	}
+	ctx = h.accessContext(ctx, session)
+	releasePublication, err := h.authority.AcquireAuthoringPublication(ctx, session.Open.Session.Scope)
+	if err != nil || releasePublication == nil {
+		return accesscore.ErrGrantStale
+	}
+	defer releasePublication()
+	grant, _, err := h.authority.ResolveGrant(ctx, session.Open.Session.Scope)
+	if err != nil {
+		return err
+	}
+	impact, err := accesscore.HostOperationImpact(kind, action, accessprotocol.HostResourceScope{
+		DocumentID: string(sessionRef.Scope.DocumentID), LocalScopeID: sessionRef.Scope.LocalScopeID, OrganizationScopeID: sessionRef.Scope.OrganizationScopeID,
+	}, resourceRefs)
+	if err != nil {
+		return err
+	}
+	decision, rejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: sessionRef.Scope, CurrentRevision: revision, Evaluation: accessprotocol.EvaluateAuthoringInput{
+		GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{impact}, RequestIntent: "publish",
+	}})
+	if rejection != nil {
+		return rejection
+	}
+	if decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow {
+		return port.ErrConflict
+	}
+	return nil
+}
+
 func (h *Host) RecoverOperations(ctx context.Context, documentID runtimeprotocol.DocumentID) (runtimeprotocol.RecoverOperationsResult, error) {
 	// Runtime protocol v1 supplies only a document ID, so it cannot bind this
 	// read or mutation to an issued owner/delegated session. Both recovery and

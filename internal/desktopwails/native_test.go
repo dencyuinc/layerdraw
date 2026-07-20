@@ -105,6 +105,33 @@ func (providerStub) Reconcile(context.Context, desktopapp.ExternalReconcileReque
 	return desktopapp.ExternalReconcileResult{ProviderVersion: "v2", Converged: true}, nil
 }
 
+type storageProviderStub struct{ providerStub }
+
+func (storageProviderStub) Inspect(_ context.Context, id string) (desktopapp.ExternalConnection, error) {
+	return desktopapp.ExternalConnection{ConnectionID: id, ProviderID: "provider", Status: desktopapp.ExternalConnectionConnected}, nil
+}
+func (storageProviderStub) Refresh(_ context.Context, id string) (desktopapp.ExternalConnection, error) {
+	return desktopapp.ExternalConnection{ConnectionID: id, ProviderID: "provider", Status: desktopapp.ExternalConnectionConnected}, nil
+}
+func (storageProviderStub) Disconnect(_ context.Context, id string) (desktopapp.ExternalConnection, error) {
+	return desktopapp.ExternalConnection{ConnectionID: id, ProviderID: "provider", Status: desktopapp.ExternalConnectionDisconnected}, nil
+}
+func (storageProviderStub) SelectRemote(_ context.Context, request desktopapp.ExternalRemoteSelectionRequest) (desktopapp.ExternalBackendBinding, error) {
+	return desktopapp.ExternalBackendBinding{BindingID: "binding", ConnectionID: request.ConnectionID, DocumentID: request.DocumentID, RemoteItemID: "remote", ProviderVersion: "v1"}, nil
+}
+func (storageProviderStub) AcquireLease(context.Context, desktopapp.ExternalBackendBinding) (desktopapp.ExternalLease, error) {
+	return desktopapp.ExternalLease{Token: "lease", ExpiresAt: "2026-07-20T01:00:00Z"}, nil
+}
+func (storageProviderStub) Write(context.Context, desktopapp.ExternalWriteRequest) (desktopapp.ExternalWriteResult, error) {
+	return desktopapp.ExternalWriteResult{State: desktopapp.ExternalWritePublished, ProviderVersion: "v2"}, nil
+}
+func (storageProviderStub) PlanReconcile(_ context.Context, request desktopapp.ExternalSyncRequest, restricted bool) (desktopapp.ExternalReconcilePlan, error) {
+	return desktopapp.ExternalReconcilePlan{PlanID: "plan", Binding: desktopapp.ExternalBackendBinding{BindingID: "binding", ConnectionID: request.ConnectionID, DocumentID: request.DocumentID, RemoteItemID: "remote", ProviderVersion: "v1"}, LocalRevision: request.Revision, ProviderVersion: "v1", Restricted: restricted}, nil
+}
+func (storageProviderStub) ApplyReconcile(context.Context, desktopapp.ExternalReconcilePlan, string) (desktopapp.ExternalReconcileResult, error) {
+	return desktopapp.ExternalReconcileResult{ProviderVersion: "v2", Converged: true}, nil
+}
+
 func TestExternalAdapterRoutesOnlyEstablishedConnections(t *testing.T) {
 	t.Parallel()
 	adapter := NewExternalAdapter(map[string]ExternalProvider{"provider": providerStub{}})
@@ -126,6 +153,48 @@ func TestExternalAdapterRoutesOnlyEstablishedConnections(t *testing.T) {
 	}
 	if failed := adapter.Connect(context.Background(), desktopapp.ExternalConnectionRequest{ProviderID: "missing"}); failed.Failure == nil || failed.Failure.Retryable {
 		t.Fatalf("missing provider: %+v", failed)
+	}
+}
+
+func TestExternalAdapterForwardsFullStorageContractOnlyToOwningProvider(t *testing.T) {
+	adapter := NewExternalAdapter(map[string]ExternalProvider{"provider": storageProviderStub{}})
+	connected := adapter.Connect(context.Background(), desktopapp.ExternalConnectionRequest{ProviderID: "provider"})
+	if connected.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatal(connected.Failure)
+	}
+	connectionID := connected.Value.ConnectionID
+	if result := adapter.Inspect(context.Background(), connectionID); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("inspect=%+v", result)
+	}
+	if result := adapter.Refresh(context.Background(), connectionID); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("refresh=%+v", result)
+	}
+	request := desktopapp.ExternalRemoteSelectionRequest{ConnectionID: connectionID, DocumentID: "document", SelectionToken: "opaque"}
+	binding := adapter.SelectRemote(context.Background(), request)
+	if binding.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("select=%+v", binding)
+	}
+	if result := adapter.AcquireLease(context.Background(), binding.Value); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("lease=%+v", result)
+	}
+	if result := adapter.Write(context.Background(), desktopapp.ExternalWriteRequest{Binding: binding.Value}); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("write=%+v", result)
+	}
+	syncRequest := desktopapp.ExternalSyncRequest{ConnectionID: connectionID, DocumentID: "document", Revision: runtimeprotocol.CommittedRevisionRef{DocumentID: "document", RevisionID: "revision"}}
+	plan := adapter.PlanReconcile(context.Background(), syncRequest, true)
+	if plan.Outcome != protocolcommon.OutcomeSuccess || !plan.Value.Restricted {
+		t.Fatalf("plan=%+v", plan)
+	}
+	if result := adapter.ApplyReconcile(context.Background(), plan.Value, "accept_provider"); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("apply=%+v", result)
+	}
+	if result := adapter.Disconnect(context.Background(), connectionID); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("disconnect=%+v", result)
+	}
+	legacy := NewExternalAdapter(map[string]ExternalProvider{"provider": providerStub{}})
+	legacy.connections["connection"] = "provider"
+	if result := legacy.Inspect(context.Background(), "connection"); result.Failure == nil || result.Failure.Retryable {
+		t.Fatalf("legacy provider exposed full storage: %+v", result)
 	}
 }
 
@@ -352,6 +421,13 @@ func TestCompositionRejectsMissingRuntimeAndMismatchedExternalLifecycle(t *testi
 func TestClosedSharedPortsRemainTyped(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	base, err := NewSharedConfig(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := base.ExternalPublication.RevalidateExternalPublication(ctx, desktopapp.ExternalPublicationIntent{}); result.Outcome != protocolcommon.OutcomeFailed || result.Failure.Code != desktopcontract.FailurePermissionDenied {
+		t.Fatalf("external publication gate=%+v", result)
+	}
 	if result := (disabledMCP{}).Start(ctx); result.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("disabled MCP lifecycle failed: %+v", result)
 	}
