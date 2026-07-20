@@ -19,6 +19,7 @@ type PackagedProbeResult struct {
 	Platform           desktopcontract.DesktopPlatform      `json:"platform"`
 	WailsRuntimeBridge bool                                 `json:"wails_runtime_bridge"`
 	SettingsRoundTrip  bool                                 `json:"settings_round_trip"`
+	ProjectRoundTrip   bool                                 `json:"project_round_trip"`
 	AssociationHandoff desktopcontract.FileAssociationKind  `json:"association_handoff"`
 	DOMRoundTrip       bool                                 `json:"dom_round_trip,omitempty"`
 	Accessibility      *desktopcontract.AccessibilityReport `json:"accessibility,omitempty"`
@@ -32,11 +33,31 @@ func RunPackagedProbe(output io.Writer) error {
 	if output == nil || !CurrentPlatform().Validate() {
 		return errors.New("packaged Desktop probe unavailable")
 	}
-	root, err := os.MkdirTemp("", "layerdraw-desktop-probe-*")
-	if err != nil {
+	root := os.Getenv("LAYERDRAW_DESKTOP_PROBE_STATE_ROOT")
+	cleanup := false
+	if root == "" {
+		var err error
+		root, err = os.MkdirTemp("", "layerdraw-desktop-probe-*")
+		if err != nil {
+			return err
+		}
+		cleanup = true
+	} else if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return errors.New("packaged Desktop probe state root is invalid")
+	}
+	if cleanup {
+		defer os.RemoveAll(root)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return err
 	}
-	defer os.RemoveAll(root)
+	action := os.Getenv("LAYERDRAW_DESKTOP_PROBE_ACTION")
+	if action == "" {
+		action = "initialize"
+	}
+	if action != "initialize" && action != "verify" {
+		return errors.New("packaged Desktop probe action is invalid")
+	}
 	store, err := desktopadapter.NewAtomicSettingsStore(filepath.Join(root, "settings-v1.json"))
 	if err != nil {
 		return err
@@ -45,8 +66,10 @@ func RunPackagedProbe(output io.Writer) error {
 		Settings: desktopcontract.DesktopSettings{SchemaVersion: 1, Theme: desktopcontract.ThemeSystem, ZoomPercent: 100},
 		Window:   desktopcontract.WindowState{SchemaVersion: 1, Bounds: desktopcontract.Rectangle{Width: 1280, Height: 800}},
 	}
-	if err := store.Save(context.Background(), state); err != nil {
-		return err
+	if action == "initialize" {
+		if err := store.Save(context.Background(), state); err != nil {
+			return err
+		}
 	}
 	loaded, err := store.Load(context.Background())
 	if err != nil || loaded != state {
@@ -55,9 +78,20 @@ func RunPackagedProbe(output io.Writer) error {
 	if _, err := desktopadapter.NewSystemExternalOpener(CurrentPlatform()); err != nil {
 		return err
 	}
-	associated := filepath.Join(root, "probe.ldl")
-	if err := os.WriteFile(associated, []byte("project probe {}\n"), 0o600); err != nil {
-		return err
+	projectRoot := filepath.Join(root, "projects", "upgrade-probe")
+	associated := filepath.Join(projectRoot, "document.ldl")
+	projectSource := []byte("project upgrade_probe \"Upgrade Probe\" {}\n")
+	if action == "initialize" {
+		if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(associated, projectSource, 0o600); err != nil {
+			return err
+		}
+	}
+	actualProject, err := os.ReadFile(associated)
+	if err != nil || string(actualProject) != string(projectSource) {
+		return errors.New("packaged Desktop project probe failed")
 	}
 	broker := desktopadapter.NewAssociationBroker()
 	if err := broker.AcceptOSPath(associated); err != nil {
@@ -71,6 +105,6 @@ func RunPackagedProbe(output io.Writer) error {
 	var _ desktopadapter.WailsRuntimeBridge = bridge
 	return json.NewEncoder(output).Encode(PackagedProbeResult{
 		SchemaVersion: 1, Platform: CurrentPlatform(), WailsRuntimeBridge: true,
-		SettingsRoundTrip: true, AssociationHandoff: handoff.Kind,
+		SettingsRoundTrip: true, ProjectRoundTrip: true, AssociationHandoff: handoff.Kind,
 	})
 }

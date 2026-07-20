@@ -70,7 +70,7 @@ if [[ "$platform" == "darwin" ]]; then
   binary="$app/Contents/MacOS/LayerDraw"
 fi
 if [[ "$platform" == "windows" ]]; then binary="$binary.exe"; fi
-go run "$repository_root/tools/licensecheck" bundle -binary "$binary" -output "$temporary/legal" -version "$version"
+go run "$repository_root/tools/licensecheck" bundle -binary "$binary" -output "$temporary/legal" -version "$version" -include-production-npm
 host="$temporary/runtime/layerdraw-host"
 if [[ "$platform" == "windows" ]]; then host="$host.exe"; fi
 CGO_ENABLED=0 go build -trimpath -buildvcs=false \

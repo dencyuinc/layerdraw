@@ -73,11 +73,41 @@ func TestPackagedProbeExercisesCurrentOSAdapters(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Platform != CurrentPlatform() || !result.WailsRuntimeBridge || !result.SettingsRoundTrip || result.AssociationHandoff != desktopcontract.FileAssociationLDL {
+	if result.Platform != CurrentPlatform() || !result.WailsRuntimeBridge || !result.SettingsRoundTrip || !result.ProjectRoundTrip || result.AssociationHandoff != desktopcontract.FileAssociationLDL {
 		t.Fatalf("probe=%+v", result)
 	}
 	if err := RunPackagedProbe(nil); err == nil {
 		t.Fatal("nil packaged probe output accepted")
+	}
+}
+
+func TestPackagedProbePersistsRealSettingsAndProjectAcrossUpgrade(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LAYERDRAW_DESKTOP_PROBE_STATE_ROOT", root)
+	t.Setenv("LAYERDRAW_DESKTOP_PROBE_ACTION", "initialize")
+	if err := RunPackagedProbe(&bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	settingsBefore, err := os.ReadFile(filepath.Join(root, "settings-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(root, "projects", "upgrade-probe", "document.ldl")
+	projectBefore, err := os.ReadFile(project)
+	if err != nil || !strings.Contains(string(projectBefore), `project upgrade_probe "Upgrade Probe"`) {
+		t.Fatalf("project=%q err=%v", projectBefore, err)
+	}
+	t.Setenv("LAYERDRAW_DESKTOP_PROBE_ACTION", "verify")
+	if err := RunPackagedProbe(&bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	settingsAfter, err := os.ReadFile(filepath.Join(root, "settings-v1.json"))
+	if err != nil || !bytes.Equal(settingsBefore, settingsAfter) {
+		t.Fatalf("settings changed across upgrade: err=%v", err)
+	}
+	projectAfter, err := os.ReadFile(project)
+	if err != nil || !bytes.Equal(projectBefore, projectAfter) {
+		t.Fatalf("project changed across upgrade: err=%v", err)
 	}
 }
 

@@ -147,6 +147,46 @@ func TestRenderCycloneDX(t *testing.T) {
 	}
 }
 
+func TestBundleProductionNPMDependenciesClosesInstalledGraph(t *testing.T) {
+	root := t.TempDir()
+	report := make(map[string][]npmPackage)
+	for _, fixture := range []struct{ name, version string }{{"react", "19.2.7"}, {"react-dom", "19.2.7"}, {"scheduler", "0.27.0"}} {
+		path := filepath.Join(root, fixture.name)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "package.json"), []byte(`{"name":"`+fixture.name+`","version":"`+fixture.version+`"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "LICENSE"), []byte("MIT license for "+fixture.name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		report["MIT"] = append(report["MIT"], npmPackage{Name: fixture.name, Versions: []string{fixture.version}, Paths: []string{path}, License: "MIT"})
+	}
+	modules, err := bundleProductionNPMReport(policy{AllowedLicenseExpressions: []string{"MIT"}}, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modules) != 3 {
+		t.Fatalf("production npm modules=%d, want 3", len(modules))
+	}
+	data, err := renderCycloneDX("LayerDraw", "1.2.3", modules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notices := string(renderThirdPartyNotices("LayerDraw", modules))
+	for _, expected := range []string{"pkg:npm/react@19.2.7", "pkg:npm/react-dom@19.2.7", "pkg:npm/scheduler@0.27.0"} {
+		if !strings.Contains(string(data), expected) {
+			t.Fatalf("SBOM is missing %s", expected)
+		}
+	}
+	for _, expected := range []string{"react 19.2.7", "react-dom 19.2.7", "scheduler 0.27.0"} {
+		if !strings.Contains(notices, expected) {
+			t.Fatalf("notices are missing %s", expected)
+		}
+	}
+}
+
 func TestWriteDependencyInventory(t *testing.T) {
 	root := t.TempDir()
 	for path, content := range map[string]string{

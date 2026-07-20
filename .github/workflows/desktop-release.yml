@@ -36,6 +36,22 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Require annotated release tag and exact peeled commit
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
+          peeled="$(git rev-parse "$GITHUB_REF_NAME^{commit}")"
+          test "$peeled" = "$GITHUB_SHA"
+          printf 'DESKTOP_SOURCE_REVISION=%s\n' "$peeled" >> "$GITHUB_ENV"
+
+      - name: Record manually dispatched source revision
+        if: github.ref_type != 'tag'
+        shell: bash
+        run: printf 'DESKTOP_SOURCE_REVISION=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Set up pinned Go toolchain
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -160,7 +176,7 @@ jobs:
           UPDATE_PUBLIC_KEY: ${{ secrets.LAYERDRAW_DESKTOP_UPDATE_PUBLIC_KEY }}
         run: |
           ./tools/build-desktop-update-metadata.sh release "${{ matrix.platform }}" "${{ matrix.format }}" \
-            "$DESKTOP_VERSION" "$GITHUB_SHA" "$RUNNER_TEMP/desktop-release"
+            "$DESKTOP_VERSION" "$DESKTOP_SOURCE_REVISION" "$RUNNER_TEMP/desktop-release"
 
       - name: Exercise fresh install, launch, upgrade, rollback, and uninstall
         shell: bash
@@ -176,7 +192,7 @@ jobs:
         shell: pwsh
         env:
           LAYERDRAW_EXPECT_SIGNED: "1"
-        run: ./tools/smoke-desktop-installer.ps1 -Installer "$env:RUNNER_TEMP\desktop-release\LayerDraw-$env:DESKTOP_VERSION.exe"
+        run: ./tools/smoke-desktop-installer.ps1 -PreviousInstaller "$env:RUNNER_TEMP\desktop-release\LayerDraw-$env:DESKTOP_VERSION.exe"
 
       - name: Upload verified release payload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

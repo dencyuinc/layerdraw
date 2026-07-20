@@ -28,7 +28,7 @@ jobs:
             platform: linux
             format: deb
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out repository without credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -58,24 +58,33 @@ jobs:
         shell: pwsh
         run: choco install nsis --version 3.11 --yes --no-progress
 
-      - name: Build unsigned test installer
+      - name: Build N and N+1 unsigned test installers
         shell: bash
-        run: ./tools/build-desktop-installer.sh "${{ matrix.platform }}" 0.0.1 "$RUNNER_TEMP/desktop-release"
+        run: |
+          ./tools/build-desktop-installer.sh "${{ matrix.platform }}" 0.0.1 "$RUNNER_TEMP/desktop-previous"
+          ./tools/build-desktop-installer.sh "${{ matrix.platform }}" 0.0.2 "$RUNNER_TEMP/desktop-current"
 
       - name: Build and verify isolated test update metadata
         shell: bash
+        env:
+          CURRENT_VERSION: 0.0.1
         run: |
           ./tools/build-desktop-update-metadata.sh test "${{ matrix.platform }}" "${{ matrix.format }}" \
-            0.0.1 "$GITHUB_SHA" "$RUNNER_TEMP/desktop-release"
+            0.0.2 "$GITHUB_SHA" "$RUNNER_TEMP/desktop-current"
 
       - name: Exercise fresh install, launch, upgrade, rollback, and uninstall
         if: matrix.platform != 'windows'
         shell: bash
         run: |
           suffix="${{ matrix.format }}"
-          ./tools/smoke-desktop-installer.sh "${{ matrix.platform }}" "$RUNNER_TEMP/desktop-release/LayerDraw-0.0.1.$suffix"
+          ./tools/smoke-desktop-installer.sh "${{ matrix.platform }}" \
+            "$RUNNER_TEMP/desktop-previous/LayerDraw-0.0.1.$suffix" \
+            "$RUNNER_TEMP/desktop-current/LayerDraw-0.0.2.$suffix"
 
       - name: Exercise Windows install lifecycle
         if: matrix.platform == 'windows'
         shell: pwsh
-        run: ./tools/smoke-desktop-installer.ps1 -Installer "$env:RUNNER_TEMP\desktop-release\LayerDraw-0.0.1.exe"
+        run: |
+          ./tools/smoke-desktop-installer.ps1 `
+            -PreviousInstaller "$env:RUNNER_TEMP\desktop-previous\LayerDraw-0.0.1.exe" `
+            -CurrentInstaller "$env:RUNNER_TEMP\desktop-current\LayerDraw-0.0.2.exe"

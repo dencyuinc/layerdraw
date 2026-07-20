@@ -52,4 +52,4 @@ go run ./tools/desktoprelease build \
 
 go run ./tools/desktoprelease verify \
   -manifest "$manifest" -root "$artifacts" -platform "$platform" \
-  -current-version 0.0.0 "${verify_args[@]}"
+  -current-version "${CURRENT_VERSION:-0.0.0}" "${verify_args[@]}"

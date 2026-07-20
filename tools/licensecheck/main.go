@@ -165,6 +165,7 @@ func run(args []string) error {
 		binary := flags.String("binary", "", "compiled Go binary")
 		output := flags.String("output", "dist", "bundle output directory")
 		version := flags.String("version", "0.0.0-dev", "artifact version")
+		includeProductionNPM := flags.Bool("include-production-npm", false, "include the installed production npm dependency closure")
 		bundledName := flags.String("bundled-name", "", "co-distributed native component name")
 		bundledVersion := flags.String("bundled-version", "", "co-distributed native component version")
 		bundledFile := flags.String("bundled-file", "", "co-distributed native component file")
@@ -221,10 +222,101 @@ func run(args []string) error {
 			}
 			extras = append(extras, extra)
 		}
+		if *includeProductionNPM {
+			npm, err := bundleProductionNPMDependencies(*root, p)
+			if err != nil {
+				return err
+			}
+			extras = append(extras, npm...)
+		}
 		return bundleArtifact(*root, *policyPath, *binary, *output, *version, extras)
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+func bundleProductionNPMDependencies(root string, p policy) ([]bundledModule, error) {
+	report, err := listNPMLicenses(root, true)
+	if err != nil {
+		return nil, err
+	}
+	return bundleProductionNPMReport(p, report)
+}
+
+func bundleProductionNPMReport(p policy, report map[string][]npmPackage) ([]bundledModule, error) {
+	allowed := stringSet(p.AllowedLicenseExpressions)
+	denied := stringSet(p.DeniedLicenseExpressions)
+	overrides := make(map[string]npmOverride, len(p.NPMOverrides))
+	for _, override := range p.NPMOverrides {
+		overrides[npmKey(override.Package, override.Version)] = override
+	}
+	var modules []bundledModule
+	for _, packages := range report {
+		for _, dependency := range packages {
+			pathsByVersion, pathErr := npmPathsByVersion(dependency.Paths)
+			if pathErr != nil {
+				return nil, pathErr
+			}
+			for _, version := range dependency.Versions {
+				key := npmKey(dependency.Name, version)
+				packagePath := pathsByVersion[version]
+				if packagePath == "" {
+					return nil, fmt.Errorf("production npm package %s cannot locate installed package", key)
+				}
+				license := dependency.License
+				licensePath := ""
+				if override, ok := overrides[key]; ok {
+					if override.ReportedLicense != license {
+						return nil, fmt.Errorf("npm override %s expected reported license %q, got %q", key, override.ReportedLicense, license)
+					}
+					license = override.License
+					if err := verifyLicenseFile(packagePath, override.LicenseFile, override.LicenseSHA256); err != nil {
+						return nil, fmt.Errorf("npm package %s: %w", key, err)
+					}
+					licensePath = filepath.Join(packagePath, override.LicenseFile)
+				} else {
+					var findErr error
+					licensePath, findErr = findNPMLicenseFile(packagePath)
+					if findErr != nil {
+						return nil, fmt.Errorf("npm package %s: %w", key, findErr)
+					}
+				}
+				if err := requireAllowedLicense(license, allowed, denied); err != nil {
+					return nil, fmt.Errorf("npm package %s: %w", key, err)
+				}
+				licenseText, readErr := os.ReadFile(licensePath)
+				if readErr != nil {
+					return nil, fmt.Errorf("npm package %s license: %w", key, readErr)
+				}
+				packageDigest, digestErr := fileSHA256(filepath.Join(packagePath, "package.json"))
+				if digestErr != nil {
+					return nil, fmt.Errorf("npm package %s: %w", key, digestErr)
+				}
+				modules = append(modules, bundledModule{
+					Review:      reviewedGoModule{Module: dependency.Name, Version: version, License: license},
+					LicenseText: licenseText,
+					PURL:        fmt.Sprintf("pkg:npm/%s@%s", strings.ReplaceAll(dependency.Name, "@", "%40"), version),
+					FileSHA256:  packageDigest,
+				})
+			}
+		}
+	}
+	sort.Slice(modules, func(i, j int) bool { return modules[i].PURL < modules[j].PURL })
+	return modules, nil
+}
+
+func findNPMLicenseFile(packagePath string) (string, error) {
+	entries, err := os.ReadDir(packagePath)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		name := strings.ToLower(entry.Name())
+		if !entry.IsDir() && (name == "license" || strings.HasPrefix(name, "license.") || name == "copying" || strings.HasPrefix(name, "copying.")) {
+			return filepath.Join(packagePath, entry.Name()), nil
+		}
+	}
+	return "", errors.New("installed production package has no license text")
 }
 
 func checkRepository(root, policyPath, reportPath string) error {

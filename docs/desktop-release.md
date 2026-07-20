@@ -49,8 +49,11 @@ source revision, build workflow, timestamp, channel, target version, and minimum
 rejects unknown fields, an untrusted key, altered metadata, altered payloads, platform/channel
 mismatch, downgrade/reinstall, and clients older than the declared compatibility floor.
 
-The workflow exercises a fresh install and launch, a same-artifact upgrade while preserving a
-user-data marker, rejection of a truncated installer, and uninstall on every supported runner.
+Installer CI builds versions N and N+1. It installs N through the platform installer, creates and
+reopens real LayerDraw settings and a valid LDL project, rejects a truncated N+1 while proving N
+and its data remain usable, upgrades through the platform installer, reopens the same settings and
+project with N+1, and uninstalls on every supported runner. Tagged release jobs repeat signed
+artifact launch, invalid-payload retention, data-preservation, and uninstall checks.
 Failed validation never replaces the installed application. Rollback of an already-installed
 version therefore means retaining the prior installation and its user data; automatic
 downgrades are intentionally forbidden.
