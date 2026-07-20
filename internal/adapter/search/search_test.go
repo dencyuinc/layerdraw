@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -420,6 +421,20 @@ func TestLocalProjectionModelIsDeterministicAndCancellable(t *testing.T) {
 	cancel()
 	if _, err := model.Embed(ctx, "cancel"); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+
+func TestLocalProjectionModelKeepsCancellationInputsRepresentable(t *testing.T) {
+	model, err := NewLocalProjectionModel(1, []byte("0123456789012345"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// token1 cancels all four signed hashes for this seed at one dimension.
+	for _, text := range []string{"token1", "graph", "layer draw", "service relation"} {
+		values, embedErr := model.Embed(context.Background(), text)
+		if embedErr != nil || len(values) != 1 || math.Abs(float64(values[0])) != 1 {
+			t.Fatalf("text=%q values=%v err=%v", text, values, embedErr)
+		}
 	}
 }
 

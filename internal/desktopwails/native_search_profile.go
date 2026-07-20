@@ -11,13 +11,20 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
+const packagedEmbeddingModelIdentity = "layerdraw.desktop.local_projection.v2"
+
 func packagedEmbeddingProfile() port.EmbeddingProfile {
-	digest := sha256.Sum256([]byte("layerdraw.desktop.local_projection.v1"))
+	digest := sha256.Sum256([]byte(packagedEmbeddingModelIdentity))
 	return port.EmbeddingProfile{
-		ProfileID: "layerdraw.desktop.local", ModelID: "local_projection", ModelVersion: "1",
+		ProfileID: "layerdraw.desktop.local", ModelID: "local_projection", ModelVersion: "2",
 		ModelDigest: "sha256:" + hex.EncodeToString(digest[:]), Dimensions: 16,
 		Normalization: "unit", MaxInputBytes: 4096,
 	}
+}
+
+func packagedEmbeddingSeed() []byte {
+	digest := sha256.Sum256([]byte(packagedEmbeddingModelIdentity))
+	return append([]byte(nil), digest[:]...)
 }
 
 func packagedSearchProfile() port.SearchProfile {

@@ -45,7 +45,7 @@ func openPackagedNativeSearch(root string, local *localdocument.Host, engine *en
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	keys := make([]byte, 80)
+	keys := make([]byte, 64)
 	if _, err := rand.Read(keys); err != nil {
 		return nil, nil, nil, err
 	}
@@ -54,7 +54,7 @@ func openPackagedNativeSearch(root string, local *localdocument.Host, engine *en
 		FTSExtensionPath:    filepath.Join(nativeRoot, "libfts.lbug_extension"),
 		VectorExtensionPath: filepath.Join(nativeRoot, "libvector.lbug_extension"),
 		AlgoExtensionPath:   filepath.Join(nativeRoot, "libalgo.lbug_extension"),
-		PlanKey:             keys[:32], SearchDocumentKey: keys[32:64], LocalModelSeed: keys[64:],
+		PlanKey:             keys[:32], SearchDocumentKey: keys[32:64], LocalModelSeed: packagedEmbeddingSeed(),
 		EmbeddingProfile: packagedEmbeddingProfile(),
 		MaxRows:          1000, MaxBytes: 8 << 20, LocalHost: local, Engine: engine,
 	})

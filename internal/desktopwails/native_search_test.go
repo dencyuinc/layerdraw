@@ -4,6 +4,7 @@
 package desktopwails
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -55,6 +56,19 @@ func TestValidateLadybugRootRejectsIncompleteBundles(t *testing.T) {
 	}
 	if _, err := nativeFileDigest(filepath.Join(root, "missing")); err == nil {
 		t.Fatal("missing extension produced a digest")
+	}
+}
+
+func TestPackagedEmbeddingSeedIsStableAndMatchesModelIdentity(t *testing.T) {
+	first := packagedEmbeddingSeed()
+	second := packagedEmbeddingSeed()
+	profile := packagedEmbeddingProfile()
+	if len(first) != sha256.Size || !bytes.Equal(first, second) || profile.ModelVersion != "2" || profile.ModelDigest != "sha256:"+hex.EncodeToString(first) {
+		t.Fatal("packaged embedding seed and model identity diverged")
+	}
+	first[0] ^= 0xff
+	if bytes.Equal(first, packagedEmbeddingSeed()) {
+		t.Fatal("packaged embedding seed aliases mutable caller memory")
 	}
 }
 

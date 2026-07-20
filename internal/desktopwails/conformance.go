@@ -335,7 +335,11 @@ func (instance *conformanceInstance) openProject(ctx context.Context, source str
 	}
 	opened := instance.app.OpenProject(ctx, token)
 	if opened.Outcome != protocolcommon.OutcomeSuccess || opened.Value.Open.Session.RuntimeSessionID == "" {
-		return desktopapp.ProjectOpenResult{}, errors.New("project did not cross the Wails storage boundary")
+		stage := "project_open"
+		if opened.Failure != nil && opened.Failure.Validate() {
+			stage += "_" + string(opened.Failure.Component)
+		}
+		return desktopapp.ProjectOpenResult{}, &conformanceStageError{stage: stage, err: errors.New("project did not cross the Wails storage boundary")}
 	}
 	return opened.Value, nil
 }
