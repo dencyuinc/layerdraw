@@ -652,8 +652,8 @@ func TestCompositionRejectsMissingRuntimeAndMismatchedExternalLifecycle(t *testi
 	if _, err := Compose(base, nil, nil); err == nil {
 		t.Fatal("nil runtime accepted")
 	}
-	if _, err := Compose(base, &nativeStub{}, map[string]ExternalProvider{"provider": providerStub{}}); err == nil {
-		t.Fatal("external lifecycle accepted without capability lifecycle adapter")
+	if _, err := Compose(base, &nativeStub{}, map[string]ExternalProvider{"provider": providerStub{}}); err != nil {
+		t.Fatalf("packaged external provider replacement was rejected: %v", err)
 	}
 	if err := Run(base, nil, nil); err == nil {
 		t.Fatal("nil assets accepted")
@@ -679,6 +679,9 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 	}
 	for _, status := range handshake.CapabilityStatuses {
 		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring ||
+			status.CapabilityID == desktopcontract.CapabilityRegistry ||
+			status.CapabilityID == desktopcontract.CapabilityReview ||
+			status.CapabilityID == desktopcontract.CapabilityExternalStorage ||
 			status.CapabilityID == desktopcontract.CapabilityExport ||
 			status.CapabilityID == desktopcontract.CapabilityMCPTools ||
 			status.CapabilityID == desktopcontract.CapabilityMCPResources ||

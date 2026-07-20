@@ -48,6 +48,19 @@ var packagedCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityMCPTools,
 	desktopcontract.CapabilityMCPResources,
 	desktopcontract.CapabilityAgentScope,
+	desktopcontract.CapabilityExternalStorage,
+	desktopcontract.CapabilityRegistry,
+	desktopcontract.CapabilityReview,
+}
+
+var packagedRequiredCapabilities = []protocolcommon.CapabilityID{
+	desktopcontract.CapabilityAuthoring,
+	desktopcontract.CapabilityRegistry,
+	desktopcontract.CapabilityReview,
+	desktopcontract.CapabilityExport,
+	desktopcontract.CapabilityMCPTools,
+	desktopcontract.CapabilityMCPResources,
+	desktopcontract.CapabilityAgentScope,
 }
 
 // NewSharedConfig wires the owners that are actually packaged in Desktop.
@@ -67,6 +80,10 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		return desktopapp.Config{}, err
 	}
 	credentials := newPlatformCredentialPort()
+	external, err := desktopapp.NewReferenceExternalStorage(desktopapp.ReferenceExternalStorageConfig{Root: root, Credentials: credentials})
+	if err != nil {
+		return desktopapp.Config{}, err
+	}
 	owner := &sharedOwner{root: root, objects: objects, transactions: transactions, sources: sources, credentials: credentials}
 	clients, err := packagedClients(owner)
 	if err != nil {
@@ -89,13 +106,15 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 	}
 	adapters[desktopcontract.ComponentRegistryClient] = enabledComponent{}
 	adapters[desktopcontract.ComponentReview] = enabledComponent{}
+	adapters[desktopcontract.ComponentExternalStorage] = external
 	adapters[desktopcontract.ComponentBindingShell] = owner
 	return desktopapp.Config{
 		Root: root, ReleaseVersion: desktopRelease, EndpointInstanceID: desktopEndpoint,
 		ReleaseManifestDigest: desktopDigest, Adapters: adapters, Bindings: clients,
 		Capabilities:                  nativeCapabilities{},
 		ExternalPublication:           owner,
-		EffectiveRequiredCapabilities: append([]protocolcommon.CapabilityID(nil), packagedCapabilities...),
+		ExternalLifecycle:             external,
+		EffectiveRequiredCapabilities: append([]protocolcommon.CapabilityID(nil), packagedRequiredCapabilities...),
 		DisabledComponents:            append([]desktopcontract.ComponentID(nil), disabled...),
 		HostPorts: desktopcontract.HostPorts{
 			Credentials: credentials, LocalActor: platformActor{},
@@ -103,6 +122,7 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		},
 		MCPCapabilities:       owner,
 		NativeSearchLifecycle: packagedNativeSearchLifecycle(owner),
+		MCPApplicationOwner:   reviewMCPOwner{shared: owner},
 		RegistryStagedObjects: registryObjectReader{store: objects},
 		ReviewOwner:           owner,
 	}, nil
@@ -238,6 +258,9 @@ func (o *sharedOwner) Snapshot(context.Context) (mcphost.CapabilitySnapshot, err
 				operations[operation] = mcphost.OperationCapability{Enabled: true, InputSchema: append(json.RawMessage(nil), schema...), OutputSchema: append(json.RawMessage(nil), schema...)}
 			}
 		}
+	}
+	for _, operation := range []string{"review.list_proposals", "review.create_proposal", "review.comment", "review.approve_apply", "review.withdraw"} {
+		operations[operation] = mcphost.OperationCapability{Enabled: true, InputSchema: append(json.RawMessage(nil), schema...), OutputSchema: append(json.RawMessage(nil), schema...)}
 	}
 	digest := protocolcommon.Digest(desktopDigest)
 	return mcphost.CapabilitySnapshot{

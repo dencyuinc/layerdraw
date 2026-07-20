@@ -34,5 +34,16 @@ func (h *Host) AuthorizeApprover(ctx context.Context, input reviewapp.ApprovalRe
 	return (accesscore.Evaluator{}).Evaluate(ctx, accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &input.Impact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "apply"})
 }
 
+func (h *Host) ReviewBinding(documentID runtimeprotocol.DocumentID) (runtimeprotocol.RuntimeSessionRef, accessprotocol.ActorRef, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, session := range h.sessions {
+		if !session.closed && session.Open.Session.Scope.DocumentID == documentID {
+			return session.Open.Session, h.authority.actor, nil
+		}
+	}
+	return runtimeprotocol.RuntimeSessionRef{}, accessprotocol.ActorRef{}, errors.New("Review project session is unavailable")
+}
+
 var _ reviewapp.RuntimePort = (*Host)(nil)
 var _ reviewapp.AccessPort = (*Host)(nil)
