@@ -26,6 +26,7 @@ func registryCommitFixture(opened runtimeprotocol.OpenRuntimeDocumentResult, hos
 		AuthoringImpact:            host.impact,
 		HostOperationImpacts:       []accessprotocol.HostOperationImpact{},
 		ExpectedDecision:           host.decision,
+		ProjectMutation:            port.RegistryProjectMutation{SnapshotHandle: host.working.Handle, SourceClosureDigest: digest('5'), Artifacts: []port.RegistryProjectArtifactRef{{Object: port.RegistryStagedObjectRef{ObjectID: "registry-object-1", Digest: digest('4'), Size: "1", MediaType: "application/vnd.layerdraw.pack"}, RegistrySource: "official"}}, RemoveCanonicalIDs: []string{}},
 	}
 }
 

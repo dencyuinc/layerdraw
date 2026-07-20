@@ -456,7 +456,10 @@ func validRegistryProjectSnapshot(state ProjectState, template bool) bool {
 		return false
 	}
 	if template {
-		return snapshot.Kind == RegistryProjectSnapshotEmptyTemplate && snapshot.Revision == "" && snapshot.DefinitionHash == "" && state.Revision == "" && state.DefinitionHash == ""
+		if _, err := protocolcommon.EncodeDigest(protocolcommon.Digest(state.DefinitionHash)); err != nil {
+			return false
+		}
+		return snapshot.Kind == RegistryProjectSnapshotEmptyTemplate && snapshot.Revision == "" && state.Revision == "" && snapshot.DefinitionHash == state.DefinitionHash
 	}
 	return snapshot.Kind == RegistryProjectSnapshotWorking && snapshot.Revision == state.Revision && snapshot.DefinitionHash == state.DefinitionHash
 }
@@ -859,7 +862,7 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 			return InstallPlan{}, fail(FailureUnavailable, "template_document_allocator", true, nil)
 		}
 		state, err = allocator.NewRegistryDocumentState(ctx, request.Requested)
-		if err != nil || state.DocumentID == "" || state.RuntimeSessionID == "" || !validRegistryProjectSnapshot(state, true) {
+		if err != nil || state.DocumentID == "" || !validRegistryProjectSnapshot(state, true) {
 			return InstallPlan{}, fail(FailureUnavailable, "template_document_allocator", true, err)
 		}
 		request.ProjectID = state.ProjectID
@@ -1481,7 +1484,7 @@ func (r *Registry) refreshRecoveryRuntimeInput(ctx context.Context, tx Transacti
 	}
 	hostCapabilities := append([]string{}, state.HostCapabilities...)
 	sort.Strings(hostCapabilities)
-	if state.RuntimeSessionID == "" || digestJSON(hostCapabilities) != tx.Plan.HostCapabilitiesDigest {
+	if (!tx.Plan.CreatesNewDocument && state.RuntimeSessionID == "") || digestJSON(hostCapabilities) != tx.Plan.HostCapabilitiesDigest {
 		return RuntimeCommitInput{}, errors.New("Runtime session or host capabilities changed during recovery")
 	}
 	for _, binding := range tx.Plan.SourceBindings {

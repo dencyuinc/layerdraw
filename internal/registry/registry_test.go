@@ -203,10 +203,10 @@ func (p *projectPort) NewRegistryDocumentState(_ context.Context, _ ArtifactIden
 	state.ProjectID = "new-project"
 	state.DocumentID = "new-document"
 	state.Revision = ""
-	state.DefinitionHash = ""
+	state.DefinitionHash = testDigest('d')
 	state.DependencySnapshot = ProjectDependencySnapshot{}
 	state.RuntimeSessionID = "runtime-session-template"
-	state.EngineSnapshot = RegistryProjectSnapshot{Kind: RegistryProjectSnapshotEmptyTemplate, Handle: "engine-template-baseline", DocumentID: state.DocumentID, SourceClosureDigest: testDigest('e')}
+	state.EngineSnapshot = RegistryProjectSnapshot{Kind: RegistryProjectSnapshotEmptyTemplate, Handle: "engine-template-baseline", DocumentID: state.DocumentID, DefinitionHash: state.DefinitionHash, SourceClosureDigest: testDigest('e')}
 	return state, p.err
 }
 

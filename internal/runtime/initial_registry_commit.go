@@ -31,6 +31,7 @@ type InitialRegistryCommitInput struct {
 	AuthoringImpact            semantic.AuthoringImpact
 	HostOperationImpacts       []accessprotocol.HostOperationImpact
 	ExpectedDecision           accessprotocol.AuthoringDecision
+	ProjectMutation            port.RegistryProjectMutation
 }
 
 func (c *Coordinator) CommitInitialRegistryTemplate(ctx context.Context, input InitialRegistryCommitInput) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
@@ -73,7 +74,7 @@ func (c *Coordinator) CommitInitialRegistryTemplate(ctx context.Context, input I
 	} else if headErr != nil && !errors.Is(headErr, port.ErrNotFound) {
 		return c.abandonRegistryPending(ctx, shim, portFailure("inspect initial Registry head", headErr))
 	}
-	prepared, err := p.Registry.PrepareInitialRegistryRevision(ctx, port.PrepareInitialRegistryRevisionInput{Scope: scope, BaselineRevision: input.BaselineRevision, RegistryTransactionID: input.RegistryTransactionID, PlanDigest: input.PlanDigest, MutationDigest: input.MutationDigest, ExpectedResolvedLockDigest: input.ExpectedResolvedLockDigest, StagedObjects: append([]port.RegistryStagedObjectRef(nil), input.StagedObjects...)})
+	prepared, err := p.Registry.PrepareInitialRegistryRevision(ctx, port.PrepareInitialRegistryRevisionInput{Scope: scope, BaselineRevision: input.BaselineRevision, RegistryTransactionID: input.RegistryTransactionID, PlanDigest: input.PlanDigest, MutationDigest: input.MutationDigest, ExpectedResolvedLockDigest: input.ExpectedResolvedLockDigest, StagedObjects: append([]port.RegistryStagedObjectRef(nil), input.StagedObjects...), ProjectMutation: input.ProjectMutation})
 	if err != nil || !validPreparedRevision(prepared, input.BaselineRevision) || !reflect.DeepEqual(prepared.AuthoringImpact, input.AuthoringImpact) {
 		return c.abandonRegistryPending(ctx, shim, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "Engine rejected the initial Registry closure"))
 	}
@@ -149,7 +150,7 @@ func (c *Coordinator) CommitInitialRegistryTemplate(ctx context.Context, input I
 }
 
 func initialRegistryShim(in InitialRegistryCommitInput, scope runtimeprotocol.RuntimeScope) RegistryCommitInput {
-	return RegistryCommitInput{Session: runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: runtimeprotocol.RuntimeSessionID("registry_initial_" + string(in.OperationID)), SessionGeneration: "1", Scope: scope}, OperationID: in.OperationID, IdempotencyKey: in.IdempotencyKey, BaseRevision: in.BaselineRevision, RegistryTransactionID: in.RegistryTransactionID, PlanDigest: in.PlanDigest, MutationDigest: in.MutationDigest, ExpectedResolvedLockDigest: in.ExpectedResolvedLockDigest, StagedObjects: in.StagedObjects, AuthoringImpact: in.AuthoringImpact, HostOperationImpacts: in.HostOperationImpacts, ExpectedDecision: in.ExpectedDecision}
+	return RegistryCommitInput{Session: runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: runtimeprotocol.RuntimeSessionID("registry_initial_" + string(in.OperationID)), SessionGeneration: "1", Scope: scope}, OperationID: in.OperationID, IdempotencyKey: in.IdempotencyKey, BaseRevision: in.BaselineRevision, RegistryTransactionID: in.RegistryTransactionID, PlanDigest: in.PlanDigest, MutationDigest: in.MutationDigest, ExpectedResolvedLockDigest: in.ExpectedResolvedLockDigest, StagedObjects: in.StagedObjects, AuthoringImpact: in.AuthoringImpact, HostOperationImpacts: in.HostOperationImpacts, ExpectedDecision: in.ExpectedDecision, ProjectMutation: in.ProjectMutation}
 }
 
 func validateInitialRegistryCommitInput(in InitialRegistryCommitInput, shim RegistryCommitInput) *ContractError {

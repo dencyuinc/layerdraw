@@ -301,6 +301,7 @@ const (
 	CapabilityReferenceWrite   AuthoringCapability = "reference:write"
 	CapabilitySourceMaintain   AuthoringCapability = "source:maintain"
 	CapabilityProjectConfigure AuthoringCapability = "project:configure"
+	CapabilityPackageManage    AuthoringCapability = "package:manage"
 )
 
 type AuthoringSubjectClassification struct {

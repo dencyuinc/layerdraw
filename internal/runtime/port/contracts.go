@@ -48,6 +48,7 @@ type PrepareRegistryRevisionInput struct {
 	MutationDigest             protocolcommon.Digest
 	ExpectedResolvedLockDigest protocolcommon.Digest
 	StagedObjects              []RegistryStagedObjectRef
+	ProjectMutation            RegistryProjectMutation
 }
 
 // RegistryRevisionPreparer is the Engine-owned handoff from verified staged
@@ -66,6 +67,23 @@ type PrepareInitialRegistryRevisionInput struct {
 	MutationDigest             protocolcommon.Digest
 	ExpectedResolvedLockDigest protocolcommon.Digest
 	StagedObjects              []RegistryStagedObjectRef
+	ProjectMutation            RegistryProjectMutation
+}
+
+type RegistryProjectMutation struct {
+	SnapshotHandle      string
+	SourceClosureDigest protocolcommon.Digest
+	Artifacts           []RegistryProjectArtifactRef
+	RemoveCanonicalIDs  []string
+}
+
+type RegistryProjectArtifactRef struct {
+	Object         RegistryStagedObjectRef
+	RegistrySource string
+}
+
+type RegistryStagedObjectReader interface {
+	OpenRegistryStagedObject(context.Context, RegistryStagedObjectRef) (io.ReadCloser, error)
 }
 
 // InitialRegistryRevisionPublisher owns the no-head publication point used by

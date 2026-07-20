@@ -128,6 +128,31 @@ func (w *RuntimeEngineBridge) Preview(ctx context.Context, working BridgeWorking
 	return prepared, nil
 }
 
+// RetainRegistryPrepared binds an Engine-produced Registry candidate to the
+// same working handle/checkpoint lifecycle as semantic operation previews.
+func (w *RuntimeEngineBridge) RetainRegistryPrepared(ctx context.Context, working BridgeWorking, prepared BridgePrepared) error {
+	input, err := DecodeLocalCompileInput(prepared.EncodedInput)
+	if err != nil {
+		return err
+	}
+	compiled, err := w.engine.Compile(ctx, input)
+	if err != nil {
+		return err
+	}
+	snapshot := compiled.Snapshot()
+	if protocolcommon.Digest(snapshot.DefinitionHash) != prepared.DefinitionHash || snapshot.GraphHash == nil || protocolcommon.Digest(*snapshot.GraphHash) != prepared.GraphHash {
+		return errors.New("Registry prepared semantic identity mismatch")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	doc := w.docs[working.Handle]
+	if doc == nil || doc.working != working {
+		return errors.New("stale working document")
+	}
+	doc.prepared, doc.preparedIn = &prepared, &input
+	return nil
+}
+
 func (w *RuntimeEngineBridge) Checkpoint(ctx context.Context, working BridgeWorking, prepared BridgePrepared, revisionID string) (BridgeWorking, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

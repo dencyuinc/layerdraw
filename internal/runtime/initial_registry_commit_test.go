@@ -28,6 +28,7 @@ func initialRegistryCommitFixture(host *coordinatorHost) InitialRegistryCommitIn
 		AuthoringImpact:            host.impact,
 		HostOperationImpacts:       []accessprotocol.HostOperationImpact{},
 		ExpectedDecision:           host.decision,
+		ProjectMutation:            port.RegistryProjectMutation{SnapshotHandle: "engine-template-baseline", SourceClosureDigest: digest('5'), Artifacts: []port.RegistryProjectArtifactRef{{Object: port.RegistryStagedObjectRef{ObjectID: "template-object", Digest: digest('4'), Size: "1", MediaType: "application/vnd.layerdraw.template"}, RegistrySource: "official"}}, RemoveCanonicalIDs: []string{}},
 	}
 }
 

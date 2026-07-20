@@ -82,24 +82,26 @@ type Config struct {
 	// LocalActor resolves the stable OS/host identity used for local-owner
 	// grants. It must not assert organization membership. The default preserves
 	// the host-local owner identity for headless and embedded callers.
-	LocalActor accesscore.LocalActorResolver
+	LocalActor            accesscore.LocalActorResolver
+	RegistryStagedObjects port.RegistryStagedObjectReader
 }
 
 type Host struct {
-	config     Config
-	engine     *engineendpoint.LocalDocumentEngine
-	runtime    *runtimehost.Runtime
-	documents  *local.Document
-	state      *local.State
-	assets     *local.Assets
-	history    *local.History
-	recovery   *local.Recovery
-	external   *local.ExternalFileStore
-	authority  *localAuthority
-	workbench  *runtimeWorkbench
-	bindingMu  sync.Mutex
-	autosaveMu sync.Mutex
-	mu         sync.Mutex
+	config          Config
+	engine          *engineendpoint.LocalDocumentEngine
+	runtime         *runtimehost.Runtime
+	documents       *local.Document
+	state           *local.State
+	assets          *local.Assets
+	history         *local.History
+	recovery        *local.Recovery
+	external        *local.ExternalFileStore
+	authority       *localAuthority
+	workbench       *runtimeWorkbench
+	registryInitial *initialRegistryPublisher
+	bindingMu       sync.Mutex
+	autosaveMu      sync.Mutex
+	mu              sync.Mutex
 	// delegationMu serializes durable delegation snapshots independently from
 	// session lifecycle locking.
 	delegationMu sync.Mutex
@@ -124,8 +126,9 @@ type autosaveJob struct {
 }
 
 type lifecycleMetadata struct {
-	Version  int                        `json:"version"`
-	Bindings map[string]documentBinding `json:"bindings"`
+	Version          int                                `json:"version"`
+	Bindings         map[string]documentBinding         `json:"bindings"`
+	RegistryProjects map[string]registryProjectMetadata `json:"registry_projects,omitempty"`
 }
 
 type documentBinding struct {
@@ -286,7 +289,7 @@ func New(config Config) (*Host, error) {
 	}
 	instance := engineendpoint.NewLocalDocumentEngine()
 	endpointID := config.EndpointInstanceID
-	workbench := &runtimeWorkbench{bridge: instance.NewRuntimeEngineBridge(endpointID), engine: instance, kinds: map[runtimeprotocol.DocumentID]port.ExternalFileKind{}}
+	workbench := &runtimeWorkbench{bridge: instance.NewRuntimeEngineBridge(endpointID), engine: instance, kinds: map[runtimeprotocol.DocumentID]port.ExternalFileKind{}, registryReader: config.RegistryStagedObjects, registryBaselines: map[string][]byte{}}
 	resolver := config.LocalActor
 	if resolver == nil {
 		resolver = accesscore.StaticLocalActorResolver{ActorID: "local-owner"}
@@ -300,7 +303,8 @@ func New(config Config) (*Host, error) {
 		return nil, err
 	}
 	authority := newLocalAuthorityWithDelegations(config.Clock, config.Random, actor, delegations)
-	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]*autosaveJob{}}
+	registryInitial := &initialRegistryPublisher{documents: documents, state: state, clock: config.Clock}
+	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, registryInitial: registryInitial, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]*autosaveJob{}}
 	metadata, err := host.loadMetadata()
 	if err != nil {
 		return nil, err
@@ -312,7 +316,12 @@ func New(config Config) (*Host, error) {
 	for _, binding := range metadata.Bindings {
 		authority.add(binding.DocumentID)
 	}
-	runtimeValue, err := runtimehost.New(runtimehost.Config{ReleaseVersion: config.ReleaseVersion, EndpointInstanceID: endpointID, ReleaseManifestDigest: config.ReleaseManifestDigest, Limits: defaultRuntimeLimits(), Ports: runtimehost.Ports{Workbench: workbench, Grants: authority, Scopes: authority, Documents: documents, State: state, StateBindings: localStateBinding{backend: state}, StateAccess: authority, Assets: assets, History: history, Recovery: recovery, External: external, Authoring: authority, Clock: authority, Identities: authority}})
+	runtimePorts := runtimehost.Ports{Workbench: workbench, Grants: authority, Scopes: authority, Documents: documents, State: state, StateBindings: localStateBinding{backend: state}, StateAccess: authority, Assets: assets, History: history, Recovery: recovery, External: external, Authoring: authority, Clock: authority, Identities: authority}
+	if config.RegistryStagedObjects != nil {
+		runtimePorts.Registry = workbench
+		runtimePorts.InitialRegistry = registryInitial
+	}
+	runtimeValue, err := runtimehost.New(runtimehost.Config{ReleaseVersion: config.ReleaseVersion, EndpointInstanceID: endpointID, ReleaseManifestDigest: config.ReleaseManifestDigest, Limits: defaultRuntimeLimits(), Ports: runtimePorts})
 	if err != nil {
 		return nil, err
 	}
@@ -1229,7 +1238,7 @@ func (h *Host) readMetadataFile() ([]byte, error) {
 func (h *Host) loadMetadata() (lifecycleMetadata, error) {
 	data, err := h.readMetadataFile()
 	if errors.Is(err, fs.ErrNotExist) {
-		return lifecycleMetadata{Version: metadataVersion, Bindings: map[string]documentBinding{}}, nil
+		return lifecycleMetadata{Version: metadataVersion, Bindings: map[string]documentBinding{}, RegistryProjects: map[string]registryProjectMetadata{}}, nil
 	}
 	if err != nil {
 		return lifecycleMetadata{}, err
@@ -1239,6 +1248,9 @@ func (h *Host) loadMetadata() (lifecycleMetadata, error) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil || value.Version != metadataVersion || value.Bindings == nil {
 		return lifecycleMetadata{}, fmt.Errorf("%w: local document bindings", ErrStateRecoveryRequired)
+	}
+	if value.RegistryProjects == nil {
+		value.RegistryProjects = map[string]registryProjectMetadata{}
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return lifecycleMetadata{}, fmt.Errorf("%w: local document bindings", ErrStateRecoveryRequired)

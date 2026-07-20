@@ -31,6 +31,7 @@ type RegistryCommitInput struct {
 	AuthoringImpact            semantic.AuthoringImpact
 	HostOperationImpacts       []accessprotocol.HostOperationImpact
 	ExpectedDecision           accessprotocol.AuthoringDecision
+	ProjectMutation            port.RegistryProjectMutation
 	LeaseToken                 *runtimeprotocol.LeaseToken
 	CancellationToken          *runtimeprotocol.CancellationToken
 }
@@ -98,6 +99,21 @@ func validateRegistryCommitInput(in RegistryCommitInput) *ContractError {
 			return contractError(runtimeprotocol.RuntimeFailureCodeRuntimeAuthorizationProofInvalid, "registry HostOperationImpact is malformed")
 		}
 	}
+	if in.ProjectMutation.SnapshotHandle == "" {
+		return contractError(runtimeprotocol.RuntimeFailureCodeRuntimeMalformedHandle, "registry Engine snapshot handle is missing")
+	}
+	if _, err := protocolcommon.EncodeDigest(in.ProjectMutation.SourceClosureDigest); err != nil {
+		return contractError(runtimeprotocol.RuntimeFailureCodeRuntimeMalformedHandle, "registry source closure digest is malformed")
+	}
+	objectIDs := make(map[string]bool, len(in.StagedObjects))
+	for _, object := range in.StagedObjects {
+		objectIDs[object.ObjectID] = true
+	}
+	for _, artifact := range in.ProjectMutation.Artifacts {
+		if !objectIDs[artifact.Object.ObjectID] || artifact.RegistrySource == "" {
+			return contractError(runtimeprotocol.RuntimeFailureCodeRuntimeMalformedHandle, "registry project artifact binding is malformed")
+		}
+	}
 	if in.LeaseToken != nil {
 		if _, err := runtimeprotocol.EncodeLeaseToken(*in.LeaseToken); err != nil {
 			return contractError(runtimeprotocol.RuntimeFailureCodeRuntimeMalformedHandle, "registry lease is malformed")
@@ -158,7 +174,7 @@ func (c *Coordinator) commitRegistryPlan(ctx context.Context, in RegistryCommitI
 	} else if rejection != nil {
 		return c.finalRegistryRejected(ctx, in, rejection, nil)
 	}
-	prepared, err := p.Registry.PrepareRegistryRevision(ctx, port.PrepareRegistryRevisionInput{Scope: in.Session.Scope, BaseRevision: in.BaseRevision, RegistryTransactionID: in.RegistryTransactionID, PlanDigest: in.PlanDigest, MutationDigest: in.MutationDigest, ExpectedResolvedLockDigest: in.ExpectedResolvedLockDigest, StagedObjects: append([]port.RegistryStagedObjectRef(nil), in.StagedObjects...)})
+	prepared, err := p.Registry.PrepareRegistryRevision(ctx, port.PrepareRegistryRevisionInput{Scope: in.Session.Scope, BaseRevision: in.BaseRevision, RegistryTransactionID: in.RegistryTransactionID, PlanDigest: in.PlanDigest, MutationDigest: in.MutationDigest, ExpectedResolvedLockDigest: in.ExpectedResolvedLockDigest, StagedObjects: append([]port.RegistryStagedObjectRef(nil), in.StagedObjects...), ProjectMutation: in.ProjectMutation})
 	if err != nil || !validPreparedRevision(prepared, in.BaseRevision) || !reflect.DeepEqual(prepared.AuthoringImpact, in.AuthoringImpact) {
 		return c.abandonRegistryPending(ctx, in, contractError(runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable, "Engine rejected the registry staged closure"))
 	}
@@ -258,7 +274,8 @@ func RegistryRetryRequestDigest(in RegistryCommitInput) protocolcommon.Digest {
 		HostOperationImpacts       []accessprotocol.HostOperationImpact `json:"host_operation_impacts"`
 		DecisionDigest             protocolcommon.Digest                `json:"decision_digest"`
 		EvaluationDigest           protocolcommon.Digest                `json:"evaluation_digest"`
-	}{in.Session.Scope.DocumentID, in.OperationID, in.BaseRevision, in.RegistryTransactionID, in.PlanDigest, in.MutationDigest, in.ExpectedResolvedLockDigest, in.StagedObjects, in.AuthoringImpact, in.HostOperationImpacts, in.ExpectedDecision.DecisionDigest, in.ExpectedDecision.EvaluationDigest}
+		ProjectMutation            port.RegistryProjectMutation         `json:"project_mutation"`
+	}{in.Session.Scope.DocumentID, in.OperationID, in.BaseRevision, in.RegistryTransactionID, in.PlanDigest, in.MutationDigest, in.ExpectedResolvedLockDigest, in.StagedObjects, in.AuthoringImpact, in.HostOperationImpacts, in.ExpectedDecision.DecisionDigest, in.ExpectedDecision.EvaluationDigest, in.ProjectMutation}
 	return digestValue(projection)
 }
 
