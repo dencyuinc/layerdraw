@@ -18,6 +18,7 @@ import (
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 func TestMCPExplicitControlDoesNotSilentlyStartAndFencesRestart(t *testing.T) {
@@ -113,7 +114,7 @@ func TestMCPConnectionsConstrainApplyRevokeExpireAndFence(t *testing.T) {
 		t.Fatalf("connections=%+v", connections)
 	}
 	metadata := filepath.Join(config.Root, mcpConnectionFilename)
-	if info, err := os.Stat(metadata); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(metadata); err != nil || !privatefs.PermissionsMatch(info, 0o600) {
 		t.Fatalf("metadata mode: info=%v err=%v", info, err)
 	}
 	_, _, restored, err := loadMCPConnectionStore(config.Root, now)
