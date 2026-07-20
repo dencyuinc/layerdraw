@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import type { ComposerIntent, ComposerSnapshot, EditorEdit } from "@layerdraw/composer";
-import type { EngineClient, OutputBlob } from "@layerdraw/engine-client";
+import type { CompileRequestBlob, EngineClient, OutputBlob } from "@layerdraw/engine-client";
 import type { AuthoringDecision, AuthoringGrantSummary } from "@layerdraw/protocol/access";
 import type {
   CapabilityID,
@@ -34,7 +34,7 @@ import type {
 import type { Diagnostic, ViewData } from "@layerdraw/protocol/semantic";
 
 export type BrowserDocumentInput =
-  | Readonly<{ authority: "engine"; input: OpenDocumentInput }>
+  | Readonly<{ authority: "engine"; input: OpenDocumentInput; blobs?: readonly CompileRequestBlob[] }>
   | Readonly<{ authority: "runtime"; input: OpenRuntimeDocumentInput }>;
 
 export type BrowserDocumentSession =

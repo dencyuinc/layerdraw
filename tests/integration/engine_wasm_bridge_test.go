@@ -45,12 +45,13 @@ func TestEngineWASMBridgeNodeSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	script := filepath.Join(repositoryRoot, "tests", "integration", "testdata", "wasm_bridge_node.mjs")
-	command := exec.CommandContext(ctx, "node", script, artifactDirectory)
+	command := exec.CommandContext(ctx, "node", script)
+	command.Dir = artifactDirectory
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run Engine WASM bridge smoke: %v\n%s", err, output)
 	}
-	if !strings.Contains(string(output), "hard-cancel/replacement smoke passed") {
+	if !strings.Contains(string(output), "BrowserEditor/hard-cancel/replacement smoke passed") {
 		t.Fatalf("unexpected bridge smoke output: %s", output)
 	}
 }
