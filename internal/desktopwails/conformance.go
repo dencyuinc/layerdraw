@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -41,6 +44,12 @@ type PackagedConformanceReport struct {
 	Scenarios                   map[string]ConformanceSamples `json:"scenarios"`
 	ProcessTreePeakRSSMebibytes []int64                       `json:"process_tree_peak_rss_mebibytes"`
 	ScenarioEvidence            map[string]string             `json:"scenario_evidence"`
+}
+
+type packagedConformanceScenarioReport struct {
+	SchemaVersion uint32 `json:"schema_version"`
+	Scenario      string `json:"scenario"`
+	PeakRSSMiB    int64  `json:"process_tree_peak_rss_mebibytes"`
 }
 
 type packagedConformanceError struct {
@@ -95,22 +104,12 @@ func RunPackagedConformance(output string) error {
 		ArtifactKind: "installed_desktop", Iterations: packagedConformanceIterations,
 		Scenarios: map[string]ConformanceSamples{}, ScenarioEvidence: cloneEvidence(),
 	}
-	runners := map[string]func(context.Context) error{
-		"cold_start":             conformanceColdStart,
-		"project_open":           conformanceProjectOpen,
-		"search_analysis":        conformanceSearchAnalysis,
-		"preview":                conformancePreview,
-		"commit":                 conformanceCommitDurable,
-		"viewer_interaction":     conformanceViewer,
-		"mcp_bounded_operations": conformanceMCP,
-		"external_reconcile":     conformanceExternal,
-		"shutdown":               conformanceShutdown,
-	}
 	for iteration := 0; iteration < packagedConformanceIterations; iteration++ {
+		var iterationPeak int64
 		for _, name := range conformanceScenarioOrder() {
 			started := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			err := runners[name](ctx)
+			rss, err := runConformanceScenarioProcess(ctx, name)
 			cancel()
 			if err != nil {
 				return conformanceFailure("scenario."+name, fmt.Errorf("iteration %d: %w", iteration+1, err))
@@ -122,12 +121,14 @@ func RunPackagedConformance(output string) error {
 			samples := report.Scenarios[name]
 			samples.SamplesMilliseconds = append(samples.SamplesMilliseconds, elapsed)
 			report.Scenarios[name] = samples
+			if rss > iterationPeak {
+				iterationPeak = rss
+			}
 		}
-		rss, err := processTreePeakRSSMebibytes()
-		if err != nil || rss <= 0 {
+		if iterationPeak <= 0 {
 			return conformanceFailure("measurement.memory", errors.New("packaged conformance process-tree RSS is unavailable"))
 		}
-		report.ProcessTreePeakRSSMebibytes = append(report.ProcessTreePeakRSSMebibytes, rss)
+		report.ProcessTreePeakRSSMebibytes = append(report.ProcessTreePeakRSSMebibytes, iterationPeak)
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -137,6 +138,59 @@ func RunPackagedConformance(output string) error {
 		return conformanceFailure("result.write", err)
 	}
 	return nil
+}
+
+func conformanceRunners() map[string]func(context.Context) error {
+	return map[string]func(context.Context) error{
+		"cold_start":             conformanceColdStart,
+		"project_open":           conformanceProjectOpen,
+		"search_analysis":        conformanceSearchAnalysis,
+		"preview":                conformancePreview,
+		"commit":                 conformanceCommitDurable,
+		"viewer_interaction":     conformanceViewer,
+		"mcp_bounded_operations": conformanceMCP,
+		"external_reconcile":     conformanceExternal,
+		"shutdown":               conformanceShutdown,
+	}
+}
+
+var runConformanceScenarioProcess = func(ctx context.Context, name string) (int64, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return 0, errors.New("installed Desktop executable is unavailable")
+	}
+	command := exec.CommandContext(ctx, executable, "--packaged-conformance-scenario", name)
+	encoded, err := command.Output()
+	if err != nil {
+		return 0, errors.New("isolated installed Desktop scenario failed")
+	}
+	var report packagedConformanceScenarioReport
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF || report.SchemaVersion != 1 || report.Scenario != name || report.PeakRSSMiB <= 0 {
+		return 0, errors.New("isolated installed Desktop scenario result is invalid")
+	}
+	return report.PeakRSSMiB, nil
+}
+
+// RunPackagedConformanceScenario executes one isolated workflow for the
+// installed conformance parent process. It is intentionally not a user-facing
+// Desktop mode and emits only a strict measurement envelope.
+func RunPackagedConformanceScenario(name string, output io.Writer) error {
+	runner := conformanceRunners()[name]
+	if runner == nil || output == nil {
+		return conformanceFailure("scenario.invalid", errors.New("packaged conformance scenario is invalid"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := runner(ctx); err != nil {
+		return conformanceFailure("scenario."+name, err)
+	}
+	rss, err := processTreePeakRSSMebibytes()
+	if err != nil || rss <= 0 {
+		return conformanceFailure("measurement.memory", errors.New("scenario process RSS is unavailable"))
+	}
+	return json.NewEncoder(output).Encode(packagedConformanceScenarioReport{SchemaVersion: 1, Scenario: name, PeakRSSMiB: rss})
 }
 
 func cloneEvidence() map[string]string {

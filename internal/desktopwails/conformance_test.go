@@ -196,6 +196,16 @@ func TestPackagedConformanceReportIsStrictAndExclusive(t *testing.T) {
 
 func TestRunPackagedConformanceExecutesEveryIteration(t *testing.T) {
 	t.Setenv("LAYERDRAW_CONFORMANCE_SOURCE_REVISION", "0123456789abcdef0123456789abcdef01234567")
+	original := runConformanceScenarioProcess
+	t.Cleanup(func() { runConformanceScenarioProcess = original })
+	calls := 0
+	runConformanceScenarioProcess = func(_ context.Context, name string) (int64, error) {
+		calls++
+		if _, ok := conformanceRunners()[name]; !ok {
+			return 0, errors.New("unknown scenario")
+		}
+		return int64(64 + calls%3), nil
+	}
 	output := filepath.Join(t.TempDir(), "conformance.json")
 	if err := RunPackagedConformance(output); err != nil {
 		t.Fatal(err)
@@ -212,6 +222,9 @@ func TestRunPackagedConformanceExecutesEveryIteration(t *testing.T) {
 	}
 	if report.Iterations != packagedConformanceIterations || len(report.Scenarios) != len(conformanceEvidence) || len(report.ProcessTreePeakRSSMebibytes) != packagedConformanceIterations {
 		t.Fatalf("incomplete report: %+v", report)
+	}
+	if calls != packagedConformanceIterations*len(conformanceEvidence) {
+		t.Fatalf("isolated scenario calls=%d", calls)
 	}
 	for name, evidence := range conformanceEvidence {
 		if len(report.Scenarios[name].SamplesMilliseconds) != packagedConformanceIterations || report.ScenarioEvidence[name] != evidence {
