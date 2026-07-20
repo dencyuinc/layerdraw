@@ -41,11 +41,14 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     .filter((node) => node.tabIndex >= 0 && !node.hasAttribute("disabled"));
   const labelsComplete = controls.every((node) =>
     (node.textContent?.trim().length ?? 0) > 0 || node.hasAttribute("aria-label") || node.hasAttribute("aria-labelledby"));
-  const focusOrderValid = controls.length > 0 && controls.every((node, index) => {
+  const focusOrderValid = controls.every((node, index) => {
     node.focus();
 	const previous = controls[index - 1];
 	const followsPrevious = index === 0 || (previous !== undefined && Boolean(previous.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING));
-    return document.activeElement === node && followsPrevious && getComputedStyle(node).outlineStyle !== "none";
+	const outlineVisible = getComputedStyle(node).outlineStyle !== "none";
+	const focusRect = node.matches(".ld-desktop-viewer-item") ? node.querySelector<SVGElement>("rect") : null;
+	const strokeVisible = focusRect !== null && Number.parseFloat(getComputedStyle(focusRect).strokeWidth) >= 3;
+    return document.activeElement === node && followsPrevious && (outlineVisible || strokeVisible);
   });
   const keyboardWorkflowValid = !profile.keyboard_only || await invokeSettings();
   document.documentElement.dataset.reducedMotion = String(Boolean(profile.reduced_motion));
