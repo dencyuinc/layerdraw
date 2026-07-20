@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 )
@@ -410,12 +411,47 @@ type ProjectState struct {
 	GrantSnapshot       accessprotocol.AuthoringGrantSnapshot
 	RuntimeSessionID    string
 	LeaseToken          string
+	EngineSnapshot      RegistryProjectSnapshot
 }
+
+type RegistryProjectSnapshotKind string
+
+const (
+	RegistryProjectSnapshotWorking       RegistryProjectSnapshotKind = "runtime_working_document"
+	RegistryProjectSnapshotEmptyTemplate RegistryProjectSnapshotKind = "empty_template_baseline"
+)
+
+// RegistryProjectSnapshot is an opaque Engine-owned input binding. Registry
+// can compare its portable identity but cannot decode the handle, source tree,
+// or LDL. PackageValidator is the sole consumer of Handle.
+type RegistryProjectSnapshot struct {
+	Kind                RegistryProjectSnapshotKind `json:"kind"`
+	Handle              string                      `json:"handle"`
+	DocumentID          string                      `json:"document_id"`
+	Revision            string                      `json:"revision,omitempty"`
+	DefinitionHash      string                      `json:"definition_hash,omitempty"`
+	SourceClosureDigest string                      `json:"source_closure_digest"`
+}
+
 type ProjectStatePort interface {
 	CurrentRegistryProjectState(context.Context, string) (ProjectState, error)
 }
 type TemplateDocumentPort interface {
 	NewRegistryDocumentState(context.Context, ArtifactIdentity) (ProjectState, error)
+}
+
+func validRegistryProjectSnapshot(state ProjectState, template bool) bool {
+	snapshot := state.EngineSnapshot
+	if snapshot.Handle == "" || snapshot.DocumentID != state.DocumentID {
+		return false
+	}
+	if _, err := protocolcommon.EncodeDigest(protocolcommon.Digest(snapshot.SourceClosureDigest)); err != nil {
+		return false
+	}
+	if template {
+		return snapshot.Kind == RegistryProjectSnapshotEmptyTemplate && snapshot.Revision == "" && snapshot.DefinitionHash == "" && state.Revision == "" && state.DefinitionHash == ""
+	}
+	return snapshot.Kind == RegistryProjectSnapshotWorking && snapshot.Revision == state.Revision && snapshot.DefinitionHash == state.DefinitionHash
 }
 
 type CredentialLease struct {
@@ -816,7 +852,7 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 			return InstallPlan{}, fail(FailureUnavailable, "template_document_allocator", true, nil)
 		}
 		state, err = allocator.NewRegistryDocumentState(ctx, request.Requested)
-		if err != nil || state.DocumentID == "" || state.RuntimeSessionID == "" {
+		if err != nil || state.DocumentID == "" || state.RuntimeSessionID == "" || !validRegistryProjectSnapshot(state, true) {
 			return InstallPlan{}, fail(FailureUnavailable, "template_document_allocator", true, err)
 		}
 		request.ProjectID = state.ProjectID
@@ -828,7 +864,7 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 		if err != nil {
 			return InstallPlan{}, fail(FailureUnavailable, request.ProjectID, true, err)
 		}
-		if state.ProjectID != request.ProjectID || state.DocumentID == "" || state.Revision != request.BaseRevision || state.DefinitionHash != request.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != request.ExpectedResolvedLockDigest || state.RuntimeSessionID == "" {
+		if state.ProjectID != request.ProjectID || state.DocumentID == "" || state.Revision != request.BaseRevision || state.DefinitionHash != request.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != request.ExpectedResolvedLockDigest || state.RuntimeSessionID == "" || !validRegistryProjectSnapshot(state, false) {
 			return InstallPlan{}, fail(FailurePlanStale, request.ProjectID, true, nil)
 		}
 	}
@@ -1138,12 +1174,12 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		}
 		requested := tx.Plan.RequestedRoot
 		state, err = allocator.NewRegistryDocumentState(ctx, requested)
-		if err != nil || state.DocumentID != boundDocumentID {
+		if err != nil || state.DocumentID != boundDocumentID || !validRegistryProjectSnapshot(state, true) {
 			return RuntimeCommitResult{}, fail(FailurePlanStale, tx.Plan.NewDocumentID, true, err)
 		}
 	} else {
 		state, err = r.projectState.CurrentRegistryProjectState(ctx, tx.Plan.ProjectID)
-		if err != nil || state.DocumentID != boundDocumentID || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
+		if err != nil || state.DocumentID != boundDocumentID || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest || !validRegistryProjectSnapshot(state, false) {
 			return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, err)
 		}
 	}
@@ -1417,12 +1453,12 @@ func (r *Registry) refreshRecoveryRuntimeInput(ctx context.Context, tx Transacti
 			return RuntimeCommitInput{}, errors.New("template document allocator unavailable")
 		}
 		state, err = allocator.NewRegistryDocumentState(ctx, tx.Plan.RequestedRoot)
-		if err != nil || state.DocumentID != boundDocumentID {
+		if err != nil || state.DocumentID != boundDocumentID || !validRegistryProjectSnapshot(state, true) {
 			return RuntimeCommitInput{}, errors.New("template document allocation changed during recovery")
 		}
 	} else {
 		state, err = r.projectState.CurrentRegistryProjectState(ctx, tx.Plan.ProjectID)
-		if err != nil || state.DocumentID != boundDocumentID || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
+		if err != nil || state.DocumentID != boundDocumentID || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest || !validRegistryProjectSnapshot(state, false) {
 			return RuntimeCommitInput{}, errors.New("project preconditions changed during recovery")
 		}
 	}
