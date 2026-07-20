@@ -51,6 +51,7 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
   const modeControl = [...document.querySelectorAll<HTMLButtonElement>(".ld-desktop-view-mode button")].find((button) => button.textContent?.trim().toLowerCase() === mode);
   modeControl?.click();
   await waitForPaint();
+  window.focus();
   const controls = [...document.querySelectorAll<HTMLElement>("button,input,select,textarea,a[href],[tabindex]")]
     .filter((node) => node.tabIndex >= 0 && !node.hasAttribute("disabled"));
   const labelsComplete = controls.every((node) =>
@@ -58,8 +59,10 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     ("labels" in node && Array.from((node as HTMLInputElement).labels ?? []).some((label) => (label.textContent?.trim().length ?? 0) > 0)) ||
     (node.closest("label")?.textContent?.trim().length ?? 0) > 0);
   const focusFailures: string[] = [];
-  const focusOrderValid = controls.map((node, index) => {
+  const focusResults: boolean[] = [];
+  for (const [index, node] of controls.entries()) {
     node.focus();
+	await waitForPaint();
 	const previous = controls[index - 1];
 	const followsPrevious = node.tabIndex === 0 && (index === 0 || (previous !== undefined && Boolean(previous.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)));
 	const outlineVisible = getComputedStyle(node).outlineStyle !== "none";
@@ -68,8 +71,9 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     const active = document.activeElement === node;
     const visible = outlineVisible || strokeVisible;
     if (!active || !followsPrevious || !visible) focusFailures.push(`${node.tagName}.${node.className}:active=${active},ordered=${followsPrevious},visible=${visible}`);
-    return active && followsPrevious && visible;
-  }).every(Boolean);
+    focusResults.push(active && followsPrevious && visible);
+  }
+  const focusOrderValid = focusResults.every(Boolean);
   const keyboardWorkflowValid = !profile.keyboard_only || await invokeSettings();
   document.documentElement.dataset.reducedMotion = String(Boolean(profile.reduced_motion));
   const reducedMotionHonored = !profile.reduced_motion || [...document.querySelectorAll<HTMLElement>(".ld-desktop-shell, .ld-desktop-shell *, .ld-desktop-shell *::before, .ld-desktop-shell *::after")]
@@ -103,7 +107,7 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     return layers.reverse().reduce<RGBA>((result, layer) => composite(layer, result), [255, 255, 255, 1]);
   };
   const contrastNodes = [...document.querySelectorAll<HTMLElement>(".ld-desktop-shell h1, .ld-desktop-shell h2, .ld-desktop-shell h3, .ld-desktop-shell p, .ld-desktop-shell button, .ld-desktop-shell dt, .ld-desktop-shell dd, .ld-desktop-shell small, .ld-desktop-shell span")]
-    .filter((node) => node.getClientRects().length > 0 && (node.textContent?.trim().length ?? 0) > 0);
+    .filter((node) => node.getClientRects().length > 0 && (node.textContent?.trim().length ?? 0) > 0 && node.closest(".ld-desktop-visually-hidden,.ld-visually-hidden") === null);
   const ratios = contrastNodes.map((node) => {
       const nodeBackground = background(node);
       const foreground = luminance(composite(rgba(getComputedStyle(node).color), nodeBackground));
