@@ -745,7 +745,7 @@
       "module": "github.com/niemeyer/pretty",
       "version": "v0.0.0-20200227124842-a10e7caefd8e",
       "license": "MIT",
-      "license_file": "LICENSE",
+      "license_file": "License",
       "license_sha256": "283c28b781bc7487bd7bcaf453cbd811f5ee8d7ce625cfcf8dcacae6ba1f4bb5"
     },
     {
