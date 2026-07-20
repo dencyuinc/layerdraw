@@ -24,6 +24,10 @@ type LifecycleEvent struct {
 	State LifecycleState `json:"state"`
 }
 
+func (s LifecycleState) Validate() bool {
+	return s == LifecycleStarting || s == LifecycleReady || s == LifecycleDraining || s == LifecycleStopped || s == LifecycleRecovery
+}
+
 type LifecyclePort interface {
 	Publish(context.Context, LifecycleEvent) error
 }

@@ -45,6 +45,35 @@ and frontend asset embedding. Native dialogs return opaque host-issued tokens,
 not native paths. The storage adapter resolves those tokens inside the trusted
 backend.
 
+## Native window, settings, and OS boundary
+
+`internal/desktopapp.NativeShell` is the framework-neutral native shell
+facade. Wails adapters supply displays, atomic settings storage, native window
+application, safe OS URL opening, opaque file-association handoff, structured
+logs, packaged accessibility probes, and crash recovery. Project lifecycle and
+UI command routing remain injected owner ports so this facade cannot acquire
+Runtime, Composer, or BrowserEditor semantics.
+
+Persisted window bounds are schema-versioned and normalized against the live
+display work areas. Invalid, oversized, or off-screen bounds recover onto a
+usable primary display; theme and zoom use closed values and zoom is bounded to
+50--300 percent. Menu, shortcut, and visible-control invocations use the same
+typed command route. Pending, denied, and unavailable commands are never
+invoked by the shell.
+
+External web links are restricted to credential-free HTTPS URLs and email
+handoff to query-free `mailto:` addresses. File associations and native dialogs
+cross the frontend boundary only as opaque host tokens; OS paths never do. The
+OS adapter must call native open APIs directly and must not invoke a command
+shell. Structured shell logs have no arbitrary message/details field and cannot
+contain document content, credentials, tokens, URLs, or native paths.
+
+Unexpected frontend or backend failures are converted to a closed error
+surface. A project-lifecycle recovery adapter may attach an opaque recovery
+reference, but raw failure text is never presented. Packaged accessibility
+probes verify labels, focus order, keyboard-only operation, reduced motion,
+contrast, and zoom on the supported macOS, Windows, and Linux profiles.
+
 ## Lifecycle and failure boundary
 
 Startup resolves a stable local actor, loads credentials and live agent
