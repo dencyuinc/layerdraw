@@ -87,7 +87,11 @@ if [[ "$platform" == "darwin" ]]; then
   if [[ -z "$app" ]]; then printf 'Wails did not produce a macOS application bundle.\n' >&2; exit 1; fi
   binary="$app/Contents/MacOS/LayerDraw"
 fi
-if [[ "$platform" == "windows" ]]; then binary="$binary.exe"; fi
+if [[ "$platform" == "windows" ]]; then
+  binary="$binary.exe"
+  nsis_binary="$binary"
+  if command -v cygpath >/dev/null 2>&1; then nsis_binary="$(cygpath -w "$binary")"; fi
+fi
 go run "$repository_root/tools/licensecheck" bundle -binary "$binary" -output "$temporary/legal" -version "$version" -include-production-npm
 desktop_sbom="$temporary/legal/$(basename "$binary").cdx.json"
 host="$temporary/runtime/layerdraw-host"
@@ -134,7 +138,7 @@ fs.writeFileSync(path, source);
 NODE
   (
     cd "$installer_root"
-    makensis -DARG_WAILS_AMD64_BINARY="$binary" project.nsi
+    makensis -DARG_WAILS_AMD64_BINARY="$nsis_binary" project.nsi
   )
 fi
 
