@@ -60,6 +60,7 @@ type retainedPreview struct {
 	sourceDiff      sourceplanner.SourceDiff
 	authoringImpact sourceplanner.AuthoringImpact
 	resultingHashes sourceplanner.ResultingHashes
+	attachments     SourcePlannerBlobs
 	retained        int64
 }
 
@@ -426,6 +427,7 @@ func workingCapabilities(compiled Snapshot) DocumentCapabilityState {
 		PlanExport:         project && compiled.TypedAST.Graph != nil && len(compiled.TypedAST.Views) != 0,
 		OrganizeWorkspace:  project,
 		PreviewFragment:    project,
+		PreviewOperations:  project,
 		PreviewSourcePatch: project,
 		ReadDeclarations:   available,
 		ReadModules:        true,

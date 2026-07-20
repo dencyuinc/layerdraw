@@ -45,7 +45,7 @@ func TestWorkbenchOpenAndCanonicalIndexedReads(t *testing.T) {
 	if !opened.Capabilities.ListModules || !opened.Capabilities.ReadModules || !opened.Capabilities.FindSymbols || !opened.Capabilities.FindUsages || !opened.Capabilities.GetNeighbors || !opened.Capabilities.InspectSubgraph || !opened.Capabilities.ReadDeclarations || !opened.Capabilities.ReadRows || !opened.Capabilities.ReadScope || !opened.Capabilities.ListReferences || !opened.Capabilities.ReadReferences || !opened.Capabilities.ReplaceSourceTree {
 		t.Fatalf("read capability missing: %+v", opened.Capabilities)
 	}
-	if !opened.Capabilities.ApplyToHandle || opened.Capabilities.PreviewOperations {
+	if !opened.Capabilities.ApplyToHandle || !opened.Capabilities.PreviewOperations {
 		t.Fatalf("unexpected operation edit capability state: %+v", opened.Capabilities)
 	}
 	if !opened.Capabilities.PreviewFragment || !opened.Capabilities.PreviewSourcePatch || !opened.Capabilities.FormatScope || !opened.Capabilities.OrganizeWorkspace {

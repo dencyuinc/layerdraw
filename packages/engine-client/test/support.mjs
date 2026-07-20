@@ -20,6 +20,7 @@ import {
   decodeOpenDocumentRequestEnvelope,
   decodeOrganizeWorkspaceRequestEnvelope,
   decodePreviewFragmentRequestEnvelope,
+  decodePreviewOperationsRequestEnvelope,
   decodePreviewSourcePatchRequestEnvelope,
   decodeReadDeclarationsRequestEnvelope,
   decodeReadModulesRequestEnvelope,
@@ -43,6 +44,7 @@ import {
   encodeOpenDocumentResponseEnvelope,
   encodeOrganizeWorkspaceResponseEnvelope,
   encodePreviewFragmentResponseEnvelope,
+  encodePreviewOperationsResponseEnvelope,
   encodePreviewSourcePatchResponseEnvelope,
   encodeReadDeclarationsResponseEnvelope,
   encodeReadModulesResponseEnvelope,
@@ -430,6 +432,8 @@ function decodeRequestEnvelope(operation, controlText) {
       return decodeOrganizeWorkspaceRequestEnvelope(controlText);
     case "engine.preview_fragment":
       return decodePreviewFragmentRequestEnvelope(controlText);
+    case "engine.preview_operations":
+      return decodePreviewOperationsRequestEnvelope(controlText);
     case "engine.preview_source_patch":
       return decodePreviewSourcePatchRequestEnvelope(controlText);
     case "engine.read_declarations":
@@ -479,6 +483,8 @@ function encodeWorkbenchResponse(operation, response) {
       return encodeOrganizeWorkspaceResponseEnvelope(response);
     case "engine.preview_fragment":
       return encodePreviewFragmentResponseEnvelope(response);
+    case "engine.preview_operations":
+      return encodePreviewOperationsResponseEnvelope(response);
     case "engine.preview_source_patch":
       return encodePreviewSourcePatchResponseEnvelope(response);
     case "engine.read_declarations":

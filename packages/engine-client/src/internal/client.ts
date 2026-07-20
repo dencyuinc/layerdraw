@@ -48,6 +48,7 @@ import {
   decodeOpenDocumentResponseEnvelope,
   decodeOrganizeWorkspaceResponseEnvelope,
   decodePreviewFragmentResponseEnvelope,
+  decodePreviewOperationsResponseEnvelope,
   decodePreviewSourcePatchResponseEnvelope,
   decodeReadDeclarationsResponseEnvelope,
   decodeReadModulesResponseEnvelope,
@@ -73,6 +74,7 @@ import {
   encodeOpenDocumentRequestEnvelope,
   encodeOrganizeWorkspaceRequestEnvelope,
   encodePreviewFragmentRequestEnvelope,
+  encodePreviewOperationsRequestEnvelope,
   encodePreviewSourcePatchRequestEnvelope,
   encodeReadDeclarationsRequestEnvelope,
   encodeReadModulesRequestEnvelope,
@@ -96,6 +98,7 @@ import {
   isOpenDocumentInput,
   isOrganizeWorkspaceInput,
   isPreviewFragmentInput,
+  isPreviewOperationsInput,
   isPreviewSourcePatchInput,
   isReadDeclarationsInput,
   isReadModulesInput,
@@ -493,6 +496,7 @@ type WorkbenchEnvelope =
   | EngineProtocol.PlanExportResponseEnvelope
   | EngineProtocol.OrganizeWorkspaceResponseEnvelope
   | EngineProtocol.PreviewFragmentResponseEnvelope
+  | EngineProtocol.PreviewOperationsResponseEnvelope
   | EngineProtocol.PreviewSourcePatchResponseEnvelope
   | EngineProtocol.ReadDeclarationsResponseEnvelope
   | ReadModulesResponseEnvelope
@@ -791,6 +795,11 @@ class EngineClientImplementation implements EngineClient {
       options?: WorkbenchOptions,
     ): Promise<WorkbenchOutcome<EngineProtocol.PreviewFragmentResponseEnvelope>> =>
       this.previewFragment(input, options),
+    previewOperations: (
+      input: EngineProtocol.PreviewOperationsInput,
+      options?: WorkbenchOptions,
+    ): Promise<WorkbenchOutcome<EngineProtocol.PreviewOperationsResponseEnvelope>> =>
+      this.previewOperations(input, options),
     previewSourcePatch: (
       input: EngineProtocol.PreviewSourcePatchInput,
       options?: WorkbenchOptions,
@@ -1093,6 +1102,16 @@ class EngineClientImplementation implements EngineClient {
     return this.executeWorkbenchOperation("engine.preview_fragment", input, options, (envelope) =>
       encodePreviewFragmentRequestEnvelope(envelope as EngineProtocol.PreviewFragmentRequestEnvelope),
     decodePreviewFragmentResponseEnvelope);
+  }
+
+  private previewOperations(
+    input: EngineProtocol.PreviewOperationsInput,
+    options?: WorkbenchOptions,
+  ): Promise<WorkbenchOutcome<EngineProtocol.PreviewOperationsResponseEnvelope>> {
+    if (!isPreviewOperationsInput(input)) throw new EngineClientInputError("INVALID_ARGUMENT");
+    return this.executeWorkbenchOperation("engine.preview_operations", input, options, (envelope) =>
+      encodePreviewOperationsRequestEnvelope(envelope as EngineProtocol.PreviewOperationsRequestEnvelope),
+    decodePreviewOperationsResponseEnvelope);
   }
 
   private previewSourcePatch(
