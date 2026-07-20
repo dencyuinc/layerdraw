@@ -284,7 +284,7 @@ func bundleProductionNPMReport(root string, p policy, report map[string][]npmPac
 				if err := requireAllowedLicense(license, allowed, denied); err != nil {
 					return nil, fmt.Errorf("npm package %s: %w", key, err)
 				}
-				licenseText, readErr := os.ReadFile(licensePath)
+				licenseText, readErr := readFileWithin(packagePath, licensePath)
 				if readErr != nil {
 					return nil, fmt.Errorf("npm package %s license: %w", key, readErr)
 				}
@@ -317,6 +317,23 @@ func findNPMLicenseFile(packagePath string) (string, error) {
 		}
 	}
 	return "", errors.New("installed production package has no license text")
+}
+
+func readFileWithin(base, path string) ([]byte, error) {
+	relative, err := filepath.Rel(base, path)
+	if err != nil {
+		return nil, err
+	}
+	relative = filepath.Clean(relative)
+	if relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("file path escapes root %s: %s", base, path)
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.ReadFile(relative)
 }
 
 func checkRepository(root, policyPath, reportPath string) error {

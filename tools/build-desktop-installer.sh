@@ -49,7 +49,10 @@ NODE
 corepack pnpm install --frozen-lockfile
 if [[ "$platform" == "windows" ]]; then
   corepack pnpm --filter @layerdraw/engine-wasm exec tsc -p tsconfig.build.json
-  for package in protocol composer render viewer engine-client client-sdk react desktop; do
+  # Keep dependency order explicit on Windows, where parallel workspace builds
+  # can race while replacing dist directories. Filters with no matching package
+  # are harmless, which keeps this compatible with branches predating review.
+  for package in protocol composer render viewer engine-client client-sdk review react desktop; do
     corepack pnpm --filter "@layerdraw/$package" build
   done
 else

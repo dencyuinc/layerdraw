@@ -199,6 +199,24 @@ func TestBundleProductionNPMDependenciesRejectsPathsOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestReadFileWithinRejectsPathsOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "LICENSE")
+	if err := os.WriteFile(inside, []byte("inside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := readFileWithin(root, inside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "inside" {
+		t.Fatalf("read content=%q, want inside", data)
+	}
+	if _, err := readFileWithin(root, filepath.Join(root, "..", "LICENSE")); err == nil {
+		t.Fatal("path outside root was accepted")
+	}
+}
+
 func TestWriteDependencyInventory(t *testing.T) {
 	root := t.TempDir()
 	for path, content := range map[string]string{
