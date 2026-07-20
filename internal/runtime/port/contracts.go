@@ -55,6 +55,36 @@ type PrepareRegistryRevisionInput struct {
 // LDL, expands archives, or fabricates source blobs from plan metadata.
 type RegistryRevisionPreparer interface {
 	PrepareRegistryRevision(context.Context, PrepareRegistryRevisionInput) (PreparedRevision, error)
+	PrepareInitialRegistryRevision(context.Context, PrepareInitialRegistryRevisionInput) (PreparedRevision, error)
+}
+
+type PrepareInitialRegistryRevisionInput struct {
+	Scope                      runtimeprotocol.RuntimeScope
+	BaselineRevision           runtimeprotocol.CommittedRevisionRef
+	RegistryTransactionID      string
+	PlanDigest                 protocolcommon.Digest
+	MutationDigest             protocolcommon.Digest
+	ExpectedResolvedLockDigest protocolcommon.Digest
+	StagedObjects              []RegistryStagedObjectRef
+}
+
+// InitialRegistryRevisionPublisher owns the no-head publication point used by
+// templates. Implementations must be idempotent by operation/idempotency key
+// and return ErrConflict if any unrelated head already exists.
+type InitialRegistryRevisionPublisher interface {
+	PublishInitialRegistryRevision(context.Context, PublishInitialRegistryRevisionInput) (runtimeprotocol.CommittedRevisionRef, error)
+}
+
+type PublishInitialRegistryRevisionInput struct {
+	Scope             runtimeprotocol.RuntimeScope
+	OperationID       runtimeprotocol.OperationID
+	IdempotencyKey    runtimeprotocol.IdempotencyKey
+	Prepared          PreparedRevision
+	DecisionDigest    protocolcommon.Digest
+	EvaluationDigest  protocolcommon.Digest
+	Actor             accessprotocol.ActorRef
+	Trigger           runtimeprotocol.CommitTrigger
+	PreviewEvaluation runtimeprotocol.PreviewEvaluation
 }
 
 // WorkingDocumentCloser is optional because some remote Engine facades expire

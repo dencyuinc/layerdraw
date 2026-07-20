@@ -42,7 +42,8 @@ type Operations struct {
 	// RegistryCommit is an owner-only composition boundary. It is deliberately
 	// not advertised as a Runtime protocol operation: Registry already owns its
 	// versioned public contract and calls this typed host handoff in-process.
-	RegistryCommit RegistryCommitOperation
+	RegistryCommit        RegistryCommitOperation
+	RegistryInitialCommit InitialRegistryCommitOperation
 }
 
 type OpenDocumentOperation interface {
@@ -69,24 +70,29 @@ type RegistryCommitOperation interface {
 	CommitRegistryPlan(context.Context, RegistryCommitInput) (runtimeprotocol.RuntimeCommitResult, *ContractError)
 }
 
+type InitialRegistryCommitOperation interface {
+	CommitInitialRegistryTemplate(context.Context, InitialRegistryCommitInput) (runtimeprotocol.RuntimeCommitResult, *ContractError)
+}
+
 // Ports is the complete provider-neutral dependency set. Port presence
 // describes storage support but never implies that an operation handler exists.
 type Ports struct {
-	Workbench     port.Workbench
-	Registry      port.RegistryRevisionPreparer
-	Grants        port.GrantSource
-	Scopes        port.ScopeSource
-	Documents     port.DocumentStore
-	State         port.StateBackend
-	StateBindings port.StateBackendBindingResolver
-	StateAccess   port.StateQueryAuthorization
-	External      port.ExternalFileStore
-	Assets        port.AssetStore
-	History       port.HistoryStore
-	Recovery      port.RecoveryJournal
-	Authoring     port.AuthoringDecision
-	Clock         port.Clock
-	Identities    port.IdentityGenerator
+	Workbench       port.Workbench
+	Registry        port.RegistryRevisionPreparer
+	InitialRegistry port.InitialRegistryRevisionPublisher
+	Grants          port.GrantSource
+	Scopes          port.ScopeSource
+	Documents       port.DocumentStore
+	State           port.StateBackend
+	StateBindings   port.StateBackendBindingResolver
+	StateAccess     port.StateQueryAuthorization
+	External        port.ExternalFileStore
+	Assets          port.AssetStore
+	History         port.HistoryStore
+	Recovery        port.RecoveryJournal
+	Authoring       port.AuthoringDecision
+	Clock           port.Clock
+	Identities      port.IdentityGenerator
 }
 
 type Config struct {
@@ -121,13 +127,16 @@ func New(config Config) (*Runtime, error) {
 		r.config.Operations = Operations{OpenDocument: coordinator, CommitOperations: coordinator, CancelOperation: coordinator, GetOperationResult: coordinator, ListRevisions: coordinator}
 		if config.Ports.Registry != nil {
 			r.config.Operations.RegistryCommit = coordinator
+			if config.Ports.InitialRegistry != nil {
+				r.config.Operations.RegistryInitialCommit = coordinator
+			}
 		}
 	}
 	return r, nil
 }
 
 func operationsEmpty(operations Operations) bool {
-	return operations.OpenDocument == nil && operations.CommitOperations == nil && operations.CancelOperation == nil && operations.GetOperationResult == nil && operations.ListRevisions == nil && operations.RegistryCommit == nil
+	return operations.OpenDocument == nil && operations.CommitOperations == nil && operations.CancelOperation == nil && operations.GetOperationResult == nil && operations.ListRevisions == nil && operations.RegistryCommit == nil && operations.RegistryInitialCommit == nil
 }
 
 func coordinatorPortsConfigured(ports Ports) bool {
@@ -279,6 +288,13 @@ func (r *Runtime) CommitRegistryPlan(ctx context.Context, input RegistryCommitIn
 		return runtimeprotocol.RuntimeCommitResult{}, unavailableOperation("runtime.registry_install")
 	}
 	return r.config.Operations.RegistryCommit.CommitRegistryPlan(ctx, input)
+}
+
+func (r *Runtime) CommitInitialRegistryTemplate(ctx context.Context, input InitialRegistryCommitInput) (runtimeprotocol.RuntimeCommitResult, *ContractError) {
+	if r.config.Operations.RegistryInitialCommit == nil {
+		return runtimeprotocol.RuntimeCommitResult{}, unavailableOperation("runtime.registry_initial_install")
+	}
+	return r.config.Operations.RegistryInitialCommit.CommitInitialRegistryTemplate(ctx, input)
 }
 
 func (r *Runtime) CancelOperation(ctx context.Context, input runtimeprotocol.CancelOperationInput) (runtimeprotocol.CancelOperationResult, *ContractError) {

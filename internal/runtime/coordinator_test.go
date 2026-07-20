@@ -1613,6 +1613,7 @@ type coordinatorHost struct {
 	staged                                                                                  map[string]runtimeprotocol.CommittedRevisionRef
 	history                                                                                 []runtimeprotocol.RevisionMetadata
 	stageCalls, abortCalls, publishCalls, successfulPublishes                               int
+	initialPublishCalls                                                                     int
 	stagedInput                                                                             port.StageRevisionInput
 	previewInput                                                                            port.PreviewWorkingDocumentInput
 	previewErr, stageErr, publishErr, historyErr                                            error
@@ -1891,7 +1892,7 @@ func newCoordinatorFixture(t *testing.T) (*coordinatorHost, *Runtime) {
 	stateHead := port.StateHead{StateVersion: "4", BackendVersion: "state-4", DefinitionHash: base.DefinitionHash, GraphHash: base.GraphHash, CapturedAt: protocolcommon.Rfc3339Time(now.Format(time.RFC3339)), SubjectHashes: map[semantic.StableAddress]protocolcommon.Digest{}}
 	source := sourceBlobForContents("source-main", protocolcommon.BlobLifetimePersistent, "text/ldl", []byte("entity fixture {}\n"))
 	h := &coordinatorHost{now: now, base: base, head: port.DocumentHead{Revision: base, ProviderVersion: "provider-1", FencingToken: "1"}, stateHead: stateHead, working: port.WorkingDocument{Handle: "engine-handle", Generation: "0", BaseRevision: base, DefinitionHash: base.DefinitionHash, GraphHash: digest('7')}, source: source, impact: impact, grant: grant, summary: summary, decision: decision, records: map[runtimeprotocol.OperationID]port.RecoveryRecord{}, keys: map[runtimeprotocol.IdempotencyKey]runtimeprotocol.OperationID{}, staged: map[string]runtimeprotocol.CommittedRevisionRef{}}
-	rt, err := New(Config{ReleaseVersion: "0.0.0-dev", EndpointInstanceID: "runtime-coordinator", ReleaseManifestDigest: digest('f'), Limits: testLimits("100"), Ports: Ports{Workbench: h, Registry: h, Grants: h, Scopes: h, Documents: h, State: coordinatorState{h}, History: h, Recovery: h, Authoring: h, Clock: h, Identities: h}})
+	rt, err := New(Config{ReleaseVersion: "0.0.0-dev", EndpointInstanceID: "runtime-coordinator", ReleaseManifestDigest: digest('f'), Limits: testLimits("100"), Ports: Ports{Workbench: h, Registry: h, InitialRegistry: h, Grants: h, Scopes: h, Documents: h, State: coordinatorState{h}, History: h, Recovery: h, Authoring: h, Clock: h, Identities: h}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2124,6 +2125,10 @@ func (h *coordinatorHost) PrepareRegistryRevision(_ context.Context, input port.
 	}, nil
 }
 
+func (h *coordinatorHost) PrepareInitialRegistryRevision(ctx context.Context, input port.PrepareInitialRegistryRevisionInput) (port.PreparedRevision, error) {
+	return h.PrepareRegistryRevision(ctx, port.PrepareRegistryRevisionInput{Scope: input.Scope, BaseRevision: input.BaselineRevision, RegistryTransactionID: input.RegistryTransactionID, PlanDigest: input.PlanDigest, MutationDigest: input.MutationDigest, ExpectedResolvedLockDigest: input.ExpectedResolvedLockDigest, StagedObjects: input.StagedObjects})
+}
+
 type coordinatorExternalHost struct{ host *coordinatorHost }
 
 func (h coordinatorExternalHost) GetExternalHead(context.Context, port.GetExternalFileHeadInput) (port.ExternalFileHead, error) {
@@ -2239,6 +2244,21 @@ func (h *coordinatorHost) PublishHead(_ context.Context, input port.PublishDocum
 	h.head.ProviderVersion = "provider-2"
 	h.successfulPublishes++
 	return port.PublishHeadResult{Published: true, Revision: revision, ProviderVersion: h.head.ProviderVersion}, h.publishErr
+}
+
+func (h *coordinatorHost) PublishInitialRegistryRevision(_ context.Context, input port.PublishInitialRegistryRevisionInput) (runtimeprotocol.CommittedRevisionRef, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.initialPublishCalls++
+	if validDocumentHead(h.head) {
+		return runtimeprotocol.CommittedRevisionRef{}, port.ErrConflict
+	}
+	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: input.Scope.DocumentID, RevisionID: runtimeprotocol.RevisionID("rev_" + string(input.OperationID)), DefinitionHash: input.Prepared.DefinitionHash, GraphHash: input.Prepared.GraphHash}
+	h.head = port.DocumentHead{Revision: revision, ProviderVersion: "provider-initial", FencingToken: "0"}
+	h.stateHead.DefinitionHash = revision.DefinitionHash
+	h.stateHead.GraphHash = revision.GraphHash
+	h.successfulPublishes++
+	return revision, nil
 }
 
 func (h *coordinatorHost) AbortStagedRevision(context.Context, port.AbortStagedRevisionInput) error {
