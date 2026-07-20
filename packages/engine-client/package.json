@@ -29,6 +29,10 @@
     "./wasm": {
       "types": "./dist/wasm.d.ts",
       "import": "./dist/wasm.js"
+    },
+    "./wails": {
+      "types": "./dist/wails.d.ts",
+      "import": "./dist/wails.js"
     }
   },
   "scripts": {
