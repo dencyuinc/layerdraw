@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "components": [
+    "desktop-shell",
+    "frontend-packages",
+    "mcp-host",
+    "native-adapters",
+    "native-exporters",
+    "registry",
+    "review"
+  ],
+  "excludes": [
+    "development-servers",
+    "source-maps",
+    "test-fixtures"
+  ],
+  "security": {
+    "preconfigured_mcp_endpoints": false,
+    "provider_credentials": false,
+    "signing_secrets": false
+  }
+}

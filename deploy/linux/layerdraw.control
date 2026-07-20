@@ -1,0 +1,9 @@
+Package: layerdraw
+Version: @VERSION@
+Section: graphics
+Priority: optional
+Architecture: amd64
+Maintainer: Dencyu Inc. <support@dencyu.jp>
+Depends: libgtk-3-0, libwebkit2gtk-4.1-0
+Description: LayerDraw Desktop
+ Verifiable desktop authoring and viewing for LayerDraw projects.

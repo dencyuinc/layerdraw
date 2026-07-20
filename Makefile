@@ -14,7 +14,7 @@ ENGINE_BINARY := dist/layerdraw-engine
 HOST_BINARY := dist/layerdraw-host
 ENGINE_WASM_DIR := dist/engine-wasm
 LICENSE_REPORT := reports/dependency-licenses.json
-GO_PACKAGES := ./cmd/... ./internal/... ./tools/protocolgen ./tools/releaseset ./tools/wasmparity
+GO_PACKAGES := ./cmd/... ./internal/... ./tools/desktoprelease ./tools/protocolgen ./tools/releaseset ./tools/wasmparity
 
 .DEFAULT_GOAL := build
 
