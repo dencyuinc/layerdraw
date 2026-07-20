@@ -33,9 +33,11 @@ import (
 
 const (
 	metadataVersion    = 1
+	relocationVersion  = 1
 	defaultMaxSessions = 32
 	defaultMaxRecovery = 256
 	metadataFileMode   = 0o600
+	relocationFileName = "local-document-relocation.json"
 )
 
 // ErrStateRecoveryRequired identifies durable local metadata that must be
@@ -83,25 +85,37 @@ type Config struct {
 }
 
 type Host struct {
-	config    Config
-	engine    *engineendpoint.LocalDocumentEngine
-	runtime   *runtimehost.Runtime
-	documents *local.Document
-	state     *local.State
-	assets    *local.Assets
-	history   *local.History
-	recovery  *local.Recovery
-	external  *local.ExternalFileStore
-	authority *localAuthority
-	workbench *runtimeWorkbench
-	mu        sync.Mutex
+	config     Config
+	engine     *engineendpoint.LocalDocumentEngine
+	runtime    *runtimehost.Runtime
+	documents  *local.Document
+	state      *local.State
+	assets     *local.Assets
+	history    *local.History
+	recovery   *local.Recovery
+	external   *local.ExternalFileStore
+	authority  *localAuthority
+	workbench  *runtimeWorkbench
+	bindingMu  sync.Mutex
+	autosaveMu sync.Mutex
+	mu         sync.Mutex
 	// delegationMu serializes durable delegation snapshots independently from
 	// session lifecycle locking.
 	delegationMu sync.Mutex
 	metadata     lifecycleMetadata
 	sessions     map[runtimeprotocol.RuntimeSessionID]*Session
-	autosaves    map[runtimeprotocol.RuntimeSessionID]func()
+	autosaves    map[runtimeprotocol.RuntimeSessionID]*autosaveJob
 	closed       bool
+}
+
+type autosaveJob struct {
+	cancelScheduled func()
+	started         bool
+	finished        bool
+	done            chan struct{}
+	result          AutosaveResult
+	completion      chan<- AutosaveResult
+	notifyCancel    bool
 }
 
 type lifecycleMetadata struct {
@@ -115,6 +129,13 @@ type documentBinding struct {
 	Locator      string                     `json:"locator"`
 	PortableID   string                     `json:"portable_project_id"`
 	SourceDigest protocolcommon.Digest      `json:"source_digest"`
+}
+
+type relocationJournal struct {
+	Version     int                        `json:"version"`
+	DocumentID  runtimeprotocol.DocumentID `json:"document_id"`
+	Prior       string                     `json:"prior"`
+	Replacement string                     `json:"replacement"`
 }
 
 type Session struct {
@@ -273,12 +294,15 @@ func New(config Config) (*Host, error) {
 		return nil, err
 	}
 	authority := newLocalAuthorityWithDelegations(config.Clock, config.Random, actor, delegations)
-	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]func(){}}
+	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]*autosaveJob{}}
 	metadata, err := host.loadMetadata()
 	if err != nil {
 		return nil, err
 	}
 	host.metadata = metadata
+	if err := host.recoverRelocation(context.Background()); err != nil {
+		return nil, err
+	}
 	for _, binding := range metadata.Bindings {
 		authority.add(binding.DocumentID)
 	}
@@ -370,7 +394,118 @@ func (h *Host) OpenDocument(ctx context.Context, documentID runtimeprotocol.Docu
 	if err != nil {
 		return OpenResult{}, err
 	}
-	return h.openBound(ctx, binding, binding.SourceDigest, source)
+	externalDigest, err := h.currentExternalDigest(ctx, binding, source)
+	if err != nil {
+		return OpenResult{}, err
+	}
+	return h.openBound(ctx, binding, externalDigest, source)
+}
+
+func (h *Host) currentExternalDigest(ctx context.Context, binding documentBinding, committed engineendpoint.LocalSource) (protocolcommon.Digest, error) {
+	switch binding.Kind {
+	case "project":
+		tree, err := readProjectTree(ctx, binding.Locator, h.config.MaxProjectFiles, h.config.MaxProjectBytes)
+		if err != nil {
+			return "", err
+		}
+		candidate, err := h.engine.WithProjectTree(ctx, committed, tree)
+		if err != nil {
+			return "", err
+		}
+		return candidate.Digest(), nil
+	case "container":
+		data, err := os.ReadFile(binding.Locator)
+		if err != nil {
+			return "", err
+		}
+		candidate, err := h.engine.ReadContainer(ctx, data)
+		if err != nil {
+			return "", err
+		}
+		return candidate.Digest(), nil
+	default:
+		return "", errors.New("unknown local source kind")
+	}
+}
+
+// RelocateProject changes only the host-private source locator for an existing
+// stable document. The replacement is compiled and must preserve the portable
+// project identity before metadata is atomically updated. Open sessions cannot
+// be relocated underneath an active Runtime session.
+func (h *Host) RelocateProject(ctx context.Context, documentID runtimeprotocol.DocumentID, input OpenProjectInput) error {
+	root, err := canonicalLocalPath(input.Root, true)
+	if err != nil {
+		return err
+	}
+	if input.EntryPath == "" {
+		input.EntryPath = "document.ldl"
+	}
+	tree, err := readProjectTree(ctx, root, h.config.MaxProjectFiles, h.config.MaxProjectBytes)
+	if err != nil {
+		return err
+	}
+	if _, ok := tree[input.EntryPath]; !ok {
+		return fmt.Errorf("entry module is unavailable: %w", port.ErrNotFound)
+	}
+	resolved := input.ResolvedDependencies
+	if resolved.Format == "" {
+		resolved = engineendpoint.LocalResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1}
+	}
+	source, err := h.engine.CompileProject(ctx, engineendpoint.LocalProjectInput{EntryPath: input.EntryPath, ProjectSourceTree: tree, InstalledPackTree: cloneByteMap(input.InstalledPackTree), ResolvedDependencies: resolved, ReferencedAssets: append([]engineendpoint.LocalAssetInput(nil), input.ReferencedAssets...), ResourceLimits: input.ResourceLimits})
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, session := range h.sessions {
+		if !session.closed && session.Open.Session.Scope.DocumentID == documentID {
+			return port.ErrConflict
+		}
+	}
+	var oldKey string
+	var binding documentBinding
+	for key, candidate := range h.metadata.Bindings {
+		if candidate.DocumentID == documentID {
+			oldKey, binding = key, candidate
+			break
+		}
+	}
+	if oldKey == "" {
+		return port.ErrNotFound
+	}
+	if binding.Kind != "project" || binding.PortableID != source.PortableID {
+		return port.ErrConflict
+	}
+	newKey := bindingKey("project", root)
+	if existing, ok := h.metadata.Bindings[newKey]; ok && existing.DocumentID != documentID {
+		return port.ErrConflict
+	}
+	prior := binding
+	binding.Locator = root
+	journal := relocationJournal{Version: relocationVersion, DocumentID: documentID, Prior: prior.Locator, Replacement: root}
+	if err := h.saveRelocationJournalLocked(journal); err != nil {
+		return err
+	}
+	if err := h.external.Relocate(ctx, h.authority.add(documentID), port.ExternalFileKindProject, prior.Locator, root); err != nil {
+		return err
+	}
+	delete(h.metadata.Bindings, oldKey)
+	h.metadata.Bindings[newKey] = binding
+	if err := h.saveMetadataLocked(); err != nil {
+		delete(h.metadata.Bindings, newKey)
+		h.metadata.Bindings[oldKey] = prior
+		if rollbackErr := h.external.Relocate(context.WithoutCancel(ctx), h.authority.add(documentID), port.ExternalFileKindProject, root, prior.Locator); rollbackErr != nil {
+			return fmt.Errorf("%w: relocation rollback incomplete", ErrStateRecoveryRequired)
+		}
+		if removeErr := h.removeRelocationJournalLocked(); removeErr != nil {
+			return fmt.Errorf("%w: relocation journal cleanup", ErrStateRecoveryRequired)
+		}
+		return err
+	}
+	if err := h.removeRelocationJournalLocked(); err != nil {
+		return fmt.Errorf("%w: relocation journal cleanup", ErrStateRecoveryRequired)
+	}
+	return nil
 }
 
 // ImportContainer always assigns a new host Document ID. Portable project
@@ -400,6 +535,8 @@ func (h *Host) openSource(ctx context.Context, kind, locator string, source engi
 	sourceDigest := source.Digest()
 	portableID := source.PortableID
 	key := bindingKey(kind, locator)
+	h.bindingMu.Lock()
+	defer h.bindingMu.Unlock()
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -438,6 +575,9 @@ func (h *Host) openSource(ctx context.Context, kind, locator string, source engi
 	} else if binding.PortableID != portableID {
 		return OpenResult{}, errors.New("portable project identity changed at bound source")
 	}
+	// Keep source identity selection serialized until Runtime has opened the
+	// bound document. Concurrent Desktop opens then observe one stable binding;
+	// the Desktop lifecycle facade deterministically focuses the first session.
 	return h.openBound(ctx, binding, sourceDigest, source)
 }
 
@@ -661,46 +801,104 @@ func (h *Host) GetOperationStatus(ctx context.Context, session *Session, operati
 }
 
 func (h *Host) ScheduleAutosave(ctx context.Context, input SaveInput, result chan<- AutosaveResult) error {
+	return h.scheduleAutosave(ctx, input, result, false)
+}
+
+func (h *Host) scheduleAutosave(ctx context.Context, input SaveInput, result chan<- AutosaveResult, notifyCancel bool) error {
 	if input.Session == nil {
 		return errors.New("session is required")
 	}
 	input.Trigger = runtimeprotocol.CommitTriggerAutosave
 	id := input.Session.Open.Session.RuntimeSessionID
-	h.mu.Lock()
-	if prior := h.autosaves[id]; prior != nil {
-		prior()
+	h.autosaveMu.Lock()
+	defer h.autosaveMu.Unlock()
+	if _, _, err := h.cancelAutosaveJob(id); err != nil {
+		return err
 	}
+	h.mu.Lock()
 	if input.Session.closed || h.sessions[id] != input.Session {
 		h.mu.Unlock()
 		return errors.New("session is closed or unknown")
 	}
-	cancel := h.config.Scheduler.Schedule(h.config.AutosaveDelay, func() {
-		value, err := h.Save(context.WithoutCancel(ctx), input)
-		if result != nil {
-			result <- AutosaveResult{Result: value, Err: err}
-		}
+	job := &autosaveJob{done: make(chan struct{}), completion: result, notifyCancel: notifyCancel}
+	job.cancelScheduled = h.config.Scheduler.Schedule(h.config.AutosaveDelay, func() {
 		h.mu.Lock()
-		delete(h.autosaves, id)
+		if h.autosaves[id] != job || job.finished {
+			h.mu.Unlock()
+			return
+		}
+		job.started = true
 		h.mu.Unlock()
+		value, err := h.Save(context.WithoutCancel(ctx), input)
+		terminal := AutosaveResult{Result: value, Err: err}
+		h.mu.Lock()
+		job.result = terminal
+		job.finished = true
+		close(job.done)
+		if h.autosaves[id] == job {
+			delete(h.autosaves, id)
+		}
+		h.mu.Unlock()
+		if job.completion != nil {
+			job.completion <- terminal
+		}
 	})
-	h.autosaves[id] = cancel
+	h.autosaves[id] = job
 	h.mu.Unlock()
 	return nil
 }
 
 func (h *Host) CancelAutosave(ref runtimeprotocol.RuntimeSessionRef) error {
+	_, _, err := h.cancelAutosave(ref)
+	return err
+}
+
+func (h *Host) cancelAutosave(ref runtimeprotocol.RuntimeSessionRef) (AutosaveResult, bool, error) {
 	session, err := h.SessionFor(ref)
 	if err != nil {
-		return err
+		return AutosaveResult{}, false, err
 	}
-	id := session.Open.Session.RuntimeSessionID
+	h.autosaveMu.Lock()
+	defer h.autosaveMu.Unlock()
+	return h.cancelAutosaveJob(session.Open.Session.RuntimeSessionID)
+}
+
+// cancelAutosaveJob must be called with autosaveMu held. It waits for an
+// already-running save and returns its real terminal result; a scheduled job
+// that has not started is completed as cancelled.
+func (h *Host) cancelAutosaveJob(id runtimeprotocol.RuntimeSessionID) (AutosaveResult, bool, error) {
 	h.mu.Lock()
-	if cancel := h.autosaves[id]; cancel != nil {
-		cancel()
-		delete(h.autosaves, id)
+	job := h.autosaves[id]
+	if job == nil {
+		h.mu.Unlock()
+		return AutosaveResult{}, false, nil
 	}
+	job.cancelScheduled()
+	if !job.started {
+		terminal := AutosaveResult{Err: context.Canceled}
+		job.result = terminal
+		job.finished = true
+		delete(h.autosaves, id)
+		close(job.done)
+		h.mu.Unlock()
+		if job.notifyCancel && job.completion != nil {
+			select {
+			case job.completion <- terminal:
+			default:
+			}
+		}
+		return terminal, true, nil
+	}
+	done := job.done
 	h.mu.Unlock()
-	return nil
+	<-done
+	return job.result, true, nil
+}
+
+func (h *Host) cancelAutosaveID(id runtimeprotocol.RuntimeSessionID) (AutosaveResult, bool, error) {
+	h.autosaveMu.Lock()
+	defer h.autosaveMu.Unlock()
+	return h.cancelAutosaveJob(id)
 }
 
 func (h *Host) CancelOperation(ctx context.Context, session *Session, operation runtimeprotocol.OperationID, token runtimeprotocol.CancellationToken) (runtimeprotocol.CancelOperationResult, error) {
@@ -719,11 +917,10 @@ func (h *Host) Close(ctx context.Context, session *Session) error {
 		return nil
 	}
 	id := session.Open.Session.RuntimeSessionID
-	h.mu.Lock()
-	if cancel := h.autosaves[id]; cancel != nil {
-		cancel()
-		delete(h.autosaves, id)
+	if _, _, err := h.cancelAutosaveID(id); err != nil {
+		return err
 	}
+	h.mu.Lock()
 	if session.closed {
 		h.mu.Unlock()
 		return nil
@@ -878,6 +1075,126 @@ func cloneByteMap(input map[string][]byte) map[string][]byte {
 
 func (h *Host) metadataPath() string {
 	return filepath.Join(h.config.Root, "local-document-bindings.json")
+}
+
+func (h *Host) relocationPath() string {
+	return filepath.Join(h.config.Root, relocationFileName)
+}
+
+func (h *Host) saveRelocationJournalLocked(value relocationJournal) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(h.config.Root, ".local-document-relocation-")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	ok := false
+	defer func() {
+		_ = tmp.Close()
+		if !ok {
+			_ = os.Remove(name)
+		}
+	}()
+	if err := tmp.Chmod(metadataFileMode); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, h.relocationPath()); err != nil {
+		return err
+	}
+	if err := syncDirectory(h.config.Root); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
+func (h *Host) removeRelocationJournalLocked() error {
+	root, err := os.OpenRoot(h.config.Root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.Remove(relocationFileName); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return syncRootDirectory(root)
+}
+
+func syncDirectory(root string) error {
+	rootDirectory, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rootDirectory.Close()
+	return syncRootDirectory(rootDirectory)
+}
+
+func syncRootDirectory(root *os.Root) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func (h *Host) recoverRelocation(ctx context.Context) error {
+	root, err := os.OpenRoot(h.config.Root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	data, err := root.ReadFile(relocationFileName)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var journal relocationJournal
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&journal); err != nil || journal.Version != relocationVersion || journal.DocumentID == "" || !filepath.IsAbs(journal.Prior) || !filepath.IsAbs(journal.Replacement) {
+		return fmt.Errorf("%w: relocation journal", ErrStateRecoveryRequired)
+	}
+	var oldKey string
+	var binding documentBinding
+	for key, candidate := range h.metadata.Bindings {
+		if candidate.DocumentID == journal.DocumentID {
+			oldKey, binding = key, candidate
+			break
+		}
+	}
+	if oldKey == "" || binding.Kind != "project" || (binding.Locator != journal.Prior && binding.Locator != journal.Replacement) {
+		return fmt.Errorf("%w: relocation binding", ErrStateRecoveryRequired)
+	}
+	scope := h.authority.add(journal.DocumentID)
+	if err := h.external.Relocate(ctx, scope, port.ExternalFileKindProject, journal.Prior, journal.Replacement); err != nil {
+		if matchErr := h.external.Matches(ctx, scope, port.ExternalFileKindProject, journal.Replacement); matchErr != nil {
+			return fmt.Errorf("%w: relocation external binding", ErrStateRecoveryRequired)
+		}
+	}
+	if binding.Locator != journal.Replacement {
+		delete(h.metadata.Bindings, oldKey)
+		binding.Locator = journal.Replacement
+		h.metadata.Bindings[bindingKey("project", binding.Locator)] = binding
+		if err := h.saveMetadataLocked(); err != nil {
+			return err
+		}
+	}
+	return h.removeRelocationJournalLocked()
 }
 
 func (h *Host) readMetadataFile() ([]byte, error) {

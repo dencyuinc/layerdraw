@@ -111,6 +111,55 @@ func (s *ExternalFileStore) Bind(ctx context.Context, input ExternalFileBinding)
 	})
 }
 
+// Relocate replaces a binding only when the caller proves the exact prior
+// canonical locator. This is used by the host's explicit moved-project flow;
+// ordinary Bind calls remain immutable and fail on locator drift.
+func (s *ExternalFileStore) Relocate(ctx context.Context, scope runtimeprotocol.RuntimeScope, kind port.ExternalFileKind, prior, replacement string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if prior == "" || !filepath.IsAbs(prior) || filepath.Clean(prior) != prior {
+		return port.ErrConflict
+	}
+	oldLocator := prior
+	newLocator, err := canonicalExternalLocator(kind, replacement)
+	if err != nil {
+		return err
+	}
+	return s.withLock(scope, func(dir string) error {
+		path := filepath.Join(dir, "external", "binding.json")
+		var existing externalBindingDisk
+		if err := s.readJSON(path, &existing); err != nil {
+			return err
+		}
+		if existing.Kind != kind || existing.Locator != oldLocator {
+			return port.ErrConflict
+		}
+		return s.writeJSON(path, externalBindingDisk{Kind: kind, Locator: newLocator})
+	})
+}
+
+// Matches verifies a trusted binding without exposing its locator.
+func (s *ExternalFileStore) Matches(ctx context.Context, scope runtimeprotocol.RuntimeScope, kind port.ExternalFileKind, locator string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	canonical, err := canonicalExternalLocator(kind, locator)
+	if err != nil {
+		return err
+	}
+	return s.withLock(scope, func(dir string) error {
+		var existing externalBindingDisk
+		if err := s.readJSON(filepath.Join(dir, "external", "binding.json"), &existing); err != nil {
+			return err
+		}
+		if existing.Kind != kind || existing.Locator != canonical {
+			return port.ErrConflict
+		}
+		return nil
+	})
+}
+
 func (s *ExternalFileStore) GetExternalHead(ctx context.Context, input port.GetExternalFileHeadInput) (port.ExternalFileHead, error) {
 	if err := ctx.Err(); err != nil {
 		return port.ExternalFileHead{}, err
@@ -827,7 +876,9 @@ func canonicalExternalLocator(kind port.ExternalFileKind, path string) (string, 
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Lstat(real)
+	// The locator is an explicit native-picker capability. Keep all filesystem
+	// access behind the audited trusted-path boundary after canonicalization.
+	info, err := trustedPathLstat(real)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 {
 		return "", port.ErrConflict
 	}

@@ -36,9 +36,10 @@ type WindowPort interface {
 type DialogKind string
 
 const (
-	DialogOpenProject DialogKind = "open_project"
-	DialogImport      DialogKind = "import"
-	DialogExport      DialogKind = "export"
+	DialogCreateProject DialogKind = "create_project"
+	DialogOpenProject   DialogKind = "open_project"
+	DialogImport        DialogKind = "import"
+	DialogExport        DialogKind = "export"
 )
 
 type DialogRequest struct {

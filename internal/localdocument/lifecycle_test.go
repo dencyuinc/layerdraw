@@ -75,6 +75,13 @@ func (s *fakeScheduler) fireLast() {
 	}
 }
 
+func (s *fakeScheduler) forceFire(index int) {
+	s.mu.Lock()
+	job := s.jobs[index]
+	s.mu.Unlock()
+	job.fn()
+}
+
 func newTestHost(t *testing.T, root string, edit func(*Config)) *Host {
 	t.Helper()
 	config := Config{Root: root, Clock: &fakeClock{now: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)}, Random: &countingReader{}}
@@ -120,6 +127,76 @@ func TestSearchBindingTracksOnlyLiveCommittedSession(t *testing.T) {
 	}
 	if _, _, _, err := host.SearchBinding(opened.Session); err == nil {
 		t.Fatal("closed search session was accepted")
+	}
+}
+
+func TestRelocateProjectPreservesStableIdentityAndDetectsChangedSource(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	project := writeProject(t, root, "project p \"P\" {}\n")
+	opened, err := host.OpenProject(ctx, OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentID := opened.Session.Open.Session.Scope.DocumentID
+	if _, err := host.currentExternalDigest(ctx, documentBinding{Kind: "unknown"}, opened.Session.sourceInput); err == nil {
+		t.Fatal("unknown external kind accepted")
+	}
+	if _, err := host.currentExternalDigest(ctx, documentBinding{Kind: "project", Locator: filepath.Join(root, "missing-project")}, opened.Session.sourceInput); err == nil {
+		t.Fatal("missing external project accepted")
+	}
+	if _, err := host.currentExternalDigest(ctx, documentBinding{Kind: "container", Locator: filepath.Join(root, "missing.layerdraw")}, opened.Session.sourceInput); err == nil {
+		t.Fatal("missing external container accepted")
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: project}); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("active relocate=%v", err)
+	}
+	if err := host.Close(ctx, opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(root, "moved")
+	if err := os.Rename(project, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RelocateProject(ctx, "document_unknown", OpenProjectInput{Root: moved}); !errors.Is(err, port.ErrNotFound) {
+		t.Fatalf("unknown relocate=%v", err)
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: "relative"}); err == nil {
+		t.Fatal("relative relocate accepted")
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: moved, EntryPath: "missing.ldl"}); !errors.Is(err, port.ErrNotFound) {
+		t.Fatalf("missing entry=%v", err)
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: moved}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := host.OpenDocument(ctx, documentID)
+	if err != nil || reopened.ExternalChange != nil || reopened.Session.Open.Session.Scope.DocumentID != documentID {
+		t.Fatalf("reopen=%+v err=%v", reopened, err)
+	}
+	if err := host.Close(ctx, reopened.Session); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moved, "document.ldl"), []byte("project p \"Changed\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := host.OpenDocument(ctx, documentID)
+	if err != nil || changed.ExternalChange == nil || !changed.ExternalChange.RequiresReview {
+		t.Fatalf("changed=%+v err=%v", changed.ExternalChange, err)
+	}
+	if err := host.Close(ctx, changed.Session); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(root, "other")
+	if err := os.Mkdir(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "document.ldl"), []byte("project other \"Other\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: other}); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("portable identity replacement=%v", err)
 	}
 }
 
@@ -554,6 +631,95 @@ func TestAutosaveUsesInjectedSchedulerAndCloseCancels(t *testing.T) {
 		t.Fatalf("cancelled autosave ran: %+v", value)
 	default:
 	}
+}
+
+func TestAutosaveCancelWaitsForRunningResultAndOldCallbackCannotDeleteReplacement(t *testing.T) {
+	root := t.TempDir()
+	source := "project p \"P\" {}\n"
+	project := writeProject(t, root, source)
+	scheduler := &fakeScheduler{}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var faultMu sync.Mutex
+	blockWrite := false
+	blocked := false
+	host := newTestHost(t, filepath.Join(root, "data"), func(c *Config) {
+		c.Scheduler = scheduler
+		c.AdapterOptions = local.Options{Fault: func(operation, _ string) error {
+			faultMu.Lock()
+			shouldBlock := blockWrite && !blocked && operation == "write"
+			if shouldBlock {
+				blocked = true
+			}
+			faultMu.Unlock()
+			if shouldBlock {
+				close(started)
+				<-release
+			}
+			return nil
+		}}
+	})
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := runtimeprotocol.RuntimeCommitInput{
+		Session:        opened.Session.Open.Session,
+		OperationID:    "autosave_running",
+		IdempotencyKey: "autosave_running_key",
+		AuthoringProof: runtimeprotocol.AuthoringProof{},
+		OperationBatch: runtimeprotocol.RuntimeOperationBatch{DocumentID: opened.Session.Open.CommittedRevision.DocumentID, BaseRevision: opened.Session.Open.CommittedRevision, ExpectedDefinitionHash: opened.Session.Open.CommittedRevision.DefinitionHash, Operations: createLayerBatch(t, "running"), Preconditions: allPreconditions(t, source)},
+	}
+	original := make(chan AutosaveResult, 1)
+	if _, err := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: commit.Session, Action: runtimeprotocol.AutosaveActionSchedule, Commit: &commit}, original); err != nil {
+		t.Fatal(err)
+	}
+	faultMu.Lock()
+	blockWrite = true
+	faultMu.Unlock()
+	go scheduler.fireLast()
+	<-started
+	cancelled := make(chan AutosaveResult, 1)
+	cancelDone := make(chan error, 1)
+	go func() {
+		_, cancelErr := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: commit.Session, Action: runtimeprotocol.AutosaveActionCancel}, cancelled)
+		cancelDone <- cancelErr
+	}()
+	select {
+	case err := <-cancelDone:
+		t.Fatalf("running autosave cancel returned before terminal result: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-cancelDone; err != nil {
+		t.Fatal(err)
+	}
+	for name, terminal := range map[string]AutosaveResult{"original": <-original, "cancel": <-cancelled} {
+		if terminal.Err != nil || terminal.Result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommitted {
+			t.Fatalf("%s terminal result=%+v", name, terminal)
+		}
+	}
+
+	replacement := commit
+	replacement.OperationID = "autosave_replacement"
+	replacement.IdempotencyKey = "autosave_replacement_key"
+	first := make(chan AutosaveResult, 1)
+	if _, err := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: commit.Session, Action: runtimeprotocol.AutosaveActionSchedule, Commit: &commit}, first); err != nil {
+		t.Fatal(err)
+	}
+	second := make(chan AutosaveResult, 1)
+	if _, err := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: replacement.Session, Action: runtimeprotocol.AutosaveActionSchedule, Commit: &replacement}, second); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.forceFire(1)
+	host.mu.Lock()
+	jobs := len(host.autosaves)
+	host.mu.Unlock()
+	if jobs != 1 {
+		t.Fatalf("stale callback deleted replacement job: jobs=%d", jobs)
+	}
+	scheduler.fireLast()
+	<-second
 }
 
 func TestRecoveryConvergesPublishedHeadAfterJournalFailure(t *testing.T) {
@@ -1475,6 +1641,105 @@ func TestFilesystemAndFailureBranchesStayBounded(t *testing.T) {
 	}
 	if _, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project}); err == nil {
 		t.Fatal("portable identity change accepted")
+	}
+}
+
+func TestRelocationJournalRollsForwardAfterInterruptedExternalMove(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	prior := writeProject(t, root, "project p \"P\" {}\n")
+	replacement := filepath.Join(root, "replacement")
+	if err := os.MkdirAll(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(replacement, "document.ldl"), []byte("project p \"P\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := newTestHost(t, dataRoot, nil)
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: prior})
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentID := opened.Session.Open.Session.Scope.DocumentID
+	scope := opened.Session.Open.Session.Scope
+	for _, binding := range host.metadata.Bindings {
+		if binding.DocumentID == documentID {
+			prior = binding.Locator
+		}
+	}
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	host.mu.Lock()
+	err = host.saveRelocationJournalLocked(relocationJournal{Version: relocationVersion, DocumentID: documentID, Prior: prior, Replacement: replacement})
+	host.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.external.Relocate(context.Background(), scope, port.ExternalFileKindProject, prior, replacement); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newTestHost(t, dataRoot, nil)
+	found := false
+	for _, binding := range restarted.metadata.Bindings {
+		if binding.DocumentID == documentID {
+			found = binding.Locator == replacement
+		}
+	}
+	if !found {
+		t.Fatalf("relocation was not rolled forward: %+v", restarted.metadata.Bindings)
+	}
+	if _, err := os.Stat(restarted.relocationPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("relocation journal not cleared: %v", err)
+	}
+}
+
+func TestRelocationJournalMissingAndMalformedBoundaries(t *testing.T) {
+	root := t.TempDir()
+	host := newTestHost(t, root, nil)
+	if err := host.removeRelocationJournalLocked(); err != nil {
+		t.Fatalf("missing journal cleanup: %v", err)
+	}
+	if err := os.WriteFile(host.relocationPath(), []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := New(Config{Root: root, Clock: &fakeClock{now: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)}, Random: &countingReader{}})
+	if !errors.Is(err, ErrStateRecoveryRequired) {
+		t.Fatalf("malformed relocation journal=%v", err)
+	}
+	validButUnknown, err := json.Marshal(relocationJournal{Version: relocationVersion, DocumentID: "document_unknown", Prior: filepath.Join(root, "prior"), Replacement: filepath.Join(root, "replacement")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(host.relocationPath(), validButUnknown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{Root: root, Clock: &fakeClock{now: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)}, Random: &countingReader{}}); !errors.Is(err, ErrStateRecoveryRequired) {
+		t.Fatalf("unknown relocation binding=%v", err)
+	}
+	originalRoot := host.config.Root
+	host.config.Root = filepath.Join(root, "missing", "data")
+	if err := syncDirectory(host.config.Root); err == nil {
+		t.Fatal("missing directory sync succeeded")
+	}
+	if err := host.saveRelocationJournalLocked(relocationJournal{}); err == nil {
+		t.Fatal("unwritable relocation journal succeeded")
+	}
+	host.config.Root = originalRoot
+	if err := os.Remove(host.relocationPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(host.relocationPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(host.relocationPath(), "owned"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.saveRelocationJournalLocked(relocationJournal{}); err == nil {
+		t.Fatal("journal rename over non-empty directory succeeded")
+	}
+	if err := host.removeRelocationJournalLocked(); err == nil {
+		t.Fatal("non-empty journal directory was removed")
 	}
 }
 
