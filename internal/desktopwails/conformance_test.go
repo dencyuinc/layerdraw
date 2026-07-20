@@ -55,6 +55,21 @@ func TestPackagedConformanceFailureCodesAreClosed(t *testing.T) {
 	}
 }
 
+func TestPackagedConformanceChildFailureParserIsClosed(t *testing.T) {
+	if got := parseConformanceChildFailure([]byte("LayerDraw Desktop conformance failed [scenario.cold_start.compose]\n"), "cold_start"); got != "scenario.cold_start.compose" {
+		t.Fatalf("closed child code=%q", got)
+	}
+	for _, input := range []string{
+		"LayerDraw Desktop conformance failed [scenario.other.compose]",
+		"LayerDraw Desktop conformance failed [scenario.cold_start.C:\\secret]",
+		"raw native error C:\\secret",
+	} {
+		if got := parseConformanceChildFailure([]byte(input), "cold_start"); got != "" {
+			t.Fatalf("unsafe child diagnostic accepted: %q", got)
+		}
+	}
+}
+
 func TestConformanceRuntimeAndClosedInputsStayBounded(t *testing.T) {
 	runtime := conformanceRuntime{}
 	ctx := context.Background()

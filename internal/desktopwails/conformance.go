@@ -57,6 +57,14 @@ type packagedConformanceError struct {
 	err  error
 }
 
+type conformanceStageError struct {
+	stage string
+	err   error
+}
+
+func (failure *conformanceStageError) Error() string { return failure.stage }
+func (failure *conformanceStageError) Unwrap() error { return failure.err }
+
 func (failure *packagedConformanceError) Error() string { return failure.code }
 func (failure *packagedConformanceError) Unwrap() error { return failure.err }
 
@@ -112,6 +120,9 @@ func RunPackagedConformance(output string) error {
 			rss, err := runConformanceScenarioProcess(ctx, name)
 			cancel()
 			if err != nil {
+				if PackagedConformanceFailureCode(err) != "" {
+					return err
+				}
 				return conformanceFailure("scenario."+name, fmt.Errorf("iteration %d: %w", iteration+1, err))
 			}
 			elapsed := time.Since(started).Milliseconds()
@@ -162,6 +173,12 @@ var runConformanceScenarioProcess = func(ctx context.Context, name string) (int6
 	command := exec.CommandContext(ctx, executable, "--packaged-conformance-scenario", name)
 	encoded, err := command.Output()
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if code := parseConformanceChildFailure(exit.Stderr, name); code != "" {
+				return 0, conformanceFailure(code, errors.New("isolated installed Desktop scenario failed"))
+			}
+		}
 		return 0, errors.New("isolated installed Desktop scenario failed")
 	}
 	var report packagedConformanceScenarioReport
@@ -171,6 +188,24 @@ var runConformanceScenarioProcess = func(ctx context.Context, name string) (int6
 		return 0, errors.New("isolated installed Desktop scenario result is invalid")
 	}
 	return report.WorkerPeakRSS, nil
+}
+
+func parseConformanceChildFailure(stderr []byte, scenario string) string {
+	const prefix = "LayerDraw Desktop conformance failed ["
+	line := strings.TrimSpace(string(stderr))
+	if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, "]") {
+		return ""
+	}
+	code := strings.TrimSuffix(strings.TrimPrefix(line, prefix), "]")
+	if !strings.HasPrefix(code, "scenario."+scenario) && code != "measurement.memory" {
+		return ""
+	}
+	for _, character := range code {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' && character != '.' {
+			return ""
+		}
+	}
+	return code
 }
 
 // RunPackagedConformanceScenario executes one isolated workflow for the
@@ -184,6 +219,10 @@ func RunPackagedConformanceScenario(name string, output io.Writer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := runner(ctx); err != nil {
+		var stage *conformanceStageError
+		if errors.As(err, &stage) {
+			return conformanceFailure("scenario."+name+"."+stage.stage, err)
+		}
 		return conformanceFailure("scenario."+name, err)
 	}
 	rss, err := isolatedWorkerPeakRSSMebibytes()
@@ -240,12 +279,12 @@ type conformanceInstance struct {
 func newConformanceInstance(ctx context.Context, external bool) (*conformanceInstance, error) {
 	root, err := os.MkdirTemp("", "layerdraw-packaged-conformance-*")
 	if err != nil {
-		return nil, err
+		return nil, &conformanceStageError{stage: "root", err: err}
 	}
 	base, err := NewSharedConfig(root)
 	if err != nil {
 		os.RemoveAll(root)
-		return nil, err
+		return nil, &conformanceStageError{stage: "config", err: err}
 	}
 	providers := map[string]ExternalProvider(nil)
 	if external {
@@ -255,11 +294,11 @@ func newConformanceInstance(ctx context.Context, external bool) (*conformanceIns
 	app, vault, err := compose(base, conformanceRuntime{}, providers)
 	if err != nil {
 		os.RemoveAll(root)
-		return nil, err
+		return nil, &conformanceStageError{stage: "compose", err: err}
 	}
 	if started := app.Start(ctx); started.Outcome != protocolcommon.OutcomeSuccess {
 		os.RemoveAll(root)
-		return nil, fmt.Errorf("canonical Desktop application did not start: %+v", started.Failure)
+		return nil, &conformanceStageError{stage: "start", err: errors.New("canonical Desktop application did not start")}
 	}
 	return &conformanceInstance{root: root, app: app, vault: vault}, nil
 }

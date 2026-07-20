@@ -70,7 +70,8 @@ try {
   }
   if ($env:LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT) {
     & $executable --packaged-conformance $env:LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT
-    if ($LASTEXITCODE -ne 0) { throw "installed Desktop conformance scenario failed" }
+    $conformanceExit = $LASTEXITCODE
+    if ($conformanceExit -ne 0) { throw "installed Desktop conformance scenario failed: $conformanceExit" }
   }
   $uninstaller = Join-Path $install "uninstall.exe"
   $removed = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
