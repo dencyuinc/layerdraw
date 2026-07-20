@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 func adapterShellState() desktopcontract.PersistedShellState {
@@ -37,7 +38,7 @@ func TestAtomicSettingsStoreRoundTripsPrivateState(t *testing.T) {
 		t.Fatalf("load=%+v err=%v", loaded, err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm()&0o077 != 0 {
+	if err != nil || !privatefs.PermissionsMatch(info, 0o600) {
 		t.Fatalf("settings permissions=%v err=%v", info.Mode().Perm(), err)
 	}
 }
@@ -272,7 +273,7 @@ func TestJSONLogStoreWritesOnlyStructuredRecords(t *testing.T) {
 		t.Fatalf("log=%q err=%v", data, err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm()&0o077 != 0 {
+	if err != nil || !privatefs.PermissionsMatch(info, 0o600) {
 		t.Fatalf("log permissions=%v err=%v", info.Mode().Perm(), err)
 	}
 	if _, err := NewJSONLogStore("relative.log"); err == nil {

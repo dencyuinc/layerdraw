@@ -25,6 +25,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -132,7 +133,7 @@ func secureRoot(root string) error {
 			}
 			if p == root {
 				existed = true
-				if info.Mode().Perm() != dirMode {
+				if !privatefs.PermissionsMatch(info, dirMode) {
 					entries, readErr := trustedPathReadDir(root)
 					if readErr != nil {
 						return classify(readErr)
@@ -167,7 +168,7 @@ func secureRoot(root string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("unsafe local adapter root: %w", port.ErrConflict)
 	}
-	if info.Mode().Perm() != dirMode {
+	if !privatefs.PermissionsMatch(info, dirMode) {
 		return fmt.Errorf("local adapter root permissions are not private: %w", port.ErrConflict)
 	}
 	return nil
@@ -243,7 +244,7 @@ func (s *Store) validateParents(path string) error {
 		if e != nil {
 			return classify(e)
 		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != dirMode {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !privatefs.PermissionsMatch(info, dirMode) {
 			return fmt.Errorf("unsafe directory boundary: %w", port.ErrConflict)
 		}
 	}
@@ -261,7 +262,7 @@ func (s *Store) validateFile(path string) (fs.FileInfo, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("unsafe file boundary: %w", port.ErrConflict)
 	}
-	if info.Mode().Perm() != fileMode {
+	if !privatefs.PermissionsMatch(info, fileMode) {
 		return nil, fmt.Errorf("file permissions are not private: %w", port.ErrConflict)
 	}
 	return info, nil

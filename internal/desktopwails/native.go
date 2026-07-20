@@ -8,6 +8,7 @@ package desktopwails
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -68,8 +69,10 @@ type selectionVault struct {
 }
 
 type selectionPath struct {
-	path     string
-	identity os.FileInfo
+	path      string
+	identity  os.FileInfo
+	digest    [sha256.Size]byte
+	digestSet bool
 }
 
 const maxPinnedAssociationBytes int64 = 64 << 20
@@ -85,13 +88,22 @@ func (v *selectionVault) issuePinned(path string, identity os.FileInfo) (string,
 	if err != nil || canonical == "" || filepath.Clean(canonical) != canonical {
 		return "", errors.New("native selection is invalid")
 	}
+	selection := selectionPath{path: canonical, identity: identity}
+	if identity != nil {
+		content, err := pinnedContent(selection)
+		if err != nil {
+			return "", err
+		}
+		selection.digest = sha256.Sum256(content)
+		selection.digestSet = true
+	}
 	bytes := make([]byte, 24)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", errors.New("native selection token unavailable")
 	}
 	token := hex.EncodeToString(bytes)
 	v.mu.Lock()
-	v.paths[token] = selectionPath{path: canonical, identity: identity}
+	v.paths[token] = selection
 	v.mu.Unlock()
 	return token, nil
 }
@@ -260,6 +272,11 @@ func validateIdentity(selection selectionPath) error {
 	if err != nil || !current.Mode().IsRegular() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(selection.identity, current) {
 		return errors.New("native selection target changed")
 	}
+	if selection.digestSet {
+		if _, err := pinnedContent(selection); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -285,6 +302,9 @@ func pinnedContent(selection selectionPath) ([]byte, error) {
 	}
 	if int64(len(content)) > maxPinnedAssociationBytes {
 		return nil, errors.New("native selection target is too large")
+	}
+	if selection.digestSet && sha256.Sum256(content) != selection.digest {
+		return nil, errors.New("native selection target changed")
 	}
 	return content, nil
 }

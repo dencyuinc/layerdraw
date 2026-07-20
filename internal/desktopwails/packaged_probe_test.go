@@ -225,8 +225,10 @@ func TestWailsShellHelpersAndCommandRouter(t *testing.T) {
 		t.Fatalf("error surface events=%v err=%v", native.events, err)
 	}
 	accepted := []string{}
-	acceptAssociationArguments(associationAcceptor(func(path string) error { accepted = append(accepted, path); return nil }), []string{"one.ldl", "/tmp/two.ldl"}, "/tmp")
-	if len(accepted) != 2 || accepted[0] != "/tmp/one.ldl" || accepted[1] != "/tmp/two.ldl" {
+	working := t.TempDir()
+	absolute := filepath.Join(working, "two.ldl")
+	acceptAssociationArguments(associationAcceptor(func(path string) error { accepted = append(accepted, path); return nil }), []string{"one.ldl", absolute}, working)
+	if len(accepted) != 2 || accepted[0] != filepath.Join(working, "one.ldl") || accepted[1] != absolute {
 		t.Fatalf("association paths=%v", accepted)
 	}
 }

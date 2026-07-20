@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 const maximumSettingsBytes = 64 * 1024
@@ -40,7 +41,7 @@ func (s *AtomicSettingsStore) Load(context.Context) (desktopcontract.PersistedSh
 		return desktopcontract.PersistedShellState{}, err
 	}
 	defer file.Close()
-	if info.Size() > maximumSettingsBytes || info.Mode().Perm()&0o077 != 0 {
+	if info.Size() > maximumSettingsBytes || !privatefs.PermissionsMatch(info, 0o600) {
 		return desktopcontract.PersistedShellState{}, errors.New("desktop settings file is unsafe")
 	}
 	decoder := json.NewDecoder(io.LimitReader(file, maximumSettingsBytes+1))
@@ -325,7 +326,7 @@ func (s *JSONLogStore) Write(_ context.Context, record desktopcontract.Structure
 	if err != nil {
 		return err
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if !privatefs.PermissionsMatch(info, 0o600) {
 		_ = file.Close()
 		return errors.New("desktop log permissions are unsafe")
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 const delegationFilename = "access-delegations.json"
@@ -36,7 +37,7 @@ func loadDelegations(root string) (*accesscore.DelegationStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 4<<20 {
+	if !info.Mode().IsRegular() || !privatefs.PermissionsMatch(info, 0o600) || info.Size() > 4<<20 {
 		return nil, fmt.Errorf("localdocument: insecure delegation snapshot")
 	}
 	data, err := directory.ReadFile(delegationFilename)
