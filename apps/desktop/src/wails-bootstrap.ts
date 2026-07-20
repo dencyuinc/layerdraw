@@ -1,14 +1,32 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import type { WailsGeneratedBindings } from "@layerdraw/engine-client/wails";
+import { createLibrary } from "@layerdraw/library";
+import type { CapabilityID } from "@layerdraw/protocol/common";
+import { createHostRegistryClient } from "@layerdraw/registry-client/host";
+import { createReviewModel } from "@layerdraw/review";
 import type { Viewer, ViewerPresentationState, ViewerState } from "@layerdraw/viewer";
-import type { DesktopExternalImportPreview, DesktopLifecyclePhase, DesktopLifecycleSnapshot, DesktopMCPConnectRequest, DesktopMCPConnection, DesktopMCPPort, DesktopMCPResult, DesktopMCPStatus, DesktopNativeExportProfile, DesktopNativeInterchangePort, DesktopNativeSerializeResult, DesktopProjectLifecyclePort } from "./contracts.js";
+import type { DesktopExternalImportPreview, DesktopExternalStoragePort, DesktopFeatureAvailability, DesktopHostResult, DesktopLifecyclePhase, DesktopLifecycleSnapshot, DesktopMCPConnectRequest, DesktopMCPConnection, DesktopMCPPort, DesktopMCPResult, DesktopMCPStatus, DesktopNativeExportProfile, DesktopNativeInterchangePort, DesktopNativeSerializeResult, DesktopProjectDialogPort, DesktopProjectLifecyclePort, DesktopProjectOpenDTO, DesktopRecentProjectDTO } from "./contracts.js";
 import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "./wails-bindings.js";
+import type { DesktopLibraryFeature, DesktopProjectOwnerBinding, DesktopRegistryHostBinding, DesktopRegistryRequestDTO, DesktopReviewFeature, DesktopReviewHostBinding } from "./wails-owner.js";
 
 export const desktopLifecycleEvent = "layerdraw:desktop-lifecycle";
 
+type JsonObject = Readonly<Record<string, unknown>>;
+
 export interface DesktopWailsApplicationBinding {
   State(): Promise<unknown>;
+  CreateProjectDialog(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  OpenProjectDialog(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  RecentProjects(): Promise<DesktopHostResult<readonly DesktopRecentProjectDTO[]>>;
+  ConnectExternal(input: JsonObject): Promise<DesktopHostResult<JsonObject>>;
+  InspectExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
+  RefreshExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
+  DisconnectExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
+  SelectExternalRemote(input: JsonObject): Promise<DesktopHostResult<JsonObject>>;
+  AcquireExternalLease(session: JsonObject, binding: JsonObject): Promise<DesktopHostResult<JsonObject>>;
+  PlanExternalReconcile(session: JsonObject, input: JsonObject, restricted: boolean): Promise<DesktopHostResult<JsonObject>>;
+  ApplyExternalReconcile(session: JsonObject, plan: JsonObject, resolution: string): Promise<DesktopHostResult<JsonObject>>;
   NativeExportProfiles(): Promise<unknown>;
   SerializeNativeExport(input: unknown): Promise<unknown>;
   PublishNativeExportDialog(input: unknown): Promise<unknown>;
@@ -16,12 +34,12 @@ export interface DesktopWailsApplicationBinding {
 }
 
 export interface DesktopWailsMCPBinding {
-	MCPStatus(): Promise<DesktopMCPStatus>;
-	SetMCPEnabled(enabled: boolean, transport: "local"): Promise<DesktopMCPResult<DesktopMCPStatus>>;
-	RestartMCP(): Promise<DesktopMCPResult<DesktopMCPStatus>>;
-	ListMCPConnections(): Promise<readonly DesktopMCPConnection[]>;
-	CreateMCPConnection(request: DesktopMCPConnectRequest): Promise<DesktopMCPResult<DesktopMCPConnection>>;
-	RevokeMCPConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
+  MCPStatus(): Promise<DesktopMCPStatus>;
+  SetMCPEnabled(enabled: boolean, transport: "local"): Promise<DesktopMCPResult<DesktopMCPStatus>>;
+  RestartMCP(): Promise<DesktopMCPResult<DesktopMCPStatus>>;
+  ListMCPConnections(): Promise<readonly DesktopMCPConnection[]>;
+  CreateMCPConnection(request: DesktopMCPConnectRequest): Promise<DesktopMCPResult<DesktopMCPConnection>>;
+  RevokeMCPConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
 }
 
 export interface DesktopWailsRuntimeBinding {
@@ -29,12 +47,21 @@ export interface DesktopWailsRuntimeBinding {
   EventsOff(name: string): void;
 }
 
+export interface DesktopWailsOwnerBindings {
+  readonly project?: DesktopProjectOwnerBinding;
+  readonly registry?: DesktopRegistryHostBinding;
+  readonly review?: DesktopReviewHostBinding;
+}
+
 export interface DesktopWailsComposition {
   readonly lifecycle: DesktopProjectLifecyclePort;
   readonly viewer: Viewer;
-  /** Exact Engine + Runtime method closure used by the Wails clients. */
   readonly generatedBindings: WailsGeneratedBindings;
+  readonly projectDialogs: DesktopProjectDialogPort;
+  readonly externalStorage: DesktopExternalStoragePort;
   readonly nativeInterchange: DesktopNativeInterchangePort;
+  readonly library: DesktopLibraryFeature;
+  readonly review: DesktopReviewFeature;
   readonly mcp: DesktopMCPPort;
 }
 
@@ -65,8 +92,7 @@ function nativeInterchange(application: DesktopWailsApplicationBinding): Desktop
 }
 
 function lifecyclePhase(value: unknown): DesktopLifecyclePhase {
-  return value === "starting" || value === "ready" || value === "recovery" || value === "draining" || value === "stopped"
-    ? value : "recovery";
+  return value === "starting" || value === "ready" || value === "recovery" || value === "draining" || value === "stopped" ? value : "recovery";
 }
 
 function eventPhase(value: unknown): DesktopLifecyclePhase {
@@ -74,69 +100,105 @@ function eventPhase(value: unknown): DesktopLifecyclePhase {
   return lifecyclePhase((value as Readonly<Record<string, unknown>>).state);
 }
 
-/**
- * Adapts only Wails lifecycle framing. Project/editor/view publications are
- * supplied by their owning adapters and never reconstructed from global state.
- */
+const unavailable: DesktopFeatureAvailability = Object.freeze({ status: "unavailable", reason: "host_disabled" });
+function unavailableCapabilities(): Readonly<Record<CapabilityID, DesktopFeatureAvailability>> {
+  return Object.freeze({
+    "desktop.project": unavailable,
+    "engine.materialize_view": unavailable,
+    "desktop.recovery": unavailable,
+    "desktop.external_storage": unavailable,
+    "desktop.registry": unavailable,
+    "desktop.review": unavailable,
+  }) as Readonly<Record<CapabilityID, DesktopFeatureAvailability>>;
+}
+
 export async function createDesktopWailsLifecycle(
-  application: DesktopWailsApplicationBinding,
+  application: Pick<DesktopWailsApplicationBinding, "State">,
   runtime: DesktopWailsRuntimeBinding,
+  owner?: DesktopProjectOwnerBinding,
 ): Promise<DesktopProjectLifecyclePort> {
   let sequence = 0;
-  let snapshot: DesktopLifecycleSnapshot = Object.freeze({ sequence, phase: lifecyclePhase(await application.State()), capabilities: Object.freeze({}) });
+  const owned = owner === undefined ? undefined : await owner.ProjectPublication();
+  let snapshot: DesktopLifecycleSnapshot = owned ?? Object.freeze({ sequence, phase: lifecyclePhase(await application.State()), capabilities: unavailableCapabilities() });
   const listeners = new Set<() => void>();
-  const onLifecycle = (event: unknown): void => {
-    snapshot = Object.freeze({ sequence: ++sequence, phase: eventPhase(event), capabilities: snapshot.capabilities });
+  const publish = (next: DesktopLifecycleSnapshot): void => {
+    snapshot = Object.freeze({ ...next, sequence: ++sequence });
     for (const listener of [...listeners]) listener();
   };
+  const failUnavailable = (code: "desktop.selection_failed" | "desktop.lifecycle_failed"): void => {
+    publish({ ...snapshot, failure: Object.freeze({ code, message_key: code === "desktop.selection_failed" ? "desktop.error.selection_failed" : "desktop.error.lifecycle_failed", recoverable: true }) });
+  };
+  const action = async (kind: "select" | "recovery" | "disconnect", viewAddress: string | undefined, signal: AbortSignal): Promise<void> => {
+    const project = snapshot.project;
+    if (owner === undefined || project === undefined) { failUnavailable(kind === "select" ? "desktop.selection_failed" : "desktop.lifecycle_failed"); return; }
+    const base = { project_id: project.project_id, session_generation: project.session_generation, authoritative_revision_token: project.authoritative_revision_token };
+    const result = kind === "select"
+      ? await owner.SelectProjectView({ ...base, view_address: viewAddress ?? "" }, signal)
+      : kind === "recovery"
+        ? await owner.ShowProjectRecoveryOptions(base, signal)
+        : await owner.DisconnectProjectExternal(base, signal);
+    if (result.outcome === "success") publish(result.publication);
+    else failUnavailable(kind === "select" ? "desktop.selection_failed" : "desktop.lifecycle_failed");
+  };
+  const onLifecycle = (event: unknown): void => publish({ ...snapshot, phase: eventPhase(event) });
   runtime.EventsOn(desktopLifecycleEvent, onLifecycle);
   return Object.freeze({
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
-    async selectView() { throw new Error("desktop project owner is not connected"); },
-    async showRecoveryOptions() { throw new Error("desktop recovery owner is not connected"); },
-	async disconnectExternal() { throw new Error("desktop external storage owner is not connected"); },
+    selectView(viewAddress: string, signal: AbortSignal) { return action("select", viewAddress, signal); },
+    showRecoveryOptions(signal: AbortSignal) { return action("recovery", undefined, signal); },
+    disconnectExternal(signal: AbortSignal) { return action("disconnect", undefined, signal); },
   });
 }
 
-/** Constructs the Desktop-owned adapters without discovering Wails globals. */
 export async function createDesktopWailsComposition(
-	application: DesktopWailsApplicationBinding,
-	runtime: DesktopWailsRuntimeBinding,
-	mcpBinding: DesktopWailsMCPBinding,
-	invoke: DesktopWailsInvoke,
+  application: DesktopWailsApplicationBinding,
+  runtime: DesktopWailsRuntimeBinding,
+  mcpBinding: DesktopWailsMCPBinding,
+  invoke: DesktopWailsInvoke,
+  owners: DesktopWailsOwnerBindings = {},
 ): Promise<DesktopWailsComposition> {
-  const [lifecycle, viewer] = await Promise.all([
-    createDesktopWailsLifecycle(application, runtime),
-    Promise.resolve(createUnopenedViewer()),
-	]);
-	const mcp: DesktopMCPPort = Object.freeze({
-		status: () => mcpBinding.MCPStatus(),
-		setEnabled: (enabled: boolean) => mcpBinding.SetMCPEnabled(enabled, "local"),
-		restart: () => mcpBinding.RestartMCP(),
-		listConnections: () => mcpBinding.ListMCPConnections(),
-		createConnection: (request: DesktopMCPConnectRequest) => mcpBinding.CreateMCPConnection(request),
-		revokeConnection: (connectionID: string) => mcpBinding.RevokeMCPConnection(connectionID),
-	});
-	return Object.freeze({
-    lifecycle,
-    viewer,
-    mcp,
-    generatedBindings: createDesktopGeneratedBindings(invoke),
-    nativeInterchange: nativeInterchange(application),
+  const lifecycle = await createDesktopWailsLifecycle(application, runtime, owners.project);
+  const mcp: DesktopMCPPort = Object.freeze({
+    status: () => mcpBinding.MCPStatus(),
+    setEnabled: (enabled: boolean) => mcpBinding.SetMCPEnabled(enabled, "local"),
+    restart: () => mcpBinding.RestartMCP(),
+    listConnections: () => mcpBinding.ListMCPConnections(),
+    createConnection: (request: DesktopMCPConnectRequest) => mcpBinding.CreateMCPConnection(request),
+    revokeConnection: (connectionID: string) => mcpBinding.RevokeMCPConnection(connectionID),
   });
+  const projectDialogs: DesktopProjectDialogPort = Object.freeze({ create: (id: string) => application.CreateProjectDialog(id), open: (id: string) => application.OpenProjectDialog(id), recent: () => application.RecentProjects() });
+  const externalStorage: DesktopExternalStoragePort = Object.freeze({
+    connect: (input: JsonObject) => application.ConnectExternal(input), inspect: (id: string) => application.InspectExternal(id), refresh: (id: string) => application.RefreshExternal(id), disconnect: (id: string) => application.DisconnectExternal(id),
+    selectRemote: (input: JsonObject) => application.SelectExternalRemote(input), acquireLease: (session: JsonObject, binding: JsonObject) => application.AcquireExternalLease(session, binding),
+    planReconcile: (session: JsonObject, input: JsonObject, restricted: boolean) => application.PlanExternalReconcile(session, input, restricted), applyReconcile: (session: JsonObject, plan: JsonObject, resolution: string) => application.ApplyExternalReconcile(session, plan, resolution),
+  });
+  const registry = owners.registry;
+  const library: DesktopLibraryFeature = registry === undefined
+    ? Object.freeze({ status: "unavailable", availability: unavailable })
+    : Object.freeze({ status: "available", value: createLibrary({ client: createHostRegistryClient({ invoke: (request: unknown) => registry.RegistryDispatch(request as DesktopRegistryRequestDTO) }), capabilities: { browse: true, manage_sources: true, plan_transactions: true, commit_transactions: true, author_artifacts: true } }) });
+  const reviewBinding = owners.review;
+  const review: DesktopReviewFeature = reviewBinding === undefined
+    ? Object.freeze({ status: "unavailable", availability: unavailable })
+    : Object.freeze({ status: "available", value: createReviewModel({
+      snapshot: ({ signal }) => signal.aborted ? Promise.reject(new DOMException("Aborted", "AbortError")) : reviewBinding.ReviewSnapshot(),
+      comment: (input, { signal }) => signal.aborted ? Promise.reject(new DOMException("Aborted", "AbortError")) : reviewBinding.ReviewComment(input),
+      approveAndApply: (input, { signal }) => signal.aborted ? Promise.reject(new DOMException("Aborted", "AbortError")) : reviewBinding.ReviewApproveAndApply(input),
+      withdraw: (input, { signal }) => signal.aborted ? Promise.reject(new DOMException("Aborted", "AbortError")) : reviewBinding.ReviewWithdraw(input),
+    }) });
+  return Object.freeze({ lifecycle, viewer: owners.project?.CreateProjectViewer() ?? createUnavailableViewer(), mcp, generatedBindings: createDesktopGeneratedBindings(invoke), projectDialogs, externalStorage, nativeInterchange: nativeInterchange(application), library, review });
 }
 
-const emptyPresentation: ViewerPresentationState = Object.freeze({
-  selection_keys: [], zoom: 1, pan: Object.freeze({ x: 0, y: 0 }), expanded_keys: [], sorting: [], display_preferences: Object.freeze({}),
-});
+const emptyPresentation: ViewerPresentationState = Object.freeze({ selection_keys: [], zoom: 1, pan: Object.freeze({ x: 0, y: 0 }), expanded_keys: [], sorting: [], display_preferences: Object.freeze({}) });
 
-/** A capability-free Viewer boundary used before any project owner publishes. */
-export function createUnopenedViewer(): Viewer {
-  let state: ViewerState = Object.freeze({ status: "empty", reason: "no_snapshot" });
+/** Explicit capability-disabled Viewer used until the project owner is installed. */
+export function createUnavailableViewer(): Viewer {
+  const error = Object.freeze({ code: "viewer.profile_unsupported" as const, recoverable: true, details: Object.freeze({ capability: "engine.materialize_view", reason: "host_disabled" }) });
+  let state: ViewerState = Object.freeze({ status: "unsupported_profile", error });
+  const reject = async () => ({ ok: false as const, outcome: "rejected" as const, error, state });
   return Object.freeze({
-    async setViewData() { return { ok: false as const, outcome: "rejected" as const, error: { code: "viewer.input_invalid" as const, recoverable: true, details: {} }, state }; },
-    async applyViewDataUpdate() { return { ok: false as const, outcome: "rejected" as const, error: { code: "viewer.input_invalid" as const, recoverable: true, details: {} }, state }; },
+    setViewData: reject,
+    applyViewDataUpdate: reject,
     updatePresentation: () => emptyPresentation,
     setSelection: () => emptyPresentation,
     inspectSource: () => undefined,

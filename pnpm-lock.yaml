@@ -20,15 +20,27 @@ importers:
       '@layerdraw/client-sdk':
         specifier: workspace:*
         version: link:../../packages/client-sdk
+      '@layerdraw/composer':
+        specifier: workspace:*
+        version: link:../../packages/composer
       '@layerdraw/engine-client':
         specifier: workspace:*
         version: link:../../packages/engine-client
+      '@layerdraw/export':
+        specifier: workspace:*
+        version: link:../../packages/export
+      '@layerdraw/library':
+        specifier: workspace:*
+        version: link:../../packages/library
       '@layerdraw/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       '@layerdraw/react':
         specifier: workspace:*
         version: link:../../packages/react
+      '@layerdraw/registry-client':
+        specifier: workspace:*
+        version: link:../../packages/registry-client
       '@layerdraw/render':
         specifier: workspace:*
         version: link:../../packages/render

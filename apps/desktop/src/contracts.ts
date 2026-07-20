@@ -89,6 +89,44 @@ export interface DesktopProjectLifecyclePort {
 	disconnectExternal(signal: AbortSignal): Promise<void>;
 }
 
+export type DesktopHostResult<T> =
+  | Readonly<{ outcome: "success"; value: T }>
+  | Readonly<{ outcome: "failed" | "rejected" | "cancelled"; failure?: Readonly<{ code: string; retryable?: boolean }> }>;
+
+/** JSON-only result returned by the native create/open project dialogs. */
+export interface DesktopProjectOpenDTO {
+  readonly open: Readonly<Record<string, unknown>>;
+  readonly history: Readonly<Record<string, unknown>>;
+  readonly project_id: string;
+  readonly disposition: string;
+  readonly reconcile_pending: boolean;
+  readonly recovery?: Readonly<Record<string, unknown>>;
+}
+
+export interface DesktopRecentProjectDTO {
+  readonly project_id: string;
+  readonly display_name: string;
+  readonly [field: string]: unknown;
+}
+
+export interface DesktopProjectDialogPort {
+  create(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  open(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  recent(): Promise<DesktopHostResult<readonly DesktopRecentProjectDTO[]>>;
+}
+
+/** Trusted native external-storage operations; credentials never cross this boundary. */
+export interface DesktopExternalStoragePort {
+  connect(input: Readonly<Record<string, unknown>>): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  inspect(connectionID: string): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  refresh(connectionID: string): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  disconnect(connectionID: string): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  selectRemote(input: Readonly<Record<string, unknown>>): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  acquireLease(session: Readonly<Record<string, unknown>>, binding: Readonly<Record<string, unknown>>): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  planReconcile(session: Readonly<Record<string, unknown>>, input: Readonly<Record<string, unknown>>, restricted: boolean): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  applyReconcile(session: Readonly<Record<string, unknown>>, plan: Readonly<Record<string, unknown>>, resolution: string): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+}
+
 export interface DesktopNativeExportProfile {
   readonly format: "json" | "csv" | "tsv";
   readonly schema_version: 1;

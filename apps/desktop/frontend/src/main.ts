@@ -3,8 +3,9 @@
 import { mountDesktopShell } from "../../src/mount.js";
 import { installAccessibilityProbe, isPackagedProbeMode, signalAccessibilityProbeReady } from "../../src/native-shell.js";
 import { mountPackagedProbeShell } from "../../src/packaged-probe.js";
-import { createDesktopWailsComposition } from "../../src/wails-bootstrap.js";
-import { CreateMCPConnection, Invoke, ListMCPConnections, MCPStatus, RestartMCP, RevokeMCPConnection, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { createDesktopWailsComposition, type DesktopWailsApplicationBinding, type DesktopWailsMCPBinding } from "../../src/wails-bootstrap.js";
+import type { DesktopWailsInvoke } from "../../src/wails-bindings.js";
+import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MCPStatus, NativeExportProfiles, OpenProjectDialog, PlanExternalReconcile, PublishNativeExportDialog, RecentProjects, RefreshExternal, RestartMCP, RevokeMCPConnection, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { EventsOff, EventsOn } from "../wailsjs/runtime/runtime.js";
 
 async function start(): Promise<void> {
@@ -16,16 +17,25 @@ async function start(): Promise<void> {
     await signalAccessibilityProbeReady();
     return;
   }
+  const application = {
+    State, CreateProjectDialog, OpenProjectDialog, RecentProjects,
+    ConnectExternal, InspectExternal, RefreshExternal, DisconnectExternal,
+    SelectExternalRemote, AcquireExternalLease, PlanExternalReconcile, ApplyExternalReconcile,
+    NativeExportProfiles, SerializeNativeExport, PublishNativeExportDialog, ImportExternalDialog,
+  } as unknown as DesktopWailsApplicationBinding;
   const composition = await createDesktopWailsComposition(
-    { State },
+    application,
 		{ EventsOn, EventsOff },
-		{ MCPStatus, SetMCPEnabled, RestartMCP, ListMCPConnections, CreateMCPConnection, RevokeMCPConnection },
-    (method, exchange) => Invoke(method, exchange),
+		{ MCPStatus, SetMCPEnabled, RestartMCP, ListMCPConnections, CreateMCPConnection, RevokeMCPConnection } as unknown as DesktopWailsMCPBinding,
+    Invoke as unknown as DesktopWailsInvoke,
   );
   mountDesktopShell(root, {
     lifecycle: composition.lifecycle,
 		viewer: composition.viewer,
 		mcp: composition.mcp,
+		libraryAvailability: composition.library.status === "available" ? { status: "available" } : composition.library.availability,
+		reviewAvailability: composition.review.status === "available" ? { status: "available" } : composition.review.availability,
+		...(composition.review.status === "available" ? { reviewModel: composition.review.value } : {}),
     viewSelectionCapability: "engine.materialize_view",
     editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
   });

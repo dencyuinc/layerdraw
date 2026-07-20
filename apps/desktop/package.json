@@ -22,9 +22,13 @@
   },
   "dependencies": {
     "@layerdraw/client-sdk": "workspace:*",
+    "@layerdraw/composer": "workspace:*",
     "@layerdraw/engine-client": "workspace:*",
+    "@layerdraw/export": "workspace:*",
+    "@layerdraw/library": "workspace:*",
     "@layerdraw/protocol": "workspace:*",
     "@layerdraw/react": "workspace:*",
+    "@layerdraw/registry-client": "workspace:*",
     "@layerdraw/render": "workspace:*",
     "@layerdraw/review": "workspace:*",
     "@layerdraw/viewer": "workspace:*",

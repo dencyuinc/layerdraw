@@ -21,3 +21,14 @@ test("Desktop styles have explicit wide, narrow, focus, and reduced-motion behav
   assert.match(styles, /:focus/);
   assert.match(styles, /prefers-reduced-motion: reduce/);
 });
+
+test("Desktop declares and packages its complete normative frontend closure", async () => {
+  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  for (const dependency of ["@layerdraw/client-sdk", "@layerdraw/composer", "@layerdraw/engine-client", "@layerdraw/export", "@layerdraw/library", "@layerdraw/protocol", "@layerdraw/react", "@layerdraw/registry-client", "@layerdraw/render", "@layerdraw/review", "@layerdraw/viewer"]) {
+    assert.equal(manifest.dependencies[dependency], "workspace:*", dependency);
+  }
+  const tsconfig = JSON.parse(await readFile(new URL("../tsconfig.json", import.meta.url), "utf8"));
+  assert.ok(tsconfig.include.includes("frontend/src/**/*.ts"));
+  const installer = await readFile(new URL("../../../tools/build-desktop-installer.sh", import.meta.url), "utf8");
+  assert.match(installer, /export registry-client library review react desktop/);
+});

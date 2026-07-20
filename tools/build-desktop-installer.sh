@@ -75,7 +75,7 @@ if [[ "$platform" == "windows" ]]; then
   # Keep dependency order explicit on Windows, where parallel workspace builds
   # can race while replacing dist directories. Filters with no matching package
   # are harmless, which keeps this compatible with branches predating review.
-  for package in protocol composer render viewer engine-client client-sdk review react desktop; do
+  for package in protocol composer render viewer engine-client client-sdk export registry-client library review react desktop; do
     corepack pnpm --filter "@layerdraw/$package" build
   done
 else

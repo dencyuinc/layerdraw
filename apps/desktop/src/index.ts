@@ -9,3 +9,4 @@ export * from "./shell.js";
 export * from "./viewer-surface.js";
 export * from "./wails-bootstrap.js";
 export * from "./wails-bindings.js";
+export * from "./wails-owner.js";
