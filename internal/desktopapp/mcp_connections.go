@@ -3,7 +3,11 @@
 package desktopapp
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"strconv"
 	"time"
@@ -306,7 +310,58 @@ func (a *Application) MCPCallConnectionTool(ctx context.Context, connectionID st
 	if request.Binding != nil && (request.Binding.DocumentID != connection.DocumentID || request.Binding.AccessFingerprint != connection.GrantSummary.AccessFingerprint) {
 		return mcphost.CallToolResult{Failure: &mcphost.Failure{Code: mcphost.ErrorStaleBinding}}
 	}
+	if request.Name == "layerdraw.get_capabilities" {
+		if request.Cursor != "" || !bytes.Equal(bytes.TrimSpace(request.Arguments), []byte("{}")) {
+			return mcphost.CallToolResult{Failure: &mcphost.Failure{Code: mcphost.ErrorInvalidRequest}}
+		}
+		content, err := a.mcpConnectionCapabilities(callCtx.Context, connection)
+		if err != nil {
+			return mcphost.CallToolResult{Failure: &mcphost.Failure{Code: mcphost.ErrorOwnerFailure, Retryable: true}}
+		}
+		return mcphost.CallToolResult{Content: content}
+	}
 	return a.MCPCallTool(callCtx.Context, request)
+}
+
+func (a *Application) mcpConnectionCapabilities(ctx context.Context, connection MCPConnection) (json.RawMessage, error) {
+	snapshot, err := a.config.MCPCapabilities.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	operations := make(map[string]mcphost.OperationCapability, len(snapshot.Operations))
+	for operation, capability := range snapshot.Operations {
+		operations[operation] = capability
+	}
+	snapshot.Operations = operations
+	snapshot.Resources = append([]mcphost.ResourceCapability(nil), snapshot.Resources...)
+	allowed := map[string]bool{}
+	for _, route := range mcphost.ToolRoutes() {
+		if !connectionAllows(connection, route.Permission) {
+			continue
+		}
+		allowed[route.Operation], allowed[route.PreviewOperation] = true, true
+		for _, operation := range route.RequiredOperations {
+			allowed[operation] = true
+		}
+	}
+	delete(allowed, "")
+	for operation := range snapshot.Operations {
+		if !allowed[operation] {
+			delete(snapshot.Operations, operation)
+		}
+	}
+	if !connection.Permissions.Read {
+		snapshot.Resources = []mcphost.ResourceCapability{}
+	}
+	snapshot.GrantSummary = connection.GrantSummary
+	snapshot.ManifestETag = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	content, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(content)
+	snapshot.ManifestETag = protocolcommon.ManifestETag("sha256:" + hex.EncodeToString(digest[:]))
+	return json.Marshal(snapshot)
 }
 
 type mcpCallContext struct {

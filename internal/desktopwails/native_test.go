@@ -603,7 +603,11 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, status := range handshake.CapabilityStatuses {
-		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring || status.CapabilityID == desktopcontract.CapabilityExport
+		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring ||
+			status.CapabilityID == desktopcontract.CapabilityExport ||
+			status.CapabilityID == desktopcontract.CapabilityMCPTools ||
+			status.CapabilityID == desktopcontract.CapabilityMCPResources ||
+			status.CapabilityID == desktopcontract.CapabilityAgentScope
 		if status.Enabled != packaged || (!packaged && status.UnavailableReason == nil) {
 			t.Fatalf("capability availability is not truthful: %+v", status)
 		}
@@ -635,6 +639,30 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 	}
 	if _, err := decoder.DecodeResponse("review.submit", control); err == nil {
 		t.Fatal("unavailable response accepted")
+	}
+}
+
+func TestPackagedDesktopComposesCanonicalMCPDefaultOff(t *testing.T) {
+	base, err := NewSharedConfig(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := Compose(base, &nativeStub{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := app.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start=%+v", result)
+	}
+	defer app.Shutdown(context.Background())
+	if status := app.MCPStatus(); status.Enabled {
+		t.Fatalf("MCP silently enabled: %+v", status)
+	}
+	if result := app.SetMCPEnabled(context.Background(), true, desktopapp.MCPTransportLocal); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("enable=%+v", result)
+	}
+	if tools, failure := app.MCPListTools(context.Background()); failure != nil || len(tools) < 2 {
+		t.Fatalf("tools=%d failure=%+v", len(tools), failure)
 	}
 }
 

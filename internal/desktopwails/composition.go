@@ -264,6 +264,10 @@ func compose(base desktopapp.Config, runtime NativeRuntime, providers map[string
 			return nil, nil, errors.New("external lifecycle requires its capability adapter")
 		}
 	}
+	if base.MCPCapabilities != nil {
+		application, err := desktopapp.NewCanonical(base)
+		return application, vault, err
+	}
 	application, err := desktopapp.New(base)
 	return application, vault, err
 }

@@ -8,17 +8,20 @@ import (
 	"errors"
 	"os/user"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/host"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	"github.com/dencyuinc/layerdraw/internal/mcphost"
 )
 
 const (
@@ -30,6 +33,9 @@ const (
 var packagedCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityAuthoring,
 	desktopcontract.CapabilityExport,
+	desktopcontract.CapabilityMCPTools,
+	desktopcontract.CapabilityMCPResources,
+	desktopcontract.CapabilityAgentScope,
 }
 
 // NewSharedConfig wires the Engine and Runtime owners that are actually
@@ -60,12 +66,12 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 			desktopcontract.ComponentNativeQuery, desktopcontract.ComponentSearchIndex,
 			desktopcontract.ComponentEmbeddingProvider, desktopcontract.ComponentRegistryClient,
 			desktopcontract.ComponentReview, desktopcontract.ComponentNativeExporters,
-			desktopcontract.ComponentMCPHost,
 		},
 		HostPorts: desktopcontract.HostPorts{
 			Credentials: newPlatformCredentialPort(), LocalActor: platformActor{},
-			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{}, MCP: disabledMCP{},
+			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{},
 		},
+		MCPCapabilities: owner,
 	}, nil
 }
 
@@ -99,6 +105,27 @@ func (o *sharedOwner) RevalidateExternalPublication(ctx context.Context, intent 
 		return closedFailure[struct{}](desktopcontract.FailurePermissionDenied)
 	}
 	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess, Value: struct{}{}}
+}
+
+func (o *sharedOwner) Snapshot(context.Context) (mcphost.CapabilitySnapshot, error) {
+	operations := map[string]mcphost.OperationCapability{}
+	generated := map[string]bool{}
+	for _, binding := range desktopcontract.GeneratedBindingTable() {
+		generated[binding.Operation] = true
+	}
+	schema := json.RawMessage(`{"type":"object","additionalProperties":true}`)
+	for _, route := range mcphost.ToolRoutes() {
+		for _, operation := range append([]string{route.Operation, route.PreviewOperation}, route.RequiredOperations...) {
+			if operation != "" && generated[operation] && (strings.HasPrefix(operation, "engine.") || strings.HasPrefix(operation, "runtime.")) {
+				operations[operation] = mcphost.OperationCapability{Enabled: true, InputSchema: append(json.RawMessage(nil), schema...), OutputSchema: append(json.RawMessage(nil), schema...)}
+			}
+		}
+	}
+	digest := protocolcommon.Digest(desktopDigest)
+	return mcphost.CapabilitySnapshot{
+		ManifestETag: protocolcommon.ManifestETag(digest), Operations: operations, Resources: []mcphost.ResourceCapability{},
+		GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, PolicyEtag: digest, GrantedCapabilities: accesscore.FullAuthoringCapabilities(), ConstrainedCapabilities: []semantic.AuthoringCapability{}},
+	}, nil
 }
 
 func (o *sharedOwner) BindLocalHost(localHost *localdocument.Host) error {
