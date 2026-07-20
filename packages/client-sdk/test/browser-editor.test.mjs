@@ -93,8 +93,10 @@ function deferred() {
 test("local Engine lifecycle preserves requests and reports only ephemeral authority", async () => {
   const engine = makeEngine();
   const editor = createBrowserEditor({ engine_client: engine.client, asset_resolver: assetResolver(), capability_manifest: manifest });
-  const opened = await editor.open({ authority: "engine", input: { compile_input: {}, requested_limits: {} } });
+  const blobs = [{ ref: { blob_id: "source", digest: "sha256:source", lifetime: "request", media_type: "text/plain", size: "1" }, bytes: new Uint8Array([1]) }];
+  const opened = await editor.open({ authority: "engine", input: { compile_input: {}, requested_limits: {} }, blobs });
   assert.equal(opened.persistence, "ephemeral");
+  assert.equal(engine.calls.find(([name]) => name === "open")[2].blobs, blobs);
   const preview = await editor.preview(edit);
   assert.equal(preview.authority, "engine");
   assert.equal(engine.calls.find(([name]) => name === "preview")[1], edit.request);
@@ -109,6 +111,17 @@ test("local Engine lifecycle preserves requests and reports only ephemeral autho
   await editor.close();
   await editor.close();
   assert.equal(engine.disposed(), true);
+});
+
+test("close completes the Engine document session before disposing its transport", async () => {
+  let documentClosed = false;
+  const engine = makeEngine({
+    closeDocument: async () => { await new Promise((resolve) => setImmediate(resolve)); documentClosed = true; return success({ closed: true }); },
+  });
+  engine.client.dispose = async () => { assert.equal(documentClosed, true); };
+  const editor = createBrowserEditor({ engine_client: engine.client, asset_resolver: assetResolver() });
+  await editor.open({ authority: "engine", input: { compile_input: {}, requested_limits: {} } });
+  await editor.close();
 });
 
 test("trusted access, approval, and host persistence remain explicit", async () => {

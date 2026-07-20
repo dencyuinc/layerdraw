@@ -8,7 +8,9 @@ or package-boundary authority disappears.
 
 The local Engine and injected Runtime paths use the same framework-neutral
 `BrowserEditor` request shape and normalized preview assertions where their
-capabilities overlap. Their persistence claims intentionally differ: local
+capabilities overlap. The local path additionally opens, previews, and applies
+through the built Go/WASM artifact rather than a transport stub. Their
+persistence claims intentionally differ: local
 Engine apply is `ephemeral` unless a host callback explicitly persists it, and
 only a successful Runtime commit may return `durable` with an authoritative
 Committed Revision. Rejected and needs-review Runtime outcomes never fabricate

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import {createHash} from "node:crypto";
-import {readFile} from "node:fs/promises";
+import {readFile, writeFile} from "node:fs/promises";
 import {join} from "node:path";
+import {pathToFileURL} from "node:url";
 import {Worker} from "node:worker_threads";
+
+import {createBrowserEditor} from "../../../packages/client-sdk/dist/browser-editor.js";
+import {createWasmEngineClient} from "../../../packages/engine-client/dist/wasm.js";
 
 const artifactDirectory = process.argv[2];
 if (!artifactDirectory) throw new Error("artifact directory argument is required");
@@ -14,7 +18,38 @@ const artifactManifest = JSON.parse(manifestBytes);
 const artifactManifestDigest = digest(manifestBytes);
 const expectedEngineRelease = process.argv[3] ?? artifactManifest.build.release_version;
 const releaseManifestDigest = `sha256:${"5".repeat(64)}`;
+const packageAuthorityPath = join(artifactDirectory, "package-authority.json");
+await writeFile(packageAuthorityPath, `${JSON.stringify({name: "@layerdraw/engine-wasm", version: artifactManifest.build.release_version})}\n`);
 let exchangeSequence = 0;
+
+class BrowserWorkerAdapter {
+  #worker;
+  #listeners = new Map();
+
+  constructor(_moduleURL, options) {
+    this.#worker = new Worker(new URL("../../../packages/engine-wasm/test/fixtures/node-worker-entry.mjs", import.meta.url), {
+      name: options.name,
+      workerData: {
+        artifactBaseURL: `${pathToFileURL(artifactDirectory).href}/`,
+        packageManifestURL: pathToFileURL(packageAuthorityPath).href,
+      },
+    });
+  }
+
+  postMessage(message, transfer) { this.#worker.postMessage(message, [...transfer]); }
+  addEventListener(type, listener) {
+    const wrapper = type === "message" ? (data) => listener({data}) : () => listener();
+    const listeners = this.#listeners.get(type) ?? new Map();
+    listeners.set(listener, wrapper);
+    this.#listeners.set(type, listeners);
+    this.#worker.on(type, wrapper);
+  }
+  removeEventListener(type, listener) {
+    const wrapper = this.#listeners.get(type)?.get(listener);
+    if (wrapper !== undefined) this.#worker.off(type, wrapper);
+  }
+  terminate() { return this.#worker.terminate(); }
+}
 
 function nextMessage(worker, predicate) {
   return new Promise((resolve, reject) => {
@@ -140,6 +175,76 @@ async function handshakeAndCompile(endpoint, suffix) {
   return envelope.payload.endpoint_instance_id;
 }
 
+function portableRequest(source) {
+  const bytes = new TextEncoder().encode(source);
+  const ref = {
+    blob_id: "compile/source/document.ldl", digest: digest(bytes), lifetime: "request",
+    media_type: "text/plain; charset=utf-8", size: String(bytes.byteLength),
+  };
+  return {
+    input: {
+      entry_path: "document.ldl", installed_pack_tree: [], mode: "project",
+      project_source_tree: [{blob: ref, path: "document.ldl"}], referenced_assets: [],
+      resolved_dependencies: {format: "layerdraw-resolved", format_version: 1, installs: [], language: 1},
+      resource_limits: {},
+    },
+    blobs: [{ref, bytes}],
+  };
+}
+
+function semanticPreconditions(compiled, documentGeneration) {
+  return {
+    document_generation: documentGeneration,
+    expected_child_sets: compiled.child_set_hashes.map(({owner_address, child_kind, hash}) => ({owner_address, child_kind, hash})),
+    expected_source_digests: compiled.source_map.files.map(({digest: sourceDigest, module_path, origin}) => ({digest: sourceDigest, module: {module_path, origin}})),
+    expected_subject_hashes: compiled.subject_semantic_hashes.map(({address, hash}) => ({address, hash})),
+    expected_subtree_hashes: compiled.subtree_hashes.map(({owner_address, hash}) => ({address: owner_address, hash})),
+  };
+}
+
+async function browserEditorRealWasmConformance() {
+  const OriginalWorker = globalThis.Worker;
+  globalThis.Worker = BrowserWorkerAdapter;
+  let client;
+  let editor;
+  try {
+    client = await createWasmEngineClient({
+      client: {expectedReleaseManifestDigest: releaseManifestDigest},
+      expectedArtifactManifestDigest: artifactManifestDigest,
+    });
+    const portable = portableRequest('project p "Project" {}');
+    const compilation = await client.compile({input: portable.input, blobs: portable.blobs});
+    if (compilation.outcome !== "success") throw new Error("real WASM BrowserEditor fixture did not compile");
+    editor = createBrowserEditor({
+      engine_client: client,
+      asset_resolver: {resolve: async () => new Uint8Array(), put: async () => "unused", describeCapability: () => ({})},
+    });
+    const opened = await editor.open({
+      authority: "engine",
+      input: {compile_input: portable.input, requested_limits: {max_items: "10000", max_output_bytes: "67108864"}},
+      blobs: portable.blobs,
+    });
+    if (opened.persistence !== "ephemeral") throw new Error("local Engine claimed durable persistence");
+    const edit = {
+      kind: "semantic_operations",
+      request: {
+        batch: {operations: [{operation: "create_subject", subject_kind: "layer", parent_address: "ldl:project:p", id: "wasm_browser_editor", fields: {display_name: "WASM Browser Editor", order: "1"}}]},
+        limits: {max_items: "10000", max_output_bytes: "67108864"},
+        preconditions: semanticPreconditions(compilation.response.payload, opened.session.document_generation),
+      },
+    };
+    const preview = await editor.preview(edit);
+    if (preview.authority !== "engine" || preview.preview.status !== "valid") throw new Error("real WASM BrowserEditor preview failed");
+    const applied = await editor.apply(edit);
+    if (applied.persistence !== "ephemeral" || "committed_revision" in applied) throw new Error("local Engine apply claimed a Runtime revision");
+    await editor.close();
+  } finally {
+    await editor?.close().catch(() => undefined);
+    await client?.dispose().catch(() => undefined);
+    globalThis.Worker = OriginalWorker;
+  }
+}
+
 const first = await createEndpoint("node-generation-1");
 const expectedLimitKeys = [
   "max_blob_id_bytes", "max_buffers", "max_control_bytes", "max_control_depth",
@@ -183,4 +288,6 @@ replacement.worker.postMessage({kind: "dispose", endpoint_generation: replacemen
 await disposeResponse;
 await replacement.worker.terminate();
 
-process.stdout.write("Go WASM real-artifact Worker handshake/compile/hard-cancel/replacement smoke passed.\n");
+await browserEditorRealWasmConformance();
+
+process.stdout.write("Go WASM real-artifact Worker handshake/compile/BrowserEditor/hard-cancel/replacement smoke passed.\n");

@@ -14,6 +14,8 @@ const editor = createBrowserEditor({ engine_client, asset_resolver });
 const opened = await editor.open({
   authority: "engine",
   input: { compile_input, requested_limits },
+  // Supply the request-lifetime source/asset bytes referenced by compile_input.
+  blobs,
 });
 
 for (const unavailable of opened.capabilities.selection.optional_unavailable) {

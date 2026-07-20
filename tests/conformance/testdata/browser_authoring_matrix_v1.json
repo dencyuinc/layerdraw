@@ -19,7 +19,7 @@
   "paths": [
     {
       "id": "engine_local",
-      "authority": {"path": "packages/client-sdk/test/browser-editor.test.mjs", "test": "local Engine lifecycle preserves requests and reports only ephemeral authority"}
+      "authority": {"path": "tests/integration/engine_wasm_bridge_test.go", "test": "TestEngineWASMBridgeNodeSmoke"}
     },
     {
       "id": "runtime_host",
