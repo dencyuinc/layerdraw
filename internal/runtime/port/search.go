@@ -69,6 +69,9 @@ type ExecutionPlan struct {
 	MaxRows         int
 	MaxBytes        int
 	Authority       PlanAuthorityBinding
+	IssuedAtUnixMs  int64
+	ExpiresAtUnixMs int64
+	Nonce           string
 }
 
 // PlanAuthorityBinding is the exact immutable authority context covered by
@@ -343,11 +346,14 @@ type PreparedSearch struct {
 }
 
 type CompleteSearchInput struct {
-	Prepared PreparedSearch
-	Rows     ExecutionResult
+	Prepared      PreparedSearch
+	Rows          ExecutionResult
+	IndexIdentity SearchIndexIdentity
 }
 
 type CompleteExecutionInput struct {
-	Plan ExecutionPlan
-	Rows ExecutionResult
+	Plan           ExecutionPlan
+	Rows           ExecutionResult
+	Request        []byte
+	BackendVersion string
 }

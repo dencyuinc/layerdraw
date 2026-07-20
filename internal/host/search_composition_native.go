@@ -27,7 +27,7 @@ type NativeDesktopSearchComposition struct {
 	engineSearch *enginesearch.Adapter
 	projection   *enginesearch.LocalAccessProjection
 	localHost    *localdocument.Host
-	profile      port.EmbeddingProfile
+	profile      *port.EmbeddingProfile
 }
 
 type DesktopNativeConfig struct {
@@ -61,7 +61,11 @@ func OpenDesktopNativeEndpoint(config DesktopNativeConfig) (*Endpoint, *NativeDe
 		return nil, nil, nil, err
 	}
 	search.engineSearch = engineSearch
-	search.projection, search.localHost, search.profile = projection, localHost, config.EmbeddingProfile
+	search.projection, search.localHost = projection, localHost
+	if config.EmbeddingProfile.ProfileID != "" {
+		profile := config.EmbeddingProfile
+		search.profile = &profile
+	}
 	endpoint, err := New(Config{LocalHost: localHost, Engine: engineFacade, Search: search.Surface, SearchLifecycle: search})
 	if err != nil {
 		search.Close()
@@ -98,8 +102,14 @@ func (c *NativeDesktopSearchComposition) RefreshSearchIndex(ctx context.Context,
 	encodedProfile, _ := json.Marshal(profile)
 	digest := sha256.Sum256(encodedProfile)
 	profile.SpecificationDigest = "sha256:" + hex.EncodeToString(digest[:])
-	identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: profile.ProfileID, SearchProfileDigest: profile.SpecificationDigest, EmbeddingProfileID: c.profile.ProfileID, EmbeddingProfileDigest: c.profile.ModelDigest, AccessProjectionDigest: accessDigest, LadybugBackendVersion: searchadapter.GoLadybugBackendVersion, IndexSchemaVersion: "1"}
-	_, err = c.RebuildIndex(ctx, layerruntime.SearchIndexBuildRequest{Snapshot: snapshot, AccessProjectionDigest: accessDigest, SearchProfile: profile, EmbeddingProfile: &c.profile, IndexIdentity: identity, EngineRequest: []byte(`{"kind":"build_search_index"}`)}, port.SearchDocumentBatchRequest{Snapshot: snapshot, AccessProjectionDigest: accessDigest, EmbeddingProfileDigest: c.profile.ModelDigest, Corpus: corpus})
+	identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: profile.ProfileID, SearchProfileDigest: profile.SpecificationDigest, AccessProjectionDigest: accessDigest, LadybugBackendVersion: searchadapter.GoLadybugBackendVersion, IndexSchemaVersion: "1"}
+	embeddingDigest := ""
+	if c.profile != nil {
+		identity.EmbeddingProfileID = c.profile.ProfileID
+		identity.EmbeddingProfileDigest = c.profile.ModelDigest
+		embeddingDigest = c.profile.ModelDigest
+	}
+	_, err = c.RebuildIndex(ctx, layerruntime.SearchIndexBuildRequest{Snapshot: snapshot, AccessProjectionDigest: accessDigest, SearchProfile: profile, EmbeddingProfile: c.profile, IndexIdentity: identity, EngineRequest: []byte(`{"kind":"build_search_index"}`)}, port.SearchDocumentBatchRequest{Snapshot: snapshot, AccessProjectionDigest: accessDigest, EmbeddingProfileDigest: embeddingDigest, Corpus: corpus})
 	return err
 }
 

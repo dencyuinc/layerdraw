@@ -192,6 +192,95 @@ func TestHMACPlanAndConcreteLadybugDriver(t *testing.T) {
 	}
 }
 
+func TestHMACPlanAuthorityExpiresAndConsumesExactlyOnce(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	authority, err := newHMACPlanAuthority(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	authority.now = func() time.Time { return now }
+	plan, err := authority.sign(validPlan(port.PlanQuery))
+	if err != nil || plan.Nonce == "" || plan.ExpiresAtUnixMs-plan.IssuedAtUnixMs != planTokenLifetime.Milliseconds() {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+
+	const workers = 32
+	results := make(chan error, workers)
+	for range workers {
+		go func() { results <- authority.VerifyPlan(context.Background(), plan) }()
+	}
+	succeeded := 0
+	for range workers {
+		if err := <-results; err == nil {
+			succeeded++
+		} else if !errors.Is(err, ErrInvalidPlan) {
+			t.Fatalf("parallel verify err=%v", err)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("parallel successes=%d want=1", succeeded)
+	}
+	if err := authority.VerifyPlan(context.Background(), plan); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("replay err=%v", err)
+	}
+
+	restarted, _ := newHMACPlanAuthority(key)
+	restarted.now = func() time.Time { return now }
+	if err := restarted.VerifyPlan(context.Background(), plan); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("restart replay err=%v", err)
+	}
+
+	expired, _ := authority.sign(validPlan(port.PlanAnalysis))
+	now = now.Add(planTokenLifetime)
+	if err := authority.VerifyPlan(context.Background(), expired); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("expired plan err=%v", err)
+	}
+
+	contextPlan, _ := authority.sign(validPlan(port.PlanSearch))
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := authority.VerifyPlan(cancelled, contextPlan); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("cancelled verify err=%v", err)
+	}
+	// Cancellation before verification must not consume the still-live token.
+	if err := authority.VerifyPlan(context.Background(), contextPlan); err != nil {
+		t.Fatalf("live token consumed by cancelled context: %v", err)
+	}
+}
+
+func TestNativeExecutorConsumesPlanBeforeBackendFailure(t *testing.T) {
+	authority, _ := newHMACPlanAuthority([]byte("01234567890123456789012345678901"))
+	plan, _ := authority.sign(validPlan(port.PlanQuery))
+	executor, _ := NewNativeExecutor(capability(), &backendStub{err: errors.New("backend failed")}, authority)
+	if _, err := executor.Execute(context.Background(), plan); err == nil {
+		t.Fatal("backend failure lost")
+	}
+	if _, err := executor.Execute(context.Background(), plan); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("failed execution replay err=%v", err)
+	}
+}
+
+func TestHMACPlanAuthorityBoundsOutstandingTokensAndPurgesExpiry(t *testing.T) {
+	authority, _ := newHMACPlanAuthority([]byte("01234567890123456789012345678901"))
+	now := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	authority.now = func() time.Time { return now }
+	authority.limit = 2
+	if _, err := authority.sign(validPlan(port.PlanQuery)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.sign(validPlan(port.PlanSearch)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.sign(validPlan(port.PlanAnalysis)); !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("outstanding token bound err=%v", err)
+	}
+	now = now.Add(planTokenLifetime)
+	if _, err := authority.sign(validPlan(port.PlanAnalysis)); err != nil {
+		t.Fatalf("expired tokens were not purged: %v", err)
+	}
+}
+
 type authorityEngineStub struct{}
 
 type documentProducerStub struct{ batch port.SearchDocumentBatch }

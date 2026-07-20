@@ -37,6 +37,21 @@ func (searchSurfaceStub) ExecuteAnalysis(context.Context, port.BoundExecutionReq
 	return []byte(`{"surface":"analysis"}`), nil
 }
 
+type failingSearchSurface struct{ err error }
+
+func (f failingSearchSurface) Capabilities(context.Context) (layerruntime.SearchCapabilityManifest, error) {
+	return layerruntime.SearchCapabilityManifest{QueryAvailable: true, SearchAvailable: true, AnalysisAvailable: true}, nil
+}
+func (f failingSearchSurface) Search(context.Context, layerruntime.SearchRequest) ([]byte, error) {
+	return nil, f.err
+}
+func (f failingSearchSurface) ExecuteQuery(context.Context, port.BoundExecutionRequest) ([]byte, error) {
+	return nil, f.err
+}
+func (f failingSearchSurface) ExecuteAnalysis(context.Context, port.BoundExecutionRequest) ([]byte, error) {
+	return nil, f.err
+}
+
 type emptyBlobSource struct {
 	definitions []engineendpoint.BlobDefinition
 	err         error
@@ -209,6 +224,35 @@ func TestWailsAndMCPConsumersReceiveIdenticalEngineSearchResultBytes(t *testing.
 	}
 	if string(decoded.Payload) != string(wailsResult) {
 		t.Fatalf("Wails=%s MCP=%s", wailsResult, decoded.Payload)
+	}
+}
+
+func TestWailsAndMCPConsumersReceiveIdenticalTypedSearchFailures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"embedding unavailable", layerruntime.ErrSearchEmbeddingUnavailable, "search.embedding_unavailable"},
+		{"stale index", layerruntime.ErrSearchIndexStale, "search.index_stale"},
+		{"cancelled", layerruntime.ErrSearchCancelled, "search.cancelled"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			endpoint := newEndpointWithSearch(t, failingSearchSurface{err: test.err})
+			session, snapshot, accessDigest := openSearchTestSession(t, endpoint)
+			request := layerruntime.SearchRequest{Session: &session, Snapshot: snapshot, AccessProjectionDigest: accessDigest}
+			if _, err := endpoint.SearchSurface().Search(context.Background(), request); !errors.Is(err, test.err) {
+				t.Fatalf("Wails err=%v", err)
+			}
+			control, err := json.Marshal(searchOperationRequest[layerruntime.SearchRequest]{Operation: OperationSearch, Protocol: runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}, RequestID: "mcp-failure", Payload: request})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := executeRuntimeControl(t, endpoint, OperationSearch, control, emptyBlobSource{})
+			if response.Failure == nil || response.Failure.Code != test.code || (errors.Is(test.err, layerruntime.ErrSearchCancelled) && response.Outcome != protocolcommon.OutcomeCancelled) {
+				t.Fatalf("MCP response=%+v", response)
+			}
+		})
 	}
 }
 

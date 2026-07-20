@@ -22,6 +22,8 @@ type SearchCandidateRow struct {
 
 type SearchCompletion struct {
 	Mode, QueryDigest, QueryText  string
+	DocumentSnapshotRef           SearchResultSnapshotRef
+	IndexIdentityDigest           string
 	MaxHits, RRFK                 int
 	LexicalWeight, SemanticWeight float64
 	Offset                        int
@@ -30,11 +32,25 @@ type SearchCompletion struct {
 	Rows                          []SearchCandidateRow
 }
 
+type SearchResultSnapshotRef struct {
+	Kind               string `json:"kind"`
+	HostDocumentID     string `json:"host_document_id,omitempty"`
+	CommittedRevision  string `json:"committed_revision,omitempty"`
+	SourceTreeDigest   string `json:"source_tree_digest,omitempty"`
+	DocumentGeneration uint64 `json:"document_generation,omitempty"`
+	DefinitionHash     string `json:"definition_hash"`
+}
+
+type ResultDiagnostic struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+}
+
 // CompleteSearchResult owns deduplication, reciprocal-rank fusion, stable
 // ordering, and the canonical domain result shape. Physical adapters supply
 // candidates only and never interpret ranking semantics.
 func CompleteSearchResult(input SearchCompletion) ([]byte, error) {
-	if input.MaxHits <= 0 || input.RRFK <= 0 || input.Offset < 0 || input.QueryDigest == "" || (input.Mode != "lexical" && input.Mode != "semantic" && input.Mode != "hybrid") {
+	if input.MaxHits <= 0 || input.RRFK <= 0 || input.Offset < 0 || input.QueryDigest == "" || input.IndexIdentityDigest == "" || !validResultSnapshot(input.DocumentSnapshotRef) || (input.Mode != "lexical" && input.Mode != "semantic" && input.Mode != "hybrid") {
 		return nil, ErrSearchResultInvalid
 	}
 	type candidate struct {
@@ -48,6 +64,11 @@ func CompleteSearchResult(input SearchCompletion) ([]byte, error) {
 		if row.Address == "" || row.Kind == "" || row.Score == "" {
 			return nil, ErrSearchResultInvalid
 		}
+		number, err := strconv.ParseFloat(row.Score, 64)
+		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+			return nil, ErrSearchResultInvalid
+		}
+		row.Score = strconv.FormatFloat(number, 'g', -1, 64)
 		value := byAddress[row.Address]
 		if value == nil {
 			value = &candidate{address: row.Address, kind: row.Kind, owner: row.Owner, graphEntries: row.GraphEntries, typeAddresses: row.TypeAddresses, layerAddresses: row.LayerAddresses, contentHash: row.ContentHash, fields: row.Fields}
@@ -107,20 +128,48 @@ func CompleteSearchResult(input SearchCompletion) ([]byte, error) {
 		if json.Unmarshal([]byte(value.graphEntries), &graphEntries) != nil || json.Unmarshal([]byte(value.typeAddresses), &typeAddresses) != nil || json.Unmarshal([]byte(value.layerAddresses), &layerAddresses) != nil || value.contentHash == "" {
 			return nil, ErrSearchResultInvalid
 		}
+		_ = typeAddresses
+		_ = layerAddresses
 		matchedRefs, snippets, err := searchExplainability(value.fields, input.QueryText, input.SnippetMaxBytes)
 		if err != nil {
 			return nil, ErrSearchResultInvalid
 		}
-		hits[index] = map[string]any{"rank": input.Offset + index + 1, "subject_address": value.address, "subject_kind": value.kind, "owner_address": value.owner, "graph_entry_addresses": graphEntries, "type_addresses": typeAddresses, "layer_addresses": layerAddresses, "content_hash": value.contentHash, "lexical_rank": value.lexicalRank, "lexical_score": value.lexicalScore, "semantic_rank": value.semanticRank, "semantic_distance": value.semanticDistance, "fused_score": value.fused, "matched_source_refs": matchedRefs, "bounded_snippets": snippets}
+		signals := map[string]any{"fused_score": value.fused}
+		if value.lexicalRank != 0 {
+			signals["lexical_rank"], signals["lexical_score"] = value.lexicalRank, value.lexicalScore
+		}
+		if value.semanticRank != 0 {
+			signals["semantic_rank"], signals["semantic_distance"] = value.semanticRank, value.semanticDistance
+		}
+		hit := map[string]any{"rank": input.Offset + index + 1, "subject_address": value.address, "subject_kind": value.kind, "graph_entry_addresses": graphEntries, "score": value.fused, "score_signals": signals, "content_hash": value.contentHash, "matched_source_refs": matchedRefs, "bounded_snippets": snippets}
+		if value.owner != "" {
+			hit["owner_address"] = value.owner
+		}
+		hits[index] = hit
 	}
-	result := map[string]any{"mode": input.Mode, "query_digest": input.QueryDigest, "hits": hits, "result_truncated": truncated}
+	result := map[string]any{"document_snapshot_ref": input.DocumentSnapshotRef, "index_identity_digest": input.IndexIdentityDigest, "mode": input.Mode, "query_digest": input.QueryDigest, "hits": hits, "result_truncated": truncated, "diagnostics": []ResultDiagnostic{}}
 	if truncated {
 		if input.NextCursor == "" {
 			return nil, ErrSearchResultInvalid
 		}
 		result["next_cursor"] = input.NextCursor
 	}
+	result["search_result_hash"] = canonicalDigest(result)
 	return json.Marshal(result)
+}
+
+func validResultSnapshot(value SearchResultSnapshotRef) bool {
+	if value.DefinitionHash == "" {
+		return false
+	}
+	return (value.Kind == "host_revision" && value.HostDocumentID != "" && value.CommittedRevision != "" && value.SourceTreeDigest == "" && value.DocumentGeneration == 0) ||
+		(value.Kind == "portable_generation" && value.HostDocumentID == "" && value.CommittedRevision == "" && value.SourceTreeDigest != "")
+}
+
+func canonicalDigest(value any) string {
+	encoded, _ := json.Marshal(value)
+	digest := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 type searchResultField struct {
@@ -183,43 +232,124 @@ func boundUTF8(value string, maxBytes int) string {
 
 type AnalysisValue struct{ Address, MetricName, TypedValue string }
 
-type QueryValue struct{ Kind, Value string }
+type QueryValue struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
 type QueryRow map[string]QueryValue
 
-func CompleteQueryResult(rows []QueryRow, scopeDigest ...string) ([]byte, error) {
-	result := make([]map[string]QueryValue, len(rows))
-	for index, row := range rows {
-		if len(row) == 0 {
-			return nil, ErrSearchResultInvalid
-		}
-		keys := make([]string, 0, len(row))
-		for key := range row {
-			keys = append(keys, key)
-		}
-		slices.Sort(keys)
-		result[index] = make(map[string]QueryValue, len(row))
-		for _, key := range keys {
-			value := row[key]
-			if key == "" || value.Kind == "" || !utf8.ValidString(key) || !utf8.ValidString(value.Kind) || !utf8.ValidString(value.Value) {
-				return nil, ErrSearchResultInvalid
-			}
-			result[index][key] = value
-		}
-	}
-	canonical, err := json.Marshal(result)
-	if err != nil {
+type QueryCompletion struct {
+	DocumentSnapshotRef SearchResultSnapshotRef
+	QueryAddress        string
+	Arguments           map[string]QueryValue
+	StatePolicy         string
+	StateInput          QueryResultStateInput
+}
+
+type QueryResultStateInput struct {
+	Kind           string `json:"kind"`
+	SnapshotHash   string `json:"snapshot_hash,omitempty"`
+	StateVersion   string `json:"state_version,omitempty"`
+	CapturedAt     string `json:"captured_at,omitempty"`
+	DefinitionHash string `json:"definition_hash,omitempty"`
+}
+
+type canonicalQueryResult struct {
+	DocumentSnapshotRef       SearchResultSnapshotRef `json:"document_snapshot_ref"`
+	QueryAddress              string                  `json:"query_address"`
+	Arguments                 map[string]QueryValue   `json:"arguments"`
+	StatePolicy               string                  `json:"state_policy"`
+	StateInput                QueryResultStateInput   `json:"state_input"`
+	StateReads                []any                   `json:"state_reads"`
+	SeedEntityAddresses       []string                `json:"seed_entity_addresses"`
+	ReachedEntityAddresses    []string                `json:"reached_entity_addresses"`
+	TraversedEntityAddresses  []string                `json:"traversed_entity_addresses"`
+	PathRelationAddresses     []string                `json:"path_relation_addresses"`
+	InducedRelationAddresses  []string                `json:"induced_relation_addresses"`
+	PrimaryEntityAddresses    []string                `json:"primary_entity_addresses"`
+	SelectedRelationAddresses []string                `json:"selected_relation_addresses"`
+	SupportEntityAddresses    []string                `json:"support_entity_addresses"`
+	Paths                     []any                   `json:"paths"`
+	CycleRefs                 []any                   `json:"cycle_refs"`
+	Diagnostics               []ResultDiagnostic      `json:"diagnostics"`
+}
+
+func CompleteQueryResult(rows []QueryRow, input QueryCompletion) ([]byte, error) {
+	if !validResultSnapshot(input.DocumentSnapshotRef) || input.QueryAddress == "" || !stableSearchScopeAddress.MatchString(input.QueryAddress) || (input.StatePolicy != "none" && input.StatePolicy != "optional" && input.StatePolicy != "required") || input.StateInput.Kind == "" {
 		return nil, ErrSearchResultInvalid
 	}
-	digest := sha256.Sum256(canonical)
-	response := map[string]any{"rows": result, "result_hash": "sha256:" + hex.EncodeToString(digest[:])}
-	if len(scopeDigest) != 0 && scopeDigest[0] != "" {
-		response["scope_digest"] = scopeDigest[0]
+	noneInput := input.StateInput.Kind == "none" && input.StateInput.SnapshotHash == "" && input.StateInput.StateVersion == "" && input.StateInput.CapturedAt == "" && input.StateInput.DefinitionHash == ""
+	snapshotInput := input.StateInput.Kind == "snapshot" && input.StateInput.SnapshotHash != "" && input.StateInput.StateVersion != "" && input.StateInput.CapturedAt != "" && input.StateInput.DefinitionHash != ""
+	if (input.StatePolicy == "none" && !noneInput) || (input.StatePolicy == "optional" && !noneInput && !snapshotInput) || (input.StatePolicy == "required" && !snapshotInput) {
+		return nil, ErrSearchResultInvalid
 	}
+	if input.Arguments == nil {
+		input.Arguments = map[string]QueryValue{}
+	}
+	for key, value := range input.Arguments {
+		if key == "" || value.Kind == "" || !utf8.ValidString(key) || !utf8.ValidString(value.Kind) || !utf8.ValidString(value.Value) {
+			return nil, ErrSearchResultInvalid
+		}
+	}
+	entities, relations := []string{}, []string{}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if len(row) != 3 || row["address"].Value == "" || row["kind"].Value == "" || !stableSearchScopeAddress.MatchString(row["address"].Value) || seen[row["address"].Value] {
+			return nil, ErrSearchResultInvalid
+		}
+		for _, key := range []string{"address", "kind", "owner"} {
+			if _, ok := row[key]; !ok {
+				return nil, ErrSearchResultInvalid
+			}
+		}
+		seen[row["address"].Value] = true
+		switch row["kind"].Value {
+		case "entity":
+			entities = append(entities, row["address"].Value)
+		case "relation":
+			relations = append(relations, row["address"].Value)
+		default:
+			return nil, ErrSearchResultInvalid
+		}
+	}
+	slices.Sort(entities)
+	slices.Sort(relations)
+	result := canonicalQueryResult{
+		DocumentSnapshotRef: input.DocumentSnapshotRef, QueryAddress: input.QueryAddress, Arguments: input.Arguments,
+		StatePolicy: input.StatePolicy, StateInput: input.StateInput, StateReads: []any{}, SeedEntityAddresses: append([]string(nil), entities...),
+		ReachedEntityAddresses: []string{}, TraversedEntityAddresses: []string{}, PathRelationAddresses: []string{}, InducedRelationAddresses: []string{},
+		PrimaryEntityAddresses: entities, SelectedRelationAddresses: relations, SupportEntityAddresses: []string{}, Paths: []any{}, CycleRefs: []any{}, Diagnostics: []ResultDiagnostic{},
+	}
+	response := struct {
+		canonicalQueryResult
+		QueryResultHash string `json:"query_result_hash"`
+	}{canonicalQueryResult: result, QueryResultHash: canonicalDigest(result)}
 	return json.Marshal(response)
 }
 
-func CompleteAnalysisResult(values []AnalysisValue, scopeDigest ...string) ([]byte, error) {
-	if len(values) == 0 {
+type AnalysisCompletion struct {
+	DocumentSnapshotRef SearchResultSnapshotRef
+	EntityAddresses     []string
+	RelationAddresses   []string
+	QueryResultHash     string
+	Algorithm           string
+	AlgorithmProfileID  string
+	BackendVersion      string
+}
+
+type analysisSummary struct {
+	MetricName string             `json:"metric_name"`
+	Count      int                `json:"count"`
+	Minimum    *map[string]string `json:"minimum,omitempty"`
+	Maximum    *map[string]string `json:"maximum,omitempty"`
+}
+
+func CompleteAnalysisResult(values []AnalysisValue, input AnalysisCompletion) ([]byte, error) {
+	if len(values) == 0 || !validResultSnapshot(input.DocumentSnapshotRef) || input.Algorithm == "" || input.AlgorithmProfileID == "" || input.BackendVersion == "" {
+		return nil, ErrSearchResultInvalid
+	}
+	inputSubgraphHash, err := canonicalInputSubgraphHash(input)
+	if err != nil {
 		return nil, ErrSearchResultInvalid
 	}
 	seen := map[string]bool{}
@@ -285,14 +415,83 @@ func CompleteAnalysisResult(values []AnalysisValue, scopeDigest ...string) ([]by
 		}
 		return strings.Compare(a["subject_address"].(string), b["subject_address"].(string))
 	})
-	canonical, err := json.Marshal(result)
-	if err != nil {
-		return nil, ErrSearchResultInvalid
-	}
-	digest := sha256.Sum256(canonical)
-	response := map[string]any{"values": result, "result_truncated": false, "result_hash": "sha256:" + hex.EncodeToString(digest[:])}
-	if len(scopeDigest) != 0 && scopeDigest[0] != "" {
-		response["scope_digest"] = scopeDigest[0]
-	}
+	summaries := summarizeAnalysisValues(result)
+	canonical := struct {
+		DocumentSnapshotRef SearchResultSnapshotRef `json:"document_snapshot_ref"`
+		InputSubgraphHash   string                  `json:"input_subgraph_hash"`
+		Algorithm           string                  `json:"algorithm"`
+		AlgorithmProfileID  string                  `json:"algorithm_profile_id"`
+		BackendVersion      string                  `json:"backend_version"`
+		Values              []map[string]any        `json:"values"`
+		Summaries           []analysisSummary       `json:"summaries"`
+		Diagnostics         []ResultDiagnostic      `json:"diagnostics"`
+	}{input.DocumentSnapshotRef, inputSubgraphHash, input.Algorithm, input.AlgorithmProfileID, input.BackendVersion, result, summaries, []ResultDiagnostic{}}
+	response := struct {
+		DocumentSnapshotRef SearchResultSnapshotRef `json:"document_snapshot_ref"`
+		InputSubgraphHash   string                  `json:"input_subgraph_hash"`
+		Algorithm           string                  `json:"algorithm"`
+		AlgorithmProfileID  string                  `json:"algorithm_profile_id"`
+		BackendVersion      string                  `json:"backend_version"`
+		Values              []map[string]any        `json:"values"`
+		Summaries           []analysisSummary       `json:"summaries"`
+		Diagnostics         []ResultDiagnostic      `json:"diagnostics"`
+		ResultHash          string                  `json:"result_hash"`
+	}{canonical.DocumentSnapshotRef, canonical.InputSubgraphHash, canonical.Algorithm, canonical.AlgorithmProfileID, canonical.BackendVersion, canonical.Values, canonical.Summaries, canonical.Diagnostics, canonicalDigest(canonical)}
 	return json.Marshal(response)
+}
+
+func canonicalInputSubgraphHash(input AnalysisCompletion) (string, error) {
+	if (input.QueryResultHash == "") == (len(input.EntityAddresses) == 0 && len(input.RelationAddresses) == 0) {
+		return "", ErrSearchResultInvalid
+	}
+	entities := append([]string(nil), input.EntityAddresses...)
+	relations := append([]string(nil), input.RelationAddresses...)
+	slices.Sort(entities)
+	slices.Sort(relations)
+	for _, values := range [][]string{entities, relations} {
+		for index, address := range values {
+			if address == "" || !stableSearchScopeAddress.MatchString(address) || (index > 0 && address == values[index-1]) {
+				return "", ErrSearchResultInvalid
+			}
+		}
+	}
+	return canonicalDigest(struct {
+		Snapshot          SearchResultSnapshotRef `json:"document_snapshot_ref"`
+		QueryResultHash   string                  `json:"query_result_hash,omitempty"`
+		EntityAddresses   []string                `json:"entity_addresses"`
+		RelationAddresses []string                `json:"relation_addresses"`
+	}{input.DocumentSnapshotRef, input.QueryResultHash, entities, relations}), nil
+}
+
+func summarizeAnalysisValues(values []map[string]any) []analysisSummary {
+	byMetric := map[string][]map[string]string{}
+	for _, value := range values {
+		typed := value["typed_value"].(map[string]string)
+		byMetric[value["metric_name"].(string)] = append(byMetric[value["metric_name"].(string)], typed)
+	}
+	metrics := make([]string, 0, len(byMetric))
+	for metric := range byMetric {
+		metrics = append(metrics, metric)
+	}
+	slices.Sort(metrics)
+	result := make([]analysisSummary, 0, len(metrics))
+	for _, metric := range metrics {
+		values := byMetric[metric]
+		summary := analysisSummary{MetricName: metric, Count: len(values)}
+		minimum, maximum := values[0], values[0]
+		for _, value := range values[1:] {
+			left, _ := strconv.ParseFloat(value["value"], 64)
+			min, _ := strconv.ParseFloat(minimum["value"], 64)
+			max, _ := strconv.ParseFloat(maximum["value"], 64)
+			if left < min {
+				minimum = value
+			}
+			if left > max {
+				maximum = value
+			}
+		}
+		summary.Minimum, summary.Maximum = &minimum, &maximum
+		result = append(result, summary)
+	}
+	return result
 }

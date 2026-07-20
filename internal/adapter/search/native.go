@@ -7,12 +7,14 @@ package search
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -42,15 +44,37 @@ type PlanVerifier interface {
 
 // hmacPlanAuthority never leaves this package. Callers can bind an Engine to
 // it, but cannot obtain a raw signer for caller-constructed plans.
-type hmacPlanAuthority struct{ key []byte }
+const (
+	planTokenLifetime        = 2 * time.Minute
+	maxOutstandingPlanTokens = 4096
+)
+
+type hmacPlanAuthority struct {
+	key    []byte
+	mu     sync.Mutex
+	now    func() time.Time
+	issued map[string]int64
+	limit  int
+}
 
 func newHMACPlanAuthority(key []byte) (*hmacPlanAuthority, error) {
 	if len(key) < 32 {
 		return nil, ErrInvalidPlan
 	}
-	return &hmacPlanAuthority{key: append([]byte(nil), key...)}, nil
+	return &hmacPlanAuthority{key: append([]byte(nil), key...), now: time.Now, issued: map[string]int64{}, limit: maxOutstandingPlanTokens}, nil
 }
 func (a *hmacPlanAuthority) sign(plan port.ExecutionPlan) (port.ExecutionPlan, error) {
+	if a == nil {
+		return plan, ErrInvalidPlan
+	}
+	nonceBytes := make([]byte, 24)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return plan, ErrInvalidPlan
+	}
+	now := a.now().UTC()
+	plan.IssuedAtUnixMs = now.UnixMilli()
+	plan.ExpiresAtUnixMs = now.Add(planTokenLifetime).UnixMilli()
+	plan.Nonce = base64.RawURLEncoding.EncodeToString(nonceBytes)
 	plan.Token = ""
 	data, err := json.Marshal(plan)
 	if err != nil {
@@ -59,9 +83,20 @@ func (a *hmacPlanAuthority) sign(plan port.ExecutionPlan) (port.ExecutionPlan, e
 	mac := hmac.New(sha256.New, a.key)
 	_, _ = mac.Write(data)
 	plan.Token = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	a.mu.Lock()
+	a.purgeExpiredLocked(now.UnixMilli())
+	if len(a.issued) >= a.limit {
+		a.mu.Unlock()
+		return plan, ErrInvalidPlan
+	}
+	a.issued[plan.Nonce] = plan.ExpiresAtUnixMs
+	a.mu.Unlock()
 	return plan, nil
 }
-func (a *hmacPlanAuthority) VerifyPlan(_ context.Context, plan port.ExecutionPlan) error {
+func (a *hmacPlanAuthority) VerifyPlan(ctx context.Context, plan port.ExecutionPlan) error {
+	if a == nil || ctx == nil || ctx.Err() != nil || plan.Nonce == "" || plan.IssuedAtUnixMs <= 0 || plan.ExpiresAtUnixMs <= plan.IssuedAtUnixMs {
+		return ErrInvalidPlan
+	}
 	token := plan.Token
 	plan.Token = ""
 	data, err := json.Marshal(plan)
@@ -77,7 +112,24 @@ func (a *hmacPlanAuthority) VerifyPlan(_ context.Context, plan port.ExecutionPla
 	if !hmac.Equal(decoded, mac.Sum(nil)) {
 		return ErrInvalidPlan
 	}
+	now := a.now().UTC().UnixMilli()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.purgeExpiredLocked(now)
+	expiresAt, issued := a.issued[plan.Nonce]
+	if !issued || expiresAt != plan.ExpiresAtUnixMs || now < plan.IssuedAtUnixMs || now >= plan.ExpiresAtUnixMs {
+		return ErrInvalidPlan
+	}
+	delete(a.issued, plan.Nonce)
 	return nil
+}
+
+func (a *hmacPlanAuthority) purgeExpiredLocked(now int64) {
+	for nonce, expiresAt := range a.issued {
+		if now >= expiresAt {
+			delete(a.issued, nonce)
+		}
+	}
 }
 
 type authorizedSearchEngine struct {

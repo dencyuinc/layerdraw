@@ -106,3 +106,36 @@ func TestDesktopNativeSearchCompositionRejectsMissingFTSExtension(t *testing.T) 
 		t.Fatal("expected missing bundled FTS extension to fail closed")
 	}
 }
+
+func TestOpenDesktopNativeEndpointSupportsLexicalOnlyProfile(t *testing.T) {
+	ftsExtensionPath := os.Getenv("LAYERDRAW_LADYBUG_FTS_EXTENSION")
+	if !filepath.IsAbs(ftsExtensionPath) {
+		t.Fatal("LAYERDRAW_LADYBUG_FTS_EXTENSION must be an absolute verified path")
+	}
+	root := t.TempDir()
+	endpoint, search, shutdown, err := OpenDesktopNativeEndpoint(DesktopNativeConfig{
+		LocalConfig:  LocalConfig{Root: root, ReleaseVersion: "0.0.0", SourceRevision: "unknown", ReleaseManifestDigest: "sha256:" + strings.Repeat("0", 64), EndpointInstanceID: "desktop-lexical-test", TransportID: "in_process"},
+		DatabasePath: filepath.Join(root, "desktop-search.lbug"), FTSExtensionPath: ftsExtensionPath,
+		VectorExtensionPath: filepath.Join(filepath.Dir(ftsExtensionPath), "libvector.lbug_extension"), AlgoExtensionPath: filepath.Join(filepath.Dir(ftsExtensionPath), "libalgo.lbug_extension"),
+		PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"), MaxRows: 100, MaxBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdown(context.Background())
+	manifest, err := search.Surface.Capabilities(context.Background())
+	if err != nil || !manifest.SearchAvailable || manifest.EmbeddingAvailable || manifest.EmbeddingReason == "" {
+		t.Fatalf("manifest=%#v err=%v", manifest, err)
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project p \"P\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := endpoint.host.OpenProject(context.Background(), localdocument.OpenProjectInput{Root: project, EntryPath: "document.ldl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := search.RefreshSearchIndex(context.Background(), opened.Session); err != nil {
+		t.Fatalf("lexical-only lifecycle refresh: %v", err)
+	}
+}

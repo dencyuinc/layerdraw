@@ -89,3 +89,27 @@ func TestDesktopSearchCompositionRejectsUnboundRebuildInput(t *testing.T) {
 		t.Fatal("unbound rebuild input was accepted")
 	}
 }
+
+func TestDesktopSearchCompositionAllowsLexicalOnlyWithoutEmbedding(t *testing.T) {
+	composition, err := NewDesktopSearchComposition(DesktopSearchConfig{
+		Root: t.TempDir(), Engine: compositionEngine{}, DocumentProducer: compositionEngine{}, Ladybug: &compositionLadybug{},
+		PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"),
+		BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096,
+		Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := composition.Surface.Capabilities(context.Background())
+	if err != nil || !manifest.SearchAvailable || !manifest.QueryAvailable || !manifest.AnalysisAvailable || manifest.EmbeddingAvailable || manifest.EmbeddingReason == "" {
+		t.Fatalf("manifest=%#v err=%v", manifest, err)
+	}
+	if _, err := NewDesktopSearchComposition(DesktopSearchConfig{
+		Root: t.TempDir(), Engine: compositionEngine{}, DocumentProducer: compositionEngine{}, Ladybug: &compositionLadybug{},
+		PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"),
+		LocalModelSeed: []byte("orphaned-seed"), BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096,
+		Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...),
+	}); err == nil {
+		t.Fatal("partial embedding configuration was accepted")
+	}
+}

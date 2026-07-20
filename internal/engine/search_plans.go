@@ -62,14 +62,19 @@ type NativeIndexPlanInput struct {
 }
 
 type nativeExecutionRequest struct {
-	Kind              string   `json:"kind"`
-	Mode              string   `json:"mode,omitempty"`
-	QueryText         string   `json:"query_text,omitempty"`
-	TargetKind        string   `json:"target_kind,omitempty"`
-	RootAddresses     []string `json:"root_addresses,omitempty"`
-	Algorithm         string   `json:"algorithm,omitempty"`
-	EntityAddresses   []string `json:"entity_addresses,omitempty"`
-	RelationAddresses []string `json:"relation_addresses,omitempty"`
+	Kind               string          `json:"kind"`
+	Mode               string          `json:"mode,omitempty"`
+	QueryText          string          `json:"query_text,omitempty"`
+	TargetKind         string          `json:"target_kind,omitempty"`
+	RootAddresses      []string        `json:"root_addresses,omitempty"`
+	Algorithm          string          `json:"algorithm,omitempty"`
+	EntityAddresses    []string        `json:"entity_addresses,omitempty"`
+	RelationAddresses  []string        `json:"relation_addresses,omitempty"`
+	QueryAddress       string          `json:"query_address,omitempty"`
+	Arguments          json.RawMessage `json:"arguments,omitempty"`
+	QueryResultHash    string          `json:"query_result_hash,omitempty"`
+	AlgorithmProfileID string          `json:"algorithm_profile_id,omitempty"`
+	Parameters         json.RawMessage `json:"parameters,omitempty"`
 }
 
 func BuildNativeSearchIndexPlan(input NativeIndexPlanInput) (NativeSearchPlan, error) {

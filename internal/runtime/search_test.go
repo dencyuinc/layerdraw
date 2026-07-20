@@ -100,7 +100,7 @@ func TestSearchCursorIsSignedAndBoundToAllAuthorities(t *testing.T) {
 	}
 	request.Cursor = cursor
 	request.QueryText = "different query text"
-	if _, err := service.Search(context.Background(), request); !errors.Is(err, ErrSearchInvalidCursor) {
+	if _, err := service.Search(context.Background(), request); !errors.Is(err, ErrSearchInvalidRequest) {
 		t.Fatalf("query-text rebound cursor err=%v", err)
 	}
 	request.QueryText = "hello"
@@ -237,11 +237,44 @@ func testIdentity() port.SearchIndexIdentity {
 }
 func testRequest(mode string) SearchRequest {
 	profile := port.EmbeddingProfile{ProfileID: "embed", ModelID: "m", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 2, Normalization: "unit", MaxInputBytes: 100}
-	r := SearchRequest{Snapshot: testIdentity().DocumentSnapshotRef, AccessProjectionDigest: "sha256:access", SearchProfile: port.SearchProfile{ProfileID: "search", SpecificationDigest: "sha256:search", LexicalCandidateLimit: 10, SemanticCandidateLimit: 10, MaxHits: 5}, IndexIdentity: testIdentity(), Mode: mode, QueryText: "hello", EngineRequest: []byte(`{"text":"hello"}`), MaxOutputBytes: 1024}
+	r := SearchRequest{Snapshot: testIdentity().DocumentSnapshotRef, AccessProjectionDigest: "sha256:access", SearchProfile: port.SearchProfile{ProfileID: "search", SpecificationDigest: "sha256:search", LexicalCandidateLimit: 10, SemanticCandidateLimit: 10, MaxHits: 5}, IndexIdentity: testIdentity(), Mode: mode, QueryText: "hello", EngineRequest: []byte(`{"kind":"search_documents","mode":"` + mode + `","query_text":"hello"}`), MaxOutputBytes: 1024}
 	if mode != "lexical" {
 		r.EmbeddingProfile = &profile
 	}
 	return r
+}
+
+type countingQueryEmbedder struct{ calls int }
+
+func (*countingQueryEmbedder) Describe(context.Context) (port.EmbeddingCapability, error) {
+	return port.EmbeddingCapability{ProviderID: "counting", Available: true}, nil
+}
+func (*countingQueryEmbedder) EmbedDocuments(context.Context, port.EmbeddingProfile, port.SearchDocumentBatch) ([]port.EmbeddingVector, error) {
+	return nil, nil
+}
+func (e *countingQueryEmbedder) EmbedQuery(context.Context, port.EmbeddingProfile, string) ([]float32, error) {
+	e.calls++
+	return []float32{1, 2}, nil
+}
+
+func TestSearchRejectsTopLevelAndEngineQueryMismatchBeforeEmbedding(t *testing.T) {
+	active := indexStub{status: port.SearchIndexStatus{Identity: testIdentity(), State: "active"}}
+	for _, mutate := range []func(*SearchRequest){
+		func(request *SearchRequest) { request.QueryText = "forged" },
+		func(request *SearchRequest) { request.Mode = "hybrid" },
+		func(request *SearchRequest) { request.EngineRequest = append(request.EngineRequest, []byte(" {}")...) },
+	} {
+		request := testRequest("semantic")
+		mutate(&request)
+		embedder := &countingQueryEmbedder{}
+		engine := &searchEngineStub{}
+		if _, err := NewSearchService(engine, executorStub{}, active, embedder).Search(context.Background(), request); !errors.Is(err, ErrSearchInvalidRequest) {
+			t.Fatalf("mismatch err=%v", err)
+		}
+		if embedder.calls != 0 || engine.prepared.Request != nil {
+			t.Fatalf("mismatch crossed authority boundary: embed=%d prepared=%s", embedder.calls, engine.prepared.Request)
+		}
+	}
 }
 func allCapabilities() port.QueryAdapterCapability {
 	return port.QueryAdapterCapability{AdapterID: "native", BackendVersion: "1", PlanProtocolVersion: "v1", Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...), MaxRows: 100, MaxBytes: 1024}

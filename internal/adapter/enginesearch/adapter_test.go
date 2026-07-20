@@ -5,6 +5,7 @@ package enginesearch
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"strings"
 	"testing"
 
@@ -94,9 +95,22 @@ func TestProductionEngineAdapterBuildsClosedLexicalAndStructuralPlans(t *testing
 		t.Fatalf("query=%+v err=%v", query, err)
 	}
 	rows := port.ExecutionResult{Complete: true, Rows: []port.RawRow{{"signal": {Kind: "string", Value: "lexical"}, "address": {Kind: "string", Value: "ldl:project:p:entity:alpha"}, "kind": {Kind: "string", Value: "entity"}, "owner": {Kind: "string"}, "graph_entries": {Kind: "string", Value: `[]`}, "type_addresses": {Kind: "string", Value: `[]`}, "layer_addresses": {Kind: "string", Value: `[]`}, "content_hash": {Kind: "string", Value: "sha256:content"}, "score": {Kind: "float64", Value: "1.5"}}}}
-	result, err := adapter.CompleteSearch(context.Background(), port.CompleteSearchInput{Prepared: prepared, Rows: rows})
+	result, err := adapter.CompleteSearch(context.Background(), port.CompleteSearchInput{Prepared: prepared, Rows: rows, IndexIdentity: identity})
 	if err != nil || !strings.Contains(string(result), `"subject_address":"ldl:project:p:entity:alpha"`) || !strings.Contains(string(result), `"rank":1`) {
 		t.Fatalf("result=%s err=%v", result, err)
+	}
+	invalidKind := rows
+	invalidKind.Rows = append([]port.RawRow(nil), rows.Rows...)
+	invalidKind.Rows[0] = maps.Clone(rows.Rows[0])
+	invalidKind.Rows[0]["score"] = port.RawValue{Kind: "string", Value: "1.5"}
+	if _, err := adapter.CompleteSearch(context.Background(), port.CompleteSearchInput{Prepared: prepared, Rows: invalidKind, IndexIdentity: identity}); err == nil {
+		t.Fatal("invalid score kind accepted")
+	}
+	invalidNumber := rows
+	invalidNumber.Rows = []port.RawRow{maps.Clone(rows.Rows[0])}
+	invalidNumber.Rows[0]["score"] = port.RawValue{Kind: "float64", Value: "NaN"}
+	if _, err := adapter.CompleteSearch(context.Background(), port.CompleteSearchInput{Prepared: prepared, Rows: invalidNumber, IndexIdentity: identity}); err == nil {
+		t.Fatal("non-finite score accepted")
 	}
 }
 
@@ -121,12 +135,22 @@ func TestEngineAdapterCompletesQueryAnalysisAndLocalProjection(t *testing.T) {
 	if err != nil || projection.AllowSearchDocument(engine.SearchDocument{}) || projection.AllowSearchField(engine.SearchDocument{}, engine.SearchField{}) {
 		t.Fatalf("projection=%v err=%v", projection, err)
 	}
-	adapter, _, _ := boundAdapter(t, projection)
-	query, err := adapter.CompleteQuery(context.Background(), port.CompleteExecutionInput{Rows: port.ExecutionResult{Complete: true, Rows: []port.RawRow{{"address": {Kind: "string", Value: "a"}}}}})
-	if err != nil || !strings.Contains(string(query), `"address"`) {
+	adapter, snapshot, _ := boundAdapter(t, projection)
+	queryRequest := []byte(`{"kind":"structural_query","query_address":"ldl:project:p:query:q","root_addresses":["a"]}`)
+	queryPlan, err := adapter.PrepareQuery(context.Background(), port.BoundExecutionRequest{Snapshot: snapshot, Request: queryRequest, MaxOutputBytes: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := adapter.CompleteQuery(context.Background(), port.CompleteExecutionInput{Plan: queryPlan, Request: queryRequest, BackendVersion: "0.17.0", Rows: port.ExecutionResult{Complete: true, Rows: []port.RawRow{{"address": {Kind: "string", Value: "a"}, "kind": {Kind: "string", Value: "entity"}, "owner": {Kind: "string"}}}}})
+	if err != nil || !strings.Contains(string(query), `"query_result_hash":"sha256:`) {
 		t.Fatalf("query=%s err=%v", query, err)
 	}
-	analysis, err := adapter.CompleteAnalysis(context.Background(), port.CompleteExecutionInput{Rows: port.ExecutionResult{Complete: true, Rows: []port.RawRow{{"address": {Kind: "string", Value: "a"}, "metric_name": {Kind: "string", Value: "importance"}, "metric_value": {Kind: "float64", Value: "0.5"}}}}})
+	analysisRequest := []byte(`{"kind":"analyze_graph","algorithm":"page_rank","entity_addresses":["a"],"relation_addresses":["r"]}`)
+	analysisPlan, err := adapter.PrepareAnalysis(context.Background(), port.BoundExecutionRequest{Snapshot: snapshot, Request: analysisRequest, MaxOutputBytes: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis, err := adapter.CompleteAnalysis(context.Background(), port.CompleteExecutionInput{Plan: analysisPlan, Request: analysisRequest, BackendVersion: "0.17.0", Rows: port.ExecutionResult{Complete: true, Rows: []port.RawRow{{"address": {Kind: "string", Value: "a"}, "metric_name": {Kind: "string", Value: "importance"}, "metric_value": {Kind: "float64", Value: "0.5"}}}}})
 	if err != nil || !strings.Contains(string(analysis), `"importance"`) {
 		t.Fatalf("analysis=%s err=%v", analysis, err)
 	}

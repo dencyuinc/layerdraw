@@ -9,7 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -238,9 +241,22 @@ func (e *Adapter) CompleteSearch(_ context.Context, input port.CompleteSearchInp
 	}
 	rows := make([]engine.SearchCandidateRow, len(input.Rows.Rows))
 	for index, row := range input.Rows.Rows {
+		for _, key := range []string{"signal", "address", "kind", "owner", "graph_entries", "type_addresses", "layer_addresses", "content_hash"} {
+			if row[key].Kind != "string" {
+				return nil, ErrInvalidNativeSearchRequest
+			}
+		}
+		if fields, present := row["fields"]; present && fields.Kind != "string" {
+			return nil, ErrInvalidNativeSearchRequest
+		}
+		score := row["score"]
+		parsedScore, parseErr := strconv.ParseFloat(score.Value, 64)
+		if score.Kind != "float64" || parseErr != nil || math.IsNaN(parsedScore) || math.IsInf(parsedScore, 0) {
+			return nil, ErrInvalidNativeSearchRequest
+		}
 		rows[index] = engine.SearchCandidateRow{Signal: row["signal"].Value, Address: row["address"].Value, Kind: row["kind"].Value, Owner: row["owner"].Value, GraphEntries: row["graph_entries"].Value, TypeAddresses: row["type_addresses"].Value, LayerAddresses: row["layer_addresses"].Value, ContentHash: row["content_hash"].Value, Fields: row["fields"].Value, Score: row["score"].Value}
 	}
-	result, err := engine.CompleteSearchResult(engine.SearchCompletion{Mode: input.Prepared.Mode, QueryDigest: input.Prepared.QueryDigest, QueryText: input.Prepared.QueryText, MaxHits: input.Prepared.MaxHits, RRFK: input.Prepared.RRFK, LexicalWeight: input.Prepared.LexicalWeight, SemanticWeight: input.Prepared.SemanticWeight, Offset: input.Prepared.Offset, NextCursor: input.Prepared.NextCursor, SnippetMaxBytes: input.Prepared.SnippetMaxBytes, Rows: rows})
+	result, err := engine.CompleteSearchResult(engine.SearchCompletion{DocumentSnapshotRef: resultSnapshot(input.IndexIdentity.DocumentSnapshotRef), IndexIdentityDigest: identityDigest(input.IndexIdentity), Mode: input.Prepared.Mode, QueryDigest: input.Prepared.QueryDigest, QueryText: input.Prepared.QueryText, MaxHits: input.Prepared.MaxHits, RRFK: input.Prepared.RRFK, LexicalWeight: input.Prepared.LexicalWeight, SemanticWeight: input.Prepared.SemanticWeight, Offset: input.Prepared.Offset, NextCursor: input.Prepared.NextCursor, SnippetMaxBytes: input.Prepared.SnippetMaxBytes, Rows: rows})
 	if err != nil {
 		return nil, ErrInvalidNativeSearchRequest
 	}
@@ -252,12 +268,25 @@ func (e *Adapter) CompleteQuery(_ context.Context, input port.CompleteExecutionI
 	}
 	rows := make([]engine.QueryRow, len(input.Rows.Rows))
 	for index, row := range input.Rows.Rows {
+		if len(row) != 3 || row["address"].Kind != "string" || row["kind"].Kind != "string" || row["owner"].Kind != "string" {
+			return nil, ErrInvalidNativeSearchRequest
+		}
 		rows[index] = make(engine.QueryRow, len(row))
 		for key, value := range row {
 			rows[index][key] = engine.QueryValue{Kind: value.Kind, Value: value.Value}
 		}
 	}
-	return engine.CompleteQueryResult(rows, input.Plan.Authority.RequestDigest)
+	var request struct {
+		QueryAddress string                       `json:"query_address"`
+		Arguments    map[string]engine.QueryValue `json:"arguments"`
+	}
+	if json.Unmarshal(input.Request, &request) != nil {
+		return nil, ErrInvalidNativeSearchRequest
+	}
+	if request.QueryAddress == "" {
+		request.QueryAddress = "ldl:runtime:query:" + strings.TrimPrefix(input.Plan.Authority.RequestDigest, "sha256:")
+	}
+	return engine.CompleteQueryResult(rows, engine.QueryCompletion{DocumentSnapshotRef: resultSnapshot(input.Plan.Authority.Snapshot), QueryAddress: request.QueryAddress, Arguments: request.Arguments, StatePolicy: "none", StateInput: engine.QueryResultStateInput{Kind: "none"}})
 }
 func (e *Adapter) CompleteAnalysis(_ context.Context, input port.CompleteExecutionInput) ([]byte, error) {
 	if !input.Rows.Complete || input.Rows.Truncated {
@@ -273,7 +302,24 @@ func (e *Adapter) CompleteAnalysis(_ context.Context, input port.CompleteExecuti
 		}
 		values = append(values, engine.AnalysisValue{Address: row["address"].Value, MetricName: row["metric_name"].Value, TypedValue: row["metric_value"].Value})
 	}
-	return engine.CompleteAnalysisResult(values, input.Plan.Authority.RequestDigest)
+	var request struct {
+		Algorithm          string   `json:"algorithm"`
+		AlgorithmProfileID string   `json:"algorithm_profile_id"`
+		QueryResultHash    string   `json:"query_result_hash"`
+		EntityAddresses    []string `json:"entity_addresses"`
+		RelationAddresses  []string `json:"relation_addresses"`
+	}
+	if json.Unmarshal(input.Request, &request) != nil {
+		return nil, ErrInvalidNativeSearchRequest
+	}
+	if request.AlgorithmProfileID == "" {
+		request.AlgorithmProfileID = "layerdraw.analysis." + request.Algorithm + ".v1"
+	}
+	return engine.CompleteAnalysisResult(values, engine.AnalysisCompletion{DocumentSnapshotRef: resultSnapshot(input.Plan.Authority.Snapshot), EntityAddresses: request.EntityAddresses, RelationAddresses: request.RelationAddresses, QueryResultHash: request.QueryResultHash, Algorithm: request.Algorithm, AlgorithmProfileID: request.AlgorithmProfileID, BackendVersion: input.BackendVersion})
+}
+
+func resultSnapshot(value port.DocumentSnapshotRef) engine.SearchResultSnapshotRef {
+	return engine.SearchResultSnapshotRef{Kind: string(value.Kind), HostDocumentID: value.HostDocumentID, CommittedRevision: value.CommittedRevision, SourceTreeDigest: value.SourceTreeDigest, DocumentGeneration: value.DocumentGeneration, DefinitionHash: value.DefinitionHash}
 }
 
 func nativePlan(kind port.PlanKind, payload []byte, maxRows, maxBytes int, authority port.PlanAuthorityBinding) port.ExecutionPlan {

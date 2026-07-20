@@ -233,6 +233,9 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 	if err := validateSearchRequest(input); err != nil {
 		return nil, err
 	}
+	if err := validateEngineSearchBinding(input); err != nil {
+		return nil, err
+	}
 	if s.engine == nil || s.executor == nil || s.indexes == nil {
 		return nil, fmt.Errorf("%w: search composition is incomplete", ErrSearchCapabilityMissing)
 	}
@@ -309,7 +312,7 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 	if err != nil {
 		return nil, normalizeExecutionError(err)
 	}
-	result, err := s.engine.CompleteSearch(ctx, port.CompleteSearchInput{Prepared: prepared, Rows: rows})
+	result, err := s.engine.CompleteSearch(ctx, port.CompleteSearchInput{Prepared: prepared, Rows: rows, IndexIdentity: input.IndexIdentity})
 	if err != nil {
 		return nil, fmt.Errorf("%w: Engine rejected adapter rows", ErrSearchBackendFailed)
 	}
@@ -317,6 +320,24 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 		return nil, fmt.Errorf("%w: Engine result exceeded bound", ErrSearchInvalidRequest)
 	}
 	return result, nil
+}
+
+func validateEngineSearchBinding(input SearchRequest) error {
+	var request struct {
+		Kind       string `json:"kind"`
+		Mode       string `json:"mode"`
+		QueryText  string `json:"query_text"`
+		TargetKind string `json:"target_kind,omitempty"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(input.EngineRequest)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return ErrSearchInvalidRequest
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF || request.Kind != "search_documents" || request.Mode != input.Mode || request.QueryText != input.QueryText {
+		return ErrSearchInvalidRequest
+	}
+	return nil
 }
 
 func encodeSearchCursor(key []byte, payload searchCursorPayload) (string, error) {
@@ -382,7 +403,14 @@ func (s *SearchService) ExecuteQuery(ctx context.Context, input port.BoundExecut
 	if err != nil {
 		return nil, normalizeExecutionError(err)
 	}
-	result, err := s.engine.CompleteQuery(ctx, port.CompleteExecutionInput{Plan: plan, Rows: rows})
+	capability, err := s.executor.Capabilities(ctx)
+	if err != nil {
+		return nil, ErrSearchBackendFailed
+	}
+	if capability.BackendVersion == "" {
+		capability.BackendVersion = "unknown"
+	}
+	result, err := s.engine.CompleteQuery(ctx, port.CompleteExecutionInput{Plan: plan, Rows: rows, Request: input.Request, BackendVersion: capability.BackendVersion})
 	if err != nil {
 		return nil, fmt.Errorf("%w: Engine rejected query rows", ErrSearchBackendFailed)
 	}
@@ -407,7 +435,14 @@ func (s *SearchService) ExecuteAnalysis(ctx context.Context, input port.BoundExe
 	if err != nil {
 		return nil, normalizeExecutionError(err)
 	}
-	result, err := s.engine.CompleteAnalysis(ctx, port.CompleteExecutionInput{Plan: plan, Rows: rows})
+	capability, err := s.executor.Capabilities(ctx)
+	if err != nil {
+		return nil, ErrSearchBackendFailed
+	}
+	if capability.BackendVersion == "" {
+		capability.BackendVersion = "unknown"
+	}
+	result, err := s.engine.CompleteAnalysis(ctx, port.CompleteExecutionInput{Plan: plan, Rows: rows, Request: input.Request, BackendVersion: capability.BackendVersion})
 	if err != nil {
 		if errors.Is(err, port.ErrInvalidScope) {
 			return nil, ErrAnalysisInvalidScope

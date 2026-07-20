@@ -154,7 +154,7 @@ SearchIndexIdentity
 
 identityのいずれかが変われば別indexとして扱う。stale indexを新revisionの結果として返してはならない。index bytes、embedding vector、HNSW内部IDを`.ldl`または`.layerdraw`の正本sourceへ保存しない。
 
-Engineが生成するSearch / Query / Analysis / Index planは、正確な`DocumentSnapshotRef`、Access projection、Search / Embedding Profile、Search Index identity、request digestへ署名付きでbindする。Runtimeは実行直前にbindingを再検証し、別revision、別session、別profileへplanを付け替えてはならない。
+Engineが生成するSearch / Query / Analysis / Index planは、正確な`DocumentSnapshotRef`、Access projection、Search / Embedding Profile、Search Index identity、request digestへ署名付きでbindする。plan tokenは暗号学的nonceと短い有効期限を持つ単回使用とし、adapterはbackend実行開始前に原子的にconsumeする。成功、backend失敗、並列実行のいずれでも再利用できず、Host再起動後の旧tokenも拒否する。Runtimeは実行直前にbindingを再検証し、別revision、別session、別profileへplanを付け替えてはならない。Searchのtop-level `query_text` / `mode`はEngine request内の値と完全一致しなければならず、不一致はembedding生成、cursor検証、adapter実行より前に拒否する。
 
 ### 5.2 Search Profile
 
@@ -252,6 +252,7 @@ SearchResult
   result_truncated
   next_cursor?
   diagnostics[]
+  search_result_hash
 
 SearchHit
   subject_address
@@ -299,6 +300,8 @@ SearchからQueryを作る操作は次を行う。
 4. RelationType、方向、深さ、cycle policy、result inclusionを明示する。
 5. Go Workbenchでpreviewし、semantic diffとQuery結果を確認する。
 6. RuntimeでLDLへcommitする。
+
+Query実行結果は`document_snapshot_ref`、保存済み`query_address`、typed `arguments`、固定した`state_policy` / `state_input`、canonicalなEntity / Relation address集合、paths / cycle refs、diagnosticsを返し、全体を`query_result_hash`へ束縛する。backendの任意row mapや内部IDを規範結果として公開しない。
 
 検索条件から属性predicateへの一般化をLLMの推測だけで自動commitしてはならない。候補predicateと影響件数をpreviewし、承認対象にする。
 

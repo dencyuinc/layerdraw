@@ -58,13 +58,18 @@ func NewDesktopSearchComposition(config DesktopSearchConfig) (DesktopSearchCompo
 	if err != nil {
 		return DesktopSearchComposition{}, err
 	}
-	model, err := searchadapter.NewLocalProjectionModel(config.EmbeddingProfile.Dimensions, config.LocalModelSeed)
-	if err != nil {
-		return DesktopSearchComposition{}, err
-	}
-	embedding, err := searchadapter.NewEmbeddingProvider(port.EmbeddingCapability{ProviderID: "layerdraw.local.projection", Available: true, Profiles: []port.EmbeddingProfile{config.EmbeddingProfile}}, map[string]searchadapter.VectorModel{config.EmbeddingProfile.ProfileID: model}, false, documentVerifier)
-	if err != nil {
-		return DesktopSearchComposition{}, err
+	var embedding port.EmbeddingProvider
+	if config.EmbeddingProfile.ProfileID != "" {
+		model, modelErr := searchadapter.NewLocalProjectionModel(config.EmbeddingProfile.Dimensions, config.LocalModelSeed)
+		if modelErr != nil {
+			return DesktopSearchComposition{}, modelErr
+		}
+		embedding, err = searchadapter.NewEmbeddingProvider(port.EmbeddingCapability{ProviderID: "layerdraw.local.projection", Available: true, Profiles: []port.EmbeddingProfile{config.EmbeddingProfile}}, map[string]searchadapter.VectorModel{config.EmbeddingProfile.ProfileID: model}, false, documentVerifier)
+		if err != nil {
+			return DesktopSearchComposition{}, err
+		}
+	} else if config.EmbeddingProfile != (port.EmbeddingProfile{}) || len(config.LocalModelSeed) != 0 {
+		return DesktopSearchComposition{}, fmt.Errorf("incomplete Desktop embedding configuration")
 	}
 	service := layerruntime.NewVerifiedSearchServiceWithCursorAuthority(authorizedEngine, executor, indexes, embedding, documentVerifier, config.PlanKey)
 	return DesktopSearchComposition{Surface: service, service: service, documents: documentProducer}, nil
@@ -74,7 +79,7 @@ func NewDesktopSearchComposition(config DesktopSearchConfig) (DesktopSearchCompo
 // Engine/Access authority before Runtime sees it. No consumer can submit or
 // sign an arbitrary batch directly.
 func (c DesktopSearchComposition) RebuildIndex(ctx context.Context, input layerruntime.SearchIndexBuildRequest, documents port.SearchDocumentBatchRequest) (port.SearchIndexStatus, error) {
-	if c.service == nil || c.documents == nil || documents.Snapshot != input.Snapshot || documents.AccessProjectionDigest != input.AccessProjectionDigest || input.EmbeddingProfile == nil || documents.EmbeddingProfileDigest != input.EmbeddingProfile.ModelDigest {
+	if c.service == nil || c.documents == nil || documents.Snapshot != input.Snapshot || documents.AccessProjectionDigest != input.AccessProjectionDigest || (input.EmbeddingProfile == nil && documents.EmbeddingProfileDigest != "") || (input.EmbeddingProfile != nil && documents.EmbeddingProfileDigest != input.EmbeddingProfile.ModelDigest) {
 		return port.SearchIndexStatus{}, fmt.Errorf("invalid Desktop Search document authority input")
 	}
 	batch, err := c.documents.ProduceSearchDocumentBatch(ctx, documents)
