@@ -13,6 +13,7 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
+	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/registry"
 )
 
@@ -25,16 +26,22 @@ type FrontendBridge struct {
 	ctx      context.Context
 	app      *desktopapp.Application
 	registry registryDispatcher
+	preview  editorPreviewDispatcher
 }
 
 type registryDispatcher interface {
 	DispatchRegistry(context.Context, []byte) []byte
 }
 
+type editorPreviewDispatcher interface {
+	PreviewEditor(context.Context, runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error)
+}
+
 func NewFrontendBridge(app *desktopapp.Application, dispatchers ...registryDispatcher) *FrontendBridge {
 	bridge := &FrontendBridge{ctx: context.Background(), app: app}
 	if len(dispatchers) != 0 {
 		bridge.registry = dispatchers[0]
+		bridge.preview, _ = dispatchers[0].(editorPreviewDispatcher)
 	}
 	return bridge
 }
@@ -55,6 +62,17 @@ func (b *FrontendBridge) context() context.Context {
 }
 
 func (b *FrontendBridge) State() desktopcontract.LifecycleState { return b.app.State() }
+
+func (b *FrontendBridge) ProjectPublication() (desktopapp.ProjectPublicationDTO, error) {
+	return b.app.ProjectPublication(b.context())
+}
+
+func (b *FrontendBridge) PreviewEditor(input runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error) {
+	if b.preview == nil {
+		return localdocument.EditorPreviewResult{}, errors.New("desktop editor preview is unavailable")
+	}
+	return b.preview.PreviewEditor(b.context(), input)
+}
 
 func (b *FrontendBridge) Invoke(method string, exchange desktopcontract.Exchange) desktopapp.BindingResult {
 	return b.app.Invoke(b.context(), method, exchange)
@@ -132,10 +150,12 @@ func (b *FrontendBridge) ReviewApproveAndApply(input desktopapp.ReviewApprovalRe
 	return reviewProposal(value, err)
 }
 
-func (b *FrontendBridge) ReviewWithdraw(input struct {
+type ReviewWithdrawRequest struct {
 	ProposalID string `json:"proposal_id"`
 	Generation uint64 `json:"generation"`
-}) (reviewapp.Proposal, error) {
+}
+
+func (b *FrontendBridge) ReviewWithdraw(input ReviewWithdrawRequest) (reviewapp.Proposal, error) {
 	value, err := b.app.ReviewWithdraw(b.context(), input.ProposalID, input.Generation)
 	return reviewProposal(value, err)
 }

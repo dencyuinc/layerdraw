@@ -378,6 +378,16 @@ func (o *sharedOwner) DispatchRegistry(ctx context.Context, wire []byte) []byte 
 	return binding.Dispatch(ctx, wire)
 }
 
+func (o *sharedOwner) PreviewEditor(ctx context.Context, input runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error) {
+	o.mu.RLock()
+	local := o.local
+	o.mu.RUnlock()
+	if local == nil {
+		return localdocument.EditorPreviewResult{}, errors.New("desktop editor preview is unavailable")
+	}
+	return local.PreviewEditor(ctx, input)
+}
+
 func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
 	o.mu.RLock()
 	endpoint, engine, registryWire := o.endpoint, o.engine, o.registryWire

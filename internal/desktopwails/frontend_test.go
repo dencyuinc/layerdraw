@@ -82,6 +82,10 @@ func TestFrontendBridgeExposesContextFreeGeneratedInvoke(t *testing.T) {
 	if result.Outcome != protocolcommon.OutcomeSuccess || !result.Validate() || bridge.State() != desktopcontract.LifecycleReady {
 		t.Fatalf("invoke=%+v state=%s", result, bridge.State())
 	}
+	publication, err := bridge.ProjectPublication()
+	if err != nil || publication.Phase != string(desktopcontract.LifecycleReady) || publication.Project != nil {
+		t.Fatalf("DTO-only empty project publication=%+v err=%v", publication, err)
+	}
 }
 
 func TestFrontendBridgeDelegatesProjectSurfaceWithFallbackContext(t *testing.T) {

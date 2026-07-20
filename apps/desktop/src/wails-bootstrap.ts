@@ -65,6 +65,10 @@ export interface DesktopWailsComposition {
   readonly mcp: DesktopMCPPort;
 }
 
+interface RefreshableDesktopLifecycle extends DesktopProjectLifecyclePort {
+  refreshPublication(): Promise<void>;
+}
+
 type DesktopResult = Readonly<{ outcome?: unknown; value?: unknown }>;
 function successful(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("desktop native interchange failed");
@@ -116,7 +120,7 @@ export async function createDesktopWailsLifecycle(
   application: Pick<DesktopWailsApplicationBinding, "State">,
   runtime: DesktopWailsRuntimeBinding,
   owner?: DesktopProjectOwnerBinding,
-): Promise<DesktopProjectLifecyclePort> {
+): Promise<RefreshableDesktopLifecycle> {
   let sequence = 0;
   const owned = owner === undefined ? undefined : await owner.ProjectPublication();
   let snapshot: DesktopLifecycleSnapshot = owned ?? Object.freeze({ sequence, phase: lifecyclePhase(await application.State()), capabilities: unavailableCapabilities() });
@@ -148,6 +152,7 @@ export async function createDesktopWailsLifecycle(
     selectView(viewAddress: string, signal: AbortSignal) { return action("select", viewAddress, signal); },
     showRecoveryOptions(signal: AbortSignal) { return action("recovery", undefined, signal); },
     disconnectExternal(signal: AbortSignal) { return action("disconnect", undefined, signal); },
+		async refreshPublication() { if (owner !== undefined) publish(await owner.ProjectPublication()); },
   });
 }
 
@@ -167,7 +172,11 @@ export async function createDesktopWailsComposition(
     createConnection: (request: DesktopMCPConnectRequest) => mcpBinding.CreateMCPConnection(request),
     revokeConnection: (connectionID: string) => mcpBinding.RevokeMCPConnection(connectionID),
   });
-  const projectDialogs: DesktopProjectDialogPort = Object.freeze({ create: (id: string) => application.CreateProjectDialog(id), open: (id: string) => application.OpenProjectDialog(id), recent: () => application.RecentProjects() });
+	const refreshAfterOpen = async (result: Awaited<ReturnType<DesktopWailsApplicationBinding["CreateProjectDialog"]>>) => {
+		if (result.outcome === "success") await lifecycle.refreshPublication();
+		return result;
+	};
+  const projectDialogs: DesktopProjectDialogPort = Object.freeze({ create: async (id: string) => refreshAfterOpen(await application.CreateProjectDialog(id)), open: async (id: string) => refreshAfterOpen(await application.OpenProjectDialog(id)), recent: () => application.RecentProjects() });
   const externalStorage: DesktopExternalStoragePort = Object.freeze({
     connect: (input: JsonObject) => application.ConnectExternal(input), inspect: (id: string) => application.InspectExternal(id), refresh: (id: string) => application.RefreshExternal(id), disconnect: (id: string) => application.DisconnectExternal(id),
     selectRemote: (input: JsonObject) => application.SelectExternalRemote(input), acquireLease: (session: JsonObject, binding: JsonObject) => application.AcquireExternalLease(session, binding),

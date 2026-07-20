@@ -47,6 +47,7 @@ type BridgePrepared struct {
 	AuthoringImpact semantic.AuthoringImpact
 	DefinitionHash  protocolcommon.Digest
 	GraphHash       protocolcommon.Digest
+	Preview         engineprotocol.WorkbenchPreviewResult
 	EncodedInput    []byte
 }
 
@@ -116,7 +117,7 @@ func (w *RuntimeEngineBridge) Preview(ctx context.Context, working BridgeWorking
 	if err != nil {
 		return BridgePrepared{}, err
 	}
-	prepared := BridgePrepared{AuthoringImpact: *wire.AuthoringImpact, DefinitionHash: protocolcommon.Digest(plan.Result.DefinitionHash), GraphHash: protocolcommon.Digest(*plan.Result.GraphHash), EncodedInput: encoded}
+	prepared := BridgePrepared{AuthoringImpact: *wire.AuthoringImpact, DefinitionHash: protocolcommon.Digest(plan.Result.DefinitionHash), GraphHash: protocolcommon.Digest(*plan.Result.GraphHash), Preview: wire, EncodedInput: encoded}
 	w.mu.Lock()
 	doc = w.docs[working.Handle]
 	if doc == nil || doc.working != working {

@@ -132,7 +132,7 @@ func (w *runtimeWorkbench) Preview(ctx context.Context, in port.PreviewWorkingDo
 	}
 	ref := engineendpoint.LocalCompileInputRef(prepared.EncodedInput)
 	sources := port.SourceBlobSet{Revision: in.Document.BaseRevision, Blobs: []port.SourceBlob{{Ref: ref, Contents: prepared.EncodedInput}}}
-	result := port.PreparedRevision{AuthoringImpact: prepared.AuthoringImpact, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, Sources: sources, Manifest: ref}
+	result := port.PreparedRevision{AuthoringImpact: prepared.AuthoringImpact, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, Preview: prepared.Preview, Sources: sources, Manifest: ref}
 	w.mu.RLock()
 	kind, fileBacked := w.kinds[in.Document.BaseRevision.DocumentID]
 	w.mu.RUnlock()

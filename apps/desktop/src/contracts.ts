@@ -3,6 +3,7 @@
 import type { BrowserDocumentSession, BrowserEditor } from "@layerdraw/client-sdk/editor";
 import type { CapabilityID } from "@layerdraw/protocol/common";
 import type { ExportPlan, ViewData } from "@layerdraw/protocol/semantic";
+import type { CommittedRevisionRef, OpenRuntimeDocumentInput } from "@layerdraw/protocol/runtime";
 import type { ViewDataUpdate, Viewer, ViewerSnapshot } from "@layerdraw/viewer";
 
 export type DesktopLifecyclePhase = "starting" | "ready" | "recovery" | "draining" | "stopped";
@@ -54,6 +55,18 @@ export interface DesktopProjectContext {
 	disconnect_consequence?: string;
   }>;
   readonly persistence: "clean" | "preview_pending" | "ephemeral" | "durable_pending" | "reconcile_pending";
+}
+
+/** JSON-only project state emitted by Go. Executable editor/viewer objects are
+ * attached by the trusted frontend owner after generated-client negotiation. */
+export interface DesktopProjectPublicationContextDTO extends Omit<DesktopProjectContext, "editor" | "editor_session" | "authoritative_revision_token" | "authoritative_revision_label" | "views" | "access" | "storage"> {
+  readonly authoritative_revision: CommittedRevisionRef;
+  readonly open_input: OpenRuntimeDocumentInput;
+}
+
+export interface DesktopProjectPublicationDTO {
+  readonly phase: DesktopLifecyclePhase;
+  readonly project?: DesktopProjectPublicationContextDTO;
 }
 
 export type DesktopViewerFrame = Readonly<{

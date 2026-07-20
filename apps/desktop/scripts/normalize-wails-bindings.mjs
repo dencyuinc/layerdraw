@@ -14,5 +14,11 @@ const generated = [
 for (const path of generated) {
   const url = new URL(`../${path}`, import.meta.url);
   const source = await readFile(url, "utf8");
-  if (!source.startsWith(header)) await writeFile(url, `${header}${source}`);
+	const headed = source.startsWith(header) ? source : `${header}${source}`;
+	const normalized = path.endsWith(".d.ts")
+		? headed.replaceAll("from '../models';", "from '../models.js';")
+			.replaceAll("desktopapp.MCPTransportKind", "string")
+			.replaceAll("desktopcontract.LifecycleState", "string")
+		: headed;
+	await writeFile(url, `${normalized.trimEnd()}\n`);
 }

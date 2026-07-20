@@ -4,8 +4,10 @@ import { mountDesktopShell } from "../../src/mount.js";
 import { installAccessibilityProbe, isPackagedProbeMode, signalAccessibilityProbeReady } from "../../src/native-shell.js";
 import { mountPackagedProbeShell } from "../../src/packaged-probe.js";
 import { createDesktopWailsComposition, type DesktopWailsApplicationBinding, type DesktopWailsMCPBinding } from "../../src/wails-bootstrap.js";
-import type { DesktopWailsInvoke } from "../../src/wails-bindings.js";
-import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MCPStatus, NativeExportProfiles, OpenProjectDialog, PlanExternalReconcile, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "../../src/wails-bindings.js";
+import { createDesktopWailsProjectOwner } from "../../src/wails-project-owner.js";
+import type { DesktopProjectHostBinding, DesktopReviewHostBinding } from "../../src/wails-owner.js";
+import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MCPStatus, NativeExportProfiles, OpenProjectDialog, PlanExternalReconcile, PreviewEditor, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { EventsOff, EventsOn } from "../wailsjs/runtime/runtime.js";
 
 async function start(): Promise<void> {
@@ -23,14 +25,17 @@ async function start(): Promise<void> {
     SelectExternalRemote, AcquireExternalLease, PlanExternalReconcile, ApplyExternalReconcile,
     NativeExportProfiles, SerializeNativeExport, PublishNativeExportDialog, ImportExternalDialog,
   } as unknown as DesktopWailsApplicationBinding;
+  const generatedBindings = createDesktopGeneratedBindings(Invoke as unknown as DesktopWailsInvoke);
+  const project = await createDesktopWailsProjectOwner({ ProjectPublication, PreviewEditor } as unknown as DesktopProjectHostBinding, generatedBindings);
   const composition = await createDesktopWailsComposition(
     application,
 		{ EventsOn, EventsOff },
 		{ MCPStatus, SetMCPEnabled, RestartMCP, ListMCPConnections, CreateMCPConnection, RevokeMCPConnection } as unknown as DesktopWailsMCPBinding,
     Invoke as unknown as DesktopWailsInvoke,
 		{
+			project,
 			registry: { RegistryDispatch },
-			review: { ReviewSnapshot, ReviewComment, ReviewApproveAndApply, ReviewWithdraw },
+			review: { ReviewSnapshot, ReviewComment, ReviewApproveAndApply, ReviewWithdraw } as unknown as DesktopReviewHostBinding,
 		},
   );
   mountDesktopShell(root, {

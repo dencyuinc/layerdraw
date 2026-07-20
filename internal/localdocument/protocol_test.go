@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -67,6 +68,10 @@ func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *t
 	ownerPreview, err := host.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: owner.Session.Open.Session, OperationBatch: batch})
 	if err != nil {
 		t.Fatal(err)
+	}
+	editorPreview, err := host.PreviewEditor(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: owner.Session.Open.Session, OperationBatch: batch})
+	if err != nil || editorPreview.Preview.PreviewID == nil || editorPreview.Preview.AuthoringImpact == nil || editorPreview.Preview.AuthoringImpact.ImpactDigest != ownerPreview.PreviewEvaluation.AuthoringImpact.ImpactDigest || !reflect.DeepEqual(editorPreview.Runtime.AuthoringProof, ownerPreview.AuthoringProof) || editorPreview.Grant.AccessFingerprint != owner.Session.Open.AccessSummary.AccessFingerprint {
+		t.Fatalf("editor preview did not preserve Engine/Runtime/Access evidence: %+v err=%v", editorPreview, err)
 	}
 	clock := host.config.Clock.Now()
 	delegate := func(id string, apply bool) accesscore.Delegation {

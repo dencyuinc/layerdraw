@@ -60,6 +60,14 @@ export function PlanExternalReconcile(arg1, arg2, arg3) {
   return window['go']['desktopwails']['FrontendBridge']['PlanExternalReconcile'](arg1, arg2, arg3);
 }
 
+export function PreviewEditor(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['PreviewEditor'](arg1);
+}
+
+export function ProjectPublication() {
+  return window['go']['desktopwails']['FrontendBridge']['ProjectPublication']();
+}
+
 export function PublishNativeExportDialog(arg1) {
   return window['go']['desktopwails']['FrontendBridge']['PublishNativeExportDialog'](arg1);
 }

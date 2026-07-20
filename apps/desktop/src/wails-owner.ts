@@ -3,7 +3,10 @@
 import type { LibraryController } from "@layerdraw/library";
 import type { ReviewApprovalRequest, ReviewCommentRequest, ReviewModel, ReviewProposal, ReviewSnapshot } from "@layerdraw/review";
 import type { Viewer } from "@layerdraw/viewer";
-import type { DesktopFeatureAvailability, DesktopLifecycleSnapshot } from "./contracts.js";
+import type { DesktopFeatureAvailability, DesktopLifecycleSnapshot, DesktopProjectPublicationDTO } from "./contracts.js";
+import type { PreviewOperationsInput, PreviewOperationsResult } from "@layerdraw/protocol/runtime";
+import type { AuthoringGrantSummary } from "@layerdraw/protocol/access";
+import type { WorkbenchPreviewResult } from "@layerdraw/protocol/engine";
 
 export interface DesktopOwnerActionDTO {
   readonly project_id: string;
@@ -31,6 +34,18 @@ export interface DesktopProjectOwnerBinding {
   ShowProjectRecoveryOptions(input: DesktopOwnerActionDTO, signal: AbortSignal): Promise<DesktopOwnerResultDTO>;
   DisconnectProjectExternal(input: DesktopOwnerActionDTO, signal: AbortSignal): Promise<DesktopOwnerResultDTO>;
   CreateProjectViewer(): Viewer;
+}
+
+export interface DesktopEditorPreviewDTO {
+  readonly preview: WorkbenchPreviewResult;
+  readonly runtime: PreviewOperationsResult;
+  readonly grant_summary: AuthoringGrantSummary;
+}
+
+/** JSON-only Wails host surface consumed by the trusted local owner. */
+export interface DesktopProjectHostBinding {
+  ProjectPublication(): Promise<DesktopProjectPublicationDTO>;
+  PreviewEditor(input: PreviewOperationsInput): Promise<DesktopEditorPreviewDTO>;
 }
 
 export interface DesktopRegistryHostBinding {

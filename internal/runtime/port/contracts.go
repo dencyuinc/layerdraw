@@ -138,6 +138,7 @@ type PreparedRevision struct {
 	AuthoringImpact semantic.AuthoringImpact
 	DefinitionHash  protocolcommon.Digest
 	GraphHash       protocolcommon.Digest
+	Preview         engineprotocol.WorkbenchPreviewResult
 	// Sources is the complete canonical source closure produced by Workbench.
 	// Every ref identity is unique and Contents must match its declared size and
 	// sha256 digest before Runtime may pass the set to StageRevision.
