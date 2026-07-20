@@ -3,7 +3,7 @@
 import { mountDesktopShell } from "../../src/mount.js";
 import { installAccessibilityProbe, isPackagedProbeMode, signalAccessibilityProbeReady } from "../../src/native-shell.js";
 import { createDesktopWailsComposition, createUnopenedViewer } from "../../src/wails-bootstrap.js";
-import { Invoke, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { CreateMCPConnection, Invoke, ListMCPConnections, MCPStatus, RestartMCP, RevokeMCPConnection, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { EventsOff, EventsOn } from "../wailsjs/runtime/runtime.js";
 
 async function start(): Promise<void> {
@@ -27,12 +27,14 @@ async function start(): Promise<void> {
   }
   const composition = await createDesktopWailsComposition(
     { State },
-    { EventsOn, EventsOff },
+		{ EventsOn, EventsOff },
+		{ MCPStatus, SetMCPEnabled, RestartMCP, ListMCPConnections, CreateMCPConnection, RevokeMCPConnection },
     (method, exchange) => Invoke(method, exchange),
   );
   mountDesktopShell(root, {
     lifecycle: composition.lifecycle,
-    viewer: composition.viewer,
+		viewer: composition.viewer,
+		mcp: composition.mcp,
     viewSelectionCapability: "engine.materialize_view",
     editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
   });

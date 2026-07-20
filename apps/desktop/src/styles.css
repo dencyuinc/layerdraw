@@ -23,6 +23,28 @@
 .ld-desktop-sidebar, .ld-desktop-inspector { padding: 1rem; background: var(--ld-panel); }
 .ld-desktop-sidebar { border-right: 1px solid var(--ld-line); }
 .ld-desktop-inspector { border-left: 1px solid var(--ld-line); }
+.ld-mcp-panel { display: grid; gap: .8rem; margin-top: 1.25rem; padding-top: 1.1rem; border-top: 1px solid var(--ld-line); }
+.ld-mcp-heading, .ld-mcp-heading > div { display: flex; align-items: center; justify-content: space-between; gap: .45rem; }
+.ld-mcp-heading > div:first-child { display: block; }
+.ld-mcp-heading h2, .ld-mcp-heading p { margin: 0; }
+.ld-mcp-panel button, .ld-mcp-panel input { font: inherit; }
+.ld-mcp-panel button { border: 1px solid var(--ld-line); border-radius: .45rem; padding: .4rem .6rem; background: var(--ld-panel); color: inherit; }
+.ld-mcp-panel button:not(:disabled):hover, .ld-mcp-panel button:not(:disabled):focus-visible { border-color: var(--ld-accent); outline: 2px solid var(--ld-accent-soft); }
+.ld-mcp-panel form { display: grid; gap: .65rem; padding: .75rem; border: 1px solid var(--ld-line); border-radius: .65rem; background: var(--ld-paper); }
+.ld-mcp-panel form > label { display: grid; gap: .25rem; }
+.ld-mcp-panel input[type="text"], .ld-mcp-panel input:not([type]) { min-width: 0; border: 1px solid var(--ld-line); border-radius: .35rem; padding: .4rem; }
+.ld-mcp-panel fieldset { display: flex; flex-wrap: wrap; gap: .45rem .7rem; margin: 0; border: 0; padding: 0; }
+.ld-mcp-panel legend { width: 100%; margin-bottom: .2rem; color: var(--ld-muted); font-size: .78rem; }
+.ld-mcp-panel fieldset label, .ld-mcp-confirm { display: flex; align-items: flex-start; gap: .3rem; font-size: .8rem; }
+.ld-mcp-instructions { display: grid; gap: .25rem; margin: 0; color: var(--ld-muted); }
+.ld-mcp-instructions code { overflow-wrap: anywhere; color: var(--ld-ink); }
+.ld-mcp-connections { display: grid; gap: .6rem; margin: 0; padding: 0; list-style: none; }
+.ld-mcp-connection { display: grid; gap: .45rem; padding: .7rem; border: 1px solid var(--ld-line); border-radius: .65rem; }
+.ld-mcp-connection > div:first-child, .ld-mcp-connection dl div { display: flex; justify-content: space-between; gap: .5rem; }
+.ld-mcp-connection dl { display: grid; gap: .25rem; margin: 0; font-size: .78rem; }
+.ld-mcp-connection dt { color: var(--ld-muted); }
+.ld-mcp-connection dd { margin: 0; max-width: 11rem; overflow-wrap: anywhere; text-align: right; }
+.ld-mcp-proposal { margin: 0; padding: .45rem; border-radius: .4rem; background: var(--ld-accent-soft); font-size: .78rem; }
 .ld-desktop-editor { display: grid; gap: 1rem; }
 .ld-desktop-storage { display: grid; gap: .7rem; margin-bottom: 1rem; border-bottom: 1px solid var(--ld-line); padding-bottom: 1rem; }
 .ld-desktop-storage h2, .ld-desktop-storage p, .ld-desktop-storage dl { margin: 0; }

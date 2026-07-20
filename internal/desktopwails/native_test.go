@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
@@ -603,7 +605,11 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, status := range handshake.CapabilityStatuses {
-		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring || status.CapabilityID == desktopcontract.CapabilityExport
+		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring ||
+			status.CapabilityID == desktopcontract.CapabilityExport ||
+			status.CapabilityID == desktopcontract.CapabilityMCPTools ||
+			status.CapabilityID == desktopcontract.CapabilityMCPResources ||
+			status.CapabilityID == desktopcontract.CapabilityAgentScope
 		if status.Enabled != packaged || (!packaged && status.UnavailableReason == nil) {
 			t.Fatalf("capability availability is not truthful: %+v", status)
 		}
@@ -635,6 +641,84 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 	}
 	if _, err := decoder.DecodeResponse("review.submit", control); err == nil {
 		t.Fatal("unavailable response accepted")
+	}
+}
+
+func TestPackagedDesktopComposesCanonicalMCPDefaultOff(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project", "document.ldl")
+	if err := os.MkdirAll(filepath.Dir(project), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(project, []byte("project p \"P\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base, err := NewSharedConfig(filepath.Join(root, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := &nativeStub{open: project}
+	app, err := Compose(base, native, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := app.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start=%+v", result)
+	}
+	defer app.Shutdown(context.Background())
+	if status := app.MCPStatus(); status.Enabled {
+		t.Fatalf("MCP silently enabled: %+v", status)
+	}
+	if result := app.SetMCPEnabled(context.Background(), true, desktopapp.MCPTransportLocal); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("enable=%+v", result)
+	}
+	if tools, failure := app.MCPListTools(context.Background()); failure != nil || len(tools) < 2 {
+		t.Fatalf("tools=%d failure=%+v", len(tools), failure)
+	}
+	opened := app.OpenProjectDialog(context.Background(), "mcp-project")
+	if opened.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("open=%+v", opened)
+	}
+	connect := func(agent string, apply bool) desktopapp.MCPConnection {
+		result := app.CreateMCPConnection(context.Background(), desktopapp.MCPConnectRequest{
+			ClientID: "reference-client", ProtocolVersion: desktopapp.MCPConnectionProtocolVersion, DocumentID: opened.Value.ProjectID, AgentID: agent,
+			Capabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite}, Permissions: accesscore.AgentPermissions{Read: true, Propose: true, Apply: apply},
+			ExpiresAt: protocolcommon.Rfc3339Time(time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)), ConfirmApply: apply,
+		})
+		if result.Outcome != protocolcommon.OutcomeSuccess {
+			t.Fatalf("connect %s=%+v", agent, result)
+		}
+		return result.Value
+	}
+	proposal, applicable := connect("proposal-agent", false), connect("apply-agent", true)
+	toolNames := func(connection string) map[string]bool {
+		tools, failure := app.MCPListConnectionTools(context.Background(), connection)
+		if failure != nil {
+			t.Fatalf("connection tools=%+v", failure)
+		}
+		names := map[string]bool{}
+		for _, tool := range tools {
+			names[tool.Name] = true
+		}
+		return names
+	}
+	if names := toolNames(proposal.ConnectionID); !names["layerdraw.preview_operations"] || names["layerdraw.apply_operations"] {
+		t.Fatalf("proposal tools=%v", names)
+	}
+	if names := toolNames(applicable.ConnectionID); !names["layerdraw.apply_operations"] {
+		t.Fatalf("apply tools=%v", names)
+	}
+	if revoked := app.RevokeMCPConnection(context.Background(), proposal.ConnectionID); revoked.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("revoke=%+v", revoked)
+	}
+	if _, failure := app.MCPListConnectionTools(context.Background(), proposal.ConnectionID); failure == nil {
+		t.Fatal("revoked reference client retained tools")
+	}
+	if restarted := app.RestartMCP(context.Background()); restarted.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("restart=%+v", restarted)
+	}
+	if _, failure := app.MCPListConnectionTools(context.Background(), applicable.ConnectionID); failure == nil {
+		t.Fatal("host restart did not fence live client")
 	}
 }
 

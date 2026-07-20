@@ -15,6 +15,11 @@ const (
 	FailureLocalActor           FailureCode = "desktop.local_actor_unavailable"
 	FailureAgentDelegation      FailureCode = "desktop.agent_delegation_failed"
 	FailureMCPTransport         FailureCode = "desktop.mcp_transport_failed"
+	FailureMCPDisabled          FailureCode = "desktop.mcp_disabled"
+	FailureMCPVersionMismatch   FailureCode = "desktop.mcp_version_mismatch"
+	FailureMCPScopeDenied       FailureCode = "desktop.mcp_scope_denied"
+	FailureMCPDisconnected      FailureCode = "desktop.mcp_disconnected"
+	FailureMCPHostRestarted     FailureCode = "desktop.mcp_host_restarted"
 	FailureDialogCancelled      FailureCode = "desktop.native_dialog_cancelled"
 	FailureBackendPanic         FailureCode = "desktop.backend_panic"
 	FailureFrontendCrash        FailureCode = "desktop.frontend_crashed"
@@ -63,7 +68,9 @@ func (f Failure) Validate() bool {
 func validFailureCode(value FailureCode) bool {
 	switch value {
 	case FailureStartup, FailureShutdown, FailureCredential, FailureLocalActor,
-		FailureAgentDelegation, FailureMCPTransport, FailureDialogCancelled,
+		FailureAgentDelegation, FailureMCPTransport, FailureMCPDisabled,
+		FailureMCPVersionMismatch, FailureMCPScopeDenied, FailureMCPDisconnected,
+		FailureMCPHostRestarted, FailureDialogCancelled,
 		FailureBackendPanic, FailureFrontendCrash, FailureReconnect, FailureAdapterUnavailable,
 		FailureProtocolIncompatible, FailureWindowState, FailureSettings,
 		FailureExternalTarget, FailureCommandUnavailable, FailureAccessibility,

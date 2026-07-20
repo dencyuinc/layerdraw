@@ -2,7 +2,7 @@
 
 import type { WailsGeneratedBindings } from "@layerdraw/engine-client/wails";
 import type { Viewer, ViewerPresentationState, ViewerState } from "@layerdraw/viewer";
-import type { DesktopExternalImportPreview, DesktopLifecyclePhase, DesktopLifecycleSnapshot, DesktopNativeExportProfile, DesktopNativeInterchangePort, DesktopNativeSerializeResult, DesktopProjectLifecyclePort } from "./contracts.js";
+import type { DesktopExternalImportPreview, DesktopLifecyclePhase, DesktopLifecycleSnapshot, DesktopMCPConnectRequest, DesktopMCPConnection, DesktopMCPPort, DesktopMCPResult, DesktopMCPStatus, DesktopNativeExportProfile, DesktopNativeInterchangePort, DesktopNativeSerializeResult, DesktopProjectLifecyclePort } from "./contracts.js";
 import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "./wails-bindings.js";
 
 export const desktopLifecycleEvent = "layerdraw:desktop-lifecycle";
@@ -13,6 +13,15 @@ export interface DesktopWailsApplicationBinding {
   SerializeNativeExport(input: unknown): Promise<unknown>;
   PublishNativeExportDialog(input: unknown): Promise<unknown>;
   ImportExternalDialog(input: unknown): Promise<unknown>;
+}
+
+export interface DesktopWailsMCPBinding {
+	MCPStatus(): Promise<DesktopMCPStatus>;
+	SetMCPEnabled(enabled: boolean, transport: "local"): Promise<DesktopMCPResult<DesktopMCPStatus>>;
+	RestartMCP(): Promise<DesktopMCPResult<DesktopMCPStatus>>;
+	ListMCPConnections(): Promise<readonly DesktopMCPConnection[]>;
+	CreateMCPConnection(request: DesktopMCPConnectRequest): Promise<DesktopMCPResult<DesktopMCPConnection>>;
+	RevokeMCPConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
 }
 
 export interface DesktopWailsRuntimeBinding {
@@ -26,6 +35,7 @@ export interface DesktopWailsComposition {
   /** Exact Engine + Runtime method closure used by the Wails clients. */
   readonly generatedBindings: WailsGeneratedBindings;
   readonly nativeInterchange: DesktopNativeInterchangePort;
+  readonly mcp: DesktopMCPPort;
 }
 
 type DesktopResult = Readonly<{ outcome?: unknown; value?: unknown }>;
@@ -91,17 +101,27 @@ export async function createDesktopWailsLifecycle(
 
 /** Constructs the Desktop-owned adapters without discovering Wails globals. */
 export async function createDesktopWailsComposition(
-  application: DesktopWailsApplicationBinding,
-  runtime: DesktopWailsRuntimeBinding,
-  invoke: DesktopWailsInvoke,
+	application: DesktopWailsApplicationBinding,
+	runtime: DesktopWailsRuntimeBinding,
+	mcpBinding: DesktopWailsMCPBinding,
+	invoke: DesktopWailsInvoke,
 ): Promise<DesktopWailsComposition> {
   const [lifecycle, viewer] = await Promise.all([
     createDesktopWailsLifecycle(application, runtime),
     Promise.resolve(createUnopenedViewer()),
-  ]);
-  return Object.freeze({
+	]);
+	const mcp: DesktopMCPPort = Object.freeze({
+		status: () => mcpBinding.MCPStatus(),
+		setEnabled: (enabled: boolean) => mcpBinding.SetMCPEnabled(enabled, "local"),
+		restart: () => mcpBinding.RestartMCP(),
+		listConnections: () => mcpBinding.ListMCPConnections(),
+		createConnection: (request: DesktopMCPConnectRequest) => mcpBinding.CreateMCPConnection(request),
+		revokeConnection: (connectionID: string) => mcpBinding.RevokeMCPConnection(connectionID),
+	});
+	return Object.freeze({
     lifecycle,
     viewer,
+    mcp,
     generatedBindings: createDesktopGeneratedBindings(invoke),
     nativeInterchange: nativeInterchange(application),
   });

@@ -3,13 +3,14 @@
 import type { CapabilityID } from "@layerdraw/protocol/common";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { DesktopShellPorts } from "./contracts.js";
+import type { DesktopMCPPort, DesktopShellPorts } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
 import type { DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import type { ReviewModel } from "@layerdraw/review";
 import { DesktopShell, type DesktopShellLabels } from "./shell.js";
 
 export interface DesktopMountOptions extends DesktopShellPorts {
+  readonly mcp: DesktopMCPPort;
   readonly viewSelectionCapability: CapabilityID;
   readonly editorCapabilities: DesktopEditorCapabilityIDs;
   readonly reviewModel?: ReviewModel;
@@ -32,6 +33,7 @@ export function mountDesktopShell(element: Element, options: DesktopMountOptions
     controller,
     viewSelectionCapability: options.viewSelectionCapability,
     editorCapabilities: options.editorCapabilities,
+    mcp: options.mcp,
     ...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel }),
     ...(options.labels === undefined ? {} : { labels: options.labels }),
   }));

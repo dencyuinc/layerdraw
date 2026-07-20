@@ -1,5 +1,28 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
+export namespace access {
+	
+	export class AgentPermissions {
+	    read: boolean;
+	    export: boolean;
+	    propose: boolean;
+	    apply: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentPermissions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.read = source["read"];
+	        this.export = source["export"];
+	        this.propose = source["propose"];
+	        this.apply = source["apply"];
+	    }
+	}
+
+}
+
 export namespace accessprotocol {
 	
 	export class AuthoringGrantSummary {
@@ -60,6 +83,122 @@ export namespace desktopapp {
 		    }
 		    return a;
 		}
+	}
+	export class MCPConnectRequest {
+	    client_id: string;
+	    protocol_version: string;
+	    document_id: string;
+	    agent_id: string;
+	    capabilities: string[];
+	    permissions: access.AgentPermissions;
+	    expires_at: string;
+	    confirm_apply: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MCPConnectRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.client_id = source["client_id"];
+	        this.protocol_version = source["protocol_version"];
+	        this.document_id = source["document_id"];
+	        this.agent_id = source["agent_id"];
+	        this.capabilities = source["capabilities"];
+	        this.permissions = this.convertValues(source["permissions"], access.AgentPermissions);
+	        this.expires_at = source["expires_at"];
+	        this.confirm_apply = source["confirm_apply"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MCPConnection {
+	    connection_id: string;
+	    client_id: string;
+	    session_id: string;
+	    protocol_version: string;
+	    document_id: string;
+	    delegation_id: string;
+	    agent_id: string;
+	    capabilities: string[];
+	    grant_summary: accessprotocol.AuthoringGrantSummary;
+	    permissions: access.AgentPermissions;
+	    expires_at: string;
+	    generation: string;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MCPConnection(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.client_id = source["client_id"];
+	        this.session_id = source["session_id"];
+	        this.protocol_version = source["protocol_version"];
+	        this.document_id = source["document_id"];
+	        this.delegation_id = source["delegation_id"];
+	        this.agent_id = source["agent_id"];
+	        this.capabilities = source["capabilities"];
+	        this.grant_summary = this.convertValues(source["grant_summary"], accessprotocol.AuthoringGrantSummary);
+	        this.permissions = this.convertValues(source["permissions"], access.AgentPermissions);
+	        this.expires_at = source["expires_at"];
+	        this.generation = source["generation"];
+	        this.status = source["status"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MCPStatus {
+	    enabled: boolean;
+	    transport: string;
+	    instructions: string;
+	    generation: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MCPStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.transport = source["transport"];
+	        this.instructions = source["instructions"];
+	        this.generation = source["generation"];
+	    }
 	}
 	export class RecoveryArtifact {
 	    kind: string;
@@ -253,6 +392,74 @@ export namespace desktopcontract {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.outcome = source["outcome"];
 	        this.value = this.convertValues(source["value"], desktopapp.RecentProject);
+	        this.failure = this.convertValues(source["failure"], Failure);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Result_github_com_dencyuinc_layerdraw_internal_desktopapp_MCPConnection_ {
+	    outcome: string;
+	    value?: desktopapp.MCPConnection;
+	    failure?: Failure;
+	
+	    static createFrom(source: any = {}) {
+	        return new Result_github_com_dencyuinc_layerdraw_internal_desktopapp_MCPConnection_(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.outcome = source["outcome"];
+	        this.value = this.convertValues(source["value"], desktopapp.MCPConnection);
+	        this.failure = this.convertValues(source["failure"], Failure);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Result_github_com_dencyuinc_layerdraw_internal_desktopapp_MCPStatus_ {
+	    outcome: string;
+	    value?: desktopapp.MCPStatus;
+	    failure?: Failure;
+	
+	    static createFrom(source: any = {}) {
+	        return new Result_github_com_dencyuinc_layerdraw_internal_desktopapp_MCPStatus_(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.outcome = source["outcome"];
+	        this.value = this.convertValues(source["value"], desktopapp.MCPStatus);
 	        this.failure = this.convertValues(source["failure"], Failure);
 	    }
 	
@@ -976,3 +1183,4 @@ export namespace semantic {
 	}
 
 }
+

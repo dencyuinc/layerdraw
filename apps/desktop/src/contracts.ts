@@ -124,6 +124,58 @@ export interface DesktopNativeInterchangePort {
 
 /** Dependencies are constructed by the Wails bootstrap (#122/#143), never discovered globally. */
 export interface DesktopShellPorts {
-  readonly lifecycle: DesktopProjectLifecyclePort;
-  readonly viewer: Viewer;
+	readonly lifecycle: DesktopProjectLifecyclePort;
+	readonly viewer: Viewer;
+}
+
+export interface DesktopMCPFailure {
+	readonly code: "desktop.mcp_transport_failed" | "desktop.mcp_disabled" | "desktop.mcp_version_mismatch" | "desktop.mcp_scope_denied" | "desktop.mcp_disconnected" | "desktop.mcp_host_restarted" | "desktop.agent_delegation_failed";
+	readonly retryable: boolean;
+	readonly recovery: "retry" | "reconnect" | "configure_adapter" | "upgrade" | "review";
+}
+
+export interface DesktopMCPStatus {
+	readonly enabled: boolean;
+	readonly transport: "local";
+	readonly instructions: string;
+	readonly generation: number;
+}
+
+export interface DesktopMCPPermissions { readonly read: boolean; readonly export: boolean; readonly propose: boolean; readonly apply: boolean }
+
+export interface DesktopMCPConnection {
+	readonly connection_id: string;
+	readonly client_id: string;
+	readonly session_id: string;
+	readonly protocol_version: "desktop-mcp-v1";
+	readonly document_id: string;
+	readonly delegation_id: string;
+	readonly agent_id: string;
+	readonly capabilities: readonly string[];
+	readonly permissions: DesktopMCPPermissions;
+	readonly expires_at: string;
+	readonly generation: string;
+	readonly status: "connected" | "revoking" | "revoked" | "expired" | "host_restarted";
+}
+
+export interface DesktopMCPConnectRequest {
+	readonly client_id: string;
+	readonly protocol_version: "desktop-mcp-v1";
+	readonly document_id: string;
+	readonly agent_id: string;
+	readonly capabilities: readonly string[];
+	readonly permissions: DesktopMCPPermissions;
+	readonly expires_at: string;
+	readonly confirm_apply: boolean;
+}
+
+export type DesktopMCPResult<T> = Readonly<{ outcome: "success"; value: T }> | Readonly<{ outcome: "failed" | "rejected" | "cancelled"; failure?: DesktopMCPFailure }>;
+
+export interface DesktopMCPPort {
+	status(): Promise<DesktopMCPStatus>;
+	setEnabled(enabled: boolean): Promise<DesktopMCPResult<DesktopMCPStatus>>;
+	restart(): Promise<DesktopMCPResult<DesktopMCPStatus>>;
+	listConnections(): Promise<readonly DesktopMCPConnection[]>;
+	createConnection(request: DesktopMCPConnectRequest): Promise<DesktopMCPResult<DesktopMCPConnection>>;
+	revokeConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
 }

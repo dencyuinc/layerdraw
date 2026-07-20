@@ -49,12 +49,14 @@ test("Wails composition exposes the exact generated Engine and Runtime closure",
   const composition = await createDesktopWailsComposition(
     application,
     { EventsOn() {}, EventsOff() {} },
-    async (_method, exchange) => ({ outcome: "success", value: exchange }),
+		{ async MCPStatus() { return { enabled: false, transport: "local", instructions: "", generation: 0 }; }, async SetMCPEnabled() { return { outcome: "failed" }; }, async RestartMCP() { return { outcome: "failed" }; }, async ListMCPConnections() { return []; }, async CreateMCPConnection() { return { outcome: "failed" }; }, async RevokeMCPConnection() { return { outcome: "failed" }; } },
+		async (_method, exchange) => ({ outcome: "success", value: exchange }),
   );
   const expected = [...wailsEngineBindingDescriptors, ...wailsRuntimeBindingDescriptors].map((item) => item.generatedMethod).sort();
   assert.deepEqual(Object.keys(composition.generatedBindings).sort(), expected);
   assert.equal(composition.lifecycle.getSnapshot().phase, "ready");
   assert.equal(composition.viewer.getState().status, "empty");
+  assert.equal((await composition.mcp.status()).enabled, false);
   assert.equal((await composition.nativeInterchange.profiles())[0].format, "json");
   const controller = new AbortController(); controller.abort();
   await assert.rejects(composition.nativeInterchange.publish({ request_id: "request", artifact_id: "artifact", extension: "json" }, controller.signal), { name: "AbortError" });

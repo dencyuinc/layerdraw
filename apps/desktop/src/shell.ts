@@ -8,12 +8,13 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { DesktopShellFailure } from "./contracts.js";
+import type { DesktopMCPPort, DesktopShellFailure } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
 import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
 import { ReviewPanel } from "@layerdraw/react/review";
 import type { ReviewModel } from "@layerdraw/review";
+import { DesktopMCPPanel } from "./mcp-panel.js";
 
 export interface DesktopShellLabels {
   readonly application: string;
@@ -46,6 +47,7 @@ export interface DesktopShellProps {
   readonly editorCapabilities: DesktopEditorCapabilityIDs;
   /** Canonical Review owner shared with MCP; omitted only when no project Review session exists. */
   readonly reviewModel?: ReviewModel;
+  readonly mcp?: DesktopMCPPort;
   readonly labels?: DesktopShellLabels;
 }
 
@@ -53,7 +55,7 @@ function statusChip(kind: string, text: string): ReactNode {
   return createElement("span", { className: "ld-desktop-chip", "data-status": kind }, text);
 }
 
-export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, labels: suppliedLabels = labels }: DesktopShellProps): ReactNode {
+export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, mcp, labels: suppliedLabels = labels }: DesktopShellProps): ReactNode {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const heading = useRef<HTMLHeadingElement>(null);
   const project = state.lifecycle.project;
@@ -111,6 +113,16 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
           createElement("p", { className: "ld-desktop-storage-consequence" }, project.storage.disconnect_consequence ?? "Disconnecting keeps the local project and stops external sync."),
           createElement("button", { type: "button", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, "Disconnect")) : null,
         createElement(DesktopEditorSurface, { project, capabilities: editorCapabilities }),
-        reviewModel === undefined ? null : createElement(ReviewPanel, { model: reviewModel }))),
+        reviewModel === undefined ? null : createElement(ReviewPanel, { model: reviewModel }),
+        createElement(DesktopMCPPanel, { mcp: mcp ?? unavailableMCP, projectID: project.project_id }))),
     createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : state.pending_action === "disconnect_storage" ? "Disconnecting external storage…" : ""));
 }
+
+const unavailableMCP: DesktopMCPPort = Object.freeze<DesktopMCPPort>({
+	async status() { return { enabled: false, transport: "local", instructions: "", generation: 0 }; },
+	async setEnabled() { return { outcome: "failed", failure: { code: "desktop.mcp_disabled", retryable: false, recovery: "configure_adapter" } }; },
+	async restart() { return { outcome: "failed", failure: { code: "desktop.mcp_disabled", retryable: false, recovery: "configure_adapter" } }; },
+	async listConnections() { return []; },
+	async createConnection() { return { outcome: "failed", failure: { code: "desktop.mcp_disabled", retryable: false, recovery: "configure_adapter" } }; },
+	async revokeConnection() { return { outcome: "failed", failure: { code: "desktop.mcp_disabled", retryable: false, recovery: "configure_adapter" } }; },
+});
