@@ -25,6 +25,12 @@ type PackagedProbeResult struct {
 	DOMRoundTrip       bool                                 `json:"dom_round_trip,omitempty"`
 	Accessibility      *desktopcontract.AccessibilityReport `json:"accessibility,omitempty"`
 	UIMatrix           []PackagedUIProbeResult              `json:"ui_matrix,omitempty"`
+	Failure            *PackagedUIProbeFailure              `json:"failure,omitempty"`
+}
+
+type PackagedUIProbeFailure struct {
+	ID            string                               `json:"id"`
+	Accessibility *desktopcontract.AccessibilityReport `json:"accessibility,omitempty"`
 }
 
 type PackagedUIProbeResult struct {

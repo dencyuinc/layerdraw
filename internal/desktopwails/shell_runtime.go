@@ -55,6 +55,7 @@ type WailsShellBridge struct {
 	probes         map[string]*accessibilitySubmission
 	probeReady     chan struct{}
 	probeReadyOnce sync.Once
+	lastReport     *desktopcontract.AccessibilityReport
 	nextID         uint64
 	ctx            context.Context
 	runtime        wailsShellRuntime
@@ -189,6 +190,7 @@ func (b *WailsShellBridge) VerifyPackagedAccessibility(ctx context.Context, prof
 		return desktopcontract.AccessibilityReport{}, errors.New("packaged accessibility profile invalid")
 	}
 	b.mu.Lock()
+	b.lastReport = nil
 	b.nextID++
 	id := fmt.Sprintf("probe-%d", b.nextID)
 	submission := &accessibilitySubmission{ch: make(chan desktopcontract.AccessibilityReport, 1)}
@@ -204,10 +206,23 @@ func (b *WailsShellBridge) VerifyPackagedAccessibility(ctx context.Context, prof
 	defer cancel()
 	select {
 	case report := <-submission.ch:
+		b.mu.Lock()
+		b.lastReport = &report
+		b.mu.Unlock()
 		return report, nil
 	case <-probeCtx.Done():
 		return desktopcontract.AccessibilityReport{}, errors.New("packaged accessibility probe timed out")
 	}
+}
+
+func (b *WailsShellBridge) lastAccessibilityReport() *desktopcontract.AccessibilityReport {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.lastReport == nil {
+		return nil
+	}
+	report := *b.lastReport
+	return &report
 }
 
 // SubmitAccessibilityReport is called only by the embedded packaged frontend.

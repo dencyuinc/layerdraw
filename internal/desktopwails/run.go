@@ -187,6 +187,7 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 		}
 		reportResult := shell.VerifyAccessibility(ctx, profile)
 		if reportResult.Outcome != protocolcommon.OutcomeSuccess {
+			probe.Failure = &PackagedUIProbeFailure{ID: current.id, Accessibility: bridge.lastAccessibilityReport()}
 			return
 		}
 		probe.UIMatrix = append(probe.UIMatrix, PackagedUIProbeResult{ID: current.id, Window: window, Settings: settings, Profile: profile, Accessibility: reportResult.Value})

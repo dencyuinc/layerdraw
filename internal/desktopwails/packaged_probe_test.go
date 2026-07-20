@@ -228,6 +228,9 @@ func TestWailsAccessibilityRoundTripAndCancellation(t *testing.T) {
 	if err := <-result; err != nil {
 		t.Fatal(err)
 	}
+	if last := bridge.lastAccessibilityReport(); last == nil || last.MinimumContrast != 7 {
+		t.Fatalf("last accessibility report=%+v", last)
+	}
 	if _, err := bridge.VerifyPackagedAccessibility(context.Background(), desktopcontract.AccessibilityProfile{}); err == nil {
 		t.Fatal("invalid profile accepted")
 	}
@@ -461,6 +464,42 @@ func TestPackagedUIProbeRejectsRelativeOutput(t *testing.T) {
 	runPackagedUIProbe(context.Background(), "relative.json", binding.shell, bridge, runtime)
 	if !runtime.quit {
 		t.Fatal("packaged UI probe did not quit after rejecting relative output")
+	}
+}
+
+func TestPackagedUIProbeRecordsRejectedAccessibilityEvidence(t *testing.T) {
+	binding, bridge, _, bridgeRuntime := newBindingFixture(t, nil)
+	output := filepath.Join(t.TempDir(), "ui-probe.json")
+	done := make(chan struct{})
+	go func() {
+		runPackagedUIProbe(context.Background(), output, binding.shell, bridge, &nativeStub{})
+		close(done)
+	}()
+	binding.AccessibilityProbeReady()
+	event := <-bridgeRuntime.emitted
+	id := event[0].(string)
+	profile := event[1].(desktopcontract.AccessibilityProfile)
+	report := desktopcontract.AccessibilityReport{
+		LabelsComplete: true, ScreenReaderSemantics: true, FocusOrderValid: true, KeyboardWorkflowValid: true,
+		ReducedMotionHonored: true, MinimumContrast: 1, ZoomLayoutValid: true,
+		ViewportWidth: profile.WindowWidth, ViewportHeight: profile.WindowHeight, ViewerMode: profile.ViewerMode,
+		RendererBackend: "svg", ViewerItemCount: 4, ViewerRelationCount: 2, ViewerKeyboardSelect: true,
+	}
+	if err := binding.SubmitAccessibilityReport(id, report); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for rejected probe evidence")
+	}
+	encoded, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result PackagedProbeResult
+	if err := json.Unmarshal(encoded, &result); err != nil || result.DOMRoundTrip || result.Failure == nil || result.Failure.ID != "standard-light-2d" || result.Failure.Accessibility == nil || result.Failure.Accessibility.MinimumContrast != 1 {
+		t.Fatalf("probe=%+v err=%v", result, err)
 	}
 }
 
