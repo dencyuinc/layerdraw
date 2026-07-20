@@ -232,6 +232,30 @@ test("Desktop restart renegotiates both manifests and keeps the replacement tran
   await desktop.dispose();
 });
 
+test("failed Desktop replacement publishes no partial Runtime transport and remains retryable", async () => {
+  let engineHandshakes = 0;
+  const bindings = generatedBindings({
+    EngineHandshake: async (exchange) => {
+      engineHandshakes++;
+      if (engineHandshakes === 2) throw new Error("private backend failure");
+      return handshakeResponse(exchange, (response) => {
+        response.payload.endpoint_instance_id = `wails-recovery-${engineHandshakes}`;
+      });
+    },
+    RuntimeHandshake: async (exchange) => runtimeHandshakeResponse(exchange),
+  });
+  const desktop = await createWailsDesktopClient({
+    ...options(bindings),
+    expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+  });
+  await assert.rejects(desktop.restart(), (error) => error.code === "REPLACEMENT_FAILED" && !String(error).includes("private"));
+  assert.equal(desktop.state, "failed");
+  await desktop.restart();
+  assert.equal(desktop.state, "ready");
+  assert.equal(desktop.engine.getEndpoint().generation, 3);
+  await desktop.dispose();
+});
+
 test("binding mismatch and incomplete generated surface fail fast with typed recovery", async () => {
   const bindings = generatedBindings();
   await assert.rejects(

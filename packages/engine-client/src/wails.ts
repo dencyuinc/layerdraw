@@ -645,11 +645,13 @@ class WailsDesktopClientImpl implements WailsDesktopClient {
     if (this.state === "disposing" || this.state === "disposed") throw new EngineClientTransportError("REPLACEMENT_FAILED", false);
     const prior = this.transport;
     const next = runtimeTransport(this.options);
+    this.state = "failed";
     try {
-      this.manifest = await runtimeHandshake(next, this.options);
+      const manifest = await runtimeHandshake(next, this.options);
+      await this.engine.restart();
+      this.manifest = manifest;
       this.transport = next;
       this.observe(next);
-      await this.engine.restart();
       await prior.dispose();
       this.state = "ready";
     } catch {
