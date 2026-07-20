@@ -11,6 +11,21 @@ sidecar, or `@layerdraw/engine-client/wasm` to create an isolated browser Worker
 endpoint. Both compose with the private byte-transport seam and leave the root
 contract environment-neutral.
 
+Use `@layerdraw/engine-client/wails` in the Desktop frontend. Pass the generated
+Engine binding functions to `createWailsEngineClient`, or the complete generated
+Engine and Runtime binding set to `createWailsDesktopClient`. The entrypoint
+does not import a Wails runtime or inspect globals: the application composition
+root owns binding injection and shutdown notification. Creation performs the
+generated Engine and Runtime handshakes, so capability availability comes only
+from negotiated manifests, never from JavaScript method presence. Binding
+protocol mismatch and incomplete generated surfaces fail before a session opens
+with a typed `WailsBindingError` and a closed recovery action.
+
+Wails requests preserve the generated control envelopes and blob bytes. Abort
+and app shutdown make pending frontend work terminal and fence late binding
+callbacks; the adapter never interprets LDL, access grants, authoring impact,
+conflicts, revisions, diagnostics, or Runtime decisions.
+
 Use `createLocalHostClient` from `@layerdraw/engine-client/host` for the local
 Runtime lifecycle plus the existing Engine facade. Callers must provide an
 explicit `layerdraw-host` binary path, local storage root, and expected release

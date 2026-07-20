@@ -10,6 +10,24 @@ import type {
   RequestBlobRef,
   WorkbenchOutcome,
 } from "../src/index.js";
+import {
+  createWailsDesktopClient,
+  createWailsEngineClient,
+  WailsBindingError,
+  type CreateWailsDesktopClientOptions,
+  type CreateWailsEngineClientOptions,
+  type WailsDesktopClient,
+  type WailsGeneratedBindings,
+} from "../src/wails.js";
+
+declare const wailsBindings: WailsGeneratedBindings;
+declare const wailsEngineOptions: CreateWailsEngineClientOptions;
+declare const wailsDesktopOptions: CreateWailsDesktopClientOptions;
+void wailsBindings.EngineCompile;
+void createWailsEngineClient(wailsEngineOptions);
+const desktop: Promise<WailsDesktopClient> = createWailsDesktopClient(wailsDesktopOptions);
+void desktop;
+void new WailsBindingError("BINDING_VERSION_MISMATCH", "upgrade_desktop");
 import type {
   OpenDocumentInput,
   OpenDocumentResponseEnvelope,
