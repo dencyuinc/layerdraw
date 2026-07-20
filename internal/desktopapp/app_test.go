@@ -33,6 +33,17 @@ type lifecycleRecorder struct {
 	release <-chan struct{}
 }
 
+type windowStub struct{}
+
+func (windowStub) Show(context.Context) error         { return nil }
+func (windowStub) RequestClose(context.Context) error { return nil }
+
+type dialogStub struct{}
+
+func (dialogStub) Select(_ context.Context, _ desktopcontract.DialogRequest) desktopcontract.Result[desktopcontract.DialogSelection] {
+	return desktopcontract.Result[desktopcontract.DialogSelection]{Outcome: protocolcommon.OutcomeSuccess, Value: desktopcontract.DialogSelection{Token: "opaque"}}
+}
+
 type panicLifecycle struct{}
 
 func (panicLifecycle) Publish(context.Context, desktopcontract.LifecycleEvent) error {
@@ -370,7 +381,7 @@ func testConfig(t *testing.T, root, project string) Config {
 			LocalActor:  localActorPortStub{actor: accessprotocol.ActorRef{ActorID: "desktop-test-owner", Kind: "user"}},
 			LocalOwner:  localOwnerPortStub{}, Delegations: delegationPortStub{}, MCP: mcpPortStub{},
 		},
-		Lifecycle: &lifecycleRecorder{}, ProjectStorage: storageStub{ProjectLocation{Root: project, EntryPath: "document.ldl"}},
+		Lifecycle: &lifecycleRecorder{}, Window: windowStub{}, Dialogs: dialogStub{}, ProjectStorage: storageStub{ProjectLocation{Root: project, EntryPath: "document.ldl"}},
 		Capabilities: negotiatorStub{value: validHandshake(t)}, Bindings: completeClients(t), Adapters: adapters,
 		Now: func() time.Time { return desktopTestNow },
 	}
@@ -399,6 +410,7 @@ func TestStartupOrdersAdaptersNegotiatesAndShutdownReverses(t *testing.T) {
 	config.HostPorts.MCP = mcpPortStub{mu: &mu, events: &events}
 	external := &adapterStub{id: desktopcontract.ComponentExternalStorage, mu: &mu, events: &events}
 	config.Adapters[desktopcontract.ComponentExternalStorage] = external
+	config.ExternalLifecycle = &externalLifecycleHarness{reconcile: true}
 	config.Capabilities = negotiatorStub{value: enableExternal(validHandshake(t))}
 	app, err := New(config)
 	if err != nil {
@@ -938,13 +950,29 @@ func TestConcurrentProjectRequestsAreTrackedAndClosable(t *testing.T) {
 	}
 	group.Wait()
 	close(results)
+	var session runtimeprotocol.RuntimeSessionRef
+	openedCount, focusedCount := 0, 0
 	for result := range results {
 		if result.Outcome != protocolcommon.OutcomeSuccess {
 			t.Fatalf("concurrent open=%+v", result)
 		}
-		if closed := app.CloseProject(context.Background(), result.Value.Open.Session); closed.Outcome != protocolcommon.OutcomeSuccess {
-			t.Fatalf("concurrent close=%+v", closed)
+		if session.RuntimeSessionID == "" {
+			session = result.Value.Open.Session
+		} else if result.Value.Open.Session != session {
+			t.Fatalf("concurrent open did not focus stable session: %+v", result)
 		}
+		switch result.Value.Disposition {
+		case ProjectOpened:
+			openedCount++
+		case ProjectFocused:
+			focusedCount++
+		}
+	}
+	if openedCount != 1 || focusedCount != count-1 {
+		t.Fatalf("dispositions opened=%d focused=%d", openedCount, focusedCount)
+	}
+	if closed := app.CloseProject(context.Background(), session); closed.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("concurrent close=%+v", closed)
 	}
 	if stopped := app.Shutdown(context.Background()); stopped.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("shutdown=%+v", stopped)

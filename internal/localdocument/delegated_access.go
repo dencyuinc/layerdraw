@@ -145,6 +145,19 @@ func (h *Host) OpenDelegatedDocument(ctx context.Context, documentID runtimeprot
 func (h *Host) RevokeDelegation(id string) error {
 	h.delegationMu.Lock()
 	defer h.delegationMu.Unlock()
+	h.mu.Lock()
+	var affected []runtimeprotocol.RuntimeSessionID
+	for sessionID, session := range h.sessions {
+		if session.delegationID == id {
+			affected = append(affected, sessionID)
+		}
+	}
+	h.mu.Unlock()
+	for _, sessionID := range affected {
+		if _, _, err := h.cancelAutosaveID(sessionID); err != nil {
+			return err
+		}
+	}
 	releaseFence := h.authority.lockDelegationMutation()
 	defer releaseFence()
 	candidate, err := h.authority.delegationStore().Clone()
@@ -158,15 +171,5 @@ func (h *Host) RevokeDelegation(id string) error {
 		return err
 	}
 	h.authority.replaceDelegationStore(candidate)
-	h.mu.Lock()
-	for sessionID, session := range h.sessions {
-		if session.delegationID == id {
-			if cancel := h.autosaves[sessionID]; cancel != nil {
-				cancel()
-				delete(h.autosaves, sessionID)
-			}
-		}
-	}
-	h.mu.Unlock()
 	return nil
 }

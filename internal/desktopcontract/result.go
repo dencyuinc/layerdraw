@@ -27,6 +27,11 @@ const (
 	FailureCommandUnavailable   FailureCode = "desktop.command_unavailable"
 	FailureAccessibility        FailureCode = "desktop.accessibility_failed"
 	FailureCrashRecovery        FailureCode = "desktop.crash_recovery_failed"
+	FailureProjectMissing       FailureCode = "desktop.project_missing"
+	FailurePermissionDenied     FailureCode = "desktop.permission_denied"
+	FailureProjectConflict      FailureCode = "desktop.project_conflict"
+	FailureRecoveryRequired     FailureCode = "desktop.recovery_required"
+	FailureReconcilePending     FailureCode = "desktop.reconcile_pending"
 )
 
 type RecoveryAction string
@@ -38,6 +43,8 @@ const (
 	RecoveryOpenRecovery     RecoveryAction = "open_recovery"
 	RecoveryUpgrade          RecoveryAction = "upgrade"
 	RecoveryExit             RecoveryAction = "exit"
+	RecoveryLocate           RecoveryAction = "locate"
+	RecoveryReview           RecoveryAction = "review"
 )
 
 // Failure is a closed shell failure. It has no arbitrary message, details,
@@ -60,7 +67,8 @@ func validFailureCode(value FailureCode) bool {
 		FailureBackendPanic, FailureFrontendCrash, FailureReconnect, FailureAdapterUnavailable,
 		FailureProtocolIncompatible, FailureWindowState, FailureSettings,
 		FailureExternalTarget, FailureCommandUnavailable, FailureAccessibility,
-		FailureCrashRecovery:
+		FailureCrashRecovery, FailureProjectMissing, FailurePermissionDenied,
+		FailureProjectConflict, FailureRecoveryRequired, FailureReconcilePending:
 		return true
 	default:
 		return false
@@ -79,7 +87,7 @@ func validComponent(value ComponentID) bool {
 func validRecovery(value RecoveryAction) bool {
 	switch value {
 	case RecoveryRetry, RecoveryReconnect, RecoveryConfigureAdapter,
-		RecoveryOpenRecovery, RecoveryUpgrade, RecoveryExit:
+		RecoveryOpenRecovery, RecoveryUpgrade, RecoveryExit, RecoveryLocate, RecoveryReview:
 		return true
 	default:
 		return false
