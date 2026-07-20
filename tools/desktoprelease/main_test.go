@@ -391,10 +391,11 @@ func fixtureFiles(t *testing.T, root string) map[string]string {
 		"installer": "desktop installer", "sbom": `{"bomFormat":"CycloneDX"}`,
 		"licenses": "Third-party notices", "capabilities": `{"schema_version":1,"components":["desktop-shell","frontend-packages","mcp-host","native-adapters","native-exporters","registry","review"],"excludes":["development-servers","source-maps","test-fixtures"],"security":{"preconfigured_mcp_endpoints":false,"provider_credentials":false,"signing_secrets":false}}`,
 		"conformance": `{"schema_version":1,"delivery":"desktop"}`,
+		"attestation": `{"schema_version":1,"source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
 	}
 	result := map[string]string{}
 	for name, content := range contents {
-		filename := map[string]string{"installer": "LayerDraw.dmg", "sbom": "LayerDraw.cdx.json", "licenses": "THIRD_PARTY_NOTICES.txt", "capabilities": "desktop-capabilities.json", "conformance": "desktop-conformance.json"}[name]
+		filename := map[string]string{"installer": "LayerDraw.dmg", "sbom": "LayerDraw.cdx.json", "licenses": "THIRD_PARTY_NOTICES.txt", "capabilities": "desktop-capabilities.json", "conformance": "desktop-conformance.json", "attestation": "desktop-attestation.json"}[name]
 		path := filepath.Join(root, filename)
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -405,7 +406,7 @@ func fixtureFiles(t *testing.T, root string) map[string]string {
 }
 
 func buildArgs(root string, files map[string]string, testSigning bool) []string {
-	args := []string{"build", "-installer", files["installer"], "-sbom", files["sbom"], "-licenses", files["licenses"], "-capabilities", files["capabilities"], "-desktop-conformance", files["conformance"], "-output", filepath.Join(root, "update.json"), "-version", "1.2.0", "-minimum-supported-version", "1.0.0", "-platform", "darwin", "-format", "dmg", "-channel", "stable", "-source-revision", strings.Repeat("a", 40), "-built-at", "2026-07-20T00:00:00Z"}
+	args := []string{"build", "-installer", files["installer"], "-sbom", files["sbom"], "-licenses", files["licenses"], "-capabilities", files["capabilities"], "-desktop-conformance", files["conformance"], "-desktop-attestation", files["attestation"], "-output", filepath.Join(root, "update.json"), "-version", "1.2.0", "-minimum-supported-version", "1.0.0", "-platform", "darwin", "-format", "dmg", "-channel", "stable", "-source-revision", strings.Repeat("a", 40), "-built-at", "2026-07-20T00:00:00Z"}
 	if testSigning {
 		args = append(args, "-test-signing")
 	}

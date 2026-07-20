@@ -31,6 +31,8 @@ if [[ "$platform" == "windows" ]] && ! command -v makensis >/dev/null 2>&1; then
   exit 1
 fi
 
+go run "$repository_root/tools/desktopconformance" -root "$repository_root" verify
+
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/layerdraw-desktop-installer.XXXXXX")"
 preserved=(go.mod go.sum apps/desktop/wails.json apps/desktop/frontend/wailsjs/runtime/runtime.d.ts apps/desktop/frontend/wailsjs/runtime/runtime.js)
 mkdir -p "$temporary/preserved"

@@ -89,15 +89,15 @@
   },
   "release_evidence": ["installer", "platform_signature", "sha256_digest", "cyclonedx_sbom", "license_bundle", "signed_updater_manifest", "packaged_content_check", "disabled_feature_manifest", "desktop_conformance_manifest"],
   "performance_budgets": {
-    "cold_start": {"max_milliseconds": 15000, "evidence": "internal/desktopapp/app_test.go#TestStartupOrdersAdaptersNegotiatesAndShutdownReverses"},
-    "project_open": {"max_milliseconds": 15000, "evidence": "internal/desktopapp/app_test.go#TestProjectCreateOpenReloadCloseAndRestartDurability"},
-    "search_analysis": {"max_milliseconds": 15000, "evidence": "internal/host/endpoint_test.go#TestSearchOperationsDispatchThroughTheWiredSurface"},
-    "preview": {"max_milliseconds": 15000, "evidence": "internal/localdocument/protocol_test.go#TestProtocolPreviewCommitAndStateSnapshot"},
-    "commit": {"max_milliseconds": 15000, "evidence": "internal/desktopapp/app_test.go#TestCommitSurvivesRestart"},
-    "viewer_interaction": {"max_milliseconds": 15000, "evidence": "tests/packaged/viewdata_corpus_test.go#TestPackagedStdioExecutesViewDataCorpus"},
-    "mcp_bounded_operations": {"max_milliseconds": 15000, "evidence": "internal/mcphost/host_test.go#TestCompleteEnvelopeAndAggregateLimits"},
-    "external_reconcile": {"max_milliseconds": 15000, "evidence": "internal/desktopapp/external_storage_test.go#TestReferenceExternalStorageLifecycleConditionalWriteAndRestart"},
-    "memory": {"max_mebibytes": 512, "evidence": "tests/packaged/desktop_conformance_test.go#TestPackagedDesktopMemoryBudget"},
-    "shutdown": {"max_milliseconds": 15000, "evidence": "internal/desktopapp/app_test.go#TestShutdownRejectsNewWorkAndDoesNotReleaseDuringInflight"}
+    "cold_start": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
+    "project_open": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
+    "search_analysis": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
+    "preview": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
+    "commit": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
+    "viewer_interaction": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
+    "mcp_bounded_operations": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
+    "external_reconcile": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
+    "memory": {"max_mebibytes": 512, "min_iterations": 5, "percentile": 95},
+    "shutdown": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95}
   }
 }

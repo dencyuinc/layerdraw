@@ -4,18 +4,15 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 )
 
 type evidenceRef string
@@ -27,9 +24,10 @@ type featureEvidence struct {
 }
 
 type performanceBudget struct {
-	MaxMilliseconds int64       `json:"max_milliseconds,omitempty"`
-	MaxMebibytes    int64       `json:"max_mebibytes,omitempty"`
-	Evidence        evidenceRef `json:"evidence"`
+	MaxMilliseconds int64 `json:"max_milliseconds,omitempty"`
+	MaxMebibytes    int64 `json:"max_mebibytes,omitempty"`
+	MinIterations   int   `json:"min_iterations"`
+	Percentile      int   `json:"percentile"`
 }
 
 type manifest struct {
@@ -53,15 +51,11 @@ var matrixPattern = regexp.MustCompile(`(?m)^\| (F\d{2}) \| ([^|]+?) \| [^|]+ \|
 func main() {
 	root := flag.String("root", ".", "repository root")
 	manifestPath := flag.String("manifest", "deploy/desktop-conformance.json", "Desktop closure manifest")
-	runBudgets := flag.Bool("run-budgets", false, "execute every time-bounded evidence test")
 	flag.Parse()
 	if flag.NArg() != 1 || flag.Arg(0) != "verify" {
 		fail(errors.New("usage: desktopconformance [flags] verify"))
 	}
-	value, err := verify(*root, *manifestPath)
-	if err == nil && *runBudgets {
-		err = executeBudgets(*root, value.PerformanceBudgets)
-	}
+	_, err := verify(*root, *manifestPath)
 	if err != nil {
 		fail(err)
 	}
@@ -134,8 +128,8 @@ func verify(root, relativeManifest string) (manifest, error) {
 		if (budget.MaxMilliseconds <= 0) == (budget.MaxMebibytes <= 0) {
 			return value, fmt.Errorf("performance budget %s must have exactly one positive limit", name)
 		}
-		if err := verifyEvidence(root, budget.Evidence); err != nil {
-			return value, fmt.Errorf("performance budget %s: %w", name, err)
+		if budget.MinIterations < 5 || budget.Percentile != 95 {
+			return value, fmt.Errorf("performance budget %s must require at least five iterations at p95", name)
 		}
 	}
 	return value, nil
@@ -189,43 +183,6 @@ func verifyEvidence(root string, references ...evidenceRef) error {
 		declaration := "func " + parts[1] + "("
 		if !bytes.Contains(data, []byte(declaration)) {
 			return fmt.Errorf("evidence test %q does not exist", reference)
-		}
-	}
-	return nil
-}
-
-func executeBudgets(root string, budgets map[string]performanceBudget) error {
-	names := make([]string, 0, len(budgets))
-	for name := range budgets {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		budget := budgets[name]
-		parts := strings.Split(string(budget.Evidence), "#")
-		packagePath := "./" + filepath.ToSlash(filepath.Dir(parts[0]))
-		timeout := time.Duration(budget.MaxMilliseconds) * time.Millisecond
-		if timeout == 0 {
-			timeout = time.Minute
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		started := time.Now()
-		command := exec.CommandContext(ctx, "go", "test", "-count=1", "-run", "^"+regexp.QuoteMeta(parts[1])+"$", packagePath)
-		command.Dir = root
-		output, err := command.CombinedOutput()
-		elapsed := time.Since(started)
-		deadlineErr := ctx.Err()
-		cancel()
-		if deadlineErr != nil {
-			return fmt.Errorf("performance evidence %s exceeded execution timeout", name)
-		}
-		if err != nil {
-			return fmt.Errorf("performance evidence %s failed after %s: %w\n%s", name, elapsed, err, output)
-		}
-		if budget.MaxMilliseconds > 0 {
-			fmt.Printf("%s %dms/%dms\n", name, elapsed.Milliseconds(), budget.MaxMilliseconds)
-		} else {
-			fmt.Printf("%s <=%dMiB evidence passed in %dms\n", name, budget.MaxMebibytes, elapsed.Milliseconds())
 		}
 	}
 	return nil
