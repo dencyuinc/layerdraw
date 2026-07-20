@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os/user"
@@ -19,10 +20,12 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/adapter/registryengine"
 	"github.com/dencyuinc/layerdraw/internal/adapter/registrysource"
+	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
@@ -71,7 +74,6 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 	}
 	adapters := map[desktopcontract.ComponentID]desktopapp.Adapter{}
 	disabled := []desktopcontract.ComponentID{
-		desktopcontract.ComponentReview,
 		desktopcontract.ComponentNativeExporters,
 	}
 	if !packagedNativeSearchEnabled() {
@@ -86,6 +88,7 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		}
 	}
 	adapters[desktopcontract.ComponentRegistryClient] = enabledComponent{}
+	adapters[desktopcontract.ComponentReview] = enabledComponent{}
 	adapters[desktopcontract.ComponentBindingShell] = owner
 	return desktopapp.Config{
 		Root: root, ReleaseVersion: desktopRelease, EndpointInstanceID: desktopEndpoint,
@@ -101,6 +104,7 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		MCPCapabilities:       owner,
 		NativeSearchLifecycle: packagedNativeSearchLifecycle(owner),
 		RegistryStagedObjects: registryObjectReader{store: objects},
+		ReviewOwner:           owner,
 	}, nil
 }
 
@@ -132,6 +136,7 @@ type sharedOwner struct {
 	credentials  desktopcontract.CredentialPort
 	registry     *registry.Registry
 	registryWire *registry.HostBinding
+	review       *reviewapp.Application
 }
 
 type registryObjectReader struct{ store registry.StagedObjectStore }
@@ -171,6 +176,51 @@ func (o *sharedOwner) RevalidateExternalPublication(ctx context.Context, intent 
 		return closedFailure[struct{}](desktopcontract.FailurePermissionDenied)
 	}
 	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess, Value: struct{}{}}
+}
+
+func (o *sharedOwner) ReviewSnapshot() any {
+	o.mu.RLock()
+	owner := o.review
+	o.mu.RUnlock()
+	if owner == nil {
+		return reviewapp.Snapshot{Version: 1, Proposals: []reviewapp.Proposal{}}
+	}
+	return owner.Snapshot()
+}
+
+func (o *sharedOwner) ReviewComment(ctx context.Context, input desktopapp.ReviewCommentRequest, actor accessprotocol.ActorRef) (any, error) {
+	o.mu.RLock()
+	owner := o.review
+	o.mu.RUnlock()
+	if owner == nil {
+		return nil, errors.New("desktop Review owner is unavailable")
+	}
+	var target reviewapp.Target
+	if err := json.Unmarshal(input.Target, &target); err != nil {
+		return nil, reviewapp.ErrInvalid
+	}
+	return owner.Comment(ctx, reviewapp.CommentInput{ProposalID: input.ProposalID, Generation: input.Generation, CommentID: input.CommentID, Author: actor, Body: input.Body, Target: target})
+}
+
+func (o *sharedOwner) ReviewApproveAndApply(ctx context.Context, input desktopapp.ReviewApprovalRequest, session runtimeprotocol.RuntimeSessionRef, actor accessprotocol.ActorRef) (any, error) {
+	o.mu.RLock()
+	owner := o.review
+	o.mu.RUnlock()
+	if owner == nil {
+		return nil, errors.New("desktop Review owner is unavailable")
+	}
+	operation := runtimeprotocol.OperationID(fmt.Sprintf("review_%s_%d", input.ProposalID, input.Generation))
+	return owner.ApproveAndApply(ctx, reviewapp.ApprovalInput{ProposalID: input.ProposalID, Generation: input.Generation, Session: session, Approver: actor, OperationID: operation, IdempotencyKey: runtimeprotocol.IdempotencyKey(operation), Trigger: runtimeprotocol.CommitTriggerAgentApply})
+}
+
+func (o *sharedOwner) ReviewWithdraw(ctx context.Context, id string, generation uint64, actor accessprotocol.ActorRef) (any, error) {
+	o.mu.RLock()
+	owner := o.review
+	o.mu.RUnlock()
+	if owner == nil {
+		return nil, errors.New("desktop Review owner is unavailable")
+	}
+	return owner.Withdraw(ctx, id, generation, actor)
 }
 
 func (o *sharedOwner) Snapshot(context.Context) (mcphost.CapabilitySnapshot, error) {
@@ -254,6 +304,17 @@ func (o *sharedOwner) Start(context.Context) error {
 	if err != nil {
 		return err
 	}
+	var reviewStore reviewapp.Store = reviewapp.NewMemoryStore()
+	if o.root != "" {
+		reviewStore, err = reviewapp.NewFileStore(filepath.Join(o.root, "review"))
+		if err != nil {
+			return err
+		}
+	}
+	reviewOwner, err := reviewapp.New(context.Background(), reviewStore, o.local, o.local, nil)
+	if err != nil {
+		return err
+	}
 	engine, err := engineendpoint.NewHostEngineFacade(desktopRelease, "unknown", desktopDigest, desktopEndpoint, engineendpoint.TransportInProcess)
 	if err != nil {
 		return err
@@ -268,14 +329,14 @@ func (o *sharedOwner) Start(context.Context) error {
 		return err
 	}
 	o.endpoint, o.engine, o.nativeSearch, o.searchLife, o.closeSearch = endpoint, engine, search != nil, lifecycle, closeSearch
-	o.registry, o.registryWire = registryOwner, registryWire
+	o.endpoint, o.engine, o.registry, o.registryWire, o.review = endpoint, engine, registryOwner, registryWire, reviewOwner
 	return nil
 }
 
 func (o *sharedOwner) Shutdown(context.Context) error {
 	o.mu.Lock()
 	closeSearch := o.closeSearch
-	o.endpoint, o.engine, o.registry, o.registryWire, o.local = nil, nil, nil, nil, nil
+	o.endpoint, o.engine, o.registry, o.registryWire, o.review, o.local = nil, nil, nil, nil, nil, nil
 	o.nativeSearch, o.searchLife, o.closeSearch = false, nil, nil
 	o.mu.Unlock()
 	if closeSearch != nil {

@@ -4,12 +4,14 @@ package desktopwails
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
+	"github.com/dencyuinc/layerdraw/internal/registry"
 )
 
 // FrontendBridge is the context-free Wails surface consumed by generated
@@ -45,6 +47,57 @@ func (b *FrontendBridge) State() desktopcontract.LifecycleState { return b.app.S
 
 func (b *FrontendBridge) Invoke(method string, exchange desktopcontract.Exchange) desktopapp.BindingResult {
 	return b.app.Invoke(b.context(), method, exchange)
+}
+
+// RegistryDispatch is the single typed Wails Registry transport. The generated
+// method table remains authoritative; the frontend cannot select an unrelated
+// owner method for a valid Registry operation.
+func (b *FrontendBridge) RegistryDispatch(request registry.WireRequest) registry.WireResponse {
+	method := ""
+	for _, binding := range desktopcontract.GeneratedBindingTable() {
+		if binding.Target == desktopcontract.TargetRegistry && binding.Operation == string(request.Operation) {
+			method = binding.GeneratedMethod
+			break
+		}
+	}
+	failure := func(code, subject string) registry.WireResponse {
+		return registry.WireResponse{WireVersion: registry.RegistryWireVersion, Operation: request.Operation, RequestID: request.RequestID, Failure: &registry.WireFailure{Code: code, Subject: subject, Actionable: true}}
+	}
+	if method == "" {
+		return failure(registry.FailureUnsupportedFormat, "operation")
+	}
+	control, err := json.Marshal(request)
+	if err != nil {
+		return failure(registry.FailureUnsupportedFormat, "request")
+	}
+	result := b.app.Invoke(b.context(), method, desktopcontract.Exchange{Operation: string(request.Operation), Control: control})
+	if result.Outcome != "success" {
+		return failure(registry.FailureUnavailable, "desktop_registry")
+	}
+	response, err := registry.DecodeWireResponse(result.Value.Control, request.Operation)
+	if err != nil {
+		return failure(registry.FailureRepairRequired, "response")
+	}
+	return response
+}
+
+func (b *FrontendBridge) ReviewSnapshot() (any, error) {
+	return b.app.ReviewSnapshot()
+}
+
+func (b *FrontendBridge) ReviewComment(input desktopapp.ReviewCommentRequest) (any, error) {
+	return b.app.ReviewComment(b.context(), input)
+}
+
+func (b *FrontendBridge) ReviewApproveAndApply(input desktopapp.ReviewApprovalRequest) (any, error) {
+	return b.app.ReviewApproveAndApply(b.context(), input)
+}
+
+func (b *FrontendBridge) ReviewWithdraw(input struct {
+	ProposalID string `json:"proposal_id"`
+	Generation uint64 `json:"generation"`
+}) (any, error) {
+	return b.app.ReviewWithdraw(b.context(), input.ProposalID, input.Generation)
 }
 
 func (b *FrontendBridge) CreateProjectDialog(requestID string) desktopcontract.Result[desktopapp.ProjectOpenResult] {

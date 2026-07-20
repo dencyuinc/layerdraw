@@ -189,7 +189,10 @@ func (a *Application) ApproveAndApply(ctx context.Context, input ApprovalInput) 
 		}
 		return a.recordFailure(ctx, index, status, "revision_changed", ErrStale)
 	}
-	if repreview.Evidence.SemanticDiff.Digest != current.Evidence.SemanticDiff.Digest || repreview.Evidence.AuthoringImpact.ImpactDigest != current.Evidence.AuthoringImpact.ImpactDigest || repreview.DefinitionHash != current.ProposedDefinitionHash {
+	// AuthoringImpact is the Engine-owned closure over semantic and source diff
+	// hashes. Repreview adapters need not duplicate the full presentation diff
+	// merely to prove the same mutation at approval time.
+	if repreview.Evidence.SemanticDiff.Digest != current.Evidence.SemanticDiff.Digest || repreview.Evidence.AuthoringImpact.ImpactDigest != current.Evidence.AuthoringImpact.ImpactDigest || repreview.DefinitionHash != current.ProposedDefinitionHash || repreview.GraphHash != current.ProposedGraphHash {
 		return a.recordFailure(ctx, index, StatusConflicting, "proposal_changed", ErrConflict)
 	}
 	decision, err := a.access.AuthorizeApprover(ctx, ApprovalRequest{Approver: input.Approver, Revision: repreview.CurrentRevision, Impact: repreview.Evidence.AuthoringImpact, Decision: repreview.PreviewDecision})

@@ -84,6 +84,14 @@ type Config struct {
 	NativeSearchLifecycle         NativeSearchLifecycle
 	Now                           func() time.Time
 	RegistryStagedObjects         port.RegistryStagedObjectReader
+	ReviewOwner                   ReviewOwner
+}
+
+type ReviewOwner interface {
+	ReviewSnapshot() any
+	ReviewComment(context.Context, ReviewCommentRequest, accessprotocol.ActorRef) (any, error)
+	ReviewApproveAndApply(context.Context, ReviewApprovalRequest, runtimeprotocol.RuntimeSessionRef, accessprotocol.ActorRef) (any, error)
+	ReviewWithdraw(context.Context, string, uint64, accessprotocol.ActorRef) (any, error)
 }
 
 type NativeSearchLifecycle interface {
