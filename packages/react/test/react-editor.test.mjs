@@ -103,16 +103,45 @@ test("session replacement cancels pending preview and ignores late completion", 
   await act(async () => renderer.unmount());
 });
 
+test("cleanup preserves host-owned previews and obsolete flights cannot overwrite current state", async () => {
+  const editor = makeEditor({ phase: "previewing", sequence: 1, can_undo: false, can_redo: false });
+  let renderer;
+  await act(async () => { renderer = TestRenderer.create(React.createElement(EditorProvider, { editor, session: ephemeralSession }, React.createElement("output"))); });
+  await act(async () => renderer.unmount());
+  assert.deepEqual(editor.calls, [], "an injected editor's pre-existing preview is not owned by the provider");
+
+  const concurrent = makeEditor();
+  const flights = [];
+  concurrent.preview = () => new Promise((resolve, reject) => flights.push({ resolve, reject }));
+  let commands;
+  function Probe() { const value = useEditor(); commands = value.commands; return React.createElement("output", null, `${value.state.pendingAction ?? "idle"}:${value.state.error instanceof Error ? value.state.error.message : "ok"}`); }
+  await act(async () => { renderer = TestRenderer.create(React.createElement(EditorProvider, { editor: concurrent, session: ephemeralSession }, React.createElement(Probe))); });
+  let first; let second;
+  await act(async () => { first = commands.preview({ kind: "semantic_operations", request: {} }); second = commands.preview({ kind: "semantic_operations", request: {} }); await Promise.resolve(); });
+  assert.equal(renderer.root.findByType("output").children.join(""), "preview:ok");
+  await act(async () => { flights[0].reject(new Error("obsolete")); await first; });
+  assert.equal(renderer.root.findByType("output").children.join(""), "preview:ok");
+  await act(async () => { flights[1].resolve({ preview: {} }); await second; });
+  assert.equal(renderer.root.findByType("output").children.join(""), "idle:ok");
+  await act(async () => renderer.unmount());
+});
+
 test("controls distinguish unavailable, denied, pending, ephemeral, and durable states", () => {
-  assert.equal(classifyEditorAction({ session: durableSession, snapshot: idle, pendingAction: undefined, decision: undefined }, false), "unavailable");
-  assert.equal(classifyEditorAction({ session: durableSession, snapshot: idle, pendingAction: undefined, decision: { outcome: "deny" } }, true), "denied");
-  assert.equal(classifyEditorAction({ session: durableSession, snapshot: idle, pendingAction: "apply", decision: undefined }, true), "pending");
-  assert.equal(classifyEditorAction({ session: ephemeralSession, snapshot: idle, pendingAction: undefined, decision: undefined }, true), "ephemeral");
-  assert.equal(classifyEditorAction({ session: durableSession, snapshot: idle, pendingAction: undefined, decision: undefined }, true), "durable");
+  const ready = { ...idle, phase: "ready", intent: { id: "i", edit: {} } };
+  assert.equal(classifyEditorAction("apply", { session: durableSession, snapshot: ready, pendingAction: undefined, decision: undefined }, false), "unavailable");
+  assert.equal(classifyEditorAction("apply", { session: durableSession, snapshot: ready, pendingAction: undefined, decision: { outcome: "deny" } }, true), "denied");
+  assert.equal(classifyEditorAction("apply", { session: durableSession, snapshot: ready, pendingAction: "apply", decision: undefined }, true), "pending");
+  assert.equal(classifyEditorAction("apply", { session: ephemeralSession, snapshot: ready, pendingAction: undefined, decision: undefined }, true), "ephemeral");
+  assert.equal(classifyEditorAction("apply", { session: durableSession, snapshot: ready, pendingAction: undefined, decision: undefined }, true), "durable");
+  assert.equal(classifyEditorAction("apply", { session: durableSession, snapshot: idle, pendingAction: undefined, decision: undefined }, true), "unavailable");
+  assert.equal(classifyEditorAction("undo", { session: durableSession, snapshot: { ...idle, can_undo: true }, pendingAction: undefined, decision: undefined }, true), "durable");
+  assert.equal(classifyEditorAction("redo", { session: durableSession, snapshot: { ...idle, can_redo: true }, pendingAction: undefined, decision: undefined }, true), "durable");
+  assert.equal(classifyEditorAction("retry", { session: durableSession, snapshot: { ...idle, phase: "failed", failure: { recoverable: true } }, pendingAction: undefined, decision: undefined }, true), "durable");
+  assert.equal(classifyEditorAction("cancel-preview", { session: durableSession, snapshot: { ...idle, phase: "previewing" }, pendingAction: "preview", decision: undefined }, true), "durable");
 });
 
 test("capability controls route commands and restore focus", async () => {
-  const editor = makeEditor({ ...idle, intent: { id: "i", edit: { kind: "semantic_operations", request: {} } } });
+  const editor = makeEditor({ ...idle, phase: "ready", intent: { id: "i", edit: { kind: "semantic_operations", request: {} } } });
   let focused = false;
   let renderer;
   await act(async () => { renderer = TestRenderer.create(React.createElement(EditorProvider, { editor, session: durableSession },

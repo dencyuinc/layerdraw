@@ -8,13 +8,20 @@ export type EditorAction = "apply" | "undo" | "redo" | "retry" | "cancel-preview
 export type EditorActionState = "unavailable" | "denied" | "pending" | "ephemeral" | "durable";
 
 export function classifyEditorAction(
+  action: EditorAction,
   state: Pick<EditorState, "session" | "snapshot" | "decision" | "pendingAction">,
   capabilityAvailable: boolean,
 ): EditorActionState {
   if (!capabilityAvailable) return "unavailable";
+  const persistence = state.session?.persistence === "durable" ? "durable" : "ephemeral";
+  if (action === "cancel-preview") return state.snapshot.phase === "previewing" ? persistence : "unavailable";
   if (state.pendingAction !== undefined || state.snapshot.phase === "previewing" || state.snapshot.phase === "applying") return "pending";
   if (state.decision?.outcome === "deny") return "denied";
-  return state.session?.persistence === "durable" ? "durable" : "ephemeral";
+  const ready = action === "apply" ? state.snapshot.phase === "ready" && state.snapshot.intent !== undefined
+    : action === "undo" ? state.snapshot.can_undo
+      : action === "redo" ? state.snapshot.can_redo
+        : state.snapshot.phase === "failed" && state.snapshot.failure?.recoverable === true;
+  return ready ? persistence : "unavailable";
 }
 
 export interface EditorCommandButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onClick" | "disabled"> {
@@ -41,7 +48,7 @@ export function EditorCommandButton({
   const state = useEditorState();
   const commands = useEditorCommands();
   const capability = useCapability(capabilityId);
-  const status = classifyEditorAction(state, capability.available);
+  const status = classifyEditorAction(action, state, capability.available);
   const descriptionId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const disabled = status === "unavailable" || status === "denied" || status === "pending";

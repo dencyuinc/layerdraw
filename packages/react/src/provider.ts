@@ -99,6 +99,8 @@ export interface EditorProviderProps {
 export function EditorProvider({ editor, session, children }: EditorProviderProps): ReactNode {
   const snapshot = useEditorSnapshot(editor);
   const generation = useRef(0);
+  const flightSequence = useRef(0);
+  const ownedPreview = useRef<Readonly<{ generation: number; flight: number }> | undefined>(undefined);
   const mounted = useRef(true);
   const [pendingAction, setPendingAction] = useState<EditorPendingAction>();
   const [error, setError] = useState<unknown>();
@@ -111,27 +113,37 @@ export function EditorProvider({ editor, session, children }: EditorProviderProp
     return () => {
       mounted.current = false;
       generation.current = currentGeneration + 1;
-      if (editor.snapshot().phase === "previewing") editor.cancelPreview();
+      if (ownedPreview.current?.generation === currentGeneration && editor.snapshot().phase === "previewing") {
+        ownedPreview.current = undefined;
+        editor.cancelPreview();
+      }
     };
   }, [editor, session]);
 
-  const run = useCallback(async <T,>(action: Exclude<EditorPendingAction, undefined>, operation: () => Promise<T>): Promise<T | undefined> => {
+  const run = useCallback(async <T,>(
+    action: Exclude<EditorPendingAction, undefined>,
+    operation: () => Promise<T>,
+    ownership?: "preview",
+  ): Promise<T | undefined> => {
     const currentGeneration = generation.current;
+    const flight = ++flightSequence.current;
+    if (ownership === "preview") ownedPreview.current = { generation: currentGeneration, flight };
     setPendingAction(action);
     setError(undefined);
     try {
       const result = await operation();
-      return mounted.current && generation.current === currentGeneration ? result : undefined;
+      return mounted.current && generation.current === currentGeneration && flightSequence.current === flight ? result : undefined;
     } catch (caught) {
-      if (mounted.current && generation.current === currentGeneration) setError(caught);
+      if (mounted.current && generation.current === currentGeneration && flightSequence.current === flight) setError(caught);
       return undefined;
     } finally {
-      if (mounted.current && generation.current === currentGeneration) setPendingAction(undefined);
+      if (ownedPreview.current?.generation === currentGeneration && ownedPreview.current.flight === flight) ownedPreview.current = undefined;
+      if (mounted.current && generation.current === currentGeneration && flightSequence.current === flight) setPendingAction(undefined);
     }
   }, []);
 
   const commands = useMemo<EditorCommands>(() => ({
-    preview: (edit, options) => run("preview", () => editor.preview(edit, options)),
+    preview: (edit, options) => run("preview", () => editor.preview(edit, options), "preview"),
     apply: (edit) => {
       const selected = edit ?? editor.snapshot().intent?.edit;
       if (selected === undefined) return Promise.resolve(undefined);
@@ -140,7 +152,13 @@ export function EditorProvider({ editor, session, children }: EditorProviderProp
     undo: () => run("undo", () => editor.undo()),
     redo: () => run("redo", () => editor.redo()),
     retry: () => run("retry", () => editor.retry()),
-    cancelPreview: () => editor.snapshot().phase === "previewing" ? editor.cancelPreview() : undefined,
+    cancelPreview: () => {
+      if (editor.snapshot().phase !== "previewing") return undefined;
+      ownedPreview.current = undefined;
+      ++flightSequence.current;
+      setPendingAction(undefined);
+      return editor.cancelPreview();
+    },
   }), [editor, run]);
 
   const state = useMemo(
