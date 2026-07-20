@@ -41,7 +41,9 @@ Paginated generated operations use a closed per-operation adapter: it decodes
 the exact generated page response, counts returned items, extracts the owner
 cursor into the opaque MCP cursor store, and injects it into the next typed
 generated request before canonical re-encoding. Operations without such a
-generated adapter reject continuations.
+generated adapter reject continuations. Paginated generated requests are
+decoded even on the first page and reject pre-populated inner cursors, so TTL,
+one-shot, generation, revision, and Access fences cannot be bypassed.
 
 Mutating tools route through the generated owner workflows: Runtime operation
 and restore commits are preceded by their generated preview operations, source

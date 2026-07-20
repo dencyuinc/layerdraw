@@ -167,6 +167,16 @@ func TestCanonicalDesktopCompositionUsesGeneratedOwnerEnvelopeWithWailsParity(t 
 	if result.Failure != nil || result.Cursor == "" || string(result.Content) != string(direct.Control) {
 		t.Fatalf("MCP=%+v direct=%s", result, direct.Control)
 	}
+	rawCursorRequest := request
+	rawCursorRequest.Payload.Cursor = &next
+	rawCursorBytes, err := engineprotocol.EncodeListModulesRequestEnvelope(rawCursorRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawCursor := app.MCPCallTool(context.Background(), mcphost.CallToolRequest{Name: "layerdraw.list_modules", RequestID: "raw-cursor", Arguments: rawCursorBytes, Binding: &mcphost.Binding{DocumentID: "document-1", RevisionDigest: digest, AccessFingerprint: digest}})
+	if rawCursor.Failure == nil || rawCursor.Failure.Code != mcphost.ErrorInvalidCursor || len(rawCursor.Content) != 0 {
+		t.Fatalf("raw inner cursor bypassed host: %+v", rawCursor)
+	}
 	second := app.MCPCallTool(context.Background(), mcphost.CallToolRequest{Name: "layerdraw.list_modules", RequestID: "request", Arguments: requestBytes, Cursor: result.Cursor, Binding: &mcphost.Binding{DocumentID: "document-1", RevisionDigest: digest, AccessFingerprint: digest}})
 	if second.Failure != nil || second.Cursor != "" || string(second.Content) != string(secondBytes) {
 		t.Fatalf("second=%+v", second)
