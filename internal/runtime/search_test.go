@@ -148,6 +148,16 @@ func (e executorStub) Execute(context.Context, port.ExecutionPlan) (port.Executi
 }
 func (e executorStub) Cancel(context.Context, string) error { return e.err }
 
+type postExecuteCapabilityFailure struct{}
+
+func (postExecuteCapabilityFailure) Execute(context.Context, port.ExecutionPlan) (port.ExecutionResult, error) {
+	return port.ExecutionResult{Complete: true}, nil
+}
+func (postExecuteCapabilityFailure) Capabilities(context.Context) (port.QueryAdapterCapability, error) {
+	return port.QueryAdapterCapability{}, errors.New("capability unavailable")
+}
+func (postExecuteCapabilityFailure) Cancel(context.Context, string) error { return nil }
+
 type indexStub struct {
 	status port.SearchIndexStatus
 	err    error
@@ -479,6 +489,13 @@ func TestQueryAndAnalysisEngineFailures(t *testing.T) {
 	}
 	if _, err := NewSearchService(&searchEngineStub{}, executorStub{}, nil, nil).ExecuteAnalysis(ctx, input); !errors.Is(err, ErrAnalysisInvalidScope) {
 		t.Fatalf("oversize analysis err=%v", err)
+	}
+	service := NewSearchService(&searchEngineStub{}, postExecuteCapabilityFailure{}, nil, nil)
+	if _, err := service.ExecuteQuery(ctx, input); !errors.Is(err, ErrSearchBackendFailed) {
+		t.Fatalf("query capability err=%v", err)
+	}
+	if _, err := service.ExecuteAnalysis(ctx, input); !errors.Is(err, ErrSearchBackendFailed) {
+		t.Fatalf("analysis capability err=%v", err)
 	}
 }
 
