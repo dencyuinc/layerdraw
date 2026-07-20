@@ -587,9 +587,15 @@ type Registry struct {
 	credentials      CredentialBroker
 	connectors       map[SourceKind]SourceConnector
 	transactions     TransactionStore
+	sourceStore      SourceStateStore
 	now              func() time.Time
 	verifiedCache    map[string]verifiedCacheEntry
 	maxArtifactBytes int64
+}
+
+type SourceStateStore interface {
+	LoadRegistrySources(context.Context) ([]RegistrySource, error)
+	SaveRegistrySources(context.Context, []RegistrySource) error
 }
 
 type verifiedCacheEntry struct {
@@ -623,6 +629,31 @@ func (r *Registry) RegisterPackageAuthor(author PackageAuthor) {
 	defer r.mu.Unlock()
 	r.author = author
 }
+
+func (r *Registry) AttachSourceStateStore(ctx context.Context, store SourceStateStore) error {
+	if store == nil {
+		return errors.New("Registry source state store is required")
+	}
+	sources, err := store.LoadRegistrySources(ctx)
+	if err != nil {
+		return err
+	}
+	loaded := make(map[string]RegistrySource, len(sources))
+	for _, source := range sources {
+		if source.SourceID == "" || source.EndpointRef == "" || source.TrustPolicyID == "" || loaded[source.SourceID].SourceID != "" {
+			return errors.New("persisted Registry source state is invalid")
+		}
+		if source.Kind != SourceLocalDirectory && source.Kind != SourceGit {
+			source.Connected = false
+			source.AuthConnectionRef = ""
+		}
+		loaded[source.SourceID] = source
+	}
+	r.mu.Lock()
+	r.sources, r.sourceStore = loaded, store
+	r.mu.Unlock()
+	return nil
+}
 func (r *Registry) PutTrustPolicy(policy TrustPolicy) error {
 	if policy.PolicyID == "" {
 		return errors.New("trust policy id is required")
@@ -652,7 +683,14 @@ func (r *Registry) ConfigureSource(source RegistrySource) error {
 	} else {
 		source.Revision = 1
 	}
-	r.sources[source.SourceID] = source
+	next := cloneSourceMap(r.sources)
+	next[source.SourceID] = source
+	if r.sourceStore != nil {
+		if err := r.sourceStore.SaveRegistrySources(context.Background(), sourceMapValues(next)); err != nil {
+			return fail(FailureUnavailable, source.SourceID, true, err)
+		}
+	}
+	r.sources = next
 	return nil
 }
 func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef string) error {
@@ -686,7 +724,14 @@ func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef st
 	source.AuthConnectionRef = connectionRef
 	source.Connected = true
 	source.Revision++
-	r.sources[sourceID] = source
+	next := cloneSourceMap(r.sources)
+	next[sourceID] = source
+	if r.sourceStore != nil {
+		if err := r.sourceStore.SaveRegistrySources(context.WithoutCancel(ctx), sourceMapValues(next)); err != nil {
+			return fail(FailureUnavailable, sourceID, true, err)
+		}
+	}
+	r.sources = next
 	return nil
 }
 func (r *Registry) DisconnectSource(sourceID string) error {
@@ -699,8 +744,32 @@ func (r *Registry) DisconnectSource(sourceID string) error {
 	source.Connected = false
 	source.AuthConnectionRef = ""
 	source.Revision++
-	r.sources[sourceID] = source
+	next := cloneSourceMap(r.sources)
+	next[sourceID] = source
+	if r.sourceStore != nil {
+		if err := r.sourceStore.SaveRegistrySources(context.Background(), sourceMapValues(next)); err != nil {
+			return fail(FailureUnavailable, sourceID, true, err)
+		}
+	}
+	r.sources = next
 	return nil
+}
+
+func cloneSourceMap(values map[string]RegistrySource) map[string]RegistrySource {
+	result := make(map[string]RegistrySource, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func sourceMapValues(values map[string]RegistrySource) []RegistrySource {
+	result := make([]RegistrySource, 0, len(values))
+	for _, value := range values {
+		result = append(result, value)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].SourceID < result[j].SourceID })
+	return result
 }
 func (r *Registry) Sources() []RegistrySource {
 	r.mu.RLock()

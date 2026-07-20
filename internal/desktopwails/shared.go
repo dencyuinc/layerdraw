@@ -59,8 +59,12 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 	if err != nil {
 		return desktopapp.Config{}, err
 	}
+	sources, err := registry.NewDiskSourceStateStore(filepath.Join(root, "registry", "sources.json"))
+	if err != nil {
+		return desktopapp.Config{}, err
+	}
 	credentials := newPlatformCredentialPort()
-	owner := &sharedOwner{root: root, objects: objects, transactions: transactions, credentials: credentials}
+	owner := &sharedOwner{root: root, objects: objects, transactions: transactions, sources: sources, credentials: credentials}
 	clients, err := packagedClients(owner)
 	if err != nil {
 		return desktopapp.Config{}, err
@@ -124,6 +128,7 @@ type sharedOwner struct {
 	closeSearch  func()
 	objects      *registry.DiskStagedObjectStore
 	transactions *registry.DiskTransactionStore
+	sources      *registry.DiskSourceStateStore
 	credentials  desktopcontract.CredentialPort
 	registry     *registry.Registry
 	registryWire *registry.HostBinding
@@ -239,6 +244,11 @@ func (o *sharedOwner) Start(context.Context) error {
 	}
 	if err := registryOwner.PutTrustPolicy(registry.TrustPolicy{PolicyID: "desktop-local", AllowUnsignedLocal: true, TrustedPublishers: map[string]bool{}, PublicKeys: map[string]ed25519.PublicKey{}, RevokedKeys: map[string]bool{}}); err != nil {
 		return err
+	}
+	if o.sources != nil {
+		if err := registryOwner.AttachSourceStateStore(context.Background(), o.sources); err != nil {
+			return err
+		}
 	}
 	registryWire, err := registry.NewHostBinding(registryOwner)
 	if err != nil {
