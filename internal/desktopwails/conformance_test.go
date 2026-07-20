@@ -3,6 +3,7 @@
 package desktopwails
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -56,5 +57,31 @@ func TestPackagedConformanceReportIsStrictAndExclusive(t *testing.T) {
 	}
 	if _, err := os.Stat(output); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunPackagedConformanceExecutesEveryIteration(t *testing.T) {
+	t.Setenv("LAYERDRAW_CONFORMANCE_SOURCE_REVISION", "0123456789abcdef0123456789abcdef01234567")
+	output := filepath.Join(t.TempDir(), "conformance.json")
+	if err := RunPackagedConformance(output); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report PackagedConformanceReport
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Iterations != packagedConformanceIterations || len(report.Scenarios) != len(conformanceEvidence) || len(report.ProcessTreePeakRSSMebibytes) != packagedConformanceIterations {
+		t.Fatalf("incomplete report: %+v", report)
+	}
+	for name, evidence := range conformanceEvidence {
+		if len(report.Scenarios[name].SamplesMilliseconds) != packagedConformanceIterations || report.ScenarioEvidence[name] != evidence {
+			t.Fatalf("scenario %q is incomplete: samples=%+v evidence=%q", name, report.Scenarios[name], report.ScenarioEvidence[name])
+		}
 	}
 }

@@ -179,7 +179,7 @@ func newConformanceInstance(ctx context.Context, external bool) (*conformanceIns
 	}
 	if started := app.Start(ctx); started.Outcome != protocolcommon.OutcomeSuccess {
 		os.RemoveAll(root)
-		return nil, errors.New("canonical Desktop application did not start")
+		return nil, fmt.Errorf("canonical Desktop application did not start: %+v", started.Failure)
 	}
 	return &conformanceInstance{root: root, app: app, vault: vault}, nil
 }
@@ -442,16 +442,25 @@ func conformanceViewer(ctx context.Context) error {
 }
 
 func conformanceMCP(ctx context.Context) error {
-	instance, err := newConformanceInstance(ctx, false)
+	workbench, err := newConformanceWorkbench(ctx)
 	if err != nil {
 		return err
 	}
-	defer instance.close(context.Background())
-	tools, failure := instance.app.MCPListTools(ctx)
-	if failure != nil {
-		return errors.New("bundled MCP Host discovery failed")
+	defer workbench.close(context.Background())
+	enabled := workbench.instance.app.SetMCPEnabled(ctx, true, desktopapp.MCPTransportLocal)
+	if enabled.Outcome != protocolcommon.OutcomeSuccess || !enabled.Value.Enabled {
+		return fmt.Errorf("bundled MCP Host enable failed: outcome=%s failure=%+v", enabled.Outcome, enabled.Failure)
 	}
-	required := map[string]bool{"layerdraw.list_modules": false, "layerdraw.search": false, "layerdraw.preview_operations": false, "layerdraw.apply_operations": false, "layerdraw.run_query": false, "layerdraw.materialize_view": false, "layerdraw.plan_export": false, "layerdraw.list_revisions": false, "layerdraw.restore_revision": false, "layerdraw.registry_search": false}
+	tools, failure := workbench.instance.app.MCPListTools(ctx)
+	if failure != nil {
+		return fmt.Errorf("bundled MCP Host discovery failed: %+v", failure)
+	}
+	required := map[string]bool{
+		"layerdraw.list_modules": false, "layerdraw.find_symbols": false,
+		"layerdraw.preview_operations": false, "layerdraw.apply_operations": false,
+		"layerdraw.materialize_view": false, "layerdraw.plan_export": false,
+		"layerdraw.list_revisions": false, "layerdraw.restore_revision": false,
+	}
 	for _, tool := range tools {
 		if _, ok := required[tool.Name]; ok {
 			required[tool.Name] = true
@@ -459,15 +468,45 @@ func conformanceMCP(ctx context.Context) error {
 	}
 	for name, found := range required {
 		if !found {
-			return fmt.Errorf("bundled MCP tool %s is absent", name)
+			names := make([]string, 0, len(tools))
+			for _, tool := range tools {
+				names = append(names, tool.Name)
+			}
+			return fmt.Errorf("bundled MCP tool %s is absent from %v", name, names)
 		}
 	}
-	capabilities := instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "conformance-capabilities", Arguments: json.RawMessage(`{}`)})
+	capabilities := workbench.instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "conformance-capabilities", Arguments: json.RawMessage(`{}`)})
 	if capabilities.Failure != nil || len(capabilities.Content) == 0 {
 		return errors.New("bundled MCP capability read failed")
 	}
-	if resources, resourceFailure := instance.app.MCPListResources(ctx); resourceFailure != nil || len(resources) == 0 {
+	list := engineprotocol.ListModulesRequestEnvelope{
+		Operation: engineprotocol.ListModulesRequestEnvelopeOperationValue,
+		Payload: engineprotocol.ListModulesInput{
+			DocumentGeneration: workbench.generation,
+			Limits:             conformanceLimits(),
+		},
+		Protocol: conformanceEngineProtocol(), RequestID: "conformance-mcp-list",
+	}
+	arguments, err := engineprotocol.EncodeListModulesRequestEnvelope(list)
+	if err != nil {
+		return err
+	}
+	digest := protocolcommon.Digest(desktopDigest)
+	listed := workbench.instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{
+		Name: "layerdraw.list_modules", RequestID: "conformance-mcp-list", Arguments: arguments,
+		Binding: &mcphost.Binding{DocumentID: "conformance-document", RevisionDigest: digest, AccessFingerprint: digest},
+	})
+	listResponse, decodeErr := engineprotocol.DecodeListModulesResponseEnvelope(listed.Content)
+	if listed.Failure != nil || decodeErr != nil || listResponse.Outcome != protocolcommon.OutcomeSuccess || listResponse.Payload == nil || len(listResponse.Payload.Items) == 0 {
+		return fmt.Errorf("bundled MCP bounded read failed: failure=%+v decode=%v", listed.Failure, decodeErr)
+	}
+	resources, resourceFailure := workbench.instance.app.MCPListResources(ctx)
+	if resourceFailure != nil || len(resources) == 0 {
 		return errors.New("bundled MCP resource discovery failed")
+	}
+	read := workbench.instance.app.MCPReadResource(ctx, mcphost.ReadResourceRequest{URI: resources[0].URI})
+	if read.Failure != nil || len(read.Content) == 0 || read.MimeType == "" {
+		return errors.New("bundled MCP resource read failed")
 	}
 	return nil
 }
@@ -485,18 +524,26 @@ func (conformanceProvider) Reconcile(context.Context, desktopapp.ExternalReconci
 }
 
 func conformanceExternal(ctx context.Context) error {
-	adapter := NewExternalAdapter(map[string]ExternalProvider{"conformance": conformanceProvider{}})
-	connected := adapter.Connect(ctx, desktopapp.ExternalConnectionRequest{ProviderID: "conformance", AccountLabel: "fixture", ScopeLabel: "isolated"})
+	instance, err := newConformanceInstance(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer instance.close(context.Background())
+	opened, err := instance.openProject(ctx, conformanceAuthoringSource)
+	if err != nil {
+		return err
+	}
+	connected := instance.app.ConnectExternal(ctx, desktopapp.ExternalConnectionRequest{ProviderID: "conformance", AccountLabel: "fixture", ScopeLabel: "isolated"})
 	if connected.Outcome != protocolcommon.OutcomeSuccess {
-		return errors.New("external provider connection failed")
+		return fmt.Errorf("external provider connection failed: %+v", connected.Failure)
 	}
-	sync := adapter.Sync(ctx, desktopapp.ExternalSyncRequest{ConnectionID: connected.Value.ConnectionID, DocumentID: "conformance-document", Revision: runtimeprotocol.CommittedRevisionRef{DocumentID: "conformance-document"}})
+	sync := instance.app.SyncExternal(ctx, opened.Open.Session, desktopapp.ExternalSyncRequest{ConnectionID: connected.Value.ConnectionID, DocumentID: opened.Open.Session.Scope.DocumentID, Revision: opened.Open.CommittedRevision})
 	if sync.Outcome != protocolcommon.OutcomeSuccess || !sync.Value.ReconcileNeeded {
-		return errors.New("external sync did not require reconcile")
+		return fmt.Errorf("external sync did not require reconcile: %+v", sync.Failure)
 	}
-	reconciled := adapter.Reconcile(ctx, desktopapp.ExternalReconcileRequest{ConnectionID: connected.Value.ConnectionID, DocumentID: "conformance-document", Resolution: "accept_remote"})
+	reconciled := instance.app.ReconcileExternal(ctx, opened.Open.Session, desktopapp.ExternalReconcileRequest{ConnectionID: connected.Value.ConnectionID, DocumentID: opened.Open.Session.Scope.DocumentID, Resolution: "accept_remote"})
 	if reconciled.Outcome != protocolcommon.OutcomeSuccess || !reconciled.Value.Converged {
-		return errors.New("external reconcile did not converge")
+		return fmt.Errorf("external reconcile did not converge: %+v", reconciled.Failure)
 	}
 	return nil
 }
