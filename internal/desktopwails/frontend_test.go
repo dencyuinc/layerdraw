@@ -12,6 +12,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
 )
 
 func TestFrontendBridgeExposesContextFreeGeneratedInvoke(t *testing.T) {
@@ -89,5 +90,17 @@ func TestFrontendBridgeDelegatesProjectSurfaceWithFallbackContext(t *testing.T) 
 	}
 	if result := bridge.ApplyExternalReconcile(runtimeprotocol.RuntimeSessionRef{}, desktopapp.ExternalReconcilePlan{}, ""); result.Failure == nil {
 		t.Fatalf("apply external=%+v", result)
+	}
+	if result := bridge.NativeExportProfiles(); result.Outcome != protocolcommon.OutcomeSuccess || len(result.Value) == 0 {
+		t.Fatalf("native export profiles=%+v", result)
+	}
+	if result := bridge.SerializeNativeExport(nativeexport.SerializeInput{}); result.Failure == nil {
+		t.Fatalf("invalid native serialize=%+v", result)
+	}
+	if result := bridge.PublishNativeExportDialog(desktopapp.NativePublishRequest{}); result.Failure == nil {
+		t.Fatalf("invalid native publish=%+v", result)
+	}
+	if result := bridge.ImportExternalDialog(desktopapp.ExternalImportRequest{}); result.Failure == nil {
+		t.Fatalf("invalid external import=%+v", result)
 	}
 }

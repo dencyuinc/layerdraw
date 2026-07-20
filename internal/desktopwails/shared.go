@@ -29,6 +29,7 @@ const (
 
 var packagedCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityAuthoring,
+	desktopcontract.CapabilityExport,
 }
 
 // NewSharedConfig wires the Engine and Runtime owners that are actually

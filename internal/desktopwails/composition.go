@@ -240,13 +240,26 @@ func compose(base desktopapp.Config, runtime NativeRuntime, providers map[string
 	base.Window = WindowAdapter{runtime: runtime}
 	base.Dialogs = NewDialogAdapter(runtime, vault)
 	base.ProjectStorage = NewProjectStorageAdapter(vault)
+	nativeInterchange, err := NewNativeInterchangeAdapter(vault, base.Root)
+	if err != nil {
+		return nil, nil, err
+	}
+	base.NativeInterchange = nativeInterchange
+	if base.Adapters == nil {
+		base.Adapters = map[desktopcontract.ComponentID]desktopapp.Adapter{}
+	}
+	base.Adapters[desktopcontract.ComponentNativeExporters] = nativeInterchange
+	filteredDisabled := base.DisabledComponents[:0]
+	for _, id := range base.DisabledComponents {
+		if id != desktopcontract.ComponentNativeExporters {
+			filteredDisabled = append(filteredDisabled, id)
+		}
+	}
+	base.DisabledComponents = filteredDisabled
 	base.Recovery = RecoveryReporter{runtime: runtime}
 	if len(providers) != 0 {
 		external := NewExternalAdapter(providers)
 		base.ExternalLifecycle = external
-		if base.Adapters == nil {
-			base.Adapters = map[desktopcontract.ComponentID]desktopapp.Adapter{}
-		}
 		if base.Adapters[desktopcontract.ComponentExternalStorage] == nil {
 			return nil, nil, errors.New("external lifecycle requires its capability adapter")
 		}

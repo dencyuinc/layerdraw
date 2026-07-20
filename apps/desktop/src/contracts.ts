@@ -2,6 +2,7 @@
 
 import type { BrowserDocumentSession, BrowserEditor } from "@layerdraw/client-sdk/editor";
 import type { CapabilityID } from "@layerdraw/protocol/common";
+import type { ExportPlan, ViewData } from "@layerdraw/protocol/semantic";
 import type { ViewDataUpdate, Viewer, ViewerSnapshot } from "@layerdraw/viewer";
 
 export type DesktopLifecyclePhase = "starting" | "ready" | "recovery" | "draining" | "stopped";
@@ -86,6 +87,39 @@ export interface DesktopProjectLifecyclePort {
   showRecoveryOptions(signal: AbortSignal): Promise<void>;
 	/** Disconnects through the host; the shell never handles credentials. */
 	disconnectExternal(signal: AbortSignal): Promise<void>;
+}
+
+export interface DesktopNativeExportProfile {
+  readonly format: "json" | "csv" | "tsv";
+  readonly schema_version: 1;
+  readonly requires_shape: readonly string[];
+}
+
+export interface DesktopNativeArtifactRef {
+  readonly artifact_id: string;
+  readonly logical_path: string;
+  readonly media_type: string;
+  readonly content_digest: string;
+}
+
+export interface DesktopNativeSerializeResult {
+  readonly artifact: DesktopNativeArtifactRef;
+  readonly source_manifest: Readonly<Record<string, unknown>>;
+}
+
+export interface DesktopExternalImportPreview {
+  readonly profile: string;
+  readonly media_type: string;
+  /** Generated Engine SemanticOperationBatch; submit to preview_operations before any write. */
+  readonly batch: Readonly<Record<string, unknown>>;
+  readonly source_hash: string;
+}
+
+export interface DesktopNativeInterchangePort {
+  profiles(): Promise<readonly DesktopNativeExportProfile[]>;
+  serialize(input: Readonly<{ export_plan: ExportPlan; view_data: ViewData }>, signal: AbortSignal): Promise<DesktopNativeSerializeResult>;
+  publish(input: Readonly<{ request_id: string; artifact_id: string; extension: string }>, signal: AbortSignal): Promise<void>;
+  importOperations(input: Readonly<{ request_id: string; profile: string; extension: string }>, signal: AbortSignal): Promise<DesktopExternalImportPreview>;
 }
 
 /** Dependencies are constructed by the Wails bootstrap (#122/#143), never discovered globally. */

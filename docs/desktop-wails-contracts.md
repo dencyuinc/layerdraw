@@ -211,3 +211,23 @@ credentials, document content, provider errors, or panic values. Lifecycle
 implementations own native dialogs, storage, recovery, leases, and revision
 rules; the React shell owns only interaction, focus, accessibility, responsive
 layout, and presentation of owner-produced Viewer render data.
+
+## Native interchange
+
+Desktop advertises `desktop.export` only when the concrete `internal/exporter`
+adapter is started. The native profile catalog is closed to JSON, CSV, and TSV
+schema version 1 until another profile has executable conformance evidence.
+Serialization accepts generated `ExportPlan` and `ViewData`, revalidates their
+revision/state/profile/hash binding, verifies exact asset and font digests, and
+returns an opaque staged-artifact ID plus a complete generated Source Manifest;
+artifact bytes and native destinations never cross the Wails response.
+
+Publish uses a save dialog token and stages the primary artifact and Source
+Manifest in the destination filesystem before replacing either file. Cancel,
+permission, capacity, and rename failures roll back without leaving a newly
+published partial pair. External import is separately advertised by its
+versioned adapter profile and returns only a generated
+`SemanticOperationBatch`; the caller must pass it through Engine Workbench
+preview and Runtime/Access before any publication. Redacted `.layerdraw`
+creation accepts only a trusted Runtime/Access projection receipt, rejects old
+derived artifacts, and delegates canonical container rehashing to Engine.

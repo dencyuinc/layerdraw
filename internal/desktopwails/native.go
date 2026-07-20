@@ -137,7 +137,11 @@ func (a *DialogAdapter) Select(ctx context.Context, request desktopcontract.Dial
 	case desktopcontract.DialogOpenProject:
 		path, err = a.runtime.OpenFile(ctx, "Open LayerDraw Project", request.Extensions)
 	case desktopcontract.DialogImport:
-		path, err = a.runtime.OpenFile(ctx, "Import LayerDraw Project", []string{"layerdraw"})
+		extensions := request.Extensions
+		if len(extensions) == 0 {
+			extensions = []string{"layerdraw"}
+		}
+		path, err = a.runtime.OpenFile(ctx, "Import LayerDraw Project", extensions)
 	case desktopcontract.DialogExport:
 		path, err = a.runtime.SaveFile(ctx, "Export LayerDraw Project", request.Extensions)
 	default:

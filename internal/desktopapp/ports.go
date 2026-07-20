@@ -7,6 +7,7 @@ package desktopapp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
@@ -14,6 +15,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
 )
 
 var errInjectedPanic = errors.New("desktop injected port panic")
@@ -56,6 +58,29 @@ type ProjectImportStorage interface {
 // validation before the binding is changed.
 type ProjectRelocationStorage interface {
 	Relocate(context.Context, runtimeprotocol.DocumentID, string) (ProjectLocation, error)
+}
+
+// NativeInterchangePort owns host filesystem selections, staged artifact
+// bytes, durable preview storage, and external-format adapters. Engine-owned
+// plans and generated operation batches cross this boundary unchanged.
+type NativeInterchangePort interface {
+	Profiles() []nativeexport.Profile
+	Serialize(context.Context, nativeexport.SerializeInput) (NativeSerializeResult, error)
+	Publish(context.Context, string, string) error
+	Import(context.Context, string, string) (nativeexport.ImportPreview, error)
+}
+
+type NativeArtifactRef struct {
+	ArtifactID    string                `json:"artifact_id"`
+	LogicalPath   string                `json:"logical_path"`
+	MediaType     string                `json:"media_type"`
+	ContentDigest protocolcommon.Digest `json:"content_digest"`
+}
+
+type NativeSerializeResult struct {
+	Artifact       NativeArtifactRef   `json:"artifact"`
+	SourceManifest nativeexport.Result `json:"-"`
+	Manifest       json.RawMessage     `json:"source_manifest"`
 }
 
 type ExternalConnectionRequest struct {

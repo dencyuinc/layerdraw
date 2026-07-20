@@ -603,7 +603,7 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, status := range handshake.CapabilityStatuses {
-		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring
+		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring || status.CapabilityID == desktopcontract.CapabilityExport
 		if status.Enabled != packaged || (!packaged && status.UnavailableReason == nil) {
 			t.Fatalf("capability availability is not truthful: %+v", status)
 		}
