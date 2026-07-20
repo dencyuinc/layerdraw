@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
+
 export namespace accessprotocol {
 	
 	export class AuthoringGrantSummary {
@@ -974,4 +976,3 @@ export namespace semantic {
 	}
 
 }
-
