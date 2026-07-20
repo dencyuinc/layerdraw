@@ -33,7 +33,7 @@ test("model presents host-owned evidence and routes comment then approval with e
 
 test("terminal proposals cannot apply and close aborts late refresh",async()=>{
   const host=client(), model=createReviewModel(host.value); await model.refresh(); model.select("p1"); await model.withdraw();
-  await assert.rejects(model.approveAndApply(),(error)=>error instanceof ReviewError&&error.code==="review.invalid_state");
+  await assert.rejects(model.approveAndApply(),(error)=>error instanceof ReviewError && error.code==="review.invalid_state");
   await model.close(); assert.equal(model.snapshot().phase,"closed");
   await assert.rejects(model.refresh(),(error)=>error.code==="review.invalid_state");
 });
