@@ -6,6 +6,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 )
@@ -55,4 +56,36 @@ func (b *FrontendBridge) OpenProjectDialog(requestID string) desktopcontract.Res
 
 func (b *FrontendBridge) RecentProjects() desktopcontract.Result[[]desktopapp.RecentProject] {
 	return b.app.RecentProjects()
+}
+
+func (b *FrontendBridge) ConnectExternal(request desktopapp.ExternalConnectionRequest) desktopcontract.Result[desktopapp.ExternalConnection] {
+	return b.app.ConnectExternal(b.context(), request)
+}
+
+func (b *FrontendBridge) InspectExternal(connectionID string) desktopcontract.Result[desktopapp.ExternalConnection] {
+	return b.app.InspectExternal(b.context(), connectionID)
+}
+
+func (b *FrontendBridge) RefreshExternal(connectionID string) desktopcontract.Result[desktopapp.ExternalConnection] {
+	return b.app.RefreshExternal(b.context(), connectionID)
+}
+
+func (b *FrontendBridge) DisconnectExternal(connectionID string) desktopcontract.Result[desktopapp.ExternalConnection] {
+	return b.app.DisconnectExternal(b.context(), connectionID)
+}
+
+func (b *FrontendBridge) SelectExternalRemote(request desktopapp.ExternalRemoteSelectionRequest) desktopcontract.Result[desktopapp.ExternalBackendBinding] {
+	return b.app.SelectExternalRemote(b.context(), request)
+}
+
+func (b *FrontendBridge) AcquireExternalLease(session runtimeprotocol.RuntimeSessionRef, binding desktopapp.ExternalBackendBinding) desktopcontract.Result[desktopapp.ExternalLease] {
+	return b.app.AcquireExternalLease(b.context(), session, binding)
+}
+
+func (b *FrontendBridge) PlanExternalReconcile(session runtimeprotocol.RuntimeSessionRef, request desktopapp.ExternalSyncRequest, restricted bool) desktopcontract.Result[desktopapp.ExternalReconcilePlan] {
+	return b.app.PlanExternalReconcile(b.context(), session, request, restricted)
+}
+
+func (b *FrontendBridge) ApplyExternalReconcile(session runtimeprotocol.RuntimeSessionRef, plan desktopapp.ExternalReconcilePlan, resolution string) desktopcontract.Result[desktopapp.ExternalReconcileResult] {
+	return b.app.ApplyExternalReconcile(b.context(), session, plan, resolution)
 }

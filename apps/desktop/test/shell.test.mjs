@@ -19,6 +19,7 @@ function fakeController(initial) {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     start() { calls.push(["start"]); }, async stop() { calls.push(["stop"]); },
     async reviewRecovery() { calls.push(["recovery-options"]); }, async selectView(address) { calls.push(["select", address]); },
+    async disconnectExternal() { calls.push(["disconnect-external"]); },
     setViewerSelection(keys) { calls.push(["viewer-selection", keys]); },
     emit(next) { state = next; for (const listener of listeners) listener(); },
   };
@@ -74,6 +75,24 @@ test("unadvertised view selection is visibly disabled and closed failures do not
   const status = renderer.root.findAll((node) => node.props.role === "status").map((node) => node.children.join(" ")).join(" ");
   assert.match(status, /view could not be displayed/i);
   assert.doesNotMatch(status, /desktop\.viewer_failed|provider|path/);
+  await act(async () => renderer.unmount());
+});
+
+test("external storage inspector shows safe sync context and explicit disconnect consequences", async () => {
+  const externalProject = { ...project, storage: {
+    kind: "external", status: "conflict", label: "Reference storage", provider_label: "Reference",
+    account_label: "Design account", scope_label: "Projects", last_sync_label: "2 minutes ago", pending_changes: 3,
+    disconnect_consequence: "The local project remains available; external sync will stop.",
+  } };
+  const controller = fakeController(shellState({ lifecycle: { sequence: 4, phase: "ready", capabilities: { "engine.materialize_view": { status: "available" } }, project: externalProject } }));
+  let renderer;
+  await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopShell, { controller, viewSelectionCapability: "engine.materialize_view", editorCapabilities })); });
+  const inspector = renderer.root.findByProps({ "aria-label": "External storage" });
+  const text = inspector.findAllByType("dd").map((node) => node.children.join("")).join(" ");
+  assert.match(text, /Reference Design account Projects 2 minutes ago 3/);
+  assert.match(inspector.findByProps({ role: "status" }).children.join(""), /Review external changes/);
+  await act(async () => inspector.findByType("button").props.onClick());
+  assert.deepEqual(controller.calls.at(-1), ["disconnect-external"]);
   await act(async () => renderer.unmount());
 });
 

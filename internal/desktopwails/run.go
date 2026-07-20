@@ -246,4 +246,5 @@ var _ desktopapp.ProjectStorage = (*ProjectStorageAdapter)(nil)
 var _ desktopapp.ProjectImportStorage = (*ProjectStorageAdapter)(nil)
 var _ desktopapp.ProjectRelocationStorage = (*ProjectStorageAdapter)(nil)
 var _ desktopapp.ExternalLifecycleAdapter = (*ExternalAdapter)(nil)
+var _ desktopapp.ExternalStorageAdapter = (*ExternalAdapter)(nil)
 var _ desktopapp.RecoveryReporter = RecoveryReporter{}

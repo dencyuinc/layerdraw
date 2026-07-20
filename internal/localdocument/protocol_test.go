@@ -23,6 +23,35 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
+func TestAuthorizeHostOperationRevalidatesCurrentSessionRevisionAndImpact(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root, "project p \"P\" {}\n")
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := opened.Session.Open.Session
+	revision := opened.Session.Open.CommittedRevision
+	if err := host.AuthorizeHostOperation(context.Background(), session, revision, accessprotocol.HostOperationKindBackendConfigure, "update", []string{"binding", "remote"}); err != nil {
+		t.Fatalf("authorize=%v", err)
+	}
+	stale := revision
+	stale.RevisionID = "stale"
+	if err := host.AuthorizeHostOperation(context.Background(), session, stale, accessprotocol.HostOperationKindBackendConfigure, "update", []string{"binding"}); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("stale revision=%v", err)
+	}
+	if err := host.AuthorizeHostOperation(context.Background(), session, revision, accessprotocol.HostOperationKindBackendConfigure, "forged", []string{"binding"}); err == nil {
+		t.Fatal("invalid impact action authorized")
+	}
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.AuthorizeHostOperation(context.Background(), session, revision, accessprotocol.HostOperationKindBackendConfigure, "update", []string{"binding"}); err == nil {
+		t.Fatal("closed session authorized")
+	}
+}
+
 func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *testing.T) {
 	root := t.TempDir()
 	source := "project p \"P\" {}\n"

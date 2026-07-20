@@ -54,6 +54,7 @@ export async function createDesktopWailsLifecycle(
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
     async selectView() { throw new Error("desktop project owner is not connected"); },
     async showRecoveryOptions() { throw new Error("desktop recovery owner is not connected"); },
+	async disconnectExternal() { throw new Error("desktop external storage owner is not connected"); },
   });
 }
 
