@@ -12,7 +12,7 @@ import type {
 export interface DesktopShellState {
   readonly lifecycle: DesktopLifecycleSnapshot;
   readonly viewer: ViewerState;
-  readonly pending_action: "select_view" | "reopen" | undefined;
+  readonly pending_action: "select_view" | "review_recovery" | undefined;
   readonly failure: DesktopShellFailure | undefined;
 }
 
@@ -90,9 +90,9 @@ export class DesktopShellController {
     await this.#runAction("select_view", (signal) => this.#ports.lifecycle.selectView(viewAddress, signal), selectionFailure);
   }
 
-  async reopen(): Promise<void> {
+  async reviewRecovery(): Promise<void> {
     if (this.#closed) return;
-    await this.#runAction("reopen", (signal) => this.#ports.lifecycle.reopen(signal), lifecycleFailure);
+    await this.#runAction("review_recovery", (signal) => this.#ports.lifecycle.showRecoveryOptions(signal), lifecycleFailure);
   }
 
   setViewerSelection(keys: readonly string[]): void {
@@ -160,7 +160,7 @@ export class DesktopShellController {
   }
 
   async #runAction(
-    action: "select_view" | "reopen",
+    action: "select_view" | "review_recovery",
     invoke: (signal: AbortSignal) => Promise<void>,
     failure: DesktopShellFailure,
   ): Promise<void> {

@@ -141,6 +141,8 @@ whose context differs from the current lifecycle publication and ignores stale
 lifecycle and Viewer sequences. Close or dependency replacement fences late
 work and cancels Viewer materialization. Reopen of the same stable project ID
 uses a new host-issued session generation so pre-close frames cannot reappear.
+Recovery state exposes a handoff to the host-owned restore/discard chooser; the
+shell never restores or discards a candidate implicitly.
 
 UI actions are rendered from the effective capability status supplied by the
 host. A linked package or generated binding never makes an action available by

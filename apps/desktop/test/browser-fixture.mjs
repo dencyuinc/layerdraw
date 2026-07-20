@@ -34,7 +34,7 @@ const calls = [];
 const controller = {
   getSnapshot: () => state,
   subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-  start() {}, async stop() {}, async reopen() {},
+  start() {}, async stop() {}, async reviewRecovery() {},
   async selectView(address) { calls.push(["select", address]); state = makeState(address); for (const listener of listeners) listener(); },
   setViewerSelection(keys) { calls.push(["viewer", ...keys]); },
 };

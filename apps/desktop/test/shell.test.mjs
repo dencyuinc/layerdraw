@@ -18,7 +18,7 @@ function fakeController(initial) {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     start() { calls.push(["start"]); }, async stop() { calls.push(["stop"]); },
-    async reopen() { calls.push(["reopen"]); }, async selectView(address) { calls.push(["select", address]); },
+    async reviewRecovery() { calls.push(["recovery-options"]); }, async selectView(address) { calls.push(["select", address]); },
     setViewerSelection(keys) { calls.push(["viewer-selection", keys]); },
     emit(next) { state = next; for (const listener of listeners) listener(); },
   };
@@ -76,7 +76,7 @@ test("startup, recovery, empty, draining, and stopped lifecycle states stay oper
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 1, phase: "recovery", capabilities: {} } })));
   assert.match(renderer.root.findByProps({ role: "alert" }).children.join(""), /recovery/);
   await act(async () => renderer.root.findByType("button").props.onClick());
-  assert.deepEqual(controller.calls.at(-1), ["reopen"]);
+  assert.deepEqual(controller.calls.at(-1), ["recovery-options"]);
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 2, phase: "ready", capabilities: {} } })));
   assert.match(renderer.root.findByType("p").children.join(""), /Open or create/);
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 3, phase: "draining", capabilities: {} } })));

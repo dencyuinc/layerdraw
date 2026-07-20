@@ -17,7 +17,7 @@ export interface DesktopShellLabels {
   readonly views: string;
   readonly canvas: string;
   readonly inspector: string;
-  readonly reopen: string;
+  readonly reviewRecovery: string;
   readonly noProject: string;
   readonly recovery: string;
   readonly unavailable: string;
@@ -25,10 +25,10 @@ export interface DesktopShellLabels {
 }
 
 const labels: DesktopShellLabels = Object.freeze({
-  application: "LayerDraw Desktop", views: "Views", canvas: "Canvas", inspector: "Project status", reopen: "Reopen project",
+  application: "LayerDraw Desktop", views: "Views", canvas: "Canvas", inspector: "Project status", reviewRecovery: "Review recovery options",
   noProject: "Open or create a project to begin.", recovery: "LayerDraw needs recovery before this project can open.", unavailable: "This action is unavailable.",
   failure: {
-    "desktop.error.lifecycle_failed": "The project could not be reopened.",
+    "desktop.error.lifecycle_failed": "Recovery options could not be opened.",
     "desktop.error.selection_failed": "The selected view could not be opened.",
     "desktop.error.viewer_rejected": "The view update was rejected.",
     "desktop.error.viewer_failed": "The view could not be displayed.",
@@ -65,7 +65,7 @@ export function DesktopShell({ controller, viewSelectionCapability, labels: supp
   if (state.lifecycle.phase === "starting") return createElement("main", { className: "ld-desktop-shell", "aria-label": suppliedLabels.application }, createElement("p", { role: "status", "aria-live": "polite" }, "Starting LayerDraw…"));
   if (state.lifecycle.phase === "recovery") return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application },
     createElement("h1", null, suppliedLabels.application), createElement("p", { role: "alert" }, suppliedLabels.recovery),
-    createElement("button", { type: "button", disabled: state.pending_action !== undefined, onClick: () => { void controller.reopen(); } }, suppliedLabels.reopen));
+    createElement("button", { type: "button", disabled: state.pending_action !== undefined, onClick: () => { void controller.reviewRecovery(); } }, suppliedLabels.reviewRecovery));
   if (state.lifecycle.phase === "draining" || state.lifecycle.phase === "stopped") return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("p", { role: "status" }, "LayerDraw is closing…"));
   if (project === undefined) return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("h1", null, suppliedLabels.application), createElement("p", null, suppliedLabels.noProject));
 
@@ -93,5 +93,5 @@ export function DesktopShell({ controller, viewSelectionCapability, labels: supp
       createElement("section", { className: "ld-desktop-canvas", "aria-label": suppliedLabels.canvas },
         createElement(DesktopViewerSurface, { state: state.viewer, onSelectionChange: (keys) => controller.setViewerSelection(keys) })),
       createElement("aside", { className: "ld-desktop-inspector", "aria-label": suppliedLabels.inspector }, editorSurface?.(project) ?? null)),
-    createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "reopen" ? "Reopening project…" : ""));
+    createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : ""));
 }

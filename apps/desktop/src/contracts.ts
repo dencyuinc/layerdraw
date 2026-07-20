@@ -76,7 +76,8 @@ export interface DesktopProjectLifecyclePort {
   getSnapshot(): DesktopLifecycleSnapshot;
   subscribe(listener: () => void): () => void;
   selectView(viewAddress: string, signal: AbortSignal): Promise<void>;
-  reopen(signal: AbortSignal): Promise<void>;
+  /** Opens the host-owned explicit restore/discard workflow; it never restores implicitly. */
+  showRecoveryOptions(signal: AbortSignal): Promise<void>;
 }
 
 /** Dependencies are constructed by the Wails bootstrap (#122/#143), never discovered globally. */

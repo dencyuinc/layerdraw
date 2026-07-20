@@ -12,7 +12,7 @@ function harness(initial) {
   const lifecycleListeners = new Set();
   const calls = [];
   let selectionFailure = false;
-  let reopenFailure = false;
+  let recoveryFailure = false;
   let viewerFailure = false;
   let viewerReject = false;
   const lifecycle = {
@@ -22,9 +22,9 @@ function harness(initial) {
       calls.push(["select", address, signal]);
       if (selectionFailure) throw new Error("native path must not escape");
     },
-    async reopen(signal) {
-      calls.push(["reopen", signal]);
-      if (reopenFailure) throw new Error("provider details must not escape");
+    async showRecoveryOptions(signal) {
+      calls.push(["recovery-options", signal]);
+      if (recoveryFailure) throw new Error("provider details must not escape");
     },
   };
   const viewer = {
@@ -47,7 +47,7 @@ function harness(initial) {
     emit(next) { lifecycleSnapshot = next; for (const listener of lifecycleListeners) listener(); },
     listeners: lifecycleListeners,
     failSelection(value = true) { selectionFailure = value; },
-    failReopen(value = true) { reopenFailure = value; },
+    failRecovery(value = true) { recoveryFailure = value; },
     failViewer(value = true) { viewerFailure = value; },
     rejectViewer(value = true) { viewerReject = value; },
   };
@@ -132,11 +132,11 @@ test("selection is constrained to advertised views and exposes only closed failu
   assert.doesNotMatch(JSON.stringify(h.controller.getSnapshot()), /native path/);
 });
 
-test("reopen, Viewer rejection, exceptions, and selection stay typed and recoverable", async () => {
+test("explicit recovery handoff, Viewer rejection, exceptions, and selection stay typed and recoverable", async () => {
   const h = harness(snapshot(0));
   h.controller.start();
-  h.failReopen();
-  await h.controller.reopen();
+  h.failRecovery();
+  await h.controller.reviewRecovery();
   assert.equal(h.controller.getSnapshot().failure.code, "desktop.lifecycle_failed");
   assert.doesNotMatch(JSON.stringify(h.controller.getSnapshot()), /provider details/);
 
@@ -161,7 +161,7 @@ test("start and close are idempotent and closed controllers reject new work", as
   assert.equal(h.listeners.size, 1);
   await h.controller.close(); await h.controller.close();
   await h.controller.selectView("view:main");
-  await h.controller.reopen();
+  await h.controller.reviewRecovery();
   h.controller.setViewerSelection(["ignored"]);
   assert.deepEqual(h.calls, [["cancel"]]);
 });
