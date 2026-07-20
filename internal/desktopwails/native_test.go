@@ -133,6 +133,33 @@ func (storageProviderStub) ApplyReconcile(context.Context, desktopapp.ExternalRe
 	return desktopapp.ExternalReconcileResult{ProviderVersion: "v2", Converged: true}, nil
 }
 
+type malformedStorageProvider struct{ storageProviderStub }
+
+func (malformedStorageProvider) Inspect(context.Context, string) (desktopapp.ExternalConnection, error) {
+	return desktopapp.ExternalConnection{}, nil
+}
+func (malformedStorageProvider) Refresh(context.Context, string) (desktopapp.ExternalConnection, error) {
+	return desktopapp.ExternalConnection{}, nil
+}
+func (malformedStorageProvider) Disconnect(context.Context, string) (desktopapp.ExternalConnection, error) {
+	return desktopapp.ExternalConnection{}, nil
+}
+func (malformedStorageProvider) SelectRemote(context.Context, desktopapp.ExternalRemoteSelectionRequest) (desktopapp.ExternalBackendBinding, error) {
+	return desktopapp.ExternalBackendBinding{}, nil
+}
+func (malformedStorageProvider) AcquireLease(context.Context, desktopapp.ExternalBackendBinding) (desktopapp.ExternalLease, error) {
+	return desktopapp.ExternalLease{}, nil
+}
+func (malformedStorageProvider) Write(context.Context, desktopapp.ExternalWriteRequest) (desktopapp.ExternalWriteResult, error) {
+	return desktopapp.ExternalWriteResult{}, errors.New("malformed write")
+}
+func (malformedStorageProvider) PlanReconcile(context.Context, desktopapp.ExternalSyncRequest, bool) (desktopapp.ExternalReconcilePlan, error) {
+	return desktopapp.ExternalReconcilePlan{}, nil
+}
+func (malformedStorageProvider) ApplyReconcile(context.Context, desktopapp.ExternalReconcilePlan, string) (desktopapp.ExternalReconcileResult, error) {
+	return desktopapp.ExternalReconcileResult{}, nil
+}
+
 func TestExternalAdapterRoutesOnlyEstablishedConnections(t *testing.T) {
 	t.Parallel()
 	adapter := NewExternalAdapter(map[string]ExternalProvider{"provider": providerStub{}})
@@ -143,6 +170,31 @@ func TestExternalAdapterRoutesOnlyEstablishedConnections(t *testing.T) {
 	unknown := adapter.Sync(context.Background(), desktopapp.ExternalSyncRequest{ConnectionID: "forged"})
 	if unknown.Failure == nil || unknown.Failure.Recovery != desktopcontract.RecoveryConfigureAdapter {
 		t.Fatalf("forged connection: %+v", unknown)
+	}
+	if result := adapter.Inspect(context.Background(), "forged"); result.Failure == nil {
+		t.Fatalf("forged inspect: %+v", result)
+	}
+	if result := adapter.Refresh(context.Background(), "forged"); result.Failure == nil {
+		t.Fatalf("forged refresh: %+v", result)
+	}
+	if result := adapter.Disconnect(context.Background(), "forged"); result.Failure == nil {
+		t.Fatalf("forged disconnect: %+v", result)
+	}
+	forgedBinding := desktopapp.ExternalBackendBinding{ConnectionID: "forged", DocumentID: "document"}
+	if result := adapter.SelectRemote(context.Background(), desktopapp.ExternalRemoteSelectionRequest{ConnectionID: "forged"}); result.Failure == nil {
+		t.Fatalf("forged selection: %+v", result)
+	}
+	if result := adapter.AcquireLease(context.Background(), forgedBinding); result.Failure == nil {
+		t.Fatalf("forged lease: %+v", result)
+	}
+	if result := adapter.Write(context.Background(), desktopapp.ExternalWriteRequest{Binding: forgedBinding}); result.Failure == nil {
+		t.Fatalf("forged write: %+v", result)
+	}
+	if result := adapter.PlanReconcile(context.Background(), desktopapp.ExternalSyncRequest{ConnectionID: "forged"}, false); result.Failure == nil {
+		t.Fatalf("forged plan: %+v", result)
+	}
+	if result := adapter.ApplyReconcile(context.Background(), desktopapp.ExternalReconcilePlan{Binding: forgedBinding}, "retry"); result.Failure == nil {
+		t.Fatalf("forged apply: %+v", result)
 	}
 	synced := adapter.Sync(context.Background(), desktopapp.ExternalSyncRequest{ConnectionID: "connection"})
 	if synced.Outcome != protocolcommon.OutcomeSuccess || synced.Value.ProviderVersion != "v1" {
@@ -197,6 +249,30 @@ func TestExternalAdapterForwardsFullStorageContractOnlyToOwningProvider(t *testi
 	if result := legacy.Inspect(context.Background(), "connection"); result.Failure == nil || result.Failure.Retryable {
 		t.Fatalf("legacy provider exposed full storage: %+v", result)
 	}
+}
+
+func TestExternalAdapterRejectsMalformedStorageProviderResults(t *testing.T) {
+	adapter := NewExternalAdapter(map[string]ExternalProvider{"provider": malformedStorageProvider{}})
+	connected := adapter.Connect(context.Background(), desktopapp.ExternalConnectionRequest{ProviderID: "provider"})
+	if connected.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatal(connected.Failure)
+	}
+	connectionID := connected.Value.ConnectionID
+	assertFailed := func(name string, failure *desktopcontract.Failure) {
+		t.Helper()
+		if failure == nil {
+			t.Fatalf("malformed %s result accepted", name)
+		}
+	}
+	assertFailed("inspect", adapter.Inspect(context.Background(), connectionID).Failure)
+	assertFailed("refresh", adapter.Refresh(context.Background(), connectionID).Failure)
+	assertFailed("disconnect", adapter.Disconnect(context.Background(), connectionID).Failure)
+	binding := desktopapp.ExternalBackendBinding{ConnectionID: connectionID, DocumentID: "document"}
+	assertFailed("select", adapter.SelectRemote(context.Background(), desktopapp.ExternalRemoteSelectionRequest{ConnectionID: connectionID, DocumentID: "document"}).Failure)
+	assertFailed("lease", adapter.AcquireLease(context.Background(), binding).Failure)
+	assertFailed("write", adapter.Write(context.Background(), desktopapp.ExternalWriteRequest{Binding: binding}).Failure)
+	assertFailed("plan", adapter.PlanReconcile(context.Background(), desktopapp.ExternalSyncRequest{ConnectionID: connectionID, DocumentID: "document"}, false).Failure)
+	assertFailed("apply", adapter.ApplyReconcile(context.Background(), desktopapp.ExternalReconcilePlan{Binding: binding}, "retry").Failure)
 }
 
 func TestProductionCompositionCallsDesktopApplicationConstructor(t *testing.T) {
