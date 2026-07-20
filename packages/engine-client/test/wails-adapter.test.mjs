@@ -17,9 +17,17 @@ import {
   makePortableRequest,
   rejectedResponse,
 } from "./support.mjs";
+import {
+  assertPortableCompileParityOutcome,
+  portableParityInput,
+} from "../../engine-wasm/test/shared/real-engine.mjs";
 
 const repositoryRoot = new URL("../../../", import.meta.url);
 const handshakeFixture = JSON.parse(await readFile(new URL("schemas/fixtures/engine/handshake-success.json", repositoryRoot), "utf8"));
+const runtimeCommitRequest = JSON.parse(await readFile(new URL("schemas/fixtures/runtime/commit-request.json", repositoryRoot), "utf8"));
+const runtimeCommitFailure = JSON.parse(await readFile(new URL("schemas/fixtures/runtime/commit-failed.json", repositoryRoot), "utf8"));
+const bindingCompatibility = JSON.parse(await readFile(new URL("schemas/fixtures/desktop/wails-binding-compatibility-v1.json", repositoryRoot), "utf8"));
+const parityCorpus = JSON.parse(await readFile(new URL("tests/conformance/testdata/engine_compile_parity_v1.json", repositoryRoot), "utf8"));
 
 const methodNames = [
   "EngineApplyToHandle", "EngineClassifyAuthoringImpact", "EngineCloseDocument",
@@ -70,7 +78,7 @@ function handshakeResponse(exchange, mutate = () => {}) {
   };
 }
 
-function runtimeHandshakeResponse(exchange) {
+function runtimeHandshakeResponse(exchange, mutate = () => {}) {
   const request = JSON.parse(decodeBase64(exchange.control).toString("utf8"));
   const operations = Object.fromEntries(request.payload.required_capabilities.map((operation) => [operation, { enabled: true, protocol_version: "1.0" }]));
   const payload = {
@@ -101,6 +109,15 @@ function runtimeHandshakeResponse(exchange) {
     protocol: { name: "runtime", version: "1.0" },
     request_id: request.request_id,
   };
+  mutate(response, request);
+  return { operation: exchange.operation, control: encodeBase64(JSON.stringify(response)), blobs: [] };
+}
+
+function runtimeCommitResponse(exchange, mutate = () => {}) {
+  const request = JSON.parse(decodeBase64(exchange.control).toString("utf8"));
+  const response = structuredClone(runtimeCommitFailure);
+  response.request_id = request.request_id;
+  mutate(response, request);
   return { operation: exchange.operation, control: encodeBase64(JSON.stringify(response)), blobs: [] };
 }
 
@@ -110,6 +127,21 @@ function options(bindings, extra = {}) {
     bindingProtocolVersion: "1.0",
     client: creationOptions,
     ...extra,
+  };
+}
+
+function transportLimits(overrides = {}) {
+  return {
+    maxControlBytes: 32 * 1024,
+    maxControlDepth: 16,
+    maxBlobIdBytes: 256,
+    maxBuffers: 128,
+    maxInputBlobBytes: 16 * 1024 * 1024,
+    maxInputTotalBytes: 64 * 1024 * 1024,
+    maxOutputBlobBytes: 16 * 1024 * 1024,
+    maxOutputTotalBytes: 64 * 1024 * 1024,
+    maxResponsePublishBytes: 65 * 1024 * 1024,
+    ...overrides,
   };
 }
 
@@ -158,6 +190,63 @@ test("generated Engine and Runtime binding closure exactly matches the Desktop o
   assert.deepEqual(actual, expected);
 });
 
+test("Desktop compatibility fixture maps the shared Engine and Runtime Wails bindings", () => {
+  const descriptors = [...wailsEngineBindingDescriptors, ...wailsRuntimeBindingDescriptors];
+  for (const expected of bindingCompatibility.bindings.filter((entry) => entry.target !== "registry_client")) {
+    assert.ok(descriptors.some((entry) =>
+      entry.generatedMethod === expected.generated_method &&
+      entry.target === expected.target &&
+      entry.operation === expected.operation));
+  }
+});
+
+test("Wails client executes shared portable success, rejection, and cancellation vectors", async () => {
+  let releaseCancellation;
+  const cancellationGate = new Promise((resolve) => { releaseCancellation = resolve; });
+  const selected = [
+    parityCorpus.cases.find((entry) => entry.name === "single_module_project"),
+    parityCorpus.cases.find((entry) => entry.name === "deterministic_rejection"),
+    parityCorpus.cases.find((entry) => entry.name === "cancellation"),
+  ];
+  assert.equal(selected.includes(undefined), false);
+  const byRequest = new Map(selected.map((entry) => [entry.expected.response.request_id, entry]));
+  const bindings = generatedBindings({
+    EngineHandshake: async (exchange) => handshakeResponse(exchange),
+    EngineCompile: async (exchange) => {
+      const request = JSON.parse(decodeBase64(exchange.control).toString("utf8"));
+      const testCase = byRequest.get(request.request_id);
+      assert.notEqual(testCase, undefined);
+      if (testCase.execution === "cancel") await cancellationGate;
+      const response = structuredClone(testCase.expected.response);
+      response.engine_release = "0.0.0-dev";
+      response.request_id = request.request_id;
+      return {
+        operation: exchange.operation,
+        control: encodeBase64(JSON.stringify(response)),
+        blobs: testCase.expected.blobs.map((blob) => ({ blob_id: blob.blob_id, bytes: blob.bytes_base64 })),
+      };
+    },
+  });
+  const client = await createWailsEngineClient(options(bindings));
+  for (const testCase of selected.filter((entry) => entry.execution === "compile")) {
+    const outcome = await client.compile(portableParityInput(testCase), { requestId: testCase.expected.response.request_id });
+    await assertPortableCompileParityOutcome(outcome, testCase, "0.0.0-dev");
+  }
+  const cancellation = selected.find((entry) => entry.execution === "cancel");
+  const controller = new AbortController();
+  const pending = client.compile(portableParityInput(cancellation), {
+    requestId: cancellation.expected.response.request_id,
+    signal: controller.signal,
+  });
+  controller.abort();
+  const cancelled = await pending;
+  assert.equal(cancelled.origin, "client");
+  assert.equal(cancelled.outcome, "cancelled");
+  releaseCancellation();
+  await new Promise((resolve) => setImmediate(resolve));
+  await client.dispose();
+});
+
 test("capabilities come only from the open-time handshake, never generated method presence", async () => {
   const bindings = generatedBindings({
     EngineHandshake: async (exchange) => handshakeResponse(exchange),
@@ -204,6 +293,120 @@ test("Desktop client implements the existing Runtime facade through its generate
   assert.equal(desktop.state, "disposed");
 });
 
+test("Runtime handshake rejects correlation, schema, and capability-closure mismatches", async () => {
+  const cases = [
+    ["request id", (response) => { response.request_id = "hostile-request"; }, "CORRELATION_MISMATCH"],
+    ["schema digest", (response) => { response.payload.negotiated_protocols[0].schema_digest = `sha256:${"a".repeat(64)}`; }, "PROTOCOL_MISMATCH"],
+    ["status manifest", (response) => {
+      response.payload.capability_statuses[0].enabled = false;
+      response.payload.capability_statuses[0].unavailable_reason = "unsupported";
+    }, "PROTOCOL_MISMATCH"],
+    ["status closure", (response) => { response.payload.capability_statuses.pop(); }, "NEGOTIATION_REJECTED"],
+  ];
+  for (const [name, mutate, code] of cases) {
+    const bindings = generatedBindings({
+      EngineHandshake: async (exchange) => handshakeResponse(exchange),
+      RuntimeHandshake: async (exchange) => runtimeHandshakeResponse(exchange, mutate),
+    });
+    await assert.rejects(
+      createWailsDesktopClient({
+        ...options(bindings),
+        expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+      }),
+      (error) => error.code === code,
+      name,
+    );
+  }
+});
+
+test("Runtime responses reject mismatched request IDs and fence late cancelled callbacks", async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const bindings = generatedBindings({
+    EngineHandshake: async (exchange) => handshakeResponse(exchange),
+    RuntimeHandshake: async (exchange) => runtimeHandshakeResponse(exchange),
+    RuntimeCommitOperations: async (exchange) => {
+      calls++;
+      if (calls === 1) return runtimeCommitResponse(exchange, (response) => { response.request_id = "hostile-request"; });
+      if (calls === 2) await gate;
+      return runtimeCommitResponse(exchange);
+    },
+  });
+  const desktop = await createWailsDesktopClient({
+    ...options(bindings),
+    expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+  });
+  await assert.rejects(
+    desktop.commitOperations(runtimeCommitRequest.payload, { requestId: "runtime-correlation" }),
+    (error) => error.code === "CORRELATION_MISMATCH",
+  );
+  const controller = new AbortController();
+  const pending = desktop.commitOperations(runtimeCommitRequest.payload, {
+    requestId: "runtime-late",
+    signal: controller.signal,
+  });
+  while (calls < 2) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(pending, (error) => error.code === "REQUEST_CANCELLED");
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  const recovered = await desktop.commitOperations(runtimeCommitRequest.payload, { requestId: "runtime-recovered" });
+  assert.equal(recovered.request_id, "runtime-recovered");
+  assert.equal(desktop.state, "ready");
+  await desktop.dispose();
+});
+
+test("Runtime transport preflights encoded size and control depth before publication", async () => {
+  let mode = "oversize";
+  const limits = transportLimits({
+    maxInputBlobBytes: 64,
+    maxInputTotalBytes: 128,
+    maxOutputBlobBytes: 64,
+    maxOutputTotalBytes: 128,
+    maxResponsePublishBytes: 33 * 1024,
+  });
+  const bindings = generatedBindings({
+    EngineHandshake: async (exchange) => handshakeResponse(exchange),
+    RuntimeHandshake: async (exchange) => runtimeHandshakeResponse(exchange),
+    RuntimeCommitOperations: async (exchange) => {
+      if (mode === "oversize") {
+        return { operation: exchange.operation, control: encodeBase64(Buffer.alloc(limits.maxControlBytes + 1)), blobs: [] };
+      }
+      if (mode === "blob") {
+        return { operation: exchange.operation, control: encodeBase64(JSON.stringify(runtimeCommitFailure)), blobs: [{ blob_id: "oversize", bytes: encodeBase64(Buffer.alloc(65)) }] };
+      }
+      if (mode === "count") {
+        return { operation: exchange.operation, control: encodeBase64(JSON.stringify(runtimeCommitFailure)), blobs: Array.from({ length: limits.maxBuffers + 1 }, (_, index) => ({ blob_id: `blob-${index}`, bytes: "" })) };
+      }
+      return { operation: exchange.operation, control: encodeBase64("[".repeat(limits.maxControlDepth + 1) + "]".repeat(limits.maxControlDepth + 1)), blobs: [] };
+    },
+  });
+  const desktop = await createWailsDesktopClient({
+    ...options(bindings, { transportLimits: limits }),
+    expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+  });
+  await assert.rejects(desktop.commitOperations(runtimeCommitRequest.payload), (error) => error.code === "MALFORMED_MESSAGE");
+  mode = "depth";
+  await assert.rejects(desktop.commitOperations(runtimeCommitRequest.payload), (error) => error.code === "MALFORMED_MESSAGE");
+  mode = "blob";
+  await assert.rejects(desktop.commitOperations(runtimeCommitRequest.payload), (error) => error.code === "MALFORMED_MESSAGE");
+  mode = "count";
+  await assert.rejects(desktop.commitOperations(runtimeCommitRequest.payload), (error) => error.code === "MALFORMED_MESSAGE");
+  const inputBytes = new Uint8Array(65);
+  await assert.rejects(desktop.stageAsset({
+    session: runtimeCommitRequest.payload.session,
+    content_blob: {
+      blob_id: "input-oversize",
+      digest: `sha256:${"0".repeat(64)}`,
+      lifetime: "request",
+      media_type: "application/octet-stream",
+      size: String(inputBytes.byteLength),
+    },
+  }, inputBytes), (error) => error.code === "MALFORMED_MESSAGE");
+  await desktop.dispose();
+});
+
 test("Desktop restart renegotiates both manifests and keeps the replacement transport ready", async () => {
   let engineGeneration = 0;
   let engineHandshakes = 0;
@@ -230,6 +433,34 @@ test("Desktop restart renegotiates both manifests and keeps the replacement tran
   assert.equal(runtimeHandshakes, 2);
   assert.equal(desktop.engine.getEndpoint().generation, 2);
   await desktop.dispose();
+});
+
+test("Desktop coalesces concurrent restarts and dispose fences an in-flight replacement", async () => {
+  let handshakes = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const bindings = generatedBindings({
+    EngineHandshake: async (exchange) => handshakeResponse(exchange),
+    RuntimeHandshake: async (exchange) => {
+      handshakes++;
+      if (handshakes === 2) await gate;
+      return runtimeHandshakeResponse(exchange);
+    },
+  });
+  const desktop = await createWailsDesktopClient({
+    ...options(bindings),
+    expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+  });
+  const first = desktop.restart();
+  const second = desktop.restart();
+  assert.equal(first, second);
+  while (handshakes < 2) await new Promise((resolve) => setImmediate(resolve));
+  const disposed = desktop.dispose();
+  release();
+  await assert.rejects(first, (error) => error.code === "REPLACEMENT_FAILED");
+  await disposed;
+  assert.equal(desktop.state, "disposed");
+  await assert.rejects(desktop.restart(), (error) => error.code === "REPLACEMENT_FAILED");
 });
 
 test("failed Desktop replacement publishes no partial Runtime transport and remains retryable", async () => {

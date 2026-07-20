@@ -305,6 +305,11 @@ function normalizeLimits(input: WailsTransportLimits | undefined): InternalTrans
     if (!Number.isSafeInteger(value) || value <= 0) throw new EngineClientInputError("INVALID_ARGUMENT");
     result[key] = value;
   }
+  if (
+    result.maxInputBlobBytes > result.maxInputTotalBytes ||
+    result.maxOutputBlobBytes > result.maxOutputTotalBytes ||
+    result.maxControlBytes + result.maxOutputTotalBytes > result.maxResponsePublishBytes
+  ) throw new EngineClientInputError("INVALID_ARGUMENT");
   return Object.freeze(result);
 }
 
@@ -325,13 +330,17 @@ function encodeBase64(input: ArrayBuffer): string {
   return output;
 }
 
-function decodeBase64(input: unknown): ArrayBuffer {
-  if (typeof input !== "string" || input.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input)) {
+function decodeBase64(input: unknown, maximumBytes: number): ArrayBuffer {
+  if (typeof input !== "string" || input.length % 4 !== 0) {
+    throw fault("decode", "MALFORMED_MESSAGE", false);
+  }
+  const padding = input.endsWith("==") ? 2 : input.endsWith("=") ? 1 : 0;
+  const decodedLength = (input.length / 4) * 3 - padding;
+  if (!Number.isSafeInteger(decodedLength) || decodedLength > maximumBytes || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input)) {
     throw fault("decode", "MALFORMED_MESSAGE", false);
   }
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const padding = input.endsWith("==") ? 2 : input.endsWith("=") ? 1 : 0;
-  const bytes = new Uint8Array((input.length / 4) * 3 - padding);
+  const bytes = new Uint8Array(decodedLength);
   let offset = 0;
   for (let index = 0; index < input.length; index += 4) {
     const a = alphabet.indexOf(input[index] ?? "");
@@ -345,6 +354,36 @@ function decodeBase64(input: unknown): ArrayBuffer {
     if (offset < bytes.length) bytes[offset++] = packed & 255;
   }
   return bytes.buffer;
+}
+
+function controlDepth(text: string): number {
+  let depth = 0;
+  let maximum = 0;
+  let inString = false;
+  let escaped = false;
+  for (const character of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+    } else if (character === '"') inString = true;
+    else if (character === "{" || character === "[") maximum = Math.max(maximum, ++depth);
+    else if (character === "}" || character === "]") depth--;
+  }
+  return maximum;
+}
+
+function utf8Length(value: string): number {
+  return encoder.encode(value).byteLength;
+}
+
+function compareUtf8(left: string, right: string): number {
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    if (a[index] !== b[index]) return (a[index] ?? 0) - (b[index] ?? 0);
+  }
+  return a.length - b.length;
 }
 
 function fault(kind: "transport" | "decode", code: ConstructorParameters<typeof InternalTransportFault>[0]["code"], retryable: boolean): InternalTransportFault {
@@ -412,6 +451,29 @@ function createWailsTransport(bindings: Partial<Record<GeneratedMethodName, Wail
     closed: closed.promise,
     request(input: InternalTransportRequest): InternalTransportExchange {
       if (stopped) throw fault("transport", "BROKEN_PIPE", true);
+      let inputControlText: string;
+      try { inputControlText = decoder.decode(input.control); } catch { throw fault("decode", "MALFORMED_MESSAGE", false); }
+      if (
+        input.control.byteLength > limits.maxControlBytes ||
+        controlDepth(inputControlText) > limits.maxControlDepth ||
+        input.blobs.length > limits.maxBuffers
+      ) throw fault("decode", "MALFORMED_MESSAGE", false);
+      let inputTotal = 0;
+      let inputPrior: string | undefined;
+      for (const blob of input.blobs) {
+        const length = blob.bytes.byteLength;
+        const idLength = typeof blob.blobId === "string" && blob.blobId.length <= limits.maxBlobIdBytes
+          ? utf8Length(blob.blobId)
+          : 0;
+        inputTotal += length;
+        if (
+          idLength < 1 || idLength > limits.maxBlobIdBytes ||
+          (inputPrior !== undefined && compareUtf8(inputPrior, blob.blobId) >= 0) ||
+          length > limits.maxInputBlobBytes || !Number.isSafeInteger(inputTotal) ||
+          inputTotal > limits.maxInputTotalBytes
+        ) throw fault("decode", "MALFORMED_MESSAGE", false);
+        inputPrior = blob.blobId;
+      }
       const operation = operationOf(input.control);
       const methodName = methods[operation];
       if (methodName === undefined) throw fault("decode", "PROTOCOL_MISMATCH", false);
@@ -429,13 +491,36 @@ function createWailsTransport(bindings: Partial<Record<GeneratedMethodName, Wail
         () => result.reject(fault("transport", "BROKEN_PIPE", true)),
       ).finally(() => pending.delete(result));
       const response = result.promise.then((value) => {
-        if (value.operation !== operation || !Array.isArray(value.blobs)) throw fault("decode", "CORRELATION_MISMATCH", false);
+        const object = dataObject(value, ["operation", "control", "blobs"]);
+        if (object === undefined || object.operation !== operation) throw fault("decode", "CORRELATION_MISMATCH", false);
+        if (!Array.isArray(object.blobs) || object.blobs.length > limits.maxBuffers) throw fault("decode", "MALFORMED_MESSAGE", false);
+        const control = decodeBase64(object.control, limits.maxControlBytes);
+        let controlText: string;
+        try { controlText = decoder.decode(control); } catch { throw fault("decode", "MALFORMED_MESSAGE", false); }
+        if (controlDepth(controlText) > limits.maxControlDepth) throw fault("decode", "MALFORMED_MESSAGE", false);
+        let total = 0;
+        let prior: string | undefined;
+        const blobs = object.blobs.map((raw) => {
+          const blob = dataObject(raw, ["blob_id", "bytes"]);
+          if (blob === undefined || typeof blob.blob_id !== "string" || blob.blob_id.length > limits.maxBlobIdBytes) {
+            throw fault("decode", "MALFORMED_MESSAGE", false);
+          }
+          const idLength = utf8Length(blob.blob_id);
+          if (idLength < 1 || idLength > limits.maxBlobIdBytes || (prior !== undefined && compareUtf8(prior, blob.blob_id) >= 0)) {
+            throw fault("decode", "MALFORMED_MESSAGE", false);
+          }
+          const bytes = decodeBase64(blob.bytes, limits.maxOutputBlobBytes);
+          total += bytes.byteLength;
+          if (
+            !Number.isSafeInteger(total) || total > limits.maxOutputTotalBytes ||
+            control.byteLength + total > limits.maxResponsePublishBytes
+          ) throw fault("decode", "MALFORMED_MESSAGE", false);
+          prior = blob.blob_id;
+          return Object.freeze({ blobId: blob.blob_id, bytes });
+        });
         return Object.freeze({
-          control: decodeBase64(value.control),
-          blobs: Object.freeze(value.blobs.map((blob) => {
-            if (typeof blob !== "object" || blob === null || typeof blob.blob_id !== "string") throw fault("decode", "MALFORMED_MESSAGE", false);
-            return Object.freeze({ blobId: blob.blob_id, bytes: decodeBase64(blob.bytes) });
-          })),
+          control,
+          blobs: Object.freeze(blobs),
         });
       });
       return Object.freeze({
@@ -576,6 +661,9 @@ function admitDesktopOptions(input: unknown): CreateWailsDesktopClientOptions {
 class WailsDesktopClientImpl implements WailsDesktopClient {
   state: "ready" | "failed" | "disposing" | "disposed" = "ready";
   private counter = 0;
+  private restartFlight: Promise<void> | undefined;
+  private disposeFlight: Promise<void> | undefined;
+  private replacement: InternalByteTransport | undefined;
 
   constructor(
     readonly engine: EngineClient,
@@ -594,6 +682,7 @@ class WailsDesktopClientImpl implements WailsDesktopClient {
 
   getCapabilities() { return this.manifest; }
   hasCapability(operation: string) { return this.manifest.operations[operation]?.enabled === true; }
+  private isTerminalLifecycle() { return this.state === "disposing" || this.state === "disposed"; }
 
   private requestId(options?: WailsRuntimeRequestOptions): string {
     if (options?.requestId !== undefined) {
@@ -603,17 +692,20 @@ class WailsDesktopClientImpl implements WailsDesktopClient {
     return `wails-runtime-${++this.counter}`;
   }
 
-  private async exchange<T>(operation: string, control: string, decode: (value: string) => T, blobs: readonly { readonly blobId: string; readonly bytes: ArrayBuffer }[], options?: WailsRuntimeRequestOptions): Promise<T> {
+  private async exchange<T extends { readonly request_id: string }>(operation: string, control: string, decode: (value: string) => T, blobs: readonly { readonly blobId: string; readonly bytes: ArrayBuffer }[], options?: WailsRuntimeRequestOptions): Promise<T> {
     if (this.state !== "ready") throw new WailsBindingError("APP_SHUTDOWN", "reopen_desktop");
     if (!this.hasCapability(operation)) throw new EngineClientTransportError("NEGOTIATION_REJECTED", false);
-    const transportExchange = this.transport.request({ exchangeId: this.requestId(options), control: textBuffer(control), blobs });
+    const requestId = this.requestId(options);
+    const transportExchange = this.transport.request({ exchangeId: requestId, control: textBuffer(control), blobs });
     const abort = () => { void transportExchange.cancel(); };
     if (options?.signal?.aborted) abort();
     else options?.signal?.addEventListener("abort", abort, { once: true });
     try {
       const response = await transportExchange.response;
       if (response.blobs.length !== 0) throw new EngineClientTransportError("BROKEN_PIPE", false);
-      return decode(decoder.decode(response.control));
+      const decoded = decode(decoder.decode(response.control));
+      if (decoded.request_id !== requestId) throw new EngineClientDecodeError("CORRELATION_MISMATCH");
+      return decoded;
     } catch (error) {
       if (error instanceof WailsBindingError || error instanceof EngineClientError) throw error;
       if (error instanceof InternalTransportFault) {
@@ -641,31 +733,52 @@ class WailsDesktopClientImpl implements WailsDesktopClient {
   getOperationResult(input: Runtime.GetOperationResultInput, options?: WailsRuntimeRequestOptions) { const id = this.requestId(options); return this.exchange("runtime.get_operation_result", encodeGetOperationResultRequestEnvelope({ protocol, request_id: id, operation: "runtime.get_operation_result", payload: input }), decodeGetOperationResultResponseEnvelope, [], { ...options, requestId: id }); }
   recoverOperations(input: Runtime.RecoverOperationsInput, options?: WailsRuntimeRequestOptions) { const id = this.requestId(options); return this.exchange("runtime.recover_operations", encodeRecoverOperationsRequestEnvelope({ protocol, request_id: id, operation: "runtime.recover_operations", payload: input }), decodeRecoverOperationsResponseEnvelope, [], { ...options, requestId: id }); }
 
-  async restart() {
-    if (this.state === "disposing" || this.state === "disposed") throw new EngineClientTransportError("REPLACEMENT_FAILED", false);
+  restart(): Promise<void> {
+    if (this.isTerminalLifecycle()) return Promise.reject(new EngineClientTransportError("REPLACEMENT_FAILED", false));
+    if (this.restartFlight !== undefined) return this.restartFlight;
+    const flight = this.performRestart().finally(() => {
+      if (this.restartFlight === flight) this.restartFlight = undefined;
+    });
+    this.restartFlight = flight;
+    return flight;
+  }
+
+  private async performRestart(): Promise<void> {
     const prior = this.transport;
     const next = runtimeTransport(this.options);
+    this.replacement = next;
     this.state = "failed";
     try {
       const manifest = await runtimeHandshake(next, this.options);
       await this.engine.restart();
+      if (this.isTerminalLifecycle() || this.replacement !== next) {
+        throw new EngineClientTransportError("REPLACEMENT_FAILED", false);
+      }
       this.manifest = manifest;
       this.transport = next;
+      this.replacement = undefined;
       this.observe(next);
-      await prior.dispose();
       this.state = "ready";
+      await prior.dispose();
     } catch {
       next.terminate();
-      this.state = "failed";
+      if (this.replacement === next) this.replacement = undefined;
+      if (!this.isTerminalLifecycle()) this.state = "failed";
       throw new EngineClientTransportError("REPLACEMENT_FAILED");
     }
   }
 
-  async dispose() {
-    if (this.state === "disposed") return;
+  dispose(): Promise<void> {
+    if (this.disposeFlight !== undefined) return this.disposeFlight;
+    if (this.state === "disposed") return Promise.resolve();
     this.state = "disposing";
-    await Promise.allSettled([this.transport.dispose(), this.engine.dispose()]);
-    this.state = "disposed";
+    this.replacement?.terminate();
+    const flight = (async () => {
+      await Promise.allSettled([this.transport.dispose(), this.engine.dispose(), this.restartFlight]);
+      this.state = "disposed";
+    })();
+    this.disposeFlight = flight;
+    return flight;
   }
 }
 
@@ -697,13 +810,38 @@ async function runtimeHandshake(transport: InternalByteTransport, options: Creat
   const raw = await exchange.response;
   if (raw.blobs.length !== 0) throw new EngineClientTransportError("NEGOTIATION_REJECTED", false);
   const response = decodeRuntimeHandshakeResponseEnvelope(decoder.decode(raw.control));
+  if (response.request_id !== request.request_id) throw new EngineClientDecodeError("CORRELATION_MISMATCH");
+  if (response.protocol.name !== "runtime" || response.protocol.version !== "1.0") throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
   if (response.outcome !== "success" || response.payload === undefined || response.payload.release_manifest_digest !== options.expectedReleaseManifestDigest) {
     throw new EngineClientTransportError("NEGOTIATION_REJECTED", false);
   }
-  for (const operation of required) {
-    if (response.payload.capability_manifest.operations[operation]?.enabled !== true) throw new EngineClientTransportError("NEGOTIATION_REJECTED", false);
+  const result = response.payload;
+  const negotiated = result.negotiated_protocols.find((candidate) => candidate.name === "runtime");
+  if (
+    negotiated?.version !== "1.0" || negotiated.schema_digest !== runtimeSchemaDigest ||
+    response.host_release !== result.host_release
+  ) throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+  const requested = new Set([...required, ...optional]);
+  const statuses = new Map<string, boolean>();
+  for (const status of result.capability_statuses) {
+    if (!requested.has(status.capability_id) || statuses.has(status.capability_id)) throw new EngineClientDecodeError("MALFORMED_MESSAGE");
+    if (status.protocol_version !== "1.0") throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+    const advertised = result.capability_manifest.operations[status.capability_id];
+    if (status.enabled) {
+      if (advertised?.enabled !== true || advertised.protocol_version !== "1.0") throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+    } else if (advertised !== undefined && (advertised.enabled !== false || advertised.protocol_version !== "1.0")) {
+      throw new EngineClientDecodeError("PROTOCOL_MISMATCH");
+    }
+    statuses.set(status.capability_id, status.enabled);
   }
-  return deepFreeze(response.payload.capability_manifest);
+  if (statuses.size !== requested.size || required.some((operation) => statuses.get(operation) !== true)) {
+    throw new EngineClientTransportError("NEGOTIATION_REJECTED", false);
+  }
+  for (const operation of required) {
+    const advertised = result.capability_manifest.operations[operation];
+    if (advertised?.enabled !== true || advertised.protocol_version !== "1.0") throw new EngineClientTransportError("NEGOTIATION_REJECTED", false);
+  }
+  return deepFreeze(result.capability_manifest);
 }
 
 export async function createWailsDesktopClient(options: CreateWailsDesktopClientOptions): Promise<WailsDesktopClient> {
