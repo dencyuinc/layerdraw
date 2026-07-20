@@ -1548,6 +1548,105 @@ func TestFilesystemAndFailureBranchesStayBounded(t *testing.T) {
 	}
 }
 
+func TestRelocationJournalRollsForwardAfterInterruptedExternalMove(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	prior := writeProject(t, root, "project p \"P\" {}\n")
+	replacement := filepath.Join(root, "replacement")
+	if err := os.MkdirAll(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(replacement, "document.ldl"), []byte("project p \"P\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := newTestHost(t, dataRoot, nil)
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: prior})
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentID := opened.Session.Open.Session.Scope.DocumentID
+	scope := opened.Session.Open.Session.Scope
+	for _, binding := range host.metadata.Bindings {
+		if binding.DocumentID == documentID {
+			prior = binding.Locator
+		}
+	}
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	host.mu.Lock()
+	err = host.saveRelocationJournalLocked(relocationJournal{Version: relocationVersion, DocumentID: documentID, Prior: prior, Replacement: replacement})
+	host.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.external.Relocate(context.Background(), scope, port.ExternalFileKindProject, prior, replacement); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newTestHost(t, dataRoot, nil)
+	found := false
+	for _, binding := range restarted.metadata.Bindings {
+		if binding.DocumentID == documentID {
+			found = binding.Locator == replacement
+		}
+	}
+	if !found {
+		t.Fatalf("relocation was not rolled forward: %+v", restarted.metadata.Bindings)
+	}
+	if _, err := os.Stat(restarted.relocationPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("relocation journal not cleared: %v", err)
+	}
+}
+
+func TestRelocationJournalMissingAndMalformedBoundaries(t *testing.T) {
+	root := t.TempDir()
+	host := newTestHost(t, root, nil)
+	if err := host.removeRelocationJournalLocked(); err != nil {
+		t.Fatalf("missing journal cleanup: %v", err)
+	}
+	if err := os.WriteFile(host.relocationPath(), []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := New(Config{Root: root, Clock: &fakeClock{now: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)}, Random: &countingReader{}})
+	if !errors.Is(err, ErrStateRecoveryRequired) {
+		t.Fatalf("malformed relocation journal=%v", err)
+	}
+	validButUnknown, err := json.Marshal(relocationJournal{Version: relocationVersion, DocumentID: "document_unknown", Prior: filepath.Join(root, "prior"), Replacement: filepath.Join(root, "replacement")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(host.relocationPath(), validButUnknown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{Root: root, Clock: &fakeClock{now: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)}, Random: &countingReader{}}); !errors.Is(err, ErrStateRecoveryRequired) {
+		t.Fatalf("unknown relocation binding=%v", err)
+	}
+	originalRoot := host.config.Root
+	host.config.Root = filepath.Join(root, "missing", "data")
+	if err := syncDirectory(host.config.Root); err == nil {
+		t.Fatal("missing directory sync succeeded")
+	}
+	if err := host.saveRelocationJournalLocked(relocationJournal{}); err == nil {
+		t.Fatal("unwritable relocation journal succeeded")
+	}
+	host.config.Root = originalRoot
+	if err := os.Remove(host.relocationPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(host.relocationPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(host.relocationPath(), "owned"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.saveRelocationJournalLocked(relocationJournal{}); err == nil {
+		t.Fatal("journal rename over non-empty directory succeeded")
+	}
+	if err := host.removeRelocationJournalLocked(); err == nil {
+		t.Fatal("non-empty journal directory was removed")
+	}
+}
+
 func TestRecoveryWithUnreadableHeadConvergesNeedsReview(t *testing.T) {
 	root := t.TempDir()
 	source := "project p \"P\" {}\n"

@@ -173,6 +173,12 @@ func (h *Host) applyCommit(session *Session, result runtimeprotocol.RuntimeCommi
 }
 
 func (h *Host) ControlAutosave(ctx context.Context, input runtimeprotocol.AutosaveControlInput) (runtimeprotocol.AutosaveControlResult, error) {
+	return h.ControlAutosaveWithResult(ctx, input, nil)
+}
+
+// ControlAutosaveWithResult exposes the terminal autosave result to trusted
+// Desktop composition while preserving the generated protocol response shape.
+func (h *Host) ControlAutosaveWithResult(ctx context.Context, input runtimeprotocol.AutosaveControlInput, result chan<- AutosaveResult) (runtimeprotocol.AutosaveControlResult, error) {
 	if input.Action == runtimeprotocol.AutosaveActionCancel {
 		if err := h.CancelAutosave(input.Session); err != nil {
 			return runtimeprotocol.AutosaveControlResult{}, err
@@ -189,7 +195,7 @@ func (h *Host) ControlAutosave(ctx context.Context, input runtimeprotocol.Autosa
 	if err != nil {
 		return runtimeprotocol.AutosaveControlResult{}, err
 	}
-	if err := h.ScheduleAutosave(ctx, saveInput(session, *input.Commit, runtimeprotocol.CommitTriggerAutosave), nil); err != nil {
+	if err := h.scheduleAutosave(ctx, saveInput(session, *input.Commit, runtimeprotocol.CommitTriggerAutosave), result, result != nil); err != nil {
 		return runtimeprotocol.AutosaveControlResult{}, err
 	}
 	return runtimeprotocol.AutosaveControlResult{Action: input.Action, Scheduled: true}, nil

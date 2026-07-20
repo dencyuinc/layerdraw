@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -589,4 +590,196 @@ func TestCloseRollbackPreservesRetryAfterHostCloseFailure(t *testing.T) {
 		t.Fatalf("retry=%+v", retry)
 	}
 	_ = app.Shutdown(context.Background())
+}
+
+func TestProjectCloseFenceDrainsThenReassessesAndRollsBack(t *testing.T) {
+	lifecycle, err := newProjectLifecycle(t.TempDir(), func() time.Time { return desktopTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_fence_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_fence", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_fence", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	if _, _, err := lifecycle.opened(ref, revision, false); err != nil {
+		t.Fatal(err)
+	}
+	generation, err := lifecycle.begin(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan CloseAssessment, 1)
+	go func() {
+		assessment, _ := lifecycle.fenceClose(context.Background().Done(), ref)
+		finished <- assessment
+	}()
+	select {
+	case <-finished:
+		t.Fatal("close fence did not drain inflight work")
+	case <-time.After(10 * time.Millisecond):
+	}
+	if err := lifecycle.mutate(ref, generation, func(state *sessionLifecycle) { state.ephemeralEdits = true }); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.end(ref, generation)
+	assessment := <-finished
+	if assessment.CanClose || len(assessment.Blockers) != 1 || assessment.Blockers[0] != CloseEphemeralEdits {
+		t.Fatalf("post-drain assessment=%+v", assessment)
+	}
+	lifecycle.rollbackClose(ref)
+	if _, err := lifecycle.begin(ref); err != nil {
+		t.Fatalf("rollback did not reopen session: %v", err)
+	}
+}
+
+func TestRecoveryJournalTracksDirtyAutosaveAndProviderState(t *testing.T) {
+	root := t.TempDir()
+	lifecycle, err := newProjectLifecycle(root, func() time.Time { return desktopTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_recovery_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_recovery", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_recovery", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	if _, _, err := lifecycle.opened(ref, revision, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.mutate(ref, 0, func(state *sessionLifecycle) {
+		state.pendingPreview, state.ephemeralEdits, state.autosavePending, state.providerPending = true, true, true, true
+		state.autosave = AutosaveScheduled
+		state.autosaveGeneration = 2
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.completeAutosave(ref, 1, 1, func(state *sessionLifecycle) { state.autosave = AutosaveCommitted }); err == nil {
+		t.Fatal("stale autosave completion changed a newer schedule")
+	}
+	restarted, err := newProjectLifecycle(root, func() time.Time { return desktopTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := restarted.recoveries()
+	if len(candidates) != 1 || !candidates[0].PendingPreview || !candidates[0].EphemeralEdits || !candidates[0].AutosavePending || !candidates[0].ProviderPending || candidates[0].Autosave != AutosaveScheduled {
+		t.Fatalf("recovery state=%+v", candidates)
+	}
+}
+
+func TestAutosaveCompletionOutcomesAreClosedAndGenerationBound(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   localdocument.AutosaveResult
+		outcome  AutosaveOutcome
+		dirty    bool
+		provider bool
+	}{
+		{name: "cancelled", result: localdocument.AutosaveResult{Err: context.Canceled}, outcome: AutosaveIdle, dirty: true},
+		{name: "conflict", result: localdocument.AutosaveResult{Err: port.ErrConflict}, outcome: AutosaveConflict, dirty: true},
+		{name: "failure", result: localdocument.AutosaveResult{Err: errors.New("closed failure")}, outcome: AutosaveFailed, dirty: true},
+		{name: "needs_review", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusNeedsReview}}}, outcome: AutosaveNeedsReview, dirty: true},
+		{name: "rejected", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusRejected}}}, outcome: AutosaveFailed, dirty: true},
+		{name: "external_pending", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusCommittedExternalPending, ExternalMaterialization: &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStatePending}}}}, outcome: AutosaveFailed, dirty: true, provider: true},
+		{name: "committed", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusCommitted}}}, outcome: AutosaveCommitted},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lifecycle, err := newProjectLifecycle(t.TempDir(), func() time.Time { return desktopTestNow })
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: runtimeprotocol.RuntimeSessionID(fmt.Sprintf("session_autosave_%04d", index)), SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: runtimeprotocol.DocumentID(fmt.Sprintf("document_autosave_%d", index)), LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+			revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_autosave", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+			if _, _, err := lifecycle.opened(ref, revision, false); err != nil {
+				t.Fatal(err)
+			}
+			if err := lifecycle.mutate(ref, 0, func(state *sessionLifecycle) {
+				state.autosaveGeneration = 1
+				state.autosavePending = true
+				state.ephemeralEdits = true
+				state.autosave = AutosaveScheduled
+			}); err != nil {
+				t.Fatal(err)
+			}
+			application := &Application{projects: lifecycle}
+			completion := make(chan localdocument.AutosaveResult, 1)
+			completion <- test.result
+			done := false
+			application.collectAutosave(ref, 1, 1, completion, func() { done = true })
+			status := application.AutosaveStatus(ref)
+			dirty, pending := false, false
+			for _, blocker := range status.Value.Blockers {
+				dirty = dirty || blocker == CloseEphemeralEdits
+				pending = pending || blocker == CloseAutosavePending
+			}
+			if !done || status.Outcome != protocolcommon.OutcomeSuccess || status.Value.Autosave != test.outcome || pending || dirty != test.dirty {
+				t.Fatalf("completion=%+v done=%v", status, done)
+			}
+			state, _ := lifecycle.session(ref)
+			if state.providerPending != test.provider {
+				t.Fatalf("provider pending=%v", state.providerPending)
+			}
+		})
+	}
+	recorder := &lifecycleRecorder{}
+	application := &Application{config: Config{Lifecycle: recorder}, state: desktopcontract.LifecycleDraining}
+	application.rollbackDraining()
+	if application.State() != desktopcontract.LifecycleReady {
+		t.Fatalf("shutdown rollback state=%s", application.State())
+	}
+}
+
+func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
+	lifecycle, err := newProjectLifecycle(t.TempDir(), func() time.Time { return desktopTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.state.Projects = map[string]persistedProject{
+		"document_b": {ProjectID: "document_b", LastOpenedAt: "2026-01-01T00:00:00Z", Missing: true},
+		"document_a": {ProjectID: "document_a", LastOpenedAt: "2026-01-01T00:00:00Z"},
+		"document_c": {ProjectID: "document_c", LastOpenedAt: "2025-01-01T00:00:00Z", Pinned: true},
+	}
+	recent := lifecycle.recent()
+	if len(recent) != 3 || recent[0].ProjectID != "document_c" || recent[1].ProjectID != "document_a" || recent[2].Availability != ProjectMissing {
+		t.Fatalf("recent ordering=%+v", recent)
+	}
+	if err := lifecycle.restore(nil); err != nil {
+		t.Fatal(err)
+	}
+	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_failure_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_failure", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_failure", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	if _, _, err := lifecycle.opened(ref, revision, false); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := lifecycle.session(ref)
+	if !ok || state == nil {
+		t.Fatal("opened session unavailable")
+	}
+	if err := lifecycle.restore(state); err == nil {
+		t.Fatal("duplicate session restore succeeded")
+	}
+	if _, ok := lifecycle.session(runtimeprotocol.RuntimeSessionRef{}); ok {
+		t.Fatal("unknown session resolved")
+	}
+	lifecycle.saveFault = func() error { return errors.New("persistence unavailable") }
+	if err := lifecycle.completeAutosave(ref, state.generation, state.autosaveGeneration, func(value *sessionLifecycle) { value.autosave = AutosaveCommitted }); err == nil {
+		t.Fatal("autosave persistence failure hidden")
+	}
+	after, _ := lifecycle.session(ref)
+	if after.autosave == AutosaveCommitted {
+		t.Fatal("failed autosave persistence was not rolled back")
+	}
+	failing, err := newProjectLifecycle(t.TempDir(), func() time.Time { return desktopTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing.saveFault = func() error { return errors.New("open journal unavailable") }
+	if _, _, err := failing.opened(ref, revision, false); err == nil || len(failing.sessions) != 0 || len(failing.state.Projects) != 0 || len(failing.state.Recoveries) != 0 {
+		t.Fatalf("failed open leaked state: sessions=%d projects=%d recoveries=%d err=%v", len(failing.sessions), len(failing.state.Projects), len(failing.state.Recoveries), err)
+	}
+	lifecycle.saveFault = func() error { return errors.New("project metadata unavailable") }
+	if err := lifecycle.markMissing(ref.Scope.DocumentID, true); err == nil {
+		t.Fatal("missing-state persistence failure hidden")
+	}
+	if missing, _ := lifecycle.missing(ref.Scope.DocumentID); missing {
+		t.Fatal("failed missing-state persistence was not rolled back")
+	}
+	if err := lifecycle.pin(ref.Scope.DocumentID, true); err == nil {
+		t.Fatal("pin persistence failure hidden")
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 type CloseResolution string
@@ -28,6 +29,24 @@ type CloseResolutionResult struct {
 type QuitAssessment struct {
 	CanQuit  bool              `json:"can_quit"`
 	Projects []CloseAssessment `json:"projects"`
+}
+
+func (a *Application) beginProject(ref runtimeprotocol.RuntimeSessionRef, component desktopcontract.ComponentID) (func(), *localdocument.Host, uint64, *desktopcontract.Failure) {
+	generation, err := a.projects.begin(ref)
+	if err != nil {
+		failure := failed[struct{}](desktopcontract.FailureProjectConflict, component, true, desktopcontract.RecoveryRetry).Failure
+		return nil, nil, 0, failure
+	}
+	doneHost, host, failure := a.beginHost(component)
+	if failure != nil {
+		a.projects.end(ref, generation)
+		return nil, nil, 0, failure
+	}
+	done := func() {
+		doneHost()
+		a.projects.end(ref, generation)
+	}
+	return done, host, generation, nil
 }
 
 func safeDialogSelect(ctx context.Context, port desktopcontract.NativeDialogPort, request desktopcontract.DialogRequest) (result desktopcontract.Result[desktopcontract.DialogSelection]) {
@@ -123,11 +142,16 @@ func (a *Application) openRecentProject(ctx context.Context, projectID runtimepr
 	result := a.reloadProject(ctx, projectID, allowRecovery)
 	if result.Outcome != protocolcommon.OutcomeSuccess {
 		if result.Failure != nil && result.Failure.Code == desktopcontract.FailureProjectMissing {
-			_ = a.projects.markMissing(projectID, true)
+			if err := a.projects.markMissing(projectID, true); err != nil {
+				return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+			}
 		}
 		return result
 	}
-	_ = a.projects.markMissing(projectID, false)
+	if err := a.projects.markMissing(projectID, false); err != nil {
+		_ = a.CloseProject(ctx, result.Value.Open.Session)
+		return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+	}
 	return result
 }
 
@@ -140,15 +164,25 @@ func (a *Application) RelocateProject(ctx context.Context, projectID runtimeprot
 	if err != nil || location.Root == "" {
 		return mapStorageFailure[ProjectOpenResult](err)
 	}
+	wasMissing, known := a.projects.missing(projectID)
+	if !known {
+		return failed[ProjectOpenResult](desktopcontract.FailureProjectMissing, desktopcontract.ComponentLocalStorage, false, desktopcontract.RecoveryLocate)
+	}
+	if err := a.projects.markMissing(projectID, false); err != nil {
+		return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+	}
 	done, host, requestFailure := a.beginHost(desktopcontract.ComponentRuntime)
 	if requestFailure != nil {
+		_ = a.projects.markMissing(projectID, wasMissing)
 		return desktopcontract.Result[ProjectOpenResult]{Outcome: protocolcommon.OutcomeFailed, Failure: requestFailure}
 	}
 	defer done()
 	if err := host.RelocateProject(ctx, projectID, localdocumentInput(location)); err != nil {
+		if rollbackErr := a.projects.markMissing(projectID, wasMissing); rollbackErr != nil {
+			return failed[ProjectOpenResult](desktopcontract.FailureRecoveryRequired, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryOpenRecovery)
+		}
 		return failed[ProjectOpenResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryReview)
 	}
-	_ = a.projects.markMissing(projectID, false)
 	return a.OpenRecentProject(ctx, projectID)
 }
 
@@ -167,7 +201,7 @@ func mapStorageFailure[T any](err error) desktopcontract.Result[T] {
 }
 
 func (a *Application) SetEphemeralState(input EphemeralStateInput) desktopcontract.Result[CloseAssessment] {
-	if !a.projects.mutate(input.Session, func(state *sessionLifecycle) { state.ephemeralEdits = input.Dirty }) {
+	if err := a.projects.mutate(input.Session, 0, func(state *sessionLifecycle) { state.ephemeralEdits = input.Dirty }); err != nil {
 		return failed[CloseAssessment](desktopcontract.FailureProjectConflict, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
 	assessment, _ := a.projects.assessment(input.Session)
@@ -200,13 +234,15 @@ func (a *Application) ResolveClose(ctx context.Context, session runtimeprotocol.
 		}
 		done()
 	}
-	a.projects.mutate(session, func(state *sessionLifecycle) {
+	if err := a.projects.mutate(session, 0, func(state *sessionLifecycle) {
 		state.pendingPreview = false
 		state.ephemeralEdits = false
 		if resolution == CloseCancelAutosaveDiscard {
 			state.autosavePending = false
 		}
-	})
+	}); err != nil {
+		return failed[CloseResolutionResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+	}
 	assessment, ok := a.projects.assessment(session)
 	if !ok || !assessment.CanClose {
 		return failed[CloseResolutionResult](desktopcontract.FailureReconcilePending, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryReview)
@@ -241,17 +277,83 @@ func (a *Application) RequestWindowClose(ctx context.Context) desktopcontract.Re
 }
 
 func (a *Application) ControlAutosave(ctx context.Context, input runtimeprotocol.AutosaveControlInput) desktopcontract.Result[runtimeprotocol.AutosaveControlResult] {
-	done, host, requestFailure := a.beginHost(desktopcontract.ComponentRuntime)
+	done, host, generation, requestFailure := a.beginProject(input.Session, desktopcontract.ComponentRuntime)
 	if requestFailure != nil {
 		return desktopcontract.Result[runtimeprotocol.AutosaveControlResult]{Outcome: protocolcommon.OutcomeFailed, Failure: requestFailure}
 	}
-	defer done()
-	value, err := host.ControlAutosave(ctx, input)
+	completion := make(chan localdocument.AutosaveResult, 1)
+	value, err := host.ControlAutosaveWithResult(ctx, input, completion)
 	if err != nil {
+		done()
 		return failed[runtimeprotocol.AutosaveControlResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryReview)
 	}
-	a.projects.mutate(input.Session, func(state *sessionLifecycle) { state.autosavePending = value.Scheduled })
+	var autosaveGeneration uint64
+	if err := a.projects.mutate(input.Session, generation, func(state *sessionLifecycle) {
+		state.autosaveGeneration++
+		autosaveGeneration = state.autosaveGeneration
+		state.autosavePending = value.Scheduled
+		if value.Scheduled {
+			state.autosave = AutosaveScheduled
+		} else {
+			state.autosave = AutosaveIdle
+		}
+	}); err != nil {
+		done()
+		return failed[runtimeprotocol.AutosaveControlResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+	}
+	if value.Scheduled {
+		go a.collectAutosave(input.Session, generation, autosaveGeneration, completion, done)
+	} else {
+		done()
+	}
 	return desktopcontract.Result[runtimeprotocol.AutosaveControlResult]{Outcome: protocolcommon.OutcomeSuccess, Value: value}
+}
+
+func (a *Application) collectAutosave(session runtimeprotocol.RuntimeSessionRef, generation, autosaveGeneration uint64, completion <-chan localdocument.AutosaveResult, done func()) {
+	defer done()
+	result, ok := <-completion
+	if !ok {
+		return
+	}
+	_ = a.projects.completeAutosave(session, generation, autosaveGeneration, func(state *sessionLifecycle) {
+		state.autosavePending = false
+		state.autosave = AutosaveFailed
+		if result.Err != nil {
+			if errors.Is(result.Err, context.Canceled) {
+				state.autosave = AutosaveIdle
+				return
+			}
+			if errors.Is(result.Err, port.ErrConflict) {
+				state.autosave = AutosaveConflict
+			}
+			state.ephemeralEdits = true
+			return
+		}
+		op := result.Result.OperationResult
+		if op.CommittedRevision != nil {
+			state.committedRevision = op.CommittedRevision.RevisionID
+		}
+		switch op.Status {
+		case runtimeprotocol.OperationResultStatusCommitted:
+			state.autosave = AutosaveCommitted
+			state.pendingPreview = false
+			state.ephemeralEdits = false
+			state.providerPending = false
+		case runtimeprotocol.OperationResultStatusNeedsReview:
+			state.autosave = AutosaveNeedsReview
+			state.ephemeralEdits = true
+		default:
+			state.autosave = AutosaveFailed
+			state.ephemeralEdits = true
+		}
+		if external := op.ExternalMaterialization; external != nil && external.State != runtimeprotocol.ExternalMaterializationStatePublished {
+			state.providerPending = true
+		}
+	})
+}
+
+func (a *Application) AutosaveStatus(session runtimeprotocol.RuntimeSessionRef) desktopcontract.Result[CloseAssessment] {
+	return a.PrepareClose(session)
 }
 
 func (a *Application) RecoveryCandidates() desktopcontract.Result[[]RecoveryCandidate] {
@@ -268,8 +370,17 @@ func (a *Application) ResolveRecovery(ctx context.Context, projectID runtimeprot
 	if choice != RecoveryRestore {
 		return failed[ProjectOpenResult](desktopcontract.FailureRecoveryRequired, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryOpenRecovery)
 	}
+	recovery, ok := a.projects.recovery(projectID)
+	if !ok {
+		return failed[ProjectOpenResult](desktopcontract.FailureProjectMissing, desktopcontract.ComponentLocalStorage, false, desktopcontract.RecoveryOpenRecovery)
+	}
 	result := a.openRecentProject(ctx, projectID, true)
 	if result.Outcome == protocolcommon.OutcomeSuccess {
+		recovery.CommittedRevision = result.Value.Open.CommittedRevision.RevisionID
+		if err := a.projects.applyRecovery(result.Value.Open.Session, recovery); err != nil {
+			_ = a.CloseProject(ctx, result.Value.Open.Session)
+			return failed[ProjectOpenResult](desktopcontract.FailureRecoveryRequired, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryOpenRecovery)
+		}
 		result.Value.Disposition = ProjectRestored
 	}
 	return result
@@ -290,12 +401,19 @@ func (a *Application) SyncExternal(ctx context.Context, session runtimeprotocol.
 	if a.config.ExternalLifecycle == nil || request.DocumentID != session.Scope.DocumentID {
 		return failed[ExternalSyncResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentExternalStorage, false, desktopcontract.RecoveryConfigureAdapter)
 	}
+	done, _, generation, failure := a.beginProject(session, desktopcontract.ComponentExternalStorage)
+	if failure != nil {
+		return desktopcontract.Result[ExternalSyncResult]{Outcome: protocolcommon.OutcomeFailed, Failure: failure}
+	}
+	defer done()
 	result := safeExternalSync(ctx, a.config.ExternalLifecycle, request)
 	if !result.Validate() || (result.Outcome == protocolcommon.OutcomeSuccess && result.Value.ProviderVersion == "") {
 		return failed[ExternalSyncResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentExternalStorage, true, desktopcontract.RecoveryRetry)
 	}
 	if result.Outcome == protocolcommon.OutcomeSuccess {
-		a.projects.mutate(session, func(state *sessionLifecycle) { state.providerPending = result.Value.ReconcileNeeded })
+		if err := a.projects.mutate(session, generation, func(state *sessionLifecycle) { state.providerPending = result.Value.ReconcileNeeded }); err != nil {
+			return failed[ExternalSyncResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+		}
 	}
 	return result
 }
@@ -304,12 +422,19 @@ func (a *Application) ReconcileExternal(ctx context.Context, session runtimeprot
 	if a.config.ExternalLifecycle == nil || request.DocumentID != session.Scope.DocumentID {
 		return failed[ExternalReconcileResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentExternalStorage, false, desktopcontract.RecoveryConfigureAdapter)
 	}
+	done, _, generation, failure := a.beginProject(session, desktopcontract.ComponentExternalStorage)
+	if failure != nil {
+		return desktopcontract.Result[ExternalReconcileResult]{Outcome: protocolcommon.OutcomeFailed, Failure: failure}
+	}
+	defer done()
 	result := safeExternalReconcile(ctx, a.config.ExternalLifecycle, request)
 	if !result.Validate() || (result.Outcome == protocolcommon.OutcomeSuccess && result.Value.ProviderVersion == "") {
 		return failed[ExternalReconcileResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentExternalStorage, true, desktopcontract.RecoveryRetry)
 	}
 	if result.Outcome == protocolcommon.OutcomeSuccess {
-		a.projects.mutate(session, func(state *sessionLifecycle) { state.providerPending = !result.Value.Converged })
+		if err := a.projects.mutate(session, generation, func(state *sessionLifecycle) { state.providerPending = !result.Value.Converged }); err != nil {
+			return failed[ExternalReconcileResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+		}
 	}
 	return result
 }

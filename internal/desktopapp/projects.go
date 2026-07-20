@@ -124,7 +124,7 @@ func mapProjectOpenFailure[T any](err error, component desktopcontract.Component
 }
 
 func (a *Application) Preview(ctx context.Context, input runtimeprotocol.PreviewOperationsInput) (result desktopcontract.Result[runtimeprotocol.PreviewOperationsResult]) {
-	done, host, requestFailure := a.beginHost(desktopcontract.ComponentRuntime)
+	done, host, generation, requestFailure := a.beginProject(input.Session, desktopcontract.ComponentRuntime)
 	if requestFailure != nil {
 		return desktopcontract.Result[runtimeprotocol.PreviewOperationsResult]{Outcome: protocolcommon.OutcomeFailed, Failure: requestFailure}
 	}
@@ -141,7 +141,7 @@ func (a *Application) Preview(ctx context.Context, input runtimeprotocol.Preview
 		}
 		return failed[runtimeprotocol.PreviewOperationsResult](desktopcontract.FailureReconnect, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
-	if !a.projects.mutate(input.Session, func(state *sessionLifecycle) { state.pendingPreview = true; state.ephemeralEdits = true }) {
+	if err := a.projects.mutate(input.Session, generation, func(state *sessionLifecycle) { state.pendingPreview = true; state.ephemeralEdits = true }); err != nil {
 		return failed[runtimeprotocol.PreviewOperationsResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
 	return desktopcontract.Result[runtimeprotocol.PreviewOperationsResult]{Outcome: protocolcommon.OutcomeSuccess, Value: value}
@@ -151,7 +151,7 @@ func (a *Application) Preview(ctx context.Context, input runtimeprotocol.Preview
 // and validate the authoritative proof; the Wails shell never classifies the
 // operation or makes an authorization decision.
 func (a *Application) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitInput) (result desktopcontract.Result[runtimeprotocol.RuntimeCommitResult]) {
-	done, host, requestFailure := a.beginHost(desktopcontract.ComponentRuntime)
+	done, host, generation, requestFailure := a.beginProject(input.Session, desktopcontract.ComponentRuntime)
 	if requestFailure != nil {
 		return desktopcontract.Result[runtimeprotocol.RuntimeCommitResult]{Outcome: protocolcommon.OutcomeFailed, Failure: requestFailure}
 	}
@@ -168,17 +168,28 @@ func (a *Application) Commit(ctx context.Context, input runtimeprotocol.RuntimeC
 		}
 		return failed[runtimeprotocol.RuntimeCommitResult](desktopcontract.FailureReconnect, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
-	a.projects.mutate(input.Session, func(state *sessionLifecycle) {
-		state.pendingPreview = false
-		state.ephemeralEdits = false
-		state.autosavePending = false
+	if err := a.projects.mutate(input.Session, generation, func(state *sessionLifecycle) {
 		if value.OperationResult.CommittedRevision != nil {
 			state.committedRevision = value.OperationResult.CommittedRevision.RevisionID
 		}
-		if external := value.OperationResult.ExternalMaterialization; external != nil {
-			state.providerPending = external.State != runtimeprotocol.ExternalMaterializationStatePublished
+		if value.OperationResult.Status == runtimeprotocol.OperationResultStatusCommitted {
+			state.pendingPreview = false
+			state.ephemeralEdits = false
+			state.autosavePending = false
+			state.autosave = AutosaveIdle
+			state.providerPending = false
+			if external := value.OperationResult.ExternalMaterialization; external != nil {
+				state.providerPending = external.State != runtimeprotocol.ExternalMaterializationStatePublished
+			}
+		} else {
+			state.ephemeralEdits = true
+			if external := value.OperationResult.ExternalMaterialization; external != nil && external.State != runtimeprotocol.ExternalMaterializationStatePublished {
+				state.providerPending = true
+			}
 		}
-	})
+	}); err != nil {
+		return failed[runtimeprotocol.RuntimeCommitResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+	}
 	return desktopcontract.Result[runtimeprotocol.RuntimeCommitResult]{Outcome: protocolcommon.OutcomeSuccess, Value: value}
 }
 
@@ -193,19 +204,22 @@ func (a *Application) CloseProject(ctx context.Context, session runtimeprotocol.
 			result = failed[runtimeprotocol.CloseDocumentResult](desktopcontract.FailureBackendPanic, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryExit)
 		}
 	}()
-	assessment, ok := a.projects.assessment(session)
-	if !ok {
+	assessment, err := a.projects.fenceClose(ctx.Done(), session)
+	if err != nil {
 		return failed[runtimeprotocol.CloseDocumentResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
 	if !assessment.CanClose {
+		a.projects.rollbackClose(session)
 		return failed[runtimeprotocol.CloseDocumentResult](desktopcontract.FailureReconcilePending, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryReview)
 	}
 	tracked, err := host.SessionFor(session)
 	if err != nil {
+		a.projects.rollbackClose(session)
 		return failed[runtimeprotocol.CloseDocumentResult](desktopcontract.FailureReconnect, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
 	detached, err := a.projects.detach(session)
 	if err != nil {
+		a.projects.rollbackClose(session)
 		return failed[runtimeprotocol.CloseDocumentResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
 	}
 	if err := a.closeProjectSession(ctx, host, tracked); err != nil {

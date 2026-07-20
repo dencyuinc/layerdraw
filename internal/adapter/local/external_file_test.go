@@ -112,6 +112,15 @@ func TestExternalFileStoreRelocateRequiresExactPriorBinding(t *testing.T) {
 	if err := store.Bind(ctx, ExternalFileBinding{Scope: scope, Kind: port.ExternalFileKindProject, Locator: oldProject}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Matches(ctx, scope, port.ExternalFileKindProject, oldProject); err != nil {
+		t.Fatalf("trusted binding did not match: %v", err)
+	}
+	if err := store.Matches(cancelled, scope, port.ExternalFileKindProject, oldProject); !errors.Is(err, context.Canceled) {
+		t.Fatalf("match cancel=%v", err)
+	}
+	if err := store.Matches(ctx, scope, port.ExternalFileKindProject, newProject); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("forged match=%v", err)
+	}
 	if err := store.Relocate(ctx, scope, port.ExternalFileKindProject, newProject, oldProject); !errors.Is(err, port.ErrConflict) {
 		t.Fatalf("forged prior=%v", err)
 	}
@@ -123,6 +132,9 @@ func TestExternalFileStoreRelocateRequiresExactPriorBinding(t *testing.T) {
 	}
 	if err := store.Bind(ctx, ExternalFileBinding{Scope: scope, Kind: port.ExternalFileKindProject, Locator: newProject}); err != nil {
 		t.Fatalf("relocated binding=%v", err)
+	}
+	if err := store.Matches(ctx, scope, port.ExternalFileKindProject, newProject); err != nil {
+		t.Fatalf("relocated match=%v", err)
 	}
 }
 

@@ -33,6 +33,7 @@ import (
 
 const (
 	metadataVersion    = 1
+	relocationVersion  = 1
 	defaultMaxSessions = 32
 	defaultMaxRecovery = 256
 	metadataFileMode   = 0o600
@@ -116,6 +117,13 @@ type documentBinding struct {
 	Locator      string                     `json:"locator"`
 	PortableID   string                     `json:"portable_project_id"`
 	SourceDigest protocolcommon.Digest      `json:"source_digest"`
+}
+
+type relocationJournal struct {
+	Version     int                        `json:"version"`
+	DocumentID  runtimeprotocol.DocumentID `json:"document_id"`
+	Prior       string                     `json:"prior"`
+	Replacement string                     `json:"replacement"`
 }
 
 type Session struct {
@@ -280,6 +288,9 @@ func New(config Config) (*Host, error) {
 		return nil, err
 	}
 	host.metadata = metadata
+	if err := host.recoverRelocation(context.Background()); err != nil {
+		return nil, err
+	}
 	for _, binding := range metadata.Bindings {
 		authority.add(binding.DocumentID)
 	}
@@ -459,18 +470,28 @@ func (h *Host) RelocateProject(ctx context.Context, documentID runtimeprotocol.D
 	}
 	prior := binding
 	binding.Locator = root
+	journal := relocationJournal{Version: relocationVersion, DocumentID: documentID, Prior: prior.Locator, Replacement: root}
+	if err := h.saveRelocationJournalLocked(journal); err != nil {
+		return err
+	}
+	if err := h.external.Relocate(ctx, h.authority.add(documentID), port.ExternalFileKindProject, prior.Locator, root); err != nil {
+		return err
+	}
 	delete(h.metadata.Bindings, oldKey)
 	h.metadata.Bindings[newKey] = binding
 	if err := h.saveMetadataLocked(); err != nil {
 		delete(h.metadata.Bindings, newKey)
 		h.metadata.Bindings[oldKey] = prior
+		if rollbackErr := h.external.Relocate(context.WithoutCancel(ctx), h.authority.add(documentID), port.ExternalFileKindProject, root, prior.Locator); rollbackErr != nil {
+			return fmt.Errorf("%w: relocation rollback incomplete", ErrStateRecoveryRequired)
+		}
+		if removeErr := h.removeRelocationJournalLocked(); removeErr != nil {
+			return fmt.Errorf("%w: relocation journal cleanup", ErrStateRecoveryRequired)
+		}
 		return err
 	}
-	if err := h.external.Relocate(ctx, h.authority.add(documentID), port.ExternalFileKindProject, prior.Locator, root); err != nil {
-		delete(h.metadata.Bindings, newKey)
-		h.metadata.Bindings[oldKey] = prior
-		_ = h.saveMetadataLocked()
-		return err
+	if err := h.removeRelocationJournalLocked(); err != nil {
+		return fmt.Errorf("%w: relocation journal cleanup", ErrStateRecoveryRequired)
 	}
 	return nil
 }
@@ -768,6 +789,10 @@ func (h *Host) GetOperationStatus(ctx context.Context, session *Session, operati
 }
 
 func (h *Host) ScheduleAutosave(ctx context.Context, input SaveInput, result chan<- AutosaveResult) error {
+	return h.scheduleAutosave(ctx, input, result, false)
+}
+
+func (h *Host) scheduleAutosave(ctx context.Context, input SaveInput, result chan<- AutosaveResult, notifyCancel bool) error {
 	if input.Session == nil {
 		return errors.New("session is required")
 	}
@@ -781,15 +806,34 @@ func (h *Host) ScheduleAutosave(ctx context.Context, input SaveInput, result cha
 		h.mu.Unlock()
 		return errors.New("session is closed or unknown")
 	}
-	cancel := h.config.Scheduler.Schedule(h.config.AutosaveDelay, func() {
+	var completed sync.Once
+	complete := func(value AutosaveResult, blocking bool) {
+		completed.Do(func() {
+			if result != nil {
+				if blocking {
+					result <- value
+				} else {
+					select {
+					case result <- value:
+					default:
+					}
+				}
+			}
+		})
+	}
+	cancelScheduled := h.config.Scheduler.Schedule(h.config.AutosaveDelay, func() {
 		value, err := h.Save(context.WithoutCancel(ctx), input)
-		if result != nil {
-			result <- AutosaveResult{Result: value, Err: err}
-		}
+		complete(AutosaveResult{Result: value, Err: err}, true)
 		h.mu.Lock()
 		delete(h.autosaves, id)
 		h.mu.Unlock()
 	})
+	cancel := func() {
+		cancelScheduled()
+		if notifyCancel {
+			complete(AutosaveResult{Err: context.Canceled}, false)
+		}
+	}
 	h.autosaves[id] = cancel
 	h.mu.Unlock()
 	return nil
@@ -985,6 +1029,107 @@ func cloneByteMap(input map[string][]byte) map[string][]byte {
 
 func (h *Host) metadataPath() string {
 	return filepath.Join(h.config.Root, "local-document-bindings.json")
+}
+
+func (h *Host) relocationPath() string {
+	return filepath.Join(h.config.Root, "local-document-relocation.json")
+}
+
+func (h *Host) saveRelocationJournalLocked(value relocationJournal) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(h.config.Root, ".local-document-relocation-")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	ok := false
+	defer func() {
+		_ = tmp.Close()
+		if !ok {
+			_ = os.Remove(name)
+		}
+	}()
+	if err := tmp.Chmod(metadataFileMode); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, h.relocationPath()); err != nil {
+		return err
+	}
+	if err := syncDirectory(h.config.Root); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
+func (h *Host) removeRelocationJournalLocked() error {
+	if err := os.Remove(h.relocationPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return syncDirectory(h.config.Root)
+}
+
+func syncDirectory(root string) error {
+	dir, err := os.Open(root)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func (h *Host) recoverRelocation(ctx context.Context) error {
+	data, err := os.ReadFile(h.relocationPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var journal relocationJournal
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&journal); err != nil || journal.Version != relocationVersion || journal.DocumentID == "" || !filepath.IsAbs(journal.Prior) || !filepath.IsAbs(journal.Replacement) {
+		return fmt.Errorf("%w: relocation journal", ErrStateRecoveryRequired)
+	}
+	var oldKey string
+	var binding documentBinding
+	for key, candidate := range h.metadata.Bindings {
+		if candidate.DocumentID == journal.DocumentID {
+			oldKey, binding = key, candidate
+			break
+		}
+	}
+	if oldKey == "" || binding.Kind != "project" || (binding.Locator != journal.Prior && binding.Locator != journal.Replacement) {
+		return fmt.Errorf("%w: relocation binding", ErrStateRecoveryRequired)
+	}
+	scope := h.authority.add(journal.DocumentID)
+	if err := h.external.Relocate(ctx, scope, port.ExternalFileKindProject, journal.Prior, journal.Replacement); err != nil {
+		if matchErr := h.external.Matches(ctx, scope, port.ExternalFileKindProject, journal.Replacement); matchErr != nil {
+			return fmt.Errorf("%w: relocation external binding", ErrStateRecoveryRequired)
+		}
+	}
+	if binding.Locator != journal.Replacement {
+		delete(h.metadata.Bindings, oldKey)
+		binding.Locator = journal.Replacement
+		h.metadata.Bindings[bindingKey("project", binding.Locator)] = binding
+		if err := h.saveMetadataLocked(); err != nil {
+			return err
+		}
+	}
+	return h.removeRelocationJournalLocked()
 }
 
 func (h *Host) readMetadataFile() ([]byte, error) {

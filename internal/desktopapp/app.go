@@ -339,11 +339,6 @@ func (a *Application) externalCapabilityMatches(handshake protocolcommon.Handsha
 func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struct{}] {
 	a.shutdown.Lock()
 	defer a.shutdown.Unlock()
-	for _, assessment := range a.projects.allAssessments() {
-		if !assessment.CanClose {
-			return failed[struct{}](desktopcontract.FailureReconcilePending, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryReview)
-		}
-	}
 	a.mu.Lock()
 	if a.state == desktopcontract.LifecycleStopped && len(a.started) == 0 {
 		a.mu.Unlock()
@@ -369,6 +364,22 @@ func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struc
 	case <-drained:
 	case <-ctx.Done():
 		return failed[struct{}](desktopcontract.FailureShutdown, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
+	}
+
+	fenced := make([]runtimeprotocol.RuntimeSessionRef, 0)
+	for _, session := range a.projects.sessionRefs() {
+		assessment, err := a.projects.fenceClose(ctx.Done(), session)
+		if err != nil || !assessment.CanClose {
+			for _, prior := range fenced {
+				a.projects.rollbackClose(prior)
+			}
+			if err == nil {
+				a.projects.rollbackClose(session)
+			}
+			a.rollbackDraining()
+			return failed[struct{}](desktopcontract.FailureReconcilePending, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryReview)
+		}
+		fenced = append(fenced, session)
 	}
 
 	for index := len(a.started) - 1; index >= 0; index-- {
@@ -432,6 +443,15 @@ func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struc
 		return failed[struct{}](code, desktopcontract.ComponentBindingShell, false, desktopcontract.RecoveryExit)
 	}
 	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess}
+}
+
+func (a *Application) rollbackDraining() {
+	a.mu.Lock()
+	if a.state == desktopcontract.LifecycleDraining {
+		a.state = desktopcontract.LifecycleReady
+	}
+	a.mu.Unlock()
+	_ = safeLifecyclePublish(context.Background(), a.config.Lifecycle, desktopcontract.LifecycleEvent{State: desktopcontract.LifecycleReady})
 }
 
 func (a *Application) Invoke(ctx context.Context, generatedMethod string, exchange desktopcontract.Exchange) (result BindingResult) {

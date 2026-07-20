@@ -56,7 +56,19 @@ type CloseAssessment struct {
 	CommittedRevision runtimeprotocol.RevisionID `json:"committed_revision"`
 	CanClose          bool                       `json:"can_close"`
 	Blockers          []CloseBlocker             `json:"blockers"`
+	Autosave          AutosaveOutcome            `json:"autosave"`
 }
+
+type AutosaveOutcome string
+
+const (
+	AutosaveIdle        AutosaveOutcome = "idle"
+	AutosaveScheduled   AutosaveOutcome = "scheduled"
+	AutosaveCommitted   AutosaveOutcome = "committed"
+	AutosaveConflict    AutosaveOutcome = "conflict"
+	AutosaveNeedsReview AutosaveOutcome = "needs_review"
+	AutosaveFailed      AutosaveOutcome = "failed"
+)
 
 type EphemeralStateInput struct {
 	Session runtimeprotocol.RuntimeSessionRef `json:"session"`
@@ -67,6 +79,11 @@ type RecoveryCandidate struct {
 	ProjectID         runtimeprotocol.DocumentID `json:"project_id"`
 	CommittedRevision runtimeprotocol.RevisionID `json:"committed_revision"`
 	InterruptedAt     protocolcommon.Rfc3339Time `json:"interrupted_at"`
+	PendingPreview    bool                       `json:"pending_preview"`
+	EphemeralEdits    bool                       `json:"ephemeral_edits"`
+	AutosavePending   bool                       `json:"autosave_pending"`
+	ProviderPending   bool                       `json:"provider_reconcile_pending"`
+	Autosave          AutosaveOutcome            `json:"autosave"`
 }
 
 type RecoveryChoice string
@@ -87,6 +104,11 @@ type persistedRecovery struct {
 	ProjectID         runtimeprotocol.DocumentID `json:"project_id"`
 	CommittedRevision runtimeprotocol.RevisionID `json:"committed_revision"`
 	InterruptedAt     protocolcommon.Rfc3339Time `json:"interrupted_at"`
+	PendingPreview    bool                       `json:"pending_preview"`
+	EphemeralEdits    bool                       `json:"ephemeral_edits"`
+	AutosavePending   bool                       `json:"autosave_pending"`
+	ProviderPending   bool                       `json:"provider_reconcile_pending"`
+	Autosave          AutosaveOutcome            `json:"autosave"`
 }
 
 type persistedLifecycle struct {
@@ -96,13 +118,19 @@ type persistedLifecycle struct {
 }
 
 type sessionLifecycle struct {
-	projectID         runtimeprotocol.DocumentID
-	session           runtimeprotocol.RuntimeSessionRef
-	committedRevision runtimeprotocol.RevisionID
-	pendingPreview    bool
-	ephemeralEdits    bool
-	autosavePending   bool
-	providerPending   bool
+	projectID          runtimeprotocol.DocumentID
+	session            runtimeprotocol.RuntimeSessionRef
+	committedRevision  runtimeprotocol.RevisionID
+	pendingPreview     bool
+	ephemeralEdits     bool
+	autosavePending    bool
+	providerPending    bool
+	autosave           AutosaveOutcome
+	autosaveGeneration uint64
+	generation         uint64
+	inflight           int
+	closing            bool
+	drained            chan struct{}
 }
 
 type projectLifecycle struct {
@@ -149,14 +177,27 @@ func newProjectLifecycle(root string, now func() time.Time) (*projectLifecycle, 
 		}
 	}
 	for key, recovery := range value.state.Recoveries {
+		if recovery.Autosave == "" {
+			recovery.Autosave = AutosaveIdle
+			value.state.Recoveries[key] = recovery
+		}
 		_, idErr := runtimeprotocol.EncodeDocumentID(recovery.ProjectID)
 		_, revisionErr := runtimeprotocol.EncodeRevisionID(recovery.CommittedRevision)
 		_, timeErr := time.Parse(time.RFC3339Nano, string(recovery.InterruptedAt))
-		if key != string(recovery.ProjectID) || idErr != nil || revisionErr != nil || timeErr != nil {
+		if key != string(recovery.ProjectID) || idErr != nil || revisionErr != nil || timeErr != nil || !validAutosaveOutcome(recovery.Autosave) {
 			return nil, fmt.Errorf("desktop lifecycle metadata requires recovery")
 		}
 	}
 	return value, nil
+}
+
+func validAutosaveOutcome(value AutosaveOutcome) bool {
+	switch value {
+	case AutosaveIdle, AutosaveScheduled, AutosaveCommitted, AutosaveConflict, AutosaveNeedsReview, AutosaveFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (l *projectLifecycle) opened(session runtimeprotocol.RuntimeSessionRef, revision runtimeprotocol.CommittedRevisionRef, providerPending bool) (runtimeprotocol.RuntimeSessionRef, ProjectOpenDisposition, error) {
@@ -174,8 +215,8 @@ func (l *projectLifecycle) opened(session runtimeprotocol.RuntimeSessionRef, rev
 	project := priorProject
 	project.ProjectID, project.LastOpenedAt, project.Missing = projectID, now, false
 	l.state.Projects[string(projectID)] = project
-	l.state.Recoveries[string(projectID)] = persistedRecovery{ProjectID: projectID, CommittedRevision: revision.RevisionID, InterruptedAt: now}
-	l.sessions[session.RuntimeSessionID] = &sessionLifecycle{projectID: projectID, session: session, committedRevision: revision.RevisionID, providerPending: providerPending}
+	l.state.Recoveries[string(projectID)] = persistedRecovery{ProjectID: projectID, CommittedRevision: revision.RevisionID, InterruptedAt: now, ProviderPending: providerPending, Autosave: AutosaveIdle}
+	l.sessions[session.RuntimeSessionID] = &sessionLifecycle{projectID: projectID, session: session, committedRevision: revision.RevisionID, providerPending: providerPending, autosave: AutosaveIdle, generation: 1}
 	l.byProject[projectID] = session.RuntimeSessionID
 	if err := l.saveLocked(); err != nil {
 		delete(l.sessions, session.RuntimeSessionID)
@@ -216,15 +257,108 @@ func (l *projectLifecycle) existing(projectID runtimeprotocol.DocumentID) (runti
 	return l.sessions[id].session, true
 }
 
-func (l *projectLifecycle) mutate(ref runtimeprotocol.RuntimeSessionRef, fn func(*sessionLifecycle)) bool {
+func (l *projectLifecycle) mutate(ref runtimeprotocol.RuntimeSessionRef, generation uint64, fn func(*sessionLifecycle)) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	value := l.sessions[ref.RuntimeSessionID]
-	if value == nil || value.session != ref {
-		return false
+	if value == nil || value.session != ref || (value.closing && generation == 0) || (generation != 0 && value.generation != generation) {
+		return errors.New("project session generation is stale")
 	}
+	prior := *value
+	priorRecovery := l.state.Recoveries[string(value.projectID)]
 	fn(value)
-	return true
+	l.syncRecoveryLocked(value)
+	if err := l.saveLocked(); err != nil {
+		*value = prior
+		l.state.Recoveries[string(value.projectID)] = priorRecovery
+		return err
+	}
+	return nil
+}
+
+func (l *projectLifecycle) completeAutosave(ref runtimeprotocol.RuntimeSessionRef, generation, autosaveGeneration uint64, fn func(*sessionLifecycle)) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	value := l.sessions[ref.RuntimeSessionID]
+	if value == nil || value.session != ref || value.generation != generation || value.autosaveGeneration != autosaveGeneration {
+		return errors.New("autosave completion generation is stale")
+	}
+	prior := *value
+	priorRecovery := l.state.Recoveries[string(value.projectID)]
+	fn(value)
+	l.syncRecoveryLocked(value)
+	if err := l.saveLocked(); err != nil {
+		*value = prior
+		l.state.Recoveries[string(value.projectID)] = priorRecovery
+		return err
+	}
+	return nil
+}
+
+func (l *projectLifecycle) begin(ref runtimeprotocol.RuntimeSessionRef) (uint64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	value := l.sessions[ref.RuntimeSessionID]
+	if value == nil || value.session != ref || value.closing {
+		return 0, errors.New("project session is closing or stale")
+	}
+	value.inflight++
+	return value.generation, nil
+}
+
+func (l *projectLifecycle) end(ref runtimeprotocol.RuntimeSessionRef, generation uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	value := l.sessions[ref.RuntimeSessionID]
+	if value == nil || value.session != ref || value.generation != generation || value.inflight == 0 {
+		return
+	}
+	value.inflight--
+	if value.closing && value.inflight == 0 && value.drained != nil {
+		close(value.drained)
+		value.drained = nil
+	}
+}
+
+func (l *projectLifecycle) fenceClose(ctxDone <-chan struct{}, ref runtimeprotocol.RuntimeSessionRef) (CloseAssessment, error) {
+	l.mu.Lock()
+	value := l.sessions[ref.RuntimeSessionID]
+	if value == nil || value.session != ref || value.closing {
+		l.mu.Unlock()
+		return CloseAssessment{}, errors.New("project session is closing or stale")
+	}
+	value.closing = true
+	var drained <-chan struct{}
+	if value.inflight > 0 {
+		value.drained = make(chan struct{})
+		drained = value.drained
+	}
+	l.mu.Unlock()
+	if drained != nil {
+		select {
+		case <-drained:
+		case <-ctxDone:
+			l.rollbackClose(ref)
+			return CloseAssessment{}, errors.New("close drain cancelled")
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	value = l.sessions[ref.RuntimeSessionID]
+	if value == nil || value.session != ref || !value.closing || value.inflight != 0 {
+		return CloseAssessment{}, errors.New("project session close fence lost")
+	}
+	value.generation++
+	return assess(value), nil
+}
+
+func (l *projectLifecycle) rollbackClose(ref runtimeprotocol.RuntimeSessionRef) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if value := l.sessions[ref.RuntimeSessionID]; value != nil && value.session == ref {
+		value.closing = false
+		value.drained = nil
+	}
 }
 
 func (l *projectLifecycle) assessment(ref runtimeprotocol.RuntimeSessionRef) (CloseAssessment, bool) {
@@ -251,14 +385,14 @@ func assess(value *sessionLifecycle) CloseAssessment {
 	if value.providerPending {
 		blockers = append(blockers, CloseProviderPending)
 	}
-	return CloseAssessment{ProjectID: value.projectID, CommittedRevision: value.committedRevision, CanClose: len(blockers) == 0, Blockers: blockers}
+	return CloseAssessment{ProjectID: value.projectID, CommittedRevision: value.committedRevision, CanClose: len(blockers) == 0, Blockers: blockers, Autosave: value.autosave}
 }
 
 func (l *projectLifecycle) detach(ref runtimeprotocol.RuntimeSessionRef) (*sessionLifecycle, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	value := l.sessions[ref.RuntimeSessionID]
-	if value == nil || value.session != ref {
+	if value == nil || value.session != ref || !value.closing || value.inflight != 0 {
 		return nil, nil
 	}
 	copy := *value
@@ -283,13 +417,17 @@ func (l *projectLifecycle) restore(value *sessionLifecycle) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	value.closing = false
+	value.inflight = 0
+	value.drained = nil
+	value.generation++
 	if l.sessions[value.session.RuntimeSessionID] != nil || l.byProject[value.projectID] != "" {
 		return errors.New("project lifecycle session already registered")
 	}
 	l.sessions[value.session.RuntimeSessionID] = value
 	l.byProject[value.projectID] = value.session.RuntimeSessionID
 	now := protocolcommon.Rfc3339Time(l.now().UTC().Format(time.RFC3339Nano))
-	l.state.Recoveries[string(value.projectID)] = persistedRecovery{ProjectID: value.projectID, CommittedRevision: value.committedRevision, InterruptedAt: now}
+	l.state.Recoveries[string(value.projectID)] = persistedRecovery{ProjectID: value.projectID, CommittedRevision: value.committedRevision, InterruptedAt: now, PendingPreview: value.pendingPreview, EphemeralEdits: value.ephemeralEdits, AutosavePending: value.autosavePending, ProviderPending: value.providerPending, Autosave: value.autosave}
 	if err := l.saveLocked(); err != nil {
 		delete(l.sessions, value.session.RuntimeSessionID)
 		delete(l.byProject, value.projectID)
@@ -306,9 +444,21 @@ func (l *projectLifecycle) markMissing(projectID runtimeprotocol.DocumentID, mis
 	if !ok {
 		return nil
 	}
+	prior := project
 	project.Missing = missing
 	l.state.Projects[string(projectID)] = project
-	return l.saveLocked()
+	if err := l.saveLocked(); err != nil {
+		l.state.Projects[string(projectID)] = prior
+		return err
+	}
+	return nil
+}
+
+func (l *projectLifecycle) missing(projectID runtimeprotocol.DocumentID) (bool, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	project, ok := l.state.Projects[string(projectID)]
+	return project.Missing, ok
 }
 
 func (l *projectLifecycle) pin(projectID runtimeprotocol.DocumentID, pinned bool) error {
@@ -318,9 +468,14 @@ func (l *projectLifecycle) pin(projectID runtimeprotocol.DocumentID, pinned bool
 	if !ok {
 		return errors.New("unknown project")
 	}
+	prior := project
 	project.Pinned = pinned
 	l.state.Projects[string(projectID)] = project
-	return l.saveLocked()
+	if err := l.saveLocked(); err != nil {
+		l.state.Projects[string(projectID)] = prior
+		return err
+	}
+	return nil
 }
 
 func (l *projectLifecycle) recent() []RecentProject {
@@ -354,10 +509,46 @@ func (l *projectLifecycle) recoveries() []RecoveryCandidate {
 		if _, currentlyOpen := l.byProject[value.ProjectID]; currentlyOpen {
 			continue
 		}
-		result = append(result, RecoveryCandidate{ProjectID: value.ProjectID, CommittedRevision: value.CommittedRevision, InterruptedAt: value.InterruptedAt})
+		result = append(result, RecoveryCandidate{ProjectID: value.ProjectID, CommittedRevision: value.CommittedRevision, InterruptedAt: value.InterruptedAt, PendingPreview: value.PendingPreview, EphemeralEdits: value.EphemeralEdits, AutosavePending: value.AutosavePending, ProviderPending: value.ProviderPending, Autosave: value.Autosave})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].InterruptedAt < result[j].InterruptedAt })
 	return result
+}
+
+func (l *projectLifecycle) recovery(projectID runtimeprotocol.DocumentID) (persistedRecovery, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	value, ok := l.state.Recoveries[string(projectID)]
+	return value, ok
+}
+
+func (l *projectLifecycle) applyRecovery(ref runtimeprotocol.RuntimeSessionRef, recovery persistedRecovery) error {
+	return l.mutate(ref, 0, func(value *sessionLifecycle) {
+		value.committedRevision = recovery.CommittedRevision
+		value.pendingPreview = recovery.PendingPreview
+		value.ephemeralEdits = recovery.EphemeralEdits
+		value.autosavePending = false // timers do not survive process death
+		value.providerPending = recovery.ProviderPending
+		value.autosave = recovery.Autosave
+		if recovery.AutosavePending {
+			value.autosave = AutosaveNeedsReview
+		}
+	})
+}
+
+func (l *projectLifecycle) syncRecoveryLocked(value *sessionLifecycle) {
+	prior := l.state.Recoveries[string(value.projectID)]
+	prior.ProjectID = value.projectID
+	prior.CommittedRevision = value.committedRevision
+	if prior.InterruptedAt == "" {
+		prior.InterruptedAt = protocolcommon.Rfc3339Time(l.now().UTC().Format(time.RFC3339Nano))
+	}
+	prior.PendingPreview = value.pendingPreview
+	prior.EphemeralEdits = value.ephemeralEdits
+	prior.AutosavePending = value.autosavePending
+	prior.ProviderPending = value.providerPending
+	prior.Autosave = value.autosave
+	l.state.Recoveries[string(value.projectID)] = prior
 }
 
 func (l *projectLifecycle) hasRecovery(projectID runtimeprotocol.DocumentID) bool {
