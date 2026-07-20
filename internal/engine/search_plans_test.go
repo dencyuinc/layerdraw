@@ -27,8 +27,13 @@ func TestNativeSearchPlansRemainCandidateBoundedForLargeProject(t *testing.T) {
 	}
 }
 
-func TestBuildNativeSearchIndexPlanOwnsIncrementalContentHashDiff(t *testing.T) {
-	input := NativeIndexPlanInput{Request: []byte(`{"kind":"build_search_index"}`), Identity: []byte(`{"identity":1}`), BackendVersion: "0.17.0", EmbeddingDimensions: 2, Documents: []NativeIndexDocument{nativeDocument("unchanged", "h1"), nativeDocument("changed", "h2"), nativeDocument("added", "h3")}, PreviousContentHashes: map[string]string{"unchanged": "h1", "changed": "old", "removed": "h0"}}
+func TestBuildNativeSearchIndexPlanOwnsIncrementalPhysicalDigestDiff(t *testing.T) {
+	documents := []NativeIndexDocument{nativeDocument("unchanged", "h1"), nativeDocument("changed", "h2"), nativeDocument("added", "h3")}
+	unchangedDigest, err := nativeIndexDocumentPhysicalDigest(documents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := NativeIndexPlanInput{Request: []byte(`{"kind":"build_search_index"}`), Identity: []byte(`{"identity":1}`), BackendVersion: "0.17.0", EmbeddingDimensions: 2, Documents: documents, PreviousContentHashes: map[string]string{"unchanged": unchangedDigest, "changed": "sha256:old", "removed": "sha256:removed"}}
 	plan, err := BuildNativeSearchIndexPlan(input)
 	if err != nil || plan.PhysicalIndex == nil || len(plan.PhysicalEvidence) != 4 || plan.PhysicalEvidence[0].ExpectedDocumentSetDigest == "" {
 		t.Fatalf("plan=%+v err=%v", plan, err)
@@ -54,6 +59,44 @@ func TestBuildNativeSearchIndexPlanOwnsIncrementalContentHashDiff(t *testing.T) 
 	}
 }
 
+func TestIncrementalPhysicalDigestRejectsPreservedContentHashCorruption(t *testing.T) {
+	original := nativeDocument("same-address", "same-content-hash")
+	originalDigest, err := nativeIndexDocumentPhysicalDigest(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := original
+	corrupt.LexicalText = "tampered physical body"
+	plan, err := BuildNativeSearchIndexPlan(NativeIndexPlanInput{Request: []byte(`{"kind":"build_search_index"}`), Identity: []byte(`{"identity":1}`), BackendVersion: "0.17.0", EmbeddingDimensions: 2, Documents: []NativeIndexDocument{corrupt}, PreviousContentHashes: map[string]string{corrupt.SubjectAddress: originalDigest}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := false
+	for _, statement := range plan.Statements {
+		created = created || (strings.HasPrefix(statement.Query, "CREATE (n:SearchDoc") && statement.Parameters["id"].Value == corrupt.SubjectAddress)
+	}
+	if !created {
+		t.Fatal("physical corruption preserving content_hash was incorrectly reused")
+	}
+}
+
+func TestLexicalIndexHasNoEmbeddingDependency(t *testing.T) {
+	document := nativeDocument("lexical", "hash")
+	document.Embedding = nil
+	plan, err := BuildNativeSearchIndexPlan(NativeIndexPlanInput{Request: []byte(`{"kind":"build_search_index"}`), Identity: []byte(`{"identity":1}`), BackendVersion: "0.17.0", Documents: []NativeIndexDocument{document}, FullRebuild: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range plan.Statements {
+		if strings.Contains(statement.Query, "VECTOR_INDEX") || strings.Contains(statement.Query, "embedding FLOAT") {
+			t.Fatalf("lexical-only plan contains vector dependency: %s", statement.Query)
+		}
+	}
+	if len(plan.PhysicalEvidence) != 3 || plan.PhysicalEvidence[0].IndexType != "FTS" {
+		t.Fatalf("evidence=%+v", plan.PhysicalEvidence)
+	}
+}
+
 func TestBuildNativeSearchQueryAndAllAnalysisPlans(t *testing.T) {
 	for _, mode := range []string{"lexical", "semantic", "hybrid"} {
 		embedding := []float32(nil)
@@ -74,7 +117,7 @@ func TestBuildNativeSearchQueryAndAllAnalysisPlans(t *testing.T) {
 	}
 	for _, algorithm := range []string{"page_rank", "k_core", "louvain", "scc", "wcc"} {
 		plan, rows, err := BuildNativeAnalysisPlan([]byte(`{"kind":"analyze_graph","algorithm":"` + algorithm + `","entity_addresses":["a","b"],"relation_addresses":["r"]}`))
-		if err != nil || rows != 2 || len(plan.Statements) != 3 || !strings.Contains(plan.Statements[1].Query, "ORDER BY address") {
+		if err != nil || rows != 3 || len(plan.Statements) != 4 || !strings.Contains(plan.Statements[0].Query, "scope_violation") || !strings.Contains(plan.Statements[2].Query, "ORDER BY address") {
 			t.Fatalf("algorithm=%s plan=%+v rows=%d err=%v", algorithm, plan, rows, err)
 		}
 	}

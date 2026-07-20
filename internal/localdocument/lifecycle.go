@@ -124,6 +124,24 @@ type Session struct {
 	delegationID  string
 }
 
+// SearchBinding exposes only the trusted, detached Engine input and exact
+// committed Access authority needed by the host-owned native index lifecycle.
+func (h *Host) SearchBinding(s *Session) ([]byte, port.DocumentSnapshotRef, string, error) {
+	if s == nil || s.closed || s.Open.AccessSummary.AccessFingerprint == "" {
+		return nil, port.DocumentSnapshotRef{}, "", errors.New("search session binding unavailable")
+	}
+	h.mu.Lock()
+	tracked := h.sessions[s.Open.Session.RuntimeSessionID] == s
+	h.mu.Unlock()
+	input, available := h.workbench.SearchEncodedInput(s.working.Handle)
+	if !tracked || !available {
+		return nil, port.DocumentSnapshotRef{}, "", errors.New("search session source unavailable")
+	}
+	revision := s.Open.CommittedRevision
+	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: string(revision.DocumentID), CommittedRevision: string(revision.RevisionID), DefinitionHash: string(revision.DefinitionHash)}
+	return input, snapshot, string(s.Open.AccessSummary.AccessFingerprint), nil
+}
+
 func (h *Host) accessContext(ctx context.Context, session *Session) context.Context {
 	if session != nil && session.delegationID != "" {
 		return withDelegation(ctx, session.delegationID)

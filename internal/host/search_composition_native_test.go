@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -32,7 +33,6 @@ func TestOpenDesktopNativeEndpointWiresProductionSearch(t *testing.T) {
 		LocalModelSeed:   []byte("0123456789012345"),
 		EmbeddingProfile: port.EmbeddingProfile{ProfileID: "local", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024},
 		MaxRows:          100, MaxBytes: 4096,
-		LocalAccessProjectionDigest: "sha256:access",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +41,31 @@ func TestOpenDesktopNativeEndpointWiresProductionSearch(t *testing.T) {
 	if !endpoint.Supports(OperationSearch) || !endpoint.Supports(OperationExecuteQuery) || !endpoint.Supports(OperationAnalyzeGraph) {
 		t.Fatal("production endpoint does not expose the official native primitive profile")
 	}
-	_ = search
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte(`project p "P" {}
+layers {
+  app "App" @1
+}
+entity_type service "Service" {
+  representation shape rect
+}
+entities service @app {
+  api "API"
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := endpoint.host.OpenProject(context.Background(), localdocument.OpenProjectInput{Root: project, EntryPath: "document.ldl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := search.RefreshSearchIndex(context.Background(), opened.Session); err != nil {
+		t.Fatalf("native lifecycle refresh: %v", err)
+	}
+	active, err := filepath.Glob(filepath.Join(root, "search-index", "*.active.json"))
+	if err != nil || len(active) != 1 || endpoint.searchLifecycle != search {
+		t.Fatalf("active=%v lifecycle_wired=%t err=%v", active, endpoint.searchLifecycle == search, err)
+	}
 }
 
 func TestDesktopNativeSearchCompositionUsesProductionLadybugBinding(t *testing.T) {

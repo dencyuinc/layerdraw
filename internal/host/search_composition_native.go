@@ -5,6 +5,9 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -12,6 +15,7 @@ import (
 	searchadapter "github.com/dencyuinc/layerdraw/internal/adapter/search"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -21,6 +25,9 @@ type NativeDesktopSearchComposition struct {
 	DesktopSearchComposition
 	ladybug      *searchadapter.GoLadybugSession
 	engineSearch *enginesearch.Adapter
+	projection   *enginesearch.LocalAccessProjection
+	localHost    *localdocument.Host
+	profile      port.EmbeddingProfile
 }
 
 type DesktopNativeConfig struct {
@@ -29,7 +36,6 @@ type DesktopNativeConfig struct {
 	VectorExtensionPath, AlgoExtensionPath string
 	PlanKey, SearchDocumentKey             []byte
 	EmbeddingProfile                       port.EmbeddingProfile
-	LocalAccessProjectionDigest            string
 	LocalModelSeed                         []byte
 	MaxRows, MaxBytes                      int
 }
@@ -47,11 +53,7 @@ func OpenDesktopNativeEndpoint(config DesktopNativeConfig) (*Endpoint, *NativeDe
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, nil, err
 	}
-	projection, err := enginesearch.NewLocalAccessProjection(config.LocalAccessProjectionDigest)
-	if err != nil {
-		_ = localHost.Shutdown(context.Background())
-		return nil, nil, nil, err
-	}
+	projection := enginesearch.NewSessionAccessProjection()
 	engineSearch := enginesearch.New(engineFacade.Compiler(), projection)
 	search, err := openDesktopNativeSearchComposition(DesktopSearchConfig{Root: config.Root, Engine: engineSearch, DocumentProducer: engineSearch, PlanKey: config.PlanKey, SearchDocumentKey: config.SearchDocumentKey, EmbeddingProfile: config.EmbeddingProfile, LocalModelSeed: config.LocalModelSeed, PlanProtocolVersion: "v1", MaxRows: config.MaxRows, MaxBytes: config.MaxBytes, Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...)}, config.DatabasePath, []string{config.FTSExtensionPath, config.VectorExtensionPath, config.AlgoExtensionPath}, true)
 	if err != nil {
@@ -59,7 +61,8 @@ func OpenDesktopNativeEndpoint(config DesktopNativeConfig) (*Endpoint, *NativeDe
 		return nil, nil, nil, err
 	}
 	search.engineSearch = engineSearch
-	endpoint, err := New(Config{LocalHost: localHost, Engine: engineFacade, Search: search.Surface})
+	search.projection, search.localHost, search.profile = projection, localHost, config.EmbeddingProfile
+	endpoint, err := New(Config{LocalHost: localHost, Engine: engineFacade, Search: search.Surface, SearchLifecycle: search})
 	if err != nil {
 		search.Close()
 		_ = localHost.Shutdown(context.Background())
@@ -72,11 +75,46 @@ func OpenDesktopNativeEndpoint(config DesktopNativeConfig) (*Endpoint, *NativeDe
 	return endpoint, search, shutdown, nil
 }
 
+func (c *NativeDesktopSearchComposition) RefreshSearchIndex(ctx context.Context, session *localdocument.Session) error {
+	if c == nil || c.localHost == nil || c.engineSearch == nil || c.projection == nil {
+		return fmt.Errorf("native Search lifecycle unavailable")
+	}
+	encodedInput, snapshot, accessDigest, err := c.localHost.SearchBinding(session)
+	if err != nil {
+		return err
+	}
+	input, err := engineendpoint.SearchOpenInputFromEncoded(encodedInput)
+	if err != nil {
+		return err
+	}
+	if err := c.projection.BindSession(snapshot, accessDigest); err != nil {
+		return err
+	}
+	corpus, err := c.engineSearch.OpenLocalCorpus(ctx, input, snapshot, accessDigest)
+	if err != nil {
+		return err
+	}
+	profile := port.SearchProfile{ProfileID: "layerdraw.desktop.default", LexicalCandidateLimit: 256, SemanticCandidateLimit: 256, MaxHits: 100, RRFK: 60, LexicalWeight: 1, SemanticWeight: 1, SnippetMaxBytes: 256}
+	encodedProfile, _ := json.Marshal(profile)
+	digest := sha256.Sum256(encodedProfile)
+	profile.SpecificationDigest = "sha256:" + hex.EncodeToString(digest[:])
+	identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: profile.ProfileID, SearchProfileDigest: profile.SpecificationDigest, EmbeddingProfileID: c.profile.ProfileID, EmbeddingProfileDigest: c.profile.ModelDigest, AccessProjectionDigest: accessDigest, LadybugBackendVersion: searchadapter.GoLadybugBackendVersion, IndexSchemaVersion: "1"}
+	_, err = c.RebuildIndex(ctx, layerruntime.SearchIndexBuildRequest{Snapshot: snapshot, AccessProjectionDigest: accessDigest, SearchProfile: profile, EmbeddingProfile: &c.profile, IndexIdentity: identity, EngineRequest: []byte(`{"kind":"build_search_index"}`)}, port.SearchDocumentBatchRequest{Snapshot: snapshot, AccessProjectionDigest: accessDigest, EmbeddingProfileDigest: c.profile.ModelDigest, Corpus: corpus})
+	return err
+}
+
 func (c *NativeDesktopSearchComposition) CorpusEngine() *enginesearch.Adapter {
 	if c == nil {
 		return nil
 	}
 	return c.engineSearch
+}
+
+func (c *NativeDesktopSearchComposition) BindSearchAuthority(snapshot port.DocumentSnapshotRef, digest string) error {
+	if c == nil || c.projection == nil {
+		return fmt.Errorf("native Search projection unavailable")
+	}
+	return c.projection.BindSession(snapshot, digest)
 }
 
 // OpenDesktopNativeSearchComposition wires the actual go-ladybug v0.17 native

@@ -31,7 +31,7 @@ func runNativeSearchCheck(args []string, stdout, stderr io.Writer) (bool, int) {
 	root := filepath.Dir(args[2])
 	endpoint, search, shutdown, err := hostendpoint.OpenDesktopNativeEndpoint(hostendpoint.DesktopNativeConfig{
 		LocalConfig:  hostendpoint.LocalConfig{Root: root, ReleaseVersion: releaseVersion, SourceRevision: sourceRevision, ReleaseManifestDigest: "sha256:" + strings.Repeat("0", 64), EndpointInstanceID: "native-search-check", TransportID: "in_process"},
-		DatabasePath: args[2], FTSExtensionPath: args[4], VectorExtensionPath: filepath.Join(filepath.Dir(args[4]), "libvector.lbug_extension"), AlgoExtensionPath: filepath.Join(filepath.Dir(args[4]), "libalgo.lbug_extension"), PlanKey: []byte("native-search-check-plan-key-0001"), SearchDocumentKey: []byte("native-search-check-document-key01"), LocalModelSeed: []byte("native-search-check-model-seed-01"), LocalAccessProjectionDigest: "sha256:access",
+		DatabasePath: args[2], FTSExtensionPath: args[4], VectorExtensionPath: filepath.Join(filepath.Dir(args[4]), "libvector.lbug_extension"), AlgoExtensionPath: filepath.Join(filepath.Dir(args[4]), "libalgo.lbug_extension"), PlanKey: []byte("native-search-check-plan-key-0001"), SearchDocumentKey: []byte("native-search-check-document-key01"), LocalModelSeed: []byte("native-search-check-model-seed-01"),
 		EmbeddingProfile: port.EmbeddingProfile{ProfileID: "check", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}, MaxRows: 16, MaxBytes: 65536,
 	})
 	if err != nil {
@@ -65,6 +65,10 @@ relations calls {
 }
 `
 	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: "check", CommittedRevision: "r1", DefinitionHash: "sha256:def"}
+	if err := search.BindSearchAuthority(snapshot, "sha256:access"); err != nil {
+		fmt.Fprintln(stderr, "layerdraw-host: native_search_projection_failed")
+		return true, 1
+	}
 	corpus, err := search.CorpusEngine().OpenLocalCorpus(context.Background(), engine.OpenDocumentInput{CompileInput: engine.CompileInput{Mode: engine.CompileProject, EntryPath: "document.ldl", ProjectSourceTree: map[string][]byte{"document.ldl": []byte(fixture)}, ResolvedDependencies: engine.ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1}}, RequestedLimits: engine.WorkbenchLimits{MaxItems: 1024, MaxOutputBytes: 1 << 20}}, snapshot, "sha256:access")
 	if err != nil {
 		fmt.Fprintln(stderr, "layerdraw-host: native_search_corpus_failed")
@@ -154,7 +158,7 @@ func openLocalEndpoint(config hostendpoint.LocalConfig) (*hostendpoint.Endpoint,
 	}
 	endpoint, _, shutdown, err := hostendpoint.OpenDesktopNativeEndpoint(hostendpoint.DesktopNativeConfig{
 		LocalConfig: config, DatabasePath: filepath.Join(stateRoot, "search.lbug"), FTSExtensionPath: filepath.Join(filepath.Dir(executable), "libfts.lbug_extension"),
-		VectorExtensionPath: filepath.Join(filepath.Dir(executable), "libvector.lbug_extension"), AlgoExtensionPath: filepath.Join(filepath.Dir(executable), "libalgo.lbug_extension"), LocalAccessProjectionDigest: "sha256:desktop-local-full-source",
+		VectorExtensionPath: filepath.Join(filepath.Dir(executable), "libvector.lbug_extension"), AlgoExtensionPath: filepath.Join(filepath.Dir(executable), "libalgo.lbug_extension"),
 		PlanKey: planKey, SearchDocumentKey: documentKey, LocalModelSeed: modelSeed,
 		EmbeddingProfile: port.EmbeddingProfile{ProfileID: "layerdraw.local.projection", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:83b1de40264e440055688d27480462c767f97c2f57c8208a360840988a902b40", Dimensions: 128, Normalization: "unit", MaxInputBytes: 65536},
 		MaxRows:          10_000, MaxBytes: 16 << 20,

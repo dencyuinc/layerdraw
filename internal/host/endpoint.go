@@ -19,6 +19,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
@@ -51,6 +52,7 @@ type Endpoint struct {
 	negotiated       *engineendpoint.NegotiatedContext
 	release          protocolcommon.ReleaseVersion
 	search           ConsumerSearchSurface
+	searchLifecycle  SearchDocumentLifecycle
 	searchOperations map[string]bool
 
 	mu         sync.Mutex
@@ -59,9 +61,14 @@ type Endpoint struct {
 }
 
 type Config struct {
-	LocalHost *localdocument.Host
-	Engine    *engineendpoint.HostEngineFacade
-	Search    ConsumerSearchSurface
+	LocalHost       *localdocument.Host
+	Engine          *engineendpoint.HostEngineFacade
+	Search          ConsumerSearchSurface
+	SearchLifecycle SearchDocumentLifecycle
+}
+
+type SearchDocumentLifecycle interface {
+	RefreshSearchIndex(context.Context, *localdocument.Session) error
 }
 
 type LocalConfig struct {
@@ -101,7 +108,7 @@ func New(config Config) (*Endpoint, error) {
 		operations[OperationExecuteQuery] = manifest.QueryAvailable
 		operations[OperationAnalyzeGraph] = manifest.AnalysisAvailable
 	}
-	return &Endpoint{host: config.LocalHost, engine: config.Engine.Dispatcher(), descriptor: config.Engine.Descriptor(), negotiated: config.Engine.Negotiated(), release: protocolcommon.ReleaseVersion(config.Engine.ReleaseVersion()), search: config.Search, searchOperations: operations}, nil
+	return &Endpoint{host: config.LocalHost, engine: config.Engine.Dispatcher(), descriptor: config.Engine.Descriptor(), negotiated: config.Engine.Negotiated(), release: protocolcommon.ReleaseVersion(config.Engine.ReleaseVersion()), search: config.Search, searchLifecycle: config.SearchLifecycle, searchOperations: operations}, nil
 }
 
 func (e *Endpoint) Supports(operation string) bool {
@@ -244,9 +251,42 @@ func (p *runtimePlan) ExecuteDispatch(ctx context.Context, source engineendpoint
 		return engineendpoint.DispatchResponse{}, errors.New("missing host endpoint context")
 	}
 	if runErr != nil {
-		return p.endpoint.runtimeResponse(p.operation, p.requestID, nil, protocolcommon.OutcomeFailed, failure("runtime.operation_failed", protocolcommon.ProtocolFailureCategoryIo))
+		outcome, mapped := runtimeOperationFailure(runErr)
+		return p.endpoint.runtimeResponse(p.operation, p.requestID, nil, outcome, mapped)
 	}
 	return p.endpoint.runtimeResponse(p.operation, p.requestID, payload, protocolcommon.OutcomeSuccess, nil)
+}
+
+func runtimeOperationFailure(err error) (protocolcommon.Outcome, *protocolcommon.ProtocolFailure) {
+	type mapping struct {
+		target    error
+		code      string
+		category  protocolcommon.ProtocolFailureCategory
+		retryable bool
+	}
+	for _, candidate := range []mapping{
+		{layerruntime.ErrSearchCancelled, "search.cancelled", protocolcommon.ProtocolFailureCategoryCancelled, false},
+		{layerruntime.ErrSearchInvalidCursor, "search.cursor_invalid", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrSearchIndexStale, "search.index_stale", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrSearchIndexNotReady, "search.index_not_ready", protocolcommon.ProtocolFailureCategoryResource, true},
+		{layerruntime.ErrSearchEmbeddingUnavailable, "search.embedding_unavailable", protocolcommon.ProtocolFailureCategoryResource, true},
+		{layerruntime.ErrSearchEmbeddingProfile, "search.embedding_profile_mismatch", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrSearchCapabilityMissing, "search.capability_missing", protocolcommon.ProtocolFailureCategoryResource, false},
+		{layerruntime.ErrSearchInvalidRequest, "search.invalid_request", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrAnalysisInvalidScope, "analysis.invalid_scope", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrSearchBackendFailed, "search.backend_failed", protocolcommon.ProtocolFailureCategoryIo, true},
+	} {
+		if errors.Is(err, candidate.target) {
+			outcome := protocolcommon.OutcomeFailed
+			if candidate.category == protocolcommon.ProtocolFailureCategoryCancelled {
+				outcome = protocolcommon.OutcomeCancelled
+			}
+			result := failure(candidate.code, candidate.category)
+			result.Retryable = candidate.retryable
+			return outcome, result
+		}
+	}
+	return protocolcommon.OutcomeFailed, failure("runtime.operation_failed", protocolcommon.ProtocolFailureCategoryIo)
 }
 
 func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control []byte) (engineendpoint.DispatchPlan, *engineendpoint.DispatchResponse, error) {
@@ -262,6 +302,9 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 		}
 		plan.requestID = request.RequestID
 		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
+			if err := e.authorizeSearchSession(ctx, request.Payload.Session, request.Payload.Snapshot, request.Payload.AccessProjectionDigest); err != nil {
+				return nil, err
+			}
 			return e.search.Search(ctx, request.Payload)
 		}
 	case OperationExecuteQuery, OperationAnalyzeGraph:
@@ -271,6 +314,9 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 		}
 		plan.requestID = request.RequestID
 		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
+			if err := e.authorizeSearchSession(ctx, request.Payload.Session, request.Payload.Snapshot, request.Payload.AccessProjectionDigest); err != nil {
+				return nil, err
+			}
 			if operation == OperationExecuteQuery {
 				return e.search.ExecuteQuery(ctx, request.Payload)
 			}
@@ -300,6 +346,10 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 				}
 			}
 			if err != nil {
+				return nil, err
+			}
+			if err := e.refreshSearchIndex(ctx, opened.Session); err != nil {
+				_ = e.host.Close(context.Background(), opened.Session)
 				return nil, err
 			}
 			opened.Session.Open.CapabilityManifest = e.manifest
@@ -332,7 +382,11 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 		}
 		plan.requestID = request.RequestID
 		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
-			return e.host.Commit(ctx, request.Payload)
+			result, err := e.host.Commit(ctx, request.Payload)
+			if err == nil {
+				err = e.refreshSearchSession(ctx, request.Payload.Session)
+			}
+			return result, err
 		}
 	case OperationSave:
 		request, err := runtimeprotocol.DecodeSaveDocumentRequestEnvelope(control)
@@ -341,7 +395,11 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 		}
 		plan.requestID = request.RequestID
 		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
-			return e.host.SaveRuntime(ctx, request.Payload)
+			result, err := e.host.SaveRuntime(ctx, request.Payload)
+			if err == nil {
+				err = e.refreshSearchSession(ctx, request.Payload.Session)
+			}
+			return result, err
 		}
 	case OperationAutosave:
 		request, err := runtimeprotocol.DecodeAutosaveControlRequestEnvelope(control)
@@ -434,6 +492,42 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 		return nil, nil, errors.New("unsupported Runtime operation")
 	}
 	return plan, nil, nil
+}
+
+func (e *Endpoint) authorizeSearchSession(ctx context.Context, ref *runtimeprotocol.RuntimeSessionRef, snapshot port.DocumentSnapshotRef, accessDigest string) error {
+	if e.host == nil || ref == nil {
+		return layerruntime.ErrSearchInvalidRequest
+	}
+	session, err := e.host.SessionFor(*ref)
+	if err != nil {
+		return layerruntime.ErrSearchIndexStale
+	}
+	if err := e.host.AuthorizeReadSurface(ctx, *ref, accesscore.SurfaceQuery); err != nil {
+		return layerruntime.ErrSearchCapabilityMissing
+	}
+	revision := session.Open.CommittedRevision
+	if snapshot.Kind != port.SnapshotHostRevision || snapshot.HostDocumentID != string(revision.DocumentID) || snapshot.CommittedRevision != string(revision.RevisionID) || snapshot.DefinitionHash != string(revision.DefinitionHash) || accessDigest != string(session.Open.AccessSummary.AccessFingerprint) {
+		return layerruntime.ErrSearchIndexStale
+	}
+	return nil
+}
+
+func (e *Endpoint) refreshSearchIndex(ctx context.Context, session *localdocument.Session) error {
+	if e.searchLifecycle == nil {
+		return nil
+	}
+	return e.searchLifecycle.RefreshSearchIndex(ctx, session)
+}
+
+func (e *Endpoint) refreshSearchSession(ctx context.Context, ref runtimeprotocol.RuntimeSessionRef) error {
+	if e.searchLifecycle == nil {
+		return nil
+	}
+	session, err := e.host.SessionFor(ref)
+	if err != nil {
+		return err
+	}
+	return e.refreshSearchIndex(ctx, session)
 }
 
 func valueOr(value *string, fallback string) string {

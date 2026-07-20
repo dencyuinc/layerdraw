@@ -154,6 +154,8 @@ SearchIndexIdentity
 
 identityのいずれかが変われば別indexとして扱う。stale indexを新revisionの結果として返してはならない。index bytes、embedding vector、HNSW内部IDを`.ldl`または`.layerdraw`の正本sourceへ保存しない。
 
+Engineが生成するSearch / Query / Analysis / Index planは、正確な`DocumentSnapshotRef`、Access projection、Search / Embedding Profile、Search Index identity、request digestへ署名付きでbindする。Runtimeは実行直前にbindingを再検証し、別revision、別session、別profileへplanを付け替えてはならない。
+
 ### 5.2 Search Profile
 
 Search Profileはcorpus field、FTS analyzer、候補数、Hybrid fusionを固定する。
@@ -198,11 +200,13 @@ EmbeddingProfile
 
 公式Query-capable hostは互換する既定Embedding Providerを1つ以上構成できなければならない。remote provider、local native model、browser modelの差はHost Adapterの差であり、SearchDocument生成、chunking、result semanticsを変えない。
 
+`mode: lexical`はEmbedding Providerやvector primitiveなしで実行できる。`semantic`と`hybrid`だけが互換するEmbedding ProfileとProviderを必須とし、利用不能時はtyped failureで閉じる。
+
 Embedding Providerへ送るtextはAccess適用後でなければならない。外部providerを使う場合、credential、data residency、retention、provider logging policyをHost policyで制御する。embedding vector自体も元textの派生機密情報として保護する。
 
 ### 5.4 更新
 
-Committed Revision公開後、Runtimeは前revisionとのSearchDocument `content_hash`差分からindex更新を計画する。
+Committed Revision公開後、Runtimeは前revisionとのSearchDocumentのcanonical physical digest差分からindex更新を計画する。physical digestはaddress、kind、owner、lexical text、field projection、graph / type / layer address、`content_hash`、存在する場合はembedding vectorを含む。`content_hash`だけが一致しても物理rowの再利用根拠にはしない。
 
 - unchanged document: embeddingとindex entryを再利用できる。
 - changed document: lexical entryとembeddingを置換する。

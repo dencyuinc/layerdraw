@@ -3,9 +3,13 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -182,9 +186,12 @@ type AnalysisValue struct{ Address, MetricName, TypedValue string }
 type QueryValue struct{ Kind, Value string }
 type QueryRow map[string]QueryValue
 
-func CompleteQueryResult(rows []QueryRow) ([]byte, error) {
+func CompleteQueryResult(rows []QueryRow, scopeDigest ...string) ([]byte, error) {
 	result := make([]map[string]QueryValue, len(rows))
 	for index, row := range rows {
+		if len(row) == 0 {
+			return nil, ErrSearchResultInvalid
+		}
 		keys := make([]string, 0, len(row))
 		for key := range row {
 			keys = append(keys, key)
@@ -192,19 +199,100 @@ func CompleteQueryResult(rows []QueryRow) ([]byte, error) {
 		slices.Sort(keys)
 		result[index] = make(map[string]QueryValue, len(row))
 		for _, key := range keys {
-			result[index][key] = row[key]
+			value := row[key]
+			if key == "" || value.Kind == "" || !utf8.ValidString(key) || !utf8.ValidString(value.Kind) || !utf8.ValidString(value.Value) {
+				return nil, ErrSearchResultInvalid
+			}
+			result[index][key] = value
 		}
 	}
-	return json.Marshal(map[string]any{"rows": result})
+	canonical, err := json.Marshal(result)
+	if err != nil {
+		return nil, ErrSearchResultInvalid
+	}
+	digest := sha256.Sum256(canonical)
+	response := map[string]any{"rows": result, "result_hash": "sha256:" + hex.EncodeToString(digest[:])}
+	if len(scopeDigest) != 0 && scopeDigest[0] != "" {
+		response["scope_digest"] = scopeDigest[0]
+	}
+	return json.Marshal(response)
 }
 
-func CompleteAnalysisResult(values []AnalysisValue) ([]byte, error) {
-	result := make([]map[string]string, len(values))
-	for index, value := range values {
-		if value.Address == "" || value.MetricName == "" || value.TypedValue == "" {
+func CompleteAnalysisResult(values []AnalysisValue, scopeDigest ...string) ([]byte, error) {
+	if len(values) == 0 {
+		return nil, ErrSearchResultInvalid
+	}
+	seen := map[string]bool{}
+	groups := map[string][]string{}
+	for _, value := range values {
+		if value.Address == "" || value.MetricName == "" || value.TypedValue == "" || !stableSearchScopeAddress.MatchString(value.Address) || seen[value.MetricName+"\x00"+value.Address] {
 			return nil, ErrSearchResultInvalid
 		}
-		result[index] = map[string]string{"subject_address": value.Address, "metric_name": value.MetricName, "typed_value": value.TypedValue}
+		seen[value.MetricName+"\x00"+value.Address] = true
+		if value.MetricName == "community_id" || value.MetricName == "component_id" {
+			if _, err := strconv.ParseInt(value.TypedValue, 10, 64); err != nil {
+				return nil, ErrSearchResultInvalid
+			}
+			groups[value.MetricName+"\x00"+value.TypedValue] = append(groups[value.MetricName+"\x00"+value.TypedValue], value.Address)
+		}
 	}
-	return json.Marshal(map[string]any{"values": result, "result_truncated": false})
+	type group struct{ key, first string }
+	groupValues := make([]group, 0, len(groups))
+	for key, addresses := range groups {
+		slices.Sort(addresses)
+		groupValues = append(groupValues, group{key: key, first: addresses[0]})
+	}
+	slices.SortFunc(groupValues, func(a, b group) int {
+		if metric := strings.Compare(strings.SplitN(a.key, "\x00", 2)[0], strings.SplitN(b.key, "\x00", 2)[0]); metric != 0 {
+			return metric
+		}
+		return strings.Compare(a.first, b.first)
+	})
+	labels := map[string]string{}
+	metricLabel := map[string]int{}
+	for _, value := range groupValues {
+		metric := strings.SplitN(value.key, "\x00", 2)[0]
+		metricLabel[metric]++
+		labels[value.key] = strconv.Itoa(metricLabel[metric])
+	}
+	result := make([]map[string]any, len(values))
+	for index, value := range values {
+		var normalized string
+		kind := "int64"
+		switch value.MetricName {
+		case "importance":
+			number, err := strconv.ParseFloat(value.TypedValue, 64)
+			if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+				return nil, ErrSearchResultInvalid
+			}
+			kind, normalized = "float64", strconv.FormatFloat(number, 'g', -1, 64)
+		case "core_number":
+			number, err := strconv.ParseInt(value.TypedValue, 10, 64)
+			if err != nil || number < 0 {
+				return nil, ErrSearchResultInvalid
+			}
+			normalized = strconv.FormatInt(number, 10)
+		case "community_id", "component_id":
+			normalized = labels[value.MetricName+"\x00"+value.TypedValue]
+		default:
+			return nil, ErrSearchResultInvalid
+		}
+		result[index] = map[string]any{"subject_address": value.Address, "metric_name": value.MetricName, "typed_value": map[string]string{"kind": kind, "value": normalized}}
+	}
+	slices.SortFunc(result, func(a, b map[string]any) int {
+		if metric := strings.Compare(a["metric_name"].(string), b["metric_name"].(string)); metric != 0 {
+			return metric
+		}
+		return strings.Compare(a["subject_address"].(string), b["subject_address"].(string))
+	})
+	canonical, err := json.Marshal(result)
+	if err != nil {
+		return nil, ErrSearchResultInvalid
+	}
+	digest := sha256.Sum256(canonical)
+	response := map[string]any{"values": result, "result_truncated": false, "result_hash": "sha256:" + hex.EncodeToString(digest[:])}
+	if len(scopeDigest) != 0 && scopeDigest[0] != "" {
+		response["scope_digest"] = scopeDigest[0]
+	}
+	return json.Marshal(response)
 }

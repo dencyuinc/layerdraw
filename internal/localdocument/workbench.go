@@ -129,6 +129,10 @@ func (w *runtimeWorkbench) SourceDigest(handle string) (protocolcommon.Digest, b
 	return w.bridge.SourceDigest(handle)
 }
 
+func (w *runtimeWorkbench) SearchEncodedInput(handle string) ([]byte, bool) {
+	return w.bridge.SearchEncodedInput(handle)
+}
+
 func (w *runtimeWorkbench) Opened(revision runtimeprotocol.CommittedRevisionRef) (port.WorkingDocument, bool) {
 	value, ok := w.bridge.Opened(string(revision.DocumentID), string(revision.RevisionID))
 	if !ok {

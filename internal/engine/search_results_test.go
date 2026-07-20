@@ -36,8 +36,8 @@ func TestCompleteSearchResultRejectsDuplicatePhysicalSignal(t *testing.T) {
 }
 
 func TestCompleteQueryAndAnalysisResults(t *testing.T) {
-	query, err := CompleteQueryResult([]QueryRow{{"address": {Kind: "string", Value: "a"}}})
-	if err != nil || !strings.Contains(string(query), `"address"`) {
+	query, err := CompleteQueryResult([]QueryRow{{"address": {Kind: "string", Value: "a"}}}, "sha256:scope")
+	if err != nil || !strings.Contains(string(query), `"address"`) || !strings.Contains(string(query), `"result_hash":"sha256:`) || !strings.Contains(string(query), `"scope_digest":"sha256:scope"`) {
 		t.Fatalf("query=%s err=%v", query, err)
 	}
 	analysis, err := CompleteAnalysisResult([]AnalysisValue{{Address: "a", MetricName: "importance", TypedValue: "0.5"}})
@@ -46,6 +46,30 @@ func TestCompleteQueryAndAnalysisResults(t *testing.T) {
 	}
 	if _, err := CompleteAnalysisResult([]AnalysisValue{{}}); err == nil {
 		t.Fatal("invalid analysis accepted")
+	}
+}
+
+func TestAnalysisNormalizesNumbersAndStableCommunityLabels(t *testing.T) {
+	result, err := CompleteAnalysisResult([]AnalysisValue{
+		{Address: "z", MetricName: "community_id", TypedValue: "99"},
+		{Address: "a", MetricName: "community_id", TypedValue: "42"},
+		{Address: "b", MetricName: "community_id", TypedValue: "42"},
+		{Address: "a", MetricName: "importance", TypedValue: "5e-1"},
+	}, "sha256:scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(result)
+	if !strings.Contains(encoded, `"kind":"float64","value":"0.5"`) || !strings.Contains(encoded, `"result_hash":"sha256:`) || !strings.Contains(encoded, `"scope_digest":"sha256:scope"`) {
+		t.Fatalf("result=%s", result)
+	}
+	first := strings.Index(encoded, `"subject_address":"a"`)
+	second := strings.Index(encoded, `"subject_address":"z"`)
+	if first < 0 || second < first || !strings.Contains(encoded, `"kind":"int64","value":"1"`) || !strings.Contains(encoded, `"kind":"int64","value":"2"`) {
+		t.Fatalf("unstable labels/order: %s", result)
+	}
+	if _, err := CompleteAnalysisResult([]AnalysisValue{{Address: "a", MetricName: "importance", TypedValue: "NaN"}}); err == nil {
+		t.Fatal("non-finite backend metric accepted")
 	}
 }
 

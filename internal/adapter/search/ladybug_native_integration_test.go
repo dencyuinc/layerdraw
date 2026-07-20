@@ -87,12 +87,12 @@ func TestGoLadybugRejectsIncrementalPlanWhoseActualDocumentSetIsStale(t *testing
 		t.Fatal(err)
 	}
 	defer session.Close()
-	for _, query := range []string{"CREATE NODE TABLE SearchDoc (id STRING, content_hash STRING, body STRING, PRIMARY KEY(id))", "CREATE (n:SearchDoc {id: 'old', content_hash: 'old-hash', body: 'stale'})"} {
+	for _, query := range []string{"CREATE NODE TABLE SearchDoc (id STRING, content_hash STRING, physical_digest STRING, body STRING, PRIMARY KEY(id))", "CREATE (n:SearchDoc {id: 'old', content_hash: 'old-hash', physical_digest: 'old-physical', body: 'stale'})"} {
 		if err := session.controlLocked(query); err != nil {
 			t.Fatal(err)
 		}
 	}
-	evidence := LadybugIndexEvidence{TableName: "SearchDoc", IndexName: "search_doc_fts", IndexType: "FTS", PropertyNames: []string{"body"}, ContentColumns: []string{"id", "content_hash", "body"}, PrimaryKey: "id", ExpectedDocumentSetDigest: documentSetDigest([]map[string]any{{"id": "new", "content_hash": "new-hash"}})}
+	evidence := LadybugIndexEvidence{TableName: "SearchDoc", IndexName: "search_doc_fts", IndexType: "FTS", PropertyNames: []string{"body"}, ContentColumns: []string{"id", "content_hash", "physical_digest", "body"}, PrimaryKey: "id", ExpectedDocumentSetDigest: documentSetDigest([]map[string]any{{"id": "new", "physical_digest": "new-physical"}})}
 	ref := port.PhysicalIndexRef{IdentityDigest: "sha256:" + string(make([]byte, 64)), BackendVersion: GoLadybugBackendVersion}
 	statements := []LadybugStatement{{Query: testCreateFTS}}
 	if err := session.ApplyIndex(context.Background(), statements, &ref, []LadybugIndexEvidence{evidence}, port.ExecutionLimits{MaxRows: 16, MaxBytes: 4096}, discardRowSink{}); !errors.Is(err, ErrPhysicalIndexMissing) {

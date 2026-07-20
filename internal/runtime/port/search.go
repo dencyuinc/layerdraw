@@ -4,7 +4,12 @@ package port
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"time"
+
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 )
 
 // Search primitives are intentionally physical. Plans and rows are produced
@@ -63,6 +68,21 @@ type ExecutionPlan struct {
 	Payload         []byte
 	MaxRows         int
 	MaxBytes        int
+	Authority       PlanAuthorityBinding
+}
+
+// PlanAuthorityBinding is the exact immutable authority context covered by
+// the private plan signature. A valid plan cannot be replayed for another
+// snapshot, Access projection, profile, index, or request.
+type PlanAuthorityBinding struct {
+	Snapshot               DocumentSnapshotRef `json:"snapshot"`
+	AccessProjectionDigest string              `json:"access_projection_digest"`
+	SearchProfileID        string              `json:"search_profile_id,omitempty"`
+	SearchProfileDigest    string              `json:"search_profile_digest,omitempty"`
+	EmbeddingProfileID     string              `json:"embedding_profile_id,omitempty"`
+	EmbeddingProfileDigest string              `json:"embedding_profile_digest,omitempty"`
+	IndexIdentityDigest    string              `json:"index_identity_digest,omitempty"`
+	RequestDigest          string              `json:"request_digest"`
 }
 
 type RawValue struct {
@@ -175,6 +195,21 @@ type SearchDocumentField struct {
 	LexicalWeight int
 }
 
+// SearchDocumentPhysicalDigest binds every persisted physical column and the
+// optional vector. ContentHash remains a semantic source digest; it is not
+// sufficient evidence that an existing physical row is safe to reuse.
+func SearchDocumentPhysicalDigest(document SearchDocumentInput, embedding []float32) string {
+	fields, _ := json.Marshal(document.Fields)
+	data, _ := json.Marshal(struct {
+		SubjectAddress, SubjectKind, OwnerAddress, ContentHash, LexicalText string
+		GraphEntryAddresses, TypeAddresses, LayerAddresses                  []string
+		Embedding                                                           []float32
+		FieldsJSON                                                          string
+	}{document.SubjectAddress, document.SubjectKind, document.OwnerAddress, document.ContentHash, document.LexicalText, document.GraphEntryAddresses, document.TypeAddresses, document.LayerAddresses, embedding, string(fields)})
+	digest := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
 // SearchDocumentBatch is opaque evidence issued after Engine generation and
 // Access projection. Runtime verifies Token before any provider sees Text.
 type SearchDocumentBatch struct {
@@ -266,6 +301,7 @@ type SearchIndexPreparationInput struct {
 }
 
 type BoundExecutionRequest struct {
+	Session                *runtimeprotocol.RuntimeSessionRef
 	Snapshot               DocumentSnapshotRef
 	AccessProjectionDigest string
 	Request                []byte

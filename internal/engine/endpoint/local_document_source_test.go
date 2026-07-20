@@ -46,6 +46,17 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 	if _, err := localEngine.ReadEncodedInput(ctx, []byte(`{"unknown":true}`)); err == nil {
 		t.Fatal("unknown encoded input was accepted")
 	}
+	searchInput := source.SearchOpenInput()
+	if searchInput.CompileInput.EntryPath != project.EntryPath || searchInput.RequestedLimits.MaxItems == 0 {
+		t.Fatalf("search input=%+v", searchInput)
+	}
+	decodedSearchInput, err := SearchOpenInputFromEncoded(encoded)
+	if err != nil || decodedSearchInput.CompileInput.EntryPath != project.EntryPath {
+		t.Fatalf("decoded search input=%+v err=%v", decodedSearchInput, err)
+	}
+	if _, err := SearchOpenInputFromEncoded([]byte(`{"unknown":true}`)); err == nil {
+		t.Fatal("invalid encoded search input was accepted")
+	}
 
 	archive, err := localEngine.WriteContainer(ctx, source)
 	if err != nil {
@@ -83,6 +94,12 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 	if digest, ok := bridge.SourceDigest(working.Handle); !ok || digest != ref.Digest {
 		t.Fatalf("source digest=%s ok=%v want=%s", digest, ok, ref.Digest)
 	}
+	if searchEncoded, ok := bridge.SearchEncodedInput(working.Handle); !ok || LocalCompileInputRef(searchEncoded).Digest != ref.Digest {
+		t.Fatalf("search encoded input ok=%v bytes=%d", ok, len(searchEncoded))
+	}
+	if _, ok := bridge.SearchEncodedInput("missing"); ok {
+		t.Fatal("missing search input was reported")
+	}
 
 	compiled, err := engine.New(engine.BuildInfo{}).Compile(ctx, source.input)
 	if err != nil {
@@ -118,6 +135,9 @@ func TestLocalDocumentSourceAndRuntimeBridge(t *testing.T) {
 	}
 	if _, ok := bridge.SourceDigest(checkpoint.Handle); ok {
 		t.Fatal("closed source digest remained visible")
+	}
+	if _, ok := bridge.SearchEncodedInput(checkpoint.Handle); ok {
+		t.Fatal("closed search input remained visible")
 	}
 	if _, ok := bridge.Opened("missing", "missing"); ok {
 		t.Fatal("missing opened document was reported")

@@ -46,10 +46,10 @@ type NativeSearchPlan struct {
 }
 
 type NativeIndexDocument struct {
-	SubjectAddress, SubjectKind, OwnerAddress, ContentHash, LexicalText string
-	GraphEntryAddresses, TypeAddresses, LayerAddresses                  []string
-	Embedding                                                           []float32
-	FieldsJSON                                                          string
+	SubjectAddress, SubjectKind, OwnerAddress, ContentHash, PhysicalDigest, LexicalText string
+	GraphEntryAddresses, TypeAddresses, LayerAddresses                                  []string
+	Embedding                                                                           []float32
+	FieldsJSON                                                                          string
 }
 type NativeIndexPlanInput struct {
 	Request               []byte
@@ -76,14 +76,19 @@ func BuildNativeSearchIndexPlan(input NativeIndexPlanInput) (NativeSearchPlan, e
 	var request struct {
 		Kind string `json:"kind"`
 	}
-	if decodeClosedSearchRequest(input.Request, &request) != nil || request.Kind != "build_search_index" || input.BackendVersion == "" || input.EmbeddingDimensions <= 0 || len(input.Documents) == 0 || len(input.Identity) == 0 {
+	if decodeClosedSearchRequest(input.Request, &request) != nil || request.Kind != "build_search_index" || input.BackendVersion == "" || input.EmbeddingDimensions < 0 || len(input.Identity) == 0 {
 		return NativeSearchPlan{}, ErrSearchPlanInvalid
 	}
 	identityDigest := sha256.Sum256(input.Identity)
 	physical := &SearchPlanPhysicalRef{IdentityDigest: hex.EncodeToString(identityDigest[:]), BackendVersion: input.BackendVersion}
 	fullRebuild := input.FullRebuild || input.PreviousContentHashes == nil
+	documentSchema := "CREATE NODE TABLE IF NOT EXISTS SearchDoc (id STRING, kind STRING, owner STRING, graph_entries STRING, type_addresses STRING, layer_addresses STRING, content_hash STRING, physical_digest STRING, fields STRING, body STRING"
+	if input.EmbeddingDimensions > 0 {
+		documentSchema += fmt.Sprintf(", embedding FLOAT[%d]", input.EmbeddingDimensions)
+	}
+	documentSchema += ", PRIMARY KEY(id))"
 	statements := []SearchPlanStatement{
-		{Query: fmt.Sprintf("CREATE NODE TABLE IF NOT EXISTS SearchDoc (id STRING, kind STRING, owner STRING, graph_entries STRING, type_addresses STRING, layer_addresses STRING, content_hash STRING, fields STRING, body STRING, embedding FLOAT[%d], PRIMARY KEY(id))", input.EmbeddingDimensions), Parameters: map[string]SearchPlanValue{}},
+		{Query: documentSchema, Parameters: map[string]SearchPlanValue{}},
 		{Query: "CREATE NODE TABLE IF NOT EXISTS SearchNode (id STRING, PRIMARY KEY(id))", Parameters: map[string]SearchPlanValue{}},
 		{Query: "CREATE REL TABLE IF NOT EXISTS SearchEdge (FROM SearchNode TO SearchNode, id STRING, from_id STRING, to_id STRING)", Parameters: map[string]SearchPlanValue{}},
 		{Query: "MATCH ()-[r:SearchEdge]->() DELETE r", Parameters: map[string]SearchPlanValue{}},
@@ -96,11 +101,13 @@ func BuildNativeSearchIndexPlan(input NativeIndexPlanInput) (NativeSearchPlan, e
 	seen := map[string]bool{}
 	currentHashes := make(map[string]string, len(input.Documents))
 	for _, document := range input.Documents {
-		if document.SubjectAddress == "" || document.ContentHash == "" || len(document.Embedding) != input.EmbeddingDimensions || seen[document.SubjectAddress] {
+		physicalDigest, digestErr := nativeIndexDocumentPhysicalDigest(document)
+		if digestErr != nil || document.SubjectAddress == "" || document.ContentHash == "" || (document.PhysicalDigest != "" && document.PhysicalDigest != physicalDigest) || len(document.Embedding) != input.EmbeddingDimensions || seen[document.SubjectAddress] {
 			return NativeSearchPlan{}, ErrSearchPlanInvalid
 		}
+		document.PhysicalDigest = physicalDigest
 		seen[document.SubjectAddress] = true
-		currentHashes[document.SubjectAddress] = document.ContentHash
+		currentHashes[document.SubjectAddress] = document.PhysicalDigest
 		if !json.Valid([]byte(document.FieldsJSON)) {
 			return NativeSearchPlan{}, ErrSearchPlanInvalid
 		}
@@ -113,17 +120,23 @@ func BuildNativeSearchIndexPlan(input NativeIndexPlanInput) (NativeSearchPlan, e
 		if document.SubjectKind == "relation" && len(document.GraphEntryAddresses) == 2 {
 			statements = append(statements, SearchPlanStatement{Query: "MATCH (a:SearchNode {id: $from}), (b:SearchNode {id: $to}) CREATE (a)-[:SearchEdge {id: $id, from_id: $from, to_id: $to}]->(b)", Parameters: map[string]SearchPlanValue{"from": {Kind: "string", Value: document.GraphEntryAddresses[0]}, "to": {Kind: "string", Value: document.GraphEntryAddresses[1]}, "id": {Kind: "string", Value: document.SubjectAddress}}})
 		}
-		if !fullRebuild && input.PreviousContentHashes[document.SubjectAddress] == document.ContentHash {
+		if !fullRebuild && input.PreviousContentHashes[document.SubjectAddress] == document.PhysicalDigest {
 			continue
 		}
 		if !fullRebuild && input.PreviousContentHashes[document.SubjectAddress] != "" {
 			statements = append(statements, SearchPlanStatement{Query: "MATCH (n:SearchDoc {id: $id}) DELETE n", Parameters: map[string]SearchPlanValue{"id": {Kind: "string", Value: document.SubjectAddress}}})
 		}
-		embedding, _ := json.Marshal(document.Embedding)
 		graphEntries, _ := json.Marshal(document.GraphEntryAddresses)
 		types, _ := json.Marshal(document.TypeAddresses)
 		layers, _ := json.Marshal(document.LayerAddresses)
-		statements = append(statements, SearchPlanStatement{Query: "CREATE (n:SearchDoc {id: $id, kind: $kind, owner: $owner, graph_entries: $graph_entries, type_addresses: $type_addresses, layer_addresses: $layer_addresses, content_hash: $content_hash, fields: $fields, body: $body, embedding: $embedding})", Parameters: map[string]SearchPlanValue{"id": {Kind: "string", Value: document.SubjectAddress}, "kind": {Kind: "string", Value: document.SubjectKind}, "owner": {Kind: "string", Value: document.OwnerAddress}, "graph_entries": {Kind: "string", Value: string(graphEntries)}, "type_addresses": {Kind: "string", Value: string(types)}, "layer_addresses": {Kind: "string", Value: string(layers)}, "content_hash": {Kind: "string", Value: document.ContentHash}, "fields": {Kind: "string", Value: document.FieldsJSON}, "body": {Kind: "string", Value: document.LexicalText}, "embedding": {Kind: "float32_array", Value: string(embedding)}}})
+		parameters := map[string]SearchPlanValue{"id": {Kind: "string", Value: document.SubjectAddress}, "kind": {Kind: "string", Value: document.SubjectKind}, "owner": {Kind: "string", Value: document.OwnerAddress}, "graph_entries": {Kind: "string", Value: string(graphEntries)}, "type_addresses": {Kind: "string", Value: string(types)}, "layer_addresses": {Kind: "string", Value: string(layers)}, "content_hash": {Kind: "string", Value: document.ContentHash}, "physical_digest": {Kind: "string", Value: document.PhysicalDigest}, "fields": {Kind: "string", Value: document.FieldsJSON}, "body": {Kind: "string", Value: document.LexicalText}}
+		properties := "id: $id, kind: $kind, owner: $owner, graph_entries: $graph_entries, type_addresses: $type_addresses, layer_addresses: $layer_addresses, content_hash: $content_hash, physical_digest: $physical_digest, fields: $fields, body: $body"
+		if input.EmbeddingDimensions > 0 {
+			embedding, _ := json.Marshal(document.Embedding)
+			parameters["embedding"] = SearchPlanValue{Kind: "float32_array", Value: string(embedding)}
+			properties += ", embedding: $embedding"
+		}
+		statements = append(statements, SearchPlanStatement{Query: "CREATE (n:SearchDoc {" + properties + "})", Parameters: parameters})
 	}
 	if !fullRebuild {
 		removed := make([]string, 0)
@@ -137,16 +150,37 @@ func BuildNativeSearchIndexPlan(input NativeIndexPlanInput) (NativeSearchPlan, e
 			statements = append(statements, SearchPlanStatement{Query: "MATCH (n:SearchDoc {id: $id}) DELETE n", Parameters: map[string]SearchPlanValue{"id": {Kind: "string", Value: address}}})
 		}
 	}
-	statements = append(statements, SearchPlanStatement{Query: "CALL CREATE_FTS_INDEX('SearchDoc', 'search_doc_fts', ['body'], stemmer := 'none')", Parameters: map[string]SearchPlanValue{}}, SearchPlanStatement{Query: "CALL CREATE_VECTOR_INDEX('SearchDoc', 'search_doc_vector', 'embedding', metric := 'cosine')", Parameters: map[string]SearchPlanValue{}})
+	statements = append(statements, SearchPlanStatement{Query: "CALL CREATE_FTS_INDEX('SearchDoc', 'search_doc_fts', ['body'], stemmer := 'none')", Parameters: map[string]SearchPlanValue{}})
+	if input.EmbeddingDimensions > 0 {
+		statements = append(statements, SearchPlanStatement{Query: "CALL CREATE_VECTOR_INDEX('SearchDoc', 'search_doc_vector', 'embedding', metric := 'cosine')", Parameters: map[string]SearchPlanValue{}})
+	}
 	expectedDocumentSetDigest := searchDocumentSetDigest(currentHashes)
-	columns := []string{"id", "kind", "owner", "graph_entries", "type_addresses", "layer_addresses", "content_hash", "fields", "body", "embedding"}
+	columns := []string{"id", "kind", "owner", "graph_entries", "type_addresses", "layer_addresses", "content_hash", "physical_digest", "fields", "body"}
+	if input.EmbeddingDimensions > 0 {
+		columns = append(columns, "embedding")
+	}
 	evidence := []SearchPlanEvidence{
 		{TableName: "SearchDoc", IndexName: "search_doc_fts", IndexType: "FTS", PropertyNames: []string{"body"}, ContentColumns: columns, PrimaryKey: "id", ExpectedDocumentSetDigest: expectedDocumentSetDigest},
-		{TableName: "SearchDoc", IndexName: "search_doc_vector", IndexType: "HNSW", PropertyNames: []string{"embedding"}, ContentColumns: columns, PrimaryKey: "id", ExpectedDocumentSetDigest: expectedDocumentSetDigest},
-		{TableName: "SearchNode", ContentColumns: []string{"id"}, PrimaryKey: "id"},
-		{TableName: "SearchEdge", ContentColumns: []string{"id", "from_id", "to_id"}, PrimaryKey: "id", AllowNonPrimary: true, Relation: true},
 	}
+	if input.EmbeddingDimensions > 0 {
+		evidence = append(evidence, SearchPlanEvidence{TableName: "SearchDoc", IndexName: "search_doc_vector", IndexType: "HNSW", PropertyNames: []string{"embedding"}, ContentColumns: columns, PrimaryKey: "id", ExpectedDocumentSetDigest: expectedDocumentSetDigest})
+	}
+	evidence = append(evidence, SearchPlanEvidence{TableName: "SearchNode", ContentColumns: []string{"id"}, PrimaryKey: "id"}, SearchPlanEvidence{TableName: "SearchEdge", ContentColumns: []string{"id", "from_id", "to_id"}, PrimaryKey: "id", AllowNonPrimary: true, Relation: true})
 	return NativeSearchPlan{Statements: statements, PhysicalIndex: physical, PhysicalEvidence: evidence}, nil
+}
+
+func nativeIndexDocumentPhysicalDigest(document NativeIndexDocument) (string, error) {
+	data, err := json.Marshal(struct {
+		SubjectAddress, SubjectKind, OwnerAddress, ContentHash, LexicalText string
+		GraphEntryAddresses, TypeAddresses, LayerAddresses                  []string
+		Embedding                                                           []float32
+		FieldsJSON                                                          string
+	}{document.SubjectAddress, document.SubjectKind, document.OwnerAddress, document.ContentHash, document.LexicalText, document.GraphEntryAddresses, document.TypeAddresses, document.LayerAddresses, document.Embedding, document.FieldsJSON})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
 func searchDocumentSetDigest(hashes map[string]string) string {
@@ -257,6 +291,7 @@ func BuildNativeAnalysisPlan(requestBytes []byte) (NativeSearchPlan, int, error)
 	}
 	digest := sha256.Sum256(requestBytes)
 	graph := "ld_scope_" + hex.EncodeToString(digest[:8])
+	validate := SearchPlanStatement{Query: "MATCH (a:SearchNode)-[r:SearchEdge]->(b:SearchNode) WHERE r.id IN [" + strings.Join(relations, ",") + "] AND (NOT a.id IN [" + strings.Join(entities, ",") + "] OR NOT b.id IN [" + strings.Join(entities, ",") + "]) RETURN r.id AS address, 'scope_violation' AS metric_name, '1' AS metric_value", Parameters: map[string]SearchPlanValue{}}
 	project := SearchPlanStatement{Query: "CALL PROJECT_GRAPH('" + graph + "', {'SearchNode': 'n.id IN [" + strings.Join(entities, ",") + "]'}, {'SearchEdge': 'r.id IN [" + strings.Join(relations, ",") + "]'})", Parameters: map[string]SearchPlanValue{}}
 	queries := map[string]string{
 		"page_rank": "CALL page_rank('" + graph + "') RETURN node.id AS address, 'importance' AS metric_name, rank AS metric_value ORDER BY address",
@@ -269,7 +304,7 @@ func BuildNativeAnalysisPlan(requestBytes []byte) (NativeSearchPlan, int, error)
 	if !ok {
 		return NativeSearchPlan{}, 0, ErrSearchPlanInvalid
 	}
-	return NativeSearchPlan{Statements: []SearchPlanStatement{project, {Query: query, Parameters: map[string]SearchPlanValue{}}, {Query: "CALL DROP_PROJECTED_GRAPH('" + graph + "')", Parameters: map[string]SearchPlanValue{}}}}, len(request.EntityAddresses), nil
+	return NativeSearchPlan{Statements: []SearchPlanStatement{validate, project, {Query: query, Parameters: map[string]SearchPlanValue{}}, {Query: "CALL DROP_PROJECTED_GRAPH('" + graph + "')", Parameters: map[string]SearchPlanValue{}}}}, len(request.EntityAddresses) + 1, nil
 }
 
 func decodeNativeExecutionRequest(data []byte, kind string) (nativeExecutionRequest, error) {

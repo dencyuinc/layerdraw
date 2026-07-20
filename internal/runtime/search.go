@@ -15,6 +15,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -108,6 +109,7 @@ func (s *SearchService) Capabilities(ctx context.Context) (SearchCapabilityManif
 }
 
 type SearchRequest struct {
+	Session                *runtimeprotocol.RuntimeSessionRef
 	Snapshot               port.DocumentSnapshotRef
 	AccessProjectionDigest string
 	SearchProfile          port.SearchProfile
@@ -198,9 +200,12 @@ func (s *SearchService) RebuildIndex(ctx context.Context, input SearchIndexBuild
 	if err != nil {
 		return port.SearchIndexStatus{}, ErrSearchInvalidRequest
 	}
+	if plan.Authority != indexPlanAuthority(input) {
+		return port.SearchIndexStatus{}, ErrSearchInvalidRequest
+	}
 	staged, err := s.indexes.ApplyPlan(ctx, input.IndexIdentity, plan)
 	if err != nil {
-		return port.SearchIndexStatus{}, fmt.Errorf("%w: index build failed", ErrSearchBackendFailed)
+		return port.SearchIndexStatus{}, fmt.Errorf("%w: index build failed: %v", ErrSearchBackendFailed, err)
 	}
 	status, err := s.indexes.Activate(ctx, staged)
 	if err != nil {
@@ -208,8 +213,13 @@ func (s *SearchService) RebuildIndex(ctx context.Context, input SearchIndexBuild
 	}
 	if supportsManifest {
 		currentHashes := make(map[string]string, len(input.Batch.Documents))
-		for _, document := range input.Batch.Documents {
-			currentHashes[document.SubjectAddress] = document.ContentHash
+		for index, document := range input.Batch.Documents {
+			var vector []float32
+			if len(embeddings) != 0 {
+				vector = embeddings[index].Values
+			}
+			digest := port.SearchDocumentPhysicalDigest(document, vector)
+			currentHashes[document.SubjectAddress] = digest
 		}
 		if err := manifestStore.RecordDocumentHashes(ctx, input.IndexIdentity, currentHashes); err != nil {
 			_ = s.indexes.Invalidate(ctx, input.IndexIdentity)
@@ -283,6 +293,9 @@ func (s *SearchService) Search(ctx context.Context, input SearchRequest) ([]byte
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: Engine rejected search", ErrSearchInvalidRequest)
+	}
+	if prepared.Plan.Authority != searchPlanAuthority(input) {
+		return nil, fmt.Errorf("%w: Engine returned unbound search plan", ErrSearchInvalidRequest)
 	}
 	prepared.Offset = offset
 	if len(s.cursorKey) != 0 {
@@ -362,15 +375,21 @@ func (s *SearchService) ExecuteQuery(ctx context.Context, input port.BoundExecut
 	if err != nil {
 		return nil, ErrSearchInvalidRequest
 	}
+	if plan.Authority != boundPlanAuthority(input) {
+		return nil, ErrSearchInvalidRequest
+	}
 	rows, err := s.executor.Execute(ctx, plan)
 	if err != nil {
 		return nil, normalizeExecutionError(err)
 	}
 	result, err := s.engine.CompleteQuery(ctx, port.CompleteExecutionInput{Plan: plan, Rows: rows})
-	if err == nil && len(result) > input.MaxOutputBytes {
+	if err != nil {
+		return nil, fmt.Errorf("%w: Engine rejected query rows", ErrSearchBackendFailed)
+	}
+	if len(result) > input.MaxOutputBytes {
 		return nil, ErrSearchInvalidRequest
 	}
-	return result, err
+	return result, nil
 }
 
 func (s *SearchService) ExecuteAnalysis(ctx context.Context, input port.BoundExecutionRequest) ([]byte, error) {
@@ -381,19 +400,28 @@ func (s *SearchService) ExecuteAnalysis(ctx context.Context, input port.BoundExe
 	if err != nil {
 		return nil, ErrAnalysisInvalidScope
 	}
+	if plan.Authority != boundPlanAuthority(input) {
+		return nil, ErrAnalysisInvalidScope
+	}
 	rows, err := s.executor.Execute(ctx, plan)
 	if err != nil {
 		return nil, normalizeExecutionError(err)
 	}
 	result, err := s.engine.CompleteAnalysis(ctx, port.CompleteExecutionInput{Plan: plan, Rows: rows})
-	if err == nil && len(result) > input.MaxOutputBytes {
+	if err != nil {
+		if errors.Is(err, port.ErrInvalidScope) {
+			return nil, ErrAnalysisInvalidScope
+		}
+		return nil, fmt.Errorf("%w: Engine rejected analysis rows", ErrSearchBackendFailed)
+	}
+	if len(result) > input.MaxOutputBytes {
 		return nil, ErrAnalysisInvalidScope
 	}
-	return result, err
+	return result, nil
 }
 
 func validateSearchRequest(input SearchRequest) error {
-	if input.QueryText == "" || input.MaxOutputBytes <= 0 || input.SearchProfile.ProfileID == "" || input.SearchProfile.SpecificationDigest == "" || input.AccessProjectionDigest == "" || input.IndexIdentity.EmbeddingProfileID == "" || input.IndexIdentity.EmbeddingProfileDigest == "" || input.IndexIdentity.LadybugBackendVersion == "" || input.IndexIdentity.IndexSchemaVersion == "" {
+	if input.QueryText == "" || input.MaxOutputBytes <= 0 || input.SearchProfile.ProfileID == "" || input.SearchProfile.SpecificationDigest == "" || input.AccessProjectionDigest == "" || input.IndexIdentity.LadybugBackendVersion == "" || input.IndexIdentity.IndexSchemaVersion == "" {
 		return ErrSearchInvalidRequest
 	}
 	snapshot := input.Snapshot
@@ -405,8 +433,13 @@ func validateSearchRequest(input SearchRequest) error {
 	if input.Mode != "lexical" && input.Mode != "semantic" && input.Mode != "hybrid" {
 		return ErrSearchInvalidRequest
 	}
-	if (input.Mode == "semantic" || input.Mode == "hybrid") && input.EmbeddingProfile == nil {
-		return ErrSearchInvalidRequest
+	if input.Mode == "semantic" || input.Mode == "hybrid" {
+		if input.EmbeddingProfile == nil {
+			return ErrSearchEmbeddingUnavailable
+		}
+		if input.IndexIdentity.EmbeddingProfileID == "" || input.IndexIdentity.EmbeddingProfileDigest == "" {
+			return ErrSearchEmbeddingProfile
+		}
 	}
 	if input.IndexIdentity.DocumentSnapshotRef != input.Snapshot || input.IndexIdentity.AccessProjectionDigest != input.AccessProjectionDigest || input.IndexIdentity.SearchProfileID != input.SearchProfile.ProfileID || input.IndexIdentity.SearchProfileDigest != input.SearchProfile.SpecificationDigest {
 		return ErrSearchIndexStale
@@ -422,4 +455,61 @@ func normalizeExecutionError(err error) error {
 		return ErrSearchCancelled
 	}
 	return fmt.Errorf("%w: adapter execution failed", ErrSearchBackendFailed)
+}
+
+func authorityDigest(value any) string {
+	data, _ := json.Marshal(value)
+	digest := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func requestAuthorityDigest(value []byte) string {
+	digest := sha256.Sum256(value)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func boundPlanAuthority(input port.BoundExecutionRequest) port.PlanAuthorityBinding {
+	return port.PlanAuthorityBinding{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, RequestDigest: requestAuthorityDigest(input.Request)}
+}
+
+func searchPlanAuthority(input SearchRequest) port.PlanAuthorityBinding {
+	authority := boundPlanAuthority(port.BoundExecutionRequest{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, Request: input.EngineRequest})
+	authority.SearchProfileID = input.SearchProfile.ProfileID
+	authority.SearchProfileDigest = input.SearchProfile.SpecificationDigest
+	authority.IndexIdentityDigest = authorityDigest(input.IndexIdentity)
+	if input.EmbeddingProfile != nil {
+		authority.EmbeddingProfileID = input.EmbeddingProfile.ProfileID
+		authority.EmbeddingProfileDigest = input.EmbeddingProfile.ModelDigest
+	}
+	return authority
+}
+
+func indexPlanAuthority(input SearchIndexBuildRequest) port.PlanAuthorityBinding {
+	authority := port.PlanAuthorityBinding{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, SearchProfileID: input.SearchProfile.ProfileID, SearchProfileDigest: input.SearchProfile.SpecificationDigest, IndexIdentityDigest: authorityDigest(input.IndexIdentity), RequestDigest: requestAuthorityDigest(input.EngineRequest)}
+	if input.EmbeddingProfile != nil {
+		authority.EmbeddingProfileID = input.EmbeddingProfile.ProfileID
+		authority.EmbeddingProfileDigest = input.EmbeddingProfile.ModelDigest
+	}
+	return authority
+}
+
+func searchPreparationAuthority(input port.SearchPreparationInput) port.PlanAuthorityBinding {
+	authority := boundPlanAuthority(input.BoundExecutionRequest)
+	authority.SearchProfileID = input.SearchProfile.ProfileID
+	authority.SearchProfileDigest = input.SearchProfile.SpecificationDigest
+	authority.IndexIdentityDigest = authorityDigest(input.IndexIdentity)
+	if input.EmbeddingProfile != nil {
+		authority.EmbeddingProfileID = input.EmbeddingProfile.ProfileID
+		authority.EmbeddingProfileDigest = input.EmbeddingProfile.ModelDigest
+	}
+	return authority
+}
+
+func indexPreparationAuthority(input port.SearchIndexPreparationInput) port.PlanAuthorityBinding {
+	authority := port.PlanAuthorityBinding{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, SearchProfileID: input.SearchProfile.ProfileID, SearchProfileDigest: input.SearchProfile.SpecificationDigest, IndexIdentityDigest: authorityDigest(input.IndexIdentity), RequestDigest: requestAuthorityDigest(input.Request)}
+	if input.EmbeddingProfile != nil {
+		authority.EmbeddingProfileID = input.EmbeddingProfile.ProfileID
+		authority.EmbeddingProfileDigest = input.EmbeddingProfile.ModelDigest
+	}
+	return authority
 }

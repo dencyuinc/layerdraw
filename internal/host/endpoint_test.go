@@ -157,15 +157,16 @@ func TestRuntimeTerminalResponsesCoverEveryAdvertisedOperation(t *testing.T) {
 
 func TestSearchOperationsDispatchThroughTheWiredSurface(t *testing.T) {
 	composite := newSearchTestEndpoint(t)
+	session, snapshot, accessDigest := openSearchTestSession(t, composite)
 	protocol := runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}
 	requests := []struct {
 		operation string
 		payload   any
 		want      string
 	}{
-		{OperationSearch, layerruntime.SearchRequest{}, `"surface":"search"`},
-		{OperationExecuteQuery, port.BoundExecutionRequest{}, `"surface":"query"`},
-		{OperationAnalyzeGraph, port.BoundExecutionRequest{}, `"surface":"analysis"`},
+		{OperationSearch, layerruntime.SearchRequest{Session: &session, Snapshot: snapshot, AccessProjectionDigest: accessDigest}, `"surface":"search"`},
+		{OperationExecuteQuery, port.BoundExecutionRequest{Session: &session, Snapshot: snapshot, AccessProjectionDigest: accessDigest}, `"surface":"query"`},
+		{OperationAnalyzeGraph, port.BoundExecutionRequest{Session: &session, Snapshot: snapshot, AccessProjectionDigest: accessDigest}, `"surface":"analysis"`},
 	}
 	for _, testCase := range requests {
 		t.Run(testCase.operation, func(t *testing.T) {
@@ -192,7 +193,8 @@ func TestSearchOperationsDispatchThroughTheWiredSurface(t *testing.T) {
 
 func TestWailsAndMCPConsumersReceiveIdenticalEngineSearchResultBytes(t *testing.T) {
 	composite := newSearchTestEndpoint(t)
-	request := layerruntime.SearchRequest{}
+	session, snapshot, accessDigest := openSearchTestSession(t, composite)
+	request := layerruntime.SearchRequest{Session: &session, Snapshot: snapshot, AccessProjectionDigest: accessDigest}
 	// Wails links the in-process consumer surface directly.
 	wailsResult, err := composite.SearchSurface().Search(context.Background(), request)
 	if err != nil {
@@ -207,6 +209,42 @@ func TestWailsAndMCPConsumersReceiveIdenticalEngineSearchResultBytes(t *testing.
 	}
 	if string(decoded.Payload) != string(wailsResult) {
 		t.Fatalf("Wails=%s MCP=%s", wailsResult, decoded.Payload)
+	}
+}
+
+func openSearchTestSession(t *testing.T, endpoint *Endpoint) (runtimeprotocol.RuntimeSessionRef, port.DocumentSnapshotRef, string) {
+	t.Helper()
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project p \"P\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := endpoint.host.OpenProject(context.Background(), localdocument.OpenProjectInput{Root: project, EntryPath: "document.ldl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := opened.Session.Open.CommittedRevision
+	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: string(revision.DocumentID), CommittedRevision: string(revision.RevisionID), DefinitionHash: string(revision.DefinitionHash)}
+	return opened.Session.Open.Session, snapshot, string(opened.Session.Open.AccessSummary.AccessFingerprint)
+}
+
+func TestSearchSessionAuthorityRejectsForgedActorRevisionAndFingerprint(t *testing.T) {
+	endpoint := newSearchTestEndpoint(t)
+	session, snapshot, digest := openSearchTestSession(t, endpoint)
+	if err := endpoint.authorizeSearchSession(context.Background(), &session, snapshot, digest); err != nil {
+		t.Fatal(err)
+	}
+	foreign := session
+	foreign.RuntimeSessionID = "foreign-session"
+	if err := endpoint.authorizeSearchSession(context.Background(), &foreign, snapshot, digest); !errors.Is(err, layerruntime.ErrSearchIndexStale) {
+		t.Fatalf("foreign session err=%v", err)
+	}
+	changed := snapshot
+	changed.CommittedRevision = "foreign-revision"
+	if err := endpoint.authorizeSearchSession(context.Background(), &session, changed, digest); !errors.Is(err, layerruntime.ErrSearchIndexStale) {
+		t.Fatalf("foreign revision err=%v", err)
+	}
+	if err := endpoint.authorizeSearchSession(context.Background(), &session, snapshot, "sha256:forged"); !errors.Is(err, layerruntime.ErrSearchIndexStale) {
+		t.Fatalf("forged fingerprint err=%v", err)
 	}
 }
 
@@ -489,6 +527,115 @@ func fmtHex(value []byte) string {
 		encoded[index*2], encoded[index*2+1] = digits[item>>4], digits[item&15]
 	}
 	return string(encoded)
+}
+
+func TestRuntimeSearchFailuresPreserveTypedParityCodes(t *testing.T) {
+	for _, test := range []struct {
+		err       error
+		code      string
+		outcome   protocolcommon.Outcome
+		retryable bool
+	}{
+		{layerruntime.ErrSearchEmbeddingUnavailable, "search.embedding_unavailable", protocolcommon.OutcomeFailed, true},
+		{layerruntime.ErrSearchEmbeddingProfile, "search.embedding_profile_mismatch", protocolcommon.OutcomeFailed, false},
+		{layerruntime.ErrSearchIndexStale, "search.index_stale", protocolcommon.OutcomeFailed, false},
+		{layerruntime.ErrSearchInvalidCursor, "search.cursor_invalid", protocolcommon.OutcomeFailed, false},
+		{layerruntime.ErrSearchCancelled, "search.cancelled", protocolcommon.OutcomeCancelled, false},
+		{layerruntime.ErrSearchIndexNotReady, "search.index_not_ready", protocolcommon.OutcomeFailed, true},
+		{layerruntime.ErrSearchCapabilityMissing, "search.capability_missing", protocolcommon.OutcomeFailed, false},
+		{layerruntime.ErrSearchInvalidRequest, "search.invalid_request", protocolcommon.OutcomeFailed, false},
+		{layerruntime.ErrAnalysisInvalidScope, "analysis.invalid_scope", protocolcommon.OutcomeFailed, false},
+		{layerruntime.ErrSearchBackendFailed, "search.backend_failed", protocolcommon.OutcomeFailed, true},
+		{errors.New("unknown"), "runtime.operation_failed", protocolcommon.OutcomeFailed, true},
+	} {
+		outcome, failure := runtimeOperationFailure(test.err)
+		if outcome != test.outcome || failure.Code != test.code || failure.Retryable != test.retryable {
+			t.Fatalf("err=%v outcome=%s failure=%+v", test.err, outcome, failure)
+		}
+	}
+}
+
+func TestSearchSessionAuthorityRequiresHostAndSession(t *testing.T) {
+	endpoint := &Endpoint{}
+	if err := endpoint.authorizeSearchSession(context.Background(), nil, port.DocumentSnapshotRef{}, ""); !errors.Is(err, layerruntime.ErrSearchInvalidRequest) {
+		t.Fatalf("nil authority err=%v", err)
+	}
+	endpoint = newSearchTestEndpoint(t)
+	if err := endpoint.authorizeSearchSession(context.Background(), nil, port.DocumentSnapshotRef{}, ""); !errors.Is(err, layerruntime.ErrSearchInvalidRequest) {
+		t.Fatalf("nil session err=%v", err)
+	}
+}
+
+type searchLifecycleRecorder struct {
+	calls int
+	err   error
+}
+
+func (r *searchLifecycleRecorder) RefreshSearchIndex(_ context.Context, _ *localdocument.Session) error {
+	r.calls++
+	return r.err
+}
+
+func TestSearchLifecycleRefreshUsesOnlyTrackedSessions(t *testing.T) {
+	endpoint := newSearchTestEndpoint(t)
+	if err := endpoint.refreshSearchIndex(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, _ := openSearchTestSession(t, endpoint)
+	recorder := &searchLifecycleRecorder{}
+	endpoint.searchLifecycle = recorder
+	if err := endpoint.refreshSearchSession(context.Background(), ref); err != nil || recorder.calls != 1 {
+		t.Fatalf("refresh calls=%d err=%v", recorder.calls, err)
+	}
+	missing := ref
+	missing.RuntimeSessionID = "missing"
+	if err := endpoint.refreshSearchSession(context.Background(), missing); err == nil {
+		t.Fatal("missing lifecycle session was accepted")
+	}
+	recorder.err = errors.New("index failed")
+	if err := endpoint.refreshSearchSession(context.Background(), ref); err == nil || recorder.calls != 2 {
+		t.Fatalf("refresh error calls=%d err=%v", recorder.calls, err)
+	}
+}
+
+func TestOpenFailsClosedWhenSearchLifecycleRefreshFails(t *testing.T) {
+	endpoint := newSearchTestEndpoint(t)
+	endpoint.searchLifecycle = &searchLifecycleRecorder{err: errors.New("index failed")}
+	handshakeTestEndpoint(t, endpoint)
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project p \"P\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	control, err := runtimeprotocol.EncodeOpenDocumentRequestEnvelope(runtimeprotocol.OpenDocumentRequestEnvelope{
+		Operation: runtimeprotocol.OpenDocumentRequestEnvelopeOperationValue,
+		Protocol:  runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"},
+		RequestID: "open_search_failure",
+		Payload:   runtimeprotocol.OpenRuntimeDocumentInput{DocumentID: "bootstrap", LocalSource: &runtimeprotocol.LocalDocumentSource{Kind: "project", Path: project}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := executeRuntimeControl(t, endpoint, "runtime.open_document", control, emptyBlobSource{})
+	if response.Outcome != protocolcommon.OutcomeFailed || response.Failure == nil {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestSearchEnvelopeAndResponseFailClosed(t *testing.T) {
+	valid := []byte(`{"operation":"runtime.search","protocol":{"name":"runtime","version":"1.0"},"request_id":"r","payload":{}}`)
+	if _, err := decodeSearchOperationRequest[layerruntime.SearchRequest](append(valid, []byte(" {}")...), OperationSearch); err == nil {
+		t.Fatal("trailing search request was accepted")
+	}
+	if _, err := decodeSearchOperationRequest[layerruntime.SearchRequest](valid, OperationExecuteQuery); err == nil {
+		t.Fatal("mismatched search request was accepted")
+	}
+	endpoint := newSearchTestEndpoint(t)
+	if _, err := endpoint.runtimeResponse(OperationSearch, "r", "not bytes", protocolcommon.OutcomeSuccess, nil); err == nil {
+		t.Fatal("non-byte search response was accepted")
+	}
+	if _, err := endpoint.runtimeResponse("runtime.unknown", "r", nil, protocolcommon.OutcomeSuccess, nil); err == nil {
+		t.Fatal("unknown Runtime response was accepted")
+	}
 }
 
 func newTestEndpoint(t *testing.T) *Endpoint {

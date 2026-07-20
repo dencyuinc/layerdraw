@@ -403,7 +403,7 @@ func (s *GoLadybugSession) inspectEvidenceLocked(ctx context.Context, evidence L
 		return "", "", ErrPhysicalIndexMissing
 	}
 	if evidence.ExpectedDocumentSetDigest != "" {
-		rows, queryErr := s.queryLocked("MATCH (n:" + evidence.TableName + ") RETURN n.id AS id, n.content_hash AS content_hash ORDER BY id")
+		rows, queryErr := s.queryLocked("MATCH (n:" + evidence.TableName + ") RETURN n.id AS id, n.physical_digest AS physical_digest ORDER BY id")
 		if queryErr != nil || documentSetDigest(rows) != evidence.ExpectedDocumentSetDigest {
 			return "", "", ErrPhysicalIndexMissing
 		}
@@ -418,7 +418,7 @@ func (s *GoLadybugSession) inspectEvidenceLocked(ctx context.Context, evidence L
 func documentSetDigest(rows []map[string]any) string {
 	hash := sha256.New()
 	for _, row := range rows {
-		_, _ = io.WriteString(hash, fmt.Sprint(row["id"])+"\x00"+fmt.Sprint(row["content_hash"])+"\n")
+		_, _ = io.WriteString(hash, fmt.Sprint(row["id"])+"\x00"+fmt.Sprint(row["physical_digest"])+"\n")
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }

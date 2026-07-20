@@ -19,14 +19,26 @@ type searchEngineStub struct {
 	indexPrepared           port.SearchIndexPreparationInput
 }
 
+type reboundSearchEngine struct{ *searchEngineStub }
+
+func (e reboundSearchEngine) PrepareSearch(ctx context.Context, input port.SearchPreparationInput) (port.PreparedSearch, error) {
+	prepared, err := e.searchEngineStub.PrepareSearch(ctx, input)
+	prepared.Plan.Authority.Snapshot.CommittedRevision = "foreign-revision"
+	return prepared, err
+}
+
 func (e *searchEngineStub) PrepareSearchIndex(_ context.Context, input port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
 	e.indexPrepared = input
-	return testPlan(port.PlanSearchIndex), e.prepareErr
+	plan := testPlan(port.PlanSearchIndex)
+	plan.Authority = indexPreparationAuthority(input)
+	return plan, e.prepareErr
 }
 
 func (e *searchEngineStub) PrepareSearch(_ context.Context, in port.SearchPreparationInput) (port.PreparedSearch, error) {
 	e.prepared = in
-	return port.PreparedSearch{Plan: testPlan(port.PlanSearch), QueryDigest: "query"}, e.prepareErr
+	plan := testPlan(port.PlanSearch)
+	plan.Authority = searchPreparationAuthority(in)
+	return port.PreparedSearch{Plan: plan, QueryDigest: "query"}, e.prepareErr
 }
 func (e *searchEngineStub) CompleteSearch(_ context.Context, input port.CompleteSearchInput) ([]byte, error) {
 	e.completed = input
@@ -96,14 +108,27 @@ func TestSearchCursorIsSignedAndBoundToAllAuthorities(t *testing.T) {
 		t.Fatalf("unsigned service accepted cursor: %v", err)
 	}
 }
-func (e *searchEngineStub) PrepareQuery(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
-	return testPlan(port.PlanQuery), e.prepareErr
+
+func TestSearchRejectsEnginePlanReboundAcrossSnapshotAuthority(t *testing.T) {
+	id := testIdentity()
+	engine := reboundSearchEngine{&searchEngineStub{}}
+	service := NewSearchService(engine, executorStub{}, indexStub{status: port.SearchIndexStatus{Identity: id, State: "active"}}, nil)
+	if _, err := service.Search(context.Background(), testRequest("lexical")); !errors.Is(err, ErrSearchInvalidRequest) {
+		t.Fatalf("rebound plan err=%v", err)
+	}
+}
+func (e *searchEngineStub) PrepareQuery(_ context.Context, input port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	plan := testPlan(port.PlanQuery)
+	plan.Authority = boundPlanAuthority(input)
+	return plan, e.prepareErr
 }
 func (e *searchEngineStub) CompleteQuery(context.Context, port.CompleteExecutionInput) ([]byte, error) {
 	return []byte(`{"query":[]}`), e.completeErr
 }
-func (e *searchEngineStub) PrepareAnalysis(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
-	return testPlan(port.PlanAnalysis), e.prepareErr
+func (e *searchEngineStub) PrepareAnalysis(_ context.Context, input port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	plan := testPlan(port.PlanAnalysis)
+	plan.Authority = boundPlanAuthority(input)
+	return plan, e.prepareErr
 }
 func (e *searchEngineStub) CompleteAnalysis(context.Context, port.CompleteExecutionInput) ([]byte, error) {
 	return []byte(`{"analysis":[]}`), e.completeErr
@@ -358,8 +383,12 @@ func TestSearchServiceFailureNormalizationAndValidation(t *testing.T) {
 	invalid := []SearchRequest{testRequest("bad"), testRequest("lexical"), testRequest("semantic")}
 	invalid[1].QueryText = ""
 	invalid[2].EmbeddingProfile = nil
-	for _, request := range invalid {
-		if _, err := NewSearchService(&searchEngineStub{}, executorStub{}, active, nil).Search(ctx, request); !errors.Is(err, ErrSearchInvalidRequest) {
+	for index, request := range invalid {
+		want := ErrSearchInvalidRequest
+		if index == 2 {
+			want = ErrSearchEmbeddingUnavailable
+		}
+		if _, err := NewSearchService(&searchEngineStub{}, executorStub{}, active, nil).Search(ctx, request); !errors.Is(err, want) {
 			t.Fatalf("request=%#v err=%v", request, err)
 		}
 	}
@@ -412,6 +441,12 @@ func TestQueryAndAnalysisEngineFailures(t *testing.T) {
 	if _, err := NewSearchService(&searchEngineStub{completeErr: errors.New("bad")}, executorStub{}, nil, nil).ExecuteAnalysis(ctx, input); err == nil {
 		t.Fatal("completion error lost")
 	}
+	if _, err := NewSearchService(&searchEngineStub{completeErr: port.ErrInvalidScope}, executorStub{}, nil, nil).ExecuteAnalysis(ctx, input); !errors.Is(err, ErrAnalysisInvalidScope) {
+		t.Fatalf("invalid scope err=%v", err)
+	}
+	if _, err := NewSearchService(&searchEngineStub{}, executorStub{}, nil, nil).ExecuteAnalysis(ctx, input); !errors.Is(err, ErrAnalysisInvalidScope) {
+		t.Fatalf("oversize analysis err=%v", err)
+	}
 }
 
 func TestRebuildIndexEmbedsFilteredDocumentsAndActivates(t *testing.T) {
@@ -453,7 +488,8 @@ func TestRebuildIndexPassesAndRecordsDurableIncrementalManifest(t *testing.T) {
 	if _, err := service.RebuildIndex(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	if engine.indexPrepared.FullRebuild || engine.indexPrepared.PreviousContentHashes["removed"] != "h" || store.recorded["a"] != "new" {
+	wantDigest := port.SearchDocumentPhysicalDigest(batch.Documents[0], []float32{1, 2})
+	if engine.indexPrepared.FullRebuild || engine.indexPrepared.PreviousContentHashes["removed"] != "h" || store.recorded["a"] != wantDigest {
 		t.Fatalf("prepared=%+v recorded=%v", engine.indexPrepared, store.recorded)
 	}
 }

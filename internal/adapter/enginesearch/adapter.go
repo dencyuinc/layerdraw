@@ -24,20 +24,45 @@ type AccessProjection interface {
 	AuthorizesSearchProjection(port.DocumentSnapshotRef, string) bool
 }
 
-type LocalAccessProjection struct{ digest string }
+type LocalAccessProjection struct {
+	mu           sync.RWMutex
+	legacyDigest string
+	bindings     map[port.DocumentSnapshotRef]string
+}
 
 func NewLocalAccessProjection(digest string) (*LocalAccessProjection, error) {
 	if digest == "" {
 		return nil, ErrInvalidNativeSearchRequest
 	}
-	return &LocalAccessProjection{digest: digest}, nil
+	return &LocalAccessProjection{legacyDigest: digest, bindings: map[port.DocumentSnapshotRef]string{}}, nil
 }
-func (p *LocalAccessProjection) AuthorizesSearchProjection(_ port.DocumentSnapshotRef, digest string) bool {
-	return p != nil && digest == p.digest
+func NewSessionAccessProjection() *LocalAccessProjection {
+	return &LocalAccessProjection{bindings: map[port.DocumentSnapshotRef]string{}}
 }
-func (*LocalAccessProjection) AllowSearchDocument(engine.SearchDocument) bool { return true }
-func (*LocalAccessProjection) AllowSearchField(engine.SearchDocument, engine.SearchField) bool {
-	return true
+func (p *LocalAccessProjection) BindSession(snapshot port.DocumentSnapshotRef, digest string) error {
+	if p == nil || !validSearchSnapshot(snapshot) || digest == "" {
+		return ErrInvalidNativeSearchRequest
+	}
+	p.mu.Lock()
+	p.bindings[snapshot] = digest
+	p.mu.Unlock()
+	return nil
+}
+func (p *LocalAccessProjection) AuthorizesSearchProjection(snapshot port.DocumentSnapshotRef, digest string) bool {
+	if p == nil || digest == "" {
+		return false
+	}
+	p.mu.RLock()
+	bound := p.bindings[snapshot]
+	legacy := p.legacyDigest
+	p.mu.RUnlock()
+	return digest == bound || (bound == "" && digest == legacy)
+}
+func (*LocalAccessProjection) AllowSearchDocument(document engine.SearchDocument) bool {
+	return document.SubjectAddress != "" && document.ContentHash != ""
+}
+func (*LocalAccessProjection) AllowSearchField(document engine.SearchDocument, field engine.SearchField) bool {
+	return document.SubjectAddress != "" && field.FieldPath != "" && field.Text != ""
 }
 
 type Adapter struct {
@@ -85,7 +110,7 @@ func (e *Adapter) available() bool {
 // issuer. The adapter decorates only this result with authority; it never
 // exposes a signer for caller-constructed batches.
 func (e *Adapter) ProduceSearchDocumentBatch(ctx context.Context, request port.SearchDocumentBatchRequest) (port.SearchDocumentBatch, error) {
-	if !e.available() || e.projection == nil || ctx == nil || ctx.Err() != nil || !validSearchSnapshot(request.Snapshot) || request.EmbeddingProfileDigest == "" || request.Corpus.EndpointInstanceID == "" || request.Corpus.DocumentHandle == "" || request.Corpus.Generation == 0 || !e.projection.AuthorizesSearchProjection(request.Snapshot, request.AccessProjectionDigest) {
+	if !e.available() || e.projection == nil || ctx == nil || ctx.Err() != nil || !validSearchSnapshot(request.Snapshot) || request.Corpus.EndpointInstanceID == "" || request.Corpus.DocumentHandle == "" || request.Corpus.Generation == 0 || !e.projection.AuthorizesSearchProjection(request.Snapshot, request.AccessProjectionDigest) {
 		return port.SearchDocumentBatch{}, ErrInvalidNativeSearchRequest
 	}
 	e.mu.RLock()
@@ -95,13 +120,13 @@ func (e *Adapter) ProduceSearchDocumentBatch(ctx context.Context, request port.S
 		return port.SearchDocumentBatch{}, ErrInvalidNativeSearchRequest
 	}
 	corpus, err := e.engine.ReadSearchCorpus(ctx, engine.DocumentGeneration{DocumentHandle: engine.DocumentHandle{EndpointInstanceID: request.Corpus.EndpointInstanceID, Value: request.Corpus.DocumentHandle}, Value: request.Corpus.Generation}, e.projection)
-	if err != nil || len(corpus) == 0 {
+	if err != nil {
 		return port.SearchDocumentBatch{}, ErrInvalidNativeSearchRequest
 	}
 	documents := make([]port.SearchDocumentInput, len(corpus))
 	seen := make(map[string]bool, len(documents))
 	for index, document := range corpus {
-		if document.SubjectAddress == "" || document.ContentHash == "" || document.Text == "" || !utf8.ValidString(document.Text) || seen[document.SubjectAddress] {
+		if document.SubjectAddress == "" || document.ContentHash == "" || document.LexicalText == "" || !utf8.ValidString(document.LexicalText) || !utf8.ValidString(document.Text) || seen[document.SubjectAddress] {
 			return port.SearchDocumentBatch{}, ErrInvalidNativeSearchRequest
 		}
 		seen[document.SubjectAddress] = true
@@ -115,7 +140,7 @@ func (e *Adapter) ProduceSearchDocumentBatch(ctx context.Context, request port.S
 }
 
 func (e *Adapter) PrepareSearchIndex(_ context.Context, input port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
-	if !e.available() || input.EmbeddingProfile == nil || len(input.Embeddings) != len(input.Batch.Documents) {
+	if !e.available() || (input.EmbeddingProfile == nil && len(input.Embeddings) != 0) || (input.EmbeddingProfile != nil && len(input.Embeddings) != len(input.Batch.Documents)) {
 		return port.ExecutionPlan{}, ErrInvalidNativeSearchRequest
 	}
 	identity, err := json.Marshal(input.IndexIdentity)
@@ -128,17 +153,26 @@ func (e *Adapter) PrepareSearchIndex(_ context.Context, input port.SearchIndexPr
 	}
 	documents := make([]engine.NativeIndexDocument, len(input.Batch.Documents))
 	for index, document := range input.Batch.Documents {
-		vector, ok := embeddings[document.SubjectAddress]
-		if !ok || vector.ContentHash != document.ContentHash {
-			return port.ExecutionPlan{}, ErrInvalidNativeSearchRequest
+		var vector port.EmbeddingVector
+		if input.EmbeddingProfile != nil {
+			var ok bool
+			vector, ok = embeddings[document.SubjectAddress]
+			if !ok || vector.ContentHash != document.ContentHash {
+				return port.ExecutionPlan{}, ErrInvalidNativeSearchRequest
+			}
 		}
 		fieldsJSON, marshalErr := json.Marshal(document.Fields)
 		if marshalErr != nil {
 			return port.ExecutionPlan{}, ErrInvalidNativeSearchRequest
 		}
-		documents[index] = engine.NativeIndexDocument{SubjectAddress: document.SubjectAddress, SubjectKind: document.SubjectKind, OwnerAddress: document.OwnerAddress, ContentHash: document.ContentHash, LexicalText: document.LexicalText, GraphEntryAddresses: document.GraphEntryAddresses, TypeAddresses: document.TypeAddresses, LayerAddresses: document.LayerAddresses, Embedding: vector.Values, FieldsJSON: string(fieldsJSON)}
+		physicalDigest := port.SearchDocumentPhysicalDigest(document, vector.Values)
+		documents[index] = engine.NativeIndexDocument{SubjectAddress: document.SubjectAddress, SubjectKind: document.SubjectKind, OwnerAddress: document.OwnerAddress, ContentHash: document.ContentHash, PhysicalDigest: physicalDigest, LexicalText: document.LexicalText, GraphEntryAddresses: document.GraphEntryAddresses, TypeAddresses: document.TypeAddresses, LayerAddresses: document.LayerAddresses, Embedding: vector.Values, FieldsJSON: string(fieldsJSON)}
 	}
-	physical, err := engine.BuildNativeSearchIndexPlan(engine.NativeIndexPlanInput{Request: input.Request, Identity: identity, BackendVersion: input.IndexIdentity.LadybugBackendVersion, EmbeddingDimensions: input.EmbeddingProfile.Dimensions, Documents: documents, PreviousContentHashes: input.PreviousContentHashes, FullRebuild: input.FullRebuild})
+	embeddingDimensions := 0
+	if input.EmbeddingProfile != nil {
+		embeddingDimensions = input.EmbeddingProfile.Dimensions
+	}
+	physical, err := engine.BuildNativeSearchIndexPlan(engine.NativeIndexPlanInput{Request: input.Request, Identity: identity, BackendVersion: input.IndexIdentity.LadybugBackendVersion, EmbeddingDimensions: embeddingDimensions, Documents: documents, PreviousContentHashes: input.PreviousContentHashes, FullRebuild: input.FullRebuild})
 	if err != nil {
 		return port.ExecutionPlan{}, ErrInvalidNativeSearchRequest
 	}
@@ -146,7 +180,7 @@ func (e *Adapter) PrepareSearchIndex(_ context.Context, input port.SearchIndexPr
 	if err != nil {
 		return port.ExecutionPlan{}, err
 	}
-	return nativePlan(port.PlanSearchIndex, payload, 1, 4096), nil
+	return nativePlan(port.PlanSearchIndex, payload, 1, 4096, indexAuthority(input)), nil
 }
 
 func (e *Adapter) PrepareSearch(_ context.Context, input port.SearchPreparationInput) (port.PreparedSearch, error) {
@@ -158,7 +192,7 @@ func (e *Adapter) PrepareSearch(_ context.Context, input port.SearchPreparationI
 		return port.PreparedSearch{}, ErrInvalidNativeSearchRequest
 	}
 	payload, _ := json.Marshal(prepared.Plan)
-	plan := nativePlan(port.PlanSearch, payload, prepared.MaxRows, input.MaxOutputBytes)
+	plan := nativePlan(port.PlanSearch, payload, prepared.MaxRows, input.MaxOutputBytes, searchAuthority(input))
 	rrfK := input.SearchProfile.RRFK
 	if rrfK <= 0 {
 		rrfK = 60
@@ -183,7 +217,7 @@ func (e *Adapter) PrepareQuery(_ context.Context, input port.BoundExecutionReque
 		return port.ExecutionPlan{}, ErrInvalidNativeSearchRequest
 	}
 	payload, _ := json.Marshal(physical)
-	return nativePlan(port.PlanQuery, payload, maxRows, input.MaxOutputBytes), nil
+	return nativePlan(port.PlanQuery, payload, maxRows, input.MaxOutputBytes, boundAuthority(input)), nil
 }
 
 func (e *Adapter) PrepareAnalysis(_ context.Context, input port.BoundExecutionRequest) (port.ExecutionPlan, error) {
@@ -195,7 +229,7 @@ func (e *Adapter) PrepareAnalysis(_ context.Context, input port.BoundExecutionRe
 		return port.ExecutionPlan{}, ErrInvalidNativeSearchRequest
 	}
 	payload, _ := json.Marshal(physical)
-	return nativePlan(port.PlanAnalysis, payload, maxRows, input.MaxOutputBytes), nil
+	return nativePlan(port.PlanAnalysis, payload, maxRows, input.MaxOutputBytes, boundAuthority(input)), nil
 }
 
 func (e *Adapter) CompleteSearch(_ context.Context, input port.CompleteSearchInput) ([]byte, error) {
@@ -223,7 +257,7 @@ func (e *Adapter) CompleteQuery(_ context.Context, input port.CompleteExecutionI
 			rows[index][key] = engine.QueryValue{Kind: value.Kind, Value: value.Value}
 		}
 	}
-	return engine.CompleteQueryResult(rows)
+	return engine.CompleteQueryResult(rows, input.Plan.Authority.RequestDigest)
 }
 func (e *Adapter) CompleteAnalysis(_ context.Context, input port.CompleteExecutionInput) ([]byte, error) {
 	if !input.Rows.Complete || input.Rows.Truncated {
@@ -231,17 +265,59 @@ func (e *Adapter) CompleteAnalysis(_ context.Context, input port.CompleteExecuti
 	}
 	values := make([]engine.AnalysisValue, 0, len(input.Rows.Rows))
 	for _, row := range input.Rows.Rows {
+		if row["metric_name"].Value == "scope_violation" {
+			return nil, port.ErrInvalidScope
+		}
 		if row["address"].Value == "" || row["metric_name"].Value == "" || row["metric_value"].Value == "" {
 			return nil, ErrInvalidNativeSearchRequest
 		}
 		values = append(values, engine.AnalysisValue{Address: row["address"].Value, MetricName: row["metric_name"].Value, TypedValue: row["metric_value"].Value})
 	}
-	return engine.CompleteAnalysisResult(values)
+	return engine.CompleteAnalysisResult(values, input.Plan.Authority.RequestDigest)
 }
 
-func nativePlan(kind port.PlanKind, payload []byte, maxRows, maxBytes int) port.ExecutionPlan {
-	digest := sha256.Sum256(append([]byte(kind+"\x00"), payload...))
-	return port.ExecutionPlan{Kind: kind, PlanID: "plan-" + hex.EncodeToString(digest[:16]), ProtocolVersion: "v1", Payload: payload, MaxRows: maxRows, MaxBytes: maxBytes}
+func nativePlan(kind port.PlanKind, payload []byte, maxRows, maxBytes int, authority port.PlanAuthorityBinding) port.ExecutionPlan {
+	bound, _ := json.Marshal(authority)
+	hashInput := append([]byte(kind+"\x00"), bound...)
+	hashInput = append(hashInput, 0)
+	hashInput = append(hashInput, payload...)
+	digest := sha256.Sum256(hashInput)
+	return port.ExecutionPlan{Kind: kind, PlanID: "plan-" + hex.EncodeToString(digest[:16]), ProtocolVersion: "v1", Payload: payload, MaxRows: maxRows, MaxBytes: maxBytes, Authority: authority}
+}
+
+func digestBytes(value []byte) string {
+	digest := sha256.Sum256(value)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func identityDigest(identity port.SearchIndexIdentity) string {
+	encoded, _ := json.Marshal(identity)
+	return digestBytes(encoded)
+}
+
+func boundAuthority(input port.BoundExecutionRequest) port.PlanAuthorityBinding {
+	return port.PlanAuthorityBinding{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, RequestDigest: digestBytes(input.Request)}
+}
+
+func searchAuthority(input port.SearchPreparationInput) port.PlanAuthorityBinding {
+	authority := boundAuthority(input.BoundExecutionRequest)
+	authority.SearchProfileID = input.SearchProfile.ProfileID
+	authority.SearchProfileDigest = input.SearchProfile.SpecificationDigest
+	authority.IndexIdentityDigest = identityDigest(input.IndexIdentity)
+	if input.EmbeddingProfile != nil {
+		authority.EmbeddingProfileID = input.EmbeddingProfile.ProfileID
+		authority.EmbeddingProfileDigest = input.EmbeddingProfile.ModelDigest
+	}
+	return authority
+}
+
+func indexAuthority(input port.SearchIndexPreparationInput) port.PlanAuthorityBinding {
+	authority := port.PlanAuthorityBinding{Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest, SearchProfileID: input.SearchProfile.ProfileID, SearchProfileDigest: input.SearchProfile.SpecificationDigest, IndexIdentityDigest: identityDigest(input.IndexIdentity), RequestDigest: digestBytes(input.Request)}
+	if input.EmbeddingProfile != nil {
+		authority.EmbeddingProfileID = input.EmbeddingProfile.ProfileID
+		authority.EmbeddingProfileDigest = input.EmbeddingProfile.ModelDigest
+	}
+	return authority
 }
 
 func validSearchSnapshot(snapshot port.DocumentSnapshotRef) bool {

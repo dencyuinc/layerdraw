@@ -118,7 +118,7 @@ func TestProductionEngineAdapterRejectsRawAndPlansBoundedAnalysis(t *testing.T) 
 
 func TestEngineAdapterCompletesQueryAnalysisAndLocalProjection(t *testing.T) {
 	projection, err := NewLocalAccessProjection("sha256:access")
-	if err != nil || !projection.AllowSearchDocument(engine.SearchDocument{}) || !projection.AllowSearchField(engine.SearchDocument{}, engine.SearchField{}) {
+	if err != nil || projection.AllowSearchDocument(engine.SearchDocument{}) || projection.AllowSearchField(engine.SearchDocument{}, engine.SearchField{}) {
 		t.Fatalf("projection=%v err=%v", projection, err)
 	}
 	adapter, _, _ := boundAdapter(t, projection)
