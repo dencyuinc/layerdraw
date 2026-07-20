@@ -48,6 +48,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 		return err
 	}
 	acceptAssociationArguments(native.Associations, os.Args[1:], "")
+	frontend := NewFrontendBridge(application)
 	configured := &options.App{
 		Title: "LayerDraw", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 640,
 		AssetServer: &assetserver.Options{Assets: assets}, StartHidden: true,
@@ -57,7 +58,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 			extension(configured)
 		}
 	}
-	configured.Bind = append([]any{application, newShellBinding(native.Shell, bridge)}, configured.Bind...)
+	configured.Bind = append([]any{frontend, newShellBinding(native.Shell, bridge)}, configured.Bind...)
 	configured.Menu = nativeMenu(native.Shell, bridge)
 	configured.SingleInstanceLock = &options.SingleInstanceLock{
 		UniqueId: "dev.layerdraw.desktop",
@@ -100,6 +101,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 	configured.OnStartup = func(ctx context.Context) {
 		defer close(startupReady)
 		bridge.setContext(ctx)
+		frontend.setContext(ctx)
 		result := application.Start(ctx)
 		if result.Outcome != protocolcommon.OutcomeSuccess && result.Failure != nil {
 			WailsRuntime{}.Emit(ctx, recoveryEvent, *result.Failure)

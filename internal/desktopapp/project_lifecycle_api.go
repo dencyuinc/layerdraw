@@ -33,6 +33,10 @@ type QuitAssessment struct {
 }
 
 func (a *Application) beginProject(ref runtimeprotocol.RuntimeSessionRef, component desktopcontract.ComponentID) (func(), *localdocument.Host, uint64, *desktopcontract.Failure) {
+	if a.projects == nil {
+		value := failure(desktopcontract.FailureReconnect, component, true, desktopcontract.RecoveryReconnect)
+		return func() {}, nil, 0, &value
+	}
 	generation, err := a.projects.begin(ref)
 	if err != nil {
 		failure := failed[struct{}](desktopcontract.FailureProjectConflict, component, true, desktopcontract.RecoveryRetry).Failure

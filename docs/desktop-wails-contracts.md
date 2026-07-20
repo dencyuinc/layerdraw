@@ -135,6 +135,37 @@ draining and can be resumed without releasing resources still in use. MCP and
 the remaining registered adapters stop before the local Runtime releases its
 sessions and storage locks.
 
+Production construction uses `desktopapp.NewCanonical`, which creates the
+concrete generated-client owner adapter, local transport, and one in-process
+`internal/mcphost.Host`; neither a prebuilt host nor a raw MCP lifecycle port is
+accepted by that constructor. The local transport is also the backing endpoint
+for the Wails MCP list/call/read bindings. `internal/mcphost` contains the single
+normative tool mapping table. Advertisement is derived only from the current owner capability
+snapshot, so an unconfigured Review, native interchange, external-storage, or
+other owner operation is absent rather than inferred from a linked package.
+Desktop does not launch a sibling MCP process.
+
+The MCP adapter owns only transport concerns. Discovery and execution are
+fenced to one host generation, including synchronous discovery during transport
+startup; partial startup is shut down and rolled back before another generation
+may start. Its opaque continuations are
+single-use and bound to tool/request bytes, document, committed revision,
+Access fingerprint, expiry, and host generation. Complete request and response
+envelopes, capability aggregates, continuations, strings, item counts, and JSON
+depth are bounded before publication. Disconnect,
+cancellation, shutdown, malformed or replayed cursors, stale bindings, owner
+panic, and oversized values produce closed failures without paths, source,
+credentials, or provider text. The typed owner adapter still performs generated
+request validation and the final Runtime/Access/Review revalidation; MCP tool
+visibility is never an authorization boundary.
+
+For generated paginated operations, the Desktop owner adapter uses a closed
+operation table to decode the exact response page, enforce the aggregate item
+limit, retain the owner continuation behind an opaque MCP cursor, and inject it
+through the typed generated request codec on the next call. Capability
+discovery advertises an explicit bounded schema matching the returned effective
+snapshot and AuthoringGrantSummary.
+
 Startup resolves the configured credential references and live delegation
 fences through the typed `HostPorts`; credential bytes are discarded before
 adapter startup. Injected-port panics are contained as
@@ -154,3 +185,29 @@ and expiry are re-evaluated at publication.
 
 Desktop does not invent an Organization, Workspace, membership, sharing, or
 realtime model. A connected server remains authoritative for those concepts.
+
+## React shell synchronization
+
+The Desktop React shell receives its Browser Editor, Viewer, and project
+lifecycle through explicit injected ports. It does not discover Wails globals
+or construct clients from generated method presence. One lifecycle publication
+contains the selected project and view, open-session generation, authoritative
+Runtime revision token, Browser Editor session, Access summary, storage origin,
+persistence state, and negotiated capability statuses.
+
+Each Viewer snapshot or ordered update carries the same project, session,
+selected-view, and authoritative-revision context. The shell rejects a frame
+whose context differs from the current lifecycle publication and ignores stale
+lifecycle and Viewer sequences. Close or dependency replacement fences late
+work and cancels Viewer materialization. Reopen of the same stable project ID
+uses a new host-issued session generation so pre-close frames cannot reappear.
+Recovery state exposes a handoff to the host-owned restore/discard chooser; the
+shell never restores or discards a candidate implicitly.
+
+UI actions are rendered from the effective capability status supplied by the
+host. A linked package or generated binding never makes an action available by
+itself. Closed localized shell failures do not expose native locations,
+credentials, document content, provider errors, or panic values. Lifecycle
+implementations own native dialogs, storage, recovery, leases, and revision
+rules; the React shell owns only interaction, focus, accessibility, responsive
+layout, and presentation of owner-produced Viewer render data.

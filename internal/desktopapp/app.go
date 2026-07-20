@@ -15,6 +15,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	"github.com/dencyuinc/layerdraw/internal/mcphost"
 )
 
 var startupOrder = []desktopcontract.ComponentID{
@@ -44,14 +45,21 @@ var injectedComponents = []desktopcontract.ComponentID{
 }
 
 type Config struct {
-	Root                          string
-	ReleaseVersion                protocolcommon.ReleaseVersion
-	EndpointInstanceID            protocolcommon.EndpointInstanceID
-	ReleaseManifestDigest         protocolcommon.Digest
-	Lifecycle                     desktopcontract.LifecyclePort
-	Window                        desktopcontract.WindowPort
-	Dialogs                       desktopcontract.NativeDialogPort
-	HostPorts                     desktopcontract.HostPorts
+	Root                  string
+	ReleaseVersion        protocolcommon.ReleaseVersion
+	EndpointInstanceID    protocolcommon.EndpointInstanceID
+	ReleaseManifestDigest protocolcommon.Digest
+	Lifecycle             desktopcontract.LifecyclePort
+	Window                desktopcontract.WindowPort
+	Dialogs               desktopcontract.NativeDialogPort
+	HostPorts             desktopcontract.HostPorts
+	// MCPHost is the canonical in-process protocol adapter used by production
+	// Desktop composition. HostPorts.MCP remains an injection seam for closed
+	// lifecycle tests and framework adapters.
+	MCPHost                       *mcphost.Host
+	MCPCapabilities               MCPCapabilitySource
+	MCPResources                  MCPResourceSource
+	MCPLimits                     mcphost.Limits
 	CredentialRefs                []desktopcontract.CredentialRef
 	DelegationFences              []desktopcontract.DelegationFence
 	ProjectStorage                ProjectStorage
@@ -112,6 +120,7 @@ type Application struct {
 	quitSessions        []runtimeprotocol.RuntimeSessionRef
 	closeProjectSession func(context.Context, *localdocument.Host, *localdocument.Session) error
 	cancelAutosave      func(*localdocument.Host, runtimeprotocol.RuntimeSessionRef) error
+	mcpLocal            *mcphost.LocalTransport
 }
 
 type localHostConsumer interface {
@@ -119,6 +128,12 @@ type localHostConsumer interface {
 }
 
 func New(config Config) (*Application, error) {
+	if config.MCPHost != nil {
+		if config.HostPorts.MCP != nil {
+			return nil, errors.New("desktop MCP composition is ambiguous")
+		}
+		config.HostPorts.MCP = BindCanonicalMCPHost(config.MCPHost)
+	}
 	if config.Root == "" || !filepath.IsAbs(config.Root) || config.Lifecycle == nil || config.Window == nil || config.Dialogs == nil ||
 		config.ProjectStorage == nil || config.Capabilities == nil || config.HostPorts.Credentials == nil ||
 		config.HostPorts.LocalActor == nil || config.HostPorts.LocalOwner == nil ||
@@ -151,6 +166,51 @@ func New(config Config) (*Application, error) {
 	}, cancelAutosave: func(host *localdocument.Host, session runtimeprotocol.RuntimeSessionRef) error {
 		return host.CancelAutosave(session)
 	}}, nil
+}
+
+// NewCanonical constructs the production Desktop backend and requires the
+// canonical in-process MCP Host. A raw transport lifecycle stub is not a
+// production composition.
+func NewCanonical(config Config) (*Application, error) {
+	if config.MCPHost != nil || config.HostPorts.MCP != nil || config.MCPCapabilities == nil {
+		return nil, errors.New("desktop canonical MCP composition is required")
+	}
+	composition, err := composeCanonicalMCP(config.Bindings, config.MCPCapabilities, config.MCPResources, config.MCPLimits)
+	if err != nil {
+		return nil, err
+	}
+	config.MCPHost = composition.host
+	app, err := New(config)
+	if err != nil {
+		return nil, err
+	}
+	app.mcpLocal = composition.transport
+	return app, nil
+}
+
+func (a *Application) MCPListTools(ctx context.Context) ([]mcphost.Tool, *mcphost.Failure) {
+	if a.mcpLocal == nil {
+		return nil, &mcphost.Failure{Code: mcphost.ErrorTransport, Retryable: true}
+	}
+	return a.mcpLocal.ListTools(ctx)
+}
+func (a *Application) MCPCallTool(ctx context.Context, request mcphost.CallToolRequest) mcphost.CallToolResult {
+	if a.mcpLocal == nil {
+		return mcphost.CallToolResult{Failure: &mcphost.Failure{Code: mcphost.ErrorTransport, Retryable: true}}
+	}
+	return a.mcpLocal.CallTool(ctx, request)
+}
+func (a *Application) MCPListResources(ctx context.Context) ([]mcphost.Resource, *mcphost.Failure) {
+	if a.mcpLocal == nil {
+		return nil, &mcphost.Failure{Code: mcphost.ErrorTransport, Retryable: true}
+	}
+	return a.mcpLocal.ListResources(ctx)
+}
+func (a *Application) MCPReadResource(ctx context.Context, request mcphost.ReadResourceRequest) mcphost.ReadResourceResult {
+	if a.mcpLocal == nil {
+		return mcphost.ReadResourceResult{Failure: &mcphost.Failure{Code: mcphost.ErrorTransport, Retryable: true}}
+	}
+	return a.mcpLocal.ReadResource(ctx, request)
 }
 
 func (a *Application) State() desktopcontract.LifecycleState {

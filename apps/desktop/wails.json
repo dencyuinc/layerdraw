@@ -3,9 +3,9 @@
   "name": "layerdraw-desktop",
   "outputfilename": "LayerDraw",
   "frontend:dir": "frontend",
-  "frontend:install": "",
-  "frontend:build": "",
-  "assetdir": "frontend/dist",
+	"frontend:install": "pnpm install --frozen-lockfile",
+	"frontend:build": "pnpm turbo run build --filter @layerdraw/desktop",
+	"assetdir": "frontend/dist",
   "info": {
     "companyName": "Dencyu Inc.",
     "productName": "LayerDraw",
@@ -14,5 +14,5 @@
       {"ext": "ldl", "name": "LayerDraw LDL Project", "description": "LayerDraw project source", "iconName": "appicon", "role": "Editor"},
       {"ext": "layerdraw", "name": "LayerDraw Project", "description": "LayerDraw project container", "iconName": "appicon", "role": "Editor"}
     ]
-  }
+	}
 }
