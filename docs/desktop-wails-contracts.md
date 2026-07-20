@@ -75,6 +75,24 @@ draining and can be resumed without releasing resources still in use. MCP and
 the remaining registered adapters stop before the local Runtime releases its
 sessions and storage locks.
 
+Production construction uses `desktopapp.NewCanonical` and requires one
+in-process `internal/mcphost.Host`; a raw MCP lifecycle port is not accepted by
+that constructor. `internal/mcphost` contains the single normative tool mapping
+table. Advertisement is derived only from the current owner capability
+snapshot, so an unconfigured Review, native interchange, external-storage, or
+other owner operation is absent rather than inferred from a linked package.
+Desktop does not launch a sibling MCP process.
+
+The MCP adapter owns only transport concerns. Its opaque continuations are
+single-use and bound to tool/request bytes, document, committed revision,
+Access fingerprint, expiry, and host generation. Input bytes, output bytes,
+item count, and JSON depth are bounded before publication. Disconnect,
+cancellation, shutdown, malformed or replayed cursors, stale bindings, owner
+panic, and oversized values produce closed failures without paths, source,
+credentials, or provider text. The typed owner adapter still performs generated
+request validation and the final Runtime/Access/Review revalidation; MCP tool
+visibility is never an authorization boundary.
+
 Startup resolves the configured credential references and live delegation
 fences through the typed `HostPorts`; credential bytes are discarded before
 adapter startup. Injected-port panics are contained as

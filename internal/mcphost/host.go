@@ -33,6 +33,7 @@ type cursorBinding struct {
 
 type Host struct {
 	config     Config
+	lifecycle  sync.Mutex
 	mu         sync.Mutex
 	running    bool
 	generation uint64
@@ -58,7 +59,9 @@ func New(config Config) (*Host, error) {
 	return &Host{config: config, cursors: map[string]cursorBinding{}}, nil
 }
 
-func (h *Host) Start(ctx context.Context) (err error) {
+func (h *Host) Start(ctx context.Context) error {
+	h.lifecycle.Lock()
+	defer h.lifecycle.Unlock()
 	h.mu.Lock()
 	if h.running {
 		h.mu.Unlock()
@@ -68,29 +71,22 @@ func (h *Host) Start(ctx context.Context) (err error) {
 	if _, failure := h.capabilities(ctx); failure != nil {
 		return errors.New("mcp owner capabilities unavailable")
 	}
+	hostCtx, cancel := context.WithCancel(context.Background())
+	if err := safeTransportStart(ctx, h.config.Transport, h); err != nil {
+		cancel()
+		return errors.New("mcp transport failed")
+	}
 	h.mu.Lock()
-	h.ctx, h.cancel = context.WithCancel(context.Background())
+	h.ctx, h.cancel = hostCtx, cancel
 	h.running, h.generation = true, h.generation+1
 	h.cursors = map[string]cursorBinding{}
 	h.mu.Unlock()
-	defer func() {
-		if recover() != nil {
-			err = errors.New("mcp transport failed")
-		}
-	}()
-	if err = h.config.Transport.Start(ctx, h); err != nil {
-		h.mu.Lock()
-		h.running = false
-		h.cancel()
-		h.cancel = nil
-		h.ctx = nil
-		h.mu.Unlock()
-		return errors.New("mcp transport failed")
-	}
 	return nil
 }
 
-func (h *Host) Shutdown(ctx context.Context) (err error) {
+func (h *Host) Shutdown(ctx context.Context) error {
+	h.lifecycle.Lock()
+	defer h.lifecycle.Unlock()
 	h.mu.Lock()
 	if !h.running {
 		h.mu.Unlock()
@@ -101,12 +97,7 @@ func (h *Host) Shutdown(ctx context.Context) (err error) {
 	h.cursors = map[string]cursorBinding{}
 	h.mu.Unlock()
 	cancel()
-	defer func() {
-		if recover() != nil {
-			err = errors.New("mcp transport failed")
-		}
-	}()
-	transportErr := h.config.Transport.Shutdown(ctx)
+	transportErr := safeTransportShutdown(ctx, h.config.Transport)
 	done := make(chan struct{})
 	go func() { h.inflight.Wait(); close(done) }()
 	select {
@@ -122,6 +113,24 @@ func (h *Host) Shutdown(ctx context.Context) (err error) {
 		return errors.New("mcp transport failed")
 	}
 	return nil
+}
+
+func safeTransportStart(ctx context.Context, transport Transport, handler Handler) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("mcp transport failed")
+		}
+	}()
+	return transport.Start(ctx, handler)
+}
+
+func safeTransportShutdown(ctx context.Context, transport Transport) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("mcp transport failed")
+		}
+	}()
+	return transport.Shutdown(ctx)
 }
 
 func (h *Host) ListTools(ctx context.Context) ([]Tool, *Failure) {
@@ -152,7 +161,7 @@ func (h *Host) CallTool(ctx context.Context, request CallToolRequest) (result Ca
 		}
 	}()
 	if request.Name == "layerdraw.get_capabilities" {
-		if request.Cursor != "" || len(request.Arguments) > 2 && string(request.Arguments) != "{}" {
+		if request.Cursor != "" || !emptyObject(request.Arguments) {
 			return CallToolResult{Failure: fail(ErrorInvalidRequest, false)}
 		}
 		snapshot, f := h.capabilities(requestCtx)
@@ -275,10 +284,10 @@ func (h *Host) ReadResource(ctx context.Context, request ReadResourceRequest) (r
 	if err != nil {
 		return ReadResourceResult{Failure: mapOwnerError(requestCtx, err)}
 	}
-	if response.Items < 0 || response.Items > h.config.Limits.MaxItems || len(response.Content) > h.config.Limits.MaxOutputBytes || !validJSON(response.Content, h.config.Limits.MaxJSONDepth) {
+	if response.Items < 0 || response.Items > h.config.Limits.MaxItems || len(response.Content) > h.config.Limits.MaxOutputBytes || !validJSON(response.Content, h.config.Limits.MaxJSONDepth) || response.MimeType != capability.MimeType {
 		return ReadResourceResult{Failure: fail(ErrorResourceExhausted, false)}
 	}
-	result.Content, result.MimeType = clone(response.Content), response.MimeType
+	result.Content, result.MimeType = clone(response.Content), capability.MimeType
 	if len(response.NextCursor) > 0 {
 		token, ok := h.issueCursor(toolMapping{name: request.URI, bound: capability.Bound}, digest, request.Binding, response.NextCursor)
 		if !ok {
@@ -336,7 +345,7 @@ func validSnapshot(s CapabilitySnapshot) bool {
 	}
 	seen := map[string]bool{}
 	for _, r := range s.Resources {
-		if r.URI == "" || r.Name == "" || r.MimeType == "" || seen[r.URI] || !validJSON(r.Schema, 16) {
+		if r.URI == "" || r.URI == "layerdraw://capabilities" || r.Name == "" || r.MimeType == "" || seen[r.URI] || !validJSON(r.Schema, 16) {
 			return false
 		}
 		seen[r.URI] = true
@@ -406,7 +415,7 @@ func mapOwnerError(ctx context.Context, err error) *Failure {
 	var typed *OwnerError
 	if errors.As(err, &typed) {
 		switch typed.Code {
-		case ErrorCapabilityUnavailable, ErrorInvalidCursor, ErrorStaleBinding, ErrorResourceExhausted, ErrorCancelled:
+		case ErrorInvalidRequest, ErrorCapabilityUnavailable, ErrorInvalidCursor, ErrorStaleBinding, ErrorResourceExhausted, ErrorCancelled:
 			return fail(typed.Code, typed.Code == ErrorCancelled)
 		}
 	}
@@ -414,6 +423,13 @@ func mapOwnerError(ctx context.Context, err error) *Failure {
 }
 func objectSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":false}`)
+}
+func emptyObject(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	var value map[string]json.RawMessage
+	return json.Unmarshal(data, &value) == nil && value != nil && len(value) == 0
 }
 func digestRequest(name string, args []byte) string {
 	return fmt.Sprintf("%s:%x", name, sha256Bytes(args))

@@ -25,6 +25,7 @@ type transportStub struct {
 	starts   int
 	stops    int
 	startErr error
+	stopErr  error
 	panic    bool
 }
 
@@ -38,11 +39,14 @@ func (t *transportStub) Start(_ context.Context, handler Handler) error {
 	return t.startErr
 }
 func (t *transportStub) Shutdown(context.Context) error {
+	if t.panic {
+		panic("transport shutdown secret")
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.handler = nil
 	t.stops++
-	return nil
+	return t.stopErr
 }
 
 type ownerStub struct {
@@ -53,11 +57,15 @@ type ownerStub struct {
 	invoke    func(context.Context, OwnerRequest) (OwnerResponse, error)
 	read      func(context.Context, ResourceRequest) (ResourceResponse, error)
 	panicCaps bool
+	capsErr   error
 }
 
 func (o *ownerStub) Capabilities(context.Context) (CapabilitySnapshot, error) {
 	if o.panicCaps {
 		panic("credential=private")
+	}
+	if o.capsErr != nil {
+		return CapabilitySnapshot{}, o.capsErr
 	}
 	return o.snapshot, nil
 }
@@ -319,6 +327,236 @@ func TestInvalidCompositionAndCapabilityPanic(t *testing.T) {
 	}
 	if err = host.Start(context.Background()); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("err=%v", err)
+	}
+	transport.panic = false
+	if err = host.Start(context.Background()); err != nil {
+		t.Fatalf("restart after panic=%v", err)
+	}
+	transport.panic = true
+	if err = host.Shutdown(context.Background()); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("shutdown panic=%v", err)
+	}
+	transport.panic = false
+	if err = host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("cleanup after panic=%v", err)
+	}
+}
+
+func TestLifecycleAndLimitFailureBranches(t *testing.T) {
+	invalid := DefaultLimits()
+	invalid.MaxItems = 0
+	if _, err := New(Config{Owner: &ownerStub{}, Transport: &transportStub{}, Limits: invalid}); err == nil {
+		t.Fatal("invalid limits accepted")
+	}
+	owner := &ownerStub{snapshot: snapshot()}
+	transport := &transportStub{startErr: errors.New("provider detail")}
+	host, err := New(Config{Owner: owner, Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Start(context.Background()); err == nil || strings.Contains(err.Error(), "provider") {
+		t.Fatalf("start err=%v", err)
+	}
+	transport.startErr = nil
+	if err = host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Start(context.Background()); err == nil {
+		t.Fatal("double start accepted")
+	}
+	transport.stopErr = errors.New("private stop")
+	if err = host.Shutdown(context.Background()); err == nil || strings.Contains(err.Error(), "private") {
+		t.Fatalf("stop err=%v", err)
+	}
+	if err = host.Shutdown(context.Background()); err != nil {
+		t.Fatalf("idempotent stop=%v", err)
+	}
+}
+
+func TestInvalidCapabilitySnapshotsFailClosed(t *testing.T) {
+	cases := map[string]CapabilitySnapshot{}
+	base := snapshot("engine.list_modules")
+	missingETag := base
+	missingETag.ManifestETag = ""
+	cases["etag"] = missingETag
+	badGrant := base
+	badGrant.GrantSummary.AccessFingerprint = "bad"
+	cases["grant"] = badGrant
+	badInput := base
+	badInput.Operations = map[string]OperationCapability{"engine.list_modules": {Enabled: true, InputSchema: json.RawMessage(`{`), OutputSchema: json.RawMessage(`{}`)}}
+	cases["schema"] = badInput
+	badResource := base
+	badResource.Resources = []ResourceCapability{{URI: "", Name: "x", MimeType: "application/json", Schema: json.RawMessage(`{}`)}}
+	cases["resource"] = badResource
+	duplicate := base
+	duplicate.Resources = []ResourceCapability{{URI: "x", Name: "x", MimeType: "application/json", Schema: json.RawMessage(`{}`)}, {URI: "x", Name: "y", MimeType: "application/json", Schema: json.RawMessage(`{}`)}}
+	cases["duplicate"] = duplicate
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			host, err := New(Config{Owner: &ownerStub{snapshot: value}, Transport: &transportStub{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = host.Start(context.Background()); err == nil {
+				t.Fatal("invalid snapshot accepted")
+			}
+		})
+	}
+	host, err := New(Config{Owner: &ownerStub{capsErr: errors.New("private")}, Transport: &transportStub{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Start(context.Background()); err == nil || strings.Contains(err.Error(), "private") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestCallAdditionalBoundsAndTypedFailures(t *testing.T) {
+	limits := DefaultLimits()
+	limits.MaxInputBytes = 4
+	owner := &ownerStub{snapshot: snapshot("engine.list_modules")}
+	host, _ := newRunning(t, owner, limits)
+	oversize := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{"xx":1}`), Binding: binding()})
+	if oversize.Failure == nil || oversize.Failure.Code != ErrorInvalidRequest {
+		t.Fatalf("oversize=%+v", oversize)
+	}
+	missing := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{}`)})
+	if missing.Failure == nil || missing.Failure.Code != ErrorStaleBinding {
+		t.Fatalf("missing=%+v", missing)
+	}
+	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
+		return OwnerResponse{}, &OwnerError{Code: ErrorCancelled}
+	}
+	cancelled := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{}`), Binding: binding()})
+	if cancelled.Failure == nil || cancelled.Failure.Code != ErrorCancelled || !cancelled.Failure.Retryable {
+		t.Fatalf("cancelled=%+v", cancelled)
+	}
+	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
+		return OwnerResponse{}, &OwnerError{Code: ErrorTransport}
+	}
+	closed := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{}`), Binding: binding()})
+	if closed.Failure == nil || closed.Failure.Code != ErrorOwnerFailure {
+		t.Fatalf("closed=%+v", closed)
+	}
+}
+
+func TestCapabilityToolAndStructuralValidationBranches(t *testing.T) {
+	if (&OwnerError{Code: ErrorStaleBinding}).Error() != string(ErrorStaleBinding) {
+		t.Fatal("owner error code changed")
+	}
+	if !validJSON(json.RawMessage(`[{"a":[1]}]`), 4) || validJSON(json.RawMessage(`[{"a":[1]}]`), 2) {
+		t.Fatal("array/map depth bound failed")
+	}
+	if emptyObject(json.RawMessage(`[]`)) || emptyObject(json.RawMessage(`null`)) || !emptyObject(json.RawMessage(` { } `)) {
+		t.Fatal("empty object validation failed")
+	}
+	owner := &ownerStub{snapshot: snapshot()}
+	host, _ := newRunning(t, owner, DefaultLimits())
+	good := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.get_capabilities", Arguments: json.RawMessage(` { } `)})
+	if good.Failure != nil || !json.Valid(good.Content) {
+		t.Fatalf("good=%+v", good)
+	}
+	cursor := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.get_capabilities", Cursor: "x"})
+	if cursor.Failure == nil || cursor.Failure.Code != ErrorInvalidRequest {
+		t.Fatalf("cursor=%+v", cursor)
+	}
+	badID := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: strings.Repeat("x", 129), Arguments: json.RawMessage(`{}`), Binding: binding()})
+	if badID.Failure == nil || badID.Failure.Code != ErrorInvalidRequest {
+		t.Fatalf("badID=%+v", badID)
+	}
+	disabled := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "x", Arguments: json.RawMessage(`{}`), Binding: binding()})
+	if disabled.Failure == nil || disabled.Failure.Code != ErrorCapabilityUnavailable {
+		t.Fatalf("disabled=%+v", disabled)
+	}
+}
+
+func TestInvalidOwnerOutputsAndResourceCursorMismatch(t *testing.T) {
+	s := snapshot("engine.list_modules")
+	s.Resources = []ResourceCapability{{URI: "layerdraw://r", Name: "r", MimeType: "application/json", Schema: json.RawMessage(`{}`), Bound: true}}
+	owner := &ownerStub{snapshot: s}
+	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
+		return OwnerResponse{Content: json.RawMessage(`{`)}, nil
+	}
+	host, _ := newRunning(t, owner, DefaultLimits())
+	bad := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{}`), Binding: binding()})
+	if bad.Failure == nil || bad.Failure.Code != ErrorResourceExhausted {
+		t.Fatalf("bad=%+v", bad)
+	}
+	owner.read = func(context.Context, ResourceRequest) (ResourceResponse, error) {
+		return ResourceResponse{Content: json.RawMessage(`{}`), NextCursor: json.RawMessage(`"next"`), MimeType: "application/json"}, nil
+	}
+	first := host.ReadResource(context.Background(), ReadResourceRequest{URI: "layerdraw://r", Binding: binding()})
+	if first.Cursor == "" {
+		t.Fatalf("first=%+v", first)
+	}
+	changed := binding()
+	changed.AccessFingerprint = "changed"
+	mismatch := host.ReadResource(context.Background(), ReadResourceRequest{URI: "layerdraw://r", Binding: changed, Cursor: first.Cursor})
+	if mismatch.Failure == nil || mismatch.Failure.Code != ErrorInvalidCursor {
+		t.Fatalf("mismatch=%+v", mismatch)
+	}
+	owner.read = func(context.Context, ResourceRequest) (ResourceResponse, error) {
+		return ResourceResponse{Content: json.RawMessage(`{`), MimeType: "application/json"}, nil
+	}
+	invalid := host.ReadResource(context.Background(), ReadResourceRequest{URI: "layerdraw://r", Binding: binding()})
+	if invalid.Failure == nil || invalid.Failure.Code != ErrorResourceExhausted {
+		t.Fatalf("invalid=%+v", invalid)
+	}
+}
+
+func TestCursorExpiryCapacityAndResourceFailures(t *testing.T) {
+	now := time.Now()
+	limits := DefaultLimits()
+	limits.MaxCursors = 1
+	limits.CursorTTL = time.Second
+	s := snapshot("engine.list_modules")
+	s.Resources = []ResourceCapability{{URI: "layerdraw://r", Name: "r", MimeType: "application/json", Schema: json.RawMessage(`{}`), Bound: true}}
+	owner := &ownerStub{snapshot: s}
+	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
+		return OwnerResponse{Content: json.RawMessage(`{}`), NextCursor: json.RawMessage(`"next"`)}, nil
+	}
+	host, err := New(Config{Owner: owner, Transport: &transportStub{}, Limits: limits, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	req := CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{}`), Binding: binding()}
+	first := host.CallTool(context.Background(), req)
+	if first.Cursor == "" {
+		t.Fatalf("first=%+v", first)
+	}
+	capacity := host.CallTool(context.Background(), req)
+	if capacity.Failure == nil || capacity.Failure.Code != ErrorResourceExhausted {
+		t.Fatalf("capacity=%+v", capacity)
+	}
+	now = now.Add(2 * time.Second)
+	req.Cursor = first.Cursor
+	expired := host.CallTool(context.Background(), req)
+	if expired.Failure == nil || expired.Failure.Code != ErrorInvalidCursor {
+		t.Fatalf("expired=%+v", expired)
+	}
+	unknown := host.ReadResource(context.Background(), ReadResourceRequest{URI: "nope"})
+	if unknown.Failure == nil || unknown.Failure.Code != ErrorCapabilityUnavailable {
+		t.Fatalf("unknown=%+v", unknown)
+	}
+	unbound := host.ReadResource(context.Background(), ReadResourceRequest{URI: "layerdraw://r"})
+	if unbound.Failure == nil || unbound.Failure.Code != ErrorStaleBinding {
+		t.Fatalf("unbound=%+v", unbound)
+	}
+	owner.read = func(context.Context, ResourceRequest) (ResourceResponse, error) {
+		return ResourceResponse{}, &OwnerError{Code: ErrorStaleBinding}
+	}
+	stale := host.ReadResource(context.Background(), ReadResourceRequest{URI: "layerdraw://r", Binding: binding()})
+	if stale.Failure == nil || stale.Failure.Code != ErrorStaleBinding {
+		t.Fatalf("stale=%+v", stale)
+	}
+	owner.read = func(context.Context, ResourceRequest) (ResourceResponse, error) { panic("private path") }
+	panicked := host.ReadResource(context.Background(), ReadResourceRequest{URI: "layerdraw://r", Binding: binding()})
+	if panicked.Failure == nil || panicked.Failure.Code != ErrorOwnerFailure {
+		t.Fatalf("panicked=%+v", panicked)
 	}
 }
 

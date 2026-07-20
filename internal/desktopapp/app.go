@@ -15,6 +15,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	"github.com/dencyuinc/layerdraw/internal/mcphost"
 )
 
 var startupOrder = []desktopcontract.ComponentID{
@@ -50,14 +51,18 @@ type Config struct {
 	ReleaseManifestDigest protocolcommon.Digest
 	Lifecycle             desktopcontract.LifecyclePort
 	HostPorts             desktopcontract.HostPorts
-	CredentialRefs        []desktopcontract.CredentialRef
-	DelegationFences      []desktopcontract.DelegationFence
-	ProjectStorage        ProjectStorage
-	Capabilities          CapabilityNegotiator
-	Bindings              desktopcontract.ClientSet
-	Adapters              map[desktopcontract.ComponentID]Adapter
-	Recovery              RecoveryReporter
-	Now                   func() time.Time
+	// MCPHost is the canonical in-process protocol adapter used by production
+	// Desktop composition. HostPorts.MCP remains an injection seam for closed
+	// lifecycle tests and framework adapters.
+	MCPHost          *mcphost.Host
+	CredentialRefs   []desktopcontract.CredentialRef
+	DelegationFences []desktopcontract.DelegationFence
+	ProjectStorage   ProjectStorage
+	Capabilities     CapabilityNegotiator
+	Bindings         desktopcontract.ClientSet
+	Adapters         map[desktopcontract.ComponentID]Adapter
+	Recovery         RecoveryReporter
+	Now              func() time.Time
 }
 
 // ProjectOpenResult contains generated Runtime values only. The local session
@@ -101,6 +106,12 @@ type Application struct {
 }
 
 func New(config Config) (*Application, error) {
+	if config.MCPHost != nil {
+		if config.HostPorts.MCP != nil {
+			return nil, errors.New("desktop MCP composition is ambiguous")
+		}
+		config.HostPorts.MCP = BindCanonicalMCPHost(config.MCPHost)
+	}
 	if config.Root == "" || !filepath.IsAbs(config.Root) || config.Lifecycle == nil ||
 		config.ProjectStorage == nil || config.Capabilities == nil || config.HostPorts.Credentials == nil ||
 		config.HostPorts.LocalActor == nil || config.HostPorts.LocalOwner == nil ||
@@ -122,6 +133,16 @@ func New(config Config) (*Application, error) {
 		config.Now = time.Now
 	}
 	return &Application{config: config, state: desktopcontract.LifecycleStopped}, nil
+}
+
+// NewCanonical constructs the production Desktop backend and requires the
+// canonical in-process MCP Host. A raw transport lifecycle stub is not a
+// production composition.
+func NewCanonical(config Config) (*Application, error) {
+	if config.MCPHost == nil || config.HostPorts.MCP != nil {
+		return nil, errors.New("desktop canonical MCP Host is required")
+	}
+	return New(config)
 }
 
 func (a *Application) State() desktopcontract.LifecycleState {
