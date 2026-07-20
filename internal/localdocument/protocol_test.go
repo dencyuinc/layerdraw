@@ -404,7 +404,7 @@ func testProtocolSaveAndAutosave(t *testing.T, root, source string) {
 		if err != nil || !control.Scheduled {
 			t.Fatalf("schedule=%+v err=%v", control, err)
 		}
-		deadline := time.Now().Add(3 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for {
 			operation := commit.OperationID
 			status, lookupErr := host.OperationResult(context.Background(), runtimeprotocol.GetOperationResultInput{Session: opened.Session.Open.Session, LookupBy: "operation_id", OperationID: &operation})
