@@ -26,7 +26,9 @@ declare const wailsDesktopOptions: CreateWailsDesktopClientOptions;
 void wailsBindings.EngineCompile;
 void createWailsEngineClient(wailsEngineOptions);
 const desktop: Promise<WailsDesktopClient> = createWailsDesktopClient(wailsDesktopOptions);
+const existingRuntimeFacade: Promise<LocalHostClient> = desktop;
 void desktop;
+void existingRuntimeFacade;
 void new WailsBindingError("BINDING_VERSION_MISMATCH", "upgrade_desktop");
 import type {
   OpenDocumentInput,
