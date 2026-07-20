@@ -68,15 +68,17 @@ jobs:
         shell: bash
         run: |
           native_dir="$(./tools/install-ladybug-native.sh)"
+          runtime_native_dir="$native_dir"
           native_link_flags=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then runtime_native_dir="$(cygpath -w "$native_dir")"; fi
           if [[ "$RUNNER_OS" == "Linux" ]]; then native_link_flags="-Wl,--export-dynamic"; fi
-          echo "LAYERDRAW_LADYBUG_NATIVE_DIR=$native_dir" >> "$GITHUB_ENV"
-          echo "LAYERDRAW_LADYBUG_FTS_EXTENSION=$native_dir/libfts.lbug_extension" >> "$GITHUB_ENV"
+          echo "LAYERDRAW_LADYBUG_NATIVE_DIR=$runtime_native_dir" >> "$GITHUB_ENV"
+          echo "LAYERDRAW_LADYBUG_FTS_EXTENSION=$runtime_native_dir/libfts.lbug_extension" >> "$GITHUB_ENV"
           echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
           echo "CGO_CFLAGS=-I$native_dir" >> "$GITHUB_ENV"
           echo "CGO_LDFLAGS=-L$native_dir $native_link_flags" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=$native_dir" >> "$GITHUB_ENV"
-          echo "$native_dir" >> "$GITHUB_PATH"
+          echo "$runtime_native_dir" >> "$GITHUB_PATH"
 
       - name: Test Desktop platform adapters
         shell: bash
