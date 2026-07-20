@@ -32,6 +32,9 @@ importers:
       '@layerdraw/render':
         specifier: workspace:*
         version: link:../../packages/render
+      '@layerdraw/review':
+        specifier: workspace:*
+        version: link:../../packages/review
       '@layerdraw/viewer':
         specifier: workspace:*
         version: link:../../packages/viewer
@@ -164,6 +167,9 @@ importers:
       '@layerdraw/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@layerdraw/review':
+        specifier: workspace:*
+        version: link:../review
       '@layerdraw/viewer':
         specifier: workspace:*
         version: link:../viewer
@@ -207,6 +213,16 @@ importers:
         version: 7.0.2
 
   packages/render:
+    dependencies:
+      '@layerdraw/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/review:
     dependencies:
       '@layerdraw/protocol':
         specifier: workspace:*

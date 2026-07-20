@@ -3,6 +3,7 @@
 package mcphost
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -120,13 +121,33 @@ func binding() *Binding {
 }
 
 func TestCatalogMatchesNormativeToolNames(t *testing.T) {
-	want := strings.Fields(`layerdraw.get_capabilities layerdraw.list_modules layerdraw.find_symbols layerdraw.search layerdraw.read_declarations layerdraw.read_rows layerdraw.get_neighbors layerdraw.inspect_subgraph layerdraw.find_usages layerdraw.list_references layerdraw.read_references layerdraw.preview_operations layerdraw.preview_fragment layerdraw.preview_source_patch layerdraw.apply_operations layerdraw.apply_source_patch layerdraw.stage_asset layerdraw.format_scope layerdraw.organize_workspace layerdraw.run_query layerdraw.analyze_graph layerdraw.materialize_view layerdraw.plan_export layerdraw.serialize_export layerdraw.import_document layerdraw.export_document layerdraw.list_revisions layerdraw.restore_revision layerdraw.registry_search layerdraw.registry_plan_install layerdraw.registry_apply_install`)
+	want := strings.Fields(`layerdraw.get_capabilities layerdraw.list_modules layerdraw.find_symbols layerdraw.search layerdraw.read_declarations layerdraw.read_rows layerdraw.get_neighbors layerdraw.inspect_subgraph layerdraw.find_usages layerdraw.list_references layerdraw.read_references layerdraw.preview_operations layerdraw.preview_fragment layerdraw.preview_source_patch layerdraw.apply_operations layerdraw.apply_source_patch layerdraw.stage_asset layerdraw.format_scope layerdraw.organize_workspace layerdraw.run_query layerdraw.analyze_graph layerdraw.materialize_view layerdraw.plan_export layerdraw.serialize_export layerdraw.import_document layerdraw.export_document layerdraw.list_revisions layerdraw.restore_revision layerdraw.registry_search layerdraw.registry_plan_install layerdraw.registry_apply_install layerdraw.review_list_proposals layerdraw.review_create_proposal layerdraw.review_comment layerdraw.review_approve_apply layerdraw.review_withdraw`)
 	got := []string{"layerdraw.get_capabilities"}
 	for _, mapping := range toolCatalog {
 		got = append(got, mapping.name)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("catalog mismatch\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestReviewToolsObserveAndMutateOnlyTheAdvertisedCanonicalOwner(t *testing.T) {
+	s := snapshot("review.list_proposals", "review.comment", "review.approve_apply")
+	owner := &ownerStub{snapshot: s}
+	owner.invoke = func(_ context.Context, request OwnerRequest) (OwnerResponse, error) {
+		return OwnerResponse{Content: json.RawMessage(`{"operation":"` + request.Operation + `","generation":3}`), Items: 1, Outcome: protocolcommon.OutcomeSuccess}, nil
+	}
+	host, _ := newRunning(t, owner, DefaultLimits())
+	tools, failure := host.ListTools(context.Background())
+	if failure != nil || len(tools) != 4 {
+		t.Fatalf("tools=%v failure=%v", tools, failure)
+	}
+	result := host.CallTool(context.Background(), CallToolRequest{RequestID: "review-request", Name: "layerdraw.review_comment", Arguments: json.RawMessage(`{"proposal_id":"p","generation":2}`), Binding: binding()})
+	if result.Failure != nil || !bytes.Contains(result.Content, []byte(`"operation":"review.comment"`)) {
+		t.Fatalf("result=%+v", result)
+	}
+	if len(owner.requests) != 1 || owner.requests[0].Operation != "review.comment" {
+		t.Fatalf("owner requests=%+v", owner.requests)
 	}
 }
 

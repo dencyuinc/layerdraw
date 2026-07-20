@@ -3,6 +3,7 @@
 package desktopapp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,11 @@ func (t *canonicalTransportStub) Start(_ context.Context, _ mcphost.Handler) err
 func (t *canonicalTransportStub) Shutdown(context.Context) error { t.stopped = true; return nil }
 
 type canonicalOwnerStub struct{}
+type applicationOwnerStub struct {
+	operations  map[string]mcphost.OperationCapability
+	requests    []mcphost.OwnerRequest
+	fingerprint protocolcommon.Digest
+}
 type mcpCapabilitySourceStub struct {
 	snapshot mcphost.CapabilitySnapshot
 	err      error
@@ -56,6 +62,20 @@ func (canonicalOwnerStub) Invoke(context.Context, mcphost.OwnerRequest) (mcphost
 }
 func (canonicalOwnerStub) ReadResource(context.Context, mcphost.ResourceRequest) (mcphost.ResourceResponse, error) {
 	return mcphost.ResourceResponse{Content: json.RawMessage(`{}`), MimeType: "application/json"}, nil
+}
+func (s *applicationOwnerStub) Capabilities(context.Context) (mcphost.CapabilitySnapshot, error) {
+	digest := s.fingerprint
+	if digest == "" {
+		digest = testMCPDigest()
+	}
+	return mcphost.CapabilitySnapshot{ManifestETag: protocolcommon.ManifestETag(digest), Operations: s.operations, Resources: []mcphost.ResourceCapability{}, GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest}}, nil
+}
+func (s *applicationOwnerStub) Invoke(_ context.Context, request mcphost.OwnerRequest) (mcphost.OwnerResponse, error) {
+	s.requests = append(s.requests, request)
+	return mcphost.OwnerResponse{Content: json.RawMessage(`{"version":1,"proposals":[]}`), Outcome: protocolcommon.OutcomeSuccess}, nil
+}
+func (*applicationOwnerStub) ReadResource(context.Context, mcphost.ResourceRequest) (mcphost.ResourceResponse, error) {
+	return mcphost.ResourceResponse{}, &mcphost.OwnerError{Code: mcphost.ErrorCapabilityUnavailable}
 }
 
 func TestCanonicalMCPPortOwnsInProcessLifecycle(t *testing.T) {
@@ -352,7 +372,7 @@ func TestMCPApplicationSurfaceAndCompositionFailClosedWithoutAUsableHost(t *test
 	_, err := composeCanonicalMCP(completeClients(t), mcpCapabilitySourceStub{snapshot: mcphost.CapabilitySnapshot{
 		ManifestETag: protocolcommon.ManifestETag(digest), Operations: map[string]mcphost.OperationCapability{}, Resources: []mcphost.ResourceCapability{},
 		GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest},
-	}}, nil, limits)
+	}}, nil, nil, limits)
 	if err == nil {
 		t.Fatal("invalid MCP limits accepted")
 	}
@@ -450,10 +470,11 @@ func TestCanonicalMCPRoutesUseOnlyClosedDesktopOwnerCatalog(t *testing.T) {
 		generated[binding.Operation] = true
 	}
 	routes := mcphost.ToolRoutes()
-	if len(routes) != 30 {
+	if len(routes) != 35 {
 		t.Fatalf("routes=%d", len(routes))
 	}
 	unwired := map[string]bool{"layerdraw.serialize_export": true, "layerdraw.import_document": true, "layerdraw.export_document": true}
+	applicationOwned := map[string]bool{"review.list_proposals": true, "review.create_proposal": true, "review.comment": true, "review.approve_apply": true, "review.withdraw": true}
 	for _, route := range routes {
 		operations := append([]string{}, route.RequiredOperations...)
 		if len(operations) == 0 && route.Operation != "" {
@@ -469,10 +490,36 @@ func TestCanonicalMCPRoutesUseOnlyClosedDesktopOwnerCatalog(t *testing.T) {
 			t.Fatalf("canonical route missing owner operation: %+v", route)
 		}
 		for _, operation := range operations {
-			if !generated[operation] {
+			if !generated[operation] && !applicationOwned[operation] {
 				t.Fatalf("%s routes to non-catalog owner %s", route.Name, operation)
 			}
 		}
+	}
+}
+
+func TestDesktopMCPOwnerRoutesReviewToTheInjectedCanonicalApplicationOwner(t *testing.T) {
+	digest := testMCPDigest()
+	operation := "review.list_proposals"
+	capability := mcphost.OperationCapability{Enabled: true, InputSchema: json.RawMessage(`{"type":"object"}`), OutputSchema: json.RawMessage(`{"type":"object"}`)}
+	source := mcpCapabilitySourceStub{snapshot: mcphost.CapabilitySnapshot{ManifestETag: protocolcommon.ManifestETag(digest), Operations: map[string]mcphost.OperationCapability{operation: capability}, Resources: []mcphost.ResourceCapability{}, GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest}}}
+	application := &applicationOwnerStub{operations: map[string]mcphost.OperationCapability{operation: capability}}
+	owner, err := newDesktopMCPOwner(completeClients(t), source, nil, application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = owner.Capabilities(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := owner.Invoke(context.Background(), mcphost.OwnerRequest{RequestID: "review", Operation: operation, Arguments: json.RawMessage(`{}`)})
+	if err != nil || len(application.requests) != 1 || !bytes.Contains(result.Content, []byte(`"proposals"`)) {
+		t.Fatalf("result=%+v requests=%+v err=%v", result, application.requests, err)
+	}
+	if _, err = owner.Invoke(context.Background(), mcphost.OwnerRequest{Operation: "review.unknown"}); err == nil {
+		t.Fatal("unadvertised application operation accepted")
+	}
+	application.fingerprint = protocolcommon.Digest("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	if _, err = owner.Capabilities(context.Background()); err == nil {
+		t.Fatal("mismatched application access state accepted")
 	}
 }
 

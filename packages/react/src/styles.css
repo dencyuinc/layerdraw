@@ -97,3 +97,11 @@
     transition-duration: 0.01ms !important;
   }
 }
+/* Review is a presentation of canonical host-owned evidence and decisions. */
+.ld-review-panel { container-type: inline-size; display: grid; gap: 1rem; min-width: 0; }
+.ld-review-panel > header, .ld-review-actions { align-items: center; display: flex; gap: .75rem; justify-content: space-between; }
+.ld-review-layout { display: grid; gap: 1rem; grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr); }
+.ld-review-layout nav ul, .ld-review-evidence ul { list-style: none; margin: 0; padding: 0; }
+.ld-review-layout nav button { inline-size: 100%; text-align: start; }
+.ld-review-evidence { display: grid; gap: .75rem; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@container (max-width: 48rem) { .ld-review-layout, .ld-review-evidence { grid-template-columns: minmax(0, 1fr); } }

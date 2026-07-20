@@ -26,6 +26,7 @@
     "@layerdraw/protocol": "workspace:*",
     "@layerdraw/react": "workspace:*",
     "@layerdraw/render": "workspace:*",
+    "@layerdraw/review": "workspace:*",
     "@layerdraw/viewer": "workspace:*",
     "react": ">=19.0.0 <20",
     "react-dom": ">=19.0.0 <20"

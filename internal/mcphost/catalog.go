@@ -41,6 +41,11 @@ var toolCatalog = []toolMapping{
 	{name: "layerdraw.registry_search", operation: "registry.search", description: "Browse the canonical Registry client.", bound: false},
 	{name: "layerdraw.registry_plan_install", operation: "registry.plan_install", description: "Plan a Registry transaction.", bound: true},
 	{name: "layerdraw.registry_apply_install", operation: "registry.commit_plan", previewOperation: "registry.plan_install", requiredOperations: []string{"registry.plan_install", "registry.commit_plan"}, description: "Re-plan, revalidate, and commit a Registry transaction.", bound: true},
+	{name: "layerdraw.review_list_proposals", operation: "review.list_proposals", description: "List canonical Review proposals and their current lifecycle state.", bound: true},
+	{name: "layerdraw.review_create_proposal", operation: "review.create_proposal", description: "Save an Engine-previewed human or agent proposal for review.", bound: true},
+	{name: "layerdraw.review_comment", operation: "review.comment", description: "Attach a revision-aware comment to a canonical Review target.", bound: true},
+	{name: "layerdraw.review_approve_apply", operation: "review.approve_apply", description: "Re-preview, reauthorize the current approver, and atomically apply a proposal.", bound: true},
+	{name: "layerdraw.review_withdraw", operation: "review.withdraw", description: "Withdraw a proposal through its canonical Review owner.", bound: true},
 }
 
 var mappingByName = func() map[string]toolMapping {
