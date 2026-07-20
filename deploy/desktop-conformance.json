@@ -87,7 +87,7 @@
     "revoked_delegation": ["internal/localdocument/delegated_access_test.go#TestDelegationPublicationFenceLinearizesRevocation"],
     "failed_upgrade": ["tools/desktoprelease/main_test.go#TestVerifyRejectsDigestMismatchDowngradeAndIncompatibleClient"]
   },
-  "release_evidence": ["installer", "platform_signature", "sha256_digest", "cyclonedx_sbom", "license_bundle", "signed_updater_manifest", "packaged_content_check", "disabled_feature_manifest", "desktop_conformance_manifest"],
+  "release_evidence": ["installer", "platform_signature", "sha256_digest", "cyclonedx_sbom", "license_bundle", "signed_updater_manifest", "packaged_content_check", "disabled_feature_manifest", "desktop_conformance_manifest", "signed_conformance_attestation", "installed_scenario_result"],
   "performance_budgets": {
     "cold_start": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},
     "project_open": {"max_milliseconds": 15000, "min_iterations": 5, "percentile": 95},

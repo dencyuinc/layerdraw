@@ -34,13 +34,14 @@ func TestSignedAttestationBindsInstalledResultsAndArtifacts(t *testing.T) {
 	if err := run([]string{"create", "-installer", installer, "-closure", closurePath, "-scenario-result", resultPath, "-output", attestationPath, "-source-revision", revision, "-platform", "linux", "-test-signing"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run([]string{"verify", "-attestation", attestationPath, "-root", root, "-allow-test-signing"}); err != nil {
+	verifyArgs := []string{"verify", "-attestation", attestationPath, "-root", root, "-source-revision", revision, "-platform", "linux", "-allow-test-signing"}
+	if err := run(verifyArgs); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(installer, []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := run([]string{"verify", "-attestation", attestationPath, "-root", root, "-allow-test-signing"}); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+	if err := run(verifyArgs); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("tampered installer accepted: %v", err)
 	}
 }
@@ -52,6 +53,16 @@ func TestResultRejectsShallowOrSelfAssertedMeasurements(t *testing.T) {
 	}
 	if _, err := percentile95([]int64{1, 0, 2}); err == nil {
 		t.Fatal("zero measurement accepted")
+	}
+}
+
+func TestReleaseClosureDecodesStrictly(t *testing.T) {
+	var value closure
+	if err := decodeStrict(filepath.Join("..", "..", "deploy", "desktop-conformance.json"), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Delivery != "desktop" || len(value.PerformanceBudgets) != 10 {
+		t.Fatalf("closure=%+v", value)
 	}
 }
 

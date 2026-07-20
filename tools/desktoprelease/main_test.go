@@ -140,6 +140,7 @@ func TestVerifyRejectsDigestMismatchDowngradeAndIncompatibleClient(t *testing.T)
 	}{
 		{name: "digest", current: "1.1.0", mutate: "installer", want: "digest mismatch"},
 		{name: "conformance digest", current: "1.1.0", mutate: "conformance", want: "digest mismatch"},
+		{name: "attestation digest", current: "1.1.0", mutate: "attestation", want: "digest mismatch"},
 		{name: "downgrade", current: "1.2.0", want: "downgrade or reinstall"},
 		{name: "incompatible", current: "0.9.0", want: "incompatible"},
 	}
@@ -147,7 +148,7 @@ func TestVerifyRejectsDigestMismatchDowngradeAndIncompatibleClient(t *testing.T)
 		t.Run(test.name, func(t *testing.T) {
 			root, manifestPath := buildFixture(t, true)
 			if test.mutate != "" {
-				path := map[string]string{"installer": "LayerDraw.dmg", "conformance": "desktop-conformance.json"}[test.mutate]
+				path := map[string]string{"installer": "LayerDraw.dmg", "conformance": "desktop-conformance.json", "attestation": "desktop-attestation.json"}[test.mutate]
 				if err := os.WriteFile(filepath.Join(root, path), []byte("tampered"), 0o644); err != nil {
 					t.Fatal(err)
 				}

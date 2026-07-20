@@ -34,6 +34,8 @@ Tagged release jobs fail before packaging when the credentials for their platfor
 - `LAYERDRAW_LINUX_GPG_PRIVATE_KEY` and `LAYERDRAW_LINUX_GPG_PASSPHRASE`;
 - `LAYERDRAW_DESKTOP_UPDATE_SIGNING_KEY` and its independently configured trust anchor,
   `LAYERDRAW_DESKTOP_UPDATE_PUBLIC_KEY`.
+- `LAYERDRAW_DESKTOP_ATTESTATION_SIGNING_KEY` and its independently configured trust anchor,
+  `LAYERDRAW_DESKTOP_ATTESTATION_PUBLIC_KEY`.
 
 Certificates and keys are exposed only in the tag/manual-only release workflow, guarded by the
 protected `desktop-release` environment. Pull requests run the separate installer CI workflow,
@@ -78,3 +80,11 @@ The explicit Desktop exclusions are F01, F02, F41, F44-F47, and F58-F61. They re
 features, not latent capabilities inferred from linked packages. App-store readiness, server,
 Organization/Workspace management, sharing, realtime collaboration, VS Code, MCP Apps, and
 Marketplace delivery are not asserted by this evidence.
+
+Each installed platform emits a strict scenario result for the exact release commit. Five or more
+iterations cover cold process start, project open, Search/Analysis, preview, durable commit, 2D/3D
+Viewer interaction, bounded MCP operations, external reconcile, shutdown, and the peak resident
+set of the Desktop, WebView, and MCP process tree. The release job computes p95 itself against the
+declared budgets. It then signs an attestation binding the scenario result, closure manifest, exact
+installer digest, source revision, and platform. Update metadata generation fails closed unless
+that independent signature and every bound digest verify against the configured trust anchor.

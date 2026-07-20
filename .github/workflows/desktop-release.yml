@@ -169,20 +169,13 @@ jobs:
           gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --detach-sign "$installer"
           gpg --verify "$installer.asc" "$installer"
 
-      - name: Build release update metadata
-        shell: bash
-        env:
-          UPDATE_SIGNING_KEY: ${{ secrets.LAYERDRAW_DESKTOP_UPDATE_SIGNING_KEY }}
-          UPDATE_PUBLIC_KEY: ${{ secrets.LAYERDRAW_DESKTOP_UPDATE_PUBLIC_KEY }}
-        run: |
-          ./tools/build-desktop-update-metadata.sh release "${{ matrix.platform }}" "${{ matrix.format }}" \
-            "$DESKTOP_VERSION" "$DESKTOP_SOURCE_REVISION" "$RUNNER_TEMP/desktop-release"
-
       - name: Exercise fresh install, launch, upgrade, rollback, and uninstall
         shell: bash
         if: matrix.platform != 'windows'
         env:
           LAYERDRAW_EXPECT_SIGNED: "1"
+          LAYERDRAW_CONFORMANCE_SOURCE_REVISION: ${{ env.DESKTOP_SOURCE_REVISION }}
+          LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT: ${{ runner.temp }}/desktop-release/LayerDraw-${{ env.DESKTOP_VERSION }}-${{ matrix.platform }}-scenario.json
         run: |
           suffix="${{ matrix.format }}"
           ./tools/smoke-desktop-installer.sh "${{ matrix.platform }}" "$RUNNER_TEMP/desktop-release/LayerDraw-$DESKTOP_VERSION.$suffix"
@@ -192,7 +185,29 @@ jobs:
         shell: pwsh
         env:
           LAYERDRAW_EXPECT_SIGNED: "1"
+          LAYERDRAW_CONFORMANCE_SOURCE_REVISION: ${{ env.DESKTOP_SOURCE_REVISION }}
+          LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT: ${{ runner.temp }}\desktop-release\LayerDraw-${{ env.DESKTOP_VERSION }}-${{ matrix.platform }}-scenario.json
         run: ./tools/smoke-desktop-installer.ps1 -PreviousInstaller "$env:RUNNER_TEMP\desktop-release\LayerDraw-$env:DESKTOP_VERSION.exe"
+
+      - name: Sign installed conformance attestation and build update metadata
+        shell: bash
+        env:
+          LAYERDRAW_DESKTOP_ATTESTATION_SIGNING_KEY: ${{ secrets.LAYERDRAW_DESKTOP_ATTESTATION_SIGNING_KEY }}
+          ATTESTATION_PUBLIC_KEY: ${{ secrets.LAYERDRAW_DESKTOP_ATTESTATION_PUBLIC_KEY }}
+          UPDATE_SIGNING_KEY: ${{ secrets.LAYERDRAW_DESKTOP_UPDATE_SIGNING_KEY }}
+          UPDATE_PUBLIC_KEY: ${{ secrets.LAYERDRAW_DESKTOP_UPDATE_PUBLIC_KEY }}
+        run: |
+          suffix="${{ matrix.format }}"
+          if [[ "$suffix" == nsis ]]; then suffix=exe; fi
+          go run ./tools/desktopattestation create \
+            -installer "$RUNNER_TEMP/desktop-release/LayerDraw-$DESKTOP_VERSION.$suffix" \
+            -closure "$RUNNER_TEMP/desktop-release/LayerDraw-$DESKTOP_VERSION-conformance.json" \
+            -scenario-result "$RUNNER_TEMP/desktop-release/LayerDraw-$DESKTOP_VERSION-${{ matrix.platform }}-scenario.json" \
+            -output "$RUNNER_TEMP/desktop-release/LayerDraw-$DESKTOP_VERSION-${{ matrix.platform }}-attestation.json" \
+            -source-revision "$DESKTOP_SOURCE_REVISION" -platform "${{ matrix.platform }}" \
+            -signing-key-env LAYERDRAW_DESKTOP_ATTESTATION_SIGNING_KEY
+          ./tools/build-desktop-update-metadata.sh release "${{ matrix.platform }}" "${{ matrix.format }}" \
+            "$DESKTOP_VERSION" "$DESKTOP_SOURCE_REVISION" "$RUNNER_TEMP/desktop-release"
 
       - name: Upload verified release payload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -68,6 +68,11 @@ type budget struct {
 type closure struct {
 	SchemaVersion      uint32            `json:"schema_version"`
 	Delivery           string            `json:"delivery"`
+	NormativeMatrix    string            `json:"normative_matrix,omitempty"`
+	Features           json.RawMessage   `json:"features,omitempty"`
+	AcceptanceSuites   json.RawMessage   `json:"acceptance_suites,omitempty"`
+	Faults             json.RawMessage   `json:"faults,omitempty"`
+	ReleaseEvidence    []string          `json:"release_evidence,omitempty"`
 	PerformanceBudgets map[string]budget `json:"performance_budgets"`
 }
 
@@ -154,7 +159,7 @@ func createCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(*output, append(encoded, '\n'), 0o600)
+	return writeExclusive(*output, append(encoded, '\n'))
 }
 
 func verifyCommand(args []string) error {
@@ -163,17 +168,29 @@ func verifyCommand(args []string) error {
 	path := flags.String("attestation", "", "signed attestation")
 	root := flags.String("root", ".", "artifact root")
 	trusted := flags.String("trusted-public-key", "", "base64 trusted Ed25519 key")
+	expectedRevision := flags.String("source-revision", "", "expected exact source commit")
+	expectedPlatform := flags.String("platform", "", "expected platform")
 	allowTest := flags.Bool("allow-test-signing", false, "accept embedded ephemeral CI key")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	var value attestation
-	if *path == "" || decodeStrict(*path, &value) != nil || value.SchemaVersion != schemaVersion || !revisionPattern.MatchString(value.SourceRevision) || !validPlatform(value.Platform) {
+	if *path == "" || !revisionPattern.MatchString(*expectedRevision) || !validPlatform(*expectedPlatform) || decodeStrict(*path, &value) != nil || value.SchemaVersion != schemaVersion || value.SourceRevision != *expectedRevision || value.Platform != *expectedPlatform {
 		return errors.New("attestation is invalid")
 	}
 	publicText := *trusted
-	if value.SigningMode == "test" && *allowTest {
+	switch value.SigningMode {
+	case "test":
+		if !*allowTest {
+			return errors.New("test attestation requires explicit opt-in")
+		}
 		publicText = value.Signature.PublicKey
+	case "release":
+		if publicText == "" {
+			return errors.New("release attestation requires a trusted key")
+		}
+	default:
+		return errors.New("attestation signing mode is invalid")
 	}
 	publicKey, err := base64.StdEncoding.DecodeString(publicText)
 	if err != nil || len(publicKey) != ed25519.PublicKeySize || value.Signature.Algorithm != "Ed25519" || value.Signature.PublicKey != publicText {
@@ -300,6 +317,21 @@ func describeFile(path string) (digestFile, error) {
 	}
 	digest := sha256.Sum256(data)
 	return digestFile{Path: filepath.Base(path), Size: info.Size(), SHA256: hex.EncodeToString(digest[:])}, nil
+}
+
+func writeExclusive(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(data); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 func decodeStrict(path string, target any) error {

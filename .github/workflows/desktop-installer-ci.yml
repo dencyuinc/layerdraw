@@ -65,17 +65,12 @@ jobs:
           ./tools/build-desktop-installer.sh "${{ matrix.platform }}" 0.0.1 "$RUNNER_TEMP/desktop-previous"
           ./tools/build-desktop-installer.sh "${{ matrix.platform }}" 0.0.2 "$RUNNER_TEMP/desktop-current"
 
-      - name: Build and verify isolated test update metadata
-        shell: bash
-        env:
-          CURRENT_VERSION: 0.0.1
-        run: |
-          ./tools/build-desktop-update-metadata.sh test "${{ matrix.platform }}" "${{ matrix.format }}" \
-            0.0.2 "$GITHUB_SHA" "$RUNNER_TEMP/desktop-current"
-
       - name: Exercise fresh install, launch, upgrade, rollback, and uninstall
         if: matrix.platform != 'windows'
         shell: bash
+        env:
+          LAYERDRAW_CONFORMANCE_SOURCE_REVISION: ${{ github.sha }}
+          LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT: ${{ runner.temp }}/desktop-current/LayerDraw-0.0.2-${{ matrix.platform }}-scenario.json
         run: |
           suffix="${{ matrix.format }}"
           ./tools/smoke-desktop-installer.sh "${{ matrix.platform }}" \
@@ -85,7 +80,26 @@ jobs:
       - name: Exercise Windows install lifecycle
         if: matrix.platform == 'windows'
         shell: pwsh
+        env:
+          LAYERDRAW_CONFORMANCE_SOURCE_REVISION: ${{ github.sha }}
+          LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT: ${{ runner.temp }}\desktop-current\LayerDraw-0.0.2-${{ matrix.platform }}-scenario.json
         run: |
           ./tools/smoke-desktop-installer.ps1 `
             -PreviousInstaller "$env:RUNNER_TEMP\desktop-previous\LayerDraw-0.0.1.exe" `
             -CurrentInstaller "$env:RUNNER_TEMP\desktop-current\LayerDraw-0.0.2.exe"
+
+      - name: Create and verify isolated test attestation and update metadata
+        shell: bash
+        env:
+          CURRENT_VERSION: 0.0.1
+        run: |
+          suffix="${{ matrix.format }}"
+          if [[ "$suffix" == nsis ]]; then suffix=exe; fi
+          go run ./tools/desktopattestation create \
+            -installer "$RUNNER_TEMP/desktop-current/LayerDraw-0.0.2.$suffix" \
+            -closure "$RUNNER_TEMP/desktop-current/LayerDraw-0.0.2-conformance.json" \
+            -scenario-result "$RUNNER_TEMP/desktop-current/LayerDraw-0.0.2-${{ matrix.platform }}-scenario.json" \
+            -output "$RUNNER_TEMP/desktop-current/LayerDraw-0.0.2-${{ matrix.platform }}-attestation.json" \
+            -source-revision "$GITHUB_SHA" -platform "${{ matrix.platform }}" -test-signing
+          ./tools/build-desktop-update-metadata.sh test "${{ matrix.platform }}" "${{ matrix.format }}" \
+            0.0.2 "$GITHUB_SHA" "$RUNNER_TEMP/desktop-current"

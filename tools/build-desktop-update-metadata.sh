@@ -43,9 +43,10 @@ case "$mode" in
   *) printf 'Unsupported update signing mode: %s\n' "$mode" >&2; exit 1 ;;
 esac
 
-go run ./tools/desktopattestation verify -attestation "$attestation" -root "$artifacts" "${attestation_verify[@]}"
-
 commit="$(git rev-parse "$revision^{commit}")"
+go run ./tools/desktopattestation verify -attestation "$attestation" -root "$artifacts" \
+  -source-revision "$commit" -platform "$platform" "${attestation_verify[@]}"
+
 built_at="$(git log -1 --format=%cI "$commit")"
 go run ./tools/desktoprelease build \
   -installer "$installer" \

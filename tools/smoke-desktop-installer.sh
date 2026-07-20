@@ -86,6 +86,9 @@ case "$platform" in
       codesign --verify --deep --strict "$installed_app"
       codesign --verify --strict "$installed_app/Contents/Resources/layerdraw/bin/layerdraw-host"
     fi
+    if [[ -n "${LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT:-}" ]]; then
+      "$installed_executable" --packaged-conformance "$LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT"
+    fi
     rm -rf "$installed_app"
     test ! -e "$installed_executable"
     ;;
@@ -110,6 +113,9 @@ case "$platform" in
     verify_probe "$installed_executable" verify
     if [[ "${LAYERDRAW_EXPECT_SIGNED:-0}" == "1" ]]; then
       gpg --verify "$current_installer.asc" "$current_installer"
+    fi
+    if [[ -n "${LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT:-}" ]]; then
+      "$installed_executable" --packaged-conformance "$LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT"
     fi
     sudo dpkg -r layerdraw
     test ! -e "$installed_executable"

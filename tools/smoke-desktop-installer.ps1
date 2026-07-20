@@ -68,6 +68,10 @@ try {
       if ((Get-AuthenticodeSignature $signedBinary).Status -ne "Valid") { throw "installed binary signature is not valid: $signedBinary" }
     }
   }
+  if ($env:LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT) {
+    & $executable --packaged-conformance $env:LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT
+    if ($LASTEXITCODE -ne 0) { throw "installed Desktop conformance scenario failed" }
+  }
   $uninstaller = Join-Path $install "uninstall.exe"
   $removed = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
   if ($removed.ExitCode -ne 0) { throw "uninstall failed: $($removed.ExitCode)" }
