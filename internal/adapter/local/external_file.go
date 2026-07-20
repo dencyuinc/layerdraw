@@ -111,6 +111,34 @@ func (s *ExternalFileStore) Bind(ctx context.Context, input ExternalFileBinding)
 	})
 }
 
+// Relocate replaces a binding only when the caller proves the exact prior
+// canonical locator. This is used by the host's explicit moved-project flow;
+// ordinary Bind calls remain immutable and fail on locator drift.
+func (s *ExternalFileStore) Relocate(ctx context.Context, scope runtimeprotocol.RuntimeScope, kind port.ExternalFileKind, prior, replacement string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if prior == "" || !filepath.IsAbs(prior) || filepath.Clean(prior) != prior {
+		return port.ErrConflict
+	}
+	oldLocator := prior
+	newLocator, err := canonicalExternalLocator(kind, replacement)
+	if err != nil {
+		return err
+	}
+	return s.withLock(scope, func(dir string) error {
+		path := filepath.Join(dir, "external", "binding.json")
+		var existing externalBindingDisk
+		if err := s.readJSON(path, &existing); err != nil {
+			return err
+		}
+		if existing.Kind != kind || existing.Locator != oldLocator {
+			return port.ErrConflict
+		}
+		return s.writeJSON(path, externalBindingDisk{Kind: kind, Locator: newLocator})
+	})
+}
+
 func (s *ExternalFileStore) GetExternalHead(ctx context.Context, input port.GetExternalFileHeadInput) (port.ExternalFileHead, error) {
 	if err := ctx.Err(); err != nil {
 		return port.ExternalFileHead{}, err

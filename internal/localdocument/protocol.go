@@ -141,6 +141,10 @@ func (h *Host) SaveRuntime(ctx context.Context, input runtimeprotocol.RuntimeCom
 	if err != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, err
 	}
+	current := session.Open.CommittedRevision
+	if input.OperationBatch.DocumentID != current.DocumentID || !sameCommittedRevision(input.OperationBatch.BaseRevision, current) || input.OperationBatch.ExpectedDefinitionHash != current.DefinitionHash {
+		return runtimeprotocol.RuntimeCommitResult{}, port.ErrConflict
+	}
 	return h.Save(ctx, saveInput(session, input, runtimeprotocol.CommitTriggerExplicitSave))
 }
 

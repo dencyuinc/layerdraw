@@ -76,6 +76,56 @@ func TestExternalFileStoreProjectPublishesCompleteTreeIdempotentlyAcrossRestart(
 	}
 }
 
+func TestExternalFileStoreRelocateRequiresExactPriorBinding(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	oldProject, newProject := filepath.Join(root, "old"), filepath.Join(root, "new")
+	for _, project := range []string{oldProject, newProject} {
+		if err := os.Mkdir(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeExternalFixture(t, project, map[string][]byte{"document.ldl": []byte("project p \"P\" {}\n")})
+	}
+	oldCanonical, err := filepath.EvalSymlinks(oldProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewExternalFileStore(filepath.Join(root, "adapter"), ExternalFileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := testScope()
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := store.Relocate(cancelled, scope, port.ExternalFileKindProject, oldProject, newProject); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel=%v", err)
+	}
+	if err := store.Relocate(ctx, scope, port.ExternalFileKindProject, "relative", newProject); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("relative prior=%v", err)
+	}
+	if err := store.Relocate(ctx, scope, port.ExternalFileKindProject, oldProject, filepath.Join(root, "missing")); err == nil {
+		t.Fatal("missing replacement accepted")
+	}
+	if err := store.Relocate(ctx, scope, port.ExternalFileKindProject, oldProject, newProject); err == nil {
+		t.Fatal("missing binding accepted")
+	}
+	if err := store.Bind(ctx, ExternalFileBinding{Scope: scope, Kind: port.ExternalFileKindProject, Locator: oldProject}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Relocate(ctx, scope, port.ExternalFileKindProject, newProject, oldProject); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("forged prior=%v", err)
+	}
+	if err := store.Relocate(ctx, scope, port.ExternalFileKindContainer, oldProject, newProject); err == nil {
+		t.Fatal("wrong kind accepted")
+	}
+	if err := store.Relocate(ctx, scope, port.ExternalFileKindProject, oldCanonical, newProject); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Bind(ctx, ExternalFileBinding{Scope: scope, Kind: port.ExternalFileKindProject, Locator: newProject}); err != nil {
+		t.Fatalf("relocated binding=%v", err)
+	}
+}
+
 func TestExternalFileStoreAbortRejectsReplacedStageDirectory(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

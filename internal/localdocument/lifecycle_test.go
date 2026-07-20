@@ -123,6 +123,76 @@ func TestSearchBindingTracksOnlyLiveCommittedSession(t *testing.T) {
 	}
 }
 
+func TestRelocateProjectPreservesStableIdentityAndDetectsChangedSource(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	project := writeProject(t, root, "project p \"P\" {}\n")
+	opened, err := host.OpenProject(ctx, OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentID := opened.Session.Open.Session.Scope.DocumentID
+	if _, err := host.currentExternalDigest(ctx, documentBinding{Kind: "unknown"}, opened.Session.sourceInput); err == nil {
+		t.Fatal("unknown external kind accepted")
+	}
+	if _, err := host.currentExternalDigest(ctx, documentBinding{Kind: "project", Locator: filepath.Join(root, "missing-project")}, opened.Session.sourceInput); err == nil {
+		t.Fatal("missing external project accepted")
+	}
+	if _, err := host.currentExternalDigest(ctx, documentBinding{Kind: "container", Locator: filepath.Join(root, "missing.layerdraw")}, opened.Session.sourceInput); err == nil {
+		t.Fatal("missing external container accepted")
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: project}); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("active relocate=%v", err)
+	}
+	if err := host.Close(ctx, opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(root, "moved")
+	if err := os.Rename(project, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RelocateProject(ctx, "document_unknown", OpenProjectInput{Root: moved}); !errors.Is(err, port.ErrNotFound) {
+		t.Fatalf("unknown relocate=%v", err)
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: "relative"}); err == nil {
+		t.Fatal("relative relocate accepted")
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: moved, EntryPath: "missing.ldl"}); !errors.Is(err, port.ErrNotFound) {
+		t.Fatalf("missing entry=%v", err)
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: moved}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := host.OpenDocument(ctx, documentID)
+	if err != nil || reopened.ExternalChange != nil || reopened.Session.Open.Session.Scope.DocumentID != documentID {
+		t.Fatalf("reopen=%+v err=%v", reopened, err)
+	}
+	if err := host.Close(ctx, reopened.Session); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moved, "document.ldl"), []byte("project p \"Changed\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := host.OpenDocument(ctx, documentID)
+	if err != nil || changed.ExternalChange == nil || !changed.ExternalChange.RequiresReview {
+		t.Fatalf("changed=%+v err=%v", changed.ExternalChange, err)
+	}
+	if err := host.Close(ctx, changed.Session); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(root, "other")
+	if err := os.Mkdir(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "document.ldl"), []byte("project other \"Other\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RelocateProject(ctx, documentID, OpenProjectInput{Root: other}); !errors.Is(err, port.ErrConflict) {
+		t.Fatalf("portable identity replacement=%v", err)
+	}
+}
+
 func durableFileSnapshot(t *testing.T, root string) string {
 	t.Helper()
 	files := map[string][]byte{}

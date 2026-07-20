@@ -94,6 +94,7 @@ type Host struct {
 	external  *local.ExternalFileStore
 	authority *localAuthority
 	workbench *runtimeWorkbench
+	bindingMu sync.Mutex
 	mu        sync.Mutex
 	// delegationMu serializes durable delegation snapshots independently from
 	// session lifecycle locking.
@@ -370,7 +371,108 @@ func (h *Host) OpenDocument(ctx context.Context, documentID runtimeprotocol.Docu
 	if err != nil {
 		return OpenResult{}, err
 	}
-	return h.openBound(ctx, binding, binding.SourceDigest, source)
+	externalDigest, err := h.currentExternalDigest(ctx, binding, source)
+	if err != nil {
+		return OpenResult{}, err
+	}
+	return h.openBound(ctx, binding, externalDigest, source)
+}
+
+func (h *Host) currentExternalDigest(ctx context.Context, binding documentBinding, committed engineendpoint.LocalSource) (protocolcommon.Digest, error) {
+	switch binding.Kind {
+	case "project":
+		tree, err := readProjectTree(ctx, binding.Locator, h.config.MaxProjectFiles, h.config.MaxProjectBytes)
+		if err != nil {
+			return "", err
+		}
+		candidate, err := h.engine.WithProjectTree(ctx, committed, tree)
+		if err != nil {
+			return "", err
+		}
+		return candidate.Digest(), nil
+	case "container":
+		data, err := os.ReadFile(binding.Locator)
+		if err != nil {
+			return "", err
+		}
+		candidate, err := h.engine.ReadContainer(ctx, data)
+		if err != nil {
+			return "", err
+		}
+		return candidate.Digest(), nil
+	default:
+		return "", errors.New("unknown local source kind")
+	}
+}
+
+// RelocateProject changes only the host-private source locator for an existing
+// stable document. The replacement is compiled and must preserve the portable
+// project identity before metadata is atomically updated. Open sessions cannot
+// be relocated underneath an active Runtime session.
+func (h *Host) RelocateProject(ctx context.Context, documentID runtimeprotocol.DocumentID, input OpenProjectInput) error {
+	root, err := canonicalLocalPath(input.Root, true)
+	if err != nil {
+		return err
+	}
+	if input.EntryPath == "" {
+		input.EntryPath = "document.ldl"
+	}
+	tree, err := readProjectTree(ctx, root, h.config.MaxProjectFiles, h.config.MaxProjectBytes)
+	if err != nil {
+		return err
+	}
+	if _, ok := tree[input.EntryPath]; !ok {
+		return fmt.Errorf("entry module is unavailable: %w", port.ErrNotFound)
+	}
+	resolved := input.ResolvedDependencies
+	if resolved.Format == "" {
+		resolved = engineendpoint.LocalResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1}
+	}
+	source, err := h.engine.CompileProject(ctx, engineendpoint.LocalProjectInput{EntryPath: input.EntryPath, ProjectSourceTree: tree, InstalledPackTree: cloneByteMap(input.InstalledPackTree), ResolvedDependencies: resolved, ReferencedAssets: append([]engineendpoint.LocalAssetInput(nil), input.ReferencedAssets...), ResourceLimits: input.ResourceLimits})
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, session := range h.sessions {
+		if !session.closed && session.Open.Session.Scope.DocumentID == documentID {
+			return port.ErrConflict
+		}
+	}
+	var oldKey string
+	var binding documentBinding
+	for key, candidate := range h.metadata.Bindings {
+		if candidate.DocumentID == documentID {
+			oldKey, binding = key, candidate
+			break
+		}
+	}
+	if oldKey == "" {
+		return port.ErrNotFound
+	}
+	if binding.Kind != "project" || binding.PortableID != source.PortableID {
+		return port.ErrConflict
+	}
+	newKey := bindingKey("project", root)
+	if existing, ok := h.metadata.Bindings[newKey]; ok && existing.DocumentID != documentID {
+		return port.ErrConflict
+	}
+	prior := binding
+	binding.Locator = root
+	delete(h.metadata.Bindings, oldKey)
+	h.metadata.Bindings[newKey] = binding
+	if err := h.saveMetadataLocked(); err != nil {
+		delete(h.metadata.Bindings, newKey)
+		h.metadata.Bindings[oldKey] = prior
+		return err
+	}
+	if err := h.external.Relocate(ctx, h.authority.add(documentID), port.ExternalFileKindProject, prior.Locator, root); err != nil {
+		delete(h.metadata.Bindings, newKey)
+		h.metadata.Bindings[oldKey] = prior
+		_ = h.saveMetadataLocked()
+		return err
+	}
+	return nil
 }
 
 // ImportContainer always assigns a new host Document ID. Portable project
@@ -400,6 +502,8 @@ func (h *Host) openSource(ctx context.Context, kind, locator string, source engi
 	sourceDigest := source.Digest()
 	portableID := source.PortableID
 	key := bindingKey(kind, locator)
+	h.bindingMu.Lock()
+	defer h.bindingMu.Unlock()
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -438,6 +542,9 @@ func (h *Host) openSource(ctx context.Context, kind, locator string, source engi
 	} else if binding.PortableID != portableID {
 		return OpenResult{}, errors.New("portable project identity changed at bound source")
 	}
+	// Keep source identity selection serialized until Runtime has opened the
+	// bound document. Concurrent Desktop opens then observe one stable binding;
+	// the Desktop lifecycle facade deterministically focuses the first session.
 	return h.openBound(ctx, binding, sourceDigest, source)
 }
 

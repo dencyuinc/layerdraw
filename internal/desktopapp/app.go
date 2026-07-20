@@ -49,6 +49,8 @@ type Config struct {
 	EndpointInstanceID    protocolcommon.EndpointInstanceID
 	ReleaseManifestDigest protocolcommon.Digest
 	Lifecycle             desktopcontract.LifecyclePort
+	Window                desktopcontract.WindowPort
+	Dialogs               desktopcontract.NativeDialogPort
 	HostPorts             desktopcontract.HostPorts
 	CredentialRefs        []desktopcontract.CredentialRef
 	DelegationFences      []desktopcontract.DelegationFence
@@ -57,14 +59,18 @@ type Config struct {
 	Bindings              desktopcontract.ClientSet
 	Adapters              map[desktopcontract.ComponentID]Adapter
 	Recovery              RecoveryReporter
+	ExternalLifecycle     ExternalLifecycleAdapter
 	Now                   func() time.Time
 }
 
 // ProjectOpenResult contains generated Runtime values only. The local session
 // pointer and native project location remain inside the trusted backend.
 type ProjectOpenResult struct {
-	Open    runtimeprotocol.OpenRuntimeDocumentResult `json:"open"`
-	History runtimeprotocol.RevisionPage              `json:"history"`
+	Open             runtimeprotocol.OpenRuntimeDocumentResult `json:"open"`
+	History          runtimeprotocol.RevisionPage              `json:"history"`
+	ProjectID        runtimeprotocol.DocumentID                `json:"project_id"`
+	Disposition      ProjectOpenDisposition                    `json:"disposition"`
+	ReconcilePending bool                                      `json:"reconcile_pending"`
 }
 
 // BindingResult preserves the generated response outcome. Failure is present
@@ -91,17 +97,19 @@ func (r BindingResult) Validate() bool {
 type Application struct {
 	config Config
 
-	mu        sync.Mutex
-	shutdown  sync.Mutex
-	state     desktopcontract.LifecycleState
-	host      *localdocument.Host
-	started   []desktopcontract.ComponentID
-	handshake protocolcommon.HandshakeResult
-	inflight  sync.WaitGroup
+	mu                  sync.Mutex
+	shutdown            sync.Mutex
+	state               desktopcontract.LifecycleState
+	host                *localdocument.Host
+	started             []desktopcontract.ComponentID
+	handshake           protocolcommon.HandshakeResult
+	inflight            sync.WaitGroup
+	projects            *projectLifecycle
+	closeProjectSession func(context.Context, *localdocument.Host, *localdocument.Session) error
 }
 
 func New(config Config) (*Application, error) {
-	if config.Root == "" || !filepath.IsAbs(config.Root) || config.Lifecycle == nil ||
+	if config.Root == "" || !filepath.IsAbs(config.Root) || config.Lifecycle == nil || config.Window == nil || config.Dialogs == nil ||
 		config.ProjectStorage == nil || config.Capabilities == nil || config.HostPorts.Credentials == nil ||
 		config.HostPorts.LocalActor == nil || config.HostPorts.LocalOwner == nil ||
 		config.HostPorts.Delegations == nil || config.HostPorts.MCP == nil {
@@ -121,7 +129,13 @@ func New(config Config) (*Application, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Application{config: config, state: desktopcontract.LifecycleStopped}, nil
+	projects, err := newProjectLifecycle(config.Root, config.Now)
+	if err != nil {
+		return nil, err
+	}
+	return &Application{config: config, state: desktopcontract.LifecycleStopped, projects: projects, closeProjectSession: func(ctx context.Context, host *localdocument.Host, session *localdocument.Session) error {
+		return host.Close(ctx, session)
+	}}, nil
 }
 
 func (a *Application) State() desktopcontract.LifecycleState {
@@ -308,7 +322,12 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 }
 
 func (a *Application) externalCapabilityMatches(handshake protocolcommon.HandshakeResult) bool {
-	wired := a.config.Adapters[desktopcontract.ComponentExternalStorage] != nil
+	adapterWired := a.config.Adapters[desktopcontract.ComponentExternalStorage] != nil
+	lifecycleWired := a.config.ExternalLifecycle != nil
+	if adapterWired != lifecycleWired {
+		return false
+	}
+	wired := adapterWired
 	for _, status := range handshake.CapabilityStatuses {
 		if status.CapabilityID == desktopcontract.CapabilityExternalStorage {
 			return status.Enabled == wired
@@ -320,6 +339,11 @@ func (a *Application) externalCapabilityMatches(handshake protocolcommon.Handsha
 func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struct{}] {
 	a.shutdown.Lock()
 	defer a.shutdown.Unlock()
+	for _, assessment := range a.projects.allAssessments() {
+		if !assessment.CanClose {
+			return failed[struct{}](desktopcontract.FailureReconcilePending, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryReview)
+		}
+	}
 	a.mu.Lock()
 	if a.state == desktopcontract.LifecycleStopped && len(a.started) == 0 {
 		a.mu.Unlock()
@@ -377,7 +401,21 @@ func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struc
 	a.mu.Lock()
 	host := a.host
 	a.mu.Unlock()
+	detached := make([]*sessionLifecycle, 0)
+	for _, session := range a.projects.sessionRefs() {
+		value, err := a.projects.detach(session)
+		if err != nil {
+			for _, prior := range detached {
+				_ = a.projects.restore(prior)
+			}
+			return failed[struct{}](desktopcontract.FailureShutdown, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
+		}
+		detached = append(detached, value)
+	}
 	if host != nil && host.Shutdown(ctx) != nil {
+		for _, prior := range detached {
+			_ = a.projects.restore(prior)
+		}
 		return failed[struct{}](desktopcontract.FailureShutdown, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
 	a.mu.Lock()
