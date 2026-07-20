@@ -112,7 +112,7 @@ export interface BrowserEditor {
   snapshot(): ComposerSnapshot;
   subscribe(listener: (snapshot: ComposerSnapshot) => void): () => void;
   getCapabilities(): BrowserEditorCapabilityState | undefined;
-  materializeView(input: MaterializeViewInput): Promise<ViewData>;
+  materializeView(input: MaterializeViewInput, options?: Readonly<{ signal?: AbortSignal }>): Promise<ViewData>;
   close(): Promise<void>;
 }
 
