@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 const mcpConnectionFilename = "mcp-connections.json"
@@ -44,7 +45,7 @@ func loadMCPConnectionStore(root string, now time.Time) (*mcpConnectionStore, ui
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 4<<20 {
+	if !info.Mode().IsRegular() || !privatefs.PermissionsMatch(info, 0o600) || info.Size() > 4<<20 {
 		return nil, 0, nil, errors.New("desktop MCP connection metadata is insecure")
 	}
 	data, err := directory.ReadFile(mcpConnectionFilename)
@@ -132,5 +133,5 @@ func (s *mcpConnectionStore) save(generation uint64, values map[string]MCPConnec
 		return err
 	}
 	defer directory.Close()
-	return directory.Sync()
+	return privatefs.SyncDirectory(directory)
 }

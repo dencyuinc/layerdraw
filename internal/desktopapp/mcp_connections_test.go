@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -268,8 +269,10 @@ func TestMCPConnectionStoreRejectsUnsafeMetadataAndRestartsLiveRecords(t *testin
 		}
 	}
 	write([]byte(`{"version":1,"generation":0,"connections":[]}`), 0o644)
-	if _, _, _, err := loadMCPConnectionStore(root, now); err == nil {
-		t.Fatal("world-readable metadata accepted")
+	if _, _, _, err := loadMCPConnectionStore(root, now); runtime.GOOS != "windows" && err == nil {
+		t.Fatal("world-readable Unix metadata accepted")
+	} else if runtime.GOOS == "windows" && err != nil {
+		t.Fatalf("private Windows ACL rejected because of synthetic mode bits: %v", err)
 	}
 	write([]byte(`{"version":2,"generation":0,"connections":[]}`), 0o600)
 	if _, _, _, err := loadMCPConnectionStore(root, now); err == nil {
