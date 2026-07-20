@@ -181,6 +181,14 @@ type ValidatedArtifact struct {
 	AuthoringImpact            *semantic.AuthoringImpact `json:"authoring_impact,omitempty"`
 	AddressMigrationPlanDigest string                    `json:"address_migration_plan_digest"`
 	Diagnostics                []string                  `json:"diagnostics"`
+	StagedObjects              []StagedObjectRef         `json:"staged_objects"`
+}
+
+type StagedObjectRef struct {
+	ObjectID  string `json:"object_id"`
+	Digest    string `json:"digest"`
+	Size      int64  `json:"size"`
+	MediaType string `json:"media_type"`
 }
 
 // PackageValidator is implemented by the Go Engine package facade. Registry
@@ -216,6 +224,7 @@ type ProjectMutationPlan struct {
 	AuthoringImpactDigest      string                   `json:"authoring_impact_digest"`
 	HostOperationImpactDigest  string                   `json:"host_operation_impact_digest"`
 	EvaluationDigest           string                   `json:"evaluation_digest"`
+	StagedObjects              []StagedObjectRef        `json:"staged_objects"`
 }
 type RegistryMutationBuildInput struct {
 	Action             Action                    `json:"action"`
