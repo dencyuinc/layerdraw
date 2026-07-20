@@ -5,6 +5,7 @@ package desktopapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -28,10 +29,22 @@ func (t *canonicalTransportStub) Start(_ context.Context, _ mcphost.Handler) err
 func (t *canonicalTransportStub) Shutdown(context.Context) error { t.stopped = true; return nil }
 
 type canonicalOwnerStub struct{}
-type mcpCapabilitySourceStub struct{ snapshot mcphost.CapabilitySnapshot }
+type mcpCapabilitySourceStub struct {
+	snapshot mcphost.CapabilitySnapshot
+	err      error
+}
 
 func (s mcpCapabilitySourceStub) Snapshot(context.Context) (mcphost.CapabilitySnapshot, error) {
-	return s.snapshot, nil
+	return s.snapshot, s.err
+}
+
+type mcpResourceSourceStub struct {
+	response mcphost.ResourceResponse
+	err      error
+}
+
+func (s mcpResourceSourceStub) Read(context.Context, mcphost.ResourceRequest) (mcphost.ResourceResponse, error) {
+	return s.response, s.err
 }
 
 func (canonicalOwnerStub) Capabilities(context.Context) (mcphost.CapabilitySnapshot, error) {
@@ -101,6 +114,30 @@ func TestCanonicalMCPPortMapsLifecycleFailures(t *testing.T) {
 	if result := port.Start(context.Background()); !result.Validate() || result.Outcome != protocolcommon.OutcomeFailed {
 		t.Fatalf("start=%+v", result)
 	}
+	shutdownFailure := &shutdownFailingCanonicalTransport{}
+	host, err = mcphost.New(mcphost.Config{Owner: owner, Transport: shutdownFailure})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port = BindCanonicalMCPHost(host)
+	if result := port.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start before shutdown failure=%+v", result)
+	}
+	if result := port.Shutdown(context.Background()); !result.Validate() || result.Outcome != protocolcommon.OutcomeFailed {
+		t.Fatalf("shutdown=%+v", result)
+	}
+	panicShutdown := &panicShutdownCanonicalTransport{}
+	host, err = mcphost.New(mcphost.Config{Owner: owner, Transport: panicShutdown})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port = BindCanonicalMCPHost(host)
+	if result := port.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start before panic shutdown=%+v", result)
+	}
+	if result := port.Shutdown(context.Background()); result.Outcome != protocolcommon.OutcomeFailed {
+		t.Fatalf("panic shutdown=%+v", result)
+	}
 }
 
 type failingCanonicalTransport struct{}
@@ -109,6 +146,18 @@ func (*failingCanonicalTransport) Start(context.Context, mcphost.Handler) error 
 	return context.Canceled
 }
 func (*failingCanonicalTransport) Shutdown(context.Context) error { return context.Canceled }
+
+type shutdownFailingCanonicalTransport struct{}
+
+func (*shutdownFailingCanonicalTransport) Start(context.Context, mcphost.Handler) error { return nil }
+func (*shutdownFailingCanonicalTransport) Shutdown(context.Context) error {
+	return context.DeadlineExceeded
+}
+
+type panicShutdownCanonicalTransport struct{}
+
+func (*panicShutdownCanonicalTransport) Start(context.Context, mcphost.Handler) error { return nil }
+func (*panicShutdownCanonicalTransport) Shutdown(context.Context) error               { panic("secret") }
 
 func TestCanonicalDesktopCompositionUsesGeneratedOwnerEnvelopeWithWailsParity(t *testing.T) {
 	clients := completeClients(t)
@@ -144,12 +193,13 @@ func TestCanonicalDesktopCompositionUsesGeneratedOwnerEnvelopeWithWailsParity(t 
 		return desktopcontract.ExchangeResult{Operation: string(engineprotocol.ListModulesRequestEnvelopeOperationValue), Control: append([]byte(nil), control...), Blobs: []desktopcontract.Blob{}}, nil
 	}
 	digest := protocolcommon.Digest("sha256:0000000000000000000000000000000000000000000000000000000000000000")
-	snapshot := mcphost.CapabilitySnapshot{ManifestETag: protocolcommon.ManifestETag(digest), Operations: map[string]mcphost.OperationCapability{string(engineprotocol.ListModulesRequestEnvelopeOperationValue): {Enabled: true, InputSchema: json.RawMessage(`{"type":"object"}`), OutputSchema: json.RawMessage(`{"type":"object"}`)}}, Resources: []mcphost.ResourceCapability{}, GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest}}
+	snapshot := mcphost.CapabilitySnapshot{ManifestETag: protocolcommon.ManifestETag(digest), Operations: map[string]mcphost.OperationCapability{string(engineprotocol.ListModulesRequestEnvelopeOperationValue): {Enabled: true, InputSchema: json.RawMessage(`{"type":"object"}`), OutputSchema: json.RawMessage(`{"type":"object"}`)}}, Resources: []mcphost.ResourceCapability{{URI: "layerdraw://project/summary", Name: "Project summary", Description: "Current project summary.", MimeType: "application/json", Schema: json.RawMessage(`{"type":"object"}`)}}, GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest}}
 	root := t.TempDir()
 	config := testConfig(t, root, writeProject(t, root))
 	config.Bindings = clients
 	config.HostPorts.MCP = nil
 	config.MCPCapabilities = mcpCapabilitySourceStub{snapshot: snapshot}
+	config.MCPResources = mcpResourceSourceStub{response: mcphost.ResourceResponse{Content: json.RawMessage(`{"project":"ready"}`), MimeType: "application/json"}}
 	config.Root = filepath.Join(root, "canonical-desktop")
 	app, err := NewCanonical(config)
 	if err != nil {
@@ -189,6 +239,186 @@ func TestCanonicalDesktopCompositionUsesGeneratedOwnerEnvelopeWithWailsParity(t 
 	tools, failure := app.MCPListTools(context.Background())
 	if failure != nil || len(tools) != 2 || tools[1].Name != "layerdraw.list_modules" {
 		t.Fatalf("tools=%+v failure=%+v", tools, failure)
+	}
+	resources, failure := app.MCPListResources(context.Background())
+	if failure != nil || len(resources) != 2 || resources[1].URI != "layerdraw://project/summary" {
+		t.Fatalf("resources=%+v failure=%+v", resources, failure)
+	}
+	resource := app.MCPReadResource(context.Background(), mcphost.ReadResourceRequest{URI: "layerdraw://project/summary"})
+	if resource.Failure != nil || resource.MimeType != "application/json" || string(resource.Content) != `{"project":"ready"}` {
+		t.Fatalf("resource=%+v", resource)
+	}
+}
+
+func TestDesktopMCPOwnerFailsClosedAtCompositionAndOutcomeBoundaries(t *testing.T) {
+	clients := completeClients(t)
+	digest := testMCPDigest()
+	base := mcphost.CapabilitySnapshot{
+		ManifestETag: protocolcommon.ManifestETag(digest),
+		Operations:   map[string]mcphost.OperationCapability{},
+		Resources:    []mcphost.ResourceCapability{},
+		GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest},
+	}
+	if _, err := NewDesktopMCPOwner(desktopcontract.ClientSet{}, mcpCapabilitySourceStub{snapshot: base}, nil); err == nil {
+		t.Fatal("incomplete clients accepted")
+	}
+	if _, err := NewDesktopMCPOwner(clients, nil, nil); err == nil {
+		t.Fatal("missing capability source accepted")
+	}
+	owner, err := NewDesktopMCPOwner(clients, mcpCapabilitySourceStub{err: context.Canceled}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = owner.Capabilities(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("capability error=%v", err)
+	}
+	owner.capabilities = mcpCapabilitySourceStub{snapshot: mcphost.CapabilitySnapshot{
+		ManifestETag: base.ManifestETag,
+		Operations:   map[string]mcphost.OperationCapability{"engine.not_generated": {Enabled: true, InputSchema: json.RawMessage(`{}`), OutputSchema: json.RawMessage(`{}`)}},
+		Resources:    base.Resources, GrantSummary: base.GrantSummary,
+	}}
+	if _, err = owner.Capabilities(context.Background()); err == nil {
+		t.Fatal("enabled operation without a generated binding accepted")
+	}
+	if _, err = owner.Invoke(context.Background(), mcphost.OwnerRequest{Operation: "engine.not_generated", Arguments: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("unknown operation accepted")
+	}
+	if _, err = owner.ReadResource(context.Background(), mcphost.ResourceRequest{URI: "layerdraw://missing"}); err == nil {
+		t.Fatal("missing resource owner accepted")
+	}
+
+	for name, control := range map[string][]byte{
+		"success":   []byte(`{"outcome":"success"}`),
+		"ok":        []byte(`{"ok":true}`),
+		"not_ok":    []byte(`{"ok":false}`),
+		"invalid":   []byte(`{"outcome":"unknown"}`),
+		"absent":    []byte(`{}`),
+		"malformed": []byte(`{`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			outcome, outcomeErr := ownerOutcome(control)
+			switch name {
+			case "success", "ok":
+				if outcomeErr != nil || outcome != protocolcommon.OutcomeSuccess {
+					t.Fatalf("outcome=%q err=%v", outcome, outcomeErr)
+				}
+			case "not_ok":
+				if outcomeErr != nil || outcome != protocolcommon.OutcomeRejected {
+					t.Fatalf("outcome=%q err=%v", outcome, outcomeErr)
+				}
+			default:
+				if outcomeErr == nil {
+					t.Fatalf("invalid outcome accepted: %q", outcome)
+				}
+			}
+		})
+	}
+}
+
+func TestMCPApplicationSurfaceAndCompositionFailClosedWithoutAUsableHost(t *testing.T) {
+	app := &Application{}
+	if tools, failure := app.MCPListTools(context.Background()); tools != nil || failure == nil || failure.Code != mcphost.ErrorTransport {
+		t.Fatalf("tools=%+v failure=%+v", tools, failure)
+	}
+	if result := app.MCPCallTool(context.Background(), mcphost.CallToolRequest{Name: "layerdraw.get_capabilities"}); result.Failure == nil || result.Failure.Code != mcphost.ErrorTransport {
+		t.Fatalf("call=%+v", result)
+	}
+	if resources, failure := app.MCPListResources(context.Background()); resources != nil || failure == nil || failure.Code != mcphost.ErrorTransport {
+		t.Fatalf("resources=%+v failure=%+v", resources, failure)
+	}
+	if result := app.MCPReadResource(context.Background(), mcphost.ReadResourceRequest{URI: "layerdraw://capabilities"}); result.Failure == nil || result.Failure.Code != mcphost.ErrorTransport {
+		t.Fatalf("read=%+v", result)
+	}
+	readyWithoutHost := &Application{state: desktopcontract.LifecycleReady}
+	if result := readyWithoutHost.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{}); result.Outcome != protocolcommon.OutcomeFailed || result.Failure == nil || result.Failure.Code != desktopcontract.FailureReconnect {
+		t.Fatalf("preview without local host=%+v", result)
+	}
+	capabilityApp := &Application{config: Config{Adapters: map[desktopcontract.ComponentID]Adapter{}}}
+	if capabilityApp.externalCapabilityMatches(protocolcommon.HandshakeResult{}) {
+		t.Fatal("missing external capability matched")
+	}
+	disabled := protocolcommon.HandshakeResult{CapabilityStatuses: []protocolcommon.RequestedCapabilityStatus{{CapabilityID: desktopcontract.CapabilityExternalStorage, Enabled: false}}}
+	if !capabilityApp.externalCapabilityMatches(disabled) {
+		t.Fatal("disabled unwired external capability did not match")
+	}
+	capabilityApp.config.Adapters[desktopcontract.ComponentExternalStorage] = &adapterStub{id: desktopcontract.ComponentExternalStorage}
+	if capabilityApp.externalCapabilityMatches(disabled) {
+		t.Fatal("disabled wired external capability matched")
+	}
+
+	limits := mcphost.DefaultLimits()
+	limits.MaxItems = 0
+	digest := testMCPDigest()
+	_, err := composeCanonicalMCP(completeClients(t), mcpCapabilitySourceStub{snapshot: mcphost.CapabilitySnapshot{
+		ManifestETag: protocolcommon.ManifestETag(digest), Operations: map[string]mcphost.OperationCapability{}, Resources: []mcphost.ResourceCapability{},
+		GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest},
+	}}, nil, limits)
+	if err == nil {
+		t.Fatal("invalid MCP limits accepted")
+	}
+	source := mcpCapabilitySourceStub{snapshot: mcphost.CapabilitySnapshot{
+		ManifestETag: protocolcommon.ManifestETag(digest), Operations: map[string]mcphost.OperationCapability{}, Resources: []mcphost.ResourceCapability{},
+		GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest},
+	}}
+	if _, err = NewCanonical(Config{Bindings: desktopcontract.ClientSet{}, MCPCapabilities: source}); err == nil {
+		t.Fatal("canonical composition accepted incomplete generated bindings")
+	}
+	if _, err = NewCanonical(Config{Bindings: completeClients(t), MCPCapabilities: source}); err == nil {
+		t.Fatal("canonical composition accepted an incomplete Desktop application")
+	}
+}
+
+func TestDesktopMCPOwnerRedactsGeneratedClientAndDecodeFailures(t *testing.T) {
+	operation := string(engineprotocol.ListModulesRequestEnvelopeOperationValue)
+	digest := testMCPDigest()
+	snapshot := mcphost.CapabilitySnapshot{
+		ManifestETag: protocolcommon.ManifestETag(digest),
+		Operations: map[string]mcphost.OperationCapability{operation: {
+			Enabled: true, InputSchema: json.RawMessage(`{"type":"object"}`), OutputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+		Resources:    []mcphost.ResourceCapability{},
+		GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: digest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: digest},
+	}
+	clients := completeClients(t)
+	clients.Engine.ListModules = func(context.Context, desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
+		return desktopcontract.ExchangeResult{}, context.DeadlineExceeded
+	}
+	owner, err := NewDesktopMCPOwner(clients, mcpCapabilitySourceStub{snapshot: snapshot}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "fixture-endpoint", Value: "document_abcdefghijklmnop"}, Value: "7"}
+	wireRequest, err := engineprotocol.EncodeListModulesRequestEnvelope(engineprotocol.ListModulesRequestEnvelope{
+		Operation: engineprotocol.ListModulesRequestEnvelopeOperationValue,
+		Payload:   engineprotocol.ListModulesInput{DocumentGeneration: generation, Limits: engineprotocol.WorkbenchLimits{MaxItems: "10", MaxOutputBytes: "4096"}},
+		Protocol:  engineprotocol.EngineProtocolRef{Name: engineprotocol.EngineProtocolRefNameValue, Version: engineprotocol.EngineProtocolRefVersionValue},
+		RequestID: "owner-error",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := mcphost.OwnerRequest{Operation: operation, Arguments: wireRequest}
+	if _, err = owner.Invoke(context.Background(), request); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("client error=%v", err)
+	}
+
+	for name, control := range map[string]json.RawMessage{
+		"malformed": []byte(`{`),
+		"not_page":  []byte(`{"outcome":"success"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			clients := completeClients(t)
+			clients.Engine.ListModules = func(context.Context, desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
+				return desktopcontract.ExchangeResult{Operation: operation, Control: append([]byte(nil), control...), Blobs: []desktopcontract.Blob{}}, nil
+			}
+			owner, ownerErr := NewDesktopMCPOwner(clients, mcpCapabilitySourceStub{snapshot: snapshot}, nil)
+			if ownerErr != nil {
+				t.Fatal(ownerErr)
+			}
+			if _, invokeErr := owner.Invoke(context.Background(), request); invokeErr == nil {
+				t.Fatal("invalid generated response accepted")
+			}
+		})
 	}
 }
 
