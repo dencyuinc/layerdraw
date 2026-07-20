@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,10 @@ func fixture() (RepreviewResult, accessprotocol.AuthoringDecision) {
 	decision := accessprotocol.AuthoringDecision{AccessFingerprint: digest, ApprovalRuleRefs: []string{}, AuthoringImpactDigest: &impact.ImpactDigest, ConstraintViolations: []accessprotocol.ConstraintViolation{}, DecisionDigest: digest, Diagnostics: []protocolcommon.ProtocolDiagnostic{}, EvaluationDigest: digest, HostOperationImpactDigests: []protocolcommon.Digest{}, MissingCapabilities: []semantic.AuthoringCapability{}, Outcome: accessprotocol.AuthoringDecisionOutcomeAllow, RequiredCapabilities: []semantic.AuthoringCapability{}}
 	preview := RepreviewResult{CurrentRevision: revision, DefinitionHash: digest, GraphHash: digest, OperationBatch: runtimeprotocol.RuntimeOperationBatch{DocumentID: revision.DocumentID, BaseRevision: revision, ExpectedDefinitionHash: digest, Operations: engineprotocol.SemanticOperationBatch{}, Preconditions: engineprotocol.EngineEditPreconditions{}}, AuthoringProof: runtimeprotocol.AuthoringProof{AccessFingerprint: digest, BaseRevision: revision, DecisionDigest: digest, EvaluationDigest: digest, PolicyRefs: []accessprotocol.PolicyRef{}}, PreviewDecision: decision, Evidence: Evidence{SemanticDiff: semantic.SemanticDiff{Digest: digest, Entries: []semantic.SemanticDiffEntry{}}, SourceDiff: engineprotocol.SourceDiff{Digest: digest, Edits: []engineprotocol.SourceEdit{}}, AuthoringImpact: impact, Diagnostics: []semantic.Diagnostic{}, AffectedUsages: []semantic.StableAddress{}, AffectedRows: []semantic.StableAddress{}, AffectedViews: []semantic.StableAddress{}, RenderPreviews: []ArtifactPreview{}}}
 	return preview, decision
+}
+
+func sessionFor(preview RepreviewResult) runtimeprotocol.RuntimeSessionRef {
+	return runtimeprotocol.RuntimeSessionRef{Scope: runtimeprotocol.RuntimeScope{DocumentID: preview.CurrentRevision.DocumentID}}
 }
 
 func newApplication(t *testing.T, store Store, runtime *runtimeStub, access *accessStub) *Application {
@@ -188,17 +193,20 @@ func TestApprovalReplaysPendingRuntimeCommitAfterFinalSaveCrash(t *testing.T) {
 	store := &crashAfterCommitStore{}
 	app := newApplication(t, store, runtime, access)
 	proposal := createProposal(t, app, "replay", accessprotocol.ActorRef{ActorID: "author", Kind: "user"}, accesscore.AgentPermissions{}, nil, preview, decision)
-	input := ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Approver: accessprotocol.ActorRef{ActorID: "approver", Kind: "user"}, OperationID: "operation", IdempotencyKey: "idempotency", Trigger: runtimeprotocol.CommitTriggerExplicitSave}
+	input := ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Session: sessionFor(preview), Approver: accessprotocol.ActorRef{ActorID: "approver", Kind: "user"}, OperationID: "operation", IdempotencyKey: "idempotency", Trigger: runtimeprotocol.CommitTriggerExplicitSave}
 	if _, err := app.ApproveAndApply(context.Background(), input); err == nil {
 		t.Fatal("expected final Review save failure")
 	}
-	if store.snapshot.Proposals[0].Status != StatusApproved || store.snapshot.Proposals[0].PendingOperationID != input.OperationID {
+	if store.snapshot.Proposals[0].Status != StatusApproved || store.snapshot.Proposals[0].PendingCommit == nil || store.snapshot.Proposals[0].PendingCommit.OperationID != input.OperationID {
 		t.Fatalf("pending approval was not durable: %+v", store.snapshot.Proposals[0])
 	}
+	runtime.preview.CurrentRevision = committed
+	access.err = ErrDenied
+	accessCalls := access.calls
 	restarted := newApplication(t, store, runtime, access)
 	got, err := restarted.ApproveAndApply(context.Background(), input)
-	if err != nil || got.Status != StatusApplied || len(runtime.commits) != 2 || runtime.commits[0].OperationID != runtime.commits[1].OperationID || runtime.commits[0].IdempotencyKey != runtime.commits[1].IdempotencyKey {
-		t.Fatalf("got=%+v err=%v commits=%+v", got, err, runtime.commits)
+	if err != nil || got.Status != StatusApplied || len(runtime.commits) != 2 || runtime.commits[0].OperationID != runtime.commits[1].OperationID || runtime.commits[0].IdempotencyKey != runtime.commits[1].IdempotencyKey || !reflect.DeepEqual(runtime.commits[0].OperationBatch, runtime.commits[1].OperationBatch) || !reflect.DeepEqual(runtime.commits[0].AuthoringProof, runtime.commits[1].AuthoringProof) || access.calls != accessCalls {
+		t.Fatalf("got=%+v err=%v commits=%+v access_calls=%d", got, err, runtime.commits, access.calls)
 	}
 }
 
@@ -214,7 +222,7 @@ func TestApprovalRepreviewCommitsAtomicallyAndFileStoreRestarts(t *testing.T) {
 	}
 	app := newApplication(t, store, runtime, access)
 	proposal := createProposal(t, app, "apply", accessprotocol.ActorRef{ActorID: "author", Kind: "user"}, accesscore.AgentPermissions{}, nil, preview, decision)
-	got, err := app.ApproveAndApply(context.Background(), ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Approver: accessprotocol.ActorRef{ActorID: "approver", Kind: "user"}, OperationID: "op", IdempotencyKey: "idem", Trigger: runtimeprotocol.CommitTriggerExplicitSave})
+	got, err := app.ApproveAndApply(context.Background(), ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Session: sessionFor(preview), Approver: accessprotocol.ActorRef{ActorID: "approver", Kind: "user"}, OperationID: "op", IdempotencyKey: "idem", Trigger: runtimeprotocol.CommitTriggerExplicitSave})
 	if err != nil || got.Status != StatusApplied || len(runtime.commits) != 1 || runtime.commits[0].AuthoringProof.DecisionDigest != preview.AuthoringProof.DecisionDigest {
 		t.Fatalf("got=%+v err=%v commits=%d", got, err, len(runtime.commits))
 	}
@@ -292,7 +300,7 @@ func TestApprovalConflictDenialAndRuntimeRecoveryStatuses(t *testing.T) {
 			test.mutate(runtime, access)
 			app := newApplication(t, NewMemoryStore(), runtime, access)
 			proposal := createProposal(t, app, "proposal", actor, accesscore.AgentPermissions{}, nil, preview, decision)
-			got, err := app.ApproveAndApply(context.Background(), ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Approver: approver, OperationID: "operation", IdempotencyKey: "idempotency"})
+			got, err := app.ApproveAndApply(context.Background(), ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Session: sessionFor(preview), Approver: approver, OperationID: "operation", IdempotencyKey: "idempotency"})
 			if got.Status != test.want {
 				t.Fatalf("status=%s err=%v", got.Status, err)
 			}
