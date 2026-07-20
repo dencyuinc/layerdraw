@@ -12,9 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
-	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 var transactionIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -224,54 +221,6 @@ func (s *DiskTransactionStore) getUnlocked(id string) (Transaction, bool, error)
 	return tx, true, nil
 }
 func (s *DiskTransactionStore) path(id string) string { return filepath.Join(s.root, id+".json") }
-func (s *DiskTransactionStore) lock(ctx context.Context) (func(), error) {
-	s.mu.Lock()
-	select {
-	case <-ctx.Done():
-		s.mu.Unlock()
-		return nil, ctx.Err()
-	default:
-	}
-	lockPath := filepath.Join(s.root, "transactions.lock")
-	fd, err := unix.Open(lockPath, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
-	if err != nil {
-		s.mu.Unlock()
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), lockPath)
-	for {
-		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			metadata, _ := json.Marshal(struct {
-				PID        int       `json:"pid"`
-				AcquiredAt time.Time `json:"acquired_at"`
-			}{os.Getpid(), time.Now().UTC()})
-			// Metadata is diagnostic only. flock ownership is authoritative, so a
-			// partial diagnostic write can never make a contender enter.
-			_ = file.Truncate(0)
-			_, _ = file.Seek(0, io.SeekStart)
-			_, _ = file.Write(metadata)
-			_ = file.Sync()
-			return func() {
-				_ = unix.Flock(fd, unix.LOCK_UN)
-				_ = file.Close()
-				s.mu.Unlock()
-			}, nil
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			_ = file.Close()
-			s.mu.Unlock()
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			_ = file.Close()
-			s.mu.Unlock()
-			return nil, ctx.Err()
-		case <-time.After(2 * time.Millisecond):
-		}
-	}
-}
 func ensureJSONEOF(decoder *json.Decoder) error {
 	var extra any
 	if err := decoder.Decode(&extra); errors.Is(err, io.EOF) {

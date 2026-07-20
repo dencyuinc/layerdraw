@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 )
 
 const maximumSettingsBytes = 64 * 1024
+const maximumAssociationBytes = 64 * 1024 * 1024
 
 type AtomicSettingsStore struct{ path string }
 
@@ -190,8 +192,9 @@ type AssociationBroker struct {
 }
 
 type associationLocation struct {
-	path string
-	info os.FileInfo
+	path   string
+	info   os.FileInfo
+	digest [sha256.Size]byte
 }
 
 func NewAssociationBroker() *AssociationBroker {
@@ -204,9 +207,14 @@ func (b *AssociationBroker) AcceptOSPath(path string) error {
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return errors.New("file association path is invalid")
 	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+	file, info, err := openRegularFile(path, os.O_RDONLY, 0)
+	if err != nil {
 		return errors.New("file association target is unsafe")
+	}
+	digest, err := boundedAssociationDigest(file)
+	_ = file.Close()
+	if err != nil {
+		return err
 	}
 	extension := strings.ToLower(filepath.Ext(path))
 	kind := desktopcontract.FileAssociationKind("")
@@ -224,7 +232,7 @@ func (b *AssociationBroker) AcceptOSPath(path string) error {
 	}
 	token := base64.RawURLEncoding.EncodeToString(random)
 	b.mu.Lock()
-	b.locations[token] = associationLocation{path: path, info: info}
+	b.locations[token] = associationLocation{path: path, info: info, digest: digest}
 	b.queue = append(b.queue, desktopcontract.FileAssociationHandoff{Kind: kind, Token: token})
 	b.mu.Unlock()
 	return nil
@@ -258,11 +266,34 @@ func (b *AssociationBroker) ResolveIdentity(token string) (string, os.FileInfo, 
 		return "", nil, errors.New("file association token is invalid")
 	}
 	delete(b.locations, token)
-	current, err := os.Lstat(location.path)
-	if err != nil || !current.Mode().IsRegular() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(location.info, current) {
+	file, current, err := openRegularFile(location.path, os.O_RDONLY, 0)
+	if err != nil || !os.SameFile(location.info, current) {
+		if file != nil {
+			_ = file.Close()
+		}
+		return "", nil, errors.New("file association target changed")
+	}
+	digest, digestErr := boundedAssociationDigest(file)
+	_ = file.Close()
+	if digestErr != nil || digest != location.digest {
 		return "", nil, errors.New("file association target changed")
 	}
 	return location.path, location.info, nil
+}
+
+func boundedAssociationDigest(file *os.File) ([sha256.Size]byte, error) {
+	var empty [sha256.Size]byte
+	if file == nil {
+		return empty, errors.New("file association target is unavailable")
+	}
+	hash := sha256.New()
+	written, err := io.Copy(hash, io.LimitReader(file, maximumAssociationBytes+1))
+	if err != nil || written > maximumAssociationBytes {
+		return empty, errors.New("file association target exceeds the safe size limit")
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
 }
 
 type JSONLogStore struct {

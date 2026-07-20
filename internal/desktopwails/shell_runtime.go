@@ -183,7 +183,7 @@ func (b *WailsShellBridge) VerifyPackagedAccessibility(ctx context.Context, prof
 		b.mu.Unlock()
 	}()
 	b.runtime.emit(ctx, accessibilityRequestEvent, id, profile)
-	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	select {
 	case report := <-submission.ch:

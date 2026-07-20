@@ -229,6 +229,21 @@ func TestAssociationBrokerReturnsOpaqueSingleUseTokens(t *testing.T) {
 	if _, err := broker.Resolve(replacedHandoff.Token); err == nil {
 		t.Fatal("replaced association target accepted")
 	}
+	oversized := filepath.Join(root, "oversized.ldl")
+	oversizedFile, err := os.OpenFile(oversized, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := oversizedFile.Truncate(maximumAssociationBytes + 1); err != nil {
+		_ = oversizedFile.Close()
+		t.Fatal(err)
+	}
+	if err := oversizedFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.AcceptOSPath(oversized); err == nil {
+		t.Fatal("oversized association target accepted")
+	}
 	unsupported := filepath.Join(root, "project.txt")
 	if err := os.WriteFile(unsupported, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
