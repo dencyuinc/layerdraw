@@ -233,7 +233,9 @@ test("Wails client executes every shared portable compile and cancellation vecto
       };
     },
   });
-  const client = await createWailsEngineClient(options(bindings));
+  const client = await createWailsEngineClient(options(bindings, {
+    client: { ...creationOptions, defaultCompileTimeoutMs: 30_000 },
+  }));
   for (const testCase of selected.filter((entry) => entry.execution === "compile")) {
     const outcome = await client.compile(portableParityInput(testCase), { requestId: testCase.expected.response.request_id });
     await assertPortableCompileParityOutcome(outcome, testCase, "0.0.0-dev");
