@@ -211,13 +211,19 @@ func (p *projectPort) NewRegistryDocumentState(_ context.Context, _ ArtifactIden
 }
 
 type runtimePort struct {
-	calls       atomic.Int64
-	err         error
-	result      *RuntimeCommitResult
-	block       chan struct{}
-	recovery    RuntimeRegistryOutcome
-	recoveryErr error
-	last        RuntimeCommitInput
+	calls        atomic.Int64
+	initialCalls atomic.Int64
+	err          error
+	result       *RuntimeCommitResult
+	block        chan struct{}
+	recovery     RuntimeRegistryOutcome
+	recoveryErr  error
+	last         RuntimeCommitInput
+}
+
+func (r *runtimePort) CommitInitialRegistryTemplate(ctx context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
+	r.initialCalls.Add(1)
+	return r.CommitRegistryPlan(ctx, input)
 }
 
 func (r *runtimePort) CommitRegistryPlan(_ context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {

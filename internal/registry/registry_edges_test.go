@@ -1333,7 +1333,7 @@ func TestCriticalTemplateNewDocumentAndAuthoritativeRecovery(t *testing.T) {
 		t.Fatalf("template reused existing project: %#v", plan)
 	}
 	result, err := env.registry.Commit(context.Background(), RuntimeCommitInput{Plan: plan, OperationID: "template", IdempotencyKey: "template-id"})
-	if err != nil || result.DocumentID != plan.NewDocumentID || !result.InitialCommittedRevision {
+	if err != nil || result.DocumentID != plan.NewDocumentID || !result.InitialCommittedRevision || env.runtime.initialCalls.Load() != 1 {
 		t.Fatalf("template commit: %#v %v", result, err)
 	}
 
@@ -1399,6 +1399,9 @@ func (p currentOnlyProject) CurrentRegistryProjectState(context.Context, string)
 type invalidTemplateRuntime struct{}
 
 func (invalidTemplateRuntime) CommitRegistryPlan(context.Context, RuntimeCommitInput) (RuntimeCommitResult, error) {
+	return RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "invalid-template"}, nil
+}
+func (invalidTemplateRuntime) CommitInitialRegistryTemplate(context.Context, RuntimeCommitInput) (RuntimeCommitResult, error) {
 	return RuntimeCommitResult{CommittedRevision: "r2", OperationResultID: "invalid-template"}, nil
 }
 

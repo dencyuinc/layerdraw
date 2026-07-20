@@ -378,6 +378,13 @@ type RuntimeCommitResult struct {
 type RuntimePort interface {
 	CommitRegistryPlan(context.Context, RuntimeCommitInput) (RuntimeCommitResult, error)
 }
+
+// TemplateInitialPublicationPort is intentionally separate from RuntimePort:
+// creating a Document has no committed base/head and must never be disguised
+// as an update against an empty revision string.
+type TemplateInitialPublicationPort interface {
+	CommitInitialRegistryTemplate(context.Context, RuntimeCommitInput) (RuntimeCommitResult, error)
+}
 type RuntimeRegistryStatus string
 
 const (
@@ -1269,7 +1276,17 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		}
 		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, errors.New("concurrent publication already started"))
 	}
-	result, err := r.runtime.CommitRegistryPlan(ctx, input)
+	var result RuntimeCommitResult
+	if tx.Plan.CreatesNewDocument {
+		initial, ok := r.runtime.(TemplateInitialPublicationPort)
+		if !ok {
+			err = errors.New("Runtime initial Registry publication facade is unavailable")
+		} else {
+			result, err = initial.CommitInitialRegistryTemplate(ctx, input)
+		}
+	} else {
+		result, err = r.runtime.CommitRegistryPlan(ctx, input)
+	}
 	if err != nil {
 		nextState := StateRolledBack
 		code := FailureUnavailable
