@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
+//go:build ladybug_native
 
 package desktopwails
 
@@ -26,6 +27,17 @@ func nativeSearchOperation(operation string) (string, bool) {
 	mapped, ok := nativeSearchOperations[operation]
 	return mapped, ok
 }
+
+func invokePackagedNativeSearch(ctx context.Context, endpoint *host.Endpoint, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error, bool) {
+	mapped, ok := nativeSearchOperation(exchange.Operation)
+	if !ok {
+		return desktopcontract.ExchangeResult{}, nil, false
+	}
+	result, err := invokeMappedSearch(ctx, endpoint, exchange, mapped)
+	return result, err, true
+}
+
+func packagedNativeSearchDecoder() (any, bool) { return nativeSearchDecoder{}, true }
 
 type nativeSearchEnvelope struct {
 	Operation string                             `json:"operation"`

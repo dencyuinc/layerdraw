@@ -76,13 +76,8 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 			Credentials: newPlatformCredentialPort(), LocalActor: platformActor{},
 			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{},
 		},
-		MCPCapabilities: owner,
-		NativeSearchLifecycle: func() desktopapp.NativeSearchLifecycle {
-			if packagedNativeSearchEnabled() {
-				return owner
-			}
-			return nil
-		}(),
+		MCPCapabilities:       owner,
+		NativeSearchLifecycle: packagedNativeSearchLifecycle(owner),
 	}, nil
 }
 
@@ -197,16 +192,6 @@ func (o *sharedOwner) Shutdown(context.Context) error {
 	return nil
 }
 
-func (o *sharedOwner) RefreshSearchIndex(ctx context.Context, session *localdocument.Session) error {
-	o.mu.RLock()
-	lifecycle := o.searchLife
-	o.mu.RUnlock()
-	if lifecycle == nil {
-		return errors.New("Desktop native Search lifecycle is unavailable")
-	}
-	return lifecycle.RefreshSearchIndex(ctx, session)
-}
-
 func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
 	o.mu.RLock()
 	endpoint, engine := o.endpoint, o.engine
@@ -214,8 +199,8 @@ func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Excha
 	if endpoint == nil || engine == nil {
 		return desktopcontract.ExchangeResult{}, errors.New("desktop shared owner is not started")
 	}
-	if mapped, ok := nativeSearchOperation(exchange.Operation); ok {
-		return invokeMappedSearch(ctx, endpoint, exchange, mapped)
+	if result, err, handled := invokePackagedNativeSearch(ctx, endpoint, exchange); handled {
+		return result, err
 	}
 	if exchange.Operation == string(engineprotocol.HandshakeRequestEnvelopeOperationValue) {
 		request, err := engineprotocol.DecodeHandshakeRequestEnvelope(exchange.Control)
@@ -398,7 +383,11 @@ func packagedClients(owner *sharedOwner) (desktopcontract.ClientSet, error) {
 			field := ownerField.Field(fieldIndex)
 			if field.Kind() == reflect.Interface {
 				if ownerName == "NativeQuery" && packagedNativeSearchEnabled() {
-					field.Set(reflect.ValueOf(nativeSearchDecoder{}))
+					nativeDecoder, ok := packagedNativeSearchDecoder()
+					if !ok {
+						return desktopcontract.ClientSet{}, errors.New("desktop native decoder is unavailable")
+					}
+					field.Set(reflect.ValueOf(nativeDecoder))
 				} else {
 					field.Set(decoder)
 				}

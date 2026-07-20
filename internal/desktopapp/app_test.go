@@ -763,6 +763,25 @@ type stopPanicAdapter struct{}
 func (stopPanicAdapter) Start(context.Context) error    { return nil }
 func (stopPanicAdapter) Shutdown(context.Context) error { panic("secret") }
 
+type nonComparableAdapter struct{ values []string }
+
+func (nonComparableAdapter) Start(context.Context) error    { return nil }
+func (nonComparableAdapter) Shutdown(context.Context) error { return nil }
+
+func TestAdapterAlreadyStartedUsesExactComparableIdentity(t *testing.T) {
+	started := &adapterStub{id: desktopcontract.ComponentReview}
+	app := &Application{
+		config:  Config{Adapters: map[desktopcontract.ComponentID]Adapter{desktopcontract.ComponentReview: started}},
+		started: []desktopcontract.ComponentID{desktopcontract.ComponentReview},
+	}
+	if !app.adapterAlreadyStarted(started) {
+		t.Fatal("started adapter identity was not detected")
+	}
+	if app.adapterAlreadyStarted(&adapterStub{id: desktopcontract.ComponentReview}) || app.adapterAlreadyStarted(panicAdapter{}) || app.adapterAlreadyStarted(nonComparableAdapter{values: []string{"value"}}) || app.adapterAlreadyStarted(nil) {
+		t.Fatal("distinct, mismatched, non-comparable, or nil adapter reused a started identity")
+	}
+}
+
 func TestShutdownContinuesAfterAdapterFailures(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(t, root, writeProject(t, root))

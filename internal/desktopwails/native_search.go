@@ -4,6 +4,7 @@
 package desktopwails
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,12 +14,25 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/host"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 )
 
 func packagedNativeSearchEnabled() bool { return true }
+
+func packagedNativeSearchLifecycle(owner *sharedOwner) desktopapp.NativeSearchLifecycle { return owner }
+
+func (o *sharedOwner) RefreshSearchIndex(ctx context.Context, session *localdocument.Session) error {
+	o.mu.RLock()
+	lifecycle := o.searchLife
+	o.mu.RUnlock()
+	if lifecycle == nil {
+		return errors.New("Desktop native Search lifecycle is unavailable")
+	}
+	return lifecycle.RefreshSearchIndex(ctx, session)
+}
 
 func openPackagedNativeSearch(root string, local *localdocument.Host, engine *endpoint.HostEngineFacade) (host.ConsumerSearchSurface, host.SearchDocumentLifecycle, func(), error) {
 	if !filepath.IsAbs(root) {
