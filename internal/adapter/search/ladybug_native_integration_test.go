@@ -13,6 +13,20 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
+type nativeRows struct{ rows []port.RawRow }
+
+func (s *nativeRows) Push(row port.RawRow) error { s.rows = append(s.rows, row); return nil }
+
+func TestGoLadybugFTSReturnsIndexedRows(t *testing.T) {
+	session := createFTSFixture(t, filepath.Join(t.TempDir(), "query.lbug"))
+	defer session.Close()
+	rows := &nativeRows{}
+	err := session.ExecutePrepared(context.Background(), LadybugStatement{Query: "CALL QUERY_FTS_INDEX('SearchDoc', 'search_doc_fts', 'layer') RETURN node.id AS id, score AS score"}, port.ExecutionLimits{MaxRows: 10, MaxBytes: 4096}, rows)
+	if err != nil || len(rows.rows) != 1 || rows.rows[0]["id"].Value != "doc-1" {
+		t.Fatalf("rows=%v err=%v", rows.rows, err)
+	}
+}
+
 func TestGoLadybugIndexEvidenceSurvivesRestartAndFailsClosed(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "search.lbug")
 	ref := buildPhysicalFTSIndex(t, databasePath)

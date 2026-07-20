@@ -78,7 +78,7 @@ func (e Engine) ReadSearchCorpus(ctx context.Context, generation DocumentGenerat
 		if document.OwnerAddress != nil {
 			owner = *document.OwnerAddress
 		}
-		documents = append(documents, SearchCorpusDocument{SubjectAddress: document.SubjectAddress, SubjectKind: string(document.SubjectKind), OwnerAddress: owner, GraphEntryAddresses: append([]string(nil), document.GraphEntryAddresses...), TypeAddresses: append([]string(nil), document.TypeAddresses...), LayerAddresses: append([]string(nil), document.LayerAddresses...), ContentHash: document.ContentHash, LexicalText: strings.Join(lexicalFields, "\n"), Text: strings.Join(embeddingFields, "\n"), Fields: fields})
+		documents = append(documents, SearchCorpusDocument{SubjectAddress: document.SubjectAddress, SubjectKind: string(document.SubjectKind), OwnerAddress: owner, GraphEntryAddresses: append([]string(nil), document.GraphEntryAddresses...), TypeAddresses: append([]string(nil), document.TypeAddresses...), LayerAddresses: append([]string(nil), document.LayerAddresses...), ContentHash: document.ContentHash, LexicalText: strings.Join(lexicalFields, " "), Text: strings.Join(embeddingFields, "\n"), Fields: fields})
 	}
 	return documents, nil
 }

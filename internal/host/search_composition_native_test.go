@@ -182,7 +182,7 @@ entities service @app {
 `)
 	for index := 0; index < 300; index++ {
 		if index == 299 {
-			fmt.Fprintf(&source, "  n%05d \"UniqueNeedle299\"\n", index)
+			fmt.Fprintf(&source, "  n%05d \"xylophone\"\n", index)
 		} else {
 			fmt.Fprintf(&source, "  n%05d \"Service %05d\"\n", index, index)
 		}
@@ -209,16 +209,16 @@ entities service @app {
 	profile.SpecificationDigest = "sha256:" + hex.EncodeToString(digest[:])
 	identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: profile.ProfileID, SearchProfileDigest: profile.SpecificationDigest, AccessProjectionDigest: accessDigest, LadybugBackendVersion: "0.17.0", IndexSchemaVersion: "1"}
 	physical := &nativeAcceptanceSink{}
-	if err := search.ladybug.ExecutePrepared(context.Background(), searchadapter.LadybugStatement{Query: "MATCH (n:SearchDoc) RETURN n.id AS id, n.body AS body LIMIT 1"}, port.ExecutionLimits{MaxRows: 1, MaxBytes: 4096}, physical); err != nil || len(physical.rows) != 1 || physical.rows[0]["body"].Value == "" {
+	if err := search.ladybug.ExecutePrepared(context.Background(), searchadapter.LadybugStatement{Query: "MATCH (n:SearchDoc {id: 'ldl:project:p:entity:n00299'}) RETURN n.id AS id, n.body AS body"}, port.ExecutionLimits{MaxRows: 1, MaxBytes: 4096}, physical); err != nil || len(physical.rows) != 1 || !strings.Contains(physical.rows[0]["body"].Value, "xylophone") {
 		t.Fatalf("large physical index row=%v err=%v", physical.rows, err)
 	}
 	fts := &nativeAcceptanceSink{}
-	if err := search.ladybug.ExecutePrepared(context.Background(), searchadapter.LadybugStatement{Query: "CALL QUERY_FTS_INDEX('SearchDoc', 'search_doc_fts', 'service', TOP := 10) RETURN node.id AS id, score AS score"}, port.ExecutionLimits{MaxRows: 10, MaxBytes: 4096}, fts); err != nil {
+	if err := search.ladybug.ExecutePrepared(context.Background(), searchadapter.LadybugStatement{Query: "CALL QUERY_FTS_INDEX('SearchDoc', 'search_doc_fts', 'xylophone') RETURN node.id AS id, score AS score"}, port.ExecutionLimits{MaxRows: 300, MaxBytes: 1 << 20}, fts); err != nil || len(fts.rows) != 1 || fts.rows[0]["id"].Value != "ldl:project:p:entity:n00299" {
 		t.Fatalf("large physical FTS rows=%v body=%v err=%v", fts.rows, physical.rows, err)
 	}
 	const maxOutputBytes = 1 << 20
 	result, err := endpoint.SearchSurface().Search(context.Background(), layerruntime.SearchRequest{Snapshot: snapshot, AccessProjectionDigest: accessDigest, SearchProfile: profile, IndexIdentity: identity, Mode: "lexical", QueryText: "service", EngineRequest: []byte(`{"kind":"search_documents","mode":"lexical","query_text":"service"}`), MaxOutputBytes: maxOutputBytes})
-	if err != nil || len(result) > maxOutputBytes || !strings.Contains(string(result), `"hits":[]`) || !strings.Contains(string(result), `"result_truncated":false`) || !strings.Contains(string(result), `"search_result_hash":"sha256:`) {
+	if err != nil || len(result) > maxOutputBytes || !strings.Contains(string(result), `"hits":[{`) || !strings.Contains(string(result), `"rank":100`) || !strings.Contains(string(result), `"result_truncated":true`) || !strings.Contains(string(result), `"next_cursor":`) || !strings.Contains(string(result), `"search_result_hash":"sha256:`) {
 		t.Fatalf("large search bytes=%d result=%s err=%v", len(result), result, err)
 	}
 }
