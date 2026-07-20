@@ -68,8 +68,8 @@ jobs:
         run: |
           go_args=()
           if [[ "$RUNNER_OS" == "Linux" ]]; then go_args=(-tags webkit2_41); fi
-          go test "${go_args[@]}" ./internal/adapter/desktop ./internal/desktopapp ./internal/desktopcontract ./internal/desktopwails ./apps/desktop
-          if [[ "$RUNNER_OS" == "Windows" ]]; then go test ./internal/registry -run TestWindowsTransactionLockSerializesStores -count=1; fi
+          go test -timeout 3m "${go_args[@]}" ./internal/adapter/desktop ./internal/desktopapp ./internal/desktopcontract ./internal/desktopwails ./apps/desktop
+          if [[ "$RUNNER_OS" == "Windows" ]]; then go test -timeout 30s ./internal/registry -run TestWindowsTransactionLockSerializesStores -count=1; fi
 
       - name: Build and execute packaged Desktop probe
         shell: bash
