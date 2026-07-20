@@ -51,7 +51,7 @@ try {
   try {
     $failed = Start-Process -FilePath $corrupt -ArgumentList "/S" -Wait -PassThru
     if ($failed.ExitCode -eq 0) { throw "corrupt installer was accepted" }
-  } catch [System.ComponentModel.Win32Exception] {
+  } catch {
     # Windows rejecting the invalid executable is the expected rollback path.
   }
   if (-not (Test-Path $executable)) { throw "failed update removed the installed application" }
