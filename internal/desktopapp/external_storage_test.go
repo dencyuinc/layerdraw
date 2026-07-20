@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -194,6 +195,9 @@ func TestReferenceExternalStorageRejectsCorruptOrExposedRestartState(t *testing.
 		{name: "world readable", body: `{"version":1,"connections":{},"bindings":{}}`, mode: 0o644},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			if testCase.name == "world readable" && runtime.GOOS == "windows" {
+				t.Skip("Windows ACLs are not represented by chmod permission bits")
+			}
 			root := t.TempDir()
 			stateRoot := filepath.Join(root, "external-storage-reference")
 			if err := os.MkdirAll(filepath.Join(stateRoot, "objects"), 0o700); err != nil {

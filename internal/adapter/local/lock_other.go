@@ -1,4 +1,4 @@
-//go:build !darwin && !linux && !freebsd && !openbsd && !netbsd
+//go:build !darwin && !linux && !freebsd && !openbsd && !netbsd && !windows
 
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 package local
