@@ -75,6 +75,37 @@ draining and can be resumed without releasing resources still in use. MCP and
 the remaining registered adapters stop before the local Runtime releases its
 sessions and storage locks.
 
+Production construction uses `desktopapp.NewCanonical`, which creates the
+concrete generated-client owner adapter, local transport, and one in-process
+`internal/mcphost.Host`; neither a prebuilt host nor a raw MCP lifecycle port is
+accepted by that constructor. The local transport is also the backing endpoint
+for the Wails MCP list/call/read bindings. `internal/mcphost` contains the single
+normative tool mapping table. Advertisement is derived only from the current owner capability
+snapshot, so an unconfigured Review, native interchange, external-storage, or
+other owner operation is absent rather than inferred from a linked package.
+Desktop does not launch a sibling MCP process.
+
+The MCP adapter owns only transport concerns. Discovery and execution are
+fenced to one host generation, including synchronous discovery during transport
+startup; partial startup is shut down and rolled back before another generation
+may start. Its opaque continuations are
+single-use and bound to tool/request bytes, document, committed revision,
+Access fingerprint, expiry, and host generation. Complete request and response
+envelopes, capability aggregates, continuations, strings, item counts, and JSON
+depth are bounded before publication. Disconnect,
+cancellation, shutdown, malformed or replayed cursors, stale bindings, owner
+panic, and oversized values produce closed failures without paths, source,
+credentials, or provider text. The typed owner adapter still performs generated
+request validation and the final Runtime/Access/Review revalidation; MCP tool
+visibility is never an authorization boundary.
+
+For generated paginated operations, the Desktop owner adapter uses a closed
+operation table to decode the exact response page, enforce the aggregate item
+limit, retain the owner continuation behind an opaque MCP cursor, and inject it
+through the typed generated request codec on the next call. Capability
+discovery advertises an explicit bounded schema matching the returned effective
+snapshot and AuthoringGrantSummary.
+
 Startup resolves the configured credential references and live delegation
 fences through the typed `HostPorts`; credential bytes are discarded before
 adapter startup. Injected-port panics are contained as
