@@ -7,6 +7,7 @@ import TestRenderer, { act } from "react-test-renderer";
 import { Composer } from "../../composer/dist/state-machine.js";
 import {
   CapabilityControl,
+  DocumentOutline,
   EditorCommandButton,
   EditorLiveRegion,
   EditorPanel,
@@ -15,7 +16,11 @@ import {
   EditorToolbar,
   EditorWorkspace,
   RestoreFocus,
+  SemanticInspector,
+  SourceNavigationList,
   classifyEditorAction,
+  filterNavigationItems,
+  reconcileNavigationSelection,
   useEditor,
   useEditorCapabilities,
   useEditorConflicts,
@@ -209,4 +214,117 @@ test("layout landmarks and live failures remain accessible", async () => {
 test("hooks fail clearly outside the dependency-injection provider", async () => {
   function Invalid() { useEditorState(); return null; }
   await assert.rejects(async () => { await act(async () => TestRenderer.create(React.createElement(Invalid))); }, /require an EditorProvider/);
+});
+
+const sourceRange = (start = "0") => ({ start_byte: start, end_byte: String(Number(start) + 4), module_path: "main.ldl", origin: { kind: "project" } });
+const navigationItem = (address, display_name, kind = "entity", availability = "available") => ({
+  address, display_name, kind, availability, source_range: sourceRange(), matched_field: "display_name", matched_value: display_name,
+});
+
+test("navigation consumes Engine identities, filters structured fields, and reconciles rename/delete", () => {
+  const before = navigationItem("project:p:entity:old", "Old name");
+  const after = navigationItem("project:p:entity:new", "New name");
+  assert.deepEqual(filterNavigationItems([before, after], "NEW", new Set(["entity"])), [after]);
+  assert.deepEqual(filterNavigationItems([before], "entity:old"), [before]);
+  assert.deepEqual(reconcileNavigationSelection({ address: before.address, lastSourceRange: before.source_range, stale: false }, [after]), {
+    address: before.address, lastSourceRange: before.source_range, stale: true,
+  });
+  assert.deepEqual(reconcileNavigationSelection(
+    { address: before.address, lastSourceRange: before.source_range, stale: false },
+    [after],
+    new Map([[before.address, after.address]]),
+  ), { address: after.address, lastSourceRange: after.source_range, stale: false });
+});
+
+test("outline bounds large results, distinguishes availability, and supports keyboard/source navigation", async () => {
+  const items = Array.from({ length: 500 }, (_, index) => navigationItem(
+    `project:p:entity:item_${String(index).padStart(4, "0")}`,
+    `Item ${index}`,
+    index === 1 ? "relation" : "entity",
+    index === 2 ? "denied" : index === 3 ? "partial" : "available",
+  ));
+  let selection = { stale: false };
+  const navigated = [];
+  let renderer;
+  const render = () => React.createElement(DocumentOutline, {
+    items, selection, maxVisibleItems: 25,
+    onSelectionChange(next) { selection = next; },
+    onNavigateSource(range, address) { navigated.push([range, address]); },
+  });
+  await act(async () => { renderer = TestRenderer.create(render()); });
+  assert.equal(renderer.root.findAllByProps({ role: "option" }).length, 25);
+  assert.equal(renderer.root.findByProps({ role: "status" }).children.join(""), "25 of 500 results shown.");
+  assert.equal(renderer.root.findAllByProps({ "data-availability": "denied" })[0].props["aria-disabled"], true);
+  const listbox = renderer.root.findByProps({ role: "listbox" });
+  await act(async () => listbox.props.onKeyDown({ key: "ArrowDown", preventDefault() {} }));
+  assert.equal(selection.address, items[0].address);
+  await act(async () => { renderer.update(render()); });
+  await act(async () => listbox.props.onKeyDown({ key: "End", preventDefault() {} }));
+  assert.equal(selection.address, items[24].address);
+  await act(async () => { renderer.update(render()); });
+  await act(async () => listbox.props.onKeyDown({ key: "Enter", preventDefault() {} }));
+  assert.equal(navigated.at(-1)[1], items[24].address);
+  selection = { address: items[499].address, lastSourceRange: items[499].source_range, stale: false };
+  await act(async () => { renderer.update(render()); });
+  assert.equal(renderer.root.findByProps({ role: "listbox" }).props["aria-activedescendant"], undefined, "a bounded-out selection must not reference an unmounted option");
+  const search = renderer.root.findByType("input");
+  await act(async () => search.props.onChange({ currentTarget: { value: "Item 1" } }));
+  assert.equal(renderer.root.findByProps({ role: "listbox" }).props["aria-activedescendant"], undefined, "a filtered-out selection must not reference an unmounted option");
+  await act(async () => renderer.unmount());
+});
+
+test("deleted selections retain source handoff and inspectors emit the supplied Composer edit verbatim", async () => {
+  const selected = navigationItem("project:p:view:gone", "Gone", "view");
+  const edits = [
+    { kind: "semantic_operations", request: { role: "field" } },
+    { kind: "semantic_operations", request: { role: "relation" } },
+    { kind: "semantic_operations", request: { role: "row" } },
+    { kind: "fragment", request: { role: "fragment" } },
+  ];
+  const drafts = ["field", "relation", "row", "fragment"];
+  const renderedDrafts = [...drafts];
+  const editor = makeEditor();
+  const navigated = [];
+  let selection = { address: selected.address, lastSourceRange: selected.source_range, stale: false };
+  let renderer;
+  await act(async () => { renderer = TestRenderer.create(React.createElement(EditorProvider, { editor, session: durableSession },
+    React.createElement(DocumentOutline, { items: [], selection, onSelectionChange(next) { selection = next; }, onNavigateSource(range) { navigated.push(range); } }),
+    React.createElement(SourceNavigationList, { targets: [
+      { id: "diagnostic", label: "Open diagnostic", source_range: selected.source_range, address: selected.address, availability: "partial" },
+      { id: "denied", label: "Denied diagnostic", source_range: selected.source_range, availability: "denied" },
+      { id: "unavailable", label: "Unavailable diagnostic", source_range: selected.source_range, availability: "unavailable" },
+      { id: "readonly", label: "Read-only diagnostic", source_range: selected.source_range, availability: "read-only" },
+    ], onNavigateSource(range) { navigated.push(range); } }),
+    React.createElement(SemanticInspector, { address: selected.address, fields: [
+      ...edits.map((edit, index) => ({
+        id: `editable-${index}`, label: `Edit ${index}`, draft: drafts[index],
+        onDraftChange(value) { drafts[index] = value; },
+        buildEdit(draft) { return { ...edit, request: { ...edit.request, draft } }; },
+      })),
+      { id: "readonly", label: "Identity", draft: selected.address, availability: "read-only" },
+    ] }),
+  )); });
+  assert.equal(selection.stale, true);
+  assert.equal(renderer.root.findByProps({ role: "status" }).children.join(""), "No structured results. Diagnostics remain available.");
+  const stale = renderer.root.findByProps({ className: "ld-navigation-stale" });
+  await act(async () => stale.props.onClick());
+  const diagnostic = renderer.root.findAllByType("button").find((button) => button.children.join("") === "Open diagnostic");
+  await act(async () => diagnostic.props.onClick());
+  const readonlyDiagnostic = renderer.root.findAllByType("button").find((button) => button.children.join("") === "Read-only diagnostic");
+  await act(async () => readonlyDiagnostic.props.onClick());
+  for (const label of ["Denied diagnostic", "Unavailable diagnostic"]) {
+    const blocked = renderer.root.findAllByType("button").find((button) => button.children.join("") === label);
+    assert.equal(blocked.props.disabled, true);
+    assert.equal(blocked.props["aria-disabled"], true);
+    assert.equal(blocked.props.onClick, undefined);
+  }
+  assert.deepEqual(navigated, [selected.source_range, selected.source_range, selected.source_range]);
+  const buttons = renderer.root.findAllByType("button");
+  const previews = buttons.filter((button) => button.children.join("") === "Preview change" && button.props.disabled === false);
+  const inputs = renderer.root.findAllByType("input").filter((input) => input.props.disabled === false);
+  for (let index = 0; index < inputs.length; index++) await act(async () => inputs[index].props.onChange({ currentTarget: { value: `${drafts[index]}-changed` } }));
+  for (const preview of previews) await act(async () => { preview.props.onClick(); await Promise.resolve(); });
+  assert.deepEqual(editor.calls, edits.map((edit, index) => ["preview", { ...edit, request: { ...edit.request, draft: renderedDrafts[index] } }]));
+  assert.equal(buttons.some((button) => button.props.disabled === true), true);
+  await act(async () => renderer.unmount());
 });

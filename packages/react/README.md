@@ -20,3 +20,7 @@ Hooks expose the current session, Composer snapshot, preview, diagnostics, Engin
 Command controls expose `unavailable`, `denied`, `pending`, `ephemeral`, and `durable` states through accessible descriptions and `data-action-state`. Toolbar arrow/Home/End navigation, async focus restoration, polite live announcements, responsive container layouts, and reduced-motion rules are included.
 
 The responsive verification profiles are desktop `1440x900` and mobile `390x844`. Layout primitives remain usable without product-specific Wails chrome or native file workflows.
+
+Structured navigation is available through `DocumentOutline` and `SemanticInspector`. Feed the outline the identity and source fields returned by Engine `SymbolReadItem` values and, for renames, Engine semantic-diff before/after address mappings. Deleted selections retain only their last Engine source range. Inspector fields use a host-controlled draft and a host-supplied `buildEdit(draft)` callback that returns the complete Composer `EditorEdit`; React never parses LDL, invents identities, or rewrites source text.
+
+`maxVisibleItems` bounds mounted outline rows. Search uses only structured Engine result fields, while listbox keyboard navigation supports Arrow keys, Home, End, and Enter for source handoff. Availability states (`read-only`, `denied`, `unavailable`, and `partial`) are exposed visually and programmatically.

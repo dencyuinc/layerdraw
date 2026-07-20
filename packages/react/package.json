@@ -11,6 +11,7 @@
     "./provider": {"types": "./dist/provider.d.ts", "import": "./dist/provider.js"},
     "./controls": {"types": "./dist/controls.d.ts", "import": "./dist/controls.js"},
     "./layout": {"types": "./dist/layout.d.ts", "import": "./dist/layout.js"},
+    "./navigation": {"types": "./dist/navigation.d.ts", "import": "./dist/navigation.js"},
     "./styles.css": "./dist/styles.css"
   },
   "scripts": {
