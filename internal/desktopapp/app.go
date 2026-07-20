@@ -183,7 +183,7 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 		clear(credential.Value)
 	}
 	for _, fence := range a.config.DelegationFences {
-		now := a.config.Now()
+		now := a.config.Now().UTC()
 		grantRequest := desktopcontract.LocalOwnerGrantRequest{
 			Actor: actorResult.Value,
 			Scope: accessprotocol.HostResourceScope{

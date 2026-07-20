@@ -559,6 +559,7 @@ func TestCredentialAndDelegationStartupFailuresAreTyped(t *testing.T) {
 func TestCredentialAndDelegationStartupSuccess(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(t, root, writeProject(t, root))
+	config.Now = func() time.Time { return desktopTestNow.In(time.FixedZone("JST", 9*60*60)) }
 	config.CredentialRefs = []desktopcontract.CredentialRef{{ID: "registry"}}
 	config.DelegationFences = []desktopcontract.DelegationFence{{DelegationID: "delegation", DocumentID: "document", LocalScopeID: "local", Generation: "1"}}
 	app, _ := New(config)
