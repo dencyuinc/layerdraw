@@ -3,6 +3,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AuthoringRecoveryWorkflow,
   DocumentOutline,
   EditorCommandButton,
   EditorLiveRegion,
@@ -65,6 +66,9 @@ const root = createRoot(document.querySelector("#root"));
 let currentSession = session(true);
 let activeEditor = makeEditor();
 let previousEditor;
+let recoveryConnection = { status: "connected" };
+let approvalAvailable = true;
+const recoveryCalls = [];
 let navigationSelection = { stale: false };
 let lastSourceNavigation;
 const navigationItems = Array.from({ length: 300 }, (_, index) => ({
@@ -143,7 +147,17 @@ function App() {
               buildEdit(draft) { return { kind: "fragment", request: { fragment: draft } }; },
             }, { id: "identity", label: "Identity", draft: navigationSelection.address ?? "none", availability: "read-only" }],
           }),
-          React.createElement(QueryViewComposer, { definitions: [{ id: "view:fixture", kind: "view", label: "Fixture view" }], selectedId: "view:fixture", onSelect() {}, intents }))),
+          React.createElement(QueryViewComposer, { definitions: [{ id: "view:fixture", kind: "view", label: "Fixture view" }], selectedId: "view:fixture", onSelect() {}, intents }),
+          React.createElement(AuthoringRecoveryWorkflow, {
+            context: { operation_id: "browser-e2e", revision: "revision-1" },
+            connection: recoveryConnection,
+            approvalAvailable,
+            handlers: {
+              async refresh(intent) { recoveryCalls.push(["refresh", intent?.id]); },
+              async discard(intent) { recoveryCalls.push(["discard", intent?.id]); },
+              async reopen() { recoveryCalls.push(["reopen"]); recoveryConnection = { status: "connected" }; activeEditor.emit(ready()); render(); },
+            },
+          }))),
       React.createElement(EditorLiveRegion)),
   );
 }
@@ -159,6 +173,15 @@ window.editorWorkflow = {
   failApply() { activeEditor.applyRejects = true; activeEditor.emit(ready()); },
   replaceEditor() { previousEditor = activeEditor; activeEditor = makeEditor(); render(); },
   viewer(mode) { viewerMode = mode; render(); },
+  recovery(mode) {
+    approvalAvailable = true;
+    recoveryConnection = { status: "connected" };
+    if (mode === "approval-unavailable") { approvalAvailable = false; activeEditor.emit(ready({ outcome: "approval_required" })); render(); }
+    else if (mode === "conflict") activeEditor.emit({ phase: "failed", sequence: 4, can_undo: false, can_redo: false, intent: { id: "browser-e2e", edit }, failure: { code: "composer.conflict", message: "conflict", recoverable: true, diagnostics: [], conflicts: [{ kind: "same_field_changed" }] } });
+    else if (mode === "disconnected") { recoveryConnection = { status: "disconnected", reason: "Runtime restarted" }; render(); }
+    else activeEditor.emit(ready());
+  },
+  recoveryCalls() { return recoveryCalls; },
   listenerCounts() { return { previous: previousEditor?.listenerCount ?? -1, current: activeEditor.listenerCount }; },
   navigation() { return { selection: navigationSelection, source: lastSourceNavigation, calls: activeEditor.calls }; },
 };
