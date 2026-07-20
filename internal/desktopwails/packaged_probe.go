@@ -68,9 +68,9 @@ func RunPackagedProbe(output io.Writer) error {
 		return err
 	}
 	bridge := NewWailsShellBridge()
-	var runtimeBridge desktopadapter.WailsRuntimeBridge = bridge
+	var _ desktopadapter.WailsRuntimeBridge = bridge
 	return json.NewEncoder(output).Encode(PackagedProbeResult{
-		SchemaVersion: 1, Platform: CurrentPlatform(), WailsRuntimeBridge: runtimeBridge != nil,
+		SchemaVersion: 1, Platform: CurrentPlatform(), WailsRuntimeBridge: true,
 		SettingsRoundTrip: true, AssociationHandoff: handoff.Kind,
 	})
 }

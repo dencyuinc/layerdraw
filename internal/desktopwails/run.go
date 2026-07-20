@@ -167,7 +167,7 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 	probe.DOMRoundTrip, probe.Accessibility = true, &report
 }
 
-func writeExclusivePackagedProbe(output string, encoded []byte) error {
+func writeExclusivePackagedProbe(output string, encoded []byte) (err error) {
 	volumeRoot := filepath.VolumeName(output) + string(os.PathSeparator)
 	if !strings.HasPrefix(output, volumeRoot) {
 		return errors.New("packaged Desktop UI probe path escapes its volume")
@@ -179,11 +179,18 @@ func writeExclusivePackagedProbe(output string, encoded []byte) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	if _, err := file.Write(encoded); err != nil {
+	defer func() {
+		if err != nil {
+			_ = file.Close()
+		}
+	}()
+	if _, err = file.Write(encoded); err != nil {
 		return err
 	}
-	return file.Sync()
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func openAssociatedProjects(ctx context.Context, native *desktopapp.PlatformNativeShell, vault *selectionVault, application *desktopapp.Application) {
