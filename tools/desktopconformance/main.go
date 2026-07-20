@@ -63,13 +63,22 @@ func main() {
 
 func verify(root, relativeManifest string) (manifest, error) {
 	var value manifest
-	if err := decodeStrict(filepath.Join(root, relativeManifest), &value); err != nil {
+	directory, err := openRepositoryRoot(root)
+	if err != nil {
+		return value, err
+	}
+	defer directory.Close()
+	manifestName, err := confinedName(relativeManifest)
+	if err != nil {
+		return value, fmt.Errorf("manifest path: %w", err)
+	}
+	if err := decodeStrict(directory, manifestName, &value); err != nil {
 		return value, err
 	}
 	if value.SchemaVersion != 1 || value.Delivery != "desktop" || value.NormativeMatrix != "docs/blueprint.md#1311-feature-x-delivery-matrix" {
 		return value, errors.New("Desktop conformance manifest identity is invalid")
 	}
-	matrix, err := readDesktopMatrix(filepath.Join(root, "docs/blueprint.md"))
+	matrix, err := readDesktopMatrix(directory, "docs/blueprint.md")
 	if err != nil {
 		return value, err
 	}
@@ -87,7 +96,7 @@ func verify(root, relativeManifest string) (manifest, error) {
 		if !expected.Delivered && len(actual.Evidence) != 0 {
 			return value, fmt.Errorf("excluded Desktop feature %s claims evidence", id)
 		}
-		if err := verifyEvidence(root, actual.Evidence...); err != nil {
+		if err := verifyEvidence(directory, actual.Evidence...); err != nil {
 			return value, fmt.Errorf("%s: %w", id, err)
 		}
 	}
@@ -99,7 +108,7 @@ func verify(root, relativeManifest string) (manifest, error) {
 		if len(evidence) == 0 {
 			return value, fmt.Errorf("acceptance suite %s is empty", name)
 		}
-		if err := verifyEvidence(root, evidence...); err != nil {
+		if err := verifyEvidence(directory, evidence...); err != nil {
 			return value, fmt.Errorf("acceptance suite %s: %w", name, err)
 		}
 	}
@@ -110,14 +119,14 @@ func verify(root, relativeManifest string) (manifest, error) {
 		if len(evidence) == 0 {
 			return value, fmt.Errorf("fault %s has no recovery evidence", name)
 		}
-		if err := verifyEvidence(root, evidence...); err != nil {
+		if err := verifyEvidence(directory, evidence...); err != nil {
 			return value, fmt.Errorf("fault %s: %w", name, err)
 		}
 	}
 	if err := requireExactValues(value.ReleaseEvidence, []string{"installer", "platform_signature", "sha256_digest", "cyclonedx_sbom", "license_bundle", "signed_updater_manifest", "packaged_content_check", "disabled_feature_manifest", "desktop_conformance_manifest", "signed_conformance_attestation", "installed_scenario_result"}); err != nil {
 		return value, fmt.Errorf("release evidence: %w", err)
 	}
-	if err := verifyReleaseEvidence(root); err != nil {
+	if err := verifyReleaseEvidence(directory); err != nil {
 		return value, err
 	}
 	requiredBudgets := []string{"cold_start", "project_open", "search_analysis", "preview", "commit", "viewer_interaction", "mcp_bounded_operations", "external_reconcile", "memory", "shutdown"}
@@ -135,7 +144,7 @@ func verify(root, relativeManifest string) (manifest, error) {
 	return value, nil
 }
 
-func verifyReleaseEvidence(root string) error {
+func verifyReleaseEvidence(root *os.Root) error {
 	requiredMarkers := map[string][]string{
 		"tools/build-desktop-installer.sh":       {"LayerDraw-$version.dmg", "LayerDraw-$version.exe", "LayerDraw-$version.deb", "desktop-conformance.json", "LayerDraw-bundle.cdx.json", "THIRD_PARTY_NOTICES.txt"},
 		"tools/build-desktop-update-metadata.sh": {"desktoprelease build", "desktoprelease verify", "-desktop-conformance", "desktopattestation verify"},
@@ -146,7 +155,11 @@ func verifyReleaseEvidence(root string) error {
 		".github/workflows/desktop-release.yml":  {"LAYERDRAW_RELEASE_SIGNING", "desktop-release/*"},
 	}
 	for relative, markers := range requiredMarkers {
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		name, nameErr := confinedName(filepath.FromSlash(relative))
+		if nameErr != nil {
+			return fmt.Errorf("release evidence %s: %w", relative, nameErr)
+		}
+		data, err := readRootFile(root, name)
 		if err != nil {
 			return fmt.Errorf("release evidence %s: %w", relative, err)
 		}
@@ -159,8 +172,8 @@ func verifyReleaseEvidence(root string) error {
 	return nil
 }
 
-func readDesktopMatrix(path string) (map[string]matrixRow, error) {
-	data, err := os.ReadFile(path)
+func readDesktopMatrix(root *os.Root, name string) (map[string]matrixRow, error) {
+	data, err := readRootFile(root, name)
 	if err != nil {
 		return nil, err
 	}
@@ -171,13 +184,17 @@ func readDesktopMatrix(path string) (map[string]matrixRow, error) {
 	return rows, nil
 }
 
-func verifyEvidence(root string, references ...evidenceRef) error {
+func verifyEvidence(root *os.Root, references ...evidenceRef) error {
 	for _, reference := range references {
 		parts := strings.Split(string(reference), "#")
 		if len(parts) != 2 || !strings.HasPrefix(parts[1], "Test") || filepath.IsAbs(parts[0]) || strings.Contains(parts[0], "..") {
 			return fmt.Errorf("invalid evidence reference %q", reference)
 		}
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(parts[0])))
+		name, nameErr := confinedName(filepath.FromSlash(parts[0]))
+		if nameErr != nil {
+			return fmt.Errorf("invalid evidence reference %q: %w", reference, nameErr)
+		}
+		data, err := readRootFile(root, name)
 		if err != nil {
 			return fmt.Errorf("read evidence %q: %w", reference, err)
 		}
@@ -189,8 +206,12 @@ func verifyEvidence(root string, references ...evidenceRef) error {
 	return nil
 }
 
-func decodeStrict(path string, target any) error {
-	file, err := os.Open(path)
+func decodeStrict(root *os.Root, name string, target any) error {
+	info, err := root.Lstat(name)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("manifest must be a regular non-symbolic-link file")
+	}
+	file, err := root.Open(name)
 	if err != nil {
 		return err
 	}
@@ -204,6 +225,36 @@ func decodeStrict(path string, target any) error {
 		return errors.New("manifest contains trailing JSON")
 	}
 	return nil
+}
+
+func readRootFile(root *os.Root, name string) ([]byte, error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, errors.New("evidence must be a regular non-symbolic-link file")
+	}
+	return root.ReadFile(name)
+}
+
+func openRepositoryRoot(path string) (*os.Root, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Clean(absolute) != absolute || filepath.VolumeName(absolute) != filepath.VolumeName(filepath.Clean(absolute)) {
+		return nil, errors.New("repository root is not canonical")
+	}
+	return os.OpenRoot(absolute)
+}
+
+func confinedName(name string) (string, error) {
+	clean := filepath.Clean(name)
+	if name == "" || filepath.IsAbs(name) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.VolumeName(name) != "" {
+		return "", errors.New("path escapes repository root")
+	}
+	return clean, nil
 }
 
 func requireExactKeys[T any](values map[string]T, expected []string) error {

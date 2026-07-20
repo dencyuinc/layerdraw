@@ -27,7 +27,11 @@ var startDesktop = func(config desktopapp.Config, assets fs.FS) error {
 
 func main() {
 	if err := run(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "LayerDraw Desktop failed to start")
+		if code := desktopwails.PackagedConformanceFailureCode(err); code != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "LayerDraw Desktop conformance failed [%s]\n", code)
+		} else {
+			_, _ = fmt.Fprintln(os.Stderr, "LayerDraw Desktop failed to start")
+		}
 		os.Exit(1)
 	}
 }

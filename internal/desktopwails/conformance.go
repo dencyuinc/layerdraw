@@ -43,6 +43,29 @@ type PackagedConformanceReport struct {
 	ScenarioEvidence            map[string]string             `json:"scenario_evidence"`
 }
 
+type packagedConformanceError struct {
+	code string
+	err  error
+}
+
+func (failure *packagedConformanceError) Error() string { return failure.code }
+func (failure *packagedConformanceError) Unwrap() error { return failure.err }
+
+// PackagedConformanceFailureCode returns a closed, non-sensitive diagnostic
+// code suitable for installer CI. Raw native paths and provider errors remain
+// inside the process boundary.
+func PackagedConformanceFailureCode(err error) string {
+	var failure *packagedConformanceError
+	if errors.As(err, &failure) {
+		return failure.code
+	}
+	return ""
+}
+
+func conformanceFailure(code string, err error) error {
+	return &packagedConformanceError{code: code, err: err}
+}
+
 var conformanceEvidence = map[string]string{
 	"cold_start":             "desktop.lifecycle.cold_start",
 	"project_open":           "desktop.project.open_save_restart",
@@ -57,15 +80,15 @@ var conformanceEvidence = map[string]string{
 
 func RunPackagedConformance(output string) error {
 	if !filepath.IsAbs(output) || filepath.Clean(output) != output {
-		return errors.New("packaged conformance output must be absolute")
+		return conformanceFailure("invocation.output", errors.New("packaged conformance output must be absolute"))
 	}
 	revision := os.Getenv("LAYERDRAW_CONFORMANCE_SOURCE_REVISION")
 	if !sourceRevisionPattern.MatchString(revision) {
-		return errors.New("packaged conformance source revision is invalid")
+		return conformanceFailure("invocation.revision", errors.New("packaged conformance source revision is invalid"))
 	}
 	platform, err := conformancePlatform(CurrentPlatform())
 	if err != nil {
-		return err
+		return conformanceFailure("invocation.platform", err)
 	}
 	report := PackagedConformanceReport{
 		SchemaVersion: 1, SourceRevision: revision, Platform: platform,
@@ -90,7 +113,7 @@ func RunPackagedConformance(output string) error {
 			err := runners[name](ctx)
 			cancel()
 			if err != nil {
-				return fmt.Errorf("packaged conformance scenario %s iteration %d: %w", name, iteration+1, err)
+				return conformanceFailure("scenario."+name, fmt.Errorf("iteration %d: %w", iteration+1, err))
 			}
 			elapsed := time.Since(started).Milliseconds()
 			if elapsed < 1 {
@@ -102,15 +125,18 @@ func RunPackagedConformance(output string) error {
 		}
 		rss, err := processTreePeakRSSMebibytes()
 		if err != nil || rss <= 0 {
-			return errors.New("packaged conformance process-tree RSS is unavailable")
+			return conformanceFailure("measurement.memory", errors.New("packaged conformance process-tree RSS is unavailable"))
 		}
 		report.ProcessTreePeakRSSMebibytes = append(report.ProcessTreePeakRSSMebibytes, rss)
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
-		return err
+		return conformanceFailure("result.encode", err)
 	}
-	return writeExclusivePackagedProbe(output, append(encoded, '\n'))
+	if err := writeExclusivePackagedProbe(output, append(encoded, '\n')); err != nil {
+		return conformanceFailure("result.write", err)
+	}
+	return nil
 }
 
 func cloneEvidence() map[string]string {

@@ -57,12 +57,43 @@ func TestResultRejectsShallowOrSelfAssertedMeasurements(t *testing.T) {
 }
 
 func TestReleaseClosureDecodesStrictly(t *testing.T) {
+	store, err := openArtifactStore(filepath.Join("..", "..", "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 	var value closure
-	if err := decodeStrict(filepath.Join("..", "..", "deploy", "desktop-conformance.json"), &value); err != nil {
+	if err := decodeStrict(store, "desktop-conformance.json", &value); err != nil {
 		t.Fatal(err)
 	}
 	if value.Delivery != "desktop" || len(value.PerformanceBudgets) != 10 {
 		t.Fatalf("closure=%+v", value)
+	}
+}
+
+func TestArtifactStoreRejectsTraversalAndSymlinkInputs(t *testing.T) {
+	root := t.TempDir()
+	store, err := openArtifactStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.directName(filepath.Join(root, "..", "outside.json")); err == nil {
+		t.Fatal("parent traversal was accepted")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked.json")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symbolic links unavailable: %v", err)
+	}
+	if _, err := describeFile(store, "linked.json"); err == nil {
+		t.Fatal("symbolic-link artifact was accepted")
+	}
+	if err := decodeStrict(store, "linked.json", new(map[string]any)); err == nil {
+		t.Fatal("symbolic-link JSON input was accepted")
 	}
 }
 

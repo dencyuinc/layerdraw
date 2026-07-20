@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
@@ -16,7 +18,7 @@ import (
 )
 
 func TestPackagedConformanceRejectsInvalidInvocation(t *testing.T) {
-	if err := RunPackagedConformance("relative.json"); err == nil {
+	if err := RunPackagedConformance("relative.json"); err == nil || PackagedConformanceFailureCode(err) != "invocation.output" {
 		t.Fatal("relative output was accepted")
 	}
 	t.Setenv("LAYERDRAW_CONFORMANCE_SOURCE_REVISION", "not-a-revision")
@@ -38,6 +40,17 @@ func TestPackagedConformanceRejectsInvalidInvocation(t *testing.T) {
 		if got != test.want || (err == nil) != test.ok {
 			t.Fatalf("platform=%q got=%q err=%v", test.platform, got, err)
 		}
+	}
+}
+
+func TestPackagedConformanceFailureCodesAreClosed(t *testing.T) {
+	secret := filepath.Join(t.TempDir(), "credential-secret")
+	err := conformanceFailure("scenario.cold_start", errors.New(secret))
+	if got := PackagedConformanceFailureCode(err); got != "scenario.cold_start" || strings.Contains(got, secret) {
+		t.Fatalf("failure code=%q", got)
+	}
+	if got := PackagedConformanceFailureCode(errors.New(secret)); got != "" {
+		t.Fatalf("untyped failure exposed code=%q", got)
 	}
 }
 

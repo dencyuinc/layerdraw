@@ -55,11 +55,11 @@ mkdir -p "$output" "$temporary/legal" "$temporary/runtime"
 native_dir="$("$repository_root/tools/install-ladybug-native.sh")"
 native_stage="$temporary/native"
 mkdir -p "$native_stage"
-cp "$native_dir/libfts.lbug_extension" "$native_stage/"
-cp "$native_dir/libvector.lbug_extension" "$native_stage/"
-cp "$native_dir/libalgo.lbug_extension" "$native_stage/"
-cp "$native_dir/ladybug-native.json" "$native_stage/"
-if [[ "$platform" == "windows" ]]; then cp "$native_dir/lbug_shared.dll" "$native_stage/"; fi
+install -m 0644 "$native_dir/libfts.lbug_extension" "$native_stage/"
+install -m 0644 "$native_dir/libvector.lbug_extension" "$native_stage/"
+install -m 0644 "$native_dir/libalgo.lbug_extension" "$native_stage/"
+install -m 0644 "$native_dir/ladybug-native.json" "$native_stage/"
+if [[ "$platform" == "windows" ]]; then install -m 0755 "$native_dir/lbug_shared.dll" "$native_stage/"; fi
 
 node - "$repository_root/apps/desktop/wails.json" "$version" <<'NODE'
 const fs = require("node:fs");

@@ -37,10 +37,15 @@ verify_payload() {
   local capabilities="$3"
   local host_sbom="$4"
   local conformance="$5"
+  local native="$6"
   test -x "$host"
   test -f "$capabilities"
   test -f "$host_sbom"
   test -f "$conformance"
+  for component in ladybug-native.json libfts.lbug_extension libvector.lbug_extension libalgo.lbug_extension; do
+    test -f "$native/$component"
+    test -r "$native/$component"
+  done
   if find "$root" -type f \( -name '*.map' -o -path '*/testdata/*' -o -path '*/test-fixtures/*' \) -print -quit | read -r; then
     printf '%s installer contains development-only assets.\n' "$platform" >&2
     exit 1
@@ -68,7 +73,7 @@ case "$platform" in
 
     install_dmg "$previous_installer"
     installed_executable="$installed_app/Contents/MacOS/LayerDraw"
-    verify_payload "$installed_app" "$installed_app/Contents/Resources/layerdraw/bin/layerdraw-host" "$installed_app/Contents/Resources/layerdraw/desktop-capabilities.json" "$installed_app/Contents/Resources/layerdraw/host/layerdraw-host.cdx.json" "$installed_app/Contents/Resources/layerdraw/desktop-conformance.json"
+    verify_payload "$installed_app" "$installed_app/Contents/Resources/layerdraw/bin/layerdraw-host" "$installed_app/Contents/Resources/layerdraw/desktop-capabilities.json" "$installed_app/Contents/Resources/layerdraw/host/layerdraw-host.cdx.json" "$installed_app/Contents/Resources/layerdraw/desktop-conformance.json" "$installed_app/Contents/Resources/layerdraw/native"
     verify_probe "$installed_executable" initialize
 
     corrupt="$temporary/corrupt.dmg"
@@ -79,7 +84,7 @@ case "$platform" in
 
     install_dmg "$current_installer"
     installed_executable="$installed_app/Contents/MacOS/LayerDraw"
-    verify_payload "$installed_app" "$installed_app/Contents/Resources/layerdraw/bin/layerdraw-host" "$installed_app/Contents/Resources/layerdraw/desktop-capabilities.json" "$installed_app/Contents/Resources/layerdraw/host/layerdraw-host.cdx.json" "$installed_app/Contents/Resources/layerdraw/desktop-conformance.json"
+    verify_payload "$installed_app" "$installed_app/Contents/Resources/layerdraw/bin/layerdraw-host" "$installed_app/Contents/Resources/layerdraw/desktop-capabilities.json" "$installed_app/Contents/Resources/layerdraw/host/layerdraw-host.cdx.json" "$installed_app/Contents/Resources/layerdraw/desktop-conformance.json" "$installed_app/Contents/Resources/layerdraw/native"
     verify_probe "$installed_executable" verify
     if [[ "${LAYERDRAW_EXPECT_SIGNED:-0}" == "1" ]]; then
       codesign --verify --strict "$current_installer"
@@ -99,7 +104,7 @@ case "$platform" in
     fi
     sudo dpkg -i "$previous_installer"
     installed_executable="/usr/bin/layerdraw"
-    verify_payload "/usr/share/layerdraw" "/usr/lib/layerdraw/layerdraw-host" "/usr/share/layerdraw/legal/desktop-capabilities.json" "/usr/share/layerdraw/legal/host/layerdraw-host.cdx.json" "/usr/share/layerdraw/legal/desktop-conformance.json"
+    verify_payload "/usr/share/layerdraw" "/usr/lib/layerdraw/layerdraw-host" "/usr/share/layerdraw/legal/desktop-capabilities.json" "/usr/share/layerdraw/legal/host/layerdraw-host.cdx.json" "/usr/share/layerdraw/legal/desktop-conformance.json" "/usr/lib/layerdraw/native"
     verify_probe "$installed_executable" initialize
 
     corrupt="$temporary/corrupt.deb"
@@ -109,7 +114,7 @@ case "$platform" in
     verify_probe "$installed_executable" verify
 
     sudo dpkg -i "$current_installer"
-    verify_payload "/usr/share/layerdraw" "/usr/lib/layerdraw/layerdraw-host" "/usr/share/layerdraw/legal/desktop-capabilities.json" "/usr/share/layerdraw/legal/host/layerdraw-host.cdx.json" "/usr/share/layerdraw/legal/desktop-conformance.json"
+    verify_payload "/usr/share/layerdraw" "/usr/lib/layerdraw/layerdraw-host" "/usr/share/layerdraw/legal/desktop-capabilities.json" "/usr/share/layerdraw/legal/host/layerdraw-host.cdx.json" "/usr/share/layerdraw/legal/desktop-conformance.json" "/usr/lib/layerdraw/native"
     verify_probe "$installed_executable" verify
     if [[ "${LAYERDRAW_EXPECT_SIGNED:-0}" == "1" ]]; then
       gpg --verify "$current_installer.asc" "$current_installer"

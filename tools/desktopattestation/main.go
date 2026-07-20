@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 const schemaVersion = 1
@@ -132,7 +133,28 @@ func createCommand(args []string) error {
 	if *installer == "" || *closurePath == "" || *resultPath == "" || *output == "" || !revisionPattern.MatchString(*revision) || !validPlatform(*platform) {
 		return errors.New("create requires installer, closure, scenario-result, output, valid source-revision, and platform")
 	}
-	if err := validateResult(*closurePath, *resultPath, *revision, *platform); err != nil {
+	store, err := openArtifactStore(filepath.Dir(*output))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	installerName, err := store.directName(*installer)
+	if err != nil {
+		return fmt.Errorf("installer path: %w", err)
+	}
+	closureName, err := store.directName(*closurePath)
+	if err != nil {
+		return fmt.Errorf("closure path: %w", err)
+	}
+	resultName, err := store.directName(*resultPath)
+	if err != nil {
+		return fmt.Errorf("scenario result path: %w", err)
+	}
+	outputName, err := store.directName(*output)
+	if err != nil {
+		return fmt.Errorf("output path: %w", err)
+	}
+	if err := validateResult(store, closureName, resultName, *revision, *platform); err != nil {
 		return err
 	}
 	privateKey, mode, err := signingKey(*keyEnv, *testSigning)
@@ -140,8 +162,8 @@ func createCommand(args []string) error {
 		return err
 	}
 	value := attestation{SchemaVersion: schemaVersion, SourceRevision: *revision, Platform: *platform, SigningMode: mode}
-	for path, target := range map[string]*digestFile{*installer: &value.Installer, *closurePath: &value.Closure, *resultPath: &value.ScenarioResult} {
-		described, describeErr := describeFile(path)
+	for name, target := range map[string]*digestFile{installerName: &value.Installer, closureName: &value.Closure, resultName: &value.ScenarioResult} {
+		described, describeErr := describeFile(store, name)
 		if describeErr != nil {
 			return describeErr
 		}
@@ -159,7 +181,7 @@ func createCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	return writeExclusive(*output, append(encoded, '\n'))
+	return writeExclusive(store, outputName, append(encoded, '\n'))
 }
 
 func verifyCommand(args []string) error {
@@ -174,8 +196,17 @@ func verifyCommand(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	store, err := openArtifactStore(*root)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	attestationName, err := store.directName(*path)
+	if err != nil {
+		return errors.New("attestation path is invalid")
+	}
 	var value attestation
-	if *path == "" || !revisionPattern.MatchString(*expectedRevision) || !validPlatform(*expectedPlatform) || decodeStrict(*path, &value) != nil || value.SchemaVersion != schemaVersion || value.SourceRevision != *expectedRevision || value.Platform != *expectedPlatform {
+	if *path == "" || !revisionPattern.MatchString(*expectedRevision) || !validPlatform(*expectedPlatform) || decodeStrict(store, attestationName, &value) != nil || value.SchemaVersion != schemaVersion || value.SourceRevision != *expectedRevision || value.Platform != *expectedPlatform {
 		return errors.New("attestation is invalid")
 	}
 	publicText := *trusted
@@ -209,21 +240,21 @@ func verifyCommand(args []string) error {
 		if filepath.Base(file.Path) != file.Path {
 			return errors.New("attested artifact path is invalid")
 		}
-		actual, describeErr := describeFile(filepath.Join(*root, file.Path))
+		actual, describeErr := describeFile(store, file.Path)
 		if describeErr != nil || actual.Size != file.Size || actual.SHA256 != file.SHA256 {
 			return fmt.Errorf("attested artifact digest mismatch for %s", file.Path)
 		}
 	}
-	return validateResult(filepath.Join(*root, value.Closure.Path), filepath.Join(*root, value.ScenarioResult.Path), value.SourceRevision, value.Platform)
+	return validateResult(store, value.Closure.Path, value.ScenarioResult.Path, value.SourceRevision, value.Platform)
 }
 
-func validateResult(closurePath, resultPath, revision, platform string) error {
+func validateResult(store *artifactStore, closurePath, resultPath, revision, platform string) error {
 	var limits closure
-	if err := decodeStrict(closurePath, &limits); err != nil || limits.SchemaVersion != schemaVersion || limits.Delivery != "desktop" {
+	if err := decodeStrict(store, closurePath, &limits); err != nil || limits.SchemaVersion != schemaVersion || limits.Delivery != "desktop" {
 		return errors.New("Desktop closure budgets are invalid")
 	}
 	var result scenarioResult
-	if err := decodeStrict(resultPath, &result); err != nil {
+	if err := decodeStrict(store, resultPath, &result); err != nil {
 		return fmt.Errorf("scenario result: %w", err)
 	}
 	if result.SchemaVersion != schemaVersion || result.SourceRevision != revision || result.Platform != platform || result.ArtifactKind != "installed_desktop" || result.Iterations < 5 {
@@ -306,21 +337,33 @@ func signingPayload(value attestation) ([]byte, error) {
 	return json.Marshal(value)
 }
 
-func describeFile(path string) (digestFile, error) {
-	data, err := os.ReadFile(path)
+func describeFile(store *artifactStore, name string) (digestFile, error) {
+	name, err := store.directName(name)
 	if err != nil {
 		return digestFile{}, err
 	}
-	info, err := os.Stat(path)
+	linkInfo, err := store.root.Lstat(name)
+	if err != nil || linkInfo.Mode()&os.ModeSymlink != 0 {
+		return digestFile{}, errors.New("attested artifact must not be a symbolic link")
+	}
+	data, err := store.root.ReadFile(name)
+	if err != nil {
+		return digestFile{}, err
+	}
+	info, err := store.root.Stat(name)
 	if err != nil || !info.Mode().IsRegular() {
 		return digestFile{}, errors.New("attested artifact is not a regular file")
 	}
 	digest := sha256.Sum256(data)
-	return digestFile{Path: filepath.Base(path), Size: info.Size(), SHA256: hex.EncodeToString(digest[:])}, nil
+	return digestFile{Path: name, Size: info.Size(), SHA256: hex.EncodeToString(digest[:])}, nil
 }
 
-func writeExclusive(path string, data []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+func writeExclusive(store *artifactStore, name string, data []byte) error {
+	name, err := store.directName(name)
+	if err != nil {
+		return err
+	}
+	file, err := store.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -334,8 +377,16 @@ func writeExclusive(path string, data []byte) error {
 	return err
 }
 
-func decodeStrict(path string, target any) error {
-	file, err := os.Open(path)
+func decodeStrict(store *artifactStore, name string, target any) error {
+	name, err := store.directName(name)
+	if err != nil {
+		return err
+	}
+	info, err := store.root.Lstat(name)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("JSON input must not be a symbolic link")
+	}
+	file, err := store.root.Open(name)
 	if err != nil {
 		return err
 	}
@@ -349,4 +400,40 @@ func decodeStrict(path string, target any) error {
 		return errors.New("trailing JSON content")
 	}
 	return nil
+}
+
+type artifactStore struct {
+	root     *os.Root
+	absolute string
+}
+
+func openArtifactStore(path string) (*artifactStore, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	absolute = filepath.Clean(absolute)
+	root, err := os.OpenRoot(absolute)
+	if err != nil {
+		return nil, err
+	}
+	return &artifactStore{root: root, absolute: absolute}, nil
+}
+
+func (store *artifactStore) Close() error { return store.root.Close() }
+
+func (store *artifactStore) directName(path string) (string, error) {
+	if path == "" || (filepath.IsAbs(path) && filepath.VolumeName(path) != filepath.VolumeName(store.absolute)) {
+		return "", errors.New("artifact path has an invalid volume")
+	}
+	absolute := path
+	if !filepath.IsAbs(absolute) {
+		absolute = filepath.Join(store.absolute, absolute)
+	}
+	absolute = filepath.Clean(absolute)
+	relative, err := filepath.Rel(store.absolute, absolute)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) || filepath.Dir(relative) != "." {
+		return "", errors.New("artifact path escapes its root or is not a direct child")
+	}
+	return relative, nil
 }

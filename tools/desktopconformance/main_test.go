@@ -31,3 +31,21 @@ func TestDesktopClosureRejectsUnprovenDeliveredRows(t *testing.T) {
 		t.Fatal("unproven delivered row was accepted")
 	}
 }
+
+func TestDesktopClosureRejectsTraversalAndEscapingSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "desktop-conformance.json")
+	if err := os.WriteFile(outside, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verify(root, filepath.Join("..", filepath.Base(outside))); err == nil {
+		t.Fatal("manifest traversal was accepted")
+	}
+	link := filepath.Join(root, "linked.json")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symbolic links unavailable: %v", err)
+	}
+	if _, err := verify(root, "linked.json"); err == nil {
+		t.Fatal("manifest symlink escaping the root was accepted")
+	}
+}
