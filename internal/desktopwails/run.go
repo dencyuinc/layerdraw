@@ -32,6 +32,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 	if err != nil {
 		return err
 	}
+	frontend := NewFrontendBridge(application)
 	configured := &options.App{
 		Title: "LayerDraw", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 640,
 		AssetServer: &assetserver.Options{Assets: assets},
@@ -41,8 +42,9 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 			extension(configured)
 		}
 	}
-	configured.Bind = append([]any{application}, configured.Bind...)
+	configured.Bind = append([]any{frontend}, configured.Bind...)
 	configured.OnStartup = func(ctx context.Context) {
+		frontend.setContext(ctx)
 		result := application.Start(ctx)
 		if result.Outcome != protocolcommon.OutcomeSuccess && result.Failure != nil {
 			WailsRuntime{}.Emit(ctx, recoveryEvent, *result.Failure)

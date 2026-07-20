@@ -3,7 +3,7 @@
   "name": "layerdraw-desktop",
   "outputfilename": "LayerDraw",
   "frontend:dir": "frontend",
-  "frontend:install": "",
-  "frontend:build": "",
+  "frontend:install": "pnpm install --frozen-lockfile",
+  "frontend:build": "pnpm turbo run build --filter @layerdraw/desktop",
   "assetdir": "frontend/dist"
 }
