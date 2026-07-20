@@ -14,6 +14,7 @@
     "./navigation": {"types": "./dist/navigation.d.ts", "import": "./dist/navigation.js"},
     "./query-viewer": {"types": "./dist/query-viewer.d.ts", "import": "./dist/query-viewer.js"},
     "./recovery": {"types": "./dist/recovery.d.ts", "import": "./dist/recovery.js"},
+    "./review": {"types": "./dist/review.d.ts", "import": "./dist/review.js"},
     "./styles.css": "./dist/styles.css"
   },
   "scripts": {
@@ -28,6 +29,7 @@
     "@layerdraw/client-sdk": "workspace:*",
     "@layerdraw/composer": "workspace:*",
     "@layerdraw/protocol": "workspace:*",
+    "@layerdraw/review": "workspace:*",
     "@layerdraw/viewer": "workspace:*"
   },
   "peerDependencies": {"react": ">=19.0.0 <20", "react-dom": ">=19.0.0 <20"},

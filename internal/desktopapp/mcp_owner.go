@@ -26,10 +26,15 @@ type DesktopMCPOwner struct {
 	clients      desktopcontract.ClientSet
 	capabilities MCPCapabilitySource
 	resources    MCPResourceSource
+	application  mcphost.Owner
 	methods      map[string]string
 }
 
 func NewDesktopMCPOwner(clients desktopcontract.ClientSet, capabilities MCPCapabilitySource, resources MCPResourceSource) (*DesktopMCPOwner, error) {
+	return newDesktopMCPOwner(clients, capabilities, resources, nil)
+}
+
+func newDesktopMCPOwner(clients desktopcontract.ClientSet, capabilities MCPCapabilitySource, resources MCPResourceSource, application mcphost.Owner) (*DesktopMCPOwner, error) {
 	if clients.Validate() != nil || capabilities == nil {
 		return nil, errors.New("desktop MCP owner composition is incomplete")
 	}
@@ -37,15 +42,25 @@ func NewDesktopMCPOwner(clients desktopcontract.ClientSet, capabilities MCPCapab
 	for _, binding := range desktopcontract.GeneratedBindingTable() {
 		methods[binding.Operation] = binding.GeneratedMethod
 	}
-	return &DesktopMCPOwner{clients: clients, capabilities: capabilities, resources: resources, methods: methods}, nil
+	return &DesktopMCPOwner{clients: clients, capabilities: capabilities, resources: resources, application: application, methods: methods}, nil
 }
 func (o *DesktopMCPOwner) Capabilities(ctx context.Context) (mcphost.CapabilitySnapshot, error) {
 	snapshot, err := o.capabilities.Snapshot(ctx)
 	if err != nil {
 		return mcphost.CapabilitySnapshot{}, err
 	}
+	applicationOperations := map[string]bool{}
+	if o.application != nil {
+		application, applicationErr := o.application.Capabilities(ctx)
+		if applicationErr != nil || application.GrantSummary.AccessFingerprint != snapshot.GrantSummary.AccessFingerprint {
+			return mcphost.CapabilitySnapshot{}, errors.New("MCP application owner capabilities are inconsistent")
+		}
+		for operation, capability := range application.Operations {
+			applicationOperations[operation] = capability.Enabled
+		}
+	}
 	for operation, capability := range snapshot.Operations {
-		if capability.Enabled && o.methods[operation] == "" {
+		if capability.Enabled && o.methods[operation] == "" && !applicationOperations[operation] {
 			return mcphost.CapabilitySnapshot{}, errors.New("MCP capability has no generated Desktop owner binding")
 		}
 	}
@@ -54,6 +69,12 @@ func (o *DesktopMCPOwner) Capabilities(ctx context.Context) (mcphost.CapabilityS
 func (o *DesktopMCPOwner) Invoke(ctx context.Context, request mcphost.OwnerRequest) (mcphost.OwnerResponse, error) {
 	method := o.methods[request.Operation]
 	if method == "" {
+		if o.application != nil {
+			capabilities, err := o.application.Capabilities(ctx)
+			if err == nil && capabilities.Operations[request.Operation].Enabled {
+				return o.application.Invoke(ctx, request)
+			}
+		}
 		return mcphost.OwnerResponse{}, &mcphost.OwnerError{Code: mcphost.ErrorCapabilityUnavailable}
 	}
 	control, err := adaptMCPPageRequest(request.Operation, request.Arguments, request.Continuation)
@@ -109,8 +130,8 @@ type canonicalMCPComposition struct {
 	transport *mcphost.LocalTransport
 }
 
-func composeCanonicalMCP(clients desktopcontract.ClientSet, capabilities MCPCapabilitySource, resources MCPResourceSource, limits mcphost.Limits) (canonicalMCPComposition, error) {
-	owner, err := NewDesktopMCPOwner(clients, capabilities, resources)
+func composeCanonicalMCP(clients desktopcontract.ClientSet, capabilities MCPCapabilitySource, resources MCPResourceSource, application mcphost.Owner, limits mcphost.Limits) (canonicalMCPComposition, error) {
+	owner, err := newDesktopMCPOwner(clients, capabilities, resources, application)
 	if err != nil {
 		return canonicalMCPComposition{}, err
 	}

@@ -56,9 +56,12 @@ type Config struct {
 	// MCPHost is the canonical in-process protocol adapter used by production
 	// Desktop composition. HostPorts.MCP remains an injection seam for closed
 	// lifecycle tests and framework adapters.
-	MCPHost                       *mcphost.Host
-	MCPCapabilities               MCPCapabilitySource
-	MCPResources                  MCPResourceSource
+	MCPHost         *mcphost.Host
+	MCPCapabilities MCPCapabilitySource
+	MCPResources    MCPResourceSource
+	// MCPApplicationOwner routes application-owned protocols such as Review;
+	// it must expose the same canonical instance injected into the Desktop UI.
+	MCPApplicationOwner           mcphost.Owner
 	MCPLimits                     mcphost.Limits
 	CredentialRefs                []desktopcontract.CredentialRef
 	DelegationFences              []desktopcontract.DelegationFence
@@ -176,7 +179,7 @@ func NewCanonical(config Config) (*Application, error) {
 	if config.MCPHost != nil || config.HostPorts.MCP != nil || config.MCPCapabilities == nil {
 		return nil, errors.New("desktop canonical MCP composition is required")
 	}
-	composition, err := composeCanonicalMCP(config.Bindings, config.MCPCapabilities, config.MCPResources, config.MCPLimits)
+	composition, err := composeCanonicalMCP(config.Bindings, config.MCPCapabilities, config.MCPResources, config.MCPApplicationOwner, config.MCPLimits)
 	if err != nil {
 		return nil, err
 	}
