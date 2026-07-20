@@ -441,7 +441,7 @@ func CompleteAnalysisResult(values []AnalysisValue, input AnalysisCompletion) ([
 }
 
 func canonicalInputSubgraphHash(input AnalysisCompletion) (string, error) {
-	if (input.QueryResultHash == "") == (len(input.EntityAddresses) == 0 && len(input.RelationAddresses) == 0) {
+	if len(input.EntityAddresses) == 0 || len(input.RelationAddresses) == 0 {
 		return "", ErrSearchResultInvalid
 	}
 	entities := append([]string(nil), input.EntityAddresses...)

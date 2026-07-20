@@ -5,6 +5,7 @@ package host
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	searchadapter "github.com/dencyuinc/layerdraw/internal/adapter/search"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
@@ -37,19 +39,63 @@ func (searchSurfaceStub) ExecuteAnalysis(context.Context, port.BoundExecutionReq
 	return []byte(`{"surface":"analysis"}`), nil
 }
 
-type failingSearchSurface struct{ err error }
+type desktopParityEngine struct{}
 
-func (f failingSearchSurface) Capabilities(context.Context) (layerruntime.SearchCapabilityManifest, error) {
-	return layerruntime.SearchCapabilityManifest{QueryAvailable: true, SearchAvailable: true, AnalysisAvailable: true}, nil
+func (desktopParityEngine) ProduceSearchDocumentBatch(_ context.Context, request port.SearchDocumentBatchRequest) (port.SearchDocumentBatch, error) {
+	return port.SearchDocumentBatch{
+		Snapshot: request.Snapshot, AccessProjectionDigest: request.AccessProjectionDigest, EmbeddingProfileDigest: request.EmbeddingProfileDigest,
+		Documents: []port.SearchDocumentInput{{SubjectAddress: "entity:test", SubjectKind: "entity", ContentHash: "sha256:content", Text: "searchable document"}},
+	}, nil
 }
-func (f failingSearchSurface) Search(context.Context, layerruntime.SearchRequest) ([]byte, error) {
-	return nil, f.err
+
+func (desktopParityEngine) PrepareSearchIndex(_ context.Context, input port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
+	identityBytes, _ := json.Marshal(input.IndexIdentity)
+	identityDigest := sha256.Sum256(identityBytes)
+	physical := port.PhysicalIndexRef{IdentityDigest: hex.EncodeToString(identityDigest[:]), ContentDigest: "sha256:physical", BackendVersion: input.IndexIdentity.LadybugBackendVersion}
+	payload, _ := json.Marshal(searchadapter.LadybugPlan{
+		Statements:       []searchadapter.LadybugStatement{{Query: "CREATE TEST INDEX", Parameters: map[string]port.RawValue{}}},
+		PhysicalIndex:    &physical,
+		PhysicalEvidence: []searchadapter.LadybugIndexEvidence{{TableName: "search_documents", IndexName: "search_fts", IndexType: "FTS", PropertyNames: []string{"text"}, PrimaryKey: "address"}},
+	})
+	return port.ExecutionPlan{
+		Kind: port.PlanSearchIndex, PlanID: "desktop-parity-index", ProtocolVersion: "v1", Payload: payload, MaxRows: 100, MaxBytes: 4096,
+		Authority: desktopParityIndexAuthority(input),
+	}, nil
 }
-func (f failingSearchSurface) ExecuteQuery(context.Context, port.BoundExecutionRequest) ([]byte, error) {
-	return nil, f.err
+
+func (desktopParityEngine) PrepareSearch(context.Context, port.SearchPreparationInput) (port.PreparedSearch, error) {
+	return port.PreparedSearch{}, errors.New("unexpected search preparation")
 }
-func (f failingSearchSurface) ExecuteAnalysis(context.Context, port.BoundExecutionRequest) ([]byte, error) {
-	return nil, f.err
+func (desktopParityEngine) CompleteSearch(context.Context, port.CompleteSearchInput) ([]byte, error) {
+	return nil, errors.New("unexpected search completion")
+}
+func (desktopParityEngine) PrepareQuery(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	return port.ExecutionPlan{}, errors.New("unexpected query preparation")
+}
+func (desktopParityEngine) CompleteQuery(context.Context, port.CompleteExecutionInput) ([]byte, error) {
+	return nil, errors.New("unexpected query completion")
+}
+func (desktopParityEngine) PrepareAnalysis(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	return port.ExecutionPlan{}, errors.New("unexpected analysis preparation")
+}
+func (desktopParityEngine) CompleteAnalysis(context.Context, port.CompleteExecutionInput) ([]byte, error) {
+	return nil, errors.New("unexpected analysis completion")
+}
+
+func desktopParityIndexAuthority(input port.SearchIndexPreparationInput) port.PlanAuthorityBinding {
+	identityBytes, _ := json.Marshal(input.IndexIdentity)
+	identityDigest := sha256.Sum256(identityBytes)
+	requestDigest := sha256.Sum256(input.Request)
+	authority := port.PlanAuthorityBinding{
+		Snapshot: input.Snapshot, AccessProjectionDigest: input.AccessProjectionDigest,
+		SearchProfileID: input.SearchProfile.ProfileID, SearchProfileDigest: input.SearchProfile.SpecificationDigest,
+		IndexIdentityDigest: "sha256:" + hex.EncodeToString(identityDigest[:]), RequestDigest: "sha256:" + hex.EncodeToString(requestDigest[:]),
+	}
+	if input.EmbeddingProfile != nil {
+		authority.EmbeddingProfileID = input.EmbeddingProfile.ProfileID
+		authority.EmbeddingProfileDigest = input.EmbeddingProfile.ModelDigest
+	}
+	return authority
 }
 
 type emptyBlobSource struct {
@@ -229,31 +275,127 @@ func TestWailsAndMCPConsumersReceiveIdenticalEngineSearchResultBytes(t *testing.
 
 func TestWailsAndMCPConsumersReceiveIdenticalTypedSearchFailures(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		err  error
-		code string
+		name          string
+		withEmbedding bool
+		prepare       func(*testing.T, *DesktopSearchComposition, layerruntime.SearchRequest) layerruntime.SearchRequest
+		ctx           func() context.Context
+		want          error
+		code          string
 	}{
-		{"embedding unavailable", layerruntime.ErrSearchEmbeddingUnavailable, "search.embedding_unavailable"},
-		{"stale index", layerruntime.ErrSearchIndexStale, "search.index_stale"},
-		{"cancelled", layerruntime.ErrSearchCancelled, "search.cancelled"},
+		{
+			name: "embedding provider and profile absent", want: layerruntime.ErrSearchEmbeddingUnavailable, code: "search.embedding_unavailable",
+		},
+		{
+			name: "stale index identity", want: layerruntime.ErrSearchIndexStale, code: "search.index_stale",
+			prepare: func(_ *testing.T, _ *DesktopSearchComposition, request layerruntime.SearchRequest) layerruntime.SearchRequest {
+				request.Mode = "lexical"
+				request.EngineRequest = []byte(`{"kind":"search_documents","mode":"lexical","query_text":"hello"}`)
+				request.IndexIdentity.DocumentSnapshotRef.CommittedRevision = "stale-revision"
+				return request
+			},
+		},
+		{
+			name: "cancelled embedding", withEmbedding: true, want: layerruntime.ErrSearchCancelled, code: "search.cancelled",
+			prepare: func(t *testing.T, composition *DesktopSearchComposition, request layerruntime.SearchRequest) layerruntime.SearchRequest {
+				t.Helper()
+				_, err := composition.RebuildIndex(context.Background(), layerruntime.SearchIndexBuildRequest{
+					Snapshot: request.Snapshot, AccessProjectionDigest: request.AccessProjectionDigest, SearchProfile: request.SearchProfile,
+					EmbeddingProfile: request.EmbeddingProfile, IndexIdentity: request.IndexIdentity, EngineRequest: []byte(`{"kind":"build_search_index"}`),
+				}, port.SearchDocumentBatchRequest{
+					Snapshot: request.Snapshot, AccessProjectionDigest: request.AccessProjectionDigest,
+					EmbeddingProfileDigest: request.EmbeddingProfile.ModelDigest,
+					Corpus:                 port.SearchCorpusRef{EndpointInstanceID: "host-test", DocumentHandle: "desktop-parity", Generation: 1},
+				})
+				if err != nil {
+					t.Fatalf("rebuild actual Desktop index: %v", err)
+				}
+				return request
+			},
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			endpoint := newEndpointWithSearch(t, failingSearchSurface{err: test.err})
+			endpoint, composition, profile := newDesktopParityEndpoint(t, test.withEmbedding)
 			session, snapshot, accessDigest := openSearchTestSession(t, endpoint)
-			request := layerruntime.SearchRequest{Session: &session, Snapshot: snapshot, AccessProjectionDigest: accessDigest}
-			if _, err := endpoint.SearchSurface().Search(context.Background(), request); !errors.Is(err, test.err) {
+			searchProfile := port.SearchProfile{ProfileID: "desktop-default", SpecificationDigest: "sha256:search-profile", LexicalCandidateLimit: 10, SemanticCandidateLimit: 10, MaxHits: 5, RRFK: 60, LexicalWeight: 1, SemanticWeight: 1, SnippetMaxBytes: 128}
+			identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: searchProfile.ProfileID, SearchProfileDigest: searchProfile.SpecificationDigest, AccessProjectionDigest: accessDigest, LadybugBackendVersion: "1", IndexSchemaVersion: "1"}
+			request := layerruntime.SearchRequest{
+				Session: &session, Snapshot: snapshot, AccessProjectionDigest: accessDigest, SearchProfile: searchProfile,
+				IndexIdentity: identity, Mode: "semantic", QueryText: "hello", EngineRequest: []byte(`{"kind":"search_documents","mode":"semantic","query_text":"hello"}`), MaxOutputBytes: 4096,
+			}
+			if profile != nil {
+				request.EmbeddingProfile = profile
+				request.IndexIdentity.EmbeddingProfileID = profile.ProfileID
+				request.IndexIdentity.EmbeddingProfileDigest = profile.ModelDigest
+			}
+			if test.prepare != nil {
+				request = test.prepare(t, composition, request)
+			}
+			ctx := context.Background()
+			if test.ctx != nil {
+				ctx = test.ctx()
+			}
+			if _, err := endpoint.SearchSurface().Search(ctx, request); !errors.Is(err, test.want) {
 				t.Fatalf("Wails err=%v", err)
 			}
 			control, err := json.Marshal(searchOperationRequest[layerruntime.SearchRequest]{Operation: OperationSearch, Protocol: runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}, RequestID: "mcp-failure", Payload: request})
 			if err != nil {
 				t.Fatal(err)
 			}
-			response := executeRuntimeControl(t, endpoint, OperationSearch, control, emptyBlobSource{})
-			if response.Failure == nil || response.Failure.Code != test.code || (errors.Is(test.err, layerruntime.ErrSearchCancelled) && response.Outcome != protocolcommon.OutcomeCancelled) {
+			plan, terminal, err := endpoint.Prepare(context.Background(), OperationSearch, control)
+			if err != nil || terminal != nil || plan == nil {
+				t.Fatalf("prepare MCP search: terminal=%+v err=%v", terminal, err)
+			}
+			response, err := plan.ExecuteDispatch(ctx, emptyBlobSource{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Failure == nil || response.Failure.Code != test.code || (errors.Is(test.want, layerruntime.ErrSearchCancelled) && response.Outcome != protocolcommon.OutcomeCancelled) {
 				t.Fatalf("MCP response=%+v", response)
 			}
 		})
 	}
+}
+
+func newDesktopParityEndpoint(t *testing.T, withEmbedding bool) (*Endpoint, *DesktopSearchComposition, *port.EmbeddingProfile) {
+	t.Helper()
+	digest := protocolcommon.Digest("sha256:" + strings.Repeat("a", 64))
+	local, err := localdocument.New(localdocument.Config{Root: t.TempDir(), ReleaseVersion: "1.0.0", EndpointInstanceID: "host-test", ReleaseManifestDigest: digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = local.Shutdown(context.Background()) })
+	engine := desktopParityEngine{}
+	config := DesktopSearchConfig{
+		Root: t.TempDir(), Engine: engine, DocumentProducer: engine, Ladybug: &compositionLadybug{},
+		PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"),
+		BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096,
+		Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...),
+	}
+	var profile *port.EmbeddingProfile
+	if withEmbedding {
+		configured := port.EmbeddingProfile{ProfileID: "local", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}
+		config.EmbeddingProfile = configured
+		config.LocalModelSeed = []byte("0123456789012345")
+		profile = &configured
+	}
+	composition, err := NewDesktopSearchComposition(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engineFacade, err := engineendpoint.NewHostEngineFacade("1.0.0", "unknown", string(digest), "host-test", "stdio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := New(Config{LocalHost: local, Engine: engineFacade, Search: composition.Surface})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return endpoint, &composition, profile
 }
 
 func openSearchTestSession(t *testing.T, endpoint *Endpoint) (runtimeprotocol.RuntimeSessionRef, port.DocumentSnapshotRef, string) {

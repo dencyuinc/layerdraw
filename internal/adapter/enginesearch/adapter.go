@@ -303,19 +303,15 @@ func (e *Adapter) CompleteAnalysis(_ context.Context, input port.CompleteExecuti
 		values = append(values, engine.AnalysisValue{Address: row["address"].Value, MetricName: row["metric_name"].Value, TypedValue: row["metric_value"].Value})
 	}
 	var request struct {
-		Algorithm          string   `json:"algorithm"`
-		AlgorithmProfileID string   `json:"algorithm_profile_id"`
-		QueryResultHash    string   `json:"query_result_hash"`
-		EntityAddresses    []string `json:"entity_addresses"`
-		RelationAddresses  []string `json:"relation_addresses"`
+		Algorithm         string   `json:"algorithm"`
+		QueryResultHash   string   `json:"query_result_hash"`
+		EntityAddresses   []string `json:"entity_addresses"`
+		RelationAddresses []string `json:"relation_addresses"`
 	}
 	if json.Unmarshal(input.Request, &request) != nil {
 		return nil, ErrInvalidNativeSearchRequest
 	}
-	if request.AlgorithmProfileID == "" {
-		request.AlgorithmProfileID = "layerdraw.analysis." + request.Algorithm + ".v1"
-	}
-	return engine.CompleteAnalysisResult(values, engine.AnalysisCompletion{DocumentSnapshotRef: resultSnapshot(input.Plan.Authority.Snapshot), EntityAddresses: request.EntityAddresses, RelationAddresses: request.RelationAddresses, QueryResultHash: request.QueryResultHash, Algorithm: request.Algorithm, AlgorithmProfileID: request.AlgorithmProfileID, BackendVersion: input.BackendVersion})
+	return engine.CompleteAnalysisResult(values, engine.AnalysisCompletion{DocumentSnapshotRef: resultSnapshot(input.Plan.Authority.Snapshot), EntityAddresses: request.EntityAddresses, RelationAddresses: request.RelationAddresses, QueryResultHash: request.QueryResultHash, Algorithm: request.Algorithm, AlgorithmProfileID: "layerdraw.analysis." + request.Algorithm + ".v1", BackendVersion: input.BackendVersion})
 }
 
 func resultSnapshot(value port.DocumentSnapshotRef) engine.SearchResultSnapshotRef {

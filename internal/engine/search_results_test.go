@@ -106,6 +106,15 @@ func TestAnalysisHashesCanonicalInputSubgraphAndSemanticResult(t *testing.T) {
 	}
 }
 
+func TestAnalysisAcceptsQueryResultHashWithCompleteSelectedSubgraph(t *testing.T) {
+	completion := analysisTestCompletion()
+	completion.QueryResultHash = "sha256:query-result"
+	result, err := CompleteAnalysisResult([]AnalysisValue{{Address: "a", MetricName: "importance", TypedValue: "0.5"}}, completion)
+	if err != nil || !strings.Contains(string(result), `"input_subgraph_hash":"sha256:`) {
+		t.Fatalf("query-result scope result=%s err=%v", result, err)
+	}
+}
+
 func TestQueryResultRejectsGenericRawRows(t *testing.T) {
 	completion := QueryCompletion{DocumentSnapshotRef: resultTestSnapshot(), QueryAddress: "ldl:project:p:query:q", StatePolicy: "none", StateInput: QueryResultStateInput{Kind: "none"}}
 	if _, err := CompleteQueryResult([]QueryRow{{"arbitrary": {Kind: "string", Value: "backend-owned"}}}, completion); err == nil {

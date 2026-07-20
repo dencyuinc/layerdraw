@@ -62,19 +62,18 @@ type NativeIndexPlanInput struct {
 }
 
 type nativeExecutionRequest struct {
-	Kind               string          `json:"kind"`
-	Mode               string          `json:"mode,omitempty"`
-	QueryText          string          `json:"query_text,omitempty"`
-	TargetKind         string          `json:"target_kind,omitempty"`
-	RootAddresses      []string        `json:"root_addresses,omitempty"`
-	Algorithm          string          `json:"algorithm,omitempty"`
-	EntityAddresses    []string        `json:"entity_addresses,omitempty"`
-	RelationAddresses  []string        `json:"relation_addresses,omitempty"`
-	QueryAddress       string          `json:"query_address,omitempty"`
-	Arguments          json.RawMessage `json:"arguments,omitempty"`
-	QueryResultHash    string          `json:"query_result_hash,omitempty"`
-	AlgorithmProfileID string          `json:"algorithm_profile_id,omitempty"`
-	Parameters         json.RawMessage `json:"parameters,omitempty"`
+	Kind              string          `json:"kind"`
+	Mode              string          `json:"mode,omitempty"`
+	QueryText         string          `json:"query_text,omitempty"`
+	TargetKind        string          `json:"target_kind,omitempty"`
+	RootAddresses     []string        `json:"root_addresses,omitempty"`
+	Algorithm         string          `json:"algorithm,omitempty"`
+	EntityAddresses   []string        `json:"entity_addresses,omitempty"`
+	RelationAddresses []string        `json:"relation_addresses,omitempty"`
+	QueryAddress      string          `json:"query_address,omitempty"`
+	Arguments         json.RawMessage `json:"arguments,omitempty"`
+	QueryResultHash   string          `json:"query_result_hash,omitempty"`
+	Parameters        json.RawMessage `json:"parameters,omitempty"`
 }
 
 func BuildNativeSearchIndexPlan(input NativeIndexPlanInput) (NativeSearchPlan, error) {
@@ -271,7 +270,7 @@ func BuildNativeQueryPlan(requestBytes []byte) (NativeSearchPlan, int, error) {
 
 func BuildNativeAnalysisPlan(requestBytes []byte) (NativeSearchPlan, int, error) {
 	request, err := decodeNativeExecutionRequest(requestBytes, "analyze_graph")
-	if err != nil || len(request.EntityAddresses) == 0 || len(request.EntityAddresses) > 256 || len(request.RelationAddresses) == 0 || len(request.RelationAddresses) > 512 {
+	if err != nil || !validDefaultAnalysisParameters(request.Parameters) || len(request.EntityAddresses) == 0 || len(request.EntityAddresses) > 256 || len(request.RelationAddresses) == 0 || len(request.RelationAddresses) > 512 {
 		return NativeSearchPlan{}, 0, ErrSearchPlanInvalid
 	}
 	encodeScope := func(values []string) ([]string, error) {
@@ -310,6 +309,14 @@ func BuildNativeAnalysisPlan(requestBytes []byte) (NativeSearchPlan, int, error)
 		return NativeSearchPlan{}, 0, ErrSearchPlanInvalid
 	}
 	return NativeSearchPlan{Statements: []SearchPlanStatement{validate, project, {Query: query, Parameters: map[string]SearchPlanValue{}}, {Query: "CALL DROP_PROJECTED_GRAPH('" + graph + "')", Parameters: map[string]SearchPlanValue{}}}}, len(request.EntityAddresses) + 1, nil
+}
+
+func validDefaultAnalysisParameters(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var parameters map[string]json.RawMessage
+	return decodeClosedSearchRequest(raw, &parameters) == nil && len(parameters) == 0
 }
 
 func decodeNativeExecutionRequest(data []byte, kind string) (nativeExecutionRequest, error) {

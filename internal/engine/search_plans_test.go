@@ -116,9 +116,15 @@ func TestBuildNativeSearchQueryAndAllAnalysisPlans(t *testing.T) {
 		t.Fatalf("query plan=%+v rows=%d err=%v", queryPlan, queryRows, err)
 	}
 	for _, algorithm := range []string{"page_rank", "k_core", "louvain", "scc", "wcc"} {
-		plan, rows, err := BuildNativeAnalysisPlan([]byte(`{"kind":"analyze_graph","algorithm":"` + algorithm + `","entity_addresses":["a","b"],"relation_addresses":["r"]}`))
+		plan, rows, err := BuildNativeAnalysisPlan([]byte(`{"kind":"analyze_graph","algorithm":"` + algorithm + `","query_result_hash":"sha256:q","entity_addresses":["a","b"],"relation_addresses":["r"],"parameters":{}}`))
 		if err != nil || rows != 3 || len(plan.Statements) != 4 || !strings.Contains(plan.Statements[0].Query, "scope_violation") || !strings.Contains(plan.Statements[2].Query, "ORDER BY address") {
 			t.Fatalf("algorithm=%s plan=%+v rows=%d err=%v", algorithm, plan, rows, err)
 		}
+	}
+	if _, _, err := BuildNativeAnalysisPlan([]byte(`{"kind":"analyze_graph","algorithm":"page_rank","algorithm_profile_id":"caller-controlled","entity_addresses":["a"],"relation_addresses":["r"]}`)); err == nil {
+		t.Fatal("caller-controlled analysis profile escaped closed request")
+	}
+	if _, _, err := BuildNativeAnalysisPlan([]byte(`{"kind":"analyze_graph","algorithm":"page_rank","entity_addresses":["a"],"relation_addresses":["r"],"parameters":{"damping":0.1}}`)); err == nil {
+		t.Fatal("unsupported analysis parameters were silently ignored")
 	}
 }
