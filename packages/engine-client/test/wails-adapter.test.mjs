@@ -11,6 +11,7 @@ import {
   wailsEngineBindingDescriptors,
   wailsRuntimeBindingDescriptors,
 } from "../dist/wails.js";
+import { EngineClientInputError } from "../dist/index.js";
 import {
   creationOptions,
   makePortableRequest,
@@ -241,6 +242,33 @@ test("binding mismatch and incomplete generated surface fail fast with typed rec
   await assert.rejects(
     createWailsEngineClient(options(bindings)),
     (error) => error instanceof WailsBindingError && error.code === "BINDING_SURFACE_INCOMPLETE" && error.recovery === "regenerate_bindings",
+  );
+});
+
+test("public option and generated-binding boundaries snapshot once and fail closed", async () => {
+  const bindings = generatedBindings({ EngineHandshake: async (exchange) => handshakeResponse(exchange) });
+  await assert.rejects(
+    createWailsEngineClient({ ...options(bindings), unexpected: true }),
+    (error) => error instanceof EngineClientInputError && error.code === "INVALID_ARGUMENT",
+  );
+  const hostileBindings = { ...bindings };
+  Object.defineProperty(hostileBindings, "EngineCompile", { get() { throw new Error("/private/path secret"); } });
+  await assert.rejects(
+    createWailsEngineClient(options(hostileBindings)),
+    (error) => error instanceof WailsBindingError && error.code === "BINDING_SURFACE_INCOMPLETE" && !String(error).includes("private"),
+  );
+  await assert.rejects(
+    createWailsEngineClient(options(bindings, { transportLimits: { maxControlBytes: 1 } })),
+    (error) => error instanceof EngineClientInputError && error.code === "INVALID_ARGUMENT",
+  );
+  await assert.rejects(
+    createWailsDesktopClient({
+      ...options(bindings),
+      expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+      requiredRuntimeCapabilities: ["runtime.handshake"],
+      optionalRuntimeCapabilities: ["runtime.handshake"],
+    }),
+    (error) => error instanceof EngineClientInputError && error.code === "INVALID_ARGUMENT",
   );
 });
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Digest } from "@layerdraw/protocol/common";
+import { isCapabilityID, isDigest, type Digest } from "@layerdraw/protocol/common";
 import type * as Runtime from "@layerdraw/protocol/runtime";
 import {
   decodeAutosaveControlResponseEnvelope,
@@ -363,16 +363,23 @@ function operationOf(control: ArrayBuffer): string {
   }
 }
 
-function assertMethods(value: unknown, methods: readonly GeneratedMethodName[]): void {
+function snapshotMethods(value: unknown, methods: readonly GeneratedMethodName[]): Partial<Record<GeneratedMethodName, WailsGeneratedMethod>> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new WailsBindingError("BINDING_SURFACE_INCOMPLETE", "regenerate_bindings");
   }
   const record = value as Record<string, unknown>;
+  const snapshot: Partial<Record<GeneratedMethodName, WailsGeneratedMethod>> = {};
   for (const method of methods) {
-    if (typeof record[method] !== "function") {
+    let candidate: unknown;
+    try { candidate = record[method]; } catch {
       throw new WailsBindingError("BINDING_SURFACE_INCOMPLETE", "regenerate_bindings");
     }
+    if (typeof candidate !== "function") {
+      throw new WailsBindingError("BINDING_SURFACE_INCOMPLETE", "regenerate_bindings");
+    }
+    snapshot[method] = candidate as WailsGeneratedMethod;
   }
+  return Object.freeze(snapshot);
 }
 
 function createWailsTransport(bindings: Partial<Record<GeneratedMethodName, WailsGeneratedMethod>>, methods: Readonly<Record<string, GeneratedMethodName>>, limits: InternalTransportLimits, shutdown?: WailsShutdownSource): InternalByteTransport {
@@ -463,9 +470,26 @@ function validateVersion(bindingProtocolVersion: string): void {
   }
 }
 
-function validateEngineOptions(options: Pick<CreateWailsEngineClientOptions, "bindings" | "bindingProtocolVersion">): void {
-  validateVersion(options?.bindingProtocolVersion);
-  assertMethods(options.bindings, Object.values(engineMethods));
+function admitShutdown(value: unknown): WailsShutdownSource | undefined {
+  if (value === undefined) return undefined;
+  const object = dataObject(value, ["subscribe"], []);
+  if (object === undefined || typeof object.subscribe !== "function") throw new EngineClientInputError("INVALID_ARGUMENT");
+  const subscribe = object.subscribe as WailsShutdownSource["subscribe"];
+  return Object.freeze({ subscribe: (listener: () => void) => Reflect.apply(subscribe, value, [listener]) as () => void });
+}
+
+function admitEngineOptions(input: unknown): CreateWailsEngineClientOptions {
+  const object = dataObject(input, ["bindings", "bindingProtocolVersion", "client"], ["transportLimits", "shutdown"]);
+  if (object === undefined || typeof object.bindingProtocolVersion !== "string") throw new EngineClientInputError("INVALID_ARGUMENT");
+  validateVersion(object.bindingProtocolVersion);
+  const bindings = snapshotMethods(object.bindings, Object.values(engineMethods)) as WailsEngineBindings;
+  return Object.freeze({
+    bindings,
+    bindingProtocolVersion: object.bindingProtocolVersion,
+    client: object.client as EngineClientCreationOptions,
+    ...(object.transportLimits === undefined ? {} : { transportLimits: object.transportLimits as WailsTransportLimits }),
+    ...(object.shutdown === undefined ? {} : { shutdown: admitShutdown(object.shutdown) as WailsShutdownSource }),
+  });
 }
 
 function wailsEngineFactory(options: CreateWailsEngineClientOptions, limits: InternalTransportLimits): InternalTransportFactory {
@@ -477,12 +501,12 @@ function wailsEngineFactory(options: CreateWailsEngineClientOptions, limits: Int
 }
 
 export async function createWailsEngineClient(options: CreateWailsEngineClientOptions): Promise<EngineClient> {
-  validateEngineOptions(options);
-  const limits = normalizeLimits(options.transportLimits);
+  const admitted = admitEngineOptions(options);
+  const limits = normalizeLimits(admitted.transportLimits);
   return createInternalEngineClient({
-    transportFactory: wailsEngineFactory(options, limits),
+    transportFactory: wailsEngineFactory(admitted, limits),
     protocolCollectors: protocolBlobRefCollectors,
-    options: options.client,
+    options: admitted.client,
   });
 }
 
@@ -519,6 +543,34 @@ export interface CreateWailsDesktopClientOptions extends CreateWailsEngineClient
   readonly expectedReleaseManifestDigest: Digest;
   readonly requiredRuntimeCapabilities?: readonly string[];
   readonly optionalRuntimeCapabilities?: readonly string[];
+}
+
+function capabilityList(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => !isCapabilityID(item)) || new Set(value).size !== value.length) {
+    throw new EngineClientInputError("INVALID_ARGUMENT");
+  }
+  return Object.freeze([...value]) as readonly string[];
+}
+
+function admitDesktopOptions(input: unknown): CreateWailsDesktopClientOptions {
+  const object = dataObject(input, ["bindings", "bindingProtocolVersion", "client", "expectedReleaseManifestDigest"], ["transportLimits", "shutdown", "requiredRuntimeCapabilities", "optionalRuntimeCapabilities"]);
+  if (object === undefined || typeof object.bindingProtocolVersion !== "string" || !isDigest(object.expectedReleaseManifestDigest)) throw new EngineClientInputError("INVALID_ARGUMENT");
+  validateVersion(object.bindingProtocolVersion);
+  const bindings = snapshotMethods(object.bindings, [...Object.values(engineMethods), ...Object.values(runtimeMethods)]) as WailsGeneratedBindings;
+  const required = capabilityList(object.requiredRuntimeCapabilities);
+  const optional = capabilityList(object.optionalRuntimeCapabilities);
+  if (required !== undefined && optional !== undefined && required.some((item) => optional.includes(item))) throw new EngineClientInputError("INVALID_ARGUMENT");
+  return Object.freeze({
+    bindings,
+    bindingProtocolVersion: object.bindingProtocolVersion,
+    client: object.client as EngineClientCreationOptions,
+    expectedReleaseManifestDigest: object.expectedReleaseManifestDigest,
+    ...(object.transportLimits === undefined ? {} : { transportLimits: object.transportLimits as WailsTransportLimits }),
+    ...(object.shutdown === undefined ? {} : { shutdown: admitShutdown(object.shutdown) as WailsShutdownSource }),
+    ...(required === undefined ? {} : { requiredRuntimeCapabilities: required }),
+    ...(optional === undefined ? {} : { optionalRuntimeCapabilities: optional }),
+  });
 }
 
 class WailsDesktopClientImpl implements WailsDesktopClient {
@@ -653,14 +705,18 @@ async function runtimeHandshake(transport: InternalByteTransport, options: Creat
 }
 
 export async function createWailsDesktopClient(options: CreateWailsDesktopClientOptions): Promise<WailsDesktopClient> {
-  const value = dataObject(options, ["bindings", "bindingProtocolVersion", "client", "expectedReleaseManifestDigest"], ["transportLimits", "shutdown", "requiredRuntimeCapabilities", "optionalRuntimeCapabilities"]);
-  if (value === undefined || typeof options.expectedReleaseManifestDigest !== "string") throw new EngineClientInputError("INVALID_ARGUMENT");
-  validateEngineOptions(options);
-  assertMethods(options.bindings, Object.values(runtimeMethods));
-  const transport = runtimeTransport(options);
+  const admitted = admitDesktopOptions(options);
+  const transport = runtimeTransport(admitted);
   try {
-    const [manifest, engine] = await Promise.all([runtimeHandshake(transport, options), createWailsEngineClient(options)]);
-    return new WailsDesktopClientImpl(engine, options, transport, manifest);
+    const engineOptions: CreateWailsEngineClientOptions = {
+      bindings: admitted.bindings,
+      bindingProtocolVersion: admitted.bindingProtocolVersion,
+      client: admitted.client,
+      ...(admitted.transportLimits === undefined ? {} : { transportLimits: admitted.transportLimits }),
+      ...(admitted.shutdown === undefined ? {} : { shutdown: admitted.shutdown }),
+    };
+    const [manifest, engine] = await Promise.all([runtimeHandshake(transport, admitted), createWailsEngineClient(engineOptions)]);
+    return new WailsDesktopClientImpl(engine, admitted, transport, manifest);
   } catch (error) {
     transport.terminate();
     throw error;
