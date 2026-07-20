@@ -109,7 +109,8 @@ contrast, and zoom on the supported macOS, Windows, and Linux profiles.
 
 Startup resolves a stable local actor, loads credentials and live agent
 delegations, initializes components in dependency order, negotiates the
-manifest, starts MCP transport, and publishes `ready`. Shutdown publishes
+manifest, leaves MCP disabled until an explicit user action, and publishes
+`ready`. Shutdown publishes
 `draining`, rejects new work, joins in-flight work, stops MCP, releases adapters
 and locks, and publishes `stopped`. Corrupt or incompatible state publishes
 `recovery`; it is never silently reset.
@@ -145,6 +146,32 @@ snapshot, so an unconfigured Review, native interchange, external-storage, or
 other owner operation is absent rather than inferred from a linked package.
 Desktop does not launch a sibling MCP process.
 
+## MCP connection management
+
+Desktop exposes only the supported local transport and non-secret client
+instructions. Enabling, disabling, and restarting the MCP host are explicit
+settings actions; packaged Desktop never silently opens the surface.
+Connection, session, and delegation identifiers are host-issued random values.
+The UI displays client and agent identity, effective AuthoringGrantSummary,
+read/export/propose/apply scopes, constrained authoring capabilities, expiry,
+generation, and closed status.
+
+Delegation creation resolves the current open local-owner session and calls the
+canonical local-document Access delegation path. A requested capability cannot
+exceed the current human grant, and apply requires separate explicit
+confirmation. The canonical MCP catalog owns each tool's read, export, propose,
+or apply classification; UI and connection gates consume that classification
+instead of duplicating operation semantics. Proposal-only connections advertise
+preview/proposal operations and never direct apply tools.
+
+Connection metadata contains no native path, credential, token, or arbitrary
+diagnostic text. It is atomically stored as mode `0600`; revoked generations
+remain recorded, expired connections stay expired, and a live connection is
+restored only as `host_restarted` so the client must reconnect. Disable,
+restart, revocation, and expiry cancel in-flight connection contexts before new
+calls can enter. The local-document publication fence remains authoritative for
+work already linearized at revocation.
+
 The MCP adapter owns only transport concerns. Discovery and execution are
 fenced to one host generation, including synchronous discovery during transport
 startup; partial startup is shut down and rolled back before another generation
@@ -158,6 +185,11 @@ panic, and oversized values produce closed failures without paths, source,
 credentials, or provider text. The typed owner adapter still performs generated
 request validation and the final Runtime/Access/Review revalidation; MCP tool
 visibility is never an authorization boundary.
+
+Disabled surface, transport failure, connection-version mismatch, scope denial,
+disconnect, and host restart have separate closed Desktop failure codes and
+recovery actions. The React panel reports them through an accessible live region
+and never renders provider errors, secret material, or local paths.
 
 For generated paginated operations, the Desktop owner adapter uses a closed
 operation table to decode the exact response page, enforce the aggregate item

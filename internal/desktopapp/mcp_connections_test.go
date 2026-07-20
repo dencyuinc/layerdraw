@@ -69,8 +69,8 @@ func TestMCPConnectionsConstrainApplyRevokeExpireAndFence(t *testing.T) {
 		t.Fatalf("open=%+v", opened)
 	}
 	request := MCPConnectRequest{
-		ConnectionID: "connection-a", ClientID: "codex", SessionID: "session-a", ProtocolVersion: MCPConnectionProtocolVersion, DocumentID: opened.Value.ProjectID,
-		DelegationID: "delegation-a", AgentID: "agent-a", Capabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite},
+		ClientID: "codex", ProtocolVersion: MCPConnectionProtocolVersion, DocumentID: opened.Value.ProjectID,
+		AgentID: "agent-a", Capabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite},
 		Permissions: accesscore.AgentPermissions{Read: true, Propose: true, Apply: true}, ExpiresAt: protocolcommon.Rfc3339Time(now.Add(time.Hour).Format(time.RFC3339Nano)),
 	}
 	if result := app.CreateMCPConnection(context.Background(), request); result.Outcome != protocolcommon.OutcomeFailed {
@@ -85,24 +85,28 @@ func TestMCPConnectionsConstrainApplyRevokeExpireAndFence(t *testing.T) {
 		t.Fatalf("revoke=%+v", result)
 	}
 
-	request.ConnectionID, request.SessionID, request.DelegationID, request.AgentID = "connection-b", "session-b", "delegation-b", "agent-b"
+	request.AgentID = "agent-b"
 	request.Permissions.Apply, request.ConfirmApply = false, false
 	request.ExpiresAt = protocolcommon.Rfc3339Time(now.Add(time.Minute).Format(time.RFC3339Nano))
 	proposal := app.CreateMCPConnection(context.Background(), request)
 	if proposal.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("proposal connection=%+v", proposal)
 	}
-	denied := app.MCPCallConnectionTool(context.Background(), request.ConnectionID, mcphost.CallToolRequest{Name: "layerdraw.apply_operations", RequestID: "apply", Arguments: []byte(`{}`)})
+	denied := app.MCPCallConnectionTool(context.Background(), proposal.Value.ConnectionID, mcphost.CallToolRequest{Name: "layerdraw.apply_operations", RequestID: "apply", Arguments: []byte(`{}`)})
 	if denied.Failure == nil || denied.Failure.Code != mcphost.ErrorCapabilityUnavailable {
 		t.Fatalf("proposal-only apply=%+v", denied)
 	}
-	stale := app.MCPCallConnectionTool(context.Background(), request.ConnectionID, mcphost.CallToolRequest{Name: "layerdraw.list_modules", RequestID: "read", Arguments: []byte(`{}`), Binding: &mcphost.Binding{DocumentID: request.DocumentID, RevisionDigest: proposal.Value.GrantSummary.AccessFingerprint, AccessFingerprint: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}})
+	stale := app.MCPCallConnectionTool(context.Background(), proposal.Value.ConnectionID, mcphost.CallToolRequest{Name: "layerdraw.list_modules", RequestID: "read", Arguments: []byte(`{}`), Binding: &mcphost.Binding{DocumentID: request.DocumentID, RevisionDigest: proposal.Value.GrantSummary.AccessFingerprint, AccessFingerprint: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}})
 	if stale.Failure == nil || stale.Failure.Code != mcphost.ErrorStaleBinding {
 		t.Fatalf("stale binding=%+v", stale)
 	}
 	now = now.Add(2 * time.Minute)
 	connections := app.ListMCPConnections()
-	if len(connections) != 2 || connections[1].Status != MCPConnectionExpired || connections[1].Permissions.Apply {
+	statuses := map[string]MCPConnection{}
+	for _, connection := range connections {
+		statuses[connection.ConnectionID] = connection
+	}
+	if len(connections) != 2 || statuses[proposal.Value.ConnectionID].Status != MCPConnectionExpired || statuses[proposal.Value.ConnectionID].Permissions.Apply {
 		t.Fatalf("connections=%+v", connections)
 	}
 	metadata := filepath.Join(config.Root, mcpConnectionFilename)
@@ -110,7 +114,7 @@ func TestMCPConnectionsConstrainApplyRevokeExpireAndFence(t *testing.T) {
 		t.Fatalf("metadata mode: info=%v err=%v", info, err)
 	}
 	_, restored, err := loadMCPConnectionStore(config.Root, now)
-	if err != nil || restored["connection-a"].Status != MCPConnectionRevoked || restored["connection-b"].Status != MCPConnectionExpired {
+	if err != nil || restored[created.Value.ConnectionID].Status != MCPConnectionRevoked || restored[proposal.Value.ConnectionID].Status != MCPConnectionExpired {
 		t.Fatalf("restored=%+v err=%v", restored, err)
 	}
 }

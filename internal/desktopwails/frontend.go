@@ -106,3 +106,25 @@ func (b *FrontendBridge) PublishNativeExportDialog(input desktopapp.NativePublis
 func (b *FrontendBridge) ImportExternalDialog(input desktopapp.ExternalImportRequest) desktopcontract.Result[nativeexport.ImportPreview] {
 	return b.app.ImportExternalDialog(b.context(), input)
 }
+
+func (b *FrontendBridge) MCPStatus() desktopapp.MCPStatus { return b.app.MCPStatus() }
+
+func (b *FrontendBridge) SetMCPEnabled(enabled bool, transport desktopapp.MCPTransportKind) desktopcontract.Result[desktopapp.MCPStatus] {
+	return b.app.SetMCPEnabled(b.context(), enabled, transport)
+}
+
+func (b *FrontendBridge) CreateMCPConnection(request desktopapp.MCPConnectRequest) desktopcontract.Result[desktopapp.MCPConnection] {
+	return b.app.CreateMCPConnection(b.context(), request)
+}
+
+func (b *FrontendBridge) ListMCPConnections() []desktopapp.MCPConnection {
+	return b.app.ListMCPConnections()
+}
+
+func (b *FrontendBridge) RevokeMCPConnection(connectionID string) desktopcontract.Result[desktopapp.MCPConnection] {
+	return b.app.RevokeMCPConnection(b.context(), connectionID)
+}
+
+func (b *FrontendBridge) RestartMCP() desktopcontract.Result[desktopapp.MCPStatus] {
+	return b.app.RestartMCP(b.context())
+}

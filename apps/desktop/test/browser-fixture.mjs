@@ -48,8 +48,18 @@ const lifecycle = {
 const viewerPort = {
   getState: () => viewer, setSelection(keys) { calls.push(["viewer", ...keys]); }, async cancel() {},
 };
+let mcpEnabled = false;
+let mcpConnections = [];
+const mcp = {
+	async status() { return { enabled: mcpEnabled, transport: "local", instructions: "Use the local Desktop MCP entrypoint.", generation: 1 }; },
+	async setEnabled(enabled) { mcpEnabled = enabled; calls.push(["mcp-enable", enabled]); return { outcome: "success", value: await this.status() }; },
+	async restart() { calls.push(["mcp-restart"]); return { outcome: "success", value: await this.status() }; },
+	async listConnections() { return mcpConnections; },
+	async createConnection(request) { const value = { connection_id: "connection-1", client_id: request.client_id, session_id: "session-1", protocol_version: request.protocol_version, document_id: request.document_id, delegation_id: "delegation-1", agent_id: request.agent_id, capabilities: request.capabilities, permissions: request.permissions, expires_at: request.expires_at, generation: "1", status: "connected" }; mcpConnections = [value]; calls.push(["mcp-connect", request]); return { outcome: "success", value }; },
+	async revokeConnection(id) { mcpConnections = mcpConnections.map((value) => ({ ...value, status: "revoked" })); calls.push(["mcp-revoke", id]); return { outcome: "success", value: mcpConnections[0] }; },
+};
 mountDesktopShell(document.querySelector("#root"), {
-  lifecycle, viewer: viewerPort, viewSelectionCapability: "engine.materialize_view",
+	lifecycle, viewer: viewerPort, mcp, viewSelectionCapability: "engine.materialize_view",
   editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
 });
 window.desktopWorkflow = {

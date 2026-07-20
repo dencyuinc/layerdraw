@@ -5,7 +5,9 @@ package desktopapp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"sort"
@@ -62,12 +64,9 @@ type MCPConnection struct {
 }
 
 type MCPConnectRequest struct {
-	ConnectionID    string                         `json:"connection_id"`
 	ClientID        string                         `json:"client_id"`
-	SessionID       string                         `json:"session_id"`
 	ProtocolVersion string                         `json:"protocol_version"`
 	DocumentID      runtimeprotocol.DocumentID     `json:"document_id"`
-	DelegationID    string                         `json:"delegation_id"`
 	AgentID         string                         `json:"agent_id"`
 	Capabilities    []semantic.AuthoringCapability `json:"capabilities"`
 	Permissions     accesscore.AgentPermissions    `json:"permissions"`
@@ -145,15 +144,19 @@ func (a *Application) CreateMCPConnection(ctx context.Context, request MCPConnec
 	if request.ProtocolVersion != MCPConnectionProtocolVersion {
 		return failed[MCPConnection](desktopcontract.FailureMCPVersionMismatch, desktopcontract.ComponentMCPHost, false, desktopcontract.RecoveryUpgrade)
 	}
-	if err != nil || request.ConnectionID == "" || request.ClientID == "" || request.SessionID == "" || request.DelegationID == "" || request.AgentID == "" || !expires.After(a.config.Now()) || (request.Permissions.Apply && !request.ConfirmApply) {
+	if err != nil || request.ClientID == "" || request.AgentID == "" || !expires.After(a.config.Now()) || (request.Permissions.Apply && !request.ConfirmApply) {
 		return failed[MCPConnection](desktopcontract.FailureMCPScopeDenied, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryReview)
 	}
 	a.mcpMu.Lock()
-	if !a.mcpEnabled || a.mcpConnections[request.ConnectionID].ConnectionID != "" {
+	if !a.mcpEnabled {
 		a.mcpMu.Unlock()
 		return failed[MCPConnection](desktopcontract.FailureMCPDisabled, desktopcontract.ComponentMCPHost, false, desktopcontract.RecoveryConfigureAdapter)
 	}
 	a.mcpMu.Unlock()
+	connectionID, sessionID, delegationID := newMCPID("connection"), newMCPID("session"), newMCPID("delegation")
+	if connectionID == "" || sessionID == "" || delegationID == "" {
+		return failed[MCPConnection](desktopcontract.FailureMCPTransport, desktopcontract.ComponentMCPHost, true, desktopcontract.RecoveryRetry)
+	}
 	ref, ok := a.projects.existing(request.DocumentID)
 	if !ok {
 		return failed[MCPConnection](desktopcontract.FailureProjectMissing, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryLocate)
@@ -169,7 +172,7 @@ func (a *Application) CreateMCPConnection(ctx context.Context, request MCPConnec
 		return failed[MCPConnection](desktopcontract.FailureReconnect, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryReconnect)
 	}
 	record, err := host.DelegateAgent(ctx, ownerSession, accesscore.Delegation{
-		ID: request.DelegationID, ParentActor: actor,
+		ID: delegationID, ParentActor: actor,
 		Agent: accessprotocolActor(request.AgentID), DocumentID: string(request.DocumentID), LocalScopeID: string(ref.Scope.LocalScopeID),
 		AuthoringCapabilities: append([]semantic.AuthoringCapability(nil), request.Capabilities...), Permissions: request.Permissions,
 		IssuedAt: a.config.Now().UTC(), ExpiresAt: expires.UTC(),
@@ -187,7 +190,7 @@ func (a *Application) CreateMCPConnection(ctx context.Context, request MCPConnec
 		_ = host.RevokeDelegation(record.ID)
 		return failed[MCPConnection](desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, true, desktopcontract.RecoveryRetry)
 	}
-	connection := MCPConnection{ConnectionID: request.ConnectionID, ClientID: request.ClientID, SessionID: request.SessionID, ProtocolVersion: request.ProtocolVersion, DocumentID: request.DocumentID, DelegationID: record.ID, AgentID: record.Agent.ActorID, Capabilities: append([]semantic.AuthoringCapability(nil), record.AuthoringCapabilities...), GrantSummary: grantSummary, Permissions: record.Permissions, ExpiresAt: protocolcommon.Rfc3339Time(record.ExpiresAt.Format(time.RFC3339Nano)), Generation: protocolcommon.CanonicalUint64(strconv.FormatUint(record.Generation, 10)), Status: MCPConnectionConnected}
+	connection := MCPConnection{ConnectionID: connectionID, ClientID: request.ClientID, SessionID: sessionID, ProtocolVersion: request.ProtocolVersion, DocumentID: request.DocumentID, DelegationID: record.ID, AgentID: record.Agent.ActorID, Capabilities: append([]semantic.AuthoringCapability(nil), record.AuthoringCapabilities...), GrantSummary: grantSummary, Permissions: record.Permissions, ExpiresAt: protocolcommon.Rfc3339Time(record.ExpiresAt.Format(time.RFC3339Nano)), Generation: protocolcommon.CanonicalUint64(strconv.FormatUint(record.Generation, 10)), Status: MCPConnectionConnected}
 	a.mcpMu.Lock()
 	a.mcpConnections[connection.ConnectionID] = connection
 	if err := a.mcpStore.save(a.mcpGeneration, a.mcpConnections); err != nil {
@@ -202,6 +205,14 @@ func (a *Application) CreateMCPConnection(ctx context.Context, request MCPConnec
 
 func accessprotocolActor(id string) accessprotocol.ActorRef {
 	return accessprotocol.ActorRef{ActorID: id, Kind: "agent"}
+}
+
+func newMCPID(kind string) string {
+	value := make([]byte, 18)
+	if _, err := rand.Read(value); err != nil {
+		return ""
+	}
+	return "mcp-" + kind + "-" + base64.RawURLEncoding.EncodeToString(value)
 }
 
 func (a *Application) ListMCPConnections() []MCPConnection {

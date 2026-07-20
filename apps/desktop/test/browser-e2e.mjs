@@ -20,7 +20,17 @@ try {
   const undo = page.getByRole("button", { name: "Undo" });
   assert.equal(await undo.isEnabled(), true);
   await undo.click();
-  assert.deepEqual(await page.evaluate(() => window.desktopWorkflow.calls.at(-1)), ["undo"]);
+	assert.deepEqual(await page.evaluate(() => window.desktopWorkflow.calls.at(-1)), ["undo"]);
+	const mcp = page.getByRole("region", { name: "MCP connections" });
+	await mcp.waitFor();
+	await mcp.getByRole("button", { name: "Enable MCP" }).click();
+	await mcp.getByText("Connection instructions").waitFor();
+	await mcp.getByRole("button", { name: "Connect agent" }).click();
+	await mcp.getByText(/Proposal only/).waitFor();
+	assert.equal(await mcp.getByRole("button", { name: "Revoke access" }).isEnabled(), true);
+	await mcp.getByRole("button", { name: "Restart host" }).click();
+	await mcp.getByRole("button", { name: "Revoke access" }).click();
+	assert.deepEqual((await page.evaluate(() => window.desktopWorkflow.calls.filter((call) => call[0].startsWith("mcp-")))).map((call) => call[0]), ["mcp-enable", "mcp-connect", "mcp-restart", "mcp-revoke"]);
   const inventory = page.getByRole("button", { name: "Inventory" });
   await inventory.click();
   await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "select" && call[1] === "view:table"));
