@@ -19,6 +19,18 @@ case "$platform" in
   *) printf 'Unsupported Desktop platform: %s\n' "$platform" >&2; exit 1 ;;
 esac
 
+if [[ "$platform" == "windows" ]] && ! command -v makensis >/dev/null 2>&1; then
+  program_files_x86="$(printenv 'ProgramFiles(x86)' || true)"
+  if [[ -n "$program_files_x86" ]] && command -v cygpath >/dev/null 2>&1; then
+    nsis_bin="$(cygpath -u "$program_files_x86/NSIS")"
+    if [[ -x "$nsis_bin/makensis.exe" ]]; then export PATH="$nsis_bin:$PATH"; fi
+  fi
+fi
+if [[ "$platform" == "windows" ]] && ! command -v makensis >/dev/null 2>&1; then
+  printf 'NSIS makensis was not found after checking PATH and ProgramFiles(x86).\n' >&2
+  exit 1
+fi
+
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/layerdraw-desktop-installer.XXXXXX")"
 preserved=(go.mod go.sum apps/desktop/wails.json apps/desktop/frontend/wailsjs/runtime/runtime.d.ts apps/desktop/frontend/wailsjs/runtime/runtime.js)
 mkdir -p "$temporary/preserved"
