@@ -81,16 +81,21 @@ func (a *Application) MCPStatus() MCPStatus {
 }
 
 func (a *Application) SetMCPEnabled(ctx context.Context, enabled bool, transport MCPTransportKind) desktopcontract.Result[MCPStatus] {
+	a.shutdown.Lock()
+	defer a.shutdown.Unlock()
+	return a.setMCPEnabledLocked(ctx, enabled, transport)
+}
+
+func (a *Application) setMCPEnabledLocked(ctx context.Context, enabled bool, transport MCPTransportKind) desktopcontract.Result[MCPStatus] {
 	if transport != MCPTransportLocal {
 		return failed[MCPStatus](desktopcontract.FailureMCPTransport, desktopcontract.ComponentMCPHost, false, desktopcontract.RecoveryConfigureAdapter)
 	}
 	a.mcpMu.Lock()
+	defer a.mcpMu.Unlock()
 	if a.mcpEnabled == enabled {
 		status := MCPStatus{Enabled: enabled, Transport: transport, Instructions: "Connect through the LayerDraw Desktop local MCP client entrypoint.", Generation: a.mcpGeneration}
-		a.mcpMu.Unlock()
 		return desktopcontract.Result[MCPStatus]{Outcome: protocolcommon.OutcomeSuccess, Value: status}
 	}
-	a.mcpMu.Unlock()
 	a.mu.Lock()
 	ready := a.state == desktopcontract.LifecycleReady
 	a.mu.Unlock()
@@ -106,18 +111,25 @@ func (a *Application) SetMCPEnabled(ctx context.Context, enabled bool, transport
 	if !lifecycle.Validate() || lifecycle.Outcome != protocolcommon.OutcomeSuccess {
 		return failed[MCPStatus](desktopcontract.FailureMCPTransport, desktopcontract.ComponentMCPHost, true, desktopcontract.RecoveryReconnect)
 	}
-	a.mcpMu.Lock()
-	a.mcpEnabled = enabled
-	a.mcpGeneration++
+	nextGeneration := a.mcpGeneration + 1
+	nextConnections := a.mcpConnections
 	if !enabled {
-		a.fenceMCPConnectionsLocked(MCPConnectionRestarted)
+		nextConnections = fencedMCPConnections(a.mcpConnections, MCPConnectionRestarted)
 	}
-	status := MCPStatus{Enabled: enabled, Transport: transport, Instructions: "Connect through the LayerDraw Desktop local MCP client entrypoint.", Generation: a.mcpGeneration}
-	if err := a.mcpStore.save(a.mcpGeneration, a.mcpConnections); err != nil {
-		a.mcpMu.Unlock()
+	if err := a.mcpStore.save(nextGeneration, nextConnections); err != nil {
+		if enabled {
+			_ = safeMCPShutdown(context.WithoutCancel(ctx), a.config.HostPorts.MCP)
+		} else if restarted := safeMCPStart(context.WithoutCancel(ctx), a.config.HostPorts.MCP); !restarted.Validate() || restarted.Outcome != protocolcommon.OutcomeSuccess {
+			a.commitMCPStoppedLocked(nextGeneration, nextConnections)
+		}
 		return failed[MCPStatus](desktopcontract.FailureMCPTransport, desktopcontract.ComponentMCPHost, true, desktopcontract.RecoveryRetry)
 	}
-	a.mcpMu.Unlock()
+	a.mcpEnabled = enabled
+	a.mcpGeneration = nextGeneration
+	if !enabled {
+		a.commitMCPStoppedLocked(nextGeneration, nextConnections)
+	}
+	status := MCPStatus{Enabled: enabled, Transport: transport, Instructions: "Connect through the LayerDraw Desktop local MCP client entrypoint.", Generation: a.mcpGeneration}
 	a.mu.Lock()
 	if enabled {
 		found := false
@@ -269,20 +281,52 @@ func (a *Application) RevokeMCPConnection(ctx context.Context, connectionID stri
 }
 
 func (a *Application) RestartMCP(ctx context.Context) desktopcontract.Result[MCPStatus] {
-	if result := a.SetMCPEnabled(ctx, false, MCPTransportLocal); result.Outcome != protocolcommon.OutcomeSuccess {
+	a.shutdown.Lock()
+	defer a.shutdown.Unlock()
+	if result := a.setMCPEnabledLocked(ctx, false, MCPTransportLocal); result.Outcome != protocolcommon.OutcomeSuccess {
 		return result
 	}
-	return a.SetMCPEnabled(ctx, true, MCPTransportLocal)
+	return a.setMCPEnabledLocked(ctx, true, MCPTransportLocal)
 }
 
-func (a *Application) fenceMCPConnectionsLocked(status MCPConnectionStatus) {
+func fencedMCPConnections(connections map[string]MCPConnection, status MCPConnectionStatus) map[string]MCPConnection {
+	result := make(map[string]MCPConnection, len(connections))
+	for id, connection := range connections {
+		if connection.Status == MCPConnectionConnected {
+			connection.Status = status
+		}
+		result[id] = connection
+	}
+	return result
+}
+
+func (a *Application) commitMCPStoppedLocked(generation uint64, connections map[string]MCPConnection) {
 	for id, connection := range a.mcpConnections {
 		if connection.Status == MCPConnectionConnected {
 			a.cancelMCPCallsLocked(id)
-			connection.Status = status
-			a.mcpConnections[id] = connection
 		}
 	}
+	a.mcpEnabled = false
+	a.mcpGeneration = generation
+	a.mcpConnections = connections
+}
+
+func (a *Application) finalizeStoppedMCP(ctx context.Context) desktopcontract.Result[struct{}] {
+	a.mcpMu.Lock()
+	defer a.mcpMu.Unlock()
+	if !a.mcpEnabled {
+		return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess}
+	}
+	nextGeneration := a.mcpGeneration + 1
+	nextConnections := fencedMCPConnections(a.mcpConnections, MCPConnectionRestarted)
+	if err := a.mcpStore.save(nextGeneration, nextConnections); err != nil {
+		if restarted := safeMCPStart(context.WithoutCancel(ctx), a.config.HostPorts.MCP); !restarted.Validate() || restarted.Outcome != protocolcommon.OutcomeSuccess {
+			a.commitMCPStoppedLocked(nextGeneration, nextConnections)
+		}
+		return failed[struct{}](desktopcontract.FailureMCPTransport, desktopcontract.ComponentMCPHost, true, desktopcontract.RecoveryRetry)
+	}
+	a.commitMCPStoppedLocked(nextGeneration, nextConnections)
+	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess}
 }
 
 func (a *Application) MCPListConnectionTools(ctx context.Context, connectionID string) ([]mcphost.Tool, *mcphost.Failure) {

@@ -29,8 +29,11 @@ try {
 	await mcp.getByText(/Proposal only/).waitFor();
 	assert.equal(await mcp.getByRole("button", { name: "Revoke access" }).isEnabled(), true);
 	await mcp.getByRole("button", { name: "Restart host" }).click();
+	await mcp.getByText("host restarted").waitFor();
+	assert.equal(await mcp.getByRole("button", { name: "Revoke access" }).count(), 0);
+	await mcp.getByRole("button", { name: "Connect agent" }).click();
 	await mcp.getByRole("button", { name: "Revoke access" }).click();
-	assert.deepEqual((await page.evaluate(() => window.desktopWorkflow.calls.filter((call) => call[0].startsWith("mcp-")))).map((call) => call[0]), ["mcp-enable", "mcp-connect", "mcp-restart", "mcp-revoke"]);
+	assert.deepEqual((await page.evaluate(() => window.desktopWorkflow.calls.filter((call) => call[0].startsWith("mcp-")))).map((call) => call[0]), ["mcp-enable", "mcp-connect", "mcp-restart", "mcp-connect", "mcp-revoke"]);
   const inventory = page.getByRole("button", { name: "Inventory" });
   await inventory.click();
   await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "select" && call[1] === "view:table"));

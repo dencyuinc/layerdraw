@@ -178,11 +178,11 @@ func New(config Config) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, connections, err := loadMCPConnectionStore(config.Root, config.Now())
+	store, mcpGeneration, connections, err := loadMCPConnectionStore(config.Root, config.Now())
 	if err != nil {
 		return nil, err
 	}
-	return &Application{config: config, state: desktopcontract.LifecycleStopped, projects: projects, mcpConnections: connections, mcpCalls: map[string]map[uint64]context.CancelFunc{}, mcpStore: store, closeProjectSession: func(ctx context.Context, host *localdocument.Host, session *localdocument.Session) error {
+	return &Application{config: config, state: desktopcontract.LifecycleStopped, projects: projects, mcpGeneration: mcpGeneration, mcpConnections: connections, mcpCalls: map[string]map[uint64]context.CancelFunc{}, mcpStore: store, closeProjectSession: func(ctx context.Context, host *localdocument.Host, session *localdocument.Session) error {
 		return host.Close(ctx, session)
 	}, cancelAutosave: func(host *localdocument.Host, session runtimeprotocol.RuntimeSessionRef) error {
 		return host.CancelAutosave(session)
@@ -499,6 +499,8 @@ func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struc
 			}
 			if !stopped.Validate() || stopped.Outcome != protocolcommon.OutcomeSuccess {
 				err = errors.New("MCP transport shutdown failed")
+			} else if finalized := a.finalizeStoppedMCP(ctx); finalized.Outcome != protocolcommon.OutcomeSuccess {
+				err = errors.New("MCP state persistence failed")
 			}
 		} else {
 			err = safeAdapterShutdown(ctx, a.config.Adapters[id])
@@ -728,6 +730,10 @@ func (a *Application) rollback(ctx context.Context) *desktopcontract.Failure {
 				return &value
 			}
 			if !stopped.Validate() || stopped.Outcome != protocolcommon.OutcomeSuccess {
+				value := failure(desktopcontract.FailureShutdown, id, true, desktopcontract.RecoveryRetry)
+				return &value
+			}
+			if finalized := a.finalizeStoppedMCP(cleanupCtx); finalized.Outcome != protocolcommon.OutcomeSuccess {
 				value := failure(desktopcontract.FailureShutdown, id, true, desktopcontract.RecoveryRetry)
 				return &value
 			}

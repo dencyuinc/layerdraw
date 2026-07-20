@@ -26,43 +26,43 @@ type mcpConnectionSnapshot struct {
 
 type mcpConnectionStore struct{ root string }
 
-func loadMCPConnectionStore(root string, now time.Time) (*mcpConnectionStore, map[string]MCPConnection, error) {
+func loadMCPConnectionStore(root string, now time.Time) (*mcpConnectionStore, uint64, map[string]MCPConnection, error) {
 	store := &mcpConnectionStore{root: root}
 	connections := map[string]MCPConnection{}
 	directory, err := os.OpenRoot(root)
 	if errors.Is(err, fs.ErrNotExist) {
-		return store, connections, nil
+		return store, 0, connections, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, nil, err
 	}
 	defer directory.Close()
 	info, err := directory.Lstat(mcpConnectionFilename)
 	if errors.Is(err, fs.ErrNotExist) {
-		return store, connections, nil
+		return store, 0, connections, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, nil, err
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 4<<20 {
-		return nil, nil, errors.New("desktop MCP connection metadata is insecure")
+		return nil, 0, nil, errors.New("desktop MCP connection metadata is insecure")
 	}
 	data, err := directory.ReadFile(mcpConnectionFilename)
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, nil, err
 	}
 	var snapshot mcpConnectionSnapshot
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&snapshot) != nil || snapshot.Version != 1 || snapshot.Connections == nil {
-		return nil, nil, errors.New("desktop MCP connection metadata is invalid")
+		return nil, 0, nil, errors.New("desktop MCP connection metadata is invalid")
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, nil, errors.New("desktop MCP connection metadata has trailing data")
+		return nil, 0, nil, errors.New("desktop MCP connection metadata has trailing data")
 	}
 	for _, connection := range snapshot.Connections {
 		if !validStoredMCPConnection(connection) || connections[connection.ConnectionID].ConnectionID != "" {
-			return nil, nil, errors.New("desktop MCP connection metadata is invalid")
+			return nil, 0, nil, errors.New("desktop MCP connection metadata is invalid")
 		}
 		if connection.Status == MCPConnectionConnected || connection.Status == MCPConnectionRevoking {
 			connection.Status = MCPConnectionRestarted
@@ -72,7 +72,7 @@ func loadMCPConnectionStore(root string, now time.Time) (*mcpConnectionStore, ma
 		}
 		connections[connection.ConnectionID] = connection
 	}
-	return store, connections, nil
+	return store, snapshot.Generation, connections, nil
 }
 
 func validStoredMCPConnection(value MCPConnection) bool {

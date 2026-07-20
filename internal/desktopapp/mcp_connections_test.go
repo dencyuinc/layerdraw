@@ -115,7 +115,7 @@ func TestMCPConnectionsConstrainApplyRevokeExpireAndFence(t *testing.T) {
 	if info, err := os.Stat(metadata); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("metadata mode: info=%v err=%v", info, err)
 	}
-	_, restored, err := loadMCPConnectionStore(config.Root, now)
+	_, _, restored, err := loadMCPConnectionStore(config.Root, now)
 	if err != nil || restored[created.Value.ConnectionID].Status != MCPConnectionRevoked || restored[proposal.Value.ConnectionID].Status != MCPConnectionExpired {
 		t.Fatalf("restored=%+v err=%v", restored, err)
 	}
@@ -244,7 +244,7 @@ func TestMCPConnectionClosedFailureAndPermissionBranches(t *testing.T) {
 
 func TestMCPConnectionStoreRejectsUnsafeMetadataAndRestartsLiveRecords(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	if _, connections, err := loadMCPConnectionStore(filepath.Join(t.TempDir(), "missing"), now); err != nil || len(connections) != 0 {
+	if _, _, connections, err := loadMCPConnectionStore(filepath.Join(t.TempDir(), "missing"), now); err != nil || len(connections) != 0 {
 		t.Fatalf("missing store: connections=%v err=%v", connections, err)
 	}
 	root := t.TempDir()
@@ -252,7 +252,7 @@ func TestMCPConnectionStoreRejectsUnsafeMetadataAndRestartsLiveRecords(t *testin
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := loadMCPConnectionStore(root, now); err == nil {
+	if _, _, _, err := loadMCPConnectionStore(root, now); err == nil {
 		t.Fatal("directory metadata accepted")
 	}
 	if err := os.Remove(path); err != nil {
@@ -268,15 +268,15 @@ func TestMCPConnectionStoreRejectsUnsafeMetadataAndRestartsLiveRecords(t *testin
 		}
 	}
 	write([]byte(`{"version":1,"generation":0,"connections":[]}`), 0o644)
-	if _, _, err := loadMCPConnectionStore(root, now); err == nil {
+	if _, _, _, err := loadMCPConnectionStore(root, now); err == nil {
 		t.Fatal("world-readable metadata accepted")
 	}
 	write([]byte(`{"version":2,"generation":0,"connections":[]}`), 0o600)
-	if _, _, err := loadMCPConnectionStore(root, now); err == nil {
+	if _, _, _, err := loadMCPConnectionStore(root, now); err == nil {
 		t.Fatal("unknown metadata version accepted")
 	}
 	write([]byte(`{"version":1,"generation":0,"connections":[]} {}`), 0o600)
-	if _, _, err := loadMCPConnectionStore(root, now); err == nil {
+	if _, _, _, err := loadMCPConnectionStore(root, now); err == nil {
 		t.Fatal("trailing metadata accepted")
 	}
 	digest := testMCPDigest()
@@ -304,7 +304,7 @@ func TestMCPConnectionStoreRejectsUnsafeMetadataAndRestartsLiveRecords(t *testin
 		t.Fatal(err)
 	}
 	write(duplicate, 0o600)
-	if _, _, err := loadMCPConnectionStore(root, now); err == nil {
+	if _, _, _, err := loadMCPConnectionStore(root, now); err == nil {
 		t.Fatal("duplicate connection accepted")
 	}
 	revoking := base
@@ -317,8 +317,8 @@ func TestMCPConnectionStoreRejectsUnsafeMetadataAndRestartsLiveRecords(t *testin
 		t.Fatal(err)
 	}
 	write(data, 0o600)
-	_, restored, err := loadMCPConnectionStore(root, now)
-	if err != nil || restored[base.ConnectionID].Status != MCPConnectionRestarted || restored[revoking.ConnectionID].Status != MCPConnectionRestarted || restored[expired.ConnectionID].Status != MCPConnectionExpired {
+	_, generation, restored, err := loadMCPConnectionStore(root, now)
+	if err != nil || generation != 7 || restored[base.ConnectionID].Status != MCPConnectionRestarted || restored[revoking.ConnectionID].Status != MCPConnectionRestarted || restored[expired.ConnectionID].Status != MCPConnectionExpired {
 		t.Fatalf("restored=%+v err=%v", restored, err)
 	}
 }
@@ -371,5 +371,122 @@ func TestMCPDisableFencesConnectionsAndCancelsInflightCalls(t *testing.T) {
 	}
 	if got := app.ListMCPConnections(); len(got) != 1 || got[0].Status != MCPConnectionConnected {
 		t.Fatalf("failed revoke did not restore connection: %+v", got)
+	}
+}
+
+func TestMCPGenerationRestoresAndShutdownFencesAcrossSameApplicationRestart(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(t, root, writeProject(t, root))
+	config.MCPExplicitControl = true
+	if err := os.MkdirAll(config.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := &mcpConnectionStore{root: config.Root}
+	if err := store.save(9, map[string]MCPConnection{}); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := app.MCPStatus().Generation; got != 9 {
+		t.Fatalf("restored generation=%d", got)
+	}
+	if result := app.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start=%+v", result)
+	}
+	if result := app.SetMCPEnabled(context.Background(), true, MCPTransportLocal); result.Outcome != protocolcommon.OutcomeSuccess || result.Value.Generation != 10 {
+		t.Fatalf("enable=%+v", result)
+	}
+	connection := MCPConnection{ConnectionID: "connection", ClientID: "client", SessionID: "session", ProtocolVersion: MCPConnectionProtocolVersion, DocumentID: "document", DelegationID: "delegation", AgentID: "agent", Generation: "1", ExpiresAt: protocolcommon.Rfc3339Time(time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)), Status: MCPConnectionConnected}
+	app.mcpMu.Lock()
+	app.mcpConnections[connection.ConnectionID] = connection
+	app.mcpMu.Unlock()
+	_, call, failure := app.beginMCPCall(context.Background(), connection.ConnectionID, "")
+	if failure != nil {
+		t.Fatalf("begin=%+v", failure)
+	}
+	if result := app.Shutdown(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("shutdown=%+v", result)
+	}
+	if status := app.MCPStatus(); status.Enabled || status.Generation != 11 {
+		t.Fatalf("shutdown status=%+v", status)
+	}
+	select {
+	case <-call.Context.Done():
+	default:
+		t.Fatal("shutdown retained in-flight MCP call")
+	}
+	if got := app.ListMCPConnections(); len(got) != 1 || got[0].Status != MCPConnectionRestarted {
+		t.Fatalf("shutdown connections=%+v", got)
+	}
+	if result := app.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("same-application restart=%+v", result)
+	}
+	if result := app.SetMCPEnabled(context.Background(), true, MCPTransportLocal); result.Outcome != protocolcommon.OutcomeSuccess || result.Value.Generation != 12 {
+		t.Fatalf("re-enable=%+v", result)
+	}
+	call.done()
+}
+
+func TestMCPTransitionsSerializeAndRollbackPersistenceFailure(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(t, root, writeProject(t, root))
+	config.MCPExplicitControl = true
+	var mu sync.Mutex
+	var events []string
+	config.HostPorts.MCP = mcpPortStub{mu: &mu, events: &events}
+	app, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := app.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start=%+v", result)
+	}
+	var wait sync.WaitGroup
+	results := make(chan desktopcontract.Result[MCPStatus], 8)
+	for range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			results <- app.SetMCPEnabled(context.Background(), true, MCPTransportLocal)
+		}()
+	}
+	wait.Wait()
+	close(results)
+	for result := range results {
+		if result.Outcome != protocolcommon.OutcomeSuccess {
+			t.Fatalf("concurrent enable=%+v", result)
+		}
+	}
+	mu.Lock()
+	if len(events) != 1 || events[0] != "start:mcp_host" {
+		t.Fatalf("concurrent lifecycle=%v", events)
+	}
+	mu.Unlock()
+
+	app.mcpStore.root = filepath.Join(root, "missing")
+	if result := app.SetMCPEnabled(context.Background(), false, MCPTransportLocal); result.Outcome != protocolcommon.OutcomeFailed {
+		t.Fatalf("disable persistence failure=%+v", result)
+	}
+	if status := app.MCPStatus(); !status.Enabled || status.Generation != 1 {
+		t.Fatalf("failed disable changed state=%+v", status)
+	}
+	mu.Lock()
+	if len(events) != 3 || events[1] != "stop:mcp_host" || events[2] != "start:mcp_host" {
+		t.Fatalf("disable rollback lifecycle=%v", events)
+	}
+	mu.Unlock()
+
+	app.mcpStore.root = root
+	if result := app.SetMCPEnabled(context.Background(), false, MCPTransportLocal); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("disable=%+v", result)
+	}
+	app.mcpStore.root = filepath.Join(root, "missing")
+	if result := app.SetMCPEnabled(context.Background(), true, MCPTransportLocal); result.Outcome != protocolcommon.OutcomeFailed {
+		t.Fatalf("enable persistence failure=%+v", result)
+	}
+	if status := app.MCPStatus(); status.Enabled || status.Generation != 2 {
+		t.Fatalf("failed enable changed state=%+v", status)
 	}
 }
