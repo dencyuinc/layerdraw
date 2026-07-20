@@ -61,8 +61,12 @@ type Config struct {
 	MCPResources    MCPResourceSource
 	// MCPApplicationOwner routes application-owned protocols such as Review;
 	// it must expose the same canonical instance injected into the Desktop UI.
-	MCPApplicationOwner           mcphost.Owner
-	MCPLimits                     mcphost.Limits
+	MCPApplicationOwner mcphost.Owner
+	MCPLimits           mcphost.Limits
+	// MCPExplicitControl keeps the local MCP surface stopped until the user
+	// enables it through Desktop settings. Production canonical composition
+	// always sets this; the zero value preserves lifecycle-port test fixtures.
+	MCPExplicitControl            bool
 	CredentialRefs                []desktopcontract.CredentialRef
 	DelegationFences              []desktopcontract.DelegationFence
 	ProjectStorage                ProjectStorage
@@ -126,6 +130,14 @@ type Application struct {
 	closeProjectSession func(context.Context, *localdocument.Host, *localdocument.Session) error
 	cancelAutosave      func(*localdocument.Host, runtimeprotocol.RuntimeSessionRef) error
 	mcpLocal            *mcphost.LocalTransport
+	mcpMu               sync.Mutex
+	mcpEnabled          bool
+	mcpGeneration       uint64
+	mcpConnections      map[string]MCPConnection
+	mcpCalls            map[string]map[uint64]context.CancelFunc
+	mcpCallSequence     uint64
+	mcpStore            *mcpConnectionStore
+	localActor          accessprotocol.ActorRef
 }
 
 type localHostConsumer interface {
@@ -166,7 +178,11 @@ func New(config Config) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Application{config: config, state: desktopcontract.LifecycleStopped, projects: projects, closeProjectSession: func(ctx context.Context, host *localdocument.Host, session *localdocument.Session) error {
+	store, connections, err := loadMCPConnectionStore(config.Root, config.Now())
+	if err != nil {
+		return nil, err
+	}
+	return &Application{config: config, state: desktopcontract.LifecycleStopped, projects: projects, mcpConnections: connections, mcpCalls: map[string]map[uint64]context.CancelFunc{}, mcpStore: store, closeProjectSession: func(ctx context.Context, host *localdocument.Host, session *localdocument.Session) error {
 		return host.Close(ctx, session)
 	}, cancelAutosave: func(host *localdocument.Host, session runtimeprotocol.RuntimeSessionRef) error {
 		return host.CancelAutosave(session)
@@ -185,6 +201,7 @@ func NewCanonical(config Config) (*Application, error) {
 		return nil, err
 	}
 	config.MCPHost = composition.host
+	config.MCPExplicitControl = true
 	app, err := New(config)
 	if err != nil {
 		return nil, err
@@ -264,6 +281,9 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 		return a.failStartWith(ctx, desktopcontract.FailureLocalActor, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryExit)
 	}
 	resolvedActor := staticActor{actor: actorResult.Value}
+	a.mu.Lock()
+	a.localActor = actorResult.Value
+	a.mu.Unlock()
 	for _, ref := range a.config.CredentialRefs {
 		credential := safeResolveCredential(ctx, a.config.HostPorts.Credentials, ref)
 		if isBackendPanic(credential.Failure) {
@@ -367,6 +387,9 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 	}
 	for _, id := range []desktopcontract.ComponentID{desktopcontract.ComponentMCPHost, desktopcontract.ComponentBindingShell} {
 		if a.componentDisabled(id) {
+			continue
+		}
+		if id == desktopcontract.ComponentMCPHost && a.config.MCPExplicitControl {
 			continue
 		}
 		var err error

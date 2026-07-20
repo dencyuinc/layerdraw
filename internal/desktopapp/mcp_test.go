@@ -228,6 +228,9 @@ func TestCanonicalDesktopCompositionUsesGeneratedOwnerEnvelopeWithWailsParity(t 
 	if started := app.Start(context.Background()); started.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("start=%+v", started)
 	}
+	if enabled := app.SetMCPEnabled(context.Background(), true, MCPTransportLocal); enabled.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("enable=%+v", enabled)
+	}
 	defer app.Shutdown(context.Background())
 	direct, err := clients.Invoke(context.Background(), "EngineListModules", desktopcontract.Exchange{Operation: string(engineprotocol.ListModulesRequestEnvelopeOperationValue), Control: requestBytes, Blobs: []desktopcontract.Blob{}})
 	if err != nil {
