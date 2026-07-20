@@ -70,6 +70,447 @@
   },
   "go_modules": [
     {
+      "module": "atomicgo.dev/cursor",
+      "version": "v0.2.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "4f49334b3d38ef18dde14b55f2712a30656afa9778ae6884cc3240d6c986e42a"
+    },
+    {
+      "module": "atomicgo.dev/keyboard",
+      "version": "v0.2.9",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "4f49334b3d38ef18dde14b55f2712a30656afa9778ae6884cc3240d6c986e42a"
+    },
+    {
+      "module": "atomicgo.dev/schedule",
+      "version": "v0.1.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "fa0bba1ce5f43fa768ea7b3e80e4d803e81838612f7a9bcb93c91d7e73f1e76c"
+    },
+    {
+      "module": "cloud.google.com/go",
+      "version": "v0.121.0",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "module": "github.com/LadybugDB/go-ladybug",
+      "version": "v0.17.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0"
+    },
+    {
+      "module": "github.com/andybalholm/brotli",
+      "version": "v1.2.1",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"
+    },
+    {
+      "module": "github.com/antlr4-go/antlr/v4",
+      "version": "v4.13.1",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "683fcd416d83b64781e229a3c2a598462fbf55c5c9fea54be244766b22c033cf"
+    },
+    {
+      "module": "github.com/apache/arrow-go/v18",
+      "version": "v18.6.0",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE.txt",
+      "license_sha256": "ff2fe52b8dfd2574c6ea7f0c407948c857f62672c2a3a9a17083ee10af8067ef"
+    },
+    {
+      "module": "github.com/apache/thrift",
+      "version": "v0.22.0",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "d315e6cdedc07c478de6992027bfb66f220886c6216fd7e9885ced30c3703646"
+    },
+    {
+      "module": "github.com/cespare/xxhash/v2",
+      "version": "v2.3.0",
+      "license": "MIT",
+      "license_file": "LICENSE.txt",
+      "license_sha256": "f566a9f97bacdaf00d9f21dd991e81dc11201c4e016c86b470799429a1c9a79c"
+    },
+    {
+      "module": "github.com/cockroachdb/apd/v3",
+      "version": "v3.2.1",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "24f9c32c2d3b165c1f9eb4a8aa2c582412a06b3c0c4630f9c77c4f5a6c3937e5"
+    },
+    {
+      "module": "github.com/containerd/console",
+      "version": "v1.0.5",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "4bbe3b885e8cd1907ab4cf9a41e862e74e24b5422297a4f2fe524e6a30ada2b4"
+    },
+    {
+      "module": "github.com/creasty/defaults",
+      "version": "v1.8.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "d3643168484d9cfebc76129ae6ed22605035cab9d6308b069caeb025f5870fcb"
+    },
+    {
+      "module": "github.com/davecgh/go-spew",
+      "version": "v1.1.2-0.20180830191138-d8f796af33cc",
+      "license": "ISC",
+      "license_file": "LICENSE",
+      "license_sha256": "1b93a317849ee09d3d7e4f1d20c2b78ddb230b4becb12d7c224c927b9d470251"
+    },
+    {
+      "module": "github.com/dustin/go-humanize",
+      "version": "v1.0.1",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "a973b4498c13eb74baa2a8e5c351426a6826f2fcdd909916dbe53ee2e755fd71"
+    },
+    {
+      "module": "github.com/go-viper/mapstructure/v2",
+      "version": "v2.4.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "22adc4abdece712a737573672f082fd61ac2b21df878efb87ffcff4354a07f26"
+    },
+    {
+      "module": "github.com/goccy/go-json",
+      "version": "v0.10.6",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "a707cd425201945d57500566c47c74dc9fb8cd02ef91b9a761abddeb2401e6a7"
+    },
+    {
+      "module": "github.com/goccy/go-yaml",
+      "version": "v1.17.1",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "43fe703ea9ebe27f0a6e5d2a1f6dd094fbe324251c743498f3ec19986d7349cd"
+    },
+    {
+      "module": "github.com/golang/snappy",
+      "version": "v1.0.0",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "f69f157b0be75da373605dbc8bbf142e8924ee82d8f44f11bcaf351335bf98cf"
+    },
+    {
+      "module": "github.com/google/flatbuffers",
+      "version": "v25.12.19+incompatible",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "module": "github.com/google/uuid",
+      "version": "v1.6.0",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "0a8d61ed3cbfd5312326e8126c31ce9c627a283adc99131b56896d29ada04b2d"
+    },
+    {
+      "module": "github.com/gookit/color",
+      "version": "v1.6.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "42c8d055a76a6a91e8f7102a106cd5929592d193aab7d43cdd816a93b24fa218"
+    },
+    {
+      "module": "github.com/hamba/avro/v2",
+      "version": "v2.31.0",
+      "license": "MIT",
+      "license_file": "LICENCE",
+      "license_sha256": "d9403e727669174d3d1a2fbd48ccd5f6f808233f06908d9a35e794ffaab87b47"
+    },
+    {
+      "module": "github.com/json-iterator/go",
+      "version": "v1.1.12",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "3247931083f058b00760a3c32a9ca0962c05e4d562ad2ffcc1753451fa8d4486"
+    },
+    {
+      "module": "github.com/klauspost/asmfmt",
+      "version": "v1.3.2",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "5d966570d7a442d4e969892860a914e542c97f262c873baee8f0aa48e1f40212"
+    },
+    {
+      "module": "github.com/klauspost/compress",
+      "version": "v1.18.5",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "0d9e582ee4bff57bf1189c9e514e6da7ce277f9cd3bc2d488b22fbb39a6d87cf"
+    },
+    {
+      "module": "github.com/klauspost/cpuid/v2",
+      "version": "v2.3.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "5d966570d7a442d4e969892860a914e542c97f262c873baee8f0aa48e1f40212"
+    },
+    {
+      "module": "github.com/kr/text",
+      "version": "v0.2.0",
+      "license": "MIT",
+      "license_file": "License",
+      "license_sha256": "283c28b781bc7487bd7bcaf453cbd811f5ee8d7ce625cfcf8dcacae6ba1f4bb5"
+    },
+    {
+      "module": "github.com/lithammer/fuzzysearch",
+      "version": "v1.1.8",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "d2e98cf1530c13d97df36a890831a2a1adb0a4580af192b6477bdac7f7af2461"
+    },
+    {
+      "module": "github.com/minio/asm2plan9s",
+      "version": "v0.0.0-20200509001527-cdd76441f9d8",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "module": "github.com/minio/c2goasm",
+      "version": "v0.0.0-20190812172519-36a3d3bbc4f3",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "module": "github.com/modern-go/concurrent",
+      "version": "v0.0.0-20180306012644-bacd9c7ef1dd",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "module": "github.com/modern-go/reflect2",
+      "version": "v1.0.2",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "module": "github.com/ncruces/go-strftime",
+      "version": "v1.0.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "38ae43959daf953a393a585b2988672cb65a5a541aca0d0be5e72595a0a16883"
+    },
+    {
+      "module": "github.com/pierrec/lz4/v4",
+      "version": "v4.1.26",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "6a358d2540ca14048f02d366f23787c0a480157e58f058113f0e27168dd4e447"
+    },
+    {
+      "module": "github.com/pmezard/go-difflib",
+      "version": "v1.0.1-0.20181226105442-5d4384ee4fb2",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "2eb550be6801c1ea434feba53bf6d12e7c71c90253e0a9de4a4f46cf88b56477"
+    },
+    {
+      "module": "github.com/pterm/pterm",
+      "version": "v0.12.83",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "8702741675cad477d4035629bea08d87c2e043d278d872ff948cc93008397cfe"
+    },
+    {
+      "module": "github.com/remyoudompheng/bigfft",
+      "version": "v0.0.0-20230129092748-24d4a6f8daec",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "dd26a7abddd02e2d0aba97805b31f248ef7835d9e10da289b22e3b8ab78b324d"
+    },
+    {
+      "module": "github.com/shopspring/decimal",
+      "version": "v1.4.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "b92ba0f6ee02f2309628bfdadb123668a17c016e475ba477b857d33470d9d625"
+    },
+    {
+      "module": "github.com/stoewer/go-strcase",
+      "version": "v1.3.1",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "73524a55beda60fc1a5fcdb2a790652154a6d1e6a090e15f61c92e7dd9360438"
+    },
+    {
+      "module": "github.com/stretchr/objx",
+      "version": "v0.5.2",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "b2663894033a05fd80261176cd8da1d72546e25842d5c1abcc852ca23b6b61b0"
+    },
+    {
+      "module": "github.com/stretchr/testify",
+      "version": "v1.11.1",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "f8e536c1c7b695810427095dc85f5f80d44ff7c10535e8a9486cf393e2599189"
+    },
+    {
+      "module": "github.com/substrait-io/substrait-go/v8",
+      "version": "v8.1.0",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "module": "github.com/substrait-io/substrait-protobuf/go",
+      "version": "v0.85.0",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+    },
+    {
+      "module": "github.com/substrait-io/substrait",
+      "version": "v0.87.0",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+    },
+    {
+      "module": "github.com/tidwall/gjson",
+      "version": "v1.14.2",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "be83ad53208d03a9fe08c7fac231cabf79422989ef5706bff217bd35104ebf07"
+    },
+    {
+      "module": "github.com/tidwall/match",
+      "version": "v1.1.1",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "be83ad53208d03a9fe08c7fac231cabf79422989ef5706bff217bd35104ebf07"
+    },
+    {
+      "module": "github.com/tidwall/pretty",
+      "version": "v1.2.0",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "0ca70311227fe097c662dece3f359e3317fa7f9d41f8d29eb45fc5135e216139"
+    },
+    {
+      "module": "github.com/tidwall/sjson",
+      "version": "v1.2.5",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "dbf5e2aa91aee5f19a1ce2cc7891e2ac37204b6461c0adc539426636e27b208e"
+    },
+    {
+      "module": "github.com/xo/terminfo",
+      "version": "v0.0.0-20220910002029-abceb7e1c41e",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "1f5f51151ba96f0492ce288bd007242f924fdad9f04002e175e951644340a891"
+    },
+    {
+      "module": "github.com/zeebo/assert",
+      "version": "v1.3.0",
+      "license": "CC0-1.0",
+      "license_file": "LICENSE",
+      "license_sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+    },
+    {
+      "module": "github.com/zeebo/xxh3",
+      "version": "v1.1.0",
+      "license": "BSD-2-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "f19854b341534d1f2314c0c70d9cd2bb4fa1f7c86fffdc4444ca33cccce412ba"
+    },
+    {
+      "module": "golang.org/x/exp",
+      "version": "v0.0.0-20260112195511-716be5621a96",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    },
+    {
+      "module": "golang.org/x/term",
+      "version": "v0.41.0",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    },
+    {
+      "module": "gonum.org/v1/gonum",
+      "version": "v0.17.0",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "b44d9e394ba3efc15de4e5a8ebd843bd8d6325f6ffbb0a4ff6db7181aa15dda3"
+    },
+    {
+      "module": "google.golang.org/genproto/googleapis/rpc",
+      "version": "v0.0.0-20260120221211-b8f7ae30c516",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "module": "google.golang.org/grpc",
+      "version": "v1.80.0",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "module": "google.golang.org/protobuf",
+      "version": "v1.36.11",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "4835612df0098ca95f8e7d9e3bffcb02358d435dbb38057c844c99d7f725eb20"
+    },
+    {
+      "module": "gopkg.in/yaml.v3",
+      "version": "v3.0.1",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_sha256": "d18f6323b71b0b768bb5e9616e36da390fbd39369a81807cca352de4e4e6aa0b"
+    },
+    {
+      "module": "modernc.org/libc",
+      "version": "v1.72.0",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "95ff867eb55a56935fa7492406cfa953fb7c13ca73f4c0a86ae05756b4605600"
+    },
+    {
+      "module": "modernc.org/mathutil",
+      "version": "v1.7.1",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "bfa9bf72a72ca009fd62a8f84fca3dca67e51d93af96352723646599898b6cf5"
+    },
+    {
+      "module": "modernc.org/memory",
+      "version": "v1.11.0",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "59895e669f48f168b6b858358f6005779cdf40a265f7828813061b56af67b496"
+    },
+    {
+      "module": "modernc.org/sqlite",
+      "version": "v1.49.1",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_sha256": "c6fe05491a60ae13bcd223088d2705e36dede24e5587226231d2459ada5c4822"
+    },
+    {
       "module": "github.com/bmatcuk/doublestar/v4",
       "version": "v4.10.0",
       "license": "MIT",

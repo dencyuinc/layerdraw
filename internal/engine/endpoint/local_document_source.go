@@ -109,6 +109,22 @@ func (s LocalSource) ProjectSourceTree() map[string][]byte {
 	return cloneByteMap(s.input.ProjectSourceTree)
 }
 
+// SearchOpenInput returns a detached Engine workbench input for the trusted
+// host Search lifecycle. Consumers never receive the retained source itself.
+func (s LocalSource) SearchOpenInput() engine.OpenDocumentInput {
+	defaults := engine.DefaultWorkbenchConfig()
+	return engine.OpenDocumentInput{CompileInput: cloneCompileInput(s.input), RequestedLimits: engine.WorkbenchLimits{MaxItems: defaults.MaxItems, MaxOutputBytes: defaults.MaxOutputBytes}}
+}
+
+func SearchOpenInputFromEncoded(data []byte) (engine.OpenDocumentInput, error) {
+	input, err := DecodeLocalCompileInput(data)
+	if err != nil {
+		return engine.OpenDocumentInput{}, err
+	}
+	defaults := engine.DefaultWorkbenchConfig()
+	return engine.OpenDocumentInput{CompileInput: input, RequestedLimits: engine.WorkbenchLimits{MaxItems: defaults.MaxItems, MaxOutputBytes: defaults.MaxOutputBytes}}, nil
+}
+
 // WriteContainer delegates canonical container construction to Engine; hosts
 // never synthesize the container representation themselves.
 func (e *LocalDocumentEngine) WriteContainer(ctx context.Context, source LocalSource) ([]byte, error) {

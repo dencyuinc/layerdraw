@@ -109,7 +109,9 @@ func TestRenderThirdPartyNotices(t *testing.T) {
 
 func TestRenderCycloneDX(t *testing.T) {
 	modules := []bundledModule{{
-		Review: reviewedGoModule{Module: "example.com/library", Version: "v1.0.0", License: "MIT"},
+		Review:     reviewedGoModule{Module: "Example native component", Version: "1.0.0", License: "MIT"},
+		PURL:       "pkg:generic/example-native@1.0.0",
+		FileSHA256: strings.Repeat("a", 64),
 	}}
 	data, err := renderCycloneDX("layerdraw-engine", "1.2.3", modules)
 	if err != nil {
@@ -123,7 +125,13 @@ func TestRenderCycloneDX(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"component"`
 		} `json:"metadata"`
-		Components []json.RawMessage `json:"components"`
+		Components []struct {
+			PURL   string `json:"purl"`
+			Hashes []struct {
+				Algorithm string `json:"alg"`
+				Content   string `json:"content"`
+			} `json:"hashes"`
+		} `json:"components"`
 	}
 	if err := json.Unmarshal(data, &document); err != nil {
 		t.Fatal(err)
@@ -133,6 +141,9 @@ func TestRenderCycloneDX(t *testing.T) {
 	}
 	if document.Metadata.Component.Name != "layerdraw-engine" || len(document.Components) != 1 {
 		t.Fatalf("unexpected SBOM content: %+v", document)
+	}
+	if document.Components[0].PURL != "pkg:generic/example-native@1.0.0" || len(document.Components[0].Hashes) != 1 || document.Components[0].Hashes[0].Algorithm != "SHA-256" || document.Components[0].Hashes[0].Content != strings.Repeat("a", 64) {
+		t.Fatalf("bundled component digest is absent: %+v", document.Components[0])
 	}
 }
 

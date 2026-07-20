@@ -12,13 +12,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 const (
@@ -41,11 +46,14 @@ var runtimeOperations = []string{
 }
 
 type Endpoint struct {
-	host       *localdocument.Host
-	engine     *engineendpoint.CompileDispatcher
-	descriptor *engineendpoint.Descriptor
-	negotiated *engineendpoint.NegotiatedContext
-	release    protocolcommon.ReleaseVersion
+	host             *localdocument.Host
+	engine           *engineendpoint.CompileDispatcher
+	descriptor       *engineendpoint.Descriptor
+	negotiated       *engineendpoint.NegotiatedContext
+	release          protocolcommon.ReleaseVersion
+	search           ConsumerSearchSurface
+	searchLifecycle  SearchDocumentLifecycle
+	searchOperations map[string]bool
 
 	mu         sync.Mutex
 	handshaken bool
@@ -53,12 +61,19 @@ type Endpoint struct {
 }
 
 type Config struct {
-	LocalHost *localdocument.Host
-	Engine    *engineendpoint.HostEngineFacade
+	LocalHost       *localdocument.Host
+	Engine          *engineendpoint.HostEngineFacade
+	Search          ConsumerSearchSurface
+	SearchLifecycle SearchDocumentLifecycle
+}
+
+type SearchDocumentLifecycle interface {
+	RefreshSearchIndex(context.Context, *localdocument.Session) error
 }
 
 type LocalConfig struct {
 	Root, ReleaseVersion, SourceRevision, ReleaseManifestDigest, EndpointInstanceID, TransportID string
+	Search                                                                                       ConsumerSearchSurface
 }
 
 func NewLocal(config LocalConfig) (*Endpoint, func(context.Context) error, error) {
@@ -71,7 +86,7 @@ func NewLocal(config LocalConfig) (*Endpoint, func(context.Context) error, error
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, err
 	}
-	result, err := New(Config{LocalHost: localHost, Engine: engineFacade})
+	result, err := New(Config{LocalHost: localHost, Engine: engineFacade, Search: config.Search})
 	if err != nil {
 		_ = localHost.Shutdown(context.Background())
 		return nil, nil, err
@@ -83,10 +98,23 @@ func New(config Config) (*Endpoint, error) {
 	if config.LocalHost == nil || config.Engine == nil {
 		return nil, errors.New("host composition requires Runtime and Engine")
 	}
-	return &Endpoint{host: config.LocalHost, engine: config.Engine.Dispatcher(), descriptor: config.Engine.Descriptor(), negotiated: config.Engine.Negotiated(), release: protocolcommon.ReleaseVersion(config.Engine.ReleaseVersion())}, nil
+	operations := map[string]bool{}
+	if config.Search != nil {
+		manifest, err := config.Search.Capabilities(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("host Search capability derivation failed: %w", err)
+		}
+		operations[OperationSearch] = manifest.SearchAvailable
+		operations[OperationExecuteQuery] = manifest.QueryAvailable
+		operations[OperationAnalyzeGraph] = manifest.AnalysisAvailable
+	}
+	return &Endpoint{host: config.LocalHost, engine: config.Engine.Dispatcher(), descriptor: config.Engine.Descriptor(), negotiated: config.Engine.Negotiated(), release: protocolcommon.ReleaseVersion(config.Engine.ReleaseVersion()), search: config.Search, searchLifecycle: config.SearchLifecycle, searchOperations: operations}, nil
 }
 
 func (e *Endpoint) Supports(operation string) bool {
+	if operation == OperationSearch || operation == OperationExecuteQuery || operation == OperationAnalyzeGraph {
+		return e.searchOperations[operation]
+	}
 	for _, candidate := range runtimeOperations {
 		if operation == candidate {
 			return true
@@ -124,6 +152,11 @@ func (e *Endpoint) Handshake(_ context.Context, control []byte) (engineendpoint.
 	manifest.Operations["runtime.handshake"] = protocolcommon.OperationCapability{Enabled: true, ProtocolVersion: "1.0"}
 	for _, operation := range e.descriptor.Operations() {
 		manifest.Operations[operation] = protocolcommon.OperationCapability{Enabled: true, ProtocolVersion: "1.0"}
+	}
+	if e.search != nil {
+		manifest.Operations[OperationSearch] = protocolcommon.OperationCapability{Enabled: e.searchOperations[OperationSearch], ProtocolVersion: "1.0"}
+		manifest.Operations[OperationExecuteQuery] = protocolcommon.OperationCapability{Enabled: e.searchOperations[OperationExecuteQuery], ProtocolVersion: "1.0"}
+		manifest.Operations[OperationAnalyzeGraph] = protocolcommon.OperationCapability{Enabled: e.searchOperations[OperationAnalyzeGraph], ProtocolVersion: "1.0"}
 	}
 	manifest.ManifestEtag = runtimeManifestETag(manifest)
 	enabled := func(id protocolcommon.CapabilityID) bool {
@@ -218,14 +251,77 @@ func (p *runtimePlan) ExecuteDispatch(ctx context.Context, source engineendpoint
 		return engineendpoint.DispatchResponse{}, errors.New("missing host endpoint context")
 	}
 	if runErr != nil {
-		return p.endpoint.runtimeResponse(p.operation, p.requestID, nil, protocolcommon.OutcomeFailed, failure("runtime.operation_failed", protocolcommon.ProtocolFailureCategoryIo))
+		outcome, mapped := runtimeOperationFailure(runErr)
+		return p.endpoint.runtimeResponse(p.operation, p.requestID, nil, outcome, mapped)
 	}
 	return p.endpoint.runtimeResponse(p.operation, p.requestID, payload, protocolcommon.OutcomeSuccess, nil)
 }
 
+func runtimeOperationFailure(err error) (protocolcommon.Outcome, *protocolcommon.ProtocolFailure) {
+	type mapping struct {
+		target    error
+		code      string
+		category  protocolcommon.ProtocolFailureCategory
+		retryable bool
+	}
+	for _, candidate := range []mapping{
+		{layerruntime.ErrSearchCancelled, "search.cancelled", protocolcommon.ProtocolFailureCategoryCancelled, false},
+		{layerruntime.ErrSearchInvalidCursor, "search.cursor_invalid", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrSearchIndexStale, "search.index_stale", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrSearchIndexNotReady, "search.index_not_ready", protocolcommon.ProtocolFailureCategoryResource, true},
+		{layerruntime.ErrSearchEmbeddingUnavailable, "search.embedding_unavailable", protocolcommon.ProtocolFailureCategoryResource, true},
+		{layerruntime.ErrSearchEmbeddingProfile, "search.embedding_profile_mismatch", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrSearchCapabilityMissing, "search.capability_missing", protocolcommon.ProtocolFailureCategoryResource, false},
+		{layerruntime.ErrSearchInvalidRequest, "search.invalid_request", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrAnalysisInvalidScope, "analysis.invalid_scope", protocolcommon.ProtocolFailureCategoryAdapter, false},
+		{layerruntime.ErrSearchBackendFailed, "search.backend_failed", protocolcommon.ProtocolFailureCategoryIo, true},
+	} {
+		if errors.Is(err, candidate.target) {
+			outcome := protocolcommon.OutcomeFailed
+			if candidate.category == protocolcommon.ProtocolFailureCategoryCancelled {
+				outcome = protocolcommon.OutcomeCancelled
+			}
+			result := failure(candidate.code, candidate.category)
+			result.Retryable = candidate.retryable
+			return outcome, result
+		}
+	}
+	return protocolcommon.OutcomeFailed, failure("runtime.operation_failed", protocolcommon.ProtocolFailureCategoryIo)
+}
+
 func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control []byte) (engineendpoint.DispatchPlan, *engineendpoint.DispatchResponse, error) {
+	if (operation == OperationSearch || operation == OperationExecuteQuery || operation == OperationAnalyzeGraph) && !e.Supports(operation) {
+		return nil, nil, errors.New("Search operation capability unavailable")
+	}
 	plan := &runtimePlan{endpoint: e, operation: operation}
 	switch operation {
+	case OperationSearch:
+		request, err := decodeSearchOperationRequest[layerruntime.SearchRequest](control, operation)
+		if err != nil {
+			return nil, nil, err
+		}
+		plan.requestID = request.RequestID
+		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
+			if err := e.authorizeSearchSession(ctx, request.Payload.Session, request.Payload.Snapshot, request.Payload.AccessProjectionDigest); err != nil {
+				return nil, err
+			}
+			return e.search.Search(ctx, request.Payload)
+		}
+	case OperationExecuteQuery, OperationAnalyzeGraph:
+		request, err := decodeSearchOperationRequest[port.BoundExecutionRequest](control, operation)
+		if err != nil {
+			return nil, nil, err
+		}
+		plan.requestID = request.RequestID
+		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
+			if err := e.authorizeSearchSession(ctx, request.Payload.Session, request.Payload.Snapshot, request.Payload.AccessProjectionDigest); err != nil {
+				return nil, err
+			}
+			if operation == OperationExecuteQuery {
+				return e.search.ExecuteQuery(ctx, request.Payload)
+			}
+			return e.search.ExecuteAnalysis(ctx, request.Payload)
+		}
 	case "runtime.open_document":
 		request, err := runtimeprotocol.DecodeOpenDocumentRequestEnvelope(control)
 		if err != nil {
@@ -250,6 +346,10 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 				}
 			}
 			if err != nil {
+				return nil, err
+			}
+			if err := e.refreshSearchIndex(ctx, opened.Session); err != nil {
+				_ = e.host.Close(context.Background(), opened.Session)
 				return nil, err
 			}
 			opened.Session.Open.CapabilityManifest = e.manifest
@@ -282,7 +382,11 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 		}
 		plan.requestID = request.RequestID
 		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
-			return e.host.Commit(ctx, request.Payload)
+			result, err := e.host.Commit(ctx, request.Payload)
+			if err == nil {
+				err = e.refreshSearchSession(ctx, request.Payload.Session)
+			}
+			return result, err
 		}
 	case OperationSave:
 		request, err := runtimeprotocol.DecodeSaveDocumentRequestEnvelope(control)
@@ -291,7 +395,11 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 		}
 		plan.requestID = request.RequestID
 		plan.run = func(ctx context.Context, _ map[string][]byte) (any, error) {
-			return e.host.SaveRuntime(ctx, request.Payload)
+			result, err := e.host.SaveRuntime(ctx, request.Payload)
+			if err == nil {
+				err = e.refreshSearchSession(ctx, request.Payload.Session)
+			}
+			return result, err
 		}
 	case OperationAutosave:
 		request, err := runtimeprotocol.DecodeAutosaveControlRequestEnvelope(control)
@@ -384,6 +492,42 @@ func (e *Endpoint) prepareRuntime(ctx context.Context, operation string, control
 		return nil, nil, errors.New("unsupported Runtime operation")
 	}
 	return plan, nil, nil
+}
+
+func (e *Endpoint) authorizeSearchSession(ctx context.Context, ref *runtimeprotocol.RuntimeSessionRef, snapshot port.DocumentSnapshotRef, accessDigest string) error {
+	if e.host == nil || ref == nil {
+		return layerruntime.ErrSearchInvalidRequest
+	}
+	session, err := e.host.SessionFor(*ref)
+	if err != nil {
+		return layerruntime.ErrSearchIndexStale
+	}
+	if err := e.host.AuthorizeReadSurface(ctx, *ref, accesscore.SurfaceQuery); err != nil {
+		return layerruntime.ErrSearchCapabilityMissing
+	}
+	revision := session.Open.CommittedRevision
+	if snapshot.Kind != port.SnapshotHostRevision || snapshot.HostDocumentID != string(revision.DocumentID) || snapshot.CommittedRevision != string(revision.RevisionID) || snapshot.DefinitionHash != string(revision.DefinitionHash) || accessDigest != string(session.Open.AccessSummary.AccessFingerprint) {
+		return layerruntime.ErrSearchIndexStale
+	}
+	return nil
+}
+
+func (e *Endpoint) refreshSearchIndex(ctx context.Context, session *localdocument.Session) error {
+	if e.searchLifecycle == nil {
+		return nil
+	}
+	return e.searchLifecycle.RefreshSearchIndex(ctx, session)
+}
+
+func (e *Endpoint) refreshSearchSession(ctx context.Context, ref runtimeprotocol.RuntimeSessionRef) error {
+	if e.searchLifecycle == nil {
+		return nil
+	}
+	session, err := e.host.SessionFor(ref)
+	if err != nil {
+		return err
+	}
+	return e.refreshSearchIndex(ctx, session)
 }
 
 func valueOr(value *string, fallback string) string {
@@ -507,10 +651,53 @@ func (e *Endpoint) runtimeResponse(operation, requestID string, payload any, out
 			value.Payload = &result
 		}
 		control, err = runtimeprotocol.EncodeRecoverOperationsResponseEnvelope(value)
+	case OperationSearch, OperationExecuteQuery, OperationAnalyzeGraph:
+		var raw json.RawMessage
+		if payload != nil {
+			bytes, ok := payload.([]byte)
+			if !ok || !json.Valid(bytes) {
+				return engineendpoint.DispatchResponse{}, errors.New("invalid Search response payload")
+			}
+			raw = append(json.RawMessage(nil), bytes...)
+		}
+		control, err = json.Marshal(searchOperationResponse{Operation: operation, Protocol: runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}, RequestID: requestID, HostRelease: e.release, Outcome: outcome, Payload: raw, Failure: protocolFailure})
 	default:
 		return engineendpoint.DispatchResponse{}, errors.New("unsupported Runtime response")
 	}
 	return engineendpoint.DispatchResponse{Operation: operation, RequestID: requestID, Control: control, Outcome: outcome, Failure: protocolFailure}, err
+}
+
+type searchOperationRequest[T any] struct {
+	Operation string                             `json:"operation"`
+	Payload   T                                  `json:"payload"`
+	Protocol  runtimeprotocol.RuntimeProtocolRef `json:"protocol"`
+	RequestID string                             `json:"request_id"`
+}
+
+type searchOperationResponse struct {
+	Operation   string                             `json:"operation"`
+	Protocol    runtimeprotocol.RuntimeProtocolRef `json:"protocol"`
+	RequestID   string                             `json:"request_id"`
+	HostRelease protocolcommon.ReleaseVersion      `json:"host_release"`
+	Outcome     protocolcommon.Outcome             `json:"outcome"`
+	Payload     json.RawMessage                    `json:"payload,omitempty"`
+	Failure     *protocolcommon.ProtocolFailure    `json:"failure,omitempty"`
+}
+
+func decodeSearchOperationRequest[T any](control []byte, operation string) (searchOperationRequest[T], error) {
+	var request searchOperationRequest[T]
+	decoder := json.NewDecoder(strings.NewReader(string(control)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return request, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return request, errors.New("Search request has trailing content")
+	}
+	if request.Operation != operation || request.RequestID == "" || request.Protocol.Name != runtimeprotocol.RuntimeProtocolRefNameValue || request.Protocol.Version != "1.0" {
+		return request, errors.New("Search request envelope mismatch")
+	}
+	return request, nil
 }
 
 func failure(code string, category protocolcommon.ProtocolFailureCategory) *protocolcommon.ProtocolFailure {

@@ -182,6 +182,17 @@ func (w *RuntimeEngineBridge) SourceDigest(handle string) (protocolcommon.Digest
 	return LocalCompileInputRef(encoded).Digest, true
 }
 
+func (w *RuntimeEngineBridge) SearchEncodedInput(handle string) ([]byte, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	doc := w.docs[handle]
+	if doc == nil {
+		return nil, false
+	}
+	encoded, err := EncodeLocalCompileInput(doc.input)
+	return encoded, err == nil
+}
+
 func (w *RuntimeEngineBridge) Opened(documentID, revisionID string) (BridgeWorking, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
+
+package host
+
+import (
+	"context"
+	"testing"
+
+	searchadapter "github.com/dencyuinc/layerdraw/internal/adapter/search"
+	layerruntime "github.com/dencyuinc/layerdraw/internal/runtime"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
+)
+
+type compositionEngine struct{}
+
+func (compositionEngine) ProduceSearchDocumentBatch(_ context.Context, request port.SearchDocumentBatchRequest) (port.SearchDocumentBatch, error) {
+	return port.SearchDocumentBatch{Snapshot: request.Snapshot, AccessProjectionDigest: request.AccessProjectionDigest, EmbeddingProfileDigest: request.EmbeddingProfileDigest, Documents: []port.SearchDocumentInput{{SubjectAddress: "trusted", SubjectKind: "entity", ContentHash: "sha256:content", Text: "searchable"}}}, nil
+}
+
+func (compositionEngine) PrepareSearchIndex(context.Context, port.SearchIndexPreparationInput) (port.ExecutionPlan, error) {
+	return port.ExecutionPlan{}, nil
+}
+func (compositionEngine) PrepareSearch(context.Context, port.SearchPreparationInput) (port.PreparedSearch, error) {
+	return port.PreparedSearch{}, nil
+}
+func (compositionEngine) CompleteSearch(context.Context, port.CompleteSearchInput) ([]byte, error) {
+	return nil, nil
+}
+func (compositionEngine) PrepareQuery(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	return port.ExecutionPlan{}, nil
+}
+func (compositionEngine) CompleteQuery(context.Context, port.CompleteExecutionInput) ([]byte, error) {
+	return nil, nil
+}
+func (compositionEngine) PrepareAnalysis(context.Context, port.BoundExecutionRequest) (port.ExecutionPlan, error) {
+	return port.ExecutionPlan{}, nil
+}
+func (compositionEngine) CompleteAnalysis(context.Context, port.CompleteExecutionInput) ([]byte, error) {
+	return nil, nil
+}
+
+type compositionLadybug struct {
+	physical map[port.PhysicalIndexRef]bool
+}
+
+func (*compositionLadybug) ExecutePrepared(context.Context, searchadapter.LadybugStatement, port.ExecutionLimits, port.RowSink) error {
+	return nil
+}
+func (*compositionLadybug) Interrupt() {}
+func (s *compositionLadybug) ApplyIndex(_ context.Context, _ []searchadapter.LadybugStatement, ref *port.PhysicalIndexRef, _ []searchadapter.LadybugIndexEvidence, _ port.ExecutionLimits, _ port.RowSink) error {
+	if s.physical == nil {
+		s.physical = map[port.PhysicalIndexRef]bool{}
+	}
+	s.physical[*ref] = true
+	return nil
+}
+func (s *compositionLadybug) InspectIndex(_ context.Context, ref port.PhysicalIndexRef) error {
+	if !s.physical[ref] {
+		return searchadapter.ErrPhysicalIndexMissing
+	}
+	return nil
+}
+
+func TestDesktopSearchCompositionProvidesOneWailsMCPSurface(t *testing.T) {
+	profile := port.EmbeddingProfile{ProfileID: "local", ModelID: "projection", ModelVersion: "1", ModelDigest: "sha256:model", Dimensions: 16, Normalization: "unit", MaxInputBytes: 1024}
+	composition, err := NewDesktopSearchComposition(DesktopSearchConfig{Root: t.TempDir(), Engine: compositionEngine{}, DocumentProducer: compositionEngine{}, Ladybug: &compositionLadybug{}, PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"), EmbeddingProfile: profile, LocalModelSeed: []byte("0123456789012345"), BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096, Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := composition.Surface.Capabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.SearchAvailable || !manifest.QueryAvailable || !manifest.AnalysisAvailable || !manifest.EmbeddingAvailable {
+		t.Fatalf("manifest=%#v", manifest)
+	}
+	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: "doc", CommittedRevision: "r1", DefinitionHash: "sha256:def"}
+	searchProfile := port.SearchProfile{ProfileID: "default", SpecificationDigest: "sha256:search", MaxHits: 1, LexicalCandidateLimit: 1, SemanticCandidateLimit: 1}
+	identity := port.SearchIndexIdentity{DocumentSnapshotRef: snapshot, SearchProfileID: searchProfile.ProfileID, SearchProfileDigest: searchProfile.SpecificationDigest, EmbeddingProfileID: profile.ProfileID, EmbeddingProfileDigest: profile.ModelDigest, AccessProjectionDigest: "sha256:access", LadybugBackendVersion: "1", IndexSchemaVersion: "1"}
+	_, err = composition.RebuildIndex(context.Background(), layerruntime.SearchIndexBuildRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", SearchProfile: searchProfile, EmbeddingProfile: &profile, IndexIdentity: identity}, port.SearchDocumentBatchRequest{Snapshot: snapshot, AccessProjectionDigest: "sha256:access", EmbeddingProfileDigest: profile.ModelDigest, Corpus: port.SearchCorpusRef{EndpointInstanceID: "test", DocumentHandle: "trusted", Generation: 1}})
+	if err == nil {
+		t.Fatal("invalid stub physical plan unexpectedly rebuilt an index")
+	}
+}
+
+func TestDesktopSearchCompositionRejectsUnboundRebuildInput(t *testing.T) {
+	composition := DesktopSearchComposition{}
+	if _, err := composition.RebuildIndex(context.Background(), layerruntime.SearchIndexBuildRequest{}, port.SearchDocumentBatchRequest{}); err == nil {
+		t.Fatal("unbound rebuild input was accepted")
+	}
+}
+
+func TestDesktopSearchCompositionAllowsLexicalOnlyWithoutEmbedding(t *testing.T) {
+	composition, err := NewDesktopSearchComposition(DesktopSearchConfig{
+		Root: t.TempDir(), Engine: compositionEngine{}, DocumentProducer: compositionEngine{}, Ladybug: &compositionLadybug{},
+		PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"),
+		BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096,
+		Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := composition.Surface.Capabilities(context.Background())
+	if err != nil || !manifest.SearchAvailable || !manifest.QueryAvailable || !manifest.AnalysisAvailable || manifest.EmbeddingAvailable || manifest.EmbeddingReason == "" {
+		t.Fatalf("manifest=%#v err=%v", manifest, err)
+	}
+	if _, err := NewDesktopSearchComposition(DesktopSearchConfig{
+		Root: t.TempDir(), Engine: compositionEngine{}, DocumentProducer: compositionEngine{}, Ladybug: &compositionLadybug{},
+		PlanKey: []byte("01234567890123456789012345678901"), SearchDocumentKey: []byte("abcdefghijklmnopqrstuvwxyzABCDEF"),
+		LocalModelSeed: []byte("orphaned-seed"), BackendVersion: "1", PlanProtocolVersion: "v1", MaxRows: 100, MaxBytes: 4096,
+		Primitives: append([]port.SearchPrimitive(nil), port.RequiredSearchPrimitives...),
+	}); err == nil {
+		t.Fatal("partial embedding configuration was accepted")
+	}
+}
