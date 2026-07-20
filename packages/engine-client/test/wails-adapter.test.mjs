@@ -325,12 +325,11 @@ test("Runtime handshake rejects correlation, schema, and capability-closure mism
   }
 });
 
-test("Desktop creation joins both handshakes and releases either successful sibling", async () => {
+test("Desktop creation cancels and joins either permanently pending sibling", async () => {
   for (const failingSide of ["runtime", "engine"]) {
     let activeSubscriptions = 0;
-    let release;
     let delayedCalls = 0;
-    const gate = new Promise((resolve) => { release = resolve; });
+    const gate = new Promise(() => undefined);
     const shutdown = {
       subscribe() {
         activeSubscriptions++;
@@ -361,15 +360,18 @@ test("Desktop creation joins both handshakes and releases either successful sibl
       ...options(bindings, { shutdown }),
       expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
     });
-    let settled = false;
-    void creation.then(() => { settled = true; }, () => { settled = true; });
+    void creation.catch(() => undefined);
     while (delayedCalls === 0) await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(settled, false, `${failingSide} failure returned before sibling ownership joined`);
-    release();
-    await assert.rejects(creation, (error) =>
-      failingSide === "runtime"
-        ? error.code === "CORRELATION_MISMATCH"
-        : error instanceof Error && !String(error).includes("private"));
+    const bounded = Promise.race([
+      creation,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("startup join timed out")), 250)),
+    ]);
+    await assert.rejects(bounded, (error) =>
+      !String(error).includes("startup join timed out") && (
+        failingSide === "runtime"
+          ? error.code === "CORRELATION_MISMATCH"
+          : error instanceof Error && !String(error).includes("private")
+      ));
     assert.equal(activeSubscriptions, 0, `${failingSide} failure leaked a shutdown subscription`);
   }
 });

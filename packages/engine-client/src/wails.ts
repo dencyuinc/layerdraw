@@ -528,6 +528,42 @@ export interface WailsShutdownSource {
   subscribe(listener: () => void): () => void;
 }
 
+function coordinatedShutdown(upstream?: WailsShutdownSource): { readonly source: WailsShutdownSource; stop(): void } {
+  let stopped = false;
+  let unsubscribeUpstream: (() => void) | undefined;
+  const listeners = new Set<() => void>();
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    try { unsubscribeUpstream?.(); } catch { /* Host cleanup failures are never exposed. */ }
+    unsubscribeUpstream = undefined;
+    const snapshot = [...listeners];
+    listeners.clear();
+    for (const listener of snapshot) listener();
+  };
+  const source = Object.freeze({
+    subscribe(listener: () => void) {
+      if (stopped) {
+        listener();
+        return () => undefined;
+      }
+      listeners.add(listener);
+      if (listeners.size === 1 && upstream !== undefined) unsubscribeUpstream = upstream.subscribe(stop);
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          try { unsubscribeUpstream?.(); } catch { /* Host cleanup failures are never exposed. */ }
+          unsubscribeUpstream = undefined;
+        }
+      };
+    },
+  });
+  return Object.freeze({ source, stop });
+}
+
 export interface CreateWailsEngineClientOptions {
   readonly bindings: WailsEngineBindings;
   readonly bindingProtocolVersion: string;
@@ -833,21 +869,31 @@ async function runtimeHandshake(transport: InternalByteTransport, options: Creat
 
 export async function createWailsDesktopClient(options: CreateWailsDesktopClientOptions): Promise<WailsDesktopClient> {
   const admitted = admitDesktopOptions(options);
-  const transport = runtimeTransport(admitted);
+  const shutdown = coordinatedShutdown(admitted.shutdown);
+  const coordinatedOptions: CreateWailsDesktopClientOptions = Object.freeze({ ...admitted, shutdown: shutdown.source });
+  const transport = runtimeTransport(coordinatedOptions);
   try {
     const engineOptions: CreateWailsEngineClientOptions = {
-      bindings: admitted.bindings,
-      bindingProtocolVersion: admitted.bindingProtocolVersion,
-      client: admitted.client,
-      ...(admitted.transportLimits === undefined ? {} : { transportLimits: admitted.transportLimits }),
-      ...(admitted.shutdown === undefined ? {} : { shutdown: admitted.shutdown }),
+      bindings: coordinatedOptions.bindings,
+      bindingProtocolVersion: coordinatedOptions.bindingProtocolVersion,
+      client: coordinatedOptions.client,
+      ...(coordinatedOptions.transportLimits === undefined ? {} : { transportLimits: coordinatedOptions.transportLimits }),
+      shutdown: shutdown.source,
     };
+    const manifestPromise = runtimeHandshake(transport, coordinatedOptions).catch((error: unknown) => {
+      shutdown.stop();
+      throw error;
+    });
+    const enginePromise = createWailsEngineClient(engineOptions).catch((error: unknown) => {
+      shutdown.stop();
+      throw error;
+    });
     const [manifestResult, engineResult] = await Promise.allSettled([
-      runtimeHandshake(transport, admitted),
-      createWailsEngineClient(engineOptions),
+      manifestPromise,
+      enginePromise,
     ]);
     if (manifestResult.status === "fulfilled" && engineResult.status === "fulfilled") {
-      return new WailsDesktopClientImpl(engineResult.value, admitted, transport, manifestResult.value);
+      return new WailsDesktopClientImpl(engineResult.value, coordinatedOptions, transport, manifestResult.value);
     }
     if (engineResult.status === "fulfilled") await engineResult.value.dispose();
     if (manifestResult.status === "rejected") throw manifestResult.reason;
