@@ -1285,6 +1285,14 @@ func assignValue(src, dst reflect.Value) error {
 		dst.Set(out)
 		return nil
 	}
+	if dst.Type() == reflect.TypeOf(semantic.Diagnostic{}) && src.Type() == reflect.TypeOf(engine.Diagnostic{}) {
+		mapped, err := mapDiagnostic(src.Interface().(engine.Diagnostic))
+		if err != nil {
+			return err
+		}
+		dst.Set(reflect.ValueOf(mapped))
+		return nil
+	}
 	if dst.Type() == reflect.TypeOf(engineprotocol.DocumentGeneration{}) && src.Kind() == reflect.Struct {
 		generation, ok := documentGenerationFromPlanner(src)
 		if ok {
