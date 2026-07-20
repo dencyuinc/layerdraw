@@ -84,9 +84,8 @@ test("packed package is closed, legal-complete, offline-installable, and SSR-saf
   assert.deepEqual(await readFile(join(artifactRoot, "wasm_exec.js")), await readFile(join(goroot.trim(), "lib", "wasm", "wasm_exec.js")));
   await execute("node", [
     new URL("tests/integration/testdata/wasm_bridge_node.mjs", repositoryRoot).pathname,
-    artifactRoot,
     manifest.version,
-  ], {cwd: repositoryRoot, maxBuffer: 10 * 1024 * 1024});
+  ], {cwd: artifactRoot, maxBuffer: 10 * 1024 * 1024});
   await execute("node", ["--input-type=module", "-e", `
     import {createHash} from "node:crypto";
     import {readFile} from "node:fs/promises";

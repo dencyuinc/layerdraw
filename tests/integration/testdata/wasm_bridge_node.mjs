@@ -9,14 +9,13 @@ import {Worker} from "node:worker_threads";
 import {createBrowserEditor} from "../../../packages/client-sdk/dist/browser-editor.js";
 import {createWasmEngineClient} from "../../../packages/engine-client/dist/wasm.js";
 
-const artifactDirectory = process.argv[2];
-if (!artifactDirectory) throw new Error("artifact directory argument is required");
+const artifactDirectory = process.cwd();
 
 const digest = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const manifestBytes = await readFile(join(artifactDirectory, "engine-wasm.manifest.json"));
 const artifactManifest = JSON.parse(manifestBytes);
 const artifactManifestDigest = digest(manifestBytes);
-const expectedEngineRelease = process.argv[3] ?? artifactManifest.build.release_version;
+const expectedEngineRelease = process.argv[2] ?? artifactManifest.build.release_version;
 const releaseManifestDigest = `sha256:${"5".repeat(64)}`;
 const packageAuthorityPath = join(artifactDirectory, "package-authority.json");
 await writeFile(packageAuthorityPath, `${JSON.stringify({name: "@layerdraw/engine-wasm", version: artifactManifest.build.release_version})}\n`);
