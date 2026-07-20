@@ -72,19 +72,21 @@ jobs:
           native_link_flags=""
           if [[ "$RUNNER_OS" == "Windows" ]]; then runtime_native_dir="$(cygpath -w "$native_dir")"; fi
           if [[ "$RUNNER_OS" == "Linux" ]]; then native_link_flags="-Wl,--export-dynamic"; fi
-          echo "LAYERDRAW_LADYBUG_NATIVE_DIR=$runtime_native_dir" >> "$GITHUB_ENV"
-          echo "LAYERDRAW_LADYBUG_FTS_EXTENSION=$runtime_native_dir/libfts.lbug_extension" >> "$GITHUB_ENV"
-          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
-          echo "CGO_CFLAGS=-I$native_dir" >> "$GITHUB_ENV"
-          echo "CGO_LDFLAGS=-L$native_dir $native_link_flags" >> "$GITHUB_ENV"
-          echo "LIBRARY_PATH=$native_dir" >> "$GITHUB_ENV"
+          {
+            echo "LAYERDRAW_LADYBUG_NATIVE_DIR=$runtime_native_dir"
+            echo "LAYERDRAW_LADYBUG_FTS_EXTENSION=$runtime_native_dir/libfts.lbug_extension"
+            echo "CGO_ENABLED=1"
+            echo "CGO_CFLAGS=-I$native_dir"
+            echo "CGO_LDFLAGS=-L$native_dir $native_link_flags"
+            echo "LIBRARY_PATH=$native_dir"
+          } >> "$GITHUB_ENV"
           echo "$runtime_native_dir" >> "$GITHUB_PATH"
 
       - name: Test Desktop platform adapters
         shell: bash
         run: |
           go_args=(-tags ladybug_native)
-          if [[ "$RUNNER_OS" == "Linux" ]]; then go_args=(-tags webkit2_41,ladybug_native); fi
+          if [[ "$RUNNER_OS" == "Linux" ]]; then go_args=(-tags "webkit2_41,ladybug_native"); fi
           go test -timeout 3m "${go_args[@]}" ./internal/privatefs ./internal/adapter/desktop ./internal/adapter/local ./internal/localdocument ./internal/desktopapp ./internal/desktopcontract ./internal/desktopwails ./apps/desktop
           if [[ "$RUNNER_OS" == "Windows" ]]; then go test -timeout 30s ./internal/registry -run TestWindowsTransactionLockSerializesStores -count=1; fi
 
@@ -92,7 +94,7 @@ jobs:
         shell: bash
         run: |
           wails_args=(-clean -trimpath -s -skipbindings -tags ladybug_native)
-          if [[ "$RUNNER_OS" == "Linux" ]]; then wails_args=(-clean -trimpath -s -skipbindings -tags webkit2_41,ladybug_native); fi
+          if [[ "$RUNNER_OS" == "Linux" ]]; then wails_args=(-clean -trimpath -s -skipbindings -tags "webkit2_41,ladybug_native"); fi
           (cd apps/desktop && go run github.com/wailsapp/wails/v2/cmd/wails@v2.12.0 build "${wails_args[@]}")
           executable="apps/desktop/build/bin/LayerDraw"
           if [[ "$RUNNER_OS" == "macOS" ]]; then executable="$(find apps/desktop/build/bin -type f -path '*/Contents/MacOS/LayerDraw' -print -quit)"; fi
