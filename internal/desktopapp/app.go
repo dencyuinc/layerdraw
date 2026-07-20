@@ -78,7 +78,7 @@ type Application struct {
 
 func New(config Config) (*Application, error) {
 	if config.Root == "" || !filepath.IsAbs(config.Root) || config.Lifecycle == nil ||
-		config.ProjectStorage == nil || config.Capabilities == nil {
+		config.ProjectStorage == nil || config.Capabilities == nil || config.LocalActor == nil {
 		return nil, errors.New("desktop composition is incomplete")
 	}
 	if err := config.Bindings.Validate(); err != nil {
@@ -126,6 +126,11 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 	if err := a.config.Lifecycle.Publish(ctx, desktopcontract.LifecycleEvent{State: desktopcontract.LifecycleStarting}); err != nil {
 		return a.failStart(ctx, desktopcontract.ComponentBindingShell, false)
 	}
+	actor, err := a.config.LocalActor.ResolveLocalActor(ctx)
+	if err != nil || actor.Kind != "user" || actor.ActorID == "" {
+		return a.failStartWith(ctx, desktopcontract.FailureLocalActor, desktopcontract.ComponentAccess, true, desktopcontract.RecoveryRetry)
+	}
+	resolvedActor := accesscore.StaticLocalActorResolver{ActorID: actor.ActorID}
 
 	for _, id := range startupOrder {
 		if id == desktopcontract.ComponentMCPHost || id == desktopcontract.ComponentBindingShell {
@@ -140,10 +145,13 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 					Root: a.config.Root, ReleaseVersion: a.config.ReleaseVersion,
 					EndpointInstanceID:    a.config.EndpointInstanceID,
 					ReleaseManifestDigest: a.config.ReleaseManifestDigest,
-					LocalActor:            a.config.LocalActor,
+					LocalActor:            resolvedActor,
 				})
 				if err != nil {
-					return a.enterRecovery(ctx, desktopcontract.ComponentLocalStorage)
+					if errors.Is(err, localdocument.ErrStateRecoveryRequired) {
+						return a.enterRecovery(ctx, desktopcontract.ComponentLocalStorage)
+					}
+					return a.failStartWith(ctx, desktopcontract.FailureStartup, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
 				}
 				a.mu.Lock()
 				a.host = host

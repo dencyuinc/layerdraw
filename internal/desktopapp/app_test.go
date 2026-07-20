@@ -13,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/engine"
 )
@@ -90,6 +92,12 @@ func (r *recoveryRecorder) Report(_ context.Context, value desktopcontract.Failu
 type negotiatorStub struct {
 	value protocolcommon.HandshakeResult
 	err   error
+}
+
+type actorFailure struct{}
+
+func (actorFailure) ResolveLocalActor(context.Context) (accessprotocol.ActorRef, error) {
+	return accessprotocol.ActorRef{}, errors.New("private OS identity failure")
 }
 
 func (n negotiatorStub) Negotiate(context.Context, desktopcontract.Manifest) (protocolcommon.HandshakeResult, error) {
@@ -196,6 +204,7 @@ func testConfig(t *testing.T, root, project string) Config {
 	return Config{
 		Root: filepath.Join(root, "desktop-data"), ReleaseVersion: "1.0.0", EndpointInstanceID: "desktop-test",
 		ReleaseManifestDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		LocalActor:            accesscore.StaticLocalActorResolver{ActorID: "desktop-test-owner"},
 		Lifecycle:             &lifecycleRecorder{}, ProjectStorage: storageStub{ProjectLocation{Root: project, EntryPath: "document.ldl"}},
 		Capabilities: negotiatorStub{value: validHandshake(t)}, Bindings: completeClients(t), Adapters: adapters,
 	}
@@ -281,6 +290,7 @@ func TestConfigurationAndPreReadyCallsFailClosed(t *testing.T) {
 		func(c *Config) { c.Lifecycle = nil },
 		func(c *Config) { c.ProjectStorage = nil },
 		func(c *Config) { c.Capabilities = nil },
+		func(c *Config) { c.LocalActor = nil },
 		func(c *Config) { c.Bindings.Engine.Compile = nil },
 		func(c *Config) { c.Adapters = nil },
 	}
@@ -317,6 +327,14 @@ func TestLifecycleCapabilityAndAdapterPanicFailures(t *testing.T) {
 	result := app.Start(context.Background())
 	if result.Failure == nil || result.Failure.Component != desktopcontract.ComponentBindingShell || len(reporter.values) != 1 {
 		t.Fatalf("lifecycle failure=%+v reports=%v", result, reporter.values)
+	}
+
+	config = testConfig(t, filepath.Join(root, "actor"), writeProject(t, filepath.Join(root, "actor")))
+	config.LocalActor = actorFailure{}
+	app, _ = New(config)
+	result = app.Start(context.Background())
+	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureLocalActor || result.Failure.Component != desktopcontract.ComponentAccess {
+		t.Fatalf("actor failure=%+v", result)
 	}
 
 	config = testConfig(t, root, project)
