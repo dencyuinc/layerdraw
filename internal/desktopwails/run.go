@@ -146,7 +146,7 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 	defer func() {
 		encoded, err := json.Marshal(probe)
 		if err == nil {
-			_ = os.WriteFile(output, append(encoded, '\n'), 0o600)
+			_ = writeExclusivePackagedProbe(output, append(encoded, '\n'))
 		}
 	}()
 	settings := desktopcontract.DesktopSettings{SchemaVersion: 1, Theme: desktopcontract.ThemeLight, ZoomPercent: 200}
@@ -159,6 +159,22 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 		return
 	}
 	probe.DOMRoundTrip, probe.Accessibility = true, &report
+}
+
+func writeExclusivePackagedProbe(output string, encoded []byte) error {
+	// This path is accepted only by the explicit packaged-probe CLI mode and is
+	// required to be clean and absolute above. O_EXCL prevents an existing file
+	// or symlink from being followed or overwritten.
+	// codeql[go/path-injection]
+	file, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Write(encoded); err != nil {
+		return err
+	}
+	return file.Sync()
 }
 
 func openAssociatedProjects(ctx context.Context, native *desktopapp.PlatformNativeShell, vault *selectionVault, application *desktopapp.Application) {

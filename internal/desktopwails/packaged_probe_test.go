@@ -376,3 +376,20 @@ func TestPackagedUIProbeRejectsRelativeOutput(t *testing.T) {
 		t.Fatal("packaged UI probe did not quit after rejecting relative output")
 	}
 }
+
+func TestPackagedUIProbeDoesNotOverwriteExistingOutput(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "ui-probe.json")
+	if err := os.WriteFile(output, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeExclusivePackagedProbe(output, []byte("replacement")); err == nil {
+		t.Fatal("existing packaged probe output was overwritten")
+	}
+	content, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "sentinel" {
+		t.Fatalf("existing output changed: %q", content)
+	}
+}
