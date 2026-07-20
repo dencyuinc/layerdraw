@@ -20,6 +20,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -187,7 +188,7 @@ func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *t
 		t.Fatalf("live delegation was not durable: %v", err)
 	}
 	info, err := os.Stat(delegationPath(filepath.Join(root, "data")))
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || !privatefs.PermissionsMatch(info, 0o600) {
 		t.Fatalf("delegation file mode=%v err=%v", info.Mode().Perm(), err)
 	}
 }

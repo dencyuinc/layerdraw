@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1818,14 +1819,16 @@ func TestDirectAmbiguousPublishedEvidenceAndMetadataFailure(t *testing.T) {
 	if _, err := defaultAuthority.NewID(context.Background(), port.IdentityOperation); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dataRoot, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(dataRoot, 0o700)
-	host.mu.Lock()
-	err = host.saveMetadataLocked()
-	host.mu.Unlock()
-	if err == nil {
-		t.Fatal("metadata write permission failure hidden")
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(dataRoot, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(dataRoot, 0o700)
+		host.mu.Lock()
+		err = host.saveMetadataLocked()
+		host.mu.Unlock()
+		if err == nil {
+			t.Fatal("metadata write permission failure hidden")
+		}
 	}
 }
