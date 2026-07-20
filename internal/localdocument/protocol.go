@@ -180,8 +180,15 @@ func (h *Host) ControlAutosave(ctx context.Context, input runtimeprotocol.Autosa
 // Desktop composition while preserving the generated protocol response shape.
 func (h *Host) ControlAutosaveWithResult(ctx context.Context, input runtimeprotocol.AutosaveControlInput, result chan<- AutosaveResult) (runtimeprotocol.AutosaveControlResult, error) {
 	if input.Action == runtimeprotocol.AutosaveActionCancel {
-		if err := h.CancelAutosave(input.Session); err != nil {
+		terminal, found, err := h.cancelAutosave(input.Session)
+		if err != nil {
 			return runtimeprotocol.AutosaveControlResult{}, err
+		}
+		if result != nil && found {
+			select {
+			case result <- terminal:
+			default:
+			}
 		}
 		return runtimeprotocol.AutosaveControlResult{Action: input.Action, Scheduled: false}, nil
 	}

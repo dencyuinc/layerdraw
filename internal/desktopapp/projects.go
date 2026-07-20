@@ -4,6 +4,7 @@ package desktopapp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -141,7 +142,15 @@ func (a *Application) Preview(ctx context.Context, input runtimeprotocol.Preview
 		}
 		return failed[runtimeprotocol.PreviewOperationsResult](desktopcontract.FailureReconnect, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
-	if err := a.projects.mutate(input.Session, generation, func(state *sessionLifecycle) { state.pendingPreview = true; state.ephemeralEdits = true }); err != nil {
+	payload, err := json.Marshal(input.OperationBatch)
+	if err != nil || len(payload) > maxRecoveryPayloadBytes {
+		return failed[runtimeprotocol.PreviewOperationsResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentLocalStorage, false, desktopcontract.RecoveryOpenRecovery)
+	}
+	if err := a.projects.mutate(input.Session, generation, func(state *sessionLifecycle) {
+		state.pendingPreview = true
+		state.ephemeralEdits = true
+		state.recovery = &RecoveryArtifact{Kind: RecoveryPreviewOperations, Payload: payload}
+	}); err != nil {
 		return failed[runtimeprotocol.PreviewOperationsResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
 	return desktopcontract.Result[runtimeprotocol.PreviewOperationsResult]{Outcome: protocolcommon.OutcomeSuccess, Value: value}
@@ -168,24 +177,40 @@ func (a *Application) Commit(ctx context.Context, input runtimeprotocol.RuntimeC
 		}
 		return failed[runtimeprotocol.RuntimeCommitResult](desktopcontract.FailureReconnect, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
 	}
+	recoveryPayload, marshalErr := json.Marshal(input.OperationBatch)
+	if marshalErr != nil || len(recoveryPayload) > maxRecoveryPayloadBytes {
+		return failed[runtimeprotocol.RuntimeCommitResult](desktopcontract.FailureRecoveryRequired, desktopcontract.ComponentLocalStorage, false, desktopcontract.RecoveryOpenRecovery)
+	}
 	if err := a.projects.mutate(input.Session, generation, func(state *sessionLifecycle) {
 		if value.OperationResult.CommittedRevision != nil {
 			state.committedRevision = value.OperationResult.CommittedRevision.RevisionID
 		}
-		if value.OperationResult.Status == runtimeprotocol.OperationResultStatusCommitted {
+		switch value.OperationResult.Status {
+		case runtimeprotocol.OperationResultStatusCommitted,
+			runtimeprotocol.OperationResultStatusCommittedExternalPending,
+			runtimeprotocol.OperationResultStatusCommittedExternalFailed,
+			runtimeprotocol.OperationResultStatusCommittedStateStale:
 			state.pendingPreview = false
 			state.ephemeralEdits = false
+			state.recovery = nil
 			state.autosavePending = false
 			state.autosave = AutosaveIdle
 			state.providerPending = false
-			if external := value.OperationResult.ExternalMaterialization; external != nil {
-				state.providerPending = external.State != runtimeprotocol.ExternalMaterializationStatePublished
+			state.terminalBlocker = ""
+			state.terminalRecovery = nil
+			switch value.OperationResult.Status {
+			case runtimeprotocol.OperationResultStatusCommittedExternalPending:
+				state.terminalBlocker = CloseExternalPending
+			case runtimeprotocol.OperationResultStatusCommittedExternalFailed:
+				state.terminalBlocker = CloseExternalFailed
+			case runtimeprotocol.OperationResultStatusCommittedStateStale:
+				state.terminalBlocker = CloseStateStale
 			}
-		} else {
+			if state.terminalBlocker != "" {
+				state.terminalRecovery = &RecoveryArtifact{Kind: RecoveryPreviewOperations, Payload: recoveryPayload}
+			}
+		default:
 			state.ephemeralEdits = true
-			if external := value.OperationResult.ExternalMaterialization; external != nil && external.State != runtimeprotocol.ExternalMaterializationStatePublished {
-				state.providerPending = true
-			}
 		}
 	}); err != nil {
 		return failed[runtimeprotocol.RuntimeCommitResult](desktopcontract.FailureProjectConflict, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)

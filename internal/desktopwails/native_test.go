@@ -11,10 +11,14 @@ import (
 	"testing/fstest"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
+	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
@@ -142,18 +146,73 @@ func TestProductionCompositionCallsDesktopApplicationConstructor(t *testing.T) {
 	}
 }
 
-func TestPackagedCompositionStartsAndStops(t *testing.T) {
+func TestPackagedCompositionReadyCallsOwnersAndStops(t *testing.T) {
 	base, err := NewSharedConfig(filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := Compose(base, &nativeStub{}, nil)
+	projectRoot := t.TempDir()
+	projectPath := filepath.Join(projectRoot, "document.ldl")
+	if err := os.WriteFile(projectPath, []byte("project p \"P\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := Compose(base, &nativeStub{open: projectPath}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	started := application.Start(context.Background())
-	if started.Outcome != protocolcommon.OutcomeSuccess {
-		t.Fatalf("start: %+v", started)
+	if started.Outcome != protocolcommon.OutcomeSuccess || application.State() != desktopcontract.LifecycleReady {
+		t.Fatalf("packaged owners did not enter ready: %+v state=%s", started, application.State())
+	}
+	engineControl, err := engineprotocol.EncodeHandshakeRequestEnvelope(engineprotocol.HandshakeRequestEnvelope{
+		Operation: engineprotocol.HandshakeRequestEnvelopeOperationValue,
+		Protocol:  engineprotocol.EngineProtocolRef{Name: engineprotocol.EngineProtocolRefNameValue, Version: engineprotocol.EngineProtocolRefVersionValue},
+		RequestID: "desktop-engine-call",
+		Payload:   protocolcommon.HandshakeRequest{ClientRelease: desktopRelease, Protocols: []protocolcommon.ProtocolOffer{{Name: engineendpoint.ProtocolName, SupportedRange: "1.0..1.0", Versions: []protocolcommon.ProtocolVersionBinding{{Version: engineendpoint.ProtocolVersion, SchemaDigest: protocolcommon.Digest(engineprotocol.SchemaDigest)}}}}, RequiredCapabilities: []protocolcommon.CapabilityID{}, OptionalCapabilities: []protocolcommon.CapabilityID{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engineCall := application.Invoke(context.Background(), "EngineHandshake", desktopcontract.Exchange{Operation: string(engineprotocol.HandshakeRequestEnvelopeOperationValue), Control: engineControl})
+	if engineCall.Outcome != protocolcommon.OutcomeSuccess || !engineCall.Validate() {
+		t.Fatalf("engine call: %+v", engineCall)
+	}
+	runtimeControl, err := runtimeprotocol.EncodeRuntimeHandshakeRequestEnvelope(runtimeprotocol.RuntimeHandshakeRequestEnvelope{
+		Operation: runtimeprotocol.RuntimeHandshakeRequestEnvelopeOperationValue,
+		Protocol:  runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"},
+		RequestID: "desktop-runtime-call",
+		Payload:   runtimeprotocol.RuntimeHandshakeRequest{ClientRelease: desktopRelease, Protocols: []protocolcommon.ProtocolOffer{{Name: "runtime", SupportedRange: "1.0..1.0", Versions: []protocolcommon.ProtocolVersionBinding{{Version: "1.0", SchemaDigest: protocolcommon.Digest(runtimeprotocol.SchemaDigest)}}}}, RequiredCapabilities: []protocolcommon.CapabilityID{}, OptionalCapabilities: []protocolcommon.CapabilityID{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeCall := application.Invoke(context.Background(), "RuntimeHandshake", desktopcontract.Exchange{Operation: string(runtimeprotocol.RuntimeHandshakeRequestEnvelopeOperationValue), Control: runtimeControl})
+	if runtimeCall.Outcome != protocolcommon.OutcomeSuccess || !runtimeCall.Validate() {
+		t.Fatalf("runtime call: %+v", runtimeCall)
+	}
+	opened := application.OpenProjectDialog(context.Background(), "shared-host-open")
+	if opened.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("project open through application host: %+v", opened)
+	}
+	inspectControl, err := runtimeprotocol.EncodeInspectDocumentRequestEnvelope(runtimeprotocol.InspectDocumentRequestEnvelope{
+		Operation: runtimeprotocol.InspectDocumentRequestEnvelopeOperationValue,
+		Protocol:  runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"},
+		RequestID: "shared-host-inspect",
+		Payload:   runtimeprotocol.RuntimeSessionInput{Session: opened.Value.Open.Session},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspectCall := application.Invoke(context.Background(), "RuntimeInspectDocument", desktopcontract.Exchange{
+		Operation: string(runtimeprotocol.InspectDocumentRequestEnvelopeOperationValue),
+		Control:   inspectControl,
+	})
+	if inspectCall.Outcome != protocolcommon.OutcomeSuccess || !inspectCall.Validate() {
+		t.Fatalf("runtime binding could not inspect application session: %+v", inspectCall)
+	}
+	inspected, err := runtimeprotocol.DecodeInspectDocumentResponseEnvelope(inspectCall.Value.Control)
+	if err != nil || inspected.Outcome != protocolcommon.OutcomeSuccess || inspected.Payload == nil {
+		t.Fatalf("inspect application session response: %+v err=%v", inspected, err)
 	}
 	stopped := application.Shutdown(context.Background())
 	if stopped.Outcome != protocolcommon.OutcomeSuccess {
@@ -293,6 +352,19 @@ func TestCompositionRejectsMissingRuntimeAndMismatchedExternalLifecycle(t *testi
 func TestClosedSharedPortsRemainTyped(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+	if result := (disabledMCP{}).Start(ctx); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("disabled MCP lifecycle failed: %+v", result)
+	}
+	handshake, err := (nativeCapabilities{}).Negotiate(ctx, desktopcontract.DefaultManifest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range handshake.CapabilityStatuses {
+		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring
+		if status.Enabled != packaged || (!packaged && status.UnavailableReason == nil) {
+			t.Fatalf("capability availability is not truthful: %+v", status)
+		}
+	}
 	if result := (unavailableCredentials{}).Resolve(ctx, desktopcontract.CredentialRef{}); result.Failure == nil || !result.Failure.Validate() {
 		t.Fatalf("credential: %+v", result)
 	}
@@ -320,5 +392,76 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 	}
 	if _, err := decoder.DecodeResponse("review.submit", control); err == nil {
 		t.Fatal("unavailable response accepted")
+	}
+}
+
+func TestSharedOwnerAndBlobBridgesRemainClosedAndOwned(t *testing.T) {
+	ctx := context.Background()
+	owner := &sharedOwner{}
+	if _, err := owner.Invoke(ctx, desktopcontract.Exchange{}); err == nil {
+		t.Fatal("unstarted shared owner accepted invocation")
+	}
+	if err := owner.Start(ctx); err == nil {
+		t.Fatal("unbound shared owner started")
+	}
+	if err := owner.BindLocalHost(nil); err == nil {
+		t.Fatal("nil local host accepted")
+	}
+	localHost, err := localdocument.New(localdocument.Config{Root: filepath.Join(t.TempDir(), "owner")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer localHost.Shutdown(ctx)
+	if err := owner.BindLocalHost(localHost); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.BindLocalHost(localHost); err == nil {
+		t.Fatal("started owner accepted host replacement")
+	}
+	if err := owner.Start(ctx); err != nil {
+		t.Fatalf("idempotent owner start: %v", err)
+	}
+	if _, err := owner.Invoke(ctx, desktopcontract.Exchange{Operation: string(engineprotocol.HandshakeRequestEnvelopeOperationValue), Control: []byte(`{}`)}); err == nil {
+		t.Fatal("malformed engine handshake accepted")
+	}
+	if _, err := owner.Invoke(ctx, desktopcontract.Exchange{Operation: "runtime.unknown", Control: []byte(`{}`)}); err == nil {
+		t.Fatal("unknown runtime operation accepted")
+	}
+	sourceBytes := []byte("input")
+	definitions, err := (exchangeBlobSource{{ID: "blob-1", Bytes: sourceBytes}}).Definitions(ctx)
+	if err != nil || len(definitions) != 1 || definitions[0].Owned == nil || string(definitions[0].Owned.Bytes) != "input" {
+		t.Fatalf("definitions=%+v err=%v", definitions, err)
+	}
+	sourceBytes[0] = 'X'
+	if string(definitions[0].Owned.Bytes) != "input" {
+		t.Fatal("blob source did not take ownership")
+	}
+	definitions[0].Owned.Release()
+	sink := &exchangeBlobSink{}
+	outputBytes := []byte("output")
+	if err := sink.Publish(ctx, []engineendpoint.OutputBlob{{Ref: protocolcommon.BlobRef{BlobID: "blob-2"}, Bytes: outputBytes}}); err != nil {
+		t.Fatal(err)
+	}
+	outputBytes[0] = 'X'
+	if len(sink.blobs) != 1 || string(sink.blobs[0].Bytes) != "output" {
+		t.Fatalf("blob sink did not take ownership: %+v", sink.blobs)
+	}
+	if err := (disabledComponent{}).Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := (disabledComponent{}).Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if result := (disabledMCP{}).Shutdown(ctx); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("disabled MCP shutdown=%+v", result)
+	}
+	if err := owner.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Shutdown(ctx); err != nil {
+		t.Fatalf("idempotent owner shutdown: %v", err)
 	}
 }

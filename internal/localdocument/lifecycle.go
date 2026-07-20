@@ -84,26 +84,37 @@ type Config struct {
 }
 
 type Host struct {
-	config    Config
-	engine    *engineendpoint.LocalDocumentEngine
-	runtime   *runtimehost.Runtime
-	documents *local.Document
-	state     *local.State
-	assets    *local.Assets
-	history   *local.History
-	recovery  *local.Recovery
-	external  *local.ExternalFileStore
-	authority *localAuthority
-	workbench *runtimeWorkbench
-	bindingMu sync.Mutex
-	mu        sync.Mutex
+	config     Config
+	engine     *engineendpoint.LocalDocumentEngine
+	runtime    *runtimehost.Runtime
+	documents  *local.Document
+	state      *local.State
+	assets     *local.Assets
+	history    *local.History
+	recovery   *local.Recovery
+	external   *local.ExternalFileStore
+	authority  *localAuthority
+	workbench  *runtimeWorkbench
+	bindingMu  sync.Mutex
+	autosaveMu sync.Mutex
+	mu         sync.Mutex
 	// delegationMu serializes durable delegation snapshots independently from
 	// session lifecycle locking.
 	delegationMu sync.Mutex
 	metadata     lifecycleMetadata
 	sessions     map[runtimeprotocol.RuntimeSessionID]*Session
-	autosaves    map[runtimeprotocol.RuntimeSessionID]func()
+	autosaves    map[runtimeprotocol.RuntimeSessionID]*autosaveJob
 	closed       bool
+}
+
+type autosaveJob struct {
+	cancelScheduled func()
+	started         bool
+	finished        bool
+	done            chan struct{}
+	result          AutosaveResult
+	completion      chan<- AutosaveResult
+	notifyCancel    bool
 }
 
 type lifecycleMetadata struct {
@@ -282,7 +293,7 @@ func New(config Config) (*Host, error) {
 		return nil, err
 	}
 	authority := newLocalAuthorityWithDelegations(config.Clock, config.Random, actor, delegations)
-	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]func(){}}
+	host := &Host{config: config, engine: instance, documents: documents, state: state, assets: assets, history: history, recovery: recovery, external: external, authority: authority, workbench: workbench, sessions: map[runtimeprotocol.RuntimeSessionID]*Session{}, autosaves: map[runtimeprotocol.RuntimeSessionID]*autosaveJob{}}
 	metadata, err := host.loadMetadata()
 	if err != nil {
 		return nil, err
@@ -798,60 +809,95 @@ func (h *Host) scheduleAutosave(ctx context.Context, input SaveInput, result cha
 	}
 	input.Trigger = runtimeprotocol.CommitTriggerAutosave
 	id := input.Session.Open.Session.RuntimeSessionID
-	h.mu.Lock()
-	if prior := h.autosaves[id]; prior != nil {
-		prior()
+	h.autosaveMu.Lock()
+	defer h.autosaveMu.Unlock()
+	if _, _, err := h.cancelAutosaveJob(id); err != nil {
+		return err
 	}
+	h.mu.Lock()
 	if input.Session.closed || h.sessions[id] != input.Session {
 		h.mu.Unlock()
 		return errors.New("session is closed or unknown")
 	}
-	var completed sync.Once
-	complete := func(value AutosaveResult, blocking bool) {
-		completed.Do(func() {
-			if result != nil {
-				if blocking {
-					result <- value
-				} else {
-					select {
-					case result <- value:
-					default:
-					}
-				}
-			}
-		})
-	}
-	cancelScheduled := h.config.Scheduler.Schedule(h.config.AutosaveDelay, func() {
-		value, err := h.Save(context.WithoutCancel(ctx), input)
-		complete(AutosaveResult{Result: value, Err: err}, true)
+	job := &autosaveJob{done: make(chan struct{}), completion: result, notifyCancel: notifyCancel}
+	job.cancelScheduled = h.config.Scheduler.Schedule(h.config.AutosaveDelay, func() {
 		h.mu.Lock()
-		delete(h.autosaves, id)
-		h.mu.Unlock()
-	})
-	cancel := func() {
-		cancelScheduled()
-		if notifyCancel {
-			complete(AutosaveResult{Err: context.Canceled}, false)
+		if h.autosaves[id] != job || job.finished {
+			h.mu.Unlock()
+			return
 		}
-	}
-	h.autosaves[id] = cancel
+		job.started = true
+		h.mu.Unlock()
+		value, err := h.Save(context.WithoutCancel(ctx), input)
+		terminal := AutosaveResult{Result: value, Err: err}
+		h.mu.Lock()
+		job.result = terminal
+		job.finished = true
+		close(job.done)
+		if h.autosaves[id] == job {
+			delete(h.autosaves, id)
+		}
+		h.mu.Unlock()
+		if job.completion != nil {
+			job.completion <- terminal
+		}
+	})
+	h.autosaves[id] = job
 	h.mu.Unlock()
 	return nil
 }
 
 func (h *Host) CancelAutosave(ref runtimeprotocol.RuntimeSessionRef) error {
+	_, _, err := h.cancelAutosave(ref)
+	return err
+}
+
+func (h *Host) cancelAutosave(ref runtimeprotocol.RuntimeSessionRef) (AutosaveResult, bool, error) {
 	session, err := h.SessionFor(ref)
 	if err != nil {
-		return err
+		return AutosaveResult{}, false, err
 	}
-	id := session.Open.Session.RuntimeSessionID
+	h.autosaveMu.Lock()
+	defer h.autosaveMu.Unlock()
+	return h.cancelAutosaveJob(session.Open.Session.RuntimeSessionID)
+}
+
+// cancelAutosaveJob must be called with autosaveMu held. It waits for an
+// already-running save and returns its real terminal result; a scheduled job
+// that has not started is completed as cancelled.
+func (h *Host) cancelAutosaveJob(id runtimeprotocol.RuntimeSessionID) (AutosaveResult, bool, error) {
 	h.mu.Lock()
-	if cancel := h.autosaves[id]; cancel != nil {
-		cancel()
-		delete(h.autosaves, id)
+	job := h.autosaves[id]
+	if job == nil {
+		h.mu.Unlock()
+		return AutosaveResult{}, false, nil
 	}
+	job.cancelScheduled()
+	if !job.started {
+		terminal := AutosaveResult{Err: context.Canceled}
+		job.result = terminal
+		job.finished = true
+		delete(h.autosaves, id)
+		close(job.done)
+		h.mu.Unlock()
+		if job.notifyCancel && job.completion != nil {
+			select {
+			case job.completion <- terminal:
+			default:
+			}
+		}
+		return terminal, true, nil
+	}
+	done := job.done
 	h.mu.Unlock()
-	return nil
+	<-done
+	return job.result, true, nil
+}
+
+func (h *Host) cancelAutosaveID(id runtimeprotocol.RuntimeSessionID) (AutosaveResult, bool, error) {
+	h.autosaveMu.Lock()
+	defer h.autosaveMu.Unlock()
+	return h.cancelAutosaveJob(id)
 }
 
 func (h *Host) CancelOperation(ctx context.Context, session *Session, operation runtimeprotocol.OperationID, token runtimeprotocol.CancellationToken) (runtimeprotocol.CancelOperationResult, error) {
@@ -870,11 +916,10 @@ func (h *Host) Close(ctx context.Context, session *Session) error {
 		return nil
 	}
 	id := session.Open.Session.RuntimeSessionID
-	h.mu.Lock()
-	if cancel := h.autosaves[id]; cancel != nil {
-		cancel()
-		delete(h.autosaves, id)
+	if _, _, err := h.cancelAutosaveID(id); err != nil {
+		return err
 	}
+	h.mu.Lock()
 	if session.closed {
 		h.mu.Unlock()
 		return nil

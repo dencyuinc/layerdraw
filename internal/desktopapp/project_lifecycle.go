@@ -3,9 +3,11 @@
 package desktopapp
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,9 +18,11 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 )
 
-const projectLifecycleVersion = 1
+const projectLifecycleVersion = 2
 
 const maxLifecycleEntries = 4096
+const maxRecoveryPayloadBytes = 256 << 10
+const maxRecoveryReferenceBytes = 2048
 
 type ProjectAvailability string
 
@@ -45,10 +49,14 @@ type RecentProject struct {
 type CloseBlocker string
 
 const (
-	ClosePendingPreview  CloseBlocker = "pending_preview"
-	CloseEphemeralEdits  CloseBlocker = "ephemeral_edits"
-	CloseAutosavePending CloseBlocker = "autosave_pending"
-	CloseProviderPending CloseBlocker = "provider_reconcile_pending"
+	ClosePendingPreview   CloseBlocker = "pending_preview"
+	CloseEphemeralEdits   CloseBlocker = "ephemeral_edits"
+	CloseAutosavePending  CloseBlocker = "autosave_pending"
+	CloseProviderPending  CloseBlocker = "provider_reconcile_pending"
+	CloseExternalPending  CloseBlocker = "external_materialization_pending"
+	CloseExternalFailed   CloseBlocker = "external_materialization_failed"
+	CloseStateStale       CloseBlocker = "committed_state_stale"
+	CloseRecoveryRequired CloseBlocker = "recovery_required"
 )
 
 type CloseAssessment struct {
@@ -71,8 +79,24 @@ const (
 )
 
 type EphemeralStateInput struct {
-	Session runtimeprotocol.RuntimeSessionRef `json:"session"`
-	Dirty   bool                              `json:"dirty"`
+	Session  runtimeprotocol.RuntimeSessionRef `json:"session"`
+	Dirty    bool                              `json:"dirty"`
+	Recovery *RecoveryArtifact                 `json:"recovery,omitempty"`
+}
+
+type RecoveryArtifactKind string
+
+const (
+	RecoveryPreviewOperations RecoveryArtifactKind = "preview_operations"
+	RecoveryEditorState       RecoveryArtifactKind = "editor_state"
+)
+
+// RecoveryArtifact is the bounded material needed to actually reconstruct an
+// interrupted edit. Exactly one of Payload or Reference is present.
+type RecoveryArtifact struct {
+	Kind      RecoveryArtifactKind `json:"kind"`
+	Payload   json.RawMessage      `json:"payload,omitempty"`
+	Reference string               `json:"reference,omitempty"`
 }
 
 type RecoveryCandidate struct {
@@ -83,7 +107,10 @@ type RecoveryCandidate struct {
 	EphemeralEdits    bool                       `json:"ephemeral_edits"`
 	AutosavePending   bool                       `json:"autosave_pending"`
 	ProviderPending   bool                       `json:"provider_reconcile_pending"`
+	TerminalBlocker   CloseBlocker               `json:"terminal_blocker,omitempty"`
 	Autosave          AutosaveOutcome            `json:"autosave"`
+	Recovery          *RecoveryArtifact          `json:"recovery,omitempty"`
+	TerminalRecovery  *RecoveryArtifact          `json:"terminal_recovery,omitempty"`
 }
 
 type RecoveryChoice string
@@ -104,11 +131,12 @@ type persistedRecovery struct {
 	ProjectID         runtimeprotocol.DocumentID `json:"project_id"`
 	CommittedRevision runtimeprotocol.RevisionID `json:"committed_revision"`
 	InterruptedAt     protocolcommon.Rfc3339Time `json:"interrupted_at"`
-	PendingPreview    bool                       `json:"pending_preview"`
-	EphemeralEdits    bool                       `json:"ephemeral_edits"`
 	AutosavePending   bool                       `json:"autosave_pending"`
 	ProviderPending   bool                       `json:"provider_reconcile_pending"`
+	TerminalBlocker   CloseBlocker               `json:"terminal_blocker,omitempty"`
 	Autosave          AutosaveOutcome            `json:"autosave"`
+	Recovery          *RecoveryArtifact          `json:"recovery,omitempty"`
+	TerminalRecovery  *RecoveryArtifact          `json:"terminal_recovery,omitempty"`
 }
 
 type persistedLifecycle struct {
@@ -125,8 +153,12 @@ type sessionLifecycle struct {
 	ephemeralEdits     bool
 	autosavePending    bool
 	providerPending    bool
+	terminalBlocker    CloseBlocker
+	recovery           *RecoveryArtifact
+	terminalRecovery   *RecoveryArtifact
 	autosave           AutosaveOutcome
 	autosaveGeneration uint64
+	recoveryRequired   bool
 	generation         uint64
 	inflight           int
 	closing            bool
@@ -163,7 +195,12 @@ func newProjectLifecycle(root string, now func() time.Time) (*projectLifecycle, 
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &value.state); err != nil || value.state.Version != projectLifecycleVersion || value.state.Projects == nil || value.state.Recoveries == nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value.state); err != nil || value.state.Version != projectLifecycleVersion || value.state.Projects == nil || value.state.Recoveries == nil {
+		return nil, fmt.Errorf("desktop lifecycle metadata requires recovery")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("desktop lifecycle metadata requires recovery")
 	}
 	if len(value.state.Projects) > maxLifecycleEntries || len(value.state.Recoveries) > maxLifecycleEntries {
@@ -184,11 +221,43 @@ func newProjectLifecycle(root string, now func() time.Time) (*projectLifecycle, 
 		_, idErr := runtimeprotocol.EncodeDocumentID(recovery.ProjectID)
 		_, revisionErr := runtimeprotocol.EncodeRevisionID(recovery.CommittedRevision)
 		_, timeErr := time.Parse(time.RFC3339Nano, string(recovery.InterruptedAt))
-		if key != string(recovery.ProjectID) || idErr != nil || revisionErr != nil || timeErr != nil || !validAutosaveOutcome(recovery.Autosave) {
+		if key != string(recovery.ProjectID) || idErr != nil || revisionErr != nil || timeErr != nil || !validAutosaveOutcome(recovery.Autosave) || !validTerminalBlocker(recovery.TerminalBlocker) || !validRecoveryArtifact(recovery.Recovery) || !validRecoveryArtifact(recovery.TerminalRecovery) || (recovery.TerminalBlocker == "") != (recovery.TerminalRecovery == nil) {
 			return nil, fmt.Errorf("desktop lifecycle metadata requires recovery")
 		}
 	}
 	return value, nil
+}
+
+func validTerminalBlocker(value CloseBlocker) bool {
+	return value == "" || value == CloseExternalPending || value == CloseExternalFailed || value == CloseStateStale
+}
+
+func validRecoveryArtifact(value *RecoveryArtifact) bool {
+	if value == nil {
+		return true
+	}
+	if value.Kind != RecoveryPreviewOperations && value.Kind != RecoveryEditorState {
+		return false
+	}
+	hasPayload := len(value.Payload) != 0
+	hasReference := value.Reference != ""
+	if hasPayload == hasReference {
+		return false
+	}
+	if hasPayload {
+		trimmed := bytes.TrimSpace(value.Payload)
+		return len(value.Payload) <= maxRecoveryPayloadBytes && len(trimmed) != 0 && (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid(trimmed)
+	}
+	return len(value.Reference) <= maxRecoveryReferenceBytes
+}
+
+func cloneRecoveryArtifact(value *RecoveryArtifact) *RecoveryArtifact {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	copy.Payload = append(json.RawMessage(nil), value.Payload...)
+	return &copy
 }
 
 func validAutosaveOutcome(value AutosaveOutcome) bool {
@@ -290,9 +359,25 @@ func (l *projectLifecycle) completeAutosave(ref runtimeprotocol.RuntimeSessionRe
 	if err := l.saveLocked(); err != nil {
 		*value = prior
 		l.state.Recoveries[string(value.projectID)] = priorRecovery
+		value.recoveryRequired = true
 		return err
 	}
 	return nil
+}
+
+func (l *projectLifecycle) autosaveRecoveryRequired(ref runtimeprotocol.RuntimeSessionRef) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	value := l.sessions[ref.RuntimeSessionID]
+	return value != nil && value.session == ref && value.recoveryRequired
+}
+
+func (l *projectLifecycle) requireRecovery(ref runtimeprotocol.RuntimeSessionRef) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if value := l.sessions[ref.RuntimeSessionID]; value != nil && value.session == ref {
+		value.recoveryRequired = true
+	}
 }
 
 func (l *projectLifecycle) begin(ref runtimeprotocol.RuntimeSessionRef) (uint64, error) {
@@ -385,6 +470,12 @@ func assess(value *sessionLifecycle) CloseAssessment {
 	if value.providerPending {
 		blockers = append(blockers, CloseProviderPending)
 	}
+	if value.terminalBlocker != "" {
+		blockers = append(blockers, value.terminalBlocker)
+	}
+	if value.recoveryRequired {
+		blockers = append(blockers, CloseRecoveryRequired)
+	}
 	return CloseAssessment{ProjectID: value.projectID, CommittedRevision: value.committedRevision, CanClose: len(blockers) == 0, Blockers: blockers, Autosave: value.autosave}
 }
 
@@ -427,7 +518,7 @@ func (l *projectLifecycle) restore(value *sessionLifecycle) error {
 	l.sessions[value.session.RuntimeSessionID] = value
 	l.byProject[value.projectID] = value.session.RuntimeSessionID
 	now := protocolcommon.Rfc3339Time(l.now().UTC().Format(time.RFC3339Nano))
-	l.state.Recoveries[string(value.projectID)] = persistedRecovery{ProjectID: value.projectID, CommittedRevision: value.committedRevision, InterruptedAt: now, PendingPreview: value.pendingPreview, EphemeralEdits: value.ephemeralEdits, AutosavePending: value.autosavePending, ProviderPending: value.providerPending, Autosave: value.autosave}
+	l.state.Recoveries[string(value.projectID)] = persistedRecovery{ProjectID: value.projectID, CommittedRevision: value.committedRevision, InterruptedAt: now, AutosavePending: value.autosavePending, ProviderPending: value.providerPending, TerminalBlocker: value.terminalBlocker, Autosave: value.autosave, Recovery: cloneRecoveryArtifact(value.recovery), TerminalRecovery: cloneRecoveryArtifact(value.terminalRecovery)}
 	if err := l.saveLocked(); err != nil {
 		delete(l.sessions, value.session.RuntimeSessionID)
 		delete(l.byProject, value.projectID)
@@ -509,7 +600,8 @@ func (l *projectLifecycle) recoveries() []RecoveryCandidate {
 		if _, currentlyOpen := l.byProject[value.ProjectID]; currentlyOpen {
 			continue
 		}
-		result = append(result, RecoveryCandidate{ProjectID: value.ProjectID, CommittedRevision: value.CommittedRevision, InterruptedAt: value.InterruptedAt, PendingPreview: value.PendingPreview, EphemeralEdits: value.EphemeralEdits, AutosavePending: value.AutosavePending, ProviderPending: value.ProviderPending, Autosave: value.Autosave})
+		artifact := cloneRecoveryArtifact(value.Recovery)
+		result = append(result, RecoveryCandidate{ProjectID: value.ProjectID, CommittedRevision: value.CommittedRevision, InterruptedAt: value.InterruptedAt, PendingPreview: artifact != nil && artifact.Kind == RecoveryPreviewOperations, EphemeralEdits: artifact != nil, AutosavePending: value.AutosavePending, ProviderPending: value.ProviderPending, TerminalBlocker: value.TerminalBlocker, Autosave: value.Autosave, Recovery: artifact, TerminalRecovery: cloneRecoveryArtifact(value.TerminalRecovery)})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].InterruptedAt < result[j].InterruptedAt })
 	return result
@@ -525,10 +617,13 @@ func (l *projectLifecycle) recovery(projectID runtimeprotocol.DocumentID) (persi
 func (l *projectLifecycle) applyRecovery(ref runtimeprotocol.RuntimeSessionRef, recovery persistedRecovery) error {
 	return l.mutate(ref, 0, func(value *sessionLifecycle) {
 		value.committedRevision = recovery.CommittedRevision
-		value.pendingPreview = recovery.PendingPreview
-		value.ephemeralEdits = recovery.EphemeralEdits
+		value.recovery = cloneRecoveryArtifact(recovery.Recovery)
+		value.pendingPreview = value.recovery != nil && value.recovery.Kind == RecoveryPreviewOperations
+		value.ephemeralEdits = value.recovery != nil
 		value.autosavePending = false // timers do not survive process death
 		value.providerPending = recovery.ProviderPending
+		value.terminalBlocker = recovery.TerminalBlocker
+		value.terminalRecovery = cloneRecoveryArtifact(recovery.TerminalRecovery)
 		value.autosave = recovery.Autosave
 		if recovery.AutosavePending {
 			value.autosave = AutosaveNeedsReview
@@ -543,11 +638,12 @@ func (l *projectLifecycle) syncRecoveryLocked(value *sessionLifecycle) {
 	if prior.InterruptedAt == "" {
 		prior.InterruptedAt = protocolcommon.Rfc3339Time(l.now().UTC().Format(time.RFC3339Nano))
 	}
-	prior.PendingPreview = value.pendingPreview
-	prior.EphemeralEdits = value.ephemeralEdits
 	prior.AutosavePending = value.autosavePending
 	prior.ProviderPending = value.providerPending
+	prior.TerminalBlocker = value.terminalBlocker
+	prior.TerminalRecovery = cloneRecoveryArtifact(value.terminalRecovery)
 	prior.Autosave = value.autosave
+	prior.Recovery = cloneRecoveryArtifact(value.recovery)
 	l.state.Recoveries[string(value.projectID)] = prior
 }
 
@@ -564,11 +660,16 @@ func (l *projectLifecycle) hasRecovery(projectID runtimeprotocol.DocumentID) boo
 func (l *projectLifecycle) discardRecovery(projectID runtimeprotocol.DocumentID) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if _, ok := l.state.Recoveries[string(projectID)]; !ok {
+	prior, ok := l.state.Recoveries[string(projectID)]
+	if !ok {
 		return errors.New("unknown recovery")
 	}
 	delete(l.state.Recoveries, string(projectID))
-	return l.saveLocked()
+	if err := l.saveLocked(); err != nil {
+		l.state.Recoveries[string(projectID)] = prior
+		return err
+	}
+	return nil
 }
 
 func (l *projectLifecycle) allAssessments() []CloseAssessment {

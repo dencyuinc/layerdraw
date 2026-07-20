@@ -44,23 +44,25 @@ var injectedComponents = []desktopcontract.ComponentID{
 }
 
 type Config struct {
-	Root                  string
-	ReleaseVersion        protocolcommon.ReleaseVersion
-	EndpointInstanceID    protocolcommon.EndpointInstanceID
-	ReleaseManifestDigest protocolcommon.Digest
-	Lifecycle             desktopcontract.LifecyclePort
-	Window                desktopcontract.WindowPort
-	Dialogs               desktopcontract.NativeDialogPort
-	HostPorts             desktopcontract.HostPorts
-	CredentialRefs        []desktopcontract.CredentialRef
-	DelegationFences      []desktopcontract.DelegationFence
-	ProjectStorage        ProjectStorage
-	Capabilities          CapabilityNegotiator
-	Bindings              desktopcontract.ClientSet
-	Adapters              map[desktopcontract.ComponentID]Adapter
-	Recovery              RecoveryReporter
-	ExternalLifecycle     ExternalLifecycleAdapter
-	Now                   func() time.Time
+	Root                          string
+	ReleaseVersion                protocolcommon.ReleaseVersion
+	EndpointInstanceID            protocolcommon.EndpointInstanceID
+	ReleaseManifestDigest         protocolcommon.Digest
+	Lifecycle                     desktopcontract.LifecyclePort
+	Window                        desktopcontract.WindowPort
+	Dialogs                       desktopcontract.NativeDialogPort
+	HostPorts                     desktopcontract.HostPorts
+	CredentialRefs                []desktopcontract.CredentialRef
+	DelegationFences              []desktopcontract.DelegationFence
+	ProjectStorage                ProjectStorage
+	Capabilities                  CapabilityNegotiator
+	EffectiveRequiredCapabilities []protocolcommon.CapabilityID
+	DisabledComponents            []desktopcontract.ComponentID
+	Bindings                      desktopcontract.ClientSet
+	Adapters                      map[desktopcontract.ComponentID]Adapter
+	Recovery                      RecoveryReporter
+	ExternalLifecycle             ExternalLifecycleAdapter
+	Now                           func() time.Time
 }
 
 // ProjectOpenResult contains generated Runtime values only. The local session
@@ -71,6 +73,7 @@ type ProjectOpenResult struct {
 	ProjectID        runtimeprotocol.DocumentID                `json:"project_id"`
 	Disposition      ProjectOpenDisposition                    `json:"disposition"`
 	ReconcilePending bool                                      `json:"reconcile_pending"`
+	Recovery         *RecoveryArtifact                         `json:"recovery,omitempty"`
 }
 
 // BindingResult preserves the generated response outcome. Failure is present
@@ -105,7 +108,14 @@ type Application struct {
 	handshake           protocolcommon.HandshakeResult
 	inflight            sync.WaitGroup
 	projects            *projectLifecycle
+	quitFenced          bool
+	quitSessions        []runtimeprotocol.RuntimeSessionRef
 	closeProjectSession func(context.Context, *localdocument.Host, *localdocument.Session) error
+	cancelAutosave      func(*localdocument.Host, runtimeprotocol.RuntimeSessionRef) error
+}
+
+type localHostConsumer interface {
+	BindLocalHost(*localdocument.Host) error
 }
 
 func New(config Config) (*Application, error) {
@@ -129,12 +139,17 @@ func New(config Config) (*Application, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if config.EffectiveRequiredCapabilities == nil {
+		config.EffectiveRequiredCapabilities = append([]protocolcommon.CapabilityID(nil), desktopcontract.DefaultManifest().RequiredCapabilities...)
+	}
 	projects, err := newProjectLifecycle(config.Root, config.Now)
 	if err != nil {
 		return nil, err
 	}
 	return &Application{config: config, state: desktopcontract.LifecycleStopped, projects: projects, closeProjectSession: func(ctx context.Context, host *localdocument.Host, session *localdocument.Session) error {
 		return host.Close(ctx, session)
+	}, cancelAutosave: func(host *localdocument.Host, session runtimeprotocol.RuntimeSessionRef) error {
+		return host.CancelAutosave(session)
 	}}, nil
 }
 
@@ -225,6 +240,9 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 	}
 
 	for _, id := range startupOrder {
+		if a.componentDisabled(id) {
+			continue
+		}
 		if id == desktopcontract.ComponentMCPHost || id == desktopcontract.ComponentBindingShell {
 			continue
 		}
@@ -274,7 +292,7 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 		}
 		return a.failStartWith(ctx, code, desktopcontract.ComponentBindingShell, false, desktopcontract.RecoveryUpgrade)
 	}
-	negotiated := desktopcontract.NegotiateCapabilities(desktopcontract.DefaultManifest(), handshake)
+	negotiated := desktopcontract.NegotiateCapabilitiesFor(desktopcontract.DefaultManifest(), handshake, a.config.EffectiveRequiredCapabilities)
 	if negotiated.Outcome != protocolcommon.OutcomeSuccess {
 		failure := *negotiated.Failure
 		return a.failStartWith(ctx, failure.Code, failure.Component, failure.Retryable, failure.Recovery)
@@ -283,6 +301,9 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 		return a.failStartWith(ctx, desktopcontract.FailureProtocolIncompatible, desktopcontract.ComponentExternalStorage, false, desktopcontract.RecoveryConfigureAdapter)
 	}
 	for _, id := range []desktopcontract.ComponentID{desktopcontract.ComponentMCPHost, desktopcontract.ComponentBindingShell} {
+		if a.componentDisabled(id) {
+			continue
+		}
 		var err error
 		if id == desktopcontract.ComponentMCPHost {
 			started := safeMCPStart(ctx, a.config.HostPorts.MCP)
@@ -293,6 +314,19 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 				err = errors.New("MCP transport start failed")
 			}
 		} else {
+			if consumer, ok := a.config.Adapters[id].(localHostConsumer); ok {
+				a.mu.Lock()
+				host := a.host
+				a.mu.Unlock()
+				if host == nil {
+					err = errors.New("desktop local host is unavailable")
+				} else {
+					err = consumer.BindLocalHost(host)
+				}
+			}
+			if err != nil {
+				return a.failStartWith(ctx, desktopcontract.FailureStartup, id, true, desktopcontract.RecoveryRetry)
+			}
 			err = safeAdapterStart(ctx, a.config.Adapters[id])
 		}
 		if err != nil {
@@ -321,6 +355,15 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 	return desktopcontract.Result[protocolcommon.HandshakeResult]{Outcome: protocolcommon.OutcomeSuccess, Value: negotiated.Value}
 }
 
+func (a *Application) componentDisabled(id desktopcontract.ComponentID) bool {
+	for _, disabled := range a.config.DisabledComponents {
+		if disabled == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Application) externalCapabilityMatches(handshake protocolcommon.HandshakeResult) bool {
 	adapterWired := a.config.Adapters[desktopcontract.ComponentExternalStorage] != nil
 	lifecycleWired := a.config.ExternalLifecycle != nil
@@ -339,6 +382,9 @@ func (a *Application) externalCapabilityMatches(handshake protocolcommon.Handsha
 func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struct{}] {
 	a.shutdown.Lock()
 	defer a.shutdown.Unlock()
+	if failure := a.fenceQuitLocked(ctx); failure != nil {
+		return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeFailed, Failure: failure}
+	}
 	a.mu.Lock()
 	if a.state == desktopcontract.LifecycleStopped && len(a.started) == 0 {
 		a.mu.Unlock()
@@ -348,39 +394,7 @@ func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struc
 		a.mu.Unlock()
 		return failed[struct{}](desktopcontract.FailureShutdown, desktopcontract.ComponentBindingShell, true, desktopcontract.RecoveryRetry)
 	}
-	a.state = desktopcontract.LifecycleDraining
 	a.mu.Unlock()
-	if err := safeLifecyclePublish(context.WithoutCancel(ctx), a.config.Lifecycle, desktopcontract.LifecycleEvent{State: desktopcontract.LifecycleDraining}); err != nil {
-		code := desktopcontract.FailureShutdown
-		if errors.Is(err, errInjectedPanic) {
-			code = desktopcontract.FailureBackendPanic
-		}
-		return failed[struct{}](code, desktopcontract.ComponentBindingShell, true, desktopcontract.RecoveryRetry)
-	}
-
-	drained := make(chan struct{})
-	go func() { a.inflight.Wait(); close(drained) }()
-	select {
-	case <-drained:
-	case <-ctx.Done():
-		return failed[struct{}](desktopcontract.FailureShutdown, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
-	}
-
-	fenced := make([]runtimeprotocol.RuntimeSessionRef, 0)
-	for _, session := range a.projects.sessionRefs() {
-		assessment, err := a.projects.fenceClose(ctx.Done(), session)
-		if err != nil || !assessment.CanClose {
-			for _, prior := range fenced {
-				a.projects.rollbackClose(prior)
-			}
-			if err == nil {
-				a.projects.rollbackClose(session)
-			}
-			a.rollbackDraining()
-			return failed[struct{}](desktopcontract.FailureReconcilePending, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryReview)
-		}
-		fenced = append(fenced, session)
-	}
 
 	for index := len(a.started) - 1; index >= 0; index-- {
 		id := a.started[index]
@@ -432,6 +446,8 @@ func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struc
 	a.mu.Lock()
 	a.host = nil
 	a.started = nil
+	a.quitFenced = false
+	a.quitSessions = nil
 	a.handshake = protocolcommon.HandshakeResult{}
 	a.state = desktopcontract.LifecycleStopped
 	a.mu.Unlock()
@@ -443,6 +459,81 @@ func (a *Application) Shutdown(ctx context.Context) desktopcontract.Result[struc
 		return failed[struct{}](code, desktopcontract.ComponentBindingShell, false, desktopcontract.RecoveryExit)
 	}
 	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess}
+}
+
+// fenceQuitLocked is the single application-wide quit fence used by both the
+// explicit close request and Wails' native before-close callback. The caller
+// holds a.shutdown, so a successful fence remains authoritative until shutdown
+// consumes it or the request is rolled back.
+func (a *Application) fenceQuitLocked(ctx context.Context) *desktopcontract.Failure {
+	a.mu.Lock()
+	if a.state == desktopcontract.LifecycleStopped && len(a.started) == 0 {
+		a.mu.Unlock()
+		return nil
+	}
+	if a.quitFenced {
+		a.mu.Unlock()
+		return nil
+	}
+	if a.state != desktopcontract.LifecycleReady && a.state != desktopcontract.LifecycleRecovery && a.state != desktopcontract.LifecycleDraining {
+		a.mu.Unlock()
+		value := failure(desktopcontract.FailureShutdown, desktopcontract.ComponentBindingShell, true, desktopcontract.RecoveryRetry)
+		return &value
+	}
+	publishDraining := a.state != desktopcontract.LifecycleDraining
+	a.state = desktopcontract.LifecycleDraining
+	a.mu.Unlock()
+	if publishDraining {
+		if err := safeLifecyclePublish(context.WithoutCancel(ctx), a.config.Lifecycle, desktopcontract.LifecycleEvent{State: desktopcontract.LifecycleDraining}); err != nil {
+			code := desktopcontract.FailureShutdown
+			if errors.Is(err, errInjectedPanic) {
+				code = desktopcontract.FailureBackendPanic
+			}
+			value := failure(code, desktopcontract.ComponentBindingShell, true, desktopcontract.RecoveryRetry)
+			return &value
+		}
+	}
+	drained := make(chan struct{})
+	go func() { a.inflight.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		value := failure(desktopcontract.FailureShutdown, desktopcontract.ComponentRuntime, true, desktopcontract.RecoveryRetry)
+		return &value
+	}
+	fenced := make([]runtimeprotocol.RuntimeSessionRef, 0)
+	for _, session := range a.projects.sessionRefs() {
+		assessment, err := a.projects.fenceClose(ctx.Done(), session)
+		if err != nil || !assessment.CanClose {
+			for _, prior := range fenced {
+				a.projects.rollbackClose(prior)
+			}
+			if err == nil {
+				a.projects.rollbackClose(session)
+			}
+			a.rollbackDraining()
+			value := failure(desktopcontract.FailureReconcilePending, desktopcontract.ComponentRuntime, false, desktopcontract.RecoveryReview)
+			return &value
+		}
+		fenced = append(fenced, session)
+	}
+	a.mu.Lock()
+	a.quitFenced = true
+	a.quitSessions = append([]runtimeprotocol.RuntimeSessionRef(nil), fenced...)
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *Application) rollbackQuitFence() {
+	a.mu.Lock()
+	sessions := append([]runtimeprotocol.RuntimeSessionRef(nil), a.quitSessions...)
+	a.quitFenced = false
+	a.quitSessions = nil
+	a.mu.Unlock()
+	for _, session := range sessions {
+		a.projects.rollbackClose(session)
+	}
+	a.rollbackDraining()
 }
 
 func (a *Application) rollbackDraining() {

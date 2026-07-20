@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -302,6 +303,9 @@ func TestCrashRecoveryRequiresExplicitRestoreOrDiscardAcrossRestart(t *testing.T
 	if opened.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatal(opened.Failure)
 	}
+	if dirty := crashed.SetEphemeralState(EphemeralStateInput{Session: opened.Value.Open.Session, Dirty: true, Recovery: &RecoveryArtifact{Kind: RecoveryEditorState, Payload: json.RawMessage(`{"selection":"layer-1"}`)}}); dirty.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("persist recovery payload=%+v", dirty)
+	}
 
 	restarted := startLifecycleApp(t, root, project, &dialogHarness{}, storage)
 	candidates := restarted.RecoveryCandidates()
@@ -312,13 +316,13 @@ func TestCrashRecoveryRequiresExplicitRestoreOrDiscardAcrossRestart(t *testing.T
 		t.Fatalf("recovery bypass=%+v", bypass)
 	}
 	restored := restarted.ResolveRecovery(context.Background(), opened.Value.ProjectID, RecoveryRestore)
-	if restored.Outcome != protocolcommon.OutcomeSuccess || restored.Value.Disposition != ProjectRestored {
+	if restored.Outcome != protocolcommon.OutcomeSuccess || restored.Value.Disposition != ProjectRestored || restored.Value.Recovery == nil || string(restored.Value.Recovery.Payload) != `{"selection":"layer-1"}` {
 		t.Fatalf("restore=%+v", restored)
 	}
 	if candidates = restarted.RecoveryCandidates(); len(candidates.Value) != 0 {
 		t.Fatalf("restored candidate remained=%+v", candidates)
 	}
-	if close := restarted.CloseProject(context.Background(), restored.Value.Open.Session); close.Outcome != protocolcommon.OutcomeSuccess {
+	if close := restarted.ResolveClose(context.Background(), restored.Value.Open.Session, CloseDiscardEphemeral); close.Outcome != protocolcommon.OutcomeSuccess || !close.Value.Closed {
 		t.Fatalf("close=%+v", close)
 	}
 	_ = restarted.Shutdown(context.Background())
@@ -399,7 +403,10 @@ func TestLifecycleControlSurfaceAndExternalAdapterFailuresAreClosed(t *testing.T
 	if _, ok := app.projects.session(opened.Value.Open.Session); !ok {
 		t.Fatal("tracked session unavailable")
 	}
-	dirty := app.SetEphemeralState(EphemeralStateInput{Session: opened.Value.Open.Session, Dirty: true})
+	if phantom := app.SetEphemeralState(EphemeralStateInput{Session: opened.Value.Open.Session, Dirty: true}); phantom.Failure == nil || phantom.Failure.Code != desktopcontract.FailureRecoveryRequired {
+		t.Fatalf("phantom dirty state accepted=%+v", phantom)
+	}
+	dirty := app.SetEphemeralState(EphemeralStateInput{Session: opened.Value.Open.Session, Dirty: true, Recovery: &RecoveryArtifact{Kind: RecoveryEditorState, Reference: "editor-buffer:primary"}})
 	if dirty.Outcome != protocolcommon.OutcomeSuccess || dirty.Value.CanClose {
 		t.Fatalf("dirty=%+v", dirty)
 	}
@@ -415,6 +422,13 @@ func TestLifecycleControlSurfaceAndExternalAdapterFailuresAreClosed(t *testing.T
 	}
 	if closeWindow := app.RequestWindowClose(context.Background()); !closeWindow.Value.CanQuit || window.closes != 1 {
 		t.Fatalf("window close=%+v", closeWindow)
+	}
+	if app.State() != desktopcontract.LifecycleDraining {
+		t.Fatalf("window close did not retain quit fence: %s", app.State())
+	}
+	if done, _, _, requestFailure := app.beginProject(opened.Value.Open.Session, desktopcontract.ComponentRuntime); requestFailure == nil {
+		done()
+		t.Fatal("new project work entered after native quit fence")
 	}
 	window.panicClose = true
 	if closeWindow := app.RequestWindowClose(context.Background()); closeWindow.Failure == nil || closeWindow.Failure.Code != desktopcontract.FailureShutdown {
@@ -443,7 +457,7 @@ func TestLifecycleControlSurfaceAndExternalAdapterFailuresAreClosed(t *testing.T
 	if result := app.ResolveRecovery(context.Background(), opened.Value.ProjectID, "unknown"); result.Failure == nil || result.Failure.Code != desktopcontract.FailureRecoveryRequired {
 		t.Fatalf("unknown recovery=%+v", result)
 	}
-	if result := app.SetEphemeralState(EphemeralStateInput{Session: runtimeprotocol.RuntimeSessionRef{}, Dirty: true}); result.Failure == nil {
+	if result := app.SetEphemeralState(EphemeralStateInput{Session: runtimeprotocol.RuntimeSessionRef{}, Dirty: true, Recovery: &RecoveryArtifact{Kind: RecoveryEditorState, Reference: "editor-buffer:unknown"}}); result.Failure == nil {
 		t.Fatalf("unknown session=%+v", result)
 	}
 	app.config.ExternalLifecycle = nil
@@ -463,11 +477,17 @@ func TestLifecycleMetadataRejectsUnsafeOrMalformedFiles(t *testing.T) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"version":2,"projects":{},"recoveries":{}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":3,"projects":{},"recoveries":{}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := newProjectLifecycle(root, time.Now); err == nil {
 		t.Fatal("unknown metadata version accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"version":2,"projects":{},"recoveries":{},"pending_preview":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newProjectLifecycle(root, time.Now); err == nil {
+		t.Fatal("phantom recovery field accepted")
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
@@ -510,6 +530,40 @@ func TestCloseRollbackPreservesRetryAfterCatalogPersistenceFailure(t *testing.T)
 		t.Fatalf("retry=%+v", retry)
 	}
 	_ = app.Shutdown(context.Background())
+}
+
+func TestAutosaveSchedulePersistenceFailureCancelsAndBlocksClose(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root)
+	storage := &lifecycleStorageHarness{locations: map[string]ProjectLocation{"open": {Root: project, EntryPath: "document.ldl"}}, errs: map[string]error{}}
+	app := startLifecycleApp(t, root, project, &dialogHarness{}, storage)
+	opened := app.OpenProject(context.Background(), "open")
+	batch, err := engineprotocol.DecodeSemanticOperationBatch([]byte(`{"operations":[{"operation":"create_subject","subject_kind":"layer","parent_address":"ldl:project:p","id":"autosave","fields":{"display_name":"Autosave","order":"1"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := runtimeprotocol.RuntimeCommitInput{Session: opened.Value.Open.Session, OperationID: "autosave_persist_failure", IdempotencyKey: "autosave_persist_failure_idem", OperationBatch: runtimeprotocol.RuntimeOperationBatch{DocumentID: opened.Value.ProjectID, BaseRevision: opened.Value.Open.CommittedRevision, ExpectedDefinitionHash: opened.Value.Open.CommittedRevision.DefinitionHash, Operations: batch, Preconditions: preconditionsFor(t, "project p \"P\" {}\n")}}
+	cancelled := false
+	originalCancel := app.cancelAutosave
+	app.cancelAutosave = func(host *localdocument.Host, session runtimeprotocol.RuntimeSessionRef) error {
+		cancelled = true
+		return originalCancel(host, session)
+	}
+	app.projects.saveFault = func() error { return errors.New("lifecycle persistence unavailable") }
+	result := app.ControlAutosave(context.Background(), runtimeprotocol.AutosaveControlInput{Action: runtimeprotocol.AutosaveActionSchedule, Session: commit.Session, Commit: &commit})
+	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureRecoveryRequired || !cancelled {
+		t.Fatalf("orphan autosave was not cancelled: result=%+v cancelled=%v", result, cancelled)
+	}
+	assessment := app.PrepareClose(commit.Session)
+	if assessment.Value.CanClose || !slices.Contains(assessment.Value.Blockers, CloseRecoveryRequired) {
+		t.Fatalf("recovery-required autosave allowed close: %+v", assessment)
+	}
+	if closeResult := app.CloseProject(context.Background(), commit.Session); closeResult.Failure == nil || closeResult.Failure.Code != desktopcontract.FailureReconcilePending {
+		t.Fatalf("recovery-required journal detached: %+v", closeResult)
+	}
+	if _, ok := app.projects.recovery(opened.Value.ProjectID); !ok {
+		t.Fatal("recovery journal removed after blocked close")
+	}
 }
 
 func TestLifecycleNegativeBoundariesRemainTyped(t *testing.T) {
@@ -643,6 +697,7 @@ func TestRecoveryJournalTracksDirtyAutosaveAndProviderState(t *testing.T) {
 	}
 	if err := lifecycle.mutate(ref, 0, func(state *sessionLifecycle) {
 		state.pendingPreview, state.ephemeralEdits, state.autosavePending, state.providerPending = true, true, true, true
+		state.recovery = &RecoveryArtifact{Kind: RecoveryPreviewOperations, Payload: json.RawMessage(`{"operations":[]}`)}
 		state.autosave = AutosaveScheduled
 		state.autosaveGeneration = 2
 	}); err != nil {
@@ -659,6 +714,9 @@ func TestRecoveryJournalTracksDirtyAutosaveAndProviderState(t *testing.T) {
 	if len(candidates) != 1 || !candidates[0].PendingPreview || !candidates[0].EphemeralEdits || !candidates[0].AutosavePending || !candidates[0].ProviderPending || candidates[0].Autosave != AutosaveScheduled {
 		t.Fatalf("recovery state=%+v", candidates)
 	}
+	if candidates[0].Recovery == nil || candidates[0].Recovery.Kind != RecoveryPreviewOperations || string(candidates[0].Recovery.Payload) != `{"operations":[]}` {
+		t.Fatalf("recoverable preview payload=%+v", candidates[0].Recovery)
+	}
 }
 
 func TestAutosaveCompletionOutcomesAreClosedAndGenerationBound(t *testing.T) {
@@ -668,13 +726,16 @@ func TestAutosaveCompletionOutcomesAreClosedAndGenerationBound(t *testing.T) {
 		outcome  AutosaveOutcome
 		dirty    bool
 		provider bool
+		terminal CloseBlocker
 	}{
 		{name: "cancelled", result: localdocument.AutosaveResult{Err: context.Canceled}, outcome: AutosaveIdle, dirty: true},
 		{name: "conflict", result: localdocument.AutosaveResult{Err: port.ErrConflict}, outcome: AutosaveConflict, dirty: true},
 		{name: "failure", result: localdocument.AutosaveResult{Err: errors.New("closed failure")}, outcome: AutosaveFailed, dirty: true},
 		{name: "needs_review", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusNeedsReview}}}, outcome: AutosaveNeedsReview, dirty: true},
 		{name: "rejected", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusRejected}}}, outcome: AutosaveFailed, dirty: true},
-		{name: "external_pending", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusCommittedExternalPending, ExternalMaterialization: &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStatePending}}}}, outcome: AutosaveFailed, dirty: true, provider: true},
+		{name: "external_pending", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusCommittedExternalPending, ExternalMaterialization: &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStatePending}}}}, outcome: AutosaveCommitted, terminal: CloseExternalPending},
+		{name: "external_failed", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusCommittedExternalFailed}}}, outcome: AutosaveCommitted, terminal: CloseExternalFailed},
+		{name: "state_stale", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusCommittedStateStale}}}, outcome: AutosaveCommitted, terminal: CloseStateStale},
 		{name: "committed", result: localdocument.AutosaveResult{Result: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusCommitted}}}, outcome: AutosaveCommitted},
 	}
 	for index, test := range tests {
@@ -692,6 +753,7 @@ func TestAutosaveCompletionOutcomesAreClosedAndGenerationBound(t *testing.T) {
 				state.autosaveGeneration = 1
 				state.autosavePending = true
 				state.ephemeralEdits = true
+				state.recovery = &RecoveryArtifact{Kind: RecoveryPreviewOperations, Payload: json.RawMessage(`{"operations":[]}`)}
 				state.autosave = AutosaveScheduled
 			}); err != nil {
 				t.Fatal(err)
@@ -713,6 +775,12 @@ func TestAutosaveCompletionOutcomesAreClosedAndGenerationBound(t *testing.T) {
 			state, _ := lifecycle.session(ref)
 			if state.providerPending != test.provider {
 				t.Fatalf("provider pending=%v", state.providerPending)
+			}
+			if state.terminalBlocker != test.terminal {
+				t.Fatalf("terminal blocker=%q want=%q", state.terminalBlocker, test.terminal)
+			}
+			if (state.terminalRecovery != nil) != (test.terminal != "") {
+				t.Fatalf("terminal recovery=%+v blocker=%q", state.terminalRecovery, test.terminal)
 			}
 		})
 	}
@@ -756,6 +824,7 @@ func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
 	if _, ok := lifecycle.session(runtimeprotocol.RuntimeSessionRef{}); ok {
 		t.Fatal("unknown session resolved")
 	}
+	state, _ = lifecycle.session(ref)
 	lifecycle.saveFault = func() error { return errors.New("persistence unavailable") }
 	if err := lifecycle.completeAutosave(ref, state.generation, state.autosaveGeneration, func(value *sessionLifecycle) { value.autosave = AutosaveCommitted }); err == nil {
 		t.Fatal("autosave persistence failure hidden")
@@ -763,6 +832,14 @@ func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
 	after, _ := lifecycle.session(ref)
 	if after.autosave == AutosaveCommitted {
 		t.Fatal("failed autosave persistence was not rolled back")
+	}
+	status := (&Application{projects: lifecycle}).AutosaveStatus(ref)
+	if status.Failure == nil || status.Failure.Code != desktopcontract.FailureRecoveryRequired || status.Failure.Recovery != desktopcontract.RecoveryOpenRecovery || status.Failure.Retryable {
+		t.Fatalf("autosave persistence failure status=%+v", status)
+	}
+	closeStatus := (&Application{projects: lifecycle}).PrepareClose(ref)
+	if closeStatus.Value.CanClose || !slices.Contains(closeStatus.Value.Blockers, CloseRecoveryRequired) {
+		t.Fatalf("autosave recovery requirement omitted from close=%+v", closeStatus)
 	}
 	failing, err := newProjectLifecycle(t.TempDir(), func() time.Time { return desktopTestNow })
 	if err != nil {
@@ -781,5 +858,11 @@ func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
 	}
 	if err := lifecycle.pin(ref.Scope.DocumentID, true); err == nil {
 		t.Fatal("pin persistence failure hidden")
+	}
+	if err := lifecycle.discardRecovery(ref.Scope.DocumentID); err == nil {
+		t.Fatal("discard persistence failure hidden")
+	}
+	if _, ok := lifecycle.recovery(ref.Scope.DocumentID); !ok {
+		t.Fatal("failed discard removed authoritative in-memory recovery")
 	}
 }

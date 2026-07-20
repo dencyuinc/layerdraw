@@ -49,7 +49,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 		}
 	}
 	configured.OnBeforeClose = func(ctx context.Context) bool {
-		assessment := application.PrepareQuit()
+		assessment := application.FenceQuit(ctx)
 		return assessment.Outcome != protocolcommon.OutcomeSuccess || !assessment.Value.CanQuit
 	}
 	configured.OnShutdown = func(ctx context.Context) {

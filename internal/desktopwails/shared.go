@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os/user"
 	"reflect"
+	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -16,6 +17,8 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
+	"github.com/dencyuinc/layerdraw/internal/host"
+	"github.com/dencyuinc/layerdraw/internal/localdocument"
 )
 
 const (
@@ -24,11 +27,16 @@ const (
 	desktopEndpoint = "layerdraw-desktop"
 )
 
-// NewSharedConfig supplies the existing in-process owners used by the native
-// lifecycle executable. Owner-specific packages can replace these explicit
-// adapters as their packaged implementations land without changing Wails.
+var packagedCapabilities = []protocolcommon.CapabilityID{
+	desktopcontract.CapabilityAuthoring,
+}
+
+// NewSharedConfig wires the Engine and Runtime owners that are actually
+// packaged in Desktop. Other typed binding slots stay fail-closed and their
+// capabilities are reported disabled until their production owners land.
 func NewSharedConfig(root string) (desktopapp.Config, error) {
-	clients, err := unavailableClients()
+	owner := &sharedOwner{}
+	clients, err := packagedClients(owner)
 	if err != nil {
 		return desktopapp.Config{}, err
 	}
@@ -37,25 +45,147 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		desktopcontract.ComponentNativeQuery, desktopcontract.ComponentSearchIndex,
 		desktopcontract.ComponentEmbeddingProvider, desktopcontract.ComponentRegistryClient,
 		desktopcontract.ComponentReview, desktopcontract.ComponentNativeExporters,
-		desktopcontract.ComponentBindingShell,
 	} {
-		adapters[id] = lifecycleComponent{}
+		adapters[id] = disabledComponent{}
 	}
+	adapters[desktopcontract.ComponentBindingShell] = owner
 	return desktopapp.Config{
 		Root: root, ReleaseVersion: desktopRelease, EndpointInstanceID: desktopEndpoint,
 		ReleaseManifestDigest: desktopDigest, Adapters: adapters, Bindings: clients,
-		Capabilities: nativeCapabilities{},
+		Capabilities:                  nativeCapabilities{},
+		EffectiveRequiredCapabilities: append([]protocolcommon.CapabilityID(nil), packagedCapabilities...),
+		DisabledComponents: []desktopcontract.ComponentID{
+			desktopcontract.ComponentNativeQuery, desktopcontract.ComponentSearchIndex,
+			desktopcontract.ComponentEmbeddingProvider, desktopcontract.ComponentRegistryClient,
+			desktopcontract.ComponentReview, desktopcontract.ComponentNativeExporters,
+			desktopcontract.ComponentMCPHost,
+		},
 		HostPorts: desktopcontract.HostPorts{
 			Credentials: unavailableCredentials{}, LocalActor: platformActor{},
-			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{}, MCP: localMCP{},
+			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{}, MCP: disabledMCP{},
 		},
 	}, nil
 }
 
-type lifecycleComponent struct{}
+type disabledComponent struct{}
 
-func (lifecycleComponent) Start(context.Context) error    { return nil }
-func (lifecycleComponent) Shutdown(context.Context) error { return nil }
+func (disabledComponent) Start(context.Context) error    { return nil }
+func (disabledComponent) Shutdown(context.Context) error { return nil }
+
+// sharedOwner owns the in-process endpoint used by generated Wails Engine and
+// Runtime bindings. It is started with the binding shell and closed before the
+// application-local project host shuts down.
+type sharedOwner struct {
+	mu       sync.RWMutex
+	local    *localdocument.Host
+	endpoint *host.Endpoint
+	engine   *engineendpoint.HostEngineFacade
+}
+
+func (o *sharedOwner) BindLocalHost(localHost *localdocument.Host) error {
+	if localHost == nil {
+		return errors.New("desktop local host is unavailable")
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.endpoint != nil {
+		return errors.New("desktop shared owner is already started")
+	}
+	o.local = localHost
+	return nil
+}
+
+func (o *sharedOwner) Start(context.Context) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.endpoint != nil {
+		return nil
+	}
+	if o.local == nil {
+		return errors.New("desktop local host is not bound")
+	}
+	engine, err := engineendpoint.NewHostEngineFacade(desktopRelease, "unknown", desktopDigest, desktopEndpoint, engineendpoint.TransportInProcess)
+	if err != nil {
+		return err
+	}
+	endpoint, err := host.New(host.Config{LocalHost: o.local, Engine: engine})
+	if err != nil {
+		return err
+	}
+	o.endpoint, o.engine = endpoint, engine
+	return nil
+}
+
+func (o *sharedOwner) Shutdown(context.Context) error {
+	o.mu.Lock()
+	o.endpoint, o.engine, o.local = nil, nil, nil
+	o.mu.Unlock()
+	return nil
+}
+
+func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
+	o.mu.RLock()
+	endpoint, engine := o.endpoint, o.engine
+	o.mu.RUnlock()
+	if endpoint == nil || engine == nil {
+		return desktopcontract.ExchangeResult{}, errors.New("desktop shared owner is not started")
+	}
+	if exchange.Operation == string(engineprotocol.HandshakeRequestEnvelopeOperationValue) {
+		request, err := engineprotocol.DecodeHandshakeRequestEnvelope(exchange.Control)
+		if err != nil {
+			return desktopcontract.ExchangeResult{}, err
+		}
+		response, _, err := engine.Descriptor().Negotiate(ctx, request)
+		if err != nil {
+			return desktopcontract.ExchangeResult{}, err
+		}
+		control, err := engineprotocol.EncodeHandshakeResponseEnvelope(response)
+		return desktopcontract.ExchangeResult{Operation: exchange.Operation, Control: control}, err
+	}
+	if exchange.Operation == string(runtimeHandshakeOperation()) {
+		response, _, err := endpoint.Handshake(ctx, exchange.Control)
+		if err != nil {
+			return desktopcontract.ExchangeResult{}, err
+		}
+		return desktopcontract.ExchangeResult{Operation: response.Operation, Control: response.Control}, nil
+	}
+	plan, terminal, err := endpoint.Prepare(ctx, exchange.Operation, exchange.Control)
+	if err != nil {
+		return desktopcontract.ExchangeResult{}, err
+	}
+	if terminal != nil {
+		return desktopcontract.ExchangeResult{Operation: terminal.Operation, Control: terminal.Control}, nil
+	}
+	sink := &exchangeBlobSink{}
+	response, err := plan.ExecuteDispatch(ctx, exchangeBlobSource(exchange.Blobs), sink)
+	if err != nil {
+		return desktopcontract.ExchangeResult{}, err
+	}
+	return desktopcontract.ExchangeResult{Operation: response.Operation, Control: response.Control, Blobs: sink.blobs}, nil
+}
+
+func runtimeHandshakeOperation() protocolcommon.CapabilityID { return "runtime.handshake" }
+
+type exchangeBlobSource []desktopcontract.Blob
+
+func (source exchangeBlobSource) Definitions(context.Context) ([]engineendpoint.BlobDefinition, error) {
+	result := make([]engineendpoint.BlobDefinition, len(source))
+	for index, blob := range source {
+		bytes := append([]byte(nil), blob.Bytes...)
+		result[index] = engineendpoint.BlobDefinition{BlobID: blob.ID, Owned: &engineendpoint.OwnedBlob{Bytes: bytes, Release: func() {}}}
+	}
+	return result, nil
+}
+
+type exchangeBlobSink struct{ blobs []desktopcontract.Blob }
+
+func (sink *exchangeBlobSink) Publish(_ context.Context, blobs []engineendpoint.OutputBlob) error {
+	sink.blobs = make([]desktopcontract.Blob, len(blobs))
+	for index, blob := range blobs {
+		sink.blobs[index] = desktopcontract.Blob{ID: blob.Ref.BlobID, Bytes: append([]byte(nil), blob.Bytes...)}
+	}
+	return nil
+}
 
 type platformActor struct{}
 
@@ -91,12 +221,14 @@ func (unavailableDelegations) Revoke(context.Context, desktopcontract.Delegation
 	return closedFailure[accesscore.DelegationSnapshot](desktopcontract.FailureAgentDelegation)
 }
 
-type localMCP struct{}
+// disabledMCP is a lifecycle-compatible closed port. It opens no listener and
+// its tool/resource capabilities remain disabled in nativeCapabilities.
+type disabledMCP struct{}
 
-func (localMCP) Start(context.Context) desktopcontract.Result[struct{}] {
+func (disabledMCP) Start(context.Context) desktopcontract.Result[struct{}] {
 	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess}
 }
-func (localMCP) Shutdown(context.Context) desktopcontract.Result[struct{}] {
+func (disabledMCP) Shutdown(context.Context) desktopcontract.Result[struct{}] {
 	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess}
 }
 
@@ -126,10 +258,14 @@ func (nativeCapabilities) Negotiate(ctx context.Context, manifest desktopcontrac
 		return protocolcommon.HandshakeResult{}, errors.New("desktop capability negotiation failed")
 	}
 	value := *response.Payload
+	enabled := make(map[protocolcommon.CapabilityID]bool, len(packagedCapabilities))
+	for _, id := range packagedCapabilities {
+		enabled[id] = true
+	}
 	ids := append(append([]protocolcommon.CapabilityID(nil), manifest.RequiredCapabilities...), manifest.OptionalCapabilities...)
 	value.CapabilityStatuses = make([]protocolcommon.RequestedCapabilityStatus, 0, len(ids))
 	for _, id := range ids {
-		status := protocolcommon.RequestedCapabilityStatus{CapabilityID: id, Enabled: id != desktopcontract.CapabilityExternalStorage, ProtocolVersion: desktopcontract.DesktopProtocolVersion}
+		status := protocolcommon.RequestedCapabilityStatus{CapabilityID: id, Enabled: enabled[id], ProtocolVersion: desktopcontract.DesktopProtocolVersion}
 		if !status.Enabled {
 			reason := protocolcommon.UnavailableReasonNotConfigured
 			status.UnavailableReason = &reason
@@ -151,26 +287,30 @@ func (closedOwnerDecoder) DecodeRequest(expected string, control []byte) (deskto
 	}
 	return desktopcontract.OwnerEnvelopeIdentity{Operation: value.Operation, RequestID: value.RequestID}, nil
 }
-func (closedOwnerDecoder) DecodeResponse(expected string, control []byte) (desktopcontract.OwnerResponseIdentity, error) {
+func (closedOwnerDecoder) DecodeResponse(string, []byte) (desktopcontract.OwnerResponseIdentity, error) {
 	return desktopcontract.OwnerResponseIdentity{}, errors.New("owner unavailable")
 }
 
-func unavailableClients() (desktopcontract.ClientSet, error) {
+func packagedClients(owner *sharedOwner) (desktopcontract.ClientSet, error) {
 	clients := desktopcontract.ClientSet{}
 	root := reflect.ValueOf(&clients).Elem()
 	methodType := reflect.TypeOf(desktopcontract.ClientMethod(nil))
-	method := reflect.MakeFunc(methodType, func([]reflect.Value) []reflect.Value {
-		return []reflect.Value{reflect.ValueOf(desktopcontract.ExchangeResult{}), reflect.ValueOf(errors.New("shared owner binding unavailable"))}
+	available := reflect.ValueOf(desktopcontract.ClientMethod(owner.Invoke))
+	unavailable := reflect.MakeFunc(methodType, func([]reflect.Value) []reflect.Value {
+		return []reflect.Value{reflect.ValueOf(desktopcontract.ExchangeResult{}), reflect.ValueOf(errors.New("desktop owner is not packaged"))}
 	})
 	decoder := reflect.ValueOf(closedOwnerDecoder{})
-	for i := 0; i < root.NumField(); i++ {
-		owner := root.Field(i)
-		for j := 0; j < owner.NumField(); j++ {
-			field := owner.Field(j)
+	for index := 0; index < root.NumField(); index++ {
+		ownerField := root.Field(index)
+		actual := root.Type().Field(index).Name == "Engine" || root.Type().Field(index).Name == "Runtime"
+		for fieldIndex := 0; fieldIndex < ownerField.NumField(); fieldIndex++ {
+			field := ownerField.Field(fieldIndex)
 			if field.Kind() == reflect.Interface {
 				field.Set(decoder)
+			} else if actual {
+				field.Set(available)
 			} else {
-				field.Set(method)
+				field.Set(unavailable)
 			}
 		}
 	}

@@ -75,6 +75,13 @@ func (s *fakeScheduler) fireLast() {
 	}
 }
 
+func (s *fakeScheduler) forceFire(index int) {
+	s.mu.Lock()
+	job := s.jobs[index]
+	s.mu.Unlock()
+	job.fn()
+}
+
 func newTestHost(t *testing.T, root string, edit func(*Config)) *Host {
 	t.Helper()
 	config := Config{Root: root, Clock: &fakeClock{now: time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)}, Random: &countingReader{}}
@@ -624,6 +631,95 @@ func TestAutosaveUsesInjectedSchedulerAndCloseCancels(t *testing.T) {
 		t.Fatalf("cancelled autosave ran: %+v", value)
 	default:
 	}
+}
+
+func TestAutosaveCancelWaitsForRunningResultAndOldCallbackCannotDeleteReplacement(t *testing.T) {
+	root := t.TempDir()
+	source := "project p \"P\" {}\n"
+	project := writeProject(t, root, source)
+	scheduler := &fakeScheduler{}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var faultMu sync.Mutex
+	blockWrite := false
+	blocked := false
+	host := newTestHost(t, filepath.Join(root, "data"), func(c *Config) {
+		c.Scheduler = scheduler
+		c.AdapterOptions = local.Options{Fault: func(operation, _ string) error {
+			faultMu.Lock()
+			shouldBlock := blockWrite && !blocked && operation == "write"
+			if shouldBlock {
+				blocked = true
+			}
+			faultMu.Unlock()
+			if shouldBlock {
+				close(started)
+				<-release
+			}
+			return nil
+		}}
+	})
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := runtimeprotocol.RuntimeCommitInput{
+		Session:        opened.Session.Open.Session,
+		OperationID:    "autosave_running",
+		IdempotencyKey: "autosave_running_key",
+		AuthoringProof: runtimeprotocol.AuthoringProof{},
+		OperationBatch: runtimeprotocol.RuntimeOperationBatch{DocumentID: opened.Session.Open.CommittedRevision.DocumentID, BaseRevision: opened.Session.Open.CommittedRevision, ExpectedDefinitionHash: opened.Session.Open.CommittedRevision.DefinitionHash, Operations: createLayerBatch(t, "running"), Preconditions: allPreconditions(t, source)},
+	}
+	original := make(chan AutosaveResult, 1)
+	if _, err := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: commit.Session, Action: runtimeprotocol.AutosaveActionSchedule, Commit: &commit}, original); err != nil {
+		t.Fatal(err)
+	}
+	faultMu.Lock()
+	blockWrite = true
+	faultMu.Unlock()
+	go scheduler.fireLast()
+	<-started
+	cancelled := make(chan AutosaveResult, 1)
+	cancelDone := make(chan error, 1)
+	go func() {
+		_, cancelErr := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: commit.Session, Action: runtimeprotocol.AutosaveActionCancel}, cancelled)
+		cancelDone <- cancelErr
+	}()
+	select {
+	case err := <-cancelDone:
+		t.Fatalf("running autosave cancel returned before terminal result: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-cancelDone; err != nil {
+		t.Fatal(err)
+	}
+	for name, terminal := range map[string]AutosaveResult{"original": <-original, "cancel": <-cancelled} {
+		if terminal.Err != nil || terminal.Result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommitted {
+			t.Fatalf("%s terminal result=%+v", name, terminal)
+		}
+	}
+
+	replacement := commit
+	replacement.OperationID = "autosave_replacement"
+	replacement.IdempotencyKey = "autosave_replacement_key"
+	first := make(chan AutosaveResult, 1)
+	if _, err := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: commit.Session, Action: runtimeprotocol.AutosaveActionSchedule, Commit: &commit}, first); err != nil {
+		t.Fatal(err)
+	}
+	second := make(chan AutosaveResult, 1)
+	if _, err := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: replacement.Session, Action: runtimeprotocol.AutosaveActionSchedule, Commit: &replacement}, second); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.forceFire(1)
+	host.mu.Lock()
+	jobs := len(host.autosaves)
+	host.mu.Unlock()
+	if jobs != 1 {
+		t.Fatalf("stale callback deleted replacement job: jobs=%d", jobs)
+	}
+	scheduler.fireLast()
+	<-second
 }
 
 func TestRecoveryConvergesPublishedHeadAfterJournalFailure(t *testing.T) {
