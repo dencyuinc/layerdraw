@@ -1,20 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-import {expect, test as base} from "@playwright/test";
-
-const test = base.extend({
-  page: async ({baseURL, browserName, playwright}, use) => {
-    const browser = await playwright[browserName].launch();
-    const context = await browser.newContext(baseURL === undefined ? {} : {baseURL});
-    const page = await context.newPage();
-    try {
-      await use(page);
-    } finally {
-      await context.close();
-      await browser.close();
-    }
-  },
-});
+import {expect, test} from "@playwright/test";
 
 const parityCases = [
   "single_module_project",

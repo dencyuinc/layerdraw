@@ -173,6 +173,14 @@ func (driver *fakeWorkbenchDriver) PreviewFragment(_ context.Context, input engi
 	return driver.plan, nil
 }
 
+func (driver *fakeWorkbenchDriver) PreviewOperations(_ context.Context, _ engineprotocol.PreviewOperationsInput) (engineprotocol.WorkbenchPreviewResult, []OutputBlob, error) {
+	var result engineprotocol.WorkbenchPreviewResult
+	if err := convertStruct(driver.plan.Preview, &result); err != nil {
+		return result, nil, err
+	}
+	return result, sourcePlanOutputBlobs(driver.plan), driver.err
+}
+
 func (driver *fakeWorkbenchDriver) FormatScope(_ context.Context, input engine.FormatScopeInput) (engine.SourcePlannerPlan, error) {
 	driver.generation = input.DocumentGeneration
 	return driver.plan, nil
@@ -212,6 +220,15 @@ func TestWorkbenchSourcePlanningDispatchesGeneratedOperations(t *testing.T) {
 	}
 	fragment := []byte("entity_type db \"DB\" {}\n")
 	fragmentRef := testBlobRef("fragment", "text/plain; charset=utf-8", fragment)
+	targetAddress := semantic.StableAddress("ldl:project:p:entity:alpha")
+	newID := semantic.LocalIdentifier("alpha_renamed")
+	semanticBatch := engineprotocol.SemanticOperationBatch{Operations: []engineprotocol.SemanticOperation{{
+		NonCreateSemanticOperation: &engineprotocol.NonCreateSemanticOperation{
+			Operation:     engineprotocol.NonCreateSemanticOperationKindRenameSubject,
+			TargetAddress: &targetAddress,
+			NewID:         &newID,
+		},
+	}}}
 
 	tests := []struct {
 		name      string
@@ -262,6 +279,22 @@ func TestWorkbenchSourcePlanningDispatchesGeneratedOperations(t *testing.T) {
 				return response.Payload, err
 			},
 			source: sourceFor(fragmentRef, fragment),
+		},
+		{
+			name:      "preview operations",
+			operation: OperationPreviewOperations,
+			control: encodePreviewOperationsForTest(t, engineprotocol.PreviewOperationsRequestEnvelope{
+				Operation: engineprotocol.PreviewOperationsRequestEnvelopeOperationValue,
+				Payload: engineprotocol.PreviewOperationsInput{
+					Batch: semanticBatch, Limits: limits, Preconditions: preconditions,
+				},
+				Protocol: bootstrapProtocolRef(), RequestID: "preview-operations",
+			}),
+			decode: func(control []byte) (*engineprotocol.WorkbenchPreviewResult, error) {
+				response, err := engineprotocol.DecodePreviewOperationsResponseEnvelope(control)
+				return response.Payload, err
+			},
+			source: &memoryBlobSource{},
 		},
 		{
 			name:      "format scope",
@@ -319,6 +352,108 @@ func TestWorkbenchSourcePlanningDispatchesGeneratedOperations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEngineCompileDriverPreviewOperationsRetainsExactApplyCandidate(t *testing.T) {
+	const source = `project p "Project" {}
+layers {
+  app "Application" @10
+}
+entity_type service "Service" {
+  representation shape rect
+  columns {
+    note "Note" string
+  }
+}
+entities service @app {
+  alpha "Alpha"
+}
+`
+	compiler := engine.New(engine.BuildInfo{Workbench: engine.WorkbenchConfig{EndpointInstanceID: "preview-operations-test"}})
+	compileInput := engine.CompileInput{
+		Mode: engine.CompileProject, EntryPath: "document.ldl",
+		ProjectSourceTree:    map[string][]byte{"document.ldl": []byte(source)},
+		ResolvedDependencies: engine.ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1},
+	}
+	opened, err := compiler.OpenDocument(context.Background(), engine.OpenDocumentInput{
+		CompileInput: compileInput, RequestedLimits: engine.WorkbenchLimits{MaxItems: 1_000, MaxOutputBytes: 1 << 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := compiler.Compile(context.Background(), compileInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preconditions := generatedPreviewPreconditions(compiled.Snapshot(), opened.DocumentGeneration)
+	target := semantic.StableAddress("ldl:project:p:entity:alpha")
+	newID := semantic.LocalIdentifier("alpha_renamed")
+	input := engineprotocol.PreviewOperationsInput{
+		Batch: engineprotocol.SemanticOperationBatch{Operations: []engineprotocol.SemanticOperation{{
+			NonCreateSemanticOperation: &engineprotocol.NonCreateSemanticOperation{
+				Operation:     engineprotocol.NonCreateSemanticOperationKindRenameSubject,
+				TargetAddress: &target, NewID: &newID,
+			},
+		}}},
+		Limits:        engineprotocol.WorkbenchLimits{MaxItems: "1000", MaxOutputBytes: "1048576"},
+		Preconditions: preconditions,
+	}
+	driver := engineCompileDriver{compiler: compiler}
+	preview, blobs, err := driver.PreviewOperations(context.Background(), input)
+	if err != nil || preview.Status != "valid" || preview.PreviewID == nil || preview.PreviewDigest == nil || len(blobs) == 0 {
+		t.Fatalf("PreviewOperations() = %+v blobs=%d err=%v", preview, len(blobs), err)
+	}
+	applied, err := compiler.ApplyToHandle(context.Background(), engine.ApplyToHandleInput{
+		BaseGeneration: opened.DocumentGeneration,
+		PreviewDigest:  engine.SourcePlannerDigest(*preview.PreviewDigest),
+		PreviewID: engine.SourcePlannerPreviewID{
+			Namespace: string(preview.PreviewID.EndpointInstanceID), Value: preview.PreviewID.Value,
+		},
+	})
+	if err != nil || applied.DocumentGeneration.Value != 2 {
+		t.Fatalf("ApplyToHandle() = %+v, %v", applied, err)
+	}
+	read, err := compiler.ReadModules(context.Background(), engine.ReadModulesInput{
+		DocumentGeneration: applied.DocumentGeneration,
+		Limits:             engine.WorkbenchLimits{MaxItems: 10, MaxOutputBytes: 1 << 20},
+		Modules:            []engine.ModuleRef{{Origin: engine.SourceOrigin{Kind: "project"}, ModulePath: "document.ldl"}},
+	})
+	if err != nil || len(read.Items) != 1 || !bytes.Contains(read.Items[0].SourceChunk.Bytes, []byte("alpha_renamed")) {
+		t.Fatalf("retained candidate was not applied: %+v, %v", read, err)
+	}
+
+	input.Limits.MaxItems = "invalid"
+	if _, _, err := driver.PreviewOperations(context.Background(), input); err == nil {
+		t.Fatal("invalid generated limits reached the Engine")
+	}
+}
+
+func generatedPreviewPreconditions(snapshot engine.Snapshot, generation engine.DocumentGeneration) engineprotocol.EngineEditPreconditions {
+	result := engineprotocol.EngineEditPreconditions{
+		DocumentGeneration: engineprotocol.DocumentGeneration{
+			DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: protocolcommon.EndpointInstanceID(generation.DocumentHandle.EndpointInstanceID), Value: generation.DocumentHandle.Value},
+			Value:          protocolcommon.CanonicalUint64(strconv.FormatUint(generation.Value, 10)),
+		},
+		ExpectedSubjectHashes: []engineprotocol.ExpectedHash{},
+		ExpectedSubtreeHashes: []engineprotocol.ExpectedHash{},
+		ExpectedChildSets:     []engineprotocol.ExpectedChildSet{},
+	}
+	for _, value := range snapshot.SubjectSemanticHashes {
+		result.ExpectedSubjectHashes = append(result.ExpectedSubjectHashes, engineprotocol.ExpectedHash{Address: semantic.StableAddress(value.Address), Hash: protocolcommon.Digest(value.Hash)})
+	}
+	for _, value := range snapshot.SubtreeHashes {
+		result.ExpectedSubtreeHashes = append(result.ExpectedSubtreeHashes, engineprotocol.ExpectedHash{Address: semantic.StableAddress(value.OwnerAddress), Hash: protocolcommon.Digest(value.Hash)})
+	}
+	for _, value := range snapshot.ChildSetHashes {
+		result.ExpectedChildSets = append(result.ExpectedChildSets, engineprotocol.ExpectedChildSet{OwnerAddress: semantic.StableAddress(value.OwnerAddress), ChildKind: semantic.SubjectKind(value.ChildKind), Hash: protocolcommon.Digest(value.Hash)})
+	}
+	sources := []engineprotocol.ExpectedSourceDigest{}
+	for _, file := range snapshot.SourceMap.Files {
+		origin := semantic.SourceOrigin{Kind: semantic.OriginKind(file.Origin.Kind)}
+		sources = append(sources, engineprotocol.ExpectedSourceDigest{Module: semantic.ModuleRef{Origin: origin, ModulePath: file.ModulePath}, Digest: protocolcommon.Digest(file.Digest)})
+	}
+	result.ExpectedSourceDigests = &sources
+	return result
 }
 
 func TestWorkbenchApplyToHandleDispatchesGeneratedOperation(t *testing.T) {
@@ -1566,6 +1701,7 @@ func TestWorkbenchTerminalEnvelopeSupportsEveryOperation(t *testing.T) {
 		OperationReadReferences,
 		OperationPreviewSourcePatch,
 		OperationPreviewFragment,
+		OperationPreviewOperations,
 		OperationFormatScope,
 		OperationOrganizeWorkspace,
 		OperationApplyToHandle,
@@ -1764,6 +1900,12 @@ func encodePreviewSourcePatchForTest(t *testing.T, value engineprotocol.PreviewS
 func encodePreviewFragmentForTest(t *testing.T, value engineprotocol.PreviewFragmentRequestEnvelope) []byte {
 	t.Helper()
 	encoded, err := engineprotocol.EncodePreviewFragmentRequestEnvelope(value)
+	return mustEncode(t, encoded, err)
+}
+
+func encodePreviewOperationsForTest(t *testing.T, value engineprotocol.PreviewOperationsRequestEnvelope) []byte {
+	t.Helper()
+	encoded, err := engineprotocol.EncodePreviewOperationsRequestEnvelope(value)
 	return mustEncode(t, encoded, err)
 }
 

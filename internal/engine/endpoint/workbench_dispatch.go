@@ -4,6 +4,8 @@ package endpoint
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/engine"
+	"github.com/dencyuinc/layerdraw/internal/engine/internal/sourceplanner"
 )
 
 const (
@@ -49,6 +52,7 @@ type workbenchDriver interface {
 	ReadReferences(context.Context, engine.ReadReferencesInput) (engine.ReadReferencesResult, error)
 	PreviewSourcePatch(context.Context, engine.PreviewSourcePatchInput) (engine.SourcePlannerPlan, error)
 	PreviewFragment(context.Context, engine.PreviewFragmentInput) (engine.SourcePlannerPlan, error)
+	PreviewOperations(context.Context, engineprotocol.PreviewOperationsInput) (engineprotocol.WorkbenchPreviewResult, []OutputBlob, error)
 	FormatScope(context.Context, engine.FormatScopeInput) (engine.SourcePlannerPlan, error)
 	OrganizeWorkspace(context.Context, engine.OrganizeWorkspaceInput) (engine.SourcePlannerPlan, error)
 	ApplyToHandle(context.Context, engine.ApplyToHandleInput) (engine.ApplyToHandleResult, error)
@@ -122,6 +126,51 @@ func (driver engineCompileDriver) PreviewSourcePatch(ctx context.Context, input 
 }
 func (driver engineCompileDriver) PreviewFragment(ctx context.Context, input engine.PreviewFragmentInput) (engine.SourcePlannerPlan, error) {
 	return driver.compiler.PreviewFragment(ctx, input)
+}
+func (driver engineCompileDriver) PreviewOperations(ctx context.Context, input engineprotocol.PreviewOperationsInput) (engineprotocol.WorkbenchPreviewResult, []OutputBlob, error) {
+	mapped, err := MapPreviewOperationsPlanInput(engine.CompileInput{}, engine.Snapshot{}, input)
+	if err != nil {
+		return engineprotocol.WorkbenchPreviewResult{}, nil, err
+	}
+	planned, err := driver.compiler.PlanWorkbenchSemanticEdits(ctx, mapped)
+	if err != nil {
+		return engineprotocol.WorkbenchPreviewResult{}, nil, err
+	}
+	base := input.Preconditions.DocumentGeneration
+	proposed := base
+	generation, err := strconv.ParseUint(string(base.Value), 10, 64)
+	if err != nil || generation == ^uint64(0) {
+		return engineprotocol.WorkbenchPreviewResult{}, nil, fmt.Errorf("invalid semantic preview generation")
+	}
+	proposed.Value = protocolcommon.CanonicalUint64(strconv.FormatUint(generation+1, 10))
+	seed := sha256.Sum256([]byte(planned.Plan.SourceDiff.Digest + "\x00" + planned.Plan.SemanticDiff.Digest + "\x00" + string(base.Value)))
+	identity := SemanticPreviewIdentity{
+		BaseGeneration:     base,
+		PreviewID:          engineprotocol.PreviewID{EndpointInstanceID: base.DocumentHandle.EndpointInstanceID, Value: "preview_" + hex.EncodeToString(seed[:12])},
+		ProposedGeneration: proposed,
+	}
+	result, blobs, err := MapSemanticEditPlanResult(planned.Plan, identity, mapped.Limits)
+	if err != nil {
+		return engineprotocol.WorkbenchPreviewResult{}, nil, err
+	}
+	if result.Status == "valid" {
+		var preview sourceplanner.WorkbenchPreviewResult
+		if err := convertStruct(result, &preview); err != nil {
+			return engineprotocol.WorkbenchPreviewResult{}, nil, err
+		}
+		var candidate sourceplanner.CompileInput
+		if err := convertStruct(planned.Candidate, &candidate); err != nil {
+			return engineprotocol.WorkbenchPreviewResult{}, nil, err
+		}
+		attachments := make(sourceplanner.PlannerBlobs, len(blobs))
+		for _, blob := range blobs {
+			attachments[blob.Ref.BlobID] = append([]byte(nil), blob.Bytes...)
+		}
+		if err := driver.compiler.RetainWorkbenchSemanticPreview(ctx, planned.Generation, sourceplanner.SourcePlan{Preview: preview, Candidate: candidate, Attachments: attachments}); err != nil {
+			return engineprotocol.WorkbenchPreviewResult{}, nil, err
+		}
+	}
+	return result, blobs, nil
 }
 func (driver engineCompileDriver) FormatScope(ctx context.Context, input engine.FormatScopeInput) (engine.SourcePlannerPlan, error) {
 	return driver.compiler.FormatScope(ctx, input)
@@ -661,6 +710,14 @@ func workbenchPayloadRunner(operation string, control []byte) (any, func(context
 		return request.Payload, runSourcePlan[engine.PreviewFragmentInput](request.Payload, func(ctx context.Context, driver workbenchDriver, input engine.PreviewFragmentInput) (engine.SourcePlannerPlan, error) {
 			return driver.PreviewFragment(ctx, input)
 		}), nil
+	case OperationPreviewOperations:
+		request, err := engineprotocol.DecodePreviewOperationsRequestEnvelope(control)
+		if err != nil {
+			return nil, nil, err
+		}
+		return request.Payload, func(ctx context.Context, driver workbenchDriver, _ map[string][]byte) (any, []OutputBlob, error) {
+			return driver.PreviewOperations(ctx, request.Payload)
+		}, nil
 	case OperationFormatScope:
 		request, err := engineprotocol.DecodeFormatScopeRequestEnvelope(control)
 		if err != nil {
@@ -865,6 +922,14 @@ func encodeWorkbenchTerminal(operation string, payload any, diagnostics []semant
 			return nil, err
 		}
 		return engineprotocol.EncodePreviewFragmentResponseEnvelope(engineprotocol.PreviewFragmentResponseEnvelope{Diagnostics: diagnostics, EngineRelease: release, Failure: optionalFailure(hasFailure, failure), Outcome: outcome, Payload: optionalPayload(outcome, out), Protocol: bootstrapProtocolRef(), RequestID: requestID})
+	case OperationPreviewOperations:
+		var out engineprotocol.WorkbenchPreviewResult
+		if typed, ok := payload.(engineprotocol.WorkbenchPreviewResult); ok && outcome == protocolcommon.OutcomeSuccess {
+			out = typed
+		} else if err := mapPayload(&out); err != nil {
+			return nil, err
+		}
+		return engineprotocol.EncodePreviewOperationsResponseEnvelope(engineprotocol.PreviewOperationsResponseEnvelope{Diagnostics: diagnostics, EngineRelease: release, Failure: optionalFailure(hasFailure, failure), Outcome: outcome, Payload: optionalPayload(outcome, out), Protocol: bootstrapProtocolRef(), RequestID: requestID})
 	case OperationFormatScope:
 		var out engineprotocol.WorkbenchPreviewResult
 		if err := mapPayload(&out); err != nil {
@@ -987,6 +1052,12 @@ func collectBlobRefs(value reflect.Value, refs *[]protocolcommon.BlobRef) {
 }
 
 func collectOutputBlobs(value any) []OutputBlob {
+	if applied, ok := value.(engine.ApplyToHandleResult); ok {
+		return sourcePlanOutputBlobs(engine.SourcePlannerPlan{
+			Preview:     sourceplanner.WorkbenchPreviewResult{SourceDiff: applied.SourceDiff},
+			Attachments: applied.Attachments,
+		})
+	}
 	blobs := []OutputBlob{}
 	collectOutputBlobsValue(reflect.ValueOf(value), &blobs)
 	return blobs
