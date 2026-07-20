@@ -38,10 +38,10 @@ try {
   }
   Install-LayerDraw $PreviousInstaller
   $executable = Join-Path $install "LayerDraw.exe"
-  $host = Join-Path $install "runtime\layerdraw-host.exe"
-  if (-not (Test-Path $host)) { throw "packaged MCP Host is missing" }
+  $companionHost = Join-Path $install "runtime\layerdraw-host.exe"
+  if (-not (Test-Path $companionHost)) { throw "packaged MCP Host is missing" }
   if (-not (Test-Path (Join-Path $install "legal\desktop-capabilities.json"))) { throw "capability declaration is missing" }
-  if (-not (Test-Path (Join-Path $install "legal\host\layerdraw-host.cdx.json"))) { throw "MCP Host SBOM is missing" }
+  if (-not (Test-Path (Join-Path $install "legal\host\layerdraw-host.exe.cdx.json"))) { throw "MCP Host SBOM is missing" }
   $developmentAssets = Get-ChildItem -Recurse -File $install | Where-Object { $_.Extension -eq ".map" -or $_.FullName -match "(testdata|test-fixtures)" }
   if ($developmentAssets) { throw "Windows installer contains development-only assets" }
   Invoke-Probe $executable "initialize"
@@ -60,7 +60,7 @@ try {
   Install-LayerDraw $CurrentInstaller
   Invoke-Probe $executable "verify"
   if ($env:LAYERDRAW_EXPECT_SIGNED -eq "1") {
-    foreach ($signedBinary in @($executable, $host)) {
+    foreach ($signedBinary in @($executable, $companionHost)) {
       if ((Get-AuthenticodeSignature $signedBinary).Status -ne "Valid") { throw "installed binary signature is not valid: $signedBinary" }
     }
   }
