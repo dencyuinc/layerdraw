@@ -44,7 +44,7 @@ import {
   type EngineClientCreationOptions,
 } from "./index.js";
 import { createInternalEngineClient } from "./internal/client.js";
-import { dataObject } from "./internal/guards.js";
+import { compareUtf8, dataObject, strictArray, utf8ByteLength } from "./internal/guards.js";
 import { protocolBlobRefCollectors } from "./internal/protocol-collectors.js";
 import {
   InternalTransportFault,
@@ -373,19 +373,6 @@ function controlDepth(text: string): number {
   return maximum;
 }
 
-function utf8Length(value: string): number {
-  return encoder.encode(value).byteLength;
-}
-
-function compareUtf8(left: string, right: string): number {
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  for (let index = 0; index < Math.min(a.length, b.length); index++) {
-    if (a[index] !== b[index]) return (a[index] ?? 0) - (b[index] ?? 0);
-  }
-  return a.length - b.length;
-}
-
 function fault(kind: "transport" | "decode", code: ConstructorParameters<typeof InternalTransportFault>[0]["code"], retryable: boolean): InternalTransportFault {
   return new InternalTransportFault({ kind, code, retryable });
 }
@@ -463,11 +450,11 @@ function createWailsTransport(bindings: Partial<Record<GeneratedMethodName, Wail
       for (const blob of input.blobs) {
         const length = blob.bytes.byteLength;
         const idLength = typeof blob.blobId === "string" && blob.blobId.length <= limits.maxBlobIdBytes
-          ? utf8Length(blob.blobId)
-          : 0;
+          ? utf8ByteLength(blob.blobId)
+          : undefined;
         inputTotal += length;
         if (
-          idLength < 1 || idLength > limits.maxBlobIdBytes ||
+          idLength === undefined || idLength < 1 || idLength > limits.maxBlobIdBytes ||
           (inputPrior !== undefined && compareUtf8(inputPrior, blob.blobId) >= 0) ||
           length > limits.maxInputBlobBytes || !Number.isSafeInteger(inputTotal) ||
           inputTotal > limits.maxInputTotalBytes
@@ -493,7 +480,7 @@ function createWailsTransport(bindings: Partial<Record<GeneratedMethodName, Wail
       const response = result.promise.then((value) => {
         const object = dataObject(value, ["operation", "control", "blobs"]);
         if (object === undefined || object.operation !== operation) throw fault("decode", "CORRELATION_MISMATCH", false);
-        if (!Array.isArray(object.blobs) || object.blobs.length > limits.maxBuffers) throw fault("decode", "MALFORMED_MESSAGE", false);
+        if (!strictArray(object.blobs) || object.blobs.length > limits.maxBuffers) throw fault("decode", "MALFORMED_MESSAGE", false);
         const control = decodeBase64(object.control, limits.maxControlBytes);
         let controlText: string;
         try { controlText = decoder.decode(control); } catch { throw fault("decode", "MALFORMED_MESSAGE", false); }
@@ -505,8 +492,8 @@ function createWailsTransport(bindings: Partial<Record<GeneratedMethodName, Wail
           if (blob === undefined || typeof blob.blob_id !== "string" || blob.blob_id.length > limits.maxBlobIdBytes) {
             throw fault("decode", "MALFORMED_MESSAGE", false);
           }
-          const idLength = utf8Length(blob.blob_id);
-          if (idLength < 1 || idLength > limits.maxBlobIdBytes || (prior !== undefined && compareUtf8(prior, blob.blob_id) >= 0)) {
+          const idLength = utf8ByteLength(blob.blob_id);
+          if (idLength === undefined || idLength < 1 || idLength > limits.maxBlobIdBytes || (prior !== undefined && compareUtf8(prior, blob.blob_id) >= 0)) {
             throw fault("decode", "MALFORMED_MESSAGE", false);
           }
           const bytes = decodeBase64(blob.bytes, limits.maxOutputBlobBytes);
@@ -855,8 +842,17 @@ export async function createWailsDesktopClient(options: CreateWailsDesktopClient
       ...(admitted.transportLimits === undefined ? {} : { transportLimits: admitted.transportLimits }),
       ...(admitted.shutdown === undefined ? {} : { shutdown: admitted.shutdown }),
     };
-    const [manifest, engine] = await Promise.all([runtimeHandshake(transport, admitted), createWailsEngineClient(engineOptions)]);
-    return new WailsDesktopClientImpl(engine, admitted, transport, manifest);
+    const [manifestResult, engineResult] = await Promise.allSettled([
+      runtimeHandshake(transport, admitted),
+      createWailsEngineClient(engineOptions),
+    ]);
+    if (manifestResult.status === "fulfilled" && engineResult.status === "fulfilled") {
+      return new WailsDesktopClientImpl(engineResult.value, admitted, transport, manifestResult.value);
+    }
+    if (engineResult.status === "fulfilled") await engineResult.value.dispose();
+    if (manifestResult.status === "rejected") throw manifestResult.reason;
+    if (engineResult.status === "rejected") throw engineResult.reason;
+    throw new EngineClientTransportError("CONNECT_FAILED", false);
   } catch (error) {
     transport.terminate();
     throw error;

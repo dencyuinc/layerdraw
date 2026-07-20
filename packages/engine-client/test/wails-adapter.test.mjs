@@ -190,25 +190,31 @@ test("generated Engine and Runtime binding closure exactly matches the Desktop o
   assert.deepEqual(actual, expected);
 });
 
-test("Desktop compatibility fixture maps the shared Engine and Runtime Wails bindings", () => {
+test("Desktop compatibility fixture preserves Browser/Wails request semantics and binding decoders", async () => {
   const descriptors = [...wailsEngineBindingDescriptors, ...wailsRuntimeBindingDescriptors];
   for (const expected of bindingCompatibility.bindings.filter((entry) => entry.target !== "registry_client")) {
     assert.ok(descriptors.some((entry) =>
       entry.generatedMethod === expected.generated_method &&
       entry.target === expected.target &&
       entry.operation === expected.operation));
+    const browserText = await readFile(new URL(expected.browser_request_fixture, repositoryRoot), "utf8");
+    const desktopText = await readFile(new URL(expected.desktop_request_fixture, repositoryRoot), "utf8");
+    assert.notEqual(browserText, desktopText);
+    const browser = JSON.parse(browserText);
+    const desktop = JSON.parse(desktopText);
+    assert.equal(browser.operation, expected.operation);
+    assert.equal(desktop.operation, expected.operation);
+    delete browser.request_id;
+    delete desktop.request_id;
+    assert.deepEqual(desktop, browser);
   }
 });
 
-test("Wails client executes shared portable success, rejection, and cancellation vectors", async () => {
+test("Wails client executes every shared portable compile and cancellation vector", async () => {
   let releaseCancellation;
   const cancellationGate = new Promise((resolve) => { releaseCancellation = resolve; });
-  const selected = [
-    parityCorpus.cases.find((entry) => entry.name === "single_module_project"),
-    parityCorpus.cases.find((entry) => entry.name === "deterministic_rejection"),
-    parityCorpus.cases.find((entry) => entry.name === "cancellation"),
-  ];
-  assert.equal(selected.includes(undefined), false);
+  const selected = parityCorpus.cases;
+  assert.equal(selected.length, 10);
   const byRequest = new Map(selected.map((entry) => [entry.expected.response.request_id, entry]));
   const bindings = generatedBindings({
     EngineHandshake: async (exchange) => handshakeResponse(exchange),
@@ -316,6 +322,55 @@ test("Runtime handshake rejects correlation, schema, and capability-closure mism
       (error) => error.code === code,
       name,
     );
+  }
+});
+
+test("Desktop creation joins both handshakes and releases either successful sibling", async () => {
+  for (const failingSide of ["runtime", "engine"]) {
+    let activeSubscriptions = 0;
+    let release;
+    let delayedCalls = 0;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const shutdown = {
+      subscribe() {
+        activeSubscriptions++;
+        let active = true;
+        return () => {
+          if (active) activeSubscriptions--;
+          active = false;
+        };
+      },
+    };
+    const bindings = generatedBindings({
+      EngineHandshake: async (exchange) => {
+        if (failingSide === "engine") throw new Error("private engine failure");
+        delayedCalls++;
+        await gate;
+        return handshakeResponse(exchange);
+      },
+      RuntimeHandshake: async (exchange) => {
+        if (failingSide === "runtime") {
+          return runtimeHandshakeResponse(exchange, (response) => { response.request_id = "hostile-request"; });
+        }
+        delayedCalls++;
+        await gate;
+        return runtimeHandshakeResponse(exchange);
+      },
+    });
+    const creation = createWailsDesktopClient({
+      ...options(bindings, { shutdown }),
+      expectedReleaseManifestDigest: creationOptions.expectedReleaseManifestDigest,
+    });
+    let settled = false;
+    void creation.then(() => { settled = true; }, () => { settled = true; });
+    while (delayedCalls === 0) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, `${failingSide} failure returned before sibling ownership joined`);
+    release();
+    await assert.rejects(creation, (error) =>
+      failingSide === "runtime"
+        ? error.code === "CORRELATION_MISMATCH"
+        : error instanceof Error && !String(error).includes("private"));
+    assert.equal(activeSubscriptions, 0, `${failingSide} failure leaked a shutdown subscription`);
   }
 });
 
