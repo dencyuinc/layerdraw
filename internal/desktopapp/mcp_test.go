@@ -511,3 +511,162 @@ func TestGeneratedPageAdapterCatalogIsClosedAndHandlesTerminalPages(t *testing.T
 		t.Fatalf("non-page result=%d,%s,%v", items, cursor, err)
 	}
 }
+
+func TestGeneratedPageAdapterClosesEveryCursorBoundary(t *testing.T) {
+	type request struct{ Cursor *string }
+	type response struct {
+		Items  int
+		Cursor *string
+	}
+	adapter := newMCPPageAdapter(
+		func(control []byte) (request, error) {
+			var value request
+			err := json.Unmarshal(control, &value)
+			return value, err
+		},
+		func(value request) ([]byte, error) { return json.Marshal(value) },
+		func(control []byte) (string, error) {
+			var value string
+			err := json.Unmarshal(control, &value)
+			return value, err
+		},
+		func(value string) ([]byte, error) {
+			if value == "encode-error" {
+				return nil, errors.New("encode cursor")
+			}
+			return json.Marshal(value)
+		},
+		func(value request) bool { return value.Cursor != nil },
+		func(value *request, cursor *string) { value.Cursor = cursor },
+		func(control []byte) (response, error) {
+			var value response
+			err := json.Unmarshal(control, &value)
+			return value, err
+		},
+		func(value response) (int, *string) { return value.Items, value.Cursor },
+	)
+
+	if _, err := adapter.bind([]byte(`{`), nil); err == nil {
+		t.Fatal("malformed request accepted")
+	}
+	if _, err := adapter.bind([]byte(`{"Cursor":"forged"}`), nil); err == nil {
+		t.Fatal("request-owned cursor accepted")
+	}
+	control := []byte(`{"Cursor":null}`)
+	bound, err := adapter.bind(control, nil)
+	if err != nil || string(bound) != string(control) {
+		t.Fatalf("terminal request=%s err=%v", bound, err)
+	}
+	if _, err := adapter.bind(control, []byte(`{`)); err == nil {
+		t.Fatal("malformed continuation accepted")
+	}
+	bound, err = adapter.bind(control, []byte(`"trusted"`))
+	if err != nil || string(bound) != `{"Cursor":"trusted"}` {
+		t.Fatalf("bound request=%s err=%v", bound, err)
+	}
+
+	if _, _, err := adapter.inspect([]byte(`{`)); err == nil {
+		t.Fatal("malformed response accepted")
+	}
+	items, cursor, err := adapter.inspect([]byte(`{"Items":2,"Cursor":null}`))
+	if err != nil || items != 2 || cursor != nil {
+		t.Fatalf("terminal page=%d,%s,%v", items, cursor, err)
+	}
+	items, cursor, err = adapter.inspect([]byte(`{"Items":3,"Cursor":"trusted"}`))
+	if err != nil || items != 3 || string(cursor) != `"trusted"` {
+		t.Fatalf("continued page=%d,%s,%v", items, cursor, err)
+	}
+	if _, _, err := adapter.inspect([]byte(`{"Items":1,"Cursor":"encode-error"}`)); err == nil {
+		t.Fatal("cursor encoding failure hidden")
+	}
+}
+
+func TestRuntimeRevisionPageAdapterClosesEveryCursorBoundary(t *testing.T) {
+	adapter := mcpPageAdapters[string(runtimeprotocol.ListRevisionsRequestEnvelopeOperationValue)]
+	request := runtimeprotocol.ListRevisionsRequestEnvelope{
+		Operation: runtimeprotocol.ListRevisionsRequestEnvelopeOperationValue,
+		Protocol:  runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"},
+		RequestID: "revision-page-request",
+		Payload: runtimeprotocol.ListRevisionsInput{
+			MaxItems:       "1",
+			MaxOutputBytes: "1024",
+			Session: runtimeprotocol.RuntimeSessionRef{
+				RuntimeSessionID:  "session_revision_page_1234",
+				SessionGeneration: "1",
+				Scope: runtimeprotocol.RuntimeScope{
+					DocumentID:        "document_revision_page",
+					LocalScopeID:      "local",
+					AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				},
+			},
+		},
+	}
+	control, err := runtimeprotocol.EncodeListRevisionsRequestEnvelope(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = adapter.bind([]byte(`{`), nil); err == nil {
+		t.Fatal("malformed runtime request accepted")
+	}
+	bound, err := adapter.bind(control, nil)
+	if err != nil || string(bound) != string(control) {
+		t.Fatalf("terminal request=%s err=%v", bound, err)
+	}
+	cursor := runtimeprotocol.RuntimeCursor("runtime_cursor_revision_page_1234")
+	request.Payload.Cursor = &cursor
+	forged, err := runtimeprotocol.EncodeListRevisionsRequestEnvelope(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = adapter.bind(forged, nil); err == nil {
+		t.Fatal("request-owned runtime cursor accepted")
+	}
+	if _, err = adapter.bind(control, []byte(`{`)); err == nil {
+		t.Fatal("malformed runtime continuation accepted")
+	}
+	continuation, err := runtimeprotocol.EncodeRuntimeCursor(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err = adapter.bind(control, continuation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := runtimeprotocol.DecodeListRevisionsRequestEnvelope(bound)
+	if err != nil || decoded.Payload.Cursor == nil || *decoded.Payload.Cursor != cursor {
+		t.Fatalf("bound runtime cursor=%+v err=%v", decoded.Payload.Cursor, err)
+	}
+
+	if _, _, err = adapter.inspect([]byte(`{`)); err == nil {
+		t.Fatal("malformed runtime response accepted")
+	}
+	response := runtimeprotocol.ListRevisionsResponseEnvelope{
+		Diagnostics: []protocolcommon.ProtocolDiagnostic{},
+		HostRelease: "1.0.0",
+		Outcome:     protocolcommon.OutcomeSuccess,
+		Payload: &runtimeprotocol.RevisionPage{
+			Items: []runtimeprotocol.RevisionMetadata{},
+			Page:  protocolcommon.PageInfo{ReturnedBytes: "0", ReturnedItems: "0"},
+		},
+		Protocol:  request.Protocol,
+		RequestID: request.RequestID,
+	}
+	terminal, err := runtimeprotocol.EncodeListRevisionsResponseEnvelope(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, next, err := adapter.inspect(terminal)
+	if err != nil || items != 0 || next != nil {
+		t.Fatalf("terminal runtime page=%d,%s,%v", items, next, err)
+	}
+	nextCursor := string(cursor)
+	response.Payload.Page.NextCursor = &nextCursor
+	continued, err := runtimeprotocol.EncodeListRevisionsResponseEnvelope(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, next, err = adapter.inspect(continued)
+	if err != nil || items != 0 || string(next) != string(continuation) {
+		t.Fatalf("continued runtime page=%d,%s,%v", items, next, err)
+	}
+}
