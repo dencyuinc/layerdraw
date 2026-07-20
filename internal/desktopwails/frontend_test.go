@@ -43,3 +43,25 @@ func TestFrontendBridgeExposesContextFreeGeneratedInvoke(t *testing.T) {
 		t.Fatalf("invoke=%+v state=%s", result, bridge.State())
 	}
 }
+
+func TestFrontendBridgeDelegatesProjectSurfaceWithFallbackContext(t *testing.T) {
+	base, err := NewSharedConfig(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := Compose(base, &nativeStub{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := NewFrontendBridge(application)
+	bridge.setContext(nil)
+	if result := bridge.CreateProjectDialog(""); result.Outcome != protocolcommon.OutcomeFailed || result.Failure == nil {
+		t.Fatalf("create project validation was not delegated: %+v", result)
+	}
+	if result := bridge.OpenProjectDialog(""); result.Outcome != protocolcommon.OutcomeFailed || result.Failure == nil {
+		t.Fatalf("open project validation was not delegated: %+v", result)
+	}
+	if result := bridge.RecentProjects(); result.Outcome != protocolcommon.OutcomeSuccess || len(result.Value) != 0 {
+		t.Fatalf("recent projects were not delegated: %+v", result)
+	}
+}
