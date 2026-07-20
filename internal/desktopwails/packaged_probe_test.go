@@ -73,11 +73,69 @@ func TestPackagedProbeExercisesCurrentOSAdapters(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Platform != CurrentPlatform() || !result.WailsRuntimeBridge || !result.SettingsRoundTrip || result.AssociationHandoff != desktopcontract.FileAssociationLDL {
+	if result.Platform != CurrentPlatform() || !result.WailsRuntimeBridge || !result.SettingsRoundTrip || !result.ProjectRoundTrip || result.AssociationHandoff != desktopcontract.FileAssociationLDL {
 		t.Fatalf("probe=%+v", result)
 	}
 	if err := RunPackagedProbe(nil); err == nil {
 		t.Fatal("nil packaged probe output accepted")
+	}
+}
+
+func TestPackagedProbePersistsRealSettingsAndProjectAcrossUpgrade(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+	t.Setenv("LAYERDRAW_DESKTOP_PROBE_STATE_KEY", key)
+	root := filepath.Join(os.TempDir(), "layerdraw-desktop-probe-state-"+key)
+	_ = os.RemoveAll(root)
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	t.Setenv("LAYERDRAW_DESKTOP_PROBE_ACTION", "initialize")
+	if err := RunPackagedProbe(&bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	settingsBefore, err := os.ReadFile(filepath.Join(root, "settings-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(root, "projects", "upgrade-probe", "document.ldl")
+	projectBefore, err := os.ReadFile(project)
+	if err != nil || !strings.Contains(string(projectBefore), `project upgrade_probe "Upgrade Probe"`) {
+		t.Fatalf("project=%q err=%v", projectBefore, err)
+	}
+	t.Setenv("LAYERDRAW_DESKTOP_PROBE_ACTION", "verify")
+	if err := RunPackagedProbe(&bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	settingsAfter, err := os.ReadFile(filepath.Join(root, "settings-v1.json"))
+	if err != nil || !bytes.Equal(settingsBefore, settingsAfter) {
+		t.Fatalf("settings changed across upgrade: err=%v", err)
+	}
+	projectAfter, err := os.ReadFile(project)
+	if err != nil || !bytes.Equal(projectBefore, projectAfter) {
+		t.Fatalf("project changed across upgrade: err=%v", err)
+	}
+}
+
+func TestPackagedProbeRejectsUnsafePersistentStateKeys(t *testing.T) {
+	for _, key := range []string{"../escape", `nested\\escape`, strings.Repeat("a", 31), strings.Repeat("g", 32)} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv("LAYERDRAW_DESKTOP_PROBE_STATE_KEY", key)
+			if err := RunPackagedProbe(&bytes.Buffer{}); err == nil {
+				t.Fatal("unsafe packaged probe state key accepted")
+			}
+		})
+	}
+}
+
+func TestPackagedProbeRejectsSymlinkPersistentStateRoot(t *testing.T) {
+	key := "fedcba9876543210fedcba9876543210"
+	root := filepath.Join(os.TempDir(), "layerdraw-desktop-probe-state-"+key)
+	_ = os.Remove(root)
+	t.Cleanup(func() { _ = os.Remove(root) })
+	if err := os.Symlink(t.TempDir(), root); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("LAYERDRAW_DESKTOP_PROBE_STATE_KEY", key)
+	if err := RunPackagedProbe(&bytes.Buffer{}); err == nil {
+		t.Fatal("symlink packaged probe state root accepted")
 	}
 }
 
@@ -381,7 +439,7 @@ func TestPackagedUIProbeWritesRealAccessibilityRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result PackagedProbeResult
-	if err := json.Unmarshal(encoded, &result); err != nil || !result.DOMRoundTrip || result.Accessibility == nil || !result.Accessibility.KeyboardWorkflowValid || !runtime.quit {
+	if err := json.Unmarshal(encoded, &result); err != nil || !result.ProjectRoundTrip || !result.DOMRoundTrip || result.Accessibility == nil || !result.Accessibility.KeyboardWorkflowValid || !runtime.quit {
 		t.Fatalf("probe=%+v runtime=%+v err=%v", result, runtime, err)
 	}
 }

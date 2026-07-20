@@ -140,16 +140,18 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 	if !filepath.IsAbs(output) || filepath.Clean(output) != output {
 		return
 	}
-	probe := PackagedProbeResult{
-		SchemaVersion: 1, Platform: CurrentPlatform(), WailsRuntimeBridge: true,
-		SettingsRoundTrip: true, AssociationHandoff: desktopcontract.FileAssociationLDL,
-	}
+	probe := PackagedProbeResult{}
 	defer func() {
 		encoded, err := json.Marshal(probe)
 		if err == nil {
 			_ = writeExclusivePackagedProbe(output, append(encoded, '\n'))
 		}
 	}()
+	stateProbe, err := executePackagedProbe()
+	if err != nil {
+		return
+	}
+	probe = stateProbe
 	readyCtx, cancelReady := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelReady()
 	if err := bridge.waitAccessibilityProbeReady(readyCtx); err != nil {

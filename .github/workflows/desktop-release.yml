@@ -1,0 +1,226 @@
+name: Desktop release artifacts
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installers:
+    name: ${{ matrix.platform }} ${{ matrix.format }} installer
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin
+            format: dmg
+          - runner: windows-2025
+            platform: windows
+            format: nsis
+          - runner: ubuntu-24.04
+            platform: linux
+            format: deb
+    runs-on: ${{ matrix.runner }}
+    environment: desktop-release
+    timeout-minutes: 30
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Require annotated release tag and exact peeled commit
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
+          peeled="$(git rev-parse "$GITHUB_REF_NAME^{commit}")"
+          test "$peeled" = "$GITHUB_SHA"
+          printf 'DESKTOP_SOURCE_REVISION=%s\n' "$peeled" >> "$GITHUB_ENV"
+
+      - name: Record manually dispatched source revision
+        if: github.ref_type != 'tag'
+        shell: bash
+        run: printf 'DESKTOP_SOURCE_REVISION=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Set up pinned Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Set up pinned Node.js toolchain
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .node-version
+
+      - name: Enable pinned package manager
+        run: corepack enable pnpm
+
+      - name: Install Linux packaging dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install --yes build-essential dpkg-dev gnupg libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config xvfb
+
+      - name: Install pinned Windows installer toolchain
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: choco install nsis --version 3.11 --yes --no-progress
+
+      - name: Require macOS release credentials
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          CERTIFICATE: ${{ secrets.LAYERDRAW_MACOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.LAYERDRAW_MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.LAYERDRAW_MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.LAYERDRAW_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.LAYERDRAW_APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.LAYERDRAW_APPLE_TEAM_ID }}
+        run: |
+          test -n "$CERTIFICATE" && test -n "$CERTIFICATE_PASSWORD" && test -n "$SIGNING_IDENTITY"
+          test -n "$APPLE_ID" && test -n "$APPLE_PASSWORD" && test -n "$APPLE_TEAM_ID"
+          keychain="$RUNNER_TEMP/layerdraw-signing.keychain-db"
+          certificate="$RUNNER_TEMP/layerdraw-signing.p12"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$CERTIFICATE_PASSWORD" "$keychain"
+          security unlock-keychain -p "$CERTIFICATE_PASSWORD" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$CERTIFICATE_PASSWORD" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          printf 'LAYERDRAW_RELEASE_SIGNING=1\nLAYERDRAW_MACOS_SIGNING_IDENTITY=%s\n' "$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Require Windows release credentials
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          CERTIFICATE: ${{ secrets.LAYERDRAW_WINDOWS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.LAYERDRAW_WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:CERTIFICATE -or -not $env:CERTIFICATE_PASSWORD) { throw "Windows release signing credentials are required" }
+          $certificatePath = "$env:RUNNER_TEMP\layerdraw-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE))
+          $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signTool) { throw "signtool.exe was not found in the Windows SDK" }
+          "LAYERDRAW_RELEASE_SIGNING=1" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "LAYERDRAW_WINDOWS_CERT_PATH=$certificatePath" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "LAYERDRAW_WINDOWS_SIGNTOOL=$($signTool.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Require Linux release credentials
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.LAYERDRAW_LINUX_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.LAYERDRAW_LINUX_GPG_PASSPHRASE }}
+        run: |
+          test -n "$GPG_PRIVATE_KEY" && test -n "$GPG_PASSPHRASE"
+          printf '%s' "$GPG_PRIVATE_KEY" | base64 --decode | gpg --batch --import
+
+      - name: Build installer with pinned Wails
+        shell: bash
+        env:
+          LAYERDRAW_WINDOWS_CERTIFICATE_PASSWORD: ${{ matrix.platform == 'windows' && secrets.LAYERDRAW_WINDOWS_CERTIFICATE_PASSWORD || '' }}
+        run: |
+          version="0.0.1"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          printf 'DESKTOP_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+          ./tools/build-desktop-installer.sh "${{ matrix.platform }}" "$version" "$RUNNER_TEMP/desktop-release"
+
+      - name: Sign and notarize macOS installer
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.LAYERDRAW_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.LAYERDRAW_APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.LAYERDRAW_APPLE_TEAM_ID }}
+        run: |
+          installer="$RUNNER_TEMP/desktop-release/LayerDraw-$DESKTOP_VERSION.dmg"
+          codesign --force --timestamp --sign "$LAYERDRAW_MACOS_SIGNING_IDENTITY" "$installer"
+          xcrun notarytool submit "$installer" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$installer"
+          codesign --verify --strict "$installer"
+
+      - name: Sign Windows installer
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          CERTIFICATE_PASSWORD: ${{ secrets.LAYERDRAW_WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $installer = "$env:RUNNER_TEMP\desktop-release\LayerDraw-$env:DESKTOP_VERSION.exe"
+          & $env:LAYERDRAW_WINDOWS_SIGNTOOL sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /f $env:LAYERDRAW_WINDOWS_CERT_PATH /p $env:CERTIFICATE_PASSWORD $installer
+          & $env:LAYERDRAW_WINDOWS_SIGNTOOL verify /pa $installer
+
+      - name: Sign Linux installer
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          GPG_PASSPHRASE: ${{ secrets.LAYERDRAW_LINUX_GPG_PASSPHRASE }}
+        run: |
+          installer="$RUNNER_TEMP/desktop-release/LayerDraw-$DESKTOP_VERSION.deb"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --detach-sign "$installer"
+          gpg --verify "$installer.asc" "$installer"
+
+      - name: Build release update metadata
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.LAYERDRAW_DESKTOP_UPDATE_SIGNING_KEY }}
+          UPDATE_PUBLIC_KEY: ${{ secrets.LAYERDRAW_DESKTOP_UPDATE_PUBLIC_KEY }}
+        run: |
+          ./tools/build-desktop-update-metadata.sh release "${{ matrix.platform }}" "${{ matrix.format }}" \
+            "$DESKTOP_VERSION" "$DESKTOP_SOURCE_REVISION" "$RUNNER_TEMP/desktop-release"
+
+      - name: Exercise fresh install, launch, upgrade, rollback, and uninstall
+        shell: bash
+        if: matrix.platform != 'windows'
+        env:
+          LAYERDRAW_EXPECT_SIGNED: "1"
+        run: |
+          suffix="${{ matrix.format }}"
+          ./tools/smoke-desktop-installer.sh "${{ matrix.platform }}" "$RUNNER_TEMP/desktop-release/LayerDraw-$DESKTOP_VERSION.$suffix"
+
+      - name: Exercise Windows install lifecycle
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          LAYERDRAW_EXPECT_SIGNED: "1"
+        run: ./tools/smoke-desktop-installer.ps1 -PreviousInstaller "$env:RUNNER_TEMP\desktop-release\LayerDraw-$env:DESKTOP_VERSION.exe"
+
+      - name: Upload verified release payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.format }}
+          path: ${{ runner.temp }}/desktop-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  github-release:
+    name: Publish canonical GitHub Release
+    if: github.ref_type == 'tag'
+    needs: installers
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: Download verified installers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --generate-notes --title "LayerDraw $GITHUB_REF_NAME"

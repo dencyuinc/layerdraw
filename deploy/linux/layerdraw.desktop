@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=LayerDraw
+Exec=/usr/bin/layerdraw %U
+Terminal=false
+Categories=Graphics;
+MimeType=application/x-layerdraw;application/x-ldl;

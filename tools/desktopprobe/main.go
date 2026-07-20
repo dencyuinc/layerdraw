@@ -28,7 +28,7 @@ func main() {
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil || value.SchemaVersion != 1 || !value.Platform.Validate() ||
-		!value.WailsRuntimeBridge || !value.SettingsRoundTrip || value.AssociationHandoff != desktopcontract.FileAssociationLDL {
+		!value.WailsRuntimeBridge || !value.SettingsRoundTrip || !value.ProjectRoundTrip || value.AssociationHandoff != desktopcontract.FileAssociationLDL {
 		fail("Desktop probe output invalid")
 	}
 	if *requireDOM && (!value.DOMRoundTrip || value.Accessibility == nil || !value.Accessibility.LabelsComplete ||
