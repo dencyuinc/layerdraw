@@ -19,6 +19,15 @@
 .ld-desktop-sidebar, .ld-desktop-inspector { padding: 1rem; background: var(--ld-panel); }
 .ld-desktop-sidebar { border-right: 1px solid var(--ld-line); }
 .ld-desktop-inspector { border-left: 1px solid var(--ld-line); }
+.ld-desktop-editor { display: grid; gap: 1rem; }
+.ld-desktop-editor .ld-editor-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; }
+.ld-desktop-editor .ld-control button { border: 1px solid var(--ld-line); border-radius: .45rem; padding: .45rem .65rem; color: inherit; background: var(--ld-panel); }
+.ld-desktop-editor .ld-control button:not(:disabled):hover, .ld-desktop-editor .ld-control button:not(:disabled):focus-visible { border-color: var(--ld-accent); outline: 2px solid var(--ld-accent-soft); }
+.ld-desktop-editor .ld-control button:disabled { opacity: .5; }
+.ld-desktop-editor-summary { display: grid; gap: .55rem; margin: 0; }
+.ld-desktop-editor-summary div { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--ld-line); padding-bottom: .45rem; }
+.ld-desktop-editor-summary dt { color: var(--ld-muted); }
+.ld-desktop-editor-summary dd { margin: 0; text-align: right; }
 .ld-desktop-sidebar h2 { margin-bottom: .65rem; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ld-muted); }
 .ld-desktop-sidebar ul { display: grid; gap: .3rem; margin: 0; padding: 0; list-style: none; }
 .ld-desktop-sidebar button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: .6rem; border: 0; border-radius: .55rem; padding: .65rem .7rem; background: transparent; color: inherit; text-align: left; cursor: pointer; }
@@ -43,6 +52,8 @@
 .ld-desktop-table-scroll button[aria-pressed="true"] { color: var(--ld-accent); font-weight: 700; }
 .ld-desktop-viewer-status, .ld-desktop-empty { padding: 2rem; text-align: center; color: var(--ld-muted); }
 .ld-desktop-visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.ld-desktop-editor .ld-visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 @media (max-width: 64rem) { .ld-desktop-workspace { grid-template-columns: 12rem minmax(0, 1fr); } .ld-desktop-inspector { grid-column: 1 / -1; border: 1px solid var(--ld-line); } }
 @media (max-width: 42rem) { .ld-desktop-titlebar { align-items: flex-start; flex-direction: column; } .ld-desktop-statuses { justify-content: flex-start; } .ld-desktop-workspace { display: block; } .ld-desktop-sidebar { border-right: 0; border-bottom: 1px solid var(--ld-line); overflow-x: auto; } .ld-desktop-sidebar ul { display: flex; } .ld-desktop-sidebar li { min-width: 9rem; } .ld-desktop-viewer { min-height: 24rem; } }
+@media (max-width: 30rem) { .ld-desktop-editor .ld-editor-toolbar { flex-wrap: nowrap; overflow-x: auto; } .ld-desktop-editor .ld-editor-toolbar > * { flex: 0 0 auto; } }
 @media (prefers-reduced-motion: reduce) { .ld-desktop-shell *, .ld-desktop-shell *::before, .ld-desktop-shell *::after { scroll-behavior: auto !important; transition-duration: .00001ms !important; animation-duration: .00001ms !important; } }

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-import React from "react";
-import { createRoot } from "react-dom/client";
-import { DesktopShell } from "../dist/index.js";
+import { mountDesktopShell } from "../dist/index.js";
 
 const listeners = new Set();
 const renderData = {
@@ -19,29 +17,42 @@ const renderData = {
   edge_paths: [{ render_key: "edge:one", points: [{ x: 260, y: 115 }, { x: 480, y: 315 }], from_port_key: "from", to_port_key: "to" }],
 };
 const viewer = { status: "ready", publication: { render_data: renderData, presentation: { selection_keys: [] } } };
+const editorManifest = { operations: { "engine.preview_operations": { enabled: true }, "runtime.commit_operations": { enabled: true } } };
+const editorSession = { authority: "runtime", persistence: "durable", session: {}, capabilities: { authority: "runtime", manifest: editorManifest, selection: { available: [], optional_unavailable: [] } } };
+let editorSnapshot = { phase: "idle", sequence: 0, can_undo: true, can_redo: false };
+const editorListeners = new Set();
+const calls = [];
+const editor = {
+  snapshot: () => editorSnapshot, subscribe(listener) { editorListeners.add(listener); listener(editorSnapshot); return () => editorListeners.delete(listener); },
+  getCapabilities: () => editorSession.capabilities,
+  async undo() { calls.push(["undo"]); return editorSnapshot; }, async redo() { return editorSnapshot; }, async retry() { return editorSnapshot; }, cancelPreview() { return editorSnapshot; },
+};
 const project = {
   project_id: "project:roadmap", session_generation: 1, display_name: "Desktop roadmap", authoritative_revision_token: "revision:12", authoritative_revision_label: "Revision 12",
-  editor: {}, editor_session: {}, views: [{ address: "view:diagram", label: "System map", shape: "diagram" }, { address: "view:table", label: "Inventory", shape: "table" }],
+  editor, editor_session: editorSession, views: [{ address: "view:diagram", label: "System map", shape: "diagram" }, { address: "view:table", label: "Inventory", shape: "table" }],
   selected_view_address: "view:diagram", access: { status: "allowed", label: "Local owner" }, storage: { kind: "local", status: "connected", label: "On this Mac" }, persistence: "clean",
 };
 let available = true;
-let state;
-function makeState(selected = project.selected_view_address) {
-  return { lifecycle: { sequence: Date.now(), phase: "ready", capabilities: available ? { "engine.materialize_view": { status: "available" } } : {}, project: { ...project, selected_view_address: selected } }, viewer, pending_action: undefined, failure: undefined };
+let sequence = 0;
+let lifecycleSnapshot;
+function makeLifecycle(selected = project.selected_view_address) {
+  return { sequence: ++sequence, phase: "ready", capabilities: available ? { "engine.materialize_view": { status: "available" } } : {}, project: { ...project, selected_view_address: selected } };
 }
-state = makeState();
-const calls = [];
-const controller = {
-  getSnapshot: () => state,
+lifecycleSnapshot = makeLifecycle();
+const lifecycle = {
+  getSnapshot: () => lifecycleSnapshot,
   subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-  start() {}, async stop() {}, async reviewRecovery() {},
-  async selectView(address) { calls.push(["select", address]); state = makeState(address); for (const listener of listeners) listener(); },
-  setViewerSelection(keys) { calls.push(["viewer", ...keys]); },
+  async showRecoveryOptions() {},
+  async selectView(address) { calls.push(["select", address]); lifecycleSnapshot = makeLifecycle(address); for (const listener of listeners) listener(); },
 };
-createRoot(document.querySelector("#root")).render(React.createElement(DesktopShell, {
-  controller, viewSelectionCapability: "engine.materialize_view", editorSurface: () => React.createElement("p", null, "Editor ready"),
-}));
+const viewerPort = {
+  getState: () => viewer, setSelection(keys) { calls.push(["viewer", ...keys]); }, async cancel() {},
+};
+mountDesktopShell(document.querySelector("#root"), {
+  lifecycle, viewer: viewerPort, viewSelectionCapability: "engine.materialize_view",
+  editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
+});
 window.desktopWorkflow = {
   calls,
-  capability(value) { available = value; state = makeState(state.lifecycle.project.selected_view_address); for (const listener of listeners) listener(); },
+  capability(value) { available = value; lifecycleSnapshot = makeLifecycle(lifecycleSnapshot.project.selected_view_address); for (const listener of listeners) listener(); },
 };

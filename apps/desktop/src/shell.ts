@@ -8,8 +8,9 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { DesktopProjectContext, DesktopShellFailure } from "./contracts.js";
+import type { DesktopShellFailure } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
+import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
 
 export interface DesktopShellLabels {
@@ -40,15 +41,15 @@ export interface DesktopShellProps {
   readonly controller: DesktopShellController;
   /** Exact capability ID supplied by the Desktop composition contract. */
   readonly viewSelectionCapability: CapabilityID;
+  readonly editorCapabilities: DesktopEditorCapabilityIDs;
   readonly labels?: DesktopShellLabels;
-  readonly editorSurface?: (project: DesktopProjectContext) => ReactNode;
 }
 
 function statusChip(kind: string, text: string): ReactNode {
   return createElement("span", { className: "ld-desktop-chip", "data-status": kind }, text);
 }
 
-export function DesktopShell({ controller, viewSelectionCapability, labels: suppliedLabels = labels, editorSurface }: DesktopShellProps): ReactNode {
+export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, labels: suppliedLabels = labels }: DesktopShellProps): ReactNode {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const heading = useRef<HTMLHeadingElement>(null);
   const project = state.lifecycle.project;
@@ -92,6 +93,7 @@ export function DesktopShell({ controller, viewSelectionCapability, labels: supp
         viewList),
       createElement("section", { className: "ld-desktop-canvas", "aria-label": suppliedLabels.canvas },
         createElement(DesktopViewerSurface, { state: state.viewer, onSelectionChange: (keys) => controller.setViewerSelection(keys) })),
-      createElement("aside", { className: "ld-desktop-inspector", "aria-label": suppliedLabels.inspector }, editorSurface?.(project) ?? null)),
+      createElement("aside", { className: "ld-desktop-inspector", "aria-label": suppliedLabels.inspector },
+        createElement(DesktopEditorSurface, { project, capabilities: editorCapabilities }))),
     createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : ""));
 }

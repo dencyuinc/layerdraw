@@ -15,6 +15,12 @@ try {
 
   await page.getByRole("navigation", { name: "Views" }).waitFor();
   await page.getByRole("region", { name: "Canvas" }).waitFor();
+  const toolbar = page.getByRole("toolbar", { name: "Authoring commands" });
+  await toolbar.waitFor();
+  const undo = page.getByRole("button", { name: "Undo" });
+  assert.equal(await undo.isEnabled(), true);
+  await undo.click();
+  assert.deepEqual(await page.evaluate(() => window.desktopWorkflow.calls.at(-1)), ["undo"]);
   const inventory = page.getByRole("button", { name: "Inventory" });
   await inventory.click();
   await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "select" && call[1] === "view:table"));
@@ -34,6 +40,7 @@ try {
   assert.ok(desktopColumns.split(" ").length >= 3);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator(".ld-desktop-workspace").evaluate((element) => getComputedStyle(element).display), "block");
+  assert.equal(await toolbar.evaluate((element) => getComputedStyle(element).flexWrap), "nowrap");
   await page.emulateMedia({ reducedMotion: "reduce" });
   const duration = await page.getByRole("button", { name: /System map/ }).evaluate((element) => Number.parseFloat(getComputedStyle(element).transitionDuration));
   assert.ok(duration <= 0.00001);

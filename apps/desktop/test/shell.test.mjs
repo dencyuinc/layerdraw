@@ -24,9 +24,18 @@ function fakeController(initial) {
   };
 }
 
+const editorManifest = { operations: { "engine.preview_operations": { enabled: true }, "runtime.commit_operations": { enabled: true } } };
+const editorSession = { authority: "runtime", persistence: "durable", session: {}, capabilities: { authority: "runtime", manifest: editorManifest, selection: { available: [], optional_unavailable: [] } } };
+const editorSnapshot = { phase: "idle", sequence: 0, can_undo: false, can_redo: false };
+const editor = {
+  snapshot: () => editorSnapshot,
+  subscribe(listener) { listener(this.snapshot()); return () => {}; }, getCapabilities: () => editorSession.capabilities,
+  async undo() { return this.snapshot(); }, async redo() { return this.snapshot(); }, async retry() { return this.snapshot(); }, cancelPreview() { return this.snapshot(); },
+};
+const editorCapabilities = { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" };
 const project = {
   project_id: "p1", session_generation: 1, display_name: "Roadmap", authoritative_revision_token: "rev:8", authoritative_revision_label: "Revision 8",
-  editor: {}, editor_session: {}, views: [{ address: "view:main", label: "Main", shape: "diagram" }, { address: "view:table", label: "Details", shape: "table" }],
+  editor, editor_session: editorSession, views: [{ address: "view:main", label: "Main", shape: "diagram" }, { address: "view:table", label: "Details", shape: "table" }],
   selected_view_address: "view:main", access: { status: "allowed", label: "Local owner" },
   storage: { kind: "local", status: "connected", label: "On this Mac" }, persistence: "clean",
 };
@@ -37,7 +46,7 @@ test("Desktop shell exposes landmarks, authoritative context, view navigation, a
   const controller = fakeController(shellState());
   let renderer;
   await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopShell, {
-    controller, viewSelectionCapability: "engine.materialize_view", editorSurface: (value) => React.createElement("p", null, `Editor ${value.project_id}`),
+    controller, viewSelectionCapability: "engine.materialize_view", editorCapabilities,
   })); });
   assert.equal(renderer.root.findByType("h1").children.join(""), "Roadmap");
   assert.equal(renderer.root.findByProps({ "aria-label": "Views" }).type, "nav");
@@ -46,7 +55,7 @@ test("Desktop shell exposes landmarks, authoritative context, view navigation, a
   const details = renderer.root.findAllByType("button").find((button) => button.props["aria-label"] === "Details");
   await act(async () => details.props.onClick());
   assert.deepEqual(controller.calls.at(-1), ["select", "view:table"]);
-  assert.ok(renderer.root.findAllByType("p").some((node) => node.children.join("") === "Editor p1"));
+  assert.equal(renderer.root.findByProps({ "aria-label": "Authoring commands" }).props.role, "toolbar");
   await act(async () => renderer.unmount());
   assert.deepEqual(controller.calls.at(-1), ["stop"]);
 });
@@ -58,8 +67,8 @@ test("unadvertised view selection is visibly disabled and closed failures do not
   });
   const controller = fakeController(state);
   let renderer;
-  await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopShell, { controller, viewSelectionCapability: "engine.materialize_view" })); });
-  const buttons = renderer.root.findAllByType("button");
+  await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopShell, { controller, viewSelectionCapability: "engine.materialize_view", editorCapabilities })); });
+  const buttons = renderer.root.findAllByType("button").filter((button) => ["Main", "Details"].some((label) => button.props["aria-label"]?.startsWith(label)));
   assert.equal(buttons.every((button) => button.props.disabled === true), true);
   assert.ok(buttons.every((button) => button.props["aria-label"].includes("unavailable")));
   const status = renderer.root.findAll((node) => node.props.role === "status").map((node) => node.children.join(" ")).join(" ");
@@ -71,7 +80,7 @@ test("unadvertised view selection is visibly disabled and closed failures do not
 test("startup, recovery, empty, draining, and stopped lifecycle states stay operable and accessible", async () => {
   const controller = fakeController(shellState({ lifecycle: { sequence: 0, phase: "starting", capabilities: {} } }));
   let renderer;
-  await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopShell, { controller, viewSelectionCapability: "engine.materialize_view" })); });
+  await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopShell, { controller, viewSelectionCapability: "engine.materialize_view", editorCapabilities })); });
   assert.match(renderer.root.findByProps({ role: "status" }).children.join(""), /Starting/);
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 1, phase: "recovery", capabilities: {} } })));
   assert.match(renderer.root.findByProps({ role: "alert" }).children.join(""), /recovery/);
