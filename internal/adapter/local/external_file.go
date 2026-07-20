@@ -906,7 +906,7 @@ func cleanManagedPath(value string) (string, error) {
 		return "", port.ErrConflict
 	}
 	clean := filepath.Clean(filepath.FromSlash(value))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if clean == "." || !filepath.IsLocal(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", port.ErrConflict
 	}
 	return filepath.ToSlash(clean), nil

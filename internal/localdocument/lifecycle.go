@@ -1288,5 +1288,5 @@ func (h *Host) saveMetadataLocked() error {
 		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	return privatefs.SyncDirectory(dir)
 }
