@@ -400,21 +400,23 @@ func testProtocolSaveAndAutosave(t *testing.T, root, source string) {
 			continue
 		}
 		commit.Trigger = runtimeprotocol.CommitTriggerAutosave
-		control, err := host.ControlAutosave(context.Background(), runtimeprotocol.AutosaveControlInput{Session: opened.Session.Open.Session, Action: runtimeprotocol.AutosaveActionSchedule, Commit: &commit})
+		completed := make(chan AutosaveResult, 1)
+		control, err := host.ControlAutosaveWithResult(context.Background(), runtimeprotocol.AutosaveControlInput{Session: opened.Session.Open.Session, Action: runtimeprotocol.AutosaveActionSchedule, Commit: &commit}, completed)
 		if err != nil || !control.Scheduled {
 			t.Fatalf("schedule=%+v err=%v", control, err)
 		}
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			operation := commit.OperationID
-			status, lookupErr := host.OperationResult(context.Background(), runtimeprotocol.GetOperationResultInput{Session: opened.Session.Open.Session, LookupBy: "operation_id", OperationID: &operation})
-			if lookupErr == nil && status.OperationResult != nil && status.OperationResult.CommittedRevision != nil {
-				break
+		select {
+		case terminal := <-completed:
+			if terminal.Err != nil || terminal.Result.OperationResult.CommittedRevision == nil {
+				t.Fatalf("autosave terminal=%+v", terminal)
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("autosave status=%+v err=%v", status, lookupErr)
-			}
-			time.Sleep(20 * time.Millisecond)
+		case <-time.After(30 * time.Second):
+			t.Fatal("autosave did not produce a terminal result")
+		}
+		operation := commit.OperationID
+		status, lookupErr := host.OperationResult(context.Background(), runtimeprotocol.GetOperationResultInput{Session: opened.Session.Open.Session, LookupBy: "operation_id", OperationID: &operation})
+		if lookupErr != nil || status.OperationResult == nil || status.OperationResult.CommittedRevision == nil {
+			t.Fatalf("autosave status=%+v err=%v", status, lookupErr)
 		}
 	}
 	if !strings.Contains(source, "project") {
