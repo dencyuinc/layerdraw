@@ -6,6 +6,8 @@ import "github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 
 type FailureCode string
 
+func (c FailureCode) Validate() bool { return validFailureCode(c) }
+
 const (
 	FailureStartup              FailureCode = "desktop.startup_failed"
 	FailureShutdown             FailureCode = "desktop.shutdown_failed"

@@ -33,18 +33,14 @@ func NewAtomicSettingsStore(path string) (*AtomicSettingsStore, error) {
 }
 
 func (s *AtomicSettingsStore) Load(context.Context) (desktopcontract.PersistedShellState, error) {
-	info, err := os.Lstat(s.path)
-	if err != nil {
-		return desktopcontract.PersistedShellState{}, err
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maximumSettingsBytes {
-		return desktopcontract.PersistedShellState{}, errors.New("desktop settings file is unsafe")
-	}
-	file, err := os.Open(s.path)
+	file, info, err := openRegularFile(s.path, os.O_RDONLY, 0)
 	if err != nil {
 		return desktopcontract.PersistedShellState{}, err
 	}
 	defer file.Close()
+	if info.Size() > maximumSettingsBytes || info.Mode().Perm()&0o077 != 0 {
+		return desktopcontract.PersistedShellState{}, errors.New("desktop settings file is unsafe")
+	}
 	decoder := json.NewDecoder(io.LimitReader(file, maximumSettingsBytes+1))
 	decoder.DisallowUnknownFields()
 	var value desktopcontract.PersistedShellState
@@ -143,9 +139,9 @@ func (o *SystemExternalOpener) OpenExternal(ctx context.Context, target desktopc
 	case desktopcontract.PlatformMacOS:
 		return o.runner.Run(ctx, "/usr/bin/open", "--", target.Value)
 	case desktopcontract.PlatformWindows:
-		return o.runner.Run(ctx, "rundll32.exe", "url.dll,FileProtocolHandler", target.Value)
+		return o.runner.Run(ctx, `C:\Windows\System32\rundll32.exe`, "url.dll,FileProtocolHandler", target.Value)
 	case desktopcontract.PlatformLinux:
-		return o.runner.Run(ctx, "xdg-open", target.Value)
+		return o.runner.Run(ctx, "/usr/bin/xdg-open", target.Value)
 	default:
 		return errors.New("desktop platform unsupported")
 	}
@@ -189,12 +185,17 @@ func (a *WailsRuntimeAdapter) VerifyPackaged(ctx context.Context, value desktopc
 
 type AssociationBroker struct {
 	mu        sync.Mutex
-	locations map[string]string
+	locations map[string]associationLocation
 	queue     []desktopcontract.FileAssociationHandoff
 }
 
+type associationLocation struct {
+	path string
+	info os.FileInfo
+}
+
 func NewAssociationBroker() *AssociationBroker {
-	return &AssociationBroker{locations: make(map[string]string)}
+	return &AssociationBroker{locations: make(map[string]associationLocation)}
 }
 
 // AcceptOSPath is called only by the native application event. It verifies the
@@ -223,7 +224,7 @@ func (b *AssociationBroker) AcceptOSPath(path string) error {
 	}
 	token := base64.RawURLEncoding.EncodeToString(random)
 	b.mu.Lock()
-	b.locations[token] = path
+	b.locations[token] = associationLocation{path: path, info: info}
 	b.queue = append(b.queue, desktopcontract.FileAssociationHandoff{Kind: kind, Token: token})
 	b.mu.Unlock()
 	return nil
@@ -245,12 +246,16 @@ func (b *AssociationBroker) Next(context.Context) (desktopcontract.FileAssociati
 func (b *AssociationBroker) Resolve(token string) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	path, ok := b.locations[token]
+	location, ok := b.locations[token]
 	if !ok {
 		return "", errors.New("file association token is invalid")
 	}
 	delete(b.locations, token)
-	return path, nil
+	current, err := os.Lstat(location.path)
+	if err != nil || !current.Mode().IsRegular() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(location.info, current) {
+		return "", errors.New("file association target changed")
+	}
+	return location.path, nil
 }
 
 type JSONLogStore struct {
@@ -266,6 +271,9 @@ func NewJSONLogStore(path string) (*JSONLogStore, error) {
 }
 
 func (s *JSONLogStore) Write(_ context.Context, record desktopcontract.StructuredLogRecord) error {
+	if !record.Validate() {
+		return errors.New("desktop structured log is invalid")
+	}
 	encoded, err := json.Marshal(record)
 	if err != nil || bytes.ContainsAny(encoded, "\r\n") {
 		return errors.New("desktop structured log is invalid")
@@ -275,18 +283,40 @@ func (s *JSONLogStore) Write(_ context.Context, record desktopcontract.Structure
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
 	}
-	if info, err := os.Lstat(s.path); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
-		return errors.New("desktop log target is unsafe")
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	file, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, info, err := openRegularFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		_ = file.Close()
+		return errors.New("desktop log permissions are unsafe")
 	}
 	defer file.Close()
 	if _, err := file.Write(append(encoded, '\n')); err != nil {
 		return err
 	}
 	return file.Sync()
+}
+
+func openRegularFile(path string, flag int, perm os.FileMode) (*os.File, os.FileInfo, error) {
+	file, err := os.OpenFile(path, flag, perm)
+	if err != nil {
+		return nil, nil, err
+	}
+	closeFailure := func(err error) (*os.File, os.FileInfo, error) {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		return closeFailure(err)
+	}
+	linked, err := os.Lstat(path)
+	if err != nil {
+		return closeFailure(err)
+	}
+	if !opened.Mode().IsRegular() || !linked.Mode().IsRegular() || linked.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, linked) {
+		return closeFailure(errors.New("desktop private file is unsafe"))
+	}
+	return file, opened, nil
 }

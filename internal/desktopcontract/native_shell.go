@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 )
 
 type DesktopPlatform string
@@ -141,15 +143,31 @@ func (s CommandSource) Validate() bool {
 }
 
 type CommandStatus struct {
-	ID         CommandID    `json:"id"`
-	State      CommandState `json:"state"`
-	Generation uint64       `json:"generation"`
+	ID         CommandID                      `json:"id"`
+	State      CommandState                   `json:"state"`
+	Generation protocolcommon.CanonicalUint64 `json:"generation"`
+}
+
+func (s CommandStatus) Validate() bool {
+	if !s.ID.Validate() || !s.State.Validate() {
+		return false
+	}
+	_, err := protocolcommon.EncodeCanonicalUint64(s.Generation)
+	return err == nil
 }
 
 type CommandInvocation struct {
-	ID               CommandID     `json:"id"`
-	Source           CommandSource `json:"source"`
-	StatusGeneration uint64        `json:"status_generation"`
+	ID               CommandID                      `json:"id"`
+	Source           CommandSource                  `json:"source"`
+	StatusGeneration protocolcommon.CanonicalUint64 `json:"status_generation"`
+}
+
+func (i CommandInvocation) Validate() bool {
+	if !i.ID.Validate() || !i.Source.Validate() {
+		return false
+	}
+	_, err := protocolcommon.EncodeCanonicalUint64(i.StatusGeneration)
+	return err == nil
 }
 
 // CommandRouter is injected by the Desktop UI composition (#124). Menus,
@@ -250,6 +268,29 @@ type StructuredLogRecord struct {
 	Platform DesktopPlatform `json:"platform"`
 	Failure  *FailureCode    `json:"failure,omitempty"`
 	Command  *CommandID      `json:"command,omitempty"`
+}
+
+func (r StructuredLogRecord) Validate() bool {
+	if r.At.IsZero() || !r.Platform.Validate() ||
+		(r.Level != LogInfo && r.Level != LogWarn && r.Level != LogError) || !r.Event.Validate() {
+		return false
+	}
+	if r.Failure != nil && !r.Failure.Validate() {
+		return false
+	}
+	return r.Command == nil || r.Command.Validate()
+}
+
+func (e ShellEvent) Validate() bool {
+	switch e {
+	case EventSettingsRestored, EventSettingsRecovered, EventSettingsSaved,
+		EventCommandInvoked, EventCommandRejected, EventExternalOpened,
+		EventExternalDenied, EventFailurePresented, EventOperationFailed,
+		EventOperationRejected:
+		return true
+	default:
+		return false
+	}
 }
 
 type StructuredLogPort interface {

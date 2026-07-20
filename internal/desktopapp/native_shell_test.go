@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -84,6 +86,12 @@ func (p *shellWindowPort) ApplySettings(_ context.Context, value desktopcontract
 		return err
 	}
 	return p.settingsErr
+}
+func (p *shellWindowPort) VerifyPackagedAccessibility(context.Context, desktopcontract.AccessibilityProfile) (desktopcontract.AccessibilityReport, error) {
+	return desktopcontract.AccessibilityReport{
+		LabelsComplete: true, FocusOrderValid: true, KeyboardWorkflowValid: true,
+		ReducedMotionHonored: true, MinimumContrast: 7, ZoomLayoutValid: true,
+	}, nil
 }
 
 type shellCommandRouter struct {
@@ -217,9 +225,9 @@ func newShellFixture(t *testing.T, platform desktopcontract.DesktopPlatform) (*N
 			snapshotWindow: validShellState().Window, snapshotSetting: validShellState().Settings,
 		},
 		router: &shellCommandRouter{statuses: []desktopcontract.CommandStatus{
-			{ID: desktopcontract.CommandOpenProject, State: desktopcontract.CommandAvailable, Generation: 1},
-			{ID: desktopcontract.CommandSaveProject, State: desktopcontract.CommandPending, Generation: 1},
-			{ID: desktopcontract.CommandUndo, State: desktopcontract.CommandDenied, Generation: 1},
+			{ID: desktopcontract.CommandOpenProject, State: desktopcontract.CommandAvailable, Generation: "1"},
+			{ID: desktopcontract.CommandSaveProject, State: desktopcontract.CommandPending, Generation: "1"},
+			{ID: desktopcontract.CommandUndo, State: desktopcontract.CommandDenied, Generation: "1"},
 		}},
 		external: &shellExternalPort{},
 		crash:    &shellCrashPort{ref: desktopcontract.RecoveryRef{ID: "recovery-opaque-1"}},
@@ -246,6 +254,43 @@ func newShellFixture(t *testing.T, platform desktopcontract.DesktopPlatform) (*N
 func TestNativeShellCompositionIsFailClosed(t *testing.T) {
 	if _, err := NewNativeShell(NativeShellConfig{}); err == nil {
 		t.Fatal("incomplete native shell was accepted")
+	}
+}
+
+func TestPlatformNativeShellWiresProductionAdapters(t *testing.T) {
+	_, f := newShellFixture(t, desktopcontract.PlatformMacOS)
+	root := t.TempDir()
+	platform, err := NewPlatformNativeShell(PlatformNativeShellConfig{
+		Platform: desktopcontract.PlatformMacOS, StateRoot: root, Runtime: f.window,
+		Commands: f.router, CrashRecovery: f.crash, Errors: f.errors,
+		Now: func() time.Time { return shellTestNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := platform.Shell.Restore(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("production restore=%+v", result)
+	}
+	profile := desktopcontract.AccessibilityProfile{Platform: desktopcontract.PlatformMacOS, ScreenReader: true, KeyboardOnly: true, ReducedMotion: true, ZoomPercent: 200}
+	if result := platform.Shell.VerifyAccessibility(context.Background(), profile); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("production accessibility=%+v", result)
+	}
+	path := filepath.Join(root, "associated.ldl")
+	if err := os.WriteFile(path, []byte("project x {}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := platform.Associations.AcceptOSPath(path); err != nil {
+		t.Fatal(err)
+	}
+	handoff := platform.Shell.NextFileAssociation(context.Background())
+	if handoff.Outcome != protocolcommon.OutcomeSuccess || handoff.Value.Token == "" {
+		t.Fatalf("production handoff=%+v", handoff)
+	}
+	if resolved, err := platform.Associations.Resolve(handoff.Value.Token); err != nil || resolved != path {
+		t.Fatalf("production resolve=%q err=%v", resolved, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "settings-v1.json")); err != nil {
+		t.Fatalf("production settings not persisted: %v", err)
 	}
 }
 
@@ -379,7 +424,7 @@ func TestNativeShellUpdateRollbackFailureOpensRecovery(t *testing.T) {
 func TestNativeShellRoutesMenusShortcutsAndControlsIdentically(t *testing.T) {
 	shell, f := newShellFixture(t, desktopcontract.PlatformMacOS)
 	for _, source := range []desktopcontract.CommandSource{desktopcontract.CommandSourceMenu, desktopcontract.CommandSourceShortcut, desktopcontract.CommandSourceControl} {
-		result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: desktopcontract.CommandOpenProject, Source: source, StatusGeneration: 1})
+		result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: desktopcontract.CommandOpenProject, Source: source, StatusGeneration: "1"})
 		if result.Outcome != protocolcommon.OutcomeSuccess {
 			t.Fatalf("source %s=%+v", source, result)
 		}
@@ -388,7 +433,7 @@ func TestNativeShellRoutesMenusShortcutsAndControlsIdentically(t *testing.T) {
 		t.Fatalf("router calls=%+v", f.router.calls)
 	}
 	for _, id := range []desktopcontract.CommandID{desktopcontract.CommandSaveProject, desktopcontract.CommandUndo, desktopcontract.CommandRedo} {
-		result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: id, Source: desktopcontract.CommandSourceShortcut, StatusGeneration: 1})
+		result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: id, Source: desktopcontract.CommandSourceShortcut, StatusGeneration: "1"})
 		if result.Outcome != protocolcommon.OutcomeRejected || result.Value.State == desktopcontract.CommandAvailable {
 			t.Fatalf("unavailable %s=%+v", id, result)
 		}
@@ -404,9 +449,9 @@ func TestNativeShellAtomicRouteRejectsStaleAvailability(t *testing.T) {
 	if status.Outcome != protocolcommon.OutcomeSuccess || status.Value[0].State != desktopcontract.CommandAvailable {
 		t.Fatal(status)
 	}
-	stale := desktopcontract.CommandStatus{ID: desktopcontract.CommandOpenProject, State: desktopcontract.CommandDenied, Generation: 2}
+	stale := desktopcontract.CommandStatus{ID: desktopcontract.CommandOpenProject, State: desktopcontract.CommandDenied, Generation: "2"}
 	f.router.route = &stale
-	result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: desktopcontract.CommandOpenProject, Source: desktopcontract.CommandSourceShortcut, StatusGeneration: 1})
+	result := shell.InvokeCommand(context.Background(), desktopcontract.CommandInvocation{ID: desktopcontract.CommandOpenProject, Source: desktopcontract.CommandSourceShortcut, StatusGeneration: "1"})
 	if result.Outcome != protocolcommon.OutcomeFailed || result.Failure.Code != desktopcontract.FailureCommandUnavailable || len(f.router.calls) != 1 {
 		t.Fatalf("stale route=%+v calls=%+v", result, f.router.calls)
 	}

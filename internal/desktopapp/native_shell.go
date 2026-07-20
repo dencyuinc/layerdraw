@@ -137,7 +137,7 @@ func (s *NativeShell) UpdateSettings(ctx context.Context, settings desktopcontra
 	}
 	if err := s.config.Settings.Save(ctx, next); err != nil {
 		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-		rollbackErr := s.config.Window.ApplySettings(rollbackCtx, previous)
+		rollbackErr := safeApplySettings(rollbackCtx, s.config.Window, previous)
 		cancel()
 		if rollbackErr != nil {
 			return compensationFailure[desktopcontract.DesktopSettings](s, ctx)
@@ -196,11 +196,11 @@ func (s *NativeShell) CommandStatus(ctx context.Context) (result desktopcontract
 func (s *NativeShell) InvokeCommand(ctx context.Context, invocation desktopcontract.CommandInvocation) (result desktopcontract.Result[desktopcontract.CommandStatus]) {
 	defer finishShellResult(s, ctx, &result)
 	defer containShellPanic(s, ctx, &result)
-	if !invocation.ID.Validate() || !invocation.Source.Validate() || invocation.StatusGeneration == 0 {
+	if !invocation.Validate() {
 		return shellFailed[desktopcontract.CommandStatus](desktopcontract.FailureCommandUnavailable, false, desktopcontract.RecoveryRetry)
 	}
 	status, err := s.config.Commands.Route(ctx, invocation)
-	if err != nil || status.ID != invocation.ID || status.Generation != invocation.StatusGeneration || !status.State.Validate() {
+	if err != nil || status.ID != invocation.ID || status.Generation != invocation.StatusGeneration || !status.Validate() {
 		return shellFailed[desktopcontract.CommandStatus](desktopcontract.FailureCommandUnavailable, true, desktopcontract.RecoveryRetry)
 	}
 	if status.State != desktopcontract.CommandAvailable {
@@ -285,19 +285,22 @@ func finishShellResult[T any](s *NativeShell, ctx context.Context, result *deskt
 }
 
 func (s *NativeShell) recoverAndPresent(ctx context.Context, origin desktopcontract.UnexpectedFailureOrigin, lifecycle desktopcontract.LifecycleState) (desktopcontract.ErrorSurface, bool) {
-	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
 	failureCode := desktopcontract.FailureBackendPanic
 	if origin == desktopcontract.FailureOriginFrontend {
 		failureCode = desktopcontract.FailureFrontendCrash
 	}
 	surface := desktopcontract.ErrorSurface{Failure: failureCode, Recovery: desktopcontract.RecoveryRetry}
-	ref, err := safePreserveRecovery(bounded, s.config.CrashRecovery, desktopcontract.CrashContext{Origin: origin, Lifecycle: lifecycle, At: s.config.Now().UTC()})
+	preserveCtx, preserveCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	ref, err := safePreserveRecovery(preserveCtx, s.config.CrashRecovery, desktopcontract.CrashContext{Origin: origin, Lifecycle: lifecycle, At: s.config.Now().UTC()})
+	preserveCancel()
 	if err == nil && validOpaqueReference(ref.ID) {
 		surface.Recovery = desktopcontract.RecoveryOpenRecovery
 		surface.Ref = &ref
 	}
-	return surface, safePresentError(bounded, s.config.Errors, surface) == nil
+	presentCtx, presentCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	presentErr := safePresentError(presentCtx, s.config.Errors, surface)
+	presentCancel()
+	return surface, presentErr == nil
 }
 
 func safePreserveRecovery(ctx context.Context, port desktopcontract.CrashRecoveryPort, input desktopcontract.CrashContext) (result desktopcontract.RecoveryRef, err error) {
@@ -321,9 +324,27 @@ func safePresentError(ctx context.Context, port desktopcontract.ErrorSurfacePort
 func (s *NativeShell) rollbackNativeState(ctx context.Context, window desktopcontract.WindowState, settings desktopcontract.DesktopSettings) bool {
 	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	windowErr := s.config.Window.ApplyWindow(bounded, window)
-	settingsErr := s.config.Window.ApplySettings(bounded, settings)
+	windowErr := safeApplyWindow(bounded, s.config.Window, window)
+	settingsErr := safeApplySettings(bounded, s.config.Window, settings)
 	return windowErr == nil && settingsErr == nil
+}
+
+func safeApplyWindow(ctx context.Context, port desktopcontract.NativeWindowPort, value desktopcontract.WindowState) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errInjectedPanic
+		}
+	}()
+	return port.ApplyWindow(ctx, value)
+}
+
+func safeApplySettings(ctx context.Context, port desktopcontract.NativeWindowPort, value desktopcontract.DesktopSettings) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errInjectedPanic
+		}
+	}()
+	return port.ApplySettings(ctx, value)
 }
 
 func compensationFailure[T any](s *NativeShell, ctx context.Context) desktopcontract.Result[T] {
@@ -409,7 +430,7 @@ func intersectionArea(a, b desktopcontract.Rectangle) int {
 func validCommandStatuses(values []desktopcontract.CommandStatus) bool {
 	seen := make(map[desktopcontract.CommandID]bool, len(values))
 	for _, value := range values {
-		if !value.ID.Validate() || !value.State.Validate() || value.Generation == 0 || seen[value.ID] {
+		if !value.Validate() || seen[value.ID] {
 			return false
 		}
 		seen[value.ID] = true

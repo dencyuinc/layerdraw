@@ -54,12 +54,29 @@ logs, packaged accessibility probes, and crash recovery. Project lifecycle and
 UI command routing remain injected owner ports so this facade cannot acquire
 Runtime, Composer, or BrowserEditor semantics.
 
+The production entrypoint is `internal/desktopapp.NewPlatformNativeShell`.
+It wires `internal/adapter/desktop`'s private atomic JSON settings store,
+fixed-executable OS URL opener, Wails runtime bridge, single-use opaque file
+association broker, packaged accessibility bridge, and closed JSONL log store.
+The Desktop frontend uses `@layerdraw/engine-client/wails`; neither the native
+shell nor these adapters add a second Engine transport or interpret owner
+responses. The #123 recovery owner and #124 command owner remain explicit
+injected ports.
+
 Persisted window bounds are schema-versioned and normalized against the live
 display work areas. Invalid, oversized, or off-screen bounds recover onto a
 usable primary display; theme and zoom use closed values and zoom is bounded to
 50--300 percent. Menu, shortcut, and visible-control invocations use the same
 typed command route. Pending, denied, and unavailable commands are never
-invoked by the shell.
+invoked by the shell. A canonical status generation is returned with each menu
+snapshot and the owner performs status re-evaluation and invocation atomically;
+a stale generation cannot race a capability or Access-state change.
+
+Restore snapshots the currently applied native state before mutation. Window,
+settings, and durable-settings stages compensate to that snapshot on failure.
+Settings updates likewise compensate the applied theme/zoom if atomic
+persistence fails. A failed compensation always preserves recovery data when
+possible and presents the closed recovery surface.
 
 External web links are restricted to credential-free HTTPS URLs and email
 handoff to query-free `mailto:` addresses. File associations and native dialogs
