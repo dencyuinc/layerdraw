@@ -17,6 +17,7 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 var startupOrder = []desktopcontract.ComponentID{
@@ -82,6 +83,7 @@ type Config struct {
 	NativeInterchange             NativeInterchangePort
 	NativeSearchLifecycle         NativeSearchLifecycle
 	Now                           func() time.Time
+	RegistryStagedObjects         port.RegistryStagedObjectReader
 }
 
 type NativeSearchLifecycle interface {
@@ -347,6 +349,7 @@ func (a *Application) Start(ctx context.Context) desktopcontract.Result[protocol
 					EndpointInstanceID:    a.config.EndpointInstanceID,
 					ReleaseManifestDigest: a.config.ReleaseManifestDigest,
 					LocalActor:            resolvedActor,
+					RegistryStagedObjects: a.config.RegistryStagedObjects,
 				})
 				if err != nil {
 					if errors.Is(err, localdocument.ErrStateRecoveryRequired) {

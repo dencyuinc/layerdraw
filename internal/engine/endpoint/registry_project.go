@@ -29,6 +29,41 @@ type RegistryProjectPreparation struct {
 	GraphHash       protocolcommon.Digest
 }
 
+// PrepareRegistryTemplate compares a validated no-head baseline with the exact
+// staged .layerdraw container selected by Registry. The resulting closed input
+// is published by Runtime as the first revision of the reserved Document.
+func (e *LocalDocumentEngine) PrepareRegistryTemplate(ctx context.Context, baseEncoded, container []byte) (RegistryProjectPreparation, error) {
+	base, err := DecodeLocalCompileInput(baseEncoded)
+	if err != nil {
+		return RegistryProjectPreparation{}, err
+	}
+	template, err := e.ReadContainer(ctx, container)
+	if err != nil {
+		return RegistryProjectPreparation{}, err
+	}
+	beforeResult, err := e.engine.Compile(ctx, base)
+	if err != nil {
+		return RegistryProjectPreparation{}, err
+	}
+	afterResult, err := e.engine.Compile(ctx, template.input)
+	if err != nil {
+		return RegistryProjectPreparation{}, err
+	}
+	_, _, planned, err := engine.BuildCanonicalAuthoringPlan(ctx, beforeResult.Snapshot(), afterResult.Snapshot(), base.ProjectSourceTree, template.input.ProjectSourceTree, engine.SemanticPlanLimits{MaxItems: 1 << 20, MaxOutputBytes: 64 << 20})
+	if err != nil {
+		return RegistryProjectPreparation{}, err
+	}
+	impact, err := generatedAuthoringImpact(planned)
+	if err != nil {
+		return RegistryProjectPreparation{}, err
+	}
+	encoded, err := EncodeLocalCompileInput(template.input)
+	if err != nil {
+		return RegistryProjectPreparation{}, err
+	}
+	return RegistryProjectPreparation{EncodedInput: encoded, AuthoringImpact: impact, DefinitionHash: template.DefinitionHash, GraphHash: template.GraphHash}, nil
+}
+
 // PrepareRegistryProject is the sole mapping boundary from an opaque local
 // Engine snapshot plus verified Registry archives to a Runtime-ready source
 // closure. Callers never receive or mutate CompileInput directly.

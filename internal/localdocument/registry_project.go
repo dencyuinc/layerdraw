@@ -51,14 +51,12 @@ func (h *Host) CurrentRegistryProjectState(ctx context.Context, projectID string
 	if err != nil {
 		return registry.ProjectState{}, err
 	}
-	return registry.ProjectState{ProjectID: projectID, DocumentID: string(open.Session.Scope.DocumentID), LocalScopeID: open.Session.Scope.LocalScopeID, OrganizationScopeID: open.Session.Scope.OrganizationScopeID, Revision: string(open.CommittedRevision.RevisionID), DefinitionHash: string(open.CommittedRevision.DefinitionHash), DependencySnapshot: metadata.DependencySnapshot, PackTreeManifest: metadata.PackTreeManifest, HostCapabilities: []string{}, GrantSnapshot: grant, RuntimeSessionID: string(open.Session.RuntimeSessionID), EngineSnapshot: registry.RegistryProjectSnapshot{Kind: registry.RegistryProjectSnapshotWorking, Handle: working.Handle, DocumentID: string(open.Session.Scope.DocumentID), Revision: string(open.CommittedRevision.RevisionID), DefinitionHash: string(open.CommittedRevision.DefinitionHash), SourceClosureDigest: string(digest)}}, nil
+	return registry.ProjectState{ProjectID: projectID, DocumentID: string(open.Session.Scope.DocumentID), LocalScopeID: open.Session.Scope.LocalScopeID, OrganizationScopeID: open.Session.Scope.OrganizationScopeID, Revision: string(open.CommittedRevision.RevisionID), DefinitionHash: string(open.CommittedRevision.DefinitionHash), DependencySnapshot: metadata.DependencySnapshot, PackTreeManifest: metadata.PackTreeManifest, HostCapabilities: []string{}, GrantSnapshot: grant, RuntimeSessionID: string(open.Session.RuntimeSessionID), EngineSnapshot: registry.RegistryProjectSnapshot{Kind: registry.RegistryProjectSnapshotWorking, Handle: working.Handle, DocumentID: string(open.Session.Scope.DocumentID), Revision: string(open.CommittedRevision.RevisionID), DefinitionHash: string(open.CommittedRevision.DefinitionHash), GraphHash: string(open.CommittedRevision.GraphHash), SourceClosureDigest: string(digest)}}, nil
 }
 
-func (h *Host) NewRegistryDocumentState(ctx context.Context, _ registry.ArtifactIdentity) (registry.ProjectState, error) {
-	id, err := h.authority.NewID(ctx, port.IdentityRevision)
-	if err != nil {
-		return registry.ProjectState{}, err
-	}
+func (h *Host) NewRegistryDocumentState(ctx context.Context, identity registry.ArtifactIdentity) (registry.ProjectState, error) {
+	reservation := string(digestJSON(identity))
+	id := reservation[len("sha256:") : len("sha256:")+32]
 	documentID := runtimeprotocol.DocumentID("registry-template-" + id)
 	scope := h.authority.add(documentID)
 	source, err := h.engine.CompileProject(ctx, endpoint.LocalProjectInput{EntryPath: "document.ldl", ProjectSourceTree: map[string][]byte{"document.ldl": []byte("project template \"Untitled\" {}\n")}, ResolvedDependencies: endpoint.LocalResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1}})
@@ -76,7 +74,7 @@ func (h *Host) NewRegistryDocumentState(ctx context.Context, _ registry.Artifact
 		return registry.ProjectState{}, err
 	}
 	projectID := source.PortableID
-	return registry.ProjectState{ProjectID: projectID, DocumentID: string(documentID), LocalScopeID: scope.LocalScopeID, Revision: "", DefinitionHash: string(source.DefinitionHash), DependencySnapshot: registry.ProjectDependencySnapshot{ResolvedLockDigest: registryDigestEmptyLock(), Installs: []registry.LockedArtifact{}}, PackTreeManifest: string(ref.Digest), HostCapabilities: []string{}, GrantSnapshot: grant, EngineSnapshot: registry.RegistryProjectSnapshot{Kind: registry.RegistryProjectSnapshotEmptyTemplate, Handle: handle, DocumentID: string(documentID), DefinitionHash: string(source.DefinitionHash), SourceClosureDigest: string(ref.Digest)}}, nil
+	return registry.ProjectState{ProjectID: projectID, DocumentID: string(documentID), LocalScopeID: scope.LocalScopeID, Revision: "", DefinitionHash: string(source.DefinitionHash), DependencySnapshot: registry.ProjectDependencySnapshot{ResolvedLockDigest: registryDigestEmptyLock(), Installs: []registry.LockedArtifact{}}, PackTreeManifest: string(ref.Digest), HostCapabilities: []string{}, GrantSnapshot: grant, EngineSnapshot: registry.RegistryProjectSnapshot{Kind: registry.RegistryProjectSnapshotEmptyTemplate, Handle: handle, DocumentID: string(documentID), DefinitionHash: string(source.DefinitionHash), GraphHash: string(source.GraphHash), SourceClosureDigest: string(ref.Digest)}}, nil
 }
 
 func (h *Host) ApplyRegistryProjectState(documentID runtimeprotocol.DocumentID, snapshot registry.ProjectDependencySnapshot, manifest string) error {

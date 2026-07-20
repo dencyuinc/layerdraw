@@ -226,6 +226,7 @@ type ProjectMutationPlan struct {
 	HostOperationImpactDigest  string                   `json:"host_operation_impact_digest"`
 	EvaluationDigest           string                   `json:"evaluation_digest"`
 	StagedObjects              []StagedObjectRef        `json:"staged_objects"`
+	EngineSnapshot             RegistryProjectSnapshot  `json:"engine_snapshot"`
 }
 type RegistryMutationBuildInput struct {
 	Action             Action                    `json:"action"`
@@ -437,6 +438,7 @@ type RegistryProjectSnapshot struct {
 	DocumentID          string                      `json:"document_id"`
 	Revision            string                      `json:"revision,omitempty"`
 	DefinitionHash      string                      `json:"definition_hash,omitempty"`
+	GraphHash           string                      `json:"graph_hash,omitempty"`
 	SourceClosureDigest string                      `json:"source_closure_digest"`
 }
 
@@ -663,9 +665,13 @@ func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef st
 	if !ok || connector == nil || connectionRef == "" {
 		return fail(FailureUnavailable, sourceID, true, nil)
 	}
-	lease, err := r.credentials.ResolveRegistryConnection(ctx, connectionRef)
-	if err != nil || lease.ConnectionRef != connectionRef || len(lease.Credential) == 0 || !lease.ExpiresAt.After(r.now()) {
-		return fail(FailurePolicyDenied, sourceID, true, err)
+	lease := CredentialLease{ConnectionRef: connectionRef, ExpiresAt: r.now().Add(time.Hour)}
+	if source.Kind != SourceLocalDirectory && source.Kind != SourceGit {
+		var err error
+		lease, err = r.credentials.ResolveRegistryConnection(ctx, connectionRef)
+		if err != nil || lease.ConnectionRef != connectionRef || len(lease.Credential) == 0 || !lease.ExpiresAt.After(r.now()) {
+			return fail(FailurePolicyDenied, sourceID, true, err)
+		}
 	}
 	if err := connector.ProbeRegistrySource(ctx, source, lease); err != nil {
 		return fail(FailureUnavailable, sourceID, true, err)

@@ -4,11 +4,15 @@ package desktopwails
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -17,12 +21,16 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
+	"github.com/dencyuinc/layerdraw/internal/adapter/registryengine"
+	"github.com/dencyuinc/layerdraw/internal/adapter/registrysource"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/host"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
+	"github.com/dencyuinc/layerdraw/internal/registry"
+	runtimeport "github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 const (
@@ -43,14 +51,23 @@ var packagedCapabilities = []protocolcommon.CapabilityID{
 // Build-tagged native owners fail closed at startup when their verified bundle
 // is absent; unavailable owners remain disabled and undiscoverable.
 func NewSharedConfig(root string) (desktopapp.Config, error) {
-	owner := &sharedOwner{root: root}
+	objects, err := registry.NewDiskStagedObjectStore(filepath.Join(root, "registry", "objects"), registry.DefaultMaxStagedObjectBytes)
+	if err != nil {
+		return desktopapp.Config{}, err
+	}
+	transactions, err := registry.NewDiskTransactionStore(filepath.Join(root, "registry", "transactions"))
+	if err != nil {
+		return desktopapp.Config{}, err
+	}
+	credentials := newPlatformCredentialPort()
+	owner := &sharedOwner{root: root, objects: objects, transactions: transactions, credentials: credentials}
 	clients, err := packagedClients(owner)
 	if err != nil {
 		return desktopapp.Config{}, err
 	}
 	adapters := map[desktopcontract.ComponentID]desktopapp.Adapter{}
 	disabled := []desktopcontract.ComponentID{
-		desktopcontract.ComponentRegistryClient, desktopcontract.ComponentReview,
+		desktopcontract.ComponentReview,
 		desktopcontract.ComponentNativeExporters,
 	}
 	if !packagedNativeSearchEnabled() {
@@ -64,6 +81,7 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 			adapters[id] = owner
 		}
 	}
+	adapters[desktopcontract.ComponentRegistryClient] = enabledComponent{}
 	adapters[desktopcontract.ComponentBindingShell] = owner
 	return desktopapp.Config{
 		Root: root, ReleaseVersion: desktopRelease, EndpointInstanceID: desktopEndpoint,
@@ -73,13 +91,19 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		EffectiveRequiredCapabilities: append([]protocolcommon.CapabilityID(nil), packagedCapabilities...),
 		DisabledComponents:            append([]desktopcontract.ComponentID(nil), disabled...),
 		HostPorts: desktopcontract.HostPorts{
-			Credentials: newPlatformCredentialPort(), LocalActor: platformActor{},
+			Credentials: credentials, LocalActor: platformActor{},
 			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{},
 		},
 		MCPCapabilities:       owner,
 		NativeSearchLifecycle: packagedNativeSearchLifecycle(owner),
+		RegistryStagedObjects: registryObjectReader{store: objects},
 	}, nil
 }
+
+type enabledComponent struct{}
+
+func (enabledComponent) Start(context.Context) error    { return nil }
+func (enabledComponent) Shutdown(context.Context) error { return nil }
 
 type disabledComponent struct{}
 
@@ -98,6 +122,33 @@ type sharedOwner struct {
 	nativeSearch bool
 	searchLife   host.SearchDocumentLifecycle
 	closeSearch  func()
+	objects      *registry.DiskStagedObjectStore
+	transactions *registry.DiskTransactionStore
+	credentials  desktopcontract.CredentialPort
+	registry     *registry.Registry
+	registryWire *registry.HostBinding
+}
+
+type registryObjectReader struct{ store registry.StagedObjectStore }
+
+func (r registryObjectReader) OpenRegistryStagedObject(ctx context.Context, ref runtimeport.RegistryStagedObjectRef) (io.ReadCloser, error) {
+	size, err := strconv.ParseInt(string(ref.Size), 10, 64)
+	if err != nil || size < 0 {
+		return nil, errors.New("Registry staged object size is invalid")
+	}
+	return r.store.OpenRegistryObject(ctx, registry.StagedObjectRef{ObjectID: ref.ObjectID, Digest: string(ref.Digest), Size: size, MediaType: ref.MediaType})
+}
+
+type registryCredentialResolver struct {
+	port desktopcontract.CredentialPort
+}
+
+func (r registryCredentialResolver) ResolveCredential(ctx context.Context, ref string) ([]byte, error) {
+	result := r.port.Resolve(ctx, desktopcontract.CredentialRef{ID: ref})
+	if !result.Validate() || result.Outcome != protocolcommon.OutcomeSuccess || len(result.Value) == 0 {
+		return nil, errors.New("Registry credential is unavailable")
+	}
+	return result.Value, nil
 }
 
 func (o *sharedOwner) RevalidateExternalPublication(ctx context.Context, intent desktopapp.ExternalPublicationIntent) desktopcontract.Result[struct{}] {
@@ -127,7 +178,8 @@ func (o *sharedOwner) Snapshot(context.Context) (mcphost.CapabilitySnapshot, err
 	for _, route := range mcphost.ToolRoutes() {
 		for _, operation := range append([]string{route.Operation, route.PreviewOperation}, route.RequiredOperations...) {
 			native := strings.HasPrefix(operation, "native.") && o.nativeSearch
-			if operation != "" && generated[operation] && (strings.HasPrefix(operation, "engine.") || strings.HasPrefix(operation, "runtime.") || native) {
+			registryOperation := strings.HasPrefix(operation, "registry.")
+			if operation != "" && generated[operation] && (strings.HasPrefix(operation, "engine.") || strings.HasPrefix(operation, "runtime.") || registryOperation || native) {
 				operations[operation] = mcphost.OperationCapability{Enabled: true, InputSchema: append(json.RawMessage(nil), schema...), OutputSchema: append(json.RawMessage(nil), schema...)}
 			}
 		}
@@ -164,6 +216,34 @@ func (o *sharedOwner) Start(context.Context) error {
 	if o.root == "" {
 		o.root = o.local.DataRoot()
 	}
+	validator, err := registryengine.New(o.objects, o.local)
+	if err != nil {
+		return err
+	}
+	registryOwner, err := registry.New(validator, registrysource.AccessPort{Evaluator: accesscore.Evaluator{}}, o.local, o.local, registrysource.CredentialBroker{Resolver: registryCredentialResolver{o.credentials}}, o.transactions)
+	if err != nil {
+		return err
+	}
+	localSource := registrysource.LocalDirectory{}
+	remoteSource, err := registrysource.NewHTTPS(&http.Client{})
+	if err != nil {
+		return err
+	}
+	for _, kind := range []registry.SourceKind{registry.SourceLocalDirectory, registry.SourceGit} {
+		registryOwner.RegisterClient(kind, localSource)
+		registryOwner.RegisterConnector(kind, localSource)
+	}
+	for _, kind := range []registry.SourceKind{registry.SourceOfficial, registry.SourceOrganizationPrivate, registry.SourceSelfHosted} {
+		registryOwner.RegisterClient(kind, remoteSource)
+		registryOwner.RegisterConnector(kind, remoteSource)
+	}
+	if err := registryOwner.PutTrustPolicy(registry.TrustPolicy{PolicyID: "desktop-local", AllowUnsignedLocal: true, TrustedPublishers: map[string]bool{}, PublicKeys: map[string]ed25519.PublicKey{}, RevokedKeys: map[string]bool{}}); err != nil {
+		return err
+	}
+	registryWire, err := registry.NewHostBinding(registryOwner)
+	if err != nil {
+		return err
+	}
 	engine, err := engineendpoint.NewHostEngineFacade(desktopRelease, "unknown", desktopDigest, desktopEndpoint, engineendpoint.TransportInProcess)
 	if err != nil {
 		return err
@@ -178,13 +258,15 @@ func (o *sharedOwner) Start(context.Context) error {
 		return err
 	}
 	o.endpoint, o.engine, o.nativeSearch, o.searchLife, o.closeSearch = endpoint, engine, search != nil, lifecycle, closeSearch
+	o.registry, o.registryWire = registryOwner, registryWire
 	return nil
 }
 
 func (o *sharedOwner) Shutdown(context.Context) error {
 	o.mu.Lock()
 	closeSearch := o.closeSearch
-	o.endpoint, o.engine, o.local, o.nativeSearch, o.searchLife, o.closeSearch = nil, nil, nil, false, nil, nil
+	o.endpoint, o.engine, o.registry, o.registryWire, o.local = nil, nil, nil, nil, nil
+	o.nativeSearch, o.searchLife, o.closeSearch = false, nil, nil
 	o.mu.Unlock()
 	if closeSearch != nil {
 		closeSearch()
@@ -194,13 +276,19 @@ func (o *sharedOwner) Shutdown(context.Context) error {
 
 func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
 	o.mu.RLock()
-	endpoint, engine := o.endpoint, o.engine
+	endpoint, engine, registryWire := o.endpoint, o.engine, o.registryWire
 	o.mu.RUnlock()
 	if endpoint == nil || engine == nil {
 		return desktopcontract.ExchangeResult{}, errors.New("desktop shared owner is not started")
 	}
 	if result, err, handled := invokePackagedNativeSearch(ctx, endpoint, exchange); handled {
 		return result, err
+	}
+	if strings.HasPrefix(exchange.Operation, "registry.") {
+		if registryWire == nil || len(exchange.Blobs) != 0 {
+			return desktopcontract.ExchangeResult{}, errors.New("desktop Registry owner is unavailable")
+		}
+		return desktopcontract.ExchangeResult{Operation: exchange.Operation, Control: registryWire.Dispatch(ctx, exchange.Control)}, nil
 	}
 	if exchange.Operation == string(engineprotocol.HandshakeRequestEnvelopeOperationValue) {
 		request, err := engineprotocol.DecodeHandshakeRequestEnvelope(exchange.Control)
@@ -378,7 +466,7 @@ func packagedClients(owner *sharedOwner) (desktopcontract.ClientSet, error) {
 	for index := 0; index < root.NumField(); index++ {
 		ownerField := root.Field(index)
 		ownerName := root.Type().Field(index).Name
-		actual := ownerName == "Engine" || ownerName == "Runtime" || (ownerName == "NativeQuery" && packagedNativeSearchEnabled())
+		actual := ownerName == "Engine" || ownerName == "Runtime" || ownerName == "Registry" || (ownerName == "NativeQuery" && packagedNativeSearchEnabled())
 		for fieldIndex := 0; fieldIndex < ownerField.NumField(); fieldIndex++ {
 			field := ownerField.Field(fieldIndex)
 			if field.Kind() == reflect.Interface {

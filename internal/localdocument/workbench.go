@@ -63,6 +63,7 @@ func (w *runtimeWorkbench) prepareRegistryRevision(ctx context.Context, base run
 		return port.PreparedRevision{}, port.ErrConflict
 	}
 	artifacts := make([]engineendpoint.RegistryProjectArtifactInput, 0, len(mutation.Artifacts))
+	artifactBytes := make([][]byte, 0, len(mutation.Artifacts))
 	for _, artifact := range mutation.Artifacts {
 		reader, err := w.registryReader.OpenRegistryStagedObject(ctx, artifact.Object)
 		if err != nil {
@@ -74,8 +75,15 @@ func (w *runtimeWorkbench) prepareRegistryRevision(ctx context.Context, base run
 			return port.PreparedRevision{}, port.ErrConflict
 		}
 		artifacts = append(artifacts, engineendpoint.RegistryProjectArtifactInput{Bytes: contents, RegistrySource: artifact.RegistrySource})
+		artifactBytes = append(artifactBytes, contents)
 	}
-	prepared, err := w.engine.PrepareRegistryProject(ctx, engineendpoint.RegistryProjectMutationInput{BaseEncoded: encoded, Artifacts: artifacts, RemoveCanonicalIDs: append([]string(nil), mutation.RemoveCanonicalIDs...)})
+	var prepared engineendpoint.RegistryProjectPreparation
+	var err error
+	if !retain && len(mutation.Artifacts) == 1 && mutation.Artifacts[0].Object.MediaType == "application/vnd.layerdraw.project" && len(mutation.RemoveCanonicalIDs) == 0 {
+		prepared, err = w.engine.PrepareRegistryTemplate(ctx, encoded, artifactBytes[0])
+	} else {
+		prepared, err = w.engine.PrepareRegistryProject(ctx, engineendpoint.RegistryProjectMutationInput{BaseEncoded: encoded, Artifacts: artifacts, RemoveCanonicalIDs: append([]string(nil), mutation.RemoveCanonicalIDs...)})
+	}
 	if err != nil {
 		return port.PreparedRevision{}, err
 	}

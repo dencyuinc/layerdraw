@@ -455,6 +455,8 @@ func (h *Host) currentExternalDigest(ctx context.Context, binding documentBindin
 			return "", err
 		}
 		return candidate.Digest(), nil
+	case "registry":
+		return committed.Digest(), nil
 	default:
 		return "", errors.New("unknown local source kind")
 	}
@@ -657,10 +659,12 @@ func (h *Host) openBound(ctx context.Context, binding documentBinding, externalD
 	h.mu.Unlock()
 	h.authority.add(binding.DocumentID)
 	kind := port.ExternalFileKind(binding.Kind)
-	if err := h.external.Bind(ctx, local.ExternalFileBinding{Scope: h.authority.add(binding.DocumentID), Kind: kind, Locator: binding.Locator}); err != nil {
-		return OpenResult{}, err
+	if binding.Kind != "registry" {
+		if err := h.external.Bind(ctx, local.ExternalFileBinding{Scope: h.authority.add(binding.DocumentID), Kind: kind, Locator: binding.Locator}); err != nil {
+			return OpenResult{}, err
+		}
+		h.workbench.BindExternal(binding.DocumentID, kind)
 	}
-	h.workbench.BindExternal(binding.DocumentID, kind)
 	if _, err := h.Recover(ctx, binding.DocumentID); err != nil {
 		return OpenResult{}, err
 	}
