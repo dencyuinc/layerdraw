@@ -36,20 +36,20 @@ type ConformanceSamples struct {
 }
 
 type PackagedConformanceReport struct {
-	SchemaVersion               uint32                        `json:"schema_version"`
-	SourceRevision              string                        `json:"source_revision"`
-	Platform                    string                        `json:"platform"`
-	ArtifactKind                string                        `json:"artifact_kind"`
-	Iterations                  int                           `json:"iterations"`
-	Scenarios                   map[string]ConformanceSamples `json:"scenarios"`
-	ProcessTreePeakRSSMebibytes []int64                       `json:"process_tree_peak_rss_mebibytes"`
-	ScenarioEvidence            map[string]string             `json:"scenario_evidence"`
+	SchemaVersion            uint32                        `json:"schema_version"`
+	SourceRevision           string                        `json:"source_revision"`
+	Platform                 string                        `json:"platform"`
+	ArtifactKind             string                        `json:"artifact_kind"`
+	Iterations               int                           `json:"iterations"`
+	Scenarios                map[string]ConformanceSamples `json:"scenarios"`
+	IsolatedWorkerPeakRSSMiB []int64                       `json:"isolated_worker_peak_rss_mebibytes"`
+	ScenarioEvidence         map[string]string             `json:"scenario_evidence"`
 }
 
 type packagedConformanceScenarioReport struct {
 	SchemaVersion uint32 `json:"schema_version"`
 	Scenario      string `json:"scenario"`
-	PeakRSSMiB    int64  `json:"process_tree_peak_rss_mebibytes"`
+	WorkerPeakRSS int64  `json:"isolated_worker_peak_rss_mebibytes"`
 }
 
 type packagedConformanceError struct {
@@ -126,9 +126,9 @@ func RunPackagedConformance(output string) error {
 			}
 		}
 		if iterationPeak <= 0 {
-			return conformanceFailure("measurement.memory", errors.New("packaged conformance process-tree RSS is unavailable"))
+			return conformanceFailure("measurement.memory", errors.New("packaged conformance isolated worker RSS is unavailable"))
 		}
-		report.ProcessTreePeakRSSMebibytes = append(report.ProcessTreePeakRSSMebibytes, iterationPeak)
+		report.IsolatedWorkerPeakRSSMiB = append(report.IsolatedWorkerPeakRSSMiB, iterationPeak)
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -167,10 +167,10 @@ var runConformanceScenarioProcess = func(ctx context.Context, name string) (int6
 	var report packagedConformanceScenarioReport
 	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF || report.SchemaVersion != 1 || report.Scenario != name || report.PeakRSSMiB <= 0 {
+	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF || report.SchemaVersion != 1 || report.Scenario != name || report.WorkerPeakRSS <= 0 {
 		return 0, errors.New("isolated installed Desktop scenario result is invalid")
 	}
-	return report.PeakRSSMiB, nil
+	return report.WorkerPeakRSS, nil
 }
 
 // RunPackagedConformanceScenario executes one isolated workflow for the
@@ -186,11 +186,11 @@ func RunPackagedConformanceScenario(name string, output io.Writer) error {
 	if err := runner(ctx); err != nil {
 		return conformanceFailure("scenario."+name, err)
 	}
-	rss, err := processTreePeakRSSMebibytes()
+	rss, err := isolatedWorkerPeakRSSMebibytes()
 	if err != nil || rss <= 0 {
 		return conformanceFailure("measurement.memory", errors.New("scenario process RSS is unavailable"))
 	}
-	return json.NewEncoder(output).Encode(packagedConformanceScenarioReport{SchemaVersion: 1, Scenario: name, PeakRSSMiB: rss})
+	return json.NewEncoder(output).Encode(packagedConformanceScenarioReport{SchemaVersion: 1, Scenario: name, WorkerPeakRSS: rss})
 }
 
 func cloneEvidence() map[string]string {

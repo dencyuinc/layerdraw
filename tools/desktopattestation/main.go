@@ -55,7 +55,7 @@ type scenarioResult struct {
 	ArtifactKind   string             `json:"artifact_kind"`
 	Iterations     int                `json:"iterations"`
 	Scenarios      map[string]samples `json:"scenarios"`
-	PeakRSSMiB     []int64            `json:"process_tree_peak_rss_mebibytes"`
+	WorkerPeakRSS  []int64            `json:"isolated_worker_peak_rss_mebibytes"`
 	Evidence       map[string]string  `json:"scenario_evidence"`
 }
 
@@ -275,12 +275,12 @@ func validateResult(store *artifactStore, closurePath, resultPath, revision, pla
 		}
 	}
 	memory := limits.PerformanceBudgets["memory"]
-	if len(result.PeakRSSMiB) != result.Iterations || len(result.PeakRSSMiB) < memory.MinIterations || memory.Percentile != 95 {
-		return errors.New("process-tree RSS evidence is invalid")
+	if len(result.WorkerPeakRSS) != result.Iterations || len(result.WorkerPeakRSS) < memory.MinIterations || memory.Percentile != 95 {
+		return errors.New("isolated worker RSS evidence is invalid")
 	}
-	observed, err := percentile95(result.PeakRSSMiB)
+	observed, err := percentile95(result.WorkerPeakRSS)
 	if err != nil || observed > memory.MaxMebibytes {
-		return fmt.Errorf("process-tree p95 RSS %dMiB exceeds %dMiB", observed, memory.MaxMebibytes)
+		return fmt.Errorf("isolated worker p95 RSS %dMiB exceeds %dMiB", observed, memory.MaxMebibytes)
 	}
 	return nil
 }

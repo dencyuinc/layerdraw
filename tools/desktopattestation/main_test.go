@@ -19,7 +19,7 @@ func TestSignedAttestationBindsInstalledResultsAndArtifacts(t *testing.T) {
 		budgets[id] = budget{MaxMilliseconds: 100, MinIterations: 5, Percentile: 95}
 	}
 	writeJSON(t, closurePath, closure{SchemaVersion: 1, Delivery: "desktop", PerformanceBudgets: budgets})
-	result := scenarioResult{SchemaVersion: 1, SourceRevision: revision, Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]samples{}, Evidence: map[string]string{}, PeakRSSMiB: []int64{100, 101, 102, 103, 104}}
+	result := scenarioResult{SchemaVersion: 1, SourceRevision: revision, Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]samples{}, Evidence: map[string]string{}, WorkerPeakRSS: []int64{100, 101, 102, 103, 104}}
 	for _, id := range scenarioIDs {
 		result.Scenarios[id] = samples{Milliseconds: []int64{10, 11, 12, 13, 14}}
 		result.Evidence[id] = expectedEvidence[id]
@@ -69,14 +69,14 @@ func TestMemoryBudgetFailureReportsOnlyMeasurements(t *testing.T) {
 	}
 	writeJSON(t, filepath.Join(root, "closure.json"), closure{SchemaVersion: 1, Delivery: "desktop", PerformanceBudgets: budgets})
 	revision := strings.Repeat("a", 40)
-	result := scenarioResult{SchemaVersion: 1, SourceRevision: revision, Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]samples{}, Evidence: map[string]string{}, PeakRSSMiB: []int64{500, 510, 520, 530, 540}}
+	result := scenarioResult{SchemaVersion: 1, SourceRevision: revision, Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]samples{}, Evidence: map[string]string{}, WorkerPeakRSS: []int64{500, 510, 520, 530, 540}}
 	for _, id := range scenarioIDs {
 		result.Scenarios[id] = samples{Milliseconds: []int64{1, 2, 3, 4, 5}}
 		result.Evidence[id] = expectedEvidence[id]
 	}
 	writeJSON(t, filepath.Join(root, "result.json"), result)
 	err = validateResult(store, "closure.json", "result.json", revision, "linux")
-	if err == nil || err.Error() != "process-tree p95 RSS 540MiB exceeds 512MiB" {
+	if err == nil || err.Error() != "isolated worker p95 RSS 540MiB exceeds 512MiB" {
 		t.Fatalf("memory failure=%v", err)
 	}
 }

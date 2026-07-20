@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-func processTreePeakRSSMebibytes() (int64, error) {
+func isolatedWorkerPeakRSSMebibytes() (int64, error) {
 	var usage syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
 		return 0, err

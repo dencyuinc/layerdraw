@@ -83,8 +83,10 @@ Marketplace delivery are not asserted by this evidence.
 
 Each installed platform emits a strict scenario result for the exact release commit. Five or more
 iterations cover cold process start, project open, Search/Analysis, preview, durable commit, 2D/3D
-Viewer interaction, bounded MCP operations, external reconcile, shutdown, and the peak resident
-set of the Desktop, WebView, and MCP process tree. The release job computes p95 itself against the
-declared budgets. It then signs an attestation binding the scenario result, closure manifest, exact
+Viewer interaction, bounded MCP operations, external reconcile, and shutdown. Each workflow runs
+in an isolated installed-Desktop worker process; the result records the largest worker peak RSS per
+iteration and computes p95 against the declared budget. This evidence does not claim WebView or MCP
+descendant-process memory: final Desktop closure requires a separate packaged UI process-tree
+scenario. The release job then signs an attestation binding the scenario result, closure manifest, exact
 installer digest, source revision, and platform. Update metadata generation fails closed unless
 that independent signature and every bound digest verify against the configured trust anchor.

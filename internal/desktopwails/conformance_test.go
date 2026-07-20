@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
@@ -165,6 +166,14 @@ func TestPackagedConformanceExecutesCanonicalNonMCPScenarios(t *testing.T) {
 	}
 }
 
+func TestPackagedConformanceExecutesCanonicalMCPScenario(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := conformanceMCP(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPackagedConformanceFixtureCompiles(t *testing.T) {
 	_, err := engine.New(engine.BuildInfo{}).Compile(context.Background(), engine.CompileInput{Mode: engine.CompileProject, EntryPath: "fixture.ldl", ProjectSourceTree: map[string][]byte{"fixture.ldl": []byte(conformanceProjectSource)}, ResolvedDependencies: engine.ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1}})
 	if err != nil {
@@ -173,7 +182,7 @@ func TestPackagedConformanceFixtureCompiles(t *testing.T) {
 }
 
 func TestPackagedConformanceReportIsStrictAndExclusive(t *testing.T) {
-	report := PackagedConformanceReport{SchemaVersion: 1, SourceRevision: "0123456789abcdef0123456789abcdef01234567", Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]ConformanceSamples{}, ProcessTreePeakRSSMebibytes: []int64{1, 1, 1, 1, 1}, ScenarioEvidence: cloneEvidence()}
+	report := PackagedConformanceReport{SchemaVersion: 1, SourceRevision: "0123456789abcdef0123456789abcdef01234567", Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]ConformanceSamples{}, IsolatedWorkerPeakRSSMiB: []int64{1, 1, 1, 1, 1}, ScenarioEvidence: cloneEvidence()}
 	encoded, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +229,7 @@ func TestRunPackagedConformanceExecutesEveryIteration(t *testing.T) {
 	if err := decoder.Decode(&report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Iterations != packagedConformanceIterations || len(report.Scenarios) != len(conformanceEvidence) || len(report.ProcessTreePeakRSSMebibytes) != packagedConformanceIterations {
+	if report.Iterations != packagedConformanceIterations || len(report.Scenarios) != len(conformanceEvidence) || len(report.IsolatedWorkerPeakRSSMiB) != packagedConformanceIterations {
 		t.Fatalf("incomplete report: %+v", report)
 	}
 	if calls != packagedConformanceIterations*len(conformanceEvidence) {

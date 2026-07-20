@@ -25,7 +25,7 @@ type processMemoryCounters struct {
 
 var getProcessMemoryInfo = windows.NewLazySystemDLL("psapi.dll").NewProc("GetProcessMemoryInfo")
 
-func processTreePeakRSSMebibytes() (int64, error) {
+func isolatedWorkerPeakRSSMebibytes() (int64, error) {
 	var counters processMemoryCounters
 	counters.CB = uint32(unsafe.Sizeof(counters))
 	result, _, callErr := getProcessMemoryInfo.Call(uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&counters)), uintptr(counters.CB))
