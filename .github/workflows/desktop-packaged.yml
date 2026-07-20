@@ -47,15 +47,14 @@ jobs:
           pnpm install --frozen-lockfile
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             pnpm --filter @layerdraw/engine-wasm exec tsc -p tsconfig.build.json
-            pnpm exec turbo run build \
-              --filter @layerdraw/protocol \
-              --filter @layerdraw/composer \
-              --filter @layerdraw/engine-client \
-              --filter @layerdraw/client-sdk \
-              --filter @layerdraw/render \
-              --filter @layerdraw/viewer \
-              --filter @layerdraw/react \
-              --filter @layerdraw/desktop
+            pnpm --filter @layerdraw/protocol build
+            pnpm --filter @layerdraw/composer build
+            pnpm --filter @layerdraw/render build
+            pnpm --filter @layerdraw/viewer build
+            pnpm --filter @layerdraw/engine-client build
+            pnpm --filter @layerdraw/client-sdk build
+            pnpm --filter @layerdraw/react build
+            pnpm --filter @layerdraw/desktop build
           else
             pnpm exec turbo run build
           fi
