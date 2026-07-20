@@ -48,12 +48,15 @@ try {
 
   $corrupt = Join-Path $root "corrupt.exe"
   [IO.File]::WriteAllBytes($corrupt, [IO.File]::ReadAllBytes($CurrentInstaller)[0..63])
+  $corruptRejected = $false
   try {
     $failed = Start-Process -FilePath $corrupt -ArgumentList "/S" -Wait -PassThru
-    if ($failed.ExitCode -eq 0) { throw "corrupt installer was accepted" }
+    $corruptRejected = $failed.ExitCode -ne 0
   } catch {
     # Windows rejecting the invalid executable is the expected rollback path.
+    $corruptRejected = $true
   }
+  if (-not $corruptRejected) { throw "corrupt installer was accepted" }
   if (-not (Test-Path $executable)) { throw "failed update removed the installed application" }
   Invoke-Probe $executable "verify"
 
