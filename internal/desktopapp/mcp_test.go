@@ -477,6 +477,26 @@ func TestNativeMCPBindingMustMatchRuntimeAuthority(t *testing.T) {
 	if err := validateNativeMCPBinding(request); err != nil {
 		t.Fatalf("matching native authority rejected: %v", err)
 	}
+	goWirePayload, err := json.Marshal(struct {
+		Session                *runtimeprotocol.RuntimeSessionRef `json:"session"`
+		Snapshot               port.DocumentSnapshotRef           `json:"snapshot"`
+		AccessProjectionDigest string
+	}{payload.Session, payload.Snapshot, payload.AccessProjectionDigest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goWireArguments, err := json.Marshal(struct {
+		Operation string          `json:"operation"`
+		Payload   json.RawMessage `json:"payload"`
+	}{Operation: "native.execute_search", Payload: goWirePayload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goWireRequest := request
+	goWireRequest.Arguments = goWireArguments
+	if err := validateNativeMCPBinding(goWireRequest); err != nil {
+		t.Fatalf("Go wire native authority rejected: %v", err)
+	}
 	for name, mutate := range map[string]func(*mcphost.OwnerRequest){
 		"missing":  func(request *mcphost.OwnerRequest) { request.Binding = nil },
 		"document": func(request *mcphost.OwnerRequest) { request.Binding.DocumentID = "document-other" },
