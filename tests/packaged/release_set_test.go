@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -152,8 +153,13 @@ func offlineCommand(t *testing.T, binary string, arguments ...string) *exec.Cmd 
 			if exec.Command(unshare, "-n", "true").Run() == nil {
 				return exec.Command(unshare, append([]string{"-n", binary}, arguments...)...)
 			}
-			if sudo, sudoErr := exec.LookPath("sudo"); sudoErr == nil && exec.Command(sudo, "-n", unshare, "-n", "true").Run() == nil {
-				command := []string{"-n", unshare, "-n", binary}
+			// Hosted Linux runners require root to create a network namespace. Drop
+			// back to the invoking user before starting the packaged binary so its
+			// database and search index remain owned (and removable) by the test.
+			identity := []string{"--setgid", strconv.Itoa(os.Getgid()), "--setuid", strconv.Itoa(os.Getuid())}
+			probe := append([]string{"-n", unshare, "-n"}, append(identity, "true")...)
+			if sudo, sudoErr := exec.LookPath("sudo"); sudoErr == nil && exec.Command(sudo, probe...).Run() == nil {
+				command := append([]string{"-n", unshare, "-n"}, append(identity, binary)...)
 				return exec.Command(sudo, append(command, arguments...)...)
 			}
 		}
