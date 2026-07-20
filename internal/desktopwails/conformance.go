@@ -20,7 +20,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
-	"github.com/dencyuinc/layerdraw/internal/engine"
+	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
 )
 
@@ -303,48 +303,29 @@ func conformanceAuthoringInput(ctx context.Context, suffix string) (*conformance
 		instance.close(context.Background())
 		return nil, desktopapp.ProjectOpenResult{}, runtimeprotocol.RuntimeCommitInput{}, err
 	}
+	preconditions, err := conformancePreconditions(ctx, conformanceAuthoringSource)
+	if err != nil {
+		instance.close(context.Background())
+		return nil, desktopapp.ProjectOpenResult{}, runtimeprotocol.RuntimeCommitInput{}, err
+	}
 	input := runtimeprotocol.RuntimeCommitInput{
 		Session: opened.Open.Session, OperationID: runtimeprotocol.OperationID("conformance_" + suffix),
 		IdempotencyKey: runtimeprotocol.IdempotencyKey("conformance_" + suffix + "_idempotency"),
-		OperationBatch: runtimeprotocol.RuntimeOperationBatch{DocumentID: opened.ProjectID, BaseRevision: opened.Open.CommittedRevision, ExpectedDefinitionHash: opened.Open.CommittedRevision.DefinitionHash, Operations: batch, Preconditions: conformancePreconditions(conformanceAuthoringSource)},
+		OperationBatch: runtimeprotocol.RuntimeOperationBatch{DocumentID: opened.ProjectID, BaseRevision: opened.Open.CommittedRevision, ExpectedDefinitionHash: opened.Open.CommittedRevision.DefinitionHash, Operations: batch, Preconditions: preconditions},
 		Trigger:        runtimeprotocol.CommitTriggerExplicitSave,
 	}
 	return instance, opened, input, nil
 }
 
-func conformancePreconditions(source string) engineprotocol.EngineEditPreconditions {
-	compiled, err := engine.New(engine.BuildInfo{}).Compile(context.Background(), engine.CompileInput{
-		Mode: engine.CompileProject, EntryPath: "document.ldl", ProjectSourceTree: map[string][]byte{"document.ldl": []byte(source)},
-		ResolvedDependencies: engine.ResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1},
-	})
-	if err != nil {
-		return engineprotocol.EngineEditPreconditions{}
-	}
-	snapshot := compiled.Snapshot()
-	result := engineprotocol.EngineEditPreconditions{DocumentGeneration: engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "placeholder", Value: "document_placeholder_123456"}, Value: "1"}, ExpectedSubjectHashes: []engineprotocol.ExpectedHash{}, ExpectedSubtreeHashes: []engineprotocol.ExpectedHash{}, ExpectedChildSets: []engineprotocol.ExpectedChildSet{}}
-	for _, item := range snapshot.SubjectSemanticHashes {
-		result.ExpectedSubjectHashes = append(result.ExpectedSubjectHashes, engineprotocol.ExpectedHash{Address: semantic.StableAddress(item.Address), Hash: protocolcommon.Digest(item.Hash)})
-	}
-	for _, item := range snapshot.SubtreeHashes {
-		result.ExpectedSubtreeHashes = append(result.ExpectedSubtreeHashes, engineprotocol.ExpectedHash{Address: semantic.StableAddress(item.OwnerAddress), Hash: protocolcommon.Digest(item.Hash)})
-	}
-	for _, item := range snapshot.ChildSetHashes {
-		result.ExpectedChildSets = append(result.ExpectedChildSets, engineprotocol.ExpectedChildSet{OwnerAddress: semantic.StableAddress(item.OwnerAddress), ChildKind: semantic.SubjectKind(item.ChildKind), Hash: protocolcommon.Digest(item.Hash)})
-	}
-	sources := make([]engineprotocol.ExpectedSourceDigest, 0, len(snapshot.SourceMap.Files))
-	for _, file := range snapshot.SourceMap.Files {
-		origin := semantic.SourceOrigin{Kind: semantic.OriginKind(file.Origin.Kind)}
-		if file.Origin.PackAddress != "" {
-			address := semantic.PackRootAddress(file.Origin.PackAddress)
-			origin.PackAddress = &address
-		}
-		sources = append(sources, engineprotocol.ExpectedSourceDigest{
-			Module: semantic.ModuleRef{Origin: origin, ModulePath: file.ModulePath},
-			Digest: protocolcommon.Digest(file.Digest),
-		})
-	}
-	result.ExpectedSourceDigests = &sources
-	return result
+func conformancePreconditions(ctx context.Context, source string) (engineprotocol.EngineEditPreconditions, error) {
+	generation := engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "placeholder", Value: "document_placeholder_123456"}, Value: "1"}
+	return endpoint.CompileProjectEditPreconditions(ctx, endpoint.LocalProjectInput{
+		EntryPath:         "document.ldl",
+		ProjectSourceTree: map[string][]byte{"document.ldl": []byte(source)},
+		ResolvedDependencies: endpoint.LocalResolvedDependencies{
+			Format: "layerdraw-resolved", FormatVersion: 1, Language: 1,
+		},
+	}, generation)
 }
 
 type conformanceWorkbench struct {

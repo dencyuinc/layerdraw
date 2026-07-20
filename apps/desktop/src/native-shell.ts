@@ -73,27 +73,37 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
       const style = getComputedStyle(node);
       return Number.parseFloat(style.animationDuration) <= .001 && Number.parseFloat(style.transitionDuration) <= .001;
     });
-  const rgb = (value: string): number[] => {
-    const values = (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
-    return value.startsWith("color(srgb") ? values.map((channel) => channel * 255) : values;
+  type RGBA = readonly [number, number, number, number];
+  const rgba = (value: string): RGBA => {
+    if (value === "transparent") return [0, 0, 0, 0];
+    const values = (value.match(/[\d.]+/g) ?? []).map(Number);
+    const channels = value.startsWith("color(srgb") ? values.slice(0, 3).map((channel) => channel * 255) : values.slice(0, 3);
+    return [channels[0] ?? 0, channels[1] ?? 0, channels[2] ?? 0, values[3] ?? 1];
   };
-  const luminance = (value: string): number => rgb(value).map((channel) => channel / 255)
+  const composite = (over: RGBA, under: RGBA): RGBA => {
+    const alpha = over[3] + under[3] * (1 - over[3]);
+    if (alpha === 0) return [0, 0, 0, 0];
+    const channel = (index: 0 | 1 | 2): number => (over[index] * over[3] + under[index] * under[3] * (1 - over[3])) / alpha;
+    return [channel(0), channel(1), channel(2), alpha];
+  };
+  const luminance = (value: RGBA): number => value.slice(0, 3).map((channel) => channel / 255)
     .map((channel) => channel <= .03928 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4)
     .reduce((sum, channel, index) => sum + channel * ([.2126, .7152, .0722][index] ?? 0), 0);
-  const background = (node: Element): string => {
+  const background = (node: Element): RGBA => {
+    const layers: RGBA[] = [];
     let current: Element | null = node;
     while (current !== null) {
-      const value = getComputedStyle(current).backgroundColor;
-      if (!value.endsWith(", 0)") && value !== "transparent") return value;
+      layers.push(rgba(getComputedStyle(current).backgroundColor));
       current = current.parentElement;
     }
-    return "rgb(255, 255, 255)";
+    return layers.reverse().reduce<RGBA>((result, layer) => composite(layer, result), [255, 255, 255, 1]);
   };
   const contrastNodes = [...document.querySelectorAll<HTMLElement>(".ld-desktop-shell h1, .ld-desktop-shell h2, .ld-desktop-shell h3, .ld-desktop-shell p, .ld-desktop-shell button, .ld-desktop-shell dt, .ld-desktop-shell dd, .ld-desktop-shell small, .ld-desktop-shell span")]
     .filter((node) => node.getClientRects().length > 0 && (node.textContent?.trim().length ?? 0) > 0);
   const ratios = contrastNodes.map((node) => {
-      const foreground = luminance(getComputedStyle(node).color);
-      const behind = luminance(background(node));
+      const nodeBackground = background(node);
+      const foreground = luminance(composite(rgba(getComputedStyle(node).color), nodeBackground));
+      const behind = luminance(nodeBackground);
       return (Math.max(foreground, behind) + .05) / (Math.min(foreground, behind) + .05);
     });
   const minimumContrast = ratios.length === 0 ? 0 : Math.min(...ratios);

@@ -67,7 +67,7 @@
 .ld-desktop-sidebar h2 { margin-bottom: .65rem; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ld-muted); }
 .ld-desktop-sidebar ul { display: grid; gap: .3rem; margin: 0; padding: 0; list-style: none; }
 .ld-desktop-sidebar button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: .6rem; border: 0; border-radius: .55rem; padding: .65rem .7rem; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.ld-desktop-sidebar button:hover:not(:disabled), .ld-desktop-sidebar button:focus-visible { background: #eef2ef; outline: 2px solid transparent; }
+.ld-desktop-sidebar button:hover:not(:disabled), .ld-desktop-sidebar button:focus-visible { background: var(--ld-accent-soft); outline: 2px solid transparent; }
 .ld-desktop-sidebar button[aria-current="page"] { color: var(--ld-accent); background: var(--ld-accent-soft); }
 .ld-desktop-sidebar button:disabled { cursor: not-allowed; opacity: .55; }
 .ld-desktop-sidebar small { color: var(--ld-muted); text-transform: capitalize; }
