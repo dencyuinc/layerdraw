@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
+import { Composer } from "../../composer/dist/state-machine.js";
 import {
   CapabilityControl,
   EditorCommandButton,
@@ -138,6 +139,23 @@ test("controls distinguish unavailable, denied, pending, ephemeral, and durable 
   assert.equal(classifyEditorAction("redo", { session: durableSession, snapshot: { ...idle, can_redo: true }, pendingAction: undefined, decision: undefined }, true), "durable");
   assert.equal(classifyEditorAction("retry", { session: durableSession, snapshot: { ...idle, phase: "failed", failure: { recoverable: true } }, pendingAction: undefined, decision: undefined }, true), "durable");
   assert.equal(classifyEditorAction("cancel-preview", { session: durableSession, snapshot: { ...idle, phase: "previewing" }, pendingAction: "preview", decision: undefined }, true), "durable");
+});
+
+test("closed Composer history leaves every editor action unavailable", async () => {
+  const composer = new Composer({
+    preview: async () => ({ preview: { status: "valid", diagnostics: [], conflicts: [] } }),
+    apply: async () => ({ persistence: "ephemeral", applied: {} }),
+  });
+  const edit = { kind: "semantic_operations", request: {} };
+  await composer.preview({ id: "history", edit, inverse: edit });
+  assert.equal((await composer.apply()).can_undo, true);
+  await composer.close();
+  const snapshot = composer.snapshot();
+  assert.equal(snapshot.phase, "closed");
+  assert.equal(snapshot.can_undo, true, "the Composer intentionally retains its semantic history after close");
+  for (const action of ["apply", "undo", "redo", "retry", "cancel-preview"]) {
+    assert.equal(classifyEditorAction(action, { session: durableSession, snapshot, pendingAction: undefined, decision: undefined }, true), "unavailable", action);
+  }
 });
 
 test("capability controls route commands and restore focus", async () => {

@@ -13,6 +13,7 @@ export function classifyEditorAction(
   capabilityAvailable: boolean,
 ): EditorActionState {
   if (!capabilityAvailable) return "unavailable";
+  if (state.snapshot.phase === "closed") return "unavailable";
   const persistence = state.session?.persistence === "durable" ? "durable" : "ephemeral";
   if (action === "cancel-preview") return state.snapshot.phase === "previewing" ? persistence : "unavailable";
   if (state.pendingAction !== undefined || state.snapshot.phase === "previewing" || state.snapshot.phase === "applying") return "pending";
