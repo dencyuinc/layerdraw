@@ -5,9 +5,11 @@ package desktopwails
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
@@ -19,13 +21,22 @@ import (
 // supplies only the app-owned lifecycle context Wails cannot inject into bound
 // method parameters.
 type FrontendBridge struct {
-	mu  sync.RWMutex
-	ctx context.Context
-	app *desktopapp.Application
+	mu       sync.RWMutex
+	ctx      context.Context
+	app      *desktopapp.Application
+	registry registryDispatcher
 }
 
-func NewFrontendBridge(app *desktopapp.Application) *FrontendBridge {
-	return &FrontendBridge{ctx: context.Background(), app: app}
+type registryDispatcher interface {
+	DispatchRegistry(context.Context, []byte) []byte
+}
+
+func NewFrontendBridge(app *desktopapp.Application, dispatchers ...registryDispatcher) *FrontendBridge {
+	bridge := &FrontendBridge{ctx: context.Background(), app: app}
+	if len(dispatchers) != 0 {
+		bridge.registry = dispatchers[0]
+	}
+	return bridge
 }
 
 func (b *FrontendBridge) setContext(ctx context.Context) {
@@ -52,52 +63,92 @@ func (b *FrontendBridge) Invoke(method string, exchange desktopcontract.Exchange
 // RegistryDispatch is the single typed Wails Registry transport. The generated
 // method table remains authoritative; the frontend cannot select an unrelated
 // owner method for a valid Registry operation.
-func (b *FrontendBridge) RegistryDispatch(request registry.WireRequest) registry.WireResponse {
-	method := ""
-	for _, binding := range desktopcontract.GeneratedBindingTable() {
-		if binding.Target == desktopcontract.TargetRegistry && binding.Operation == string(request.Operation) {
-			method = binding.GeneratedMethod
-			break
+func (b *FrontendBridge) RegistryDispatch(requestJSON string) string {
+	requestBytes := []byte(requestJSON)
+	var envelope struct {
+		Operation registry.WireOperation `json:"operation"`
+		RequestID string                 `json:"request_id"`
+	}
+	if err := json.Unmarshal(requestBytes, &envelope); err != nil {
+		return string(registryWireFailure(registry.WireOperation("registry.invalid"), "", registry.FailureUnsupportedFormat, "wire_request"))
+	}
+	request, err := registry.DecodeWireRequest(requestBytes, envelope.Operation)
+	if err != nil || b.registry == nil {
+		code, subject := registry.FailureUnsupportedFormat, "wire_request"
+		if err == nil {
+			code, subject = registry.FailureUnavailable, "desktop_registry"
 		}
+		return string(registryWireFailure(envelope.Operation, envelope.RequestID, code, subject))
 	}
-	failure := func(code, subject string) registry.WireResponse {
-		return registry.WireResponse{WireVersion: registry.RegistryWireVersion, Operation: request.Operation, RequestID: request.RequestID, Failure: &registry.WireFailure{Code: code, Subject: subject, Actionable: true}}
+	responseBytes := b.registry.DispatchRegistry(b.context(), requestBytes)
+	response, err := registry.DecodeWireResponse(responseBytes, request.Operation)
+	if err != nil || response.RequestID != request.RequestID {
+		return string(registryWireFailure(request.Operation, request.RequestID, registry.FailureRepairRequired, "wire_response"))
 	}
-	if method == "" {
-		return failure(registry.FailureUnsupportedFormat, "operation")
-	}
-	control, err := json.Marshal(request)
-	if err != nil {
-		return failure(registry.FailureUnsupportedFormat, "request")
-	}
-	result := b.app.Invoke(b.context(), method, desktopcontract.Exchange{Operation: string(request.Operation), Control: control})
-	if result.Outcome != "success" {
-		return failure(registry.FailureUnavailable, "desktop_registry")
-	}
-	response, err := registry.DecodeWireResponse(result.Value.Control, request.Operation)
-	if err != nil {
-		return failure(registry.FailureRepairRequired, "response")
-	}
+	return string(responseBytes)
+}
+
+func registryWireFailure(operation registry.WireOperation, requestID, code, subject string) []byte {
+	response, _ := json.Marshal(registry.WireResponse{
+		WireVersion: registry.RegistryWireVersion,
+		Operation:   operation,
+		RequestID:   requestID,
+		Failure:     &registry.WireFailure{Code: code, Subject: subject, Actionable: true},
+	})
 	return response
 }
 
-func (b *FrontendBridge) ReviewSnapshot() (any, error) {
-	return b.app.ReviewSnapshot()
+func (b *FrontendBridge) ReviewSnapshot() (reviewapp.Snapshot, error) {
+	value, err := b.app.ReviewSnapshot()
+	if err != nil {
+		return reviewapp.Snapshot{}, err
+	}
+	snapshot, ok := value.(reviewapp.Snapshot)
+	if !ok {
+		return reviewapp.Snapshot{}, errors.New("desktop Review snapshot contract mismatch")
+	}
+	return snapshot, nil
 }
 
-func (b *FrontendBridge) ReviewComment(input desktopapp.ReviewCommentRequest) (any, error) {
-	return b.app.ReviewComment(b.context(), input)
+type ReviewCommentRequest struct {
+	ProposalID string           `json:"proposal_id"`
+	Generation uint64           `json:"generation"`
+	CommentID  string           `json:"comment_id"`
+	Body       string           `json:"body"`
+	Target     reviewapp.Target `json:"target"`
 }
 
-func (b *FrontendBridge) ReviewApproveAndApply(input desktopapp.ReviewApprovalRequest) (any, error) {
-	return b.app.ReviewApproveAndApply(b.context(), input)
+func (b *FrontendBridge) ReviewComment(input ReviewCommentRequest) (reviewapp.Proposal, error) {
+	target, err := json.Marshal(input.Target)
+	if err != nil {
+		return reviewapp.Proposal{}, err
+	}
+	value, err := b.app.ReviewComment(b.context(), desktopapp.ReviewCommentRequest{ProposalID: input.ProposalID, Generation: input.Generation, CommentID: input.CommentID, Body: input.Body, Target: target})
+	return reviewProposal(value, err)
+}
+
+func (b *FrontendBridge) ReviewApproveAndApply(input desktopapp.ReviewApprovalRequest) (reviewapp.Proposal, error) {
+	value, err := b.app.ReviewApproveAndApply(b.context(), input)
+	return reviewProposal(value, err)
 }
 
 func (b *FrontendBridge) ReviewWithdraw(input struct {
 	ProposalID string `json:"proposal_id"`
 	Generation uint64 `json:"generation"`
-}) (any, error) {
-	return b.app.ReviewWithdraw(b.context(), input.ProposalID, input.Generation)
+}) (reviewapp.Proposal, error) {
+	value, err := b.app.ReviewWithdraw(b.context(), input.ProposalID, input.Generation)
+	return reviewProposal(value, err)
+}
+
+func reviewProposal(value any, err error) (reviewapp.Proposal, error) {
+	if err != nil {
+		return reviewapp.Proposal{}, err
+	}
+	proposal, ok := value.(reviewapp.Proposal)
+	if !ok {
+		return reviewapp.Proposal{}, errors.New("desktop Review proposal contract mismatch")
+	}
+	return proposal, nil
 }
 
 func (b *FrontendBridge) CreateProjectDialog(requestID string) desktopcontract.Result[desktopapp.ProjectOpenResult] {

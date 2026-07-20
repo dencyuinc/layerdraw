@@ -169,6 +169,10 @@ func (a *Application) ApproveAndApply(ctx context.Context, input ApprovalInput) 
 	if input.Generation != current.Generation {
 		return Proposal{}, ErrConflict
 	}
+	resuming := current.Status == StatusApproved
+	if resuming && (current.PendingOperationID == "" || current.PendingIdempotencyKey == "" || current.PendingOperationID != input.OperationID || current.PendingIdempotencyKey != input.IdempotencyKey) {
+		return Proposal{}, ErrConflict
+	}
 	if terminal(current.Status) || current.Status == StatusSuperseded {
 		return Proposal{}, ErrTerminal
 	}
@@ -205,6 +209,22 @@ func (a *Application) ApproveAndApply(ctx context.Context, input ApprovalInput) 
 	if decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || !sameCapabilities(decision.RequiredCapabilities, current.RequiredCapabilities) {
 		return a.recordFailure(ctx, index, StatusDenied, "approver_insufficient", ErrDenied)
 	}
+	if !resuming {
+		next := cloneSnapshot(a.state)
+		pending := &next.Proposals[index]
+		pending.UpdatedAt = a.now().UTC()
+		pending.ApprovedBy = &input.Approver
+		pending.AccessEvaluationDigest = decision.EvaluationDigest
+		pending.AccessDecisionDigest = decision.DecisionDigest
+		pending.Status = StatusApproved
+		pending.PendingOperationID = input.OperationID
+		pending.PendingIdempotencyKey = input.IdempotencyKey
+		if err := a.store.Save(ctx, next); err != nil {
+			return Proposal{}, err
+		}
+		a.state = next
+		current = next.Proposals[index]
+	}
 	commit := runtimeprotocol.RuntimeCommitInput{Session: input.Session, OperationBatch: repreview.OperationBatch, AuthoringProof: repreview.AuthoringProof, OperationID: input.OperationID, IdempotencyKey: input.IdempotencyKey, Trigger: input.Trigger, CancellationToken: input.Cancellation}
 	result, err := a.runtime.Commit(ctx, commit)
 	if err != nil {
@@ -221,6 +241,8 @@ func (a *Application) ApproveAndApply(ctx context.Context, input ApprovalInput) 
 	proposal.AccessEvaluationDigest = decision.EvaluationDigest
 	proposal.AccessDecisionDigest = decision.DecisionDigest
 	proposal.Status = StatusApproved
+	proposal.PendingOperationID = ""
+	proposal.PendingIdempotencyKey = ""
 	switch result.OperationResult.Status {
 	case runtimeprotocol.OperationResultStatusCommitted, runtimeprotocol.OperationResultStatusCommittedExternalFailed, runtimeprotocol.OperationResultStatusCommittedExternalPending, runtimeprotocol.OperationResultStatusCommittedStateStale:
 		if result.OperationResult.CommittedRevision == nil {
@@ -273,10 +295,14 @@ func (a *Application) recordFailure(ctx context.Context, index int, status Statu
 	proposal := &next.Proposals[index]
 	proposal.Status = status
 	proposal.LastFailure = code
+	proposal.PendingOperationID = ""
+	proposal.PendingIdempotencyKey = ""
 	proposal.Generation++
 	proposal.UpdatedAt = a.now().UTC()
 	markStaleComments(proposal)
-	if err := a.store.Save(ctx, next); err != nil {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := a.store.Save(persistCtx, next); err != nil {
 		return Proposal{}, err
 	}
 	a.state = next
@@ -344,7 +370,8 @@ func validateSnapshot(snapshot Snapshot) error {
 	}
 	seen := map[string]bool{}
 	for _, proposal := range snapshot.Proposals {
-		if proposal.ID == "" || proposal.Generation == 0 || seen[proposal.ID] {
+		pending := proposal.PendingOperationID != "" || proposal.PendingIdempotencyKey != ""
+		if proposal.ID == "" || proposal.Generation == 0 || seen[proposal.ID] || pending != (proposal.Status == StatusApproved) || (pending && (proposal.PendingOperationID == "" || proposal.PendingIdempotencyKey == "")) {
 			return ErrInvalid
 		}
 		seen[proposal.ID] = true

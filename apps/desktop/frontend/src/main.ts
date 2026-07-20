@@ -5,7 +5,7 @@ import { installAccessibilityProbe, isPackagedProbeMode, signalAccessibilityProb
 import { mountPackagedProbeShell } from "../../src/packaged-probe.js";
 import { createDesktopWailsComposition, type DesktopWailsApplicationBinding, type DesktopWailsMCPBinding } from "../../src/wails-bootstrap.js";
 import type { DesktopWailsInvoke } from "../../src/wails-bindings.js";
-import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MCPStatus, NativeExportProfiles, OpenProjectDialog, PlanExternalReconcile, PublishNativeExportDialog, RecentProjects, RefreshExternal, RestartMCP, RevokeMCPConnection, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MCPStatus, NativeExportProfiles, OpenProjectDialog, PlanExternalReconcile, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { EventsOff, EventsOn } from "../wailsjs/runtime/runtime.js";
 
 async function start(): Promise<void> {
@@ -28,6 +28,10 @@ async function start(): Promise<void> {
 		{ EventsOn, EventsOff },
 		{ MCPStatus, SetMCPEnabled, RestartMCP, ListMCPConnections, CreateMCPConnection, RevokeMCPConnection } as unknown as DesktopWailsMCPBinding,
     Invoke as unknown as DesktopWailsInvoke,
+		{
+			registry: { RegistryDispatch },
+			review: { ReviewSnapshot, ReviewComment, ReviewApproveAndApply, ReviewWithdraw },
+		},
   );
   mountDesktopShell(root, {
     lifecycle: composition.lifecycle,

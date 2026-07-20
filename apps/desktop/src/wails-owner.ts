@@ -34,7 +34,7 @@ export interface DesktopProjectOwnerBinding {
 }
 
 export interface DesktopRegistryHostBinding {
-  RegistryDispatch(request: DesktopRegistryRequestDTO): Promise<unknown>;
+  RegistryDispatch(requestJSON: string): Promise<string>;
 }
 
 export interface DesktopRegistryRequestDTO {

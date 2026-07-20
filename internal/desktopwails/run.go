@@ -49,7 +49,8 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 		return err
 	}
 	acceptAssociationArguments(native.Associations, os.Args[1:], "")
-	frontend := NewFrontendBridge(application)
+	registryOwner, _ := base.Adapters[desktopcontract.ComponentBindingShell].(registryDispatcher)
+	frontend := NewFrontendBridge(application, registryOwner)
 	configured := &options.App{
 		Title: "LayerDraw", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 640,
 		AssetServer: &assetserver.Options{Assets: assets}, StartHidden: true,

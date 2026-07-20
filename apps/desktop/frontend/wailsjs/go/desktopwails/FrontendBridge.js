@@ -72,8 +72,28 @@ export function RefreshExternal(arg1) {
   return window['go']['desktopwails']['FrontendBridge']['RefreshExternal'](arg1);
 }
 
+export function RegistryDispatch(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['RegistryDispatch'](arg1);
+}
+
 export function RestartMCP() {
   return window['go']['desktopwails']['FrontendBridge']['RestartMCP']();
+}
+
+export function ReviewApproveAndApply(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['ReviewApproveAndApply'](arg1);
+}
+
+export function ReviewComment(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['ReviewComment'](arg1);
+}
+
+export function ReviewSnapshot() {
+  return window['go']['desktopwails']['FrontendBridge']['ReviewSnapshot']();
+}
+
+export function ReviewWithdraw(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['ReviewWithdraw'](arg1);
 }
 
 export function RevokeMCPConnection(arg1) {

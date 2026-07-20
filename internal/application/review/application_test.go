@@ -24,6 +24,33 @@ type storeStub struct {
 	loadErr, saveErr error
 }
 
+type crashAfterCommitStore struct {
+	snapshot Snapshot
+	saves    int
+}
+
+func (s *crashAfterCommitStore) Load(context.Context) (Snapshot, error) {
+	return cloneSnapshot(s.snapshot), nil
+}
+func (s *crashAfterCommitStore) Save(_ context.Context, state Snapshot) error {
+	s.saves++
+	if s.saves == 3 {
+		return errors.New("simulated crash before Review finalization")
+	}
+	s.snapshot = cloneSnapshot(state)
+	return nil
+}
+
+type contextObservingStore struct {
+	*MemoryStore
+	lastSaveContextErr error
+}
+
+func (s *contextObservingStore) Save(ctx context.Context, state Snapshot) error {
+	s.lastSaveContextErr = ctx.Err()
+	return s.MemoryStore.Save(ctx, state)
+}
+
 func (s storeStub) Load(context.Context) (Snapshot, error) { return s.snapshot, s.loadErr }
 func (s storeStub) Save(context.Context, Snapshot) error   { return s.saveErr }
 
@@ -138,6 +165,43 @@ func TestApprovalCancellationIsExplicitAndRecoverable(t *testing.T) {
 	}
 }
 
+func TestApprovalCancellationPersistsWithDetachedBoundedContext(t *testing.T) {
+	preview, decision := fixture()
+	runtime, access := &runtimeStub{preview: preview, previewErr: context.Canceled}, &accessStub{decision: decision}
+	store := &contextObservingStore{MemoryStore: NewMemoryStore()}
+	app := newApplication(t, store, runtime, access)
+	proposal := createProposal(t, app, "cancel-detached", accessprotocol.ActorRef{ActorID: "author", Kind: "user"}, accesscore.AgentPermissions{}, nil, preview, decision)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, err := app.ApproveAndApply(ctx, ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Approver: accessprotocol.ActorRef{ActorID: "approver", Kind: "user"}})
+	if !errors.Is(err, ErrCancelled) || got.LastFailure != "approval_cancelled" || store.lastSaveContextErr != nil {
+		t.Fatalf("got=%+v err=%v persisted_context_err=%v", got, err, store.lastSaveContextErr)
+	}
+}
+
+func TestApprovalReplaysPendingRuntimeCommitAfterFinalSaveCrash(t *testing.T) {
+	preview, decision := fixture()
+	committed := preview.CurrentRevision
+	committed.RevisionID = "revision_cdefghijklmnopqr"
+	runtime := &runtimeStub{preview: preview, commit: runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{Status: runtimeprotocol.OperationResultStatusCommitted, CommittedRevision: &committed}}}
+	access := &accessStub{decision: decision}
+	store := &crashAfterCommitStore{}
+	app := newApplication(t, store, runtime, access)
+	proposal := createProposal(t, app, "replay", accessprotocol.ActorRef{ActorID: "author", Kind: "user"}, accesscore.AgentPermissions{}, nil, preview, decision)
+	input := ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Approver: accessprotocol.ActorRef{ActorID: "approver", Kind: "user"}, OperationID: "operation", IdempotencyKey: "idempotency", Trigger: runtimeprotocol.CommitTriggerExplicitSave}
+	if _, err := app.ApproveAndApply(context.Background(), input); err == nil {
+		t.Fatal("expected final Review save failure")
+	}
+	if store.snapshot.Proposals[0].Status != StatusApproved || store.snapshot.Proposals[0].PendingOperationID != input.OperationID {
+		t.Fatalf("pending approval was not durable: %+v", store.snapshot.Proposals[0])
+	}
+	restarted := newApplication(t, store, runtime, access)
+	got, err := restarted.ApproveAndApply(context.Background(), input)
+	if err != nil || got.Status != StatusApplied || len(runtime.commits) != 2 || runtime.commits[0].OperationID != runtime.commits[1].OperationID || runtime.commits[0].IdempotencyKey != runtime.commits[1].IdempotencyKey {
+		t.Fatalf("got=%+v err=%v commits=%+v", got, err, runtime.commits)
+	}
+}
+
 func TestApprovalRepreviewCommitsAtomicallyAndFileStoreRestarts(t *testing.T) {
 	preview, decision := fixture()
 	committed := preview.CurrentRevision
@@ -228,7 +292,7 @@ func TestApprovalConflictDenialAndRuntimeRecoveryStatuses(t *testing.T) {
 			test.mutate(runtime, access)
 			app := newApplication(t, NewMemoryStore(), runtime, access)
 			proposal := createProposal(t, app, "proposal", actor, accesscore.AgentPermissions{}, nil, preview, decision)
-			got, err := app.ApproveAndApply(context.Background(), ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Approver: approver})
+			got, err := app.ApproveAndApply(context.Background(), ApprovalInput{ProposalID: proposal.ID, Generation: proposal.Generation, Approver: approver, OperationID: "operation", IdempotencyKey: "idempotency"})
 			if got.Status != test.want {
 				t.Fatalf("status=%s err=%v", got.Status, err)
 			}

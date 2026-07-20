@@ -114,6 +114,8 @@ type Proposal struct {
 	UpdatedAt              time.Time                             `json:"updated_at"`
 	ApprovedBy             *accessprotocol.ActorRef              `json:"approved_by,omitempty"`
 	CommittedRevision      *runtimeprotocol.CommittedRevisionRef `json:"committed_revision,omitempty"`
+	PendingOperationID     runtimeprotocol.OperationID           `json:"pending_operation_id,omitempty"`
+	PendingIdempotencyKey  runtimeprotocol.IdempotencyKey        `json:"pending_idempotency_key,omitempty"`
 	LastFailure            string                                `json:"last_failure,omitempty"`
 }
 

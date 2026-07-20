@@ -8,7 +8,7 @@ import { createReviewModel } from "@layerdraw/review";
 import type { Viewer, ViewerPresentationState, ViewerState } from "@layerdraw/viewer";
 import type { DesktopExternalImportPreview, DesktopExternalStoragePort, DesktopFeatureAvailability, DesktopHostResult, DesktopLifecyclePhase, DesktopLifecycleSnapshot, DesktopMCPConnectRequest, DesktopMCPConnection, DesktopMCPPort, DesktopMCPResult, DesktopMCPStatus, DesktopNativeExportProfile, DesktopNativeInterchangePort, DesktopNativeSerializeResult, DesktopProjectDialogPort, DesktopProjectLifecyclePort, DesktopProjectOpenDTO, DesktopRecentProjectDTO } from "./contracts.js";
 import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "./wails-bindings.js";
-import type { DesktopLibraryFeature, DesktopProjectOwnerBinding, DesktopRegistryHostBinding, DesktopRegistryRequestDTO, DesktopReviewFeature, DesktopReviewHostBinding } from "./wails-owner.js";
+import type { DesktopLibraryFeature, DesktopProjectOwnerBinding, DesktopRegistryHostBinding, DesktopReviewFeature, DesktopReviewHostBinding } from "./wails-owner.js";
 
 export const desktopLifecycleEvent = "layerdraw:desktop-lifecycle";
 
@@ -176,7 +176,7 @@ export async function createDesktopWailsComposition(
   const registry = owners.registry;
   const library: DesktopLibraryFeature = registry === undefined
     ? Object.freeze({ status: "unavailable", availability: unavailable })
-    : Object.freeze({ status: "available", value: createLibrary({ client: createHostRegistryClient({ invoke: (request: unknown) => registry.RegistryDispatch(request as DesktopRegistryRequestDTO) }), capabilities: { browse: true, manage_sources: true, plan_transactions: true, commit_transactions: true, author_artifacts: true } }) });
+    : Object.freeze({ status: "available", value: createLibrary({ client: createHostRegistryClient({ invoke: async (request: unknown) => JSON.parse(await registry.RegistryDispatch(JSON.stringify(request))) as unknown }), capabilities: { browse: true, manage_sources: true, plan_transactions: true, commit_transactions: true, author_artifacts: true } }) });
   const reviewBinding = owners.review;
   const review: DesktopReviewFeature = reviewBinding === undefined
     ? Object.freeze({ status: "unavailable", availability: unavailable })

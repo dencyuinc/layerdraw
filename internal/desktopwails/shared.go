@@ -368,6 +368,16 @@ func (o *sharedOwner) Shutdown(context.Context) error {
 	return nil
 }
 
+func (o *sharedOwner) DispatchRegistry(ctx context.Context, wire []byte) []byte {
+	o.mu.RLock()
+	binding := o.registryWire
+	o.mu.RUnlock()
+	if binding == nil {
+		return registryWireFailure(registry.WireOperation("registry.invalid"), "", registry.FailureUnavailable, "desktop_registry")
+	}
+	return binding.Dispatch(ctx, wire)
+}
+
 func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
 	o.mu.RLock()
 	endpoint, engine, registryWire := o.endpoint, o.engine, o.registryWire
