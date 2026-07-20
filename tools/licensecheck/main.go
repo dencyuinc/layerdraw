@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -97,6 +98,8 @@ type packageManifest struct {
 type bundledModule struct {
 	Review      reviewedGoModule
 	LicenseText []byte
+	PURL        string
+	FileSHA256  string
 }
 
 type dependencyRecord struct {
@@ -162,13 +165,63 @@ func run(args []string) error {
 		binary := flags.String("binary", "", "compiled Go binary")
 		output := flags.String("output", "dist", "bundle output directory")
 		version := flags.String("version", "0.0.0-dev", "artifact version")
+		bundledName := flags.String("bundled-name", "", "co-distributed native component name")
+		bundledVersion := flags.String("bundled-version", "", "co-distributed native component version")
+		bundledFile := flags.String("bundled-file", "", "co-distributed native component file")
+		bundledLicense := flags.String("bundled-license", "", "co-distributed native component SPDX license")
+		bundledLicenseFile := flags.String("bundled-license-file", "", "reviewed license text for the co-distributed native component")
+		bundledLicenseSHA256 := flags.String("bundled-license-sha256", "", "reviewed license text SHA-256")
+		var bundledComponents []string
+		flags.Func("bundled-component", "NAME|VERSION|FILE|LICENSE|LICENSE_FILE|LICENSE_SHA256 (repeatable)", func(value string) error {
+			bundledComponents = append(bundledComponents, value)
+			return nil
+		})
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *binary == "" {
 			return errors.New("bundle requires -binary")
 		}
-		return bundleArtifact(*root, *policyPath, *binary, *output, *version)
+		var extras []bundledModule
+		if *bundledName != "" || *bundledVersion != "" || *bundledFile != "" || *bundledLicense != "" || *bundledLicenseFile != "" || *bundledLicenseSHA256 != "" {
+			bundledComponents = append(bundledComponents, strings.Join([]string{*bundledName, *bundledVersion, *bundledFile, *bundledLicense, *bundledLicenseFile, *bundledLicenseSHA256}, "|"))
+		}
+		p, err := loadPolicy(*root, *policyPath)
+		if err != nil {
+			return err
+		}
+		for _, specification := range bundledComponents {
+			fields := strings.Split(specification, "|")
+			if len(fields) != 6 || slices.Contains(fields, "") {
+				return errors.New("bundled component metadata is incomplete")
+			}
+			extra := bundledModule{Review: reviewedGoModule{Module: fields[0], Version: fields[1], License: fields[3], LicenseFile: fields[4], LicenseSHA256: fields[5]}}
+			extra.PURL = fmt.Sprintf("pkg:generic/%s@%s", strings.ToLower(strings.ReplaceAll(extra.Review.Module, " ", "-")), extra.Review.Version)
+			if err := requireAllowedLicense(extra.Review.License, stringSet(p.AllowedLicenseExpressions), stringSet(p.DeniedLicenseExpressions)); err != nil {
+				return fmt.Errorf("bundled component: %w", err)
+			}
+			licensePath := extra.Review.LicenseFile
+			if !filepath.IsAbs(licensePath) {
+				licensePath = filepath.Join(*root, licensePath)
+			}
+			if err := verifyLicenseFile(filepath.Dir(licensePath), filepath.Base(licensePath), extra.Review.LicenseSHA256); err != nil {
+				return fmt.Errorf("bundled component license: %w", err)
+			}
+			extra.LicenseText, err = os.ReadFile(licensePath)
+			if err != nil {
+				return fmt.Errorf("bundled component license: %w", err)
+			}
+			bundledPath := fields[2]
+			if !filepath.IsAbs(bundledPath) {
+				bundledPath = filepath.Join(*root, bundledPath)
+			}
+			extra.FileSHA256, err = fileSHA256(bundledPath)
+			if err != nil {
+				return fmt.Errorf("bundled component: %w", err)
+			}
+			extras = append(extras, extra)
+		}
+		return bundleArtifact(*root, *policyPath, *binary, *output, *version, extras)
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
@@ -769,7 +822,7 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func bundleArtifact(root, policyPath, binary, output, version string) error {
+func bundleArtifact(root, policyPath, binary, output, version string, extras []bundledModule) error {
 	p, err := loadPolicy(root, policyPath)
 	if err != nil {
 		return err
@@ -829,6 +882,7 @@ func bundleArtifact(root, policyPath, binary, output, version string) error {
 		bundled = append(bundled, bundledModule{Review: review, LicenseText: licenseText})
 		seen[key] = true
 	}
+	bundled = append(bundled, extras...)
 	sort.Slice(bundled, func(i, j int) bool {
 		return moduleKey(bundled[i].Review.Module, bundled[i].Review.Version) < moduleKey(bundled[j].Review.Module, bundled[j].Review.Version)
 	})
@@ -888,6 +942,10 @@ func renderCycloneDX(artifactName, version string, modules []bundledModule) ([]b
 	type licenseChoice struct {
 		License license `json:"license"`
 	}
+	type hash struct {
+		Algorithm string `json:"alg"`
+		Content   string `json:"content"`
+	}
 	type component struct {
 		Type     string          `json:"type"`
 		Name     string          `json:"name"`
@@ -896,6 +954,7 @@ func renderCycloneDX(artifactName, version string, modules []bundledModule) ([]b
 		BOMRef   string          `json:"bom-ref"`
 		Scope    string          `json:"scope,omitempty"`
 		Licenses []licenseChoice `json:"licenses,omitempty"`
+		Hashes   []hash          `json:"hashes,omitempty"`
 	}
 	type dependency struct {
 		Ref       string   `json:"ref"`
@@ -930,7 +989,14 @@ func renderCycloneDX(artifactName, version string, modules []bundledModule) ([]b
 	}
 	rootDependency := dependency{Ref: rootRef, DependsOn: make([]string, 0, len(modules))}
 	for _, module := range modules {
-		purl := fmt.Sprintf("pkg:golang/%s@%s", module.Review.Module, module.Review.Version)
+		purl := module.PURL
+		if purl == "" {
+			purl = fmt.Sprintf("pkg:golang/%s@%s", module.Review.Module, module.Review.Version)
+		}
+		hashes := []hash{}
+		if module.FileSHA256 != "" {
+			hashes = append(hashes, hash{Algorithm: "SHA-256", Content: module.FileSHA256})
+		}
 		doc.Components = append(doc.Components, component{
 			Type:     "library",
 			Name:     module.Review.Module,
@@ -939,6 +1005,7 @@ func renderCycloneDX(artifactName, version string, modules []bundledModule) ([]b
 			BOMRef:   purl,
 			Scope:    "required",
 			Licenses: []licenseChoice{{License: license{ID: module.Review.License}}},
+			Hashes:   hashes,
 		})
 		rootDependency.DependsOn = append(rootDependency.DependsOn, purl)
 		doc.Dependencies = append(doc.Dependencies, dependency{Ref: purl, DependsOn: []string{}})

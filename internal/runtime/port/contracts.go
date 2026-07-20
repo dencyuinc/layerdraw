@@ -20,6 +20,7 @@ import (
 var (
 	ErrNotFound      = errors.New("runtime port: not found")
 	ErrConflict      = errors.New("runtime port: conditional conflict")
+	ErrInvalidScope  = errors.New("runtime port: invalid result scope")
 	ErrIndeterminate = errors.New("runtime port: publication indeterminate")
 )
 

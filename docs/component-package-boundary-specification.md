@@ -801,7 +801,9 @@ Editor、Runtime、Viewer、Library UIを含めない。
 The normative framework-neutral transport, lifecycle, native-dialog,
 capability-negotiation, and composition contracts are frozen in
 [desktop-wails-contracts.md](desktop-wails-contracts.md) and enforced by
-`internal/desktopcontract` conformance tests.
+`internal/desktopcontract` conformance tests. `internal/desktopapp` is the
+in-process composition root that implements those lifecycle contracts without
+moving component semantics into Wails.
 
 ```text
 Wails backend
@@ -821,6 +823,8 @@ Wails backend
 ```
 
 Wails methodはgenerated protocol request / responseへmapするだけである。React frontend assetsはWails application bundleへembedする。
+
+`internal/host.OpenDesktopNativeEndpoint`をDesktop native backendの正準production composition rootとする。このentrypointは実Engine adapter、Runtime Search service、Access束縛済みSearchDocument issuer、Ladybug native session、同梱FTS、local Embedding providerを同一processへ配線し、Wails bindingとnative host transportは同じ`Endpoint` / Search surfaceを利用する。`layerdraw-host-native-<version>.tar.gz`はこのin-process backendを先行検証・host統合するplatform-specific native runtime artifactであり、Wails UIを含むDesktop installerそのものではない。Desktop shell issueはこのentrypointを直接linkし、別Search compositionやtest stubを製品経路へ持ち込んではならない。
 
 ## 11. Framework Shell Boundaries
 

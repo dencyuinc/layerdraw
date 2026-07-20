@@ -196,6 +196,18 @@ type artifactInput struct {
 	nativeNotices                 string
 }
 
+type desktopNativeAuthority struct {
+	LadybugVersion  string `json:"ladybug_version"`
+	Platform        string `json:"platform"`
+	FTSExtension    string `json:"fts_extension"`
+	FTSSHA256       string `json:"fts_sha256"`
+	VectorExtension string `json:"vector_extension"`
+	VectorSHA256    string `json:"vector_sha256"`
+	AlgoExtension   string `json:"algo_extension"`
+	AlgoSHA256      string `json:"algo_sha256"`
+	Host            string `json:"host"`
+}
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "releaseset:", err)
@@ -289,6 +301,7 @@ func build(root, output, version, revision, builtAt, nativeSBOM, nativeNotices s
 func fixedArtifacts(output, version, nativeSBOM, nativeNotices string) []artifactInput {
 	return []artifactInput{
 		{id: "layerdraw-engine", path: filepath.Join(output, "layerdraw-engine"), platform: runtime.GOOS + "/" + runtime.GOARCH, mediaType: "application/vnd.layerdraw.engine", nativeSBOM: nativeSBOM, nativeNotices: nativeNotices},
+		{id: "layerdraw-host-native", path: filepath.Join(output, "artifacts", "layerdraw-host-native-"+version+".tar.gz"), platform: runtime.GOOS + "/" + runtime.GOARCH, mediaType: "application/vnd.layerdraw.desktop-native", nativeSBOM: filepath.Join(output, "desktop-native-legal", "layerdraw-host-native.cdx.json"), nativeNotices: filepath.Join(output, "desktop-native-legal", "THIRD_PARTY_NOTICES.txt")},
 		{id: "@layerdraw/protocol", path: filepath.Join(output, "artifacts", "layerdraw-protocol-"+version+".tgz"), mediaType: "application/vnd.npm.package", packageName: "@layerdraw/protocol"},
 		{id: "@layerdraw/engine-wasm", path: filepath.Join(output, "artifacts", "layerdraw-engine-wasm-"+version+".tgz"), platform: "js/wasm", mediaType: "application/vnd.npm.package", packageName: "@layerdraw/engine-wasm"},
 		{id: "@layerdraw/engine-client", path: filepath.Join(output, "artifacts", "layerdraw-engine-client-"+version+".tgz"), mediaType: "application/vnd.npm.package", packageName: "@layerdraw/engine-client"},
@@ -400,7 +413,7 @@ func verify(root, output string) error {
 	if err := validateIdentity(manifest.ReleaseVersion, manifest.SourceRevision, manifest.BuiltAt); err != nil {
 		return err
 	}
-	if manifest.ManifestVersion != 1 || len(manifest.Artifacts) != 4 || len(manifest.Protocols) != 1 || len(manifest.GeneratedPackages) != 1 || !slices.Equal(manifest.LDLGenerations, []int{1}) {
+	if manifest.ManifestVersion != 1 || len(manifest.Artifacts) != 5 || len(manifest.Protocols) != 1 || len(manifest.GeneratedPackages) != 1 || !slices.Equal(manifest.LDLGenerations, []int{1}) {
 		return errors.New("release manifest shape is incomplete")
 	}
 	if manifest.Protocols[0].Name != "engine" || manifest.Protocols[0].SupportedRange != "1.0..1.0" || len(manifest.Protocols[0].Versions) != 1 || manifest.Protocols[0].Versions[0].SchemaDigest != engineprotocol.SchemaDigest {
@@ -410,7 +423,7 @@ func verify(root, output string) error {
 	if generated.PackageName != "@layerdraw/protocol" || generated.PackageVersion != manifest.ReleaseVersion || !slices.Equal(generated.SchemaDigests, []string{protocolcommon.SchemaDigest, semantic.SchemaDigest, engineprotocol.SchemaDigest}) {
 		return errors.New("release manifest generated package binding mismatch")
 	}
-	wantIDs := []string{"@layerdraw/engine-client", "@layerdraw/engine-wasm", "@layerdraw/protocol", "layerdraw-engine"}
+	wantIDs := []string{"@layerdraw/engine-client", "@layerdraw/engine-wasm", "@layerdraw/protocol", "layerdraw-engine", "layerdraw-host-native"}
 	gotIDs := make([]string, 0, len(manifest.Artifacts))
 	packages := map[string]packageAuthority{}
 	wantArtifacts := map[string]artifactInput{}
@@ -466,6 +479,34 @@ func verify(root, output string) error {
 				return fmt.Errorf("%s SBOM: %w", artifact.ArtifactID, err)
 			}
 			packages[artifact.ArtifactID] = authority
+		} else if artifact.ArtifactID == "layerdraw-host-native" {
+			archivePath := filepath.Join(output, filepath.FromSlash(artifact.Path))
+			entries := make(map[string][]byte, 5)
+			for _, name := range []string{"layerdraw-host-native", "libfts.lbug_extension", "libvector.lbug_extension", "libalgo.lbug_extension", "ladybug-native.json"} {
+				data, err := readTarFile(archivePath, name)
+				if err != nil || len(data) == 0 {
+					return fmt.Errorf("Desktop native archive is missing %s", name)
+				}
+				entries[name] = data
+			}
+			var authority desktopNativeAuthority
+			decoder := json.NewDecoder(bytes.NewReader(entries["ladybug-native.json"]))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&authority); err != nil {
+				return fmt.Errorf("Desktop native authority is invalid: %w", err)
+			}
+			if err := decoder.Decode(&struct{}{}); err != io.EOF {
+				return errors.New("Desktop native authority has trailing content")
+			}
+			ftsDigest := sha256.Sum256(entries["libfts.lbug_extension"])
+			vectorDigest := sha256.Sum256(entries["libvector.lbug_extension"])
+			algoDigest := sha256.Sum256(entries["libalgo.lbug_extension"])
+			if authority.LadybugVersion != "0.17.0" || authority.Platform != runtime.GOOS+"/"+runtime.GOARCH || authority.FTSExtension != "libfts.lbug_extension" || authority.VectorExtension != "libvector.lbug_extension" || authority.AlgoExtension != "libalgo.lbug_extension" || authority.Host != "layerdraw-host-native" || authority.FTSSHA256 != hex.EncodeToString(ftsDigest[:]) || authority.VectorSHA256 != hex.EncodeToString(vectorDigest[:]) || authority.AlgoSHA256 != hex.EncodeToString(algoDigest[:]) {
+				return errors.New("Desktop native authority mismatch")
+			}
+			if err := validateDesktopExtensionComponents(closure, authority); err != nil {
+				return errors.New("Desktop extensions are not bound to their CycloneDX components")
+			}
 		} else {
 			versionOutput, err := exec.Command(filepath.Join(output, filepath.FromSlash(artifact.Path)), "--version").CombinedOutput()
 			if err != nil || !strings.HasPrefix(string(versionOutput), "layerdraw-engine "+manifest.ReleaseVersion+" (") {
@@ -481,6 +522,20 @@ func verify(root, output string) error {
 		return err
 	}
 	_ = root
+	return nil
+}
+
+func validateDesktopExtensionComponents(closure cyclonedxAuthority, authority desktopNativeAuthority) error {
+	for _, expected := range []struct{ purl, name, digest string }{
+		{"pkg:generic/ladybugdb-fts-extension@0.17.0", "LadybugDB FTS extension", authority.FTSSHA256},
+		{"pkg:generic/ladybugdb-vector-extension@0.17.0", "LadybugDB Vector extension", authority.VectorSHA256},
+		{"pkg:generic/ladybugdb-algo-extension@0.17.0", "LadybugDB Algo extension", authority.AlgoSHA256},
+	} {
+		component, exists := closure.Components[expected.purl]
+		if !exists || component.Name != expected.name || component.Version != authority.LadybugVersion || componentLicense(component) != "MIT" || len(component.Hashes) != 1 || component.Hashes[0].Algorithm != "SHA-256" || component.Hashes[0].Content != expected.digest {
+			return errors.New("extension component authority mismatch")
+		}
+	}
 	return nil
 }
 

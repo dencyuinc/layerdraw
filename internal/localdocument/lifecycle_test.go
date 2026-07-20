@@ -100,6 +100,29 @@ func writeProject(t *testing.T, root, source string) string {
 	return project
 }
 
+func TestSearchBindingTracksOnlyLiveCommittedSession(t *testing.T) {
+	root := t.TempDir()
+	host := newTestHost(t, root, nil)
+	project := writeProject(t, root, "project p \"P\" {}\n")
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, snapshot, accessDigest, err := host.SearchBinding(opened.Session)
+	if err != nil || len(encoded) == 0 || snapshot.HostDocumentID != string(opened.Session.Open.CommittedRevision.DocumentID) || accessDigest != string(opened.Session.Open.AccessSummary.AccessFingerprint) {
+		t.Fatalf("binding bytes=%d snapshot=%+v access=%q err=%v", len(encoded), snapshot, accessDigest, err)
+	}
+	if _, _, _, err := host.SearchBinding(nil); err == nil {
+		t.Fatal("nil search session was accepted")
+	}
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := host.SearchBinding(opened.Session); err == nil {
+		t.Fatal("closed search session was accepted")
+	}
+}
+
 func durableFileSnapshot(t *testing.T, root string) string {
 	t.Helper()
 	files := map[string][]byte{}

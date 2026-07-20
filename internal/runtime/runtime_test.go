@@ -42,6 +42,29 @@ func TestNegotiationAdvertisesOnlyWiredCapabilities(t *testing.T) {
 	}
 }
 
+func TestHostOperationActionsAreClosedByOperationKind(t *testing.T) {
+	tests := []struct {
+		kind   accessprotocol.HostOperationKind
+		action string
+		valid  bool
+	}{
+		{accessprotocol.HostOperationKindAssetDelete, "delete", true},
+		{accessprotocol.HostOperationKindAssetPersist, "create", true},
+		{accessprotocol.HostOperationKindAssetPersist, "update", true},
+		{accessprotocol.HostOperationKindAssetStage, "stage", true},
+		{accessprotocol.HostOperationKindPackageTransaction, "delete", true},
+		{accessprotocol.HostOperationKindBackendConfigure, "update", true},
+		{accessprotocol.HostOperationKindProjectConfigure, "update", true},
+		{accessprotocol.HostOperationKindAssetDelete, "update", false},
+		{accessprotocol.HostOperationKind("future"), "update", false},
+	}
+	for _, test := range tests {
+		if got := validHostOperationAction(test.kind, test.action); got != test.valid {
+			t.Fatalf("kind=%q action=%q got=%v want=%v", test.kind, test.action, got, test.valid)
+		}
+	}
+}
+
 func TestNegotiationRejectsDigestAndMissingRequiredCapability(t *testing.T) {
 	runtime := newTestRuntime(t, Ports{})
 	tests := []struct {

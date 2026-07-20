@@ -64,6 +64,25 @@ not define parallel wire vocabularies. Failure values have no arbitrary details
 surface and never include credentials, document content, native paths, provider
 error text, or panic values.
 
+The executable-neutral composition root is `internal/desktopapp`. It constructs
+the completed local Engine, Runtime, Access, and storage host in-process, starts
+registered capability adapters in dependency order, validates the effective
+generated handshake, starts MCP, and only then publishes `ready`. Its project
+storage port accepts opaque native-dialog tokens; trusted absolute locations
+remain backend-only. Shutdown changes admission to `draining` before joining
+requests and releases adapters in reverse order. A cancelled shutdown remains
+draining and can be resumed without releasing resources still in use. MCP and
+the remaining registered adapters stop before the local Runtime releases its
+sessions and storage locks.
+
+Startup resolves the configured credential references and live delegation
+fences through the typed `HostPorts`; credential bytes are discarded before
+adapter startup. Injected-port panics are contained as
+`desktop.backend_panic`. The binding facade preserves the generated owner
+response outcome, including `rejected`, `failed`, and `cancelled`; a separate
+closed Desktop failure is present only when no trustworthy owner response was
+produced.
+
 ## Local authority
 
 Desktop resolves a stable OS-backed local actor and creates a local-owner grant
