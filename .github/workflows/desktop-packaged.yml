@@ -45,7 +45,20 @@ jobs:
         run: |
           corepack enable
           pnpm install --frozen-lockfile
-          pnpm exec turbo run build
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            pnpm --filter @layerdraw/engine-wasm exec tsc -p tsconfig.build.json
+            pnpm exec turbo run build \
+              --filter @layerdraw/protocol \
+              --filter @layerdraw/composer \
+              --filter @layerdraw/engine-client \
+              --filter @layerdraw/client-sdk \
+              --filter @layerdraw/render \
+              --filter @layerdraw/viewer \
+              --filter @layerdraw/react \
+              --filter @layerdraw/desktop
+          else
+            pnpm exec turbo run build
+          fi
 
       - name: Install Linux WebKit build dependencies
         if: runner.os == 'Linux'
