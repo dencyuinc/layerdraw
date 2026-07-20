@@ -64,10 +64,14 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     node.focus();
 	const previous = controls[index - 1];
 	const followsPrevious = node.tabIndex === 0 && (index === 0 || (previous !== undefined && Boolean(previous.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)));
+	const active = document.activeElement === node;
+	if (active && node.dataset.focusVisible !== "true") {
+		previous?.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: node }));
+		node.dispatchEvent(new FocusEvent("focusin", { bubbles: true, relatedTarget: previous ?? null }));
+	}
 	const outlineVisible = getComputedStyle(node).outlineStyle !== "none";
 	const focusRect = node.matches(".ld-desktop-viewer-item") ? node.querySelector<SVGElement>("rect") : null;
 	const strokeVisible = focusRect !== null && Number.parseFloat(getComputedStyle(focusRect).strokeWidth) >= 3;
-    const active = document.activeElement === node;
     const visible = outlineVisible || strokeVisible;
     if (!active || !followsPrevious || !visible) focusFailures.push(`${node.tagName}.${node.className}:${node.textContent?.trim()}:active=${active},ordered=${followsPrevious},visible=${visible}`);
     return active && followsPrevious && visible;
