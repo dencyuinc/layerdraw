@@ -12,7 +12,7 @@ import type {
 export interface DesktopShellState {
   readonly lifecycle: DesktopLifecycleSnapshot;
   readonly viewer: ViewerState;
-  readonly pending_action: "select_view" | "review_recovery" | undefined;
+  readonly pending_action: "select_view" | "review_recovery" | "disconnect_storage" | undefined;
   readonly failure: DesktopShellFailure | undefined;
 }
 
@@ -95,6 +95,11 @@ export class DesktopShellController {
     await this.#runAction("review_recovery", (signal) => this.#ports.lifecycle.showRecoveryOptions(signal), lifecycleFailure);
   }
 
+  async disconnectExternal(): Promise<void> {
+	if (this.#closed || this.#state.lifecycle.project?.storage.kind !== "external") return;
+	await this.#runAction("disconnect_storage", (signal) => this.#ports.lifecycle.disconnectExternal(signal), lifecycleFailure);
+  }
+
   setViewerSelection(keys: readonly string[]): void {
     if (this.#closed) return;
     try {
@@ -160,7 +165,7 @@ export class DesktopShellController {
   }
 
   async #runAction(
-    action: "select_view" | "review_recovery",
+    action: "select_view" | "review_recovery" | "disconnect_storage",
     invoke: (signal: AbortSignal) => Promise<void>,
     failure: DesktopShellFailure,
   ): Promise<void> {

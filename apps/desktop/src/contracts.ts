@@ -45,6 +45,12 @@ export interface DesktopProjectContext {
     kind: "local" | "external";
     status: "connected" | "syncing" | "conflict" | "reconcile_pending" | "unavailable";
     label: string;
+	provider_label?: string;
+	account_label?: string;
+	scope_label?: string;
+	last_sync_label?: string;
+	pending_changes?: number;
+	disconnect_consequence?: string;
   }>;
   readonly persistence: "clean" | "preview_pending" | "ephemeral" | "durable_pending" | "reconcile_pending";
 }
@@ -78,6 +84,8 @@ export interface DesktopProjectLifecyclePort {
   selectView(viewAddress: string, signal: AbortSignal): Promise<void>;
   /** Opens the host-owned explicit restore/discard workflow; it never restores implicitly. */
   showRecoveryOptions(signal: AbortSignal): Promise<void>;
+	/** Disconnects through the host; the shell never handles credentials. */
+	disconnectExternal(signal: AbortSignal): Promise<void>;
 }
 
 /** Dependencies are constructed by the Wails bootstrap (#122/#143), never discovered globally. */

@@ -40,6 +40,18 @@ type ExternalProvider interface {
 	Reconcile(context.Context, desktopapp.ExternalReconcileRequest) (desktopapp.ExternalReconcileResult, error)
 }
 
+type ExternalStorageProvider interface {
+	ExternalProvider
+	Inspect(context.Context, string) (desktopapp.ExternalConnection, error)
+	Refresh(context.Context, string) (desktopapp.ExternalConnection, error)
+	Disconnect(context.Context, string) (desktopapp.ExternalConnection, error)
+	SelectRemote(context.Context, desktopapp.ExternalRemoteSelectionRequest) (desktopapp.ExternalBackendBinding, error)
+	AcquireLease(context.Context, desktopapp.ExternalBackendBinding) (desktopapp.ExternalLease, error)
+	Write(context.Context, desktopapp.ExternalWriteRequest) (desktopapp.ExternalWriteResult, error)
+	PlanReconcile(context.Context, desktopapp.ExternalSyncRequest, bool) (desktopapp.ExternalReconcilePlan, error)
+	ApplyReconcile(context.Context, desktopapp.ExternalReconcilePlan, string) (desktopapp.ExternalReconcileResult, error)
+}
+
 type ExternalAdapter struct {
 	mu          sync.RWMutex
 	providers   map[string]ExternalProvider
@@ -101,6 +113,111 @@ func (a *ExternalAdapter) providerFor(connectionID string) ExternalProvider {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.providers[a.connections[connectionID]]
+}
+
+func (a *ExternalAdapter) storageProvider(connectionID string) ExternalStorageProvider {
+	provider, _ := a.providerFor(connectionID).(ExternalStorageProvider)
+	return provider
+}
+
+func (a *ExternalAdapter) Inspect(ctx context.Context, connectionID string) desktopcontract.Result[desktopapp.ExternalConnection] {
+	provider := a.storageProvider(connectionID)
+	if provider == nil {
+		return externalFailure[desktopapp.ExternalConnection](false, desktopcontract.RecoveryConfigureAdapter)
+	}
+	value, err := provider.Inspect(ctx, connectionID)
+	if err != nil || value.ConnectionID != connectionID || value.ProviderID == "" {
+		return externalFailure[desktopapp.ExternalConnection](true, desktopcontract.RecoveryRetry)
+	}
+	return externalSuccess(value)
+}
+
+func (a *ExternalAdapter) Refresh(ctx context.Context, connectionID string) desktopcontract.Result[desktopapp.ExternalConnection] {
+	provider := a.storageProvider(connectionID)
+	if provider == nil {
+		return externalFailure[desktopapp.ExternalConnection](false, desktopcontract.RecoveryConfigureAdapter)
+	}
+	value, err := provider.Refresh(ctx, connectionID)
+	if err != nil || value.ConnectionID != connectionID {
+		return externalFailure[desktopapp.ExternalConnection](true, desktopcontract.RecoveryReconnect)
+	}
+	return externalSuccess(value)
+}
+
+func (a *ExternalAdapter) Disconnect(ctx context.Context, connectionID string) desktopcontract.Result[desktopapp.ExternalConnection] {
+	provider := a.storageProvider(connectionID)
+	if provider == nil {
+		return externalFailure[desktopapp.ExternalConnection](false, desktopcontract.RecoveryConfigureAdapter)
+	}
+	value, err := provider.Disconnect(ctx, connectionID)
+	if err != nil || value.ConnectionID != connectionID || value.Status != desktopapp.ExternalConnectionDisconnected {
+		return externalFailure[desktopapp.ExternalConnection](true, desktopcontract.RecoveryRetry)
+	}
+	return externalSuccess(value)
+}
+
+func (a *ExternalAdapter) SelectRemote(ctx context.Context, request desktopapp.ExternalRemoteSelectionRequest) desktopcontract.Result[desktopapp.ExternalBackendBinding] {
+	provider := a.storageProvider(request.ConnectionID)
+	if provider == nil {
+		return externalFailure[desktopapp.ExternalBackendBinding](false, desktopcontract.RecoveryConfigureAdapter)
+	}
+	value, err := provider.SelectRemote(ctx, request)
+	if err != nil || value.ConnectionID != request.ConnectionID || value.DocumentID != request.DocumentID || value.BindingID == "" {
+		return externalFailure[desktopapp.ExternalBackendBinding](true, desktopcontract.RecoveryRetry)
+	}
+	return externalSuccess(value)
+}
+
+func (a *ExternalAdapter) AcquireLease(ctx context.Context, binding desktopapp.ExternalBackendBinding) desktopcontract.Result[desktopapp.ExternalLease] {
+	provider := a.storageProvider(binding.ConnectionID)
+	if provider == nil {
+		return externalFailure[desktopapp.ExternalLease](false, desktopcontract.RecoveryConfigureAdapter)
+	}
+	value, err := provider.AcquireLease(ctx, binding)
+	if err != nil || value.Token == "" || value.ExpiresAt == "" {
+		return externalFailure[desktopapp.ExternalLease](true, desktopcontract.RecoveryRetry)
+	}
+	return externalSuccess(value)
+}
+
+func (a *ExternalAdapter) Write(ctx context.Context, request desktopapp.ExternalWriteRequest) desktopcontract.Result[desktopapp.ExternalWriteResult] {
+	provider := a.storageProvider(request.Binding.ConnectionID)
+	if provider == nil {
+		return externalFailure[desktopapp.ExternalWriteResult](false, desktopcontract.RecoveryConfigureAdapter)
+	}
+	value, err := provider.Write(ctx, request)
+	if err != nil {
+		return externalFailure[desktopapp.ExternalWriteResult](true, desktopcontract.RecoveryRetry)
+	}
+	return externalSuccess(value)
+}
+
+func (a *ExternalAdapter) PlanReconcile(ctx context.Context, request desktopapp.ExternalSyncRequest, restricted bool) desktopcontract.Result[desktopapp.ExternalReconcilePlan] {
+	provider := a.storageProvider(request.ConnectionID)
+	if provider == nil {
+		return externalFailure[desktopapp.ExternalReconcilePlan](false, desktopcontract.RecoveryConfigureAdapter)
+	}
+	value, err := provider.PlanReconcile(ctx, request, restricted)
+	if err != nil || value.PlanID == "" || value.Binding.DocumentID != request.DocumentID {
+		return externalFailure[desktopapp.ExternalReconcilePlan](true, desktopcontract.RecoveryRetry)
+	}
+	return externalSuccess(value)
+}
+
+func (a *ExternalAdapter) ApplyReconcile(ctx context.Context, plan desktopapp.ExternalReconcilePlan, resolution string) desktopcontract.Result[desktopapp.ExternalReconcileResult] {
+	provider := a.storageProvider(plan.Binding.ConnectionID)
+	if provider == nil {
+		return externalFailure[desktopapp.ExternalReconcileResult](false, desktopcontract.RecoveryConfigureAdapter)
+	}
+	value, err := provider.ApplyReconcile(ctx, plan, resolution)
+	if err != nil || value.ProviderVersion == "" {
+		return externalFailure[desktopapp.ExternalReconcileResult](true, desktopcontract.RecoveryRetry)
+	}
+	return externalSuccess(value)
+}
+
+func externalSuccess[T any](value T) desktopcontract.Result[T] {
+	return desktopcontract.Result[T]{Outcome: protocolcommon.OutcomeSuccess, Value: value}
 }
 
 func externalFailure[T any](retryable bool, recovery desktopcontract.RecoveryAction) desktopcontract.Result[T] {

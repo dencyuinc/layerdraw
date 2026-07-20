@@ -20,6 +20,16 @@
 .ld-desktop-sidebar { border-right: 1px solid var(--ld-line); }
 .ld-desktop-inspector { border-left: 1px solid var(--ld-line); }
 .ld-desktop-editor { display: grid; gap: 1rem; }
+.ld-desktop-storage { display: grid; gap: .7rem; margin-bottom: 1rem; border-bottom: 1px solid var(--ld-line); padding-bottom: 1rem; }
+.ld-desktop-storage h2, .ld-desktop-storage p, .ld-desktop-storage dl { margin: 0; }
+.ld-desktop-storage h2 { font-size: .8rem; letter-spacing: .07em; text-transform: uppercase; color: var(--ld-muted); }
+.ld-desktop-storage dl { display: grid; gap: .35rem; }
+.ld-desktop-storage dl div { display: flex; justify-content: space-between; gap: .75rem; }
+.ld-desktop-storage dt { color: var(--ld-muted); }
+.ld-desktop-storage dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.ld-desktop-storage-warning { color: #873535; }
+.ld-desktop-storage-consequence { color: var(--ld-muted); font-size: .82rem; }
+.ld-desktop-storage button { justify-self: start; border: 1px solid #d9a4a4; border-radius: .45rem; padding: .4rem .65rem; color: #873535; background: #fff; }
 .ld-desktop-editor .ld-editor-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; }
 .ld-desktop-editor .ld-control button { border: 1px solid var(--ld-line); border-radius: .45rem; padding: .45rem .65rem; color: inherit; background: var(--ld-panel); }
 .ld-desktop-editor .ld-control button:not(:disabled):hover, .ld-desktop-editor .ld-control button:not(:disabled):focus-visible { border-color: var(--ld-accent); outline: 2px solid var(--ld-accent-soft); }

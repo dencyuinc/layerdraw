@@ -94,6 +94,18 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
       createElement("section", { className: "ld-desktop-canvas", "aria-label": suppliedLabels.canvas },
         createElement(DesktopViewerSurface, { state: state.viewer, onSelectionChange: (keys) => controller.setViewerSelection(keys) })),
       createElement("aside", { className: "ld-desktop-inspector", "aria-label": suppliedLabels.inspector },
+		project.storage.kind === "external" ? createElement("section", { className: "ld-desktop-storage", "aria-label": "External storage" },
+			createElement("h2", null, "External storage"),
+			createElement("dl", null,
+				createElement("div", null, createElement("dt", null, "Provider"), createElement("dd", null, project.storage.provider_label ?? project.storage.label)),
+				createElement("div", null, createElement("dt", null, "Account"), createElement("dd", null, project.storage.account_label ?? "Unavailable")),
+				createElement("div", null, createElement("dt", null, "Scope"), createElement("dd", null, project.storage.scope_label ?? "Unavailable")),
+				createElement("div", null, createElement("dt", null, "Last sync"), createElement("dd", null, project.storage.last_sync_label ?? "Never")),
+				createElement("div", null, createElement("dt", null, "Pending"), createElement("dd", null, String(project.storage.pending_changes ?? 0)))),
+			project.storage.status === "conflict" || project.storage.status === "reconcile_pending"
+				? createElement("p", { role: "status", className: "ld-desktop-storage-warning" }, "Review external changes before publishing.") : null,
+			createElement("p", { className: "ld-desktop-storage-consequence" }, project.storage.disconnect_consequence ?? "Disconnecting keeps the local project and stops external sync."),
+			createElement("button", { type: "button", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, "Disconnect")) : null,
         createElement(DesktopEditorSurface, { project, capabilities: editorCapabilities }))),
-    createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : ""));
+    createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : state.pending_action === "disconnect_storage" ? "Disconnecting external storage…" : ""));
 }

@@ -60,11 +60,104 @@ type ProjectRelocationStorage interface {
 type ExternalConnectionRequest struct {
 	ProviderID    string                        `json:"provider_id"`
 	CredentialRef desktopcontract.CredentialRef `json:"credential_ref"`
+	AccountLabel  string                        `json:"account_label"`
+	ScopeLabel    string                        `json:"scope_label"`
 }
 
 type ExternalConnection struct {
-	ConnectionID string `json:"connection_id"`
-	ProviderID   string `json:"provider_id"`
+	ConnectionID string                     `json:"connection_id"`
+	ProviderID   string                     `json:"provider_id"`
+	AccountLabel string                     `json:"account_label"`
+	ScopeLabel   string                     `json:"scope_label"`
+	Status       ExternalConnectionStatus   `json:"status"`
+	Capabilities ExternalProviderCapability `json:"capabilities"`
+}
+
+type ExternalConnectionStatus string
+
+const (
+	ExternalConnectionConnected    ExternalConnectionStatus = "connected"
+	ExternalConnectionExpired      ExternalConnectionStatus = "credential_expired"
+	ExternalConnectionRateLimited  ExternalConnectionStatus = "rate_limited"
+	ExternalConnectionDisconnected ExternalConnectionStatus = "disconnected"
+	ExternalConnectionReconnect    ExternalConnectionStatus = "reconnect_required"
+)
+
+// ExternalProviderCapability is discovered from the provider. Desktop never
+// guesses write safety from a method being present.
+type ExternalProviderCapability struct {
+	Open             bool `json:"open"`
+	ConditionalWrite bool `json:"conditional_write"`
+	Lease            bool `json:"lease"`
+	MoveDetection    bool `json:"move_detection"`
+	ResumableUpload  bool `json:"resumable_upload"`
+}
+
+// ExternalBackendBinding is host metadata, deliberately separate from the
+// portable project StableAddress and from provider credentials.
+type ExternalBackendBinding struct {
+	BindingID       string                               `json:"binding_id"`
+	ConnectionID    string                               `json:"connection_id"`
+	DocumentID      runtimeprotocol.DocumentID           `json:"document_id"`
+	RemoteItemID    string                               `json:"remote_item_id"`
+	ProviderVersion runtimeprotocol.ProviderVersionToken `json:"provider_version"`
+}
+
+type ExternalRemoteSelectionRequest struct {
+	ConnectionID   string                     `json:"connection_id"`
+	DocumentID     runtimeprotocol.DocumentID `json:"document_id"`
+	SelectionToken string                     `json:"selection_token"`
+}
+
+type ExternalLease struct {
+	Token     string                     `json:"token"`
+	ExpiresAt protocolcommon.Rfc3339Time `json:"expires_at"`
+}
+
+type ExternalWriteRequest struct {
+	Binding                 ExternalBackendBinding               `json:"binding"`
+	Revision                runtimeprotocol.CommittedRevisionRef `json:"revision"`
+	ExpectedProviderVersion runtimeprotocol.ProviderVersionToken `json:"expected_provider_version"`
+	LeaseToken              string                               `json:"lease_token,omitempty"`
+	// Payload is trusted-backend-only material and never crosses Wails.
+	Payload []byte `json:"-"`
+}
+
+type ExternalWriteState string
+
+const (
+	ExternalWritePublished ExternalWriteState = "published"
+	ExternalWriteConflict  ExternalWriteState = "conflict"
+	ExternalWritePartial   ExternalWriteState = "partial_upload"
+	ExternalWriteUnknown   ExternalWriteState = "unknown_write_result"
+	ExternalWriteMoved     ExternalWriteState = "moved_item"
+	ExternalWriteOffline   ExternalWriteState = "offline"
+)
+
+type ExternalWriteResult struct {
+	State           ExternalWriteState                   `json:"state"`
+	ProviderVersion runtimeprotocol.ProviderVersionToken `json:"provider_version,omitempty"`
+	Retryable       bool                                 `json:"retryable"`
+}
+
+type ExternalReconcileKind string
+
+const (
+	ExternalReconcileUpToDate    ExternalReconcileKind = "up_to_date"
+	ExternalReconcileFastForward ExternalReconcileKind = "fast_forward"
+	ExternalReconcileConflict    ExternalReconcileKind = "conflict"
+	ExternalReconcileMergeRebase ExternalReconcileKind = "merge_rebase"
+	ExternalReconcileQuarantined ExternalReconcileKind = "quarantined"
+)
+
+type ExternalReconcilePlan struct {
+	PlanID          string                               `json:"plan_id"`
+	Binding         ExternalBackendBinding               `json:"binding"`
+	Kind            ExternalReconcileKind                `json:"kind"`
+	LocalRevision   runtimeprotocol.CommittedRevisionRef `json:"local_revision"`
+	ProviderVersion runtimeprotocol.ProviderVersionToken `json:"provider_version"`
+	RequiresReview  bool                                 `json:"requires_review"`
+	Restricted      bool                                 `json:"restricted"`
 }
 
 type ExternalSyncRequest struct {
@@ -95,6 +188,36 @@ type ExternalLifecycleAdapter interface {
 	Connect(context.Context, ExternalConnectionRequest) desktopcontract.Result[ExternalConnection]
 	Sync(context.Context, ExternalSyncRequest) desktopcontract.Result[ExternalSyncResult]
 	Reconcile(context.Context, ExternalReconcileRequest) desktopcontract.Result[ExternalReconcileResult]
+}
+
+// ExternalStorageAdapter is the complete Desktop provider contract. Reconcile
+// is preview/apply, writes are conditional, and credentials remain owned by
+// the injected credential broker.
+type ExternalStorageAdapter interface {
+	ExternalLifecycleAdapter
+	Inspect(context.Context, string) desktopcontract.Result[ExternalConnection]
+	Refresh(context.Context, string) desktopcontract.Result[ExternalConnection]
+	Disconnect(context.Context, string) desktopcontract.Result[ExternalConnection]
+	SelectRemote(context.Context, ExternalRemoteSelectionRequest) desktopcontract.Result[ExternalBackendBinding]
+	AcquireLease(context.Context, ExternalBackendBinding) desktopcontract.Result[ExternalLease]
+	Write(context.Context, ExternalWriteRequest) desktopcontract.Result[ExternalWriteResult]
+	PlanReconcile(context.Context, ExternalSyncRequest, bool) desktopcontract.Result[ExternalReconcilePlan]
+	ApplyReconcile(context.Context, ExternalReconcilePlan, string) desktopcontract.Result[ExternalReconcileResult]
+}
+
+type ExternalPublicationIntent struct {
+	Session  runtimeprotocol.RuntimeSessionRef    `json:"session"`
+	Action   string                               `json:"action"`
+	Binding  ExternalBackendBinding               `json:"binding"`
+	Revision runtimeprotocol.CommittedRevisionRef `json:"revision"`
+	Plan     *ExternalReconcilePlan               `json:"plan,omitempty"`
+}
+
+// ExternalPublicationGate is implemented by the Runtime/Access owner. It must
+// re-evaluate current definition/state/asset/package/project-setting effects;
+// an adapter is never allowed to self-authorize publication.
+type ExternalPublicationGate interface {
+	RevalidateExternalPublication(context.Context, ExternalPublicationIntent) desktopcontract.Result[struct{}]
 }
 
 // CapabilityNegotiator returns the generated common handshake produced from
