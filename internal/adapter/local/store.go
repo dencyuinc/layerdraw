@@ -542,10 +542,11 @@ func (s *Store) withLock(scope runtimeprotocol.RuntimeScope, fn func(string) err
 	if !opened.Mode().IsRegular() || !privatefs.PermissionsMatch(opened, fileMode) || (prior != nil && !os.SameFile(prior, opened)) {
 		return fmt.Errorf("unsafe lock file open: %w", port.ErrConflict)
 	}
-	if err := lockFile(f); err != nil {
+	unlock, err := lockFile(f)
+	if err != nil {
 		return classify(err)
 	}
-	defer unlockFile(f)
+	defer unlock()
 	return fn(dir)
 }
 
