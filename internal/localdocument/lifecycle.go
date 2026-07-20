@@ -37,6 +37,7 @@ const (
 	defaultMaxSessions = 32
 	defaultMaxRecovery = 256
 	metadataFileMode   = 0o600
+	relocationFileName = "local-document-relocation.json"
 )
 
 // ErrStateRecoveryRequired identifies durable local metadata that must be
@@ -1077,7 +1078,7 @@ func (h *Host) metadataPath() string {
 }
 
 func (h *Host) relocationPath() string {
-	return filepath.Join(h.config.Root, "local-document-relocation.json")
+	return filepath.Join(h.config.Root, relocationFileName)
 }
 
 func (h *Host) saveRelocationJournalLocked(value relocationJournal) error {
@@ -1120,18 +1121,28 @@ func (h *Host) saveRelocationJournalLocked(value relocationJournal) error {
 }
 
 func (h *Host) removeRelocationJournalLocked() error {
-	// The path is a fixed filename beneath the absolute host-owned Root that New
-	// validates before any metadata access.
-	if err := os.Remove(h.relocationPath()); err != nil && !errors.Is(err, fs.ErrNotExist) { // lgtm[go/path-injection]
+	root, err := os.OpenRoot(h.config.Root)
+	if err != nil {
 		return err
 	}
-	return syncDirectory(h.config.Root)
+	defer root.Close()
+	if err := root.Remove(relocationFileName); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return syncRootDirectory(root)
 }
 
 func syncDirectory(root string) error {
-	// Callers pass the absolute host-owned Root validated by New, never a project
-	// or protocol-provided path.
-	dir, err := os.Open(root) // lgtm[go/path-injection]
+	rootDirectory, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rootDirectory.Close()
+	return syncRootDirectory(rootDirectory)
+}
+
+func syncRootDirectory(root *os.Root) error {
+	dir, err := root.Open(".")
 	if err != nil {
 		return err
 	}
@@ -1140,9 +1151,12 @@ func syncDirectory(root string) error {
 }
 
 func (h *Host) recoverRelocation(ctx context.Context) error {
-	// The path is a fixed filename beneath the absolute host-owned Root that New
-	// validates before any metadata access.
-	data, err := os.ReadFile(h.relocationPath()) // lgtm[go/path-injection]
+	root, err := os.OpenRoot(h.config.Root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	data, err := root.ReadFile(relocationFileName)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
