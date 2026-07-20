@@ -149,7 +149,10 @@ class BrowserEditorImpl implements BrowserEditor {
       this.#providerOpened = this.#options.document_provider !== undefined;
       this.#assertOperation(signal);
       if (input.authority === "engine") {
-        const session = unwrapEngine<OpenDocumentResult>(await this.#options.engine_client.workbench.openDocument(input.input, { signal }), "Open document");
+        const session = unwrapEngine<OpenDocumentResult>(await this.#options.engine_client.workbench.openDocument(input.input, {
+          signal,
+          ...(input.blobs === undefined ? {} : { blobs: input.blobs }),
+        }), "Open document");
         if (!session.capabilities.preview_operations || !session.capabilities.apply_to_handle) {
           await this.#closeEngineSession(session, signal).catch(() => undefined);
           throw new BrowserEditorError("editor.capability_unavailable", "This document does not support semantic preview and apply.");
@@ -249,16 +252,21 @@ class BrowserEditorImpl implements BrowserEditor {
     this.#session = undefined;
     this.#capabilities = undefined;
     const controller = new AbortController();
-    const cleanup: Promise<unknown>[] = [];
-    if (session?.authority === "engine") cleanup.push(this.#closeEngineSession(session.session, controller.signal));
-    if (session?.authority === "runtime") cleanup.push(this.#options.runtime_client!.closeDocument(session.session.session, { signal: controller.signal }));
-    cleanup.push(
+    const ownedCleanup: Promise<unknown>[] = [];
+    if (session?.authority === "engine") ownedCleanup.push(this.#closeEngineSession(session.session, controller.signal));
+    if (session?.authority === "runtime") ownedCleanup.push(this.#options.runtime_client!.closeDocument(session.session.session, { signal: controller.signal }));
+    ownedCleanup.push(
       this.#providerOpened ? this.#options.document_provider?.close() ?? Promise.resolve() : Promise.resolve(),
       this.#options.asset_resolver.dispose?.() ?? Promise.resolve(),
+    );
+    // A real Worker-backed Engine cannot close a document after its transport is
+    // disposed. Complete session cleanup before releasing either client.
+    const ownedResults = await Promise.allSettled(ownedCleanup);
+    const clientResults = await Promise.allSettled([
       this.#options.engine_client.dispose(),
       this.#options.runtime_client?.dispose?.() ?? Promise.resolve(),
-    );
-    if ((await Promise.allSettled(cleanup)).some((result) => result.status === "rejected")) {
+    ]);
+    if ([...ownedResults, ...clientResults].some((result) => result.status === "rejected")) {
       throw new BrowserEditorError("editor.transport_failed", "One or more Browser Editor resources failed to close.");
     }
     this.#providerOpened = false;
