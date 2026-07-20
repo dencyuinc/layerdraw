@@ -53,7 +53,7 @@ case "$platform/$machine" in
     digest="4e00186f7634eb8688e1c0e77855ef302114b7ff289757bd5f33044850ccdfc5"
     target_platform="windows-amd64"
     extension_platform="win_amd64"
-    extension_digest="516967588c447953013ae047346cfebf7d4885b0392c0f71fd656b71c832306f"
+    extension_digest="1bf03d062579f9360cf992918fcd6370f6cac49f0a1fb6d7971a913579063f1b"
     vector_digest="18332984fba353bc5626d33f7e8fb0052b13b5840451fd07643e6818106017f1"
     algo_digest="45654fd85938a3c22b8d1012aff1c2213f956ba33a75de3eed934943a3ad7c19"
     archive_kind="zip"

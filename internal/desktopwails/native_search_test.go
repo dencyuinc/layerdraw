@@ -28,7 +28,7 @@ func TestValidateLadybugRootRequiresPinnedManifestDigests(t *testing.T) {
 		digests[name] = hex.EncodeToString(digest[:])
 	}
 	manifest, err := json.Marshal(struct {
-		SchemaVersion   int               `json:"schema_version"`
+		SchemaVersion  int               `json:"schema_version"`
 		LadybugVersion string            `json:"ladybug_version"`
 		Platform       string            `json:"platform"`
 		Files          map[string]string `json:"files"`

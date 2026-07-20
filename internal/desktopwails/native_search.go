@@ -90,7 +90,7 @@ func validateLadybugRoot(root string) (string, error) {
 		return "", errors.New("Desktop native component manifest is unavailable")
 	}
 	var manifest struct {
-		SchemaVersion   int               `json:"schema_version"`
+		SchemaVersion  int               `json:"schema_version"`
 		LadybugVersion string            `json:"ladybug_version"`
 		Platform       string            `json:"platform"`
 		Files          map[string]string `json:"files"`
