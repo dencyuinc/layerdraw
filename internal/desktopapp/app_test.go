@@ -24,9 +24,17 @@ import (
 )
 
 type lifecycleRecorder struct {
-	mu     sync.Mutex
-	states []desktopcontract.LifecycleState
-	fail   desktopcontract.LifecycleState
+	mu      sync.Mutex
+	states  []desktopcontract.LifecycleState
+	fail    desktopcontract.LifecycleState
+	ready   chan struct{}
+	release <-chan struct{}
+}
+
+type panicLifecycle struct{}
+
+func (panicLifecycle) Publish(context.Context, desktopcontract.LifecycleEvent) error {
+	panic("private")
 }
 
 func (r *lifecycleRecorder) Publish(_ context.Context, event desktopcontract.LifecycleEvent) error {
@@ -35,6 +43,10 @@ func (r *lifecycleRecorder) Publish(_ context.Context, event desktopcontract.Lif
 	r.states = append(r.states, event.State)
 	if event.State == r.fail {
 		return errors.New("lifecycle unavailable")
+	}
+	if event.State == desktopcontract.LifecycleReady && r.ready != nil {
+		close(r.ready)
+		<-r.release
 	}
 	return nil
 }
@@ -89,15 +101,123 @@ func (r *recoveryRecorder) Report(_ context.Context, value desktopcontract.Failu
 	r.values = append(r.values, value)
 }
 
+type panicReporter struct{}
+
+func (panicReporter) Report(context.Context, desktopcontract.Failure) { panic("private") }
+
 type negotiatorStub struct {
 	value protocolcommon.HandshakeResult
 	err   error
 }
 
+type panicNegotiator struct{}
+
+func (panicNegotiator) Negotiate(context.Context, desktopcontract.Manifest) (protocolcommon.HandshakeResult, error) {
+	panic("private")
+}
+
 type actorFailure struct{}
 
-func (actorFailure) ResolveLocalActor(context.Context) (accessprotocol.ActorRef, error) {
-	return accessprotocol.ActorRef{}, errors.New("private OS identity failure")
+func (actorFailure) ResolveLocalActor(context.Context) desktopcontract.Result[accessprotocol.ActorRef] {
+	return failed[accessprotocol.ActorRef](desktopcontract.FailureLocalActor, desktopcontract.ComponentAccess, true, desktopcontract.RecoveryRetry)
+}
+
+type localActorPortStub struct{ actor accessprotocol.ActorRef }
+
+func (s localActorPortStub) ResolveLocalActor(context.Context) desktopcontract.Result[accessprotocol.ActorRef] {
+	return desktopcontract.Result[accessprotocol.ActorRef]{Outcome: protocolcommon.OutcomeSuccess, Value: s.actor}
+}
+
+type panicActorPort struct{}
+
+func (panicActorPort) ResolveLocalActor(context.Context) desktopcontract.Result[accessprotocol.ActorRef] {
+	panic("private")
+}
+
+type credentialPortStub struct{}
+
+func (credentialPortStub) Resolve(context.Context, desktopcontract.CredentialRef) desktopcontract.Result[[]byte] {
+	return desktopcontract.Result[[]byte]{Outcome: protocolcommon.OutcomeSuccess, Value: []byte("ephemeral")}
+}
+
+type credentialFailure struct{ panic bool }
+
+func (c credentialFailure) Resolve(context.Context, desktopcontract.CredentialRef) desktopcontract.Result[[]byte] {
+	if c.panic {
+		panic("credential secret")
+	}
+	return failed[[]byte](desktopcontract.FailureCredential, desktopcontract.ComponentAccess, true, desktopcontract.RecoveryRetry)
+}
+
+type localOwnerPortStub struct{}
+
+func (localOwnerPortStub) IssueLocalOwnerGrant(context.Context, desktopcontract.LocalOwnerGrantRequest) desktopcontract.Result[accessprotocol.AuthoringGrantSnapshot] {
+	return desktopcontract.Result[accessprotocol.AuthoringGrantSnapshot]{Outcome: protocolcommon.OutcomeSuccess}
+}
+
+type delegationPortStub struct{}
+
+func (delegationPortStub) Delegate(context.Context, accessprotocol.AuthoringGrantSnapshot, accesscore.Delegation) desktopcontract.Result[accesscore.Delegation] {
+	return desktopcontract.Result[accesscore.Delegation]{Outcome: protocolcommon.OutcomeSuccess}
+}
+
+type delegationFailure struct{ panic bool }
+
+func (delegationFailure) Delegate(context.Context, accessprotocol.AuthoringGrantSnapshot, accesscore.Delegation) desktopcontract.Result[accesscore.Delegation] {
+	return failed[accesscore.Delegation](desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryOpenRecovery)
+}
+func (d delegationFailure) Resolve(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.Delegation] {
+	if d.panic {
+		panic("private")
+	}
+	return failed[accesscore.Delegation](desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryOpenRecovery)
+}
+func (delegationFailure) Revoke(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.DelegationSnapshot] {
+	return failed[accesscore.DelegationSnapshot](desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryOpenRecovery)
+}
+func (delegationPortStub) Resolve(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.Delegation] {
+	return desktopcontract.Result[accesscore.Delegation]{Outcome: protocolcommon.OutcomeSuccess}
+}
+func (delegationPortStub) Revoke(context.Context, desktopcontract.DelegationFence) desktopcontract.Result[accesscore.DelegationSnapshot] {
+	return desktopcontract.Result[accesscore.DelegationSnapshot]{Outcome: protocolcommon.OutcomeSuccess}
+}
+
+type mcpPortStub struct {
+	mu         *sync.Mutex
+	events     *[]string
+	startPanic bool
+	stopPanic  bool
+	startFail  bool
+	stopFail   bool
+}
+
+func (m mcpPortStub) Start(context.Context) desktopcontract.Result[struct{}] {
+	if m.startPanic {
+		panic("secret")
+	}
+	if m.startFail {
+		return failed[struct{}](desktopcontract.FailureMCPTransport, desktopcontract.ComponentMCPHost, true, desktopcontract.RecoveryReconnect)
+	}
+	if m.mu != nil {
+		m.mu.Lock()
+		*m.events = append(*m.events, "start:"+string(desktopcontract.ComponentMCPHost))
+		m.mu.Unlock()
+	}
+	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess}
+}
+func (m mcpPortStub) Shutdown(context.Context) desktopcontract.Result[struct{}] {
+	if m.stopPanic {
+		panic("secret")
+	}
+	if m.stopFail {
+		return failed[struct{}](desktopcontract.FailureMCPTransport, desktopcontract.ComponentMCPHost, true, desktopcontract.RecoveryReconnect)
+	}
+	if m.mu != nil {
+		m.mu.Lock()
+		*m.events = append(*m.events, "stop:"+string(desktopcontract.ComponentMCPHost))
+		m.mu.Unlock()
+	}
+	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess}
 }
 
 func (n negotiatorStub) Negotiate(context.Context, desktopcontract.Manifest) (protocolcommon.HandshakeResult, error) {
@@ -204,8 +324,12 @@ func testConfig(t *testing.T, root, project string) Config {
 	return Config{
 		Root: filepath.Join(root, "desktop-data"), ReleaseVersion: "1.0.0", EndpointInstanceID: "desktop-test",
 		ReleaseManifestDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		LocalActor:            accesscore.StaticLocalActorResolver{ActorID: "desktop-test-owner"},
-		Lifecycle:             &lifecycleRecorder{}, ProjectStorage: storageStub{ProjectLocation{Root: project, EntryPath: "document.ldl"}},
+		HostPorts: desktopcontract.HostPorts{
+			Credentials: credentialPortStub{},
+			LocalActor:  localActorPortStub{actor: accessprotocol.ActorRef{ActorID: "desktop-test-owner", Kind: "user"}},
+			LocalOwner:  localOwnerPortStub{}, Delegations: delegationPortStub{}, MCP: mcpPortStub{},
+		},
+		Lifecycle: &lifecycleRecorder{}, ProjectStorage: storageStub{ProjectLocation{Root: project, EntryPath: "document.ldl"}},
 		Capabilities: negotiatorStub{value: validHandshake(t)}, Bindings: completeClients(t), Adapters: adapters,
 	}
 }
@@ -230,6 +354,7 @@ func TestStartupOrdersAdaptersNegotiatesAndShutdownReverses(t *testing.T) {
 	for _, id := range injectedComponents {
 		config.Adapters[id] = &adapterStub{id: id, mu: &mu, events: &events}
 	}
+	config.HostPorts.MCP = mcpPortStub{mu: &mu, events: &events}
 	external := &adapterStub{id: desktopcontract.ComponentExternalStorage, mu: &mu, events: &events}
 	config.Adapters[desktopcontract.ComponentExternalStorage] = external
 	config.Capabilities = negotiatorStub{value: enableExternal(validHandshake(t))}
@@ -290,7 +415,11 @@ func TestConfigurationAndPreReadyCallsFailClosed(t *testing.T) {
 		func(c *Config) { c.Lifecycle = nil },
 		func(c *Config) { c.ProjectStorage = nil },
 		func(c *Config) { c.Capabilities = nil },
-		func(c *Config) { c.LocalActor = nil },
+		func(c *Config) { c.HostPorts.LocalActor = nil },
+		func(c *Config) { c.HostPorts.Credentials = nil },
+		func(c *Config) { c.HostPorts.LocalOwner = nil },
+		func(c *Config) { c.HostPorts.Delegations = nil },
+		func(c *Config) { c.HostPorts.MCP = nil },
 		func(c *Config) { c.Bindings.Engine.Compile = nil },
 		func(c *Config) { c.Adapters = nil },
 	}
@@ -330,7 +459,7 @@ func TestLifecycleCapabilityAndAdapterPanicFailures(t *testing.T) {
 	}
 
 	config = testConfig(t, filepath.Join(root, "actor"), writeProject(t, filepath.Join(root, "actor")))
-	config.LocalActor = actorFailure{}
+	config.HostPorts.LocalActor = actorFailure{}
 	app, _ = New(config)
 	result = app.Start(context.Background())
 	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureLocalActor || result.Failure.Component != desktopcontract.ComponentAccess {
@@ -346,11 +475,167 @@ func TestLifecycleCapabilityAndAdapterPanicFailures(t *testing.T) {
 	}
 
 	config = testConfig(t, root, project)
-	config.Adapters[desktopcontract.ComponentMCPHost] = panicAdapter{}
+	config.HostPorts.MCP = mcpPortStub{startPanic: true}
 	app, _ = New(config)
 	result = app.Start(context.Background())
-	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureMCPTransport {
+	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureBackendPanic {
 		t.Fatalf("adapter panic=%+v", result)
+	}
+}
+
+func TestCredentialAndDelegationStartupFailuresAreTyped(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root)
+	config := testConfig(t, root, project)
+	config.CredentialRefs = []desktopcontract.CredentialRef{{ID: "registry"}}
+	config.HostPorts.Credentials = credentialFailure{}
+	app, _ := New(config)
+	result := app.Start(context.Background())
+	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureCredential {
+		t.Fatalf("credential failure=%+v", result)
+	}
+
+	config = testConfig(t, filepath.Join(root, "panic"), writeProject(t, filepath.Join(root, "panic")))
+	config.CredentialRefs = []desktopcontract.CredentialRef{{ID: "registry"}}
+	config.HostPorts.Credentials = credentialFailure{panic: true}
+	app, _ = New(config)
+	result = app.Start(context.Background())
+	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureBackendPanic {
+		t.Fatalf("credential panic=%+v", result)
+	}
+
+	config = testConfig(t, filepath.Join(root, "delegation"), writeProject(t, filepath.Join(root, "delegation")))
+	config.DelegationFences = []desktopcontract.DelegationFence{{DelegationID: "delegation", DocumentID: "document", LocalScopeID: "local", Generation: "1"}}
+	config.HostPorts.Delegations = delegationFailure{}
+	app, _ = New(config)
+	result = app.Start(context.Background())
+	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureAgentDelegation {
+		t.Fatalf("delegation failure=%+v", result)
+	}
+}
+
+func TestCredentialAndDelegationStartupSuccess(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(t, root, writeProject(t, root))
+	config.CredentialRefs = []desktopcontract.CredentialRef{{ID: "registry"}}
+	config.DelegationFences = []desktopcontract.DelegationFence{{DelegationID: "delegation", DocumentID: "document", LocalScopeID: "local", Generation: "1"}}
+	app, _ := New(config)
+	if result := app.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("typed startup=%+v", result)
+	}
+	_ = app.Shutdown(context.Background())
+}
+
+func TestAdditionalStartupPanicsAndCapabilityMismatchFailClosed(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root)
+	config := testConfig(t, root, project)
+	config.HostPorts.LocalActor = panicActorPort{}
+	app, _ := New(config)
+	if result := app.Start(context.Background()); result.Failure == nil || result.Failure.Code != desktopcontract.FailureBackendPanic {
+		t.Fatalf("actor panic=%+v", result)
+	}
+
+	delegationRoot := filepath.Join(root, "delegation-panic")
+	config = testConfig(t, delegationRoot, writeProject(t, delegationRoot))
+	config.DelegationFences = []desktopcontract.DelegationFence{{DelegationID: "delegation", DocumentID: "document", LocalScopeID: "local", Generation: "1"}}
+	config.HostPorts.Delegations = delegationFailure{panic: true}
+	app, _ = New(config)
+	if result := app.Start(context.Background()); result.Failure == nil || result.Failure.Code != desktopcontract.FailureBackendPanic {
+		t.Fatalf("delegation panic=%+v", result)
+	}
+
+	adapterRoot := filepath.Join(root, "adapter-panic")
+	config = testConfig(t, adapterRoot, writeProject(t, adapterRoot))
+	config.Adapters[desktopcontract.ComponentReview] = panicAdapter{}
+	app, _ = New(config)
+	if result := app.Start(context.Background()); result.Failure == nil || result.Failure.Code != desktopcontract.FailureBackendPanic {
+		t.Fatalf("adapter panic=%+v", result)
+	}
+
+	externalRoot := filepath.Join(root, "external-mismatch")
+	config = testConfig(t, externalRoot, writeProject(t, externalRoot))
+	config.Adapters[desktopcontract.ComponentExternalStorage] = &adapterStub{id: desktopcontract.ComponentExternalStorage}
+	app, _ = New(config)
+	if result := app.Start(context.Background()); result.Failure == nil || result.Failure.Component != desktopcontract.ComponentExternalStorage {
+		t.Fatalf("external mismatch=%+v", result)
+	}
+
+	mcpRoot := filepath.Join(root, "mcp-failure")
+	config = testConfig(t, mcpRoot, writeProject(t, mcpRoot))
+	config.HostPorts.MCP = mcpPortStub{startFail: true}
+	app, _ = New(config)
+	if result := app.Start(context.Background()); result.Failure == nil || result.Failure.Code != desktopcontract.FailureMCPTransport {
+		t.Fatalf("MCP failure=%+v", result)
+	}
+}
+
+func TestReadyPublicationPrecedesAdmission(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(t, root, writeProject(t, root))
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	config.Lifecycle = &lifecycleRecorder{ready: ready, release: release}
+	app, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan desktopcontract.Result[protocolcommon.HandshakeResult], 1)
+	go func() { started <- app.Start(context.Background()) }()
+	<-ready
+	if app.State() != desktopcontract.LifecycleStarting {
+		t.Fatalf("state before ready publication=%s", app.State())
+	}
+	if opened := app.OpenProject(context.Background(), "opaque"); opened.Failure == nil || opened.Failure.Code != desktopcontract.FailureReconnect {
+		t.Fatalf("request admitted before ready publication: %+v", opened)
+	}
+	close(release)
+	if result := <-started; result.Outcome != protocolcommon.OutcomeSuccess || app.State() != desktopcontract.LifecycleReady {
+		t.Fatalf("start=%+v state=%s", result, app.State())
+	}
+	_ = app.Shutdown(context.Background())
+}
+
+func TestReadyFailureRollsBackWithoutAdmission(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(t, root, writeProject(t, root))
+	config.Lifecycle = &lifecycleRecorder{fail: desktopcontract.LifecycleReady}
+	app, _ := New(config)
+	result := app.Start(context.Background())
+	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureStartup || app.State() != desktopcontract.LifecycleStopped {
+		t.Fatalf("ready failure=%+v state=%s", result, app.State())
+	}
+	if opened := app.OpenProject(context.Background(), "opaque"); opened.Failure == nil {
+		t.Fatalf("request admitted after failed ready publication: %+v", opened)
+	}
+}
+
+func TestInjectedPortPanicsNeverEscape(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root)
+	config := testConfig(t, root, project)
+	config.Lifecycle = panicLifecycle{}
+	app, _ := New(config)
+	if result := app.Start(context.Background()); result.Failure == nil || result.Failure.Code != desktopcontract.FailureBackendPanic {
+		t.Fatalf("lifecycle panic=%+v", result)
+	}
+
+	other := filepath.Join(root, "negotiator")
+	config = testConfig(t, other, writeProject(t, other))
+	config.Capabilities = panicNegotiator{}
+	app, _ = New(config)
+	if result := app.Start(context.Background()); result.Failure == nil || result.Failure.Code != desktopcontract.FailureBackendPanic {
+		t.Fatalf("negotiator panic=%+v", result)
+	}
+
+	reporterRoot := filepath.Join(root, "reporter")
+	config = testConfig(t, reporterRoot, writeProject(t, reporterRoot))
+	config.CredentialRefs = []desktopcontract.CredentialRef{{ID: "registry"}}
+	config.HostPorts.Credentials = credentialFailure{}
+	config.Recovery = panicReporter{}
+	app, _ = New(config)
+	if result := app.Start(context.Background()); result.Failure == nil || result.Failure.Code != desktopcontract.FailureCredential {
+		t.Fatalf("reporter panic changed result=%+v", result)
 	}
 }
 
@@ -373,8 +658,12 @@ func TestShutdownContinuesAfterAdapterFailures(t *testing.T) {
 		t.Fatal("start failed")
 	}
 	result := app.Shutdown(context.Background())
-	if result.Failure == nil || result.Failure.Component != desktopcontract.ComponentReview || app.State() != desktopcontract.LifecycleStopped {
+	if result.Failure == nil || result.Failure.Component != desktopcontract.ComponentReview || app.State() != desktopcontract.LifecycleDraining {
 		t.Fatalf("shutdown=%+v state=%s", result, app.State())
+	}
+	config.Adapters[desktopcontract.ComponentReview].(*adapterStub).stopErr = nil
+	if retried := app.Shutdown(context.Background()); retried.Outcome != protocolcommon.OutcomeSuccess || app.State() != desktopcontract.LifecycleStopped {
+		t.Fatalf("retried shutdown=%+v state=%s", retried, app.State())
 	}
 }
 
@@ -389,6 +678,34 @@ func TestShutdownSanitizesAdapterPanic(t *testing.T) {
 	result := app.Shutdown(context.Background())
 	if result.Failure == nil || result.Failure.Component != desktopcontract.ComponentReview {
 		t.Fatalf("shutdown panic=%+v", result)
+	}
+	config.Adapters[desktopcontract.ComponentReview] = &adapterStub{id: desktopcontract.ComponentReview}
+	if retried := app.Shutdown(context.Background()); retried.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("retried panic shutdown=%+v", retried)
+	}
+}
+
+func TestShutdownLifecycleAndMCPFailuresRemainResumable(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(t, root, writeProject(t, root))
+	lifecycle := &lifecycleRecorder{}
+	config.Lifecycle = lifecycle
+	app, _ := New(config)
+	if app.Start(context.Background()).Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatal("start failed")
+	}
+	lifecycle.fail = desktopcontract.LifecycleDraining
+	if result := app.Shutdown(context.Background()); result.Failure == nil || app.State() != desktopcontract.LifecycleDraining {
+		t.Fatalf("lifecycle shutdown=%+v state=%s", result, app.State())
+	}
+	lifecycle.fail = ""
+	app.config.HostPorts.MCP = mcpPortStub{stopFail: true}
+	if result := app.Shutdown(context.Background()); result.Failure == nil || result.Failure.Component != desktopcontract.ComponentMCPHost || app.State() != desktopcontract.LifecycleDraining {
+		t.Fatalf("MCP shutdown=%+v state=%s", result, app.State())
+	}
+	app.config.HostPorts.MCP = mcpPortStub{}
+	if result := app.Shutdown(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("resumed shutdown=%+v", result)
 	}
 }
 
@@ -563,7 +880,7 @@ func TestBindingSuccessAndProjectFailuresAreNormalized(t *testing.T) {
 	}
 	control := []byte(`{"operation":"review.submit","request_id":"request"}`)
 	invoked := app.Invoke(context.Background(), "ReviewSubmit", desktopcontract.Exchange{Operation: "review.submit", Control: control})
-	if invoked.Outcome != protocolcommon.OutcomeSuccess || invoked.Value.Operation != "review.submit" {
+	if invoked.Outcome != protocolcommon.OutcomeSuccess || invoked.Value.Operation != "review.submit" || !invoked.Validate() {
 		t.Fatalf("invoke=%+v", invoked)
 	}
 	if result := app.ReloadProject(context.Background(), "missing_document"); result.Failure == nil {
@@ -597,6 +914,46 @@ func TestBindingSuccessAndProjectFailuresAreNormalized(t *testing.T) {
 	_ = app.Start(context.Background())
 	if result := app.OpenProject(context.Background(), "opaque"); result.Failure == nil || result.Failure.Code != desktopcontract.FailureBackendPanic {
 		t.Fatalf("storage panic=%+v", result)
+	}
+	_ = app.Shutdown(context.Background())
+}
+
+func TestBindingPreservesRejectedFailedAndCancelledOutcomes(t *testing.T) {
+	for _, outcome := range []protocolcommon.Outcome{protocolcommon.OutcomeRejected, protocolcommon.OutcomeFailed, protocolcommon.OutcomeCancelled} {
+		root := t.TempDir()
+		config := testConfig(t, root, writeProject(t, root))
+		config.Bindings.Review.Submit = func(_ context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
+			control, _ := json.Marshal(map[string]string{"operation": exchange.Operation, "request_id": "request", "outcome": string(outcome)})
+			return desktopcontract.ExchangeResult{Operation: exchange.Operation, Control: control}, nil
+		}
+		app, _ := New(config)
+		if app.Start(context.Background()).Outcome != protocolcommon.OutcomeSuccess {
+			t.Fatal("start failed")
+		}
+		control := []byte(`{"operation":"review.submit","request_id":"request"}`)
+		result := app.Invoke(context.Background(), "ReviewSubmit", desktopcontract.Exchange{Operation: "review.submit", Control: control})
+		if result.Outcome != outcome || result.Failure != nil || !result.Validate() {
+			t.Fatalf("outcome %s was not preserved: %+v", outcome, result)
+		}
+		_ = app.Shutdown(context.Background())
+	}
+}
+
+func TestBindingRejectsInvalidOutcomeAndValidationShapes(t *testing.T) {
+	root := t.TempDir()
+	config := testConfig(t, root, writeProject(t, root))
+	config.Bindings.Review.Submit = func(_ context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
+		return desktopcontract.ExchangeResult{Operation: exchange.Operation, Control: []byte(`{"operation":"review.submit","request_id":"request","outcome":"other"}`)}, nil
+	}
+	app, _ := New(config)
+	_ = app.Start(context.Background())
+	control := []byte(`{"operation":"review.submit","request_id":"request"}`)
+	result := app.Invoke(context.Background(), "ReviewSubmit", desktopcontract.Exchange{Operation: "review.submit", Control: control})
+	if result.Failure == nil || result.Failure.Code != desktopcontract.FailureProtocolIncompatible || !result.Validate() {
+		t.Fatalf("invalid outcome=%+v", result)
+	}
+	if (BindingResult{Outcome: "other"}).Validate() || (BindingResult{Outcome: protocolcommon.OutcomeSuccess}).Validate() {
+		t.Fatal("invalid binding result shape accepted")
 	}
 	_ = app.Shutdown(context.Background())
 }

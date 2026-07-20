@@ -75,6 +75,14 @@ draining and can be resumed without releasing resources still in use. MCP and
 the remaining registered adapters stop before the local Runtime releases its
 sessions and storage locks.
 
+Startup resolves the configured credential references and live delegation
+fences through the typed `HostPorts`; credential bytes are discarded before
+adapter startup. Injected-port panics are contained as
+`desktop.backend_panic`. The binding facade preserves the generated owner
+response outcome, including `rejected`, `failed`, and `cancelled`; a separate
+closed Desktop failure is present only when no trustworthy owner response was
+produced.
+
 ## Local authority
 
 Desktop resolves a stable OS-backed local actor and creates a local-owner grant
