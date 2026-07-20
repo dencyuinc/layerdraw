@@ -27,6 +27,7 @@ type transportStub struct {
 	startErr error
 	stopErr  error
 	panic    bool
+	onStart  func(Handler) error
 }
 
 func (t *transportStub) Start(_ context.Context, handler Handler) error {
@@ -36,6 +37,9 @@ func (t *transportStub) Start(_ context.Context, handler Handler) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.handler, t.starts = handler, t.starts+1
+	if t.onStart != nil {
+		return t.onStart(handler)
+	}
 	return t.startErr
 }
 func (t *transportStub) Shutdown(context.Context) error {
@@ -93,7 +97,7 @@ func snapshot(operations ...string) CapabilitySnapshot {
 	for _, operation := range operations {
 		values[operation] = OperationCapability{Enabled: true, InputSchema: json.RawMessage(`{"type":"object"}`), OutputSchema: json.RawMessage(`{"type":"object"}`)}
 	}
-	return CapabilitySnapshot{ManifestETag: "manifest-1", Operations: values, Resources: []ResourceCapability{}, GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: testDigest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: testDigest}}
+	return CapabilitySnapshot{ManifestETag: protocolcommon.ManifestETag(testDigest), Operations: values, Resources: []ResourceCapability{}, GrantSummary: accessprotocol.AuthoringGrantSummary{AccessFingerprint: testDigest, ConstrainedCapabilities: []semantic.AuthoringCapability{}, GrantedCapabilities: []semantic.AuthoringCapability{}, PolicyEtag: testDigest}}
 }
 
 func newRunning(t *testing.T, owner *ownerStub, limits Limits) (*Host, *transportStub) {
@@ -110,7 +114,7 @@ func newRunning(t *testing.T, owner *ownerStub, limits Limits) (*Host, *transpor
 	return host, transport
 }
 func binding() *Binding {
-	return &Binding{DocumentID: "doc-1", RevisionDigest: string(testDigest), AccessFingerprint: string(testDigest)}
+	return &Binding{DocumentID: "doc-1", RevisionDigest: testDigest, AccessFingerprint: testDigest}
 }
 
 func TestCatalogMatchesNormativeToolNames(t *testing.T) {
@@ -194,7 +198,11 @@ func TestCursorRejectsChangedRequestRevisionAndAccess(t *testing.T) {
 				request.Binding.AccessFingerprint = "sha256:changed"
 			}
 			result := host.CallTool(context.Background(), request)
-			if result.Failure == nil || result.Failure.Code != ErrorInvalidCursor {
+			want := ErrorInvalidCursor
+			if change != "arguments" {
+				want = ErrorInvalidRequest
+			}
+			if result.Failure == nil || result.Failure.Code != want {
 				t.Fatalf("result=%+v", result)
 			}
 		})
@@ -203,7 +211,7 @@ func TestCursorRejectsChangedRequestRevisionAndAccess(t *testing.T) {
 
 func TestBoundsMalformedAndOwnerFailuresFailClosed(t *testing.T) {
 	limits := DefaultLimits()
-	limits.MaxInputBytes = 32
+	limits.MaxInputBytes = 1024
 	limits.MaxOutputBytes = 16
 	limits.MaxItems = 2
 	limits.MaxJSONDepth = 2
@@ -368,6 +376,7 @@ func TestLifecycleAndLimitFailureBranches(t *testing.T) {
 	if err = host.Shutdown(context.Background()); err == nil || strings.Contains(err.Error(), "private") {
 		t.Fatalf("stop err=%v", err)
 	}
+	transport.stopErr = nil
 	if err = host.Shutdown(context.Background()); err != nil {
 		t.Fatalf("idempotent stop=%v", err)
 	}
@@ -413,10 +422,13 @@ func TestInvalidCapabilitySnapshotsFailClosed(t *testing.T) {
 
 func TestCallAdditionalBoundsAndTypedFailures(t *testing.T) {
 	limits := DefaultLimits()
-	limits.MaxInputBytes = 4
+	limits.MaxInputBytes = 1024
 	owner := &ownerStub{snapshot: snapshot("engine.list_modules")}
 	host, _ := newRunning(t, owner, limits)
-	oversize := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{"xx":1}`), Binding: binding()})
+	oversizeRequest := CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{"xx":1}`), Binding: binding()}
+	limits.MaxInputBytes = 4
+	smallHost, _ := newRunning(t, owner, limits)
+	oversize := smallHost.CallTool(context.Background(), oversizeRequest)
 	if oversize.Failure == nil || oversize.Failure.Code != ErrorInvalidRequest {
 		t.Fatalf("oversize=%+v", oversize)
 	}
@@ -452,11 +464,11 @@ func TestCapabilityToolAndStructuralValidationBranches(t *testing.T) {
 	}
 	owner := &ownerStub{snapshot: snapshot()}
 	host, _ := newRunning(t, owner, DefaultLimits())
-	good := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.get_capabilities", Arguments: json.RawMessage(` { } `)})
+	good := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "cap", Arguments: json.RawMessage(` { } `)})
 	if good.Failure != nil || !json.Valid(good.Content) {
 		t.Fatalf("good=%+v", good)
 	}
-	cursor := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.get_capabilities", Cursor: "x"})
+	cursor := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "cap", Cursor: "x"})
 	if cursor.Failure == nil || cursor.Failure.Code != ErrorInvalidRequest {
 		t.Fatalf("cursor=%+v", cursor)
 	}
@@ -472,7 +484,7 @@ func TestCapabilityToolAndStructuralValidationBranches(t *testing.T) {
 
 func TestInvalidOwnerOutputsAndResourceCursorMismatch(t *testing.T) {
 	s := snapshot("engine.list_modules")
-	s.Resources = []ResourceCapability{{URI: "layerdraw://r", Name: "r", MimeType: "application/json", Schema: json.RawMessage(`{}`), Bound: true}}
+	s.Resources = []ResourceCapability{{URI: "layerdraw://r", Name: "r", Description: "r", MimeType: "application/json", Schema: json.RawMessage(`{}`), Bound: true}}
 	owner := &ownerStub{snapshot: s}
 	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
 		return OwnerResponse{Content: json.RawMessage(`{`)}, nil
@@ -492,7 +504,7 @@ func TestInvalidOwnerOutputsAndResourceCursorMismatch(t *testing.T) {
 	changed := binding()
 	changed.AccessFingerprint = "changed"
 	mismatch := host.ReadResource(context.Background(), ReadResourceRequest{URI: "layerdraw://r", Binding: changed, Cursor: first.Cursor})
-	if mismatch.Failure == nil || mismatch.Failure.Code != ErrorInvalidCursor {
+	if mismatch.Failure == nil || mismatch.Failure.Code != ErrorInvalidRequest {
 		t.Fatalf("mismatch=%+v", mismatch)
 	}
 	owner.read = func(context.Context, ResourceRequest) (ResourceResponse, error) {
@@ -510,7 +522,7 @@ func TestCursorExpiryCapacityAndResourceFailures(t *testing.T) {
 	limits.MaxCursors = 1
 	limits.CursorTTL = time.Second
 	s := snapshot("engine.list_modules")
-	s.Resources = []ResourceCapability{{URI: "layerdraw://r", Name: "r", MimeType: "application/json", Schema: json.RawMessage(`{}`), Bound: true}}
+	s.Resources = []ResourceCapability{{URI: "layerdraw://r", Name: "r", Description: "r", MimeType: "application/json", Schema: json.RawMessage(`{}`), Bound: true}}
 	owner := &ownerStub{snapshot: s}
 	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
 		return OwnerResponse{Content: json.RawMessage(`{}`), NextCursor: json.RawMessage(`"next"`)}, nil
@@ -569,6 +581,207 @@ func TestGetCapabilitiesArgumentsAndUnknownTools(t *testing.T) {
 	unknown := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.unknown", RequestID: "x", Arguments: json.RawMessage(`{}`)})
 	if unknown.Failure == nil || unknown.Failure.Code != ErrorCapabilityUnavailable {
 		t.Fatalf("unknown=%+v", unknown)
+	}
+}
+
+func TestStartingGenerationAllowsSynchronousTransportDiscoveryAndRollsBack(t *testing.T) {
+	owner := &ownerStub{snapshot: snapshot("engine.list_modules")}
+	transport := &transportStub{}
+	transport.onStart = func(handler Handler) error {
+		tools, failure := handler.ListTools(context.Background())
+		if failure != nil || len(tools) != 2 {
+			return errors.New("synchronous discovery failed")
+		}
+		return errors.New("bind failed")
+	}
+	host, err := New(Config{Owner: owner, Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Start(context.Background()); err == nil {
+		t.Fatal("failed transport start accepted")
+	}
+	transport.mu.Lock()
+	starts, stops := transport.starts, transport.stops
+	transport.mu.Unlock()
+	if starts != 1 || stops != 1 {
+		t.Fatalf("partial rollback starts=%d stops=%d", starts, stops)
+	}
+	transport.onStart = nil
+	if err = host.Start(context.Background()); err != nil {
+		t.Fatalf("restart=%v", err)
+	}
+	defer host.Shutdown(context.Background())
+}
+
+func TestListsAreLifecycleGated(t *testing.T) {
+	host, err := New(Config{Owner: &ownerStub{snapshot: snapshot()}, Transport: &transportStub{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tools, failure := host.ListTools(context.Background()); tools != nil || failure == nil || failure.Code != ErrorTransport {
+		t.Fatalf("prestart tools=%v failure=%v", tools, failure)
+	}
+	if resources, failure := host.ListResources(context.Background()); resources != nil || failure == nil || failure.Code != ErrorTransport {
+		t.Fatalf("prestart resources=%v failure=%v", resources, failure)
+	}
+	if err = host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, failure := host.ListTools(context.Background()); failure == nil || failure.Code != ErrorTransport {
+		t.Fatalf("poststop failure=%v", failure)
+	}
+}
+
+func TestCancellationIgnoringOldGenerationCannotPublishAfterRestart(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	owner := &ownerStub{snapshot: snapshot("engine.list_modules")}
+	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
+		close(started)
+		<-release
+		return OwnerResponse{Content: json.RawMessage(`{"old":true}`), NextCursor: json.RawMessage(`"old-next"`)}, nil
+	}
+	host, _ := newRunning(t, owner, DefaultLimits())
+	result := make(chan CallToolResult, 1)
+	go func() {
+		result <- host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "old", Arguments: json.RawMessage(`{}`), Binding: binding()})
+	}()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := host.Shutdown(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown=%v", err)
+	}
+	if err := host.Start(context.Background()); err == nil {
+		t.Fatal("restart accepted before old generation drained")
+	}
+	close(release)
+	old := <-result
+	if old.Failure == nil || old.Failure.Code != ErrorCancelled || old.Cursor != "" || len(old.Content) != 0 {
+		t.Fatalf("old result=%+v", old)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	owner.invoke = nil
+	if err := host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	fresh := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "fresh", Arguments: json.RawMessage(`{}`), Binding: binding()})
+	if fresh.Failure != nil {
+		t.Fatalf("fresh=%+v", fresh)
+	}
+}
+
+func TestCompleteEnvelopeAndAggregateLimits(t *testing.T) {
+	limits := DefaultLimits()
+	owner := &ownerStub{snapshot: snapshot("engine.list_modules")}
+	host, _ := newRunning(t, owner, limits)
+	for name, request := range map[string]CallToolRequest{"name": {Name: strings.Repeat("x", limits.MaxStringBytes+1), RequestID: "r", Arguments: json.RawMessage(`{}`)}, "id": {Name: "layerdraw.list_modules", RequestID: strings.Repeat("x", 129), Arguments: json.RawMessage(`{}`), Binding: binding()}, "cursor": {Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{}`), Cursor: "not-base64", Binding: binding()}, "binding": {Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{}`), Binding: &Binding{DocumentID: "bad id", RevisionDigest: "bad", AccessFingerprint: "bad"}}} {
+		t.Run(name, func(t *testing.T) {
+			result := host.CallTool(context.Background(), request)
+			if result.Failure == nil || result.Failure.Code != ErrorInvalidRequest {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+	resource := host.ReadResource(context.Background(), ReadResourceRequest{URI: strings.Repeat("x", limits.MaxStringBytes+1)})
+	if resource.Failure == nil || resource.Failure.Code != ErrorInvalidRequest {
+		t.Fatalf("resource=%+v", resource)
+	}
+}
+
+func TestGeneratedWorkflowRoutesPreviewBeforeCommitAndStopsOnRejection(t *testing.T) {
+	s := snapshot("runtime.preview_operations", "runtime.commit_operations")
+	owner := &ownerStub{snapshot: s}
+	owner.invoke = func(_ context.Context, request OwnerRequest) (OwnerResponse, error) {
+		if request.Operation == "runtime.preview_operations" {
+			return OwnerResponse{Content: json.RawMessage(`{"outcome":"success"}`), Outcome: protocolcommon.OutcomeSuccess}, nil
+		}
+		return OwnerResponse{Content: json.RawMessage(`{"committed":true}`), Outcome: protocolcommon.OutcomeSuccess}, nil
+	}
+	host, _ := newRunning(t, owner, DefaultLimits())
+	arguments := json.RawMessage(`{"preview":{"operation":"runtime.preview_operations"},"commit":{"operation":"runtime.commit_operations"}}`)
+	result := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.apply_operations", RequestID: "apply", Arguments: arguments, Binding: binding()})
+	if result.Failure != nil || string(result.Content) != `{"committed":true}` {
+		t.Fatalf("result=%+v", result)
+	}
+	owner.mu.Lock()
+	if len(owner.requests) != 2 || owner.requests[0].Operation != "runtime.preview_operations" || owner.requests[1].Operation != "runtime.commit_operations" {
+		t.Fatalf("requests=%+v", owner.requests)
+	}
+	owner.requests = nil
+	owner.mu.Unlock()
+	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
+		return OwnerResponse{Content: json.RawMessage(`{"outcome":"rejected"}`), Outcome: protocolcommon.OutcomeRejected}, nil
+	}
+	rejected := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.apply_operations", RequestID: "deny", Arguments: arguments, Binding: binding()})
+	if rejected.Failure != nil || string(rejected.Content) != `{"outcome":"rejected"}` {
+		t.Fatalf("rejected=%+v", rejected)
+	}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if len(owner.requests) != 1 {
+		t.Fatalf("commit executed after rejection: %d", len(owner.requests))
+	}
+}
+
+func TestCapabilityAndContinuationAggregateLimits(t *testing.T) {
+	limits := DefaultLimits()
+	limits.MaxCapabilityBytes = 64
+	host, err := New(Config{Owner: &ownerStub{snapshot: snapshot("engine.list_modules")}, Transport: &transportStub{}, Limits: limits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Start(context.Background()); err == nil {
+		t.Fatal("oversized capability snapshot accepted")
+	}
+	limits = DefaultLimits()
+	owner := &ownerStub{snapshot: snapshot("engine.list_modules")}
+	deep := strings.Repeat(`{"x":`, limits.MaxJSONDepth+1) + `1` + strings.Repeat(`}`, limits.MaxJSONDepth+1)
+	owner.invoke = func(context.Context, OwnerRequest) (OwnerResponse, error) {
+		return OwnerResponse{Content: json.RawMessage(`{}`), NextCursor: json.RawMessage(deep)}, nil
+	}
+	host, err = New(Config{Owner: owner, Transport: &transportStub{}, Limits: limits})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer host.Shutdown(context.Background())
+	result := host.CallTool(context.Background(), CallToolRequest{Name: "layerdraw.list_modules", RequestID: "r", Arguments: json.RawMessage(`{}`), Binding: binding()})
+	if result.Failure == nil || result.Failure.Code != ErrorResourceExhausted {
+		t.Fatalf("continuation=%+v", result)
+	}
+}
+
+func TestLocalTransportUsesOnlyActiveHandlerGeneration(t *testing.T) {
+	transport := &LocalTransport{}
+	if result := transport.CallTool(context.Background(), CallToolRequest{}); result.Failure == nil || result.Failure.Code != ErrorTransport {
+		t.Fatalf("prestart=%+v", result)
+	}
+	owner := &ownerStub{snapshot: snapshot()}
+	host, err := New(Config{Owner: owner, Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if tools, failure := transport.ListTools(context.Background()); failure != nil || len(tools) != 1 {
+		t.Fatalf("tools=%v failure=%v", tools, failure)
+	}
+	if err = host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, failure := transport.ListResources(context.Background()); failure == nil || failure.Code != ErrorTransport {
+		t.Fatalf("poststop=%v", failure)
 	}
 }
 

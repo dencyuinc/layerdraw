@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 )
 
 type ErrorCode string
@@ -40,13 +42,22 @@ type OwnerError struct{ Code ErrorCode }
 func (e *OwnerError) Error() string { return string(e.Code) }
 
 type Binding struct {
-	DocumentID        string `json:"document_id"`
-	RevisionDigest    string `json:"revision_digest"`
-	AccessFingerprint string `json:"access_fingerprint"`
+	DocumentID        runtimeprotocol.DocumentID `json:"document_id"`
+	RevisionDigest    protocolcommon.Digest      `json:"revision_digest"`
+	AccessFingerprint protocolcommon.Digest      `json:"access_fingerprint"`
 }
 
 func (b Binding) valid() bool {
-	return b.DocumentID != "" && b.RevisionDigest != "" && b.AccessFingerprint != ""
+	if _, err := runtimeprotocol.EncodeDocumentID(b.DocumentID); err != nil {
+		return false
+	}
+	if _, err := protocolcommon.EncodeDigest(b.RevisionDigest); err != nil {
+		return false
+	}
+	if _, err := protocolcommon.EncodeDigest(b.AccessFingerprint); err != nil {
+		return false
+	}
+	return true
 }
 
 type OperationCapability struct {
@@ -67,7 +78,7 @@ type ResourceCapability struct {
 // CapabilitySnapshot is produced by the trusted composition owner. The MCP
 // host advertises only enabled operations and resources from this snapshot.
 type CapabilitySnapshot struct {
-	ManifestETag string                               `json:"manifest_etag"`
+	ManifestETag protocolcommon.ManifestETag          `json:"manifest_etag"`
 	Operations   map[string]OperationCapability       `json:"operations"`
 	Resources    []ResourceCapability                 `json:"resources"`
 	GrantSummary accessprotocol.AuthoringGrantSummary `json:"authoring_grant_summary"`
@@ -85,6 +96,7 @@ type OwnerResponse struct {
 	Content    json.RawMessage
 	NextCursor json.RawMessage
 	Items      int
+	Outcome    protocolcommon.Outcome
 }
 
 type ResourceRequest struct {
@@ -164,14 +176,17 @@ type Transport interface {
 }
 
 type Limits struct {
-	MaxInputBytes  int
-	MaxOutputBytes int
-	MaxItems       int
-	MaxJSONDepth   int
-	MaxCursors     int
-	CursorTTL      time.Duration
+	MaxInputBytes      int
+	MaxOutputBytes     int
+	MaxItems           int
+	MaxJSONDepth       int
+	MaxStringBytes     int
+	MaxCapabilityBytes int
+	MaxCursors         int
+	MaxCursorBytes     int
+	CursorTTL          time.Duration
 }
 
 func DefaultLimits() Limits {
-	return Limits{MaxInputBytes: 1 << 20, MaxOutputBytes: 8 << 20, MaxItems: 1000, MaxJSONDepth: 64, MaxCursors: 4096, CursorTTL: 10 * time.Minute}
+	return Limits{MaxInputBytes: 1 << 20, MaxOutputBytes: 8 << 20, MaxItems: 1000, MaxJSONDepth: 64, MaxStringBytes: 4096, MaxCapabilityBytes: 2 << 20, MaxCursors: 4096, MaxCursorBytes: 4096, CursorTTL: 10 * time.Minute}
 }

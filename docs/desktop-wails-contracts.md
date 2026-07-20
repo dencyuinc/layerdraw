@@ -75,18 +75,24 @@ draining and can be resumed without releasing resources still in use. MCP and
 the remaining registered adapters stop before the local Runtime releases its
 sessions and storage locks.
 
-Production construction uses `desktopapp.NewCanonical` and requires one
-in-process `internal/mcphost.Host`; a raw MCP lifecycle port is not accepted by
-that constructor. `internal/mcphost` contains the single normative tool mapping
-table. Advertisement is derived only from the current owner capability
+Production construction uses `desktopapp.NewCanonical`, which creates the
+concrete generated-client owner adapter, local transport, and one in-process
+`internal/mcphost.Host`; neither a prebuilt host nor a raw MCP lifecycle port is
+accepted by that constructor. The local transport is also the backing endpoint
+for the Wails MCP list/call/read bindings. `internal/mcphost` contains the single
+normative tool mapping table. Advertisement is derived only from the current owner capability
 snapshot, so an unconfigured Review, native interchange, external-storage, or
 other owner operation is absent rather than inferred from a linked package.
 Desktop does not launch a sibling MCP process.
 
-The MCP adapter owns only transport concerns. Its opaque continuations are
+The MCP adapter owns only transport concerns. Discovery and execution are
+fenced to one host generation, including synchronous discovery during transport
+startup; partial startup is shut down and rolled back before another generation
+may start. Its opaque continuations are
 single-use and bound to tool/request bytes, document, committed revision,
-Access fingerprint, expiry, and host generation. Input bytes, output bytes,
-item count, and JSON depth are bounded before publication. Disconnect,
+Access fingerprint, expiry, and host generation. Complete request and response
+envelopes, capability aggregates, continuations, strings, item counts, and JSON
+depth are bounded before publication. Disconnect,
 cancellation, shutdown, malformed or replayed cursors, stale bindings, owner
 panic, and oversized values produce closed failures without paths, source,
 credentials, or provider text. The typed owner adapter still performs generated

@@ -55,6 +55,9 @@ type Config struct {
 	// Desktop composition. HostPorts.MCP remains an injection seam for closed
 	// lifecycle tests and framework adapters.
 	MCPHost          *mcphost.Host
+	MCPCapabilities  MCPCapabilitySource
+	MCPResources     MCPResourceSource
+	MCPLimits        mcphost.Limits
 	CredentialRefs   []desktopcontract.CredentialRef
 	DelegationFences []desktopcontract.DelegationFence
 	ProjectStorage   ProjectStorage
@@ -103,6 +106,7 @@ type Application struct {
 	started   []desktopcontract.ComponentID
 	handshake protocolcommon.HandshakeResult
 	inflight  sync.WaitGroup
+	mcpLocal  *mcphost.LocalTransport
 }
 
 func New(config Config) (*Application, error) {
@@ -139,10 +143,45 @@ func New(config Config) (*Application, error) {
 // canonical in-process MCP Host. A raw transport lifecycle stub is not a
 // production composition.
 func NewCanonical(config Config) (*Application, error) {
-	if config.MCPHost == nil || config.HostPorts.MCP != nil {
-		return nil, errors.New("desktop canonical MCP Host is required")
+	if config.MCPHost != nil || config.HostPorts.MCP != nil || config.MCPCapabilities == nil {
+		return nil, errors.New("desktop canonical MCP composition is required")
 	}
-	return New(config)
+	composition, err := composeCanonicalMCP(config.Bindings, config.MCPCapabilities, config.MCPResources, config.MCPLimits)
+	if err != nil {
+		return nil, err
+	}
+	config.MCPHost = composition.host
+	app, err := New(config)
+	if err != nil {
+		return nil, err
+	}
+	app.mcpLocal = composition.transport
+	return app, nil
+}
+
+func (a *Application) MCPListTools(ctx context.Context) ([]mcphost.Tool, *mcphost.Failure) {
+	if a.mcpLocal == nil {
+		return nil, &mcphost.Failure{Code: mcphost.ErrorTransport, Retryable: true}
+	}
+	return a.mcpLocal.ListTools(ctx)
+}
+func (a *Application) MCPCallTool(ctx context.Context, request mcphost.CallToolRequest) mcphost.CallToolResult {
+	if a.mcpLocal == nil {
+		return mcphost.CallToolResult{Failure: &mcphost.Failure{Code: mcphost.ErrorTransport, Retryable: true}}
+	}
+	return a.mcpLocal.CallTool(ctx, request)
+}
+func (a *Application) MCPListResources(ctx context.Context) ([]mcphost.Resource, *mcphost.Failure) {
+	if a.mcpLocal == nil {
+		return nil, &mcphost.Failure{Code: mcphost.ErrorTransport, Retryable: true}
+	}
+	return a.mcpLocal.ListResources(ctx)
+}
+func (a *Application) MCPReadResource(ctx context.Context, request mcphost.ReadResourceRequest) mcphost.ReadResourceResult {
+	if a.mcpLocal == nil {
+		return mcphost.ReadResourceResult{Failure: &mcphost.Failure{Code: mcphost.ErrorTransport, Retryable: true}}
+	}
+	return a.mcpLocal.ReadResource(ctx, request)
 }
 
 func (a *Application) State() desktopcontract.LifecycleState {

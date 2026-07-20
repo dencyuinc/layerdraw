@@ -15,11 +15,14 @@ The adapter enforces MCP transport concerns before dispatch:
 
 - closed request, capability, cursor, stale-binding, resource, cancellation,
   transport and owner failures without provider text or panic values;
-- bounded input/output bytes, item counts and JSON depth;
+- bounded request/response envelopes, capability aggregates, continuation
+  bytes, item counts, string sizes and JSON depth;
 - opaque one-shot continuation cursors bound to tool, normalized request
   bytes, document, revision, Access fingerprint and expiry;
-- cancellation and shutdown propagation, in-flight draining, and fresh
-  generation state after restart;
+- generation-fenced discovery, calls and resource reads; transport startup may
+  discover synchronously, while partial startup is rolled back completely;
+- cancellation and shutdown propagation, per-generation in-flight draining,
+  and fresh generation state after restart;
 - defensive copies of schemas, arguments, results and owner continuations.
 
 Owner adapters receive `OwnerRequest` or `ResourceRequest`. They must pass
@@ -28,7 +31,17 @@ revision checks, Access re-evaluation, Review approval, and atomic Runtime
 publication. They must not accept raw LDL parsing, raw database queries,
 provider credentials or self-asserted authorization through this boundary.
 
-Production Desktop construction uses `desktopapp.NewCanonical` with an
-in-process `*mcphost.Host`. `desktopapp.BindCanonicalMCPHost` is the lifecycle
+Production Desktop construction uses `desktopapp.NewCanonical`, which composes
+the concrete generated `desktopcontract.ClientSet` owner, `LocalTransport`, and
+in-process `*mcphost.Host`. The same local transport backs the Wails-bindable
+list/call/read methods. `desktopapp.BindCanonicalMCPHost` is the lifecycle
 adapter used by the composition root. The lower-level `HostPorts.MCP` seam is
 retained for closed lifecycle and framework tests, not production wiring.
+
+Mutating tools route through the generated owner workflows: Runtime operation
+and restore commits are preceded by their generated preview operations, source
+patches use Engine preview plus Runtime commit, and Registry installs use
+`plan_install` plus `commit_plan`. Each commit owner remains responsible for
+fresh authorization and revision validation. Normative native interchange tool
+names remain in the closed catalog but are not advertised until their generated
+owner bindings exist.

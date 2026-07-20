@@ -3,43 +3,44 @@
 package mcphost
 
 type toolMapping struct {
-	name, operation, description string
-	bound                        bool
+	name, operation, previewOperation, description string
+	requiredOperations                             []string
+	bound                                          bool
 }
 
 // toolCatalog is the single MCP-to-owner mapping table. Availability still
 // comes exclusively from the owner capability snapshot.
 var toolCatalog = []toolMapping{
-	{"layerdraw.list_modules", "engine.list_modules", "List modules in the bounded document scope.", true},
-	{"layerdraw.find_symbols", "engine.find_symbols", "Resolve exact symbols through the Engine.", true},
-	{"layerdraw.search", "runtime.search", "Run revision and Access-bound project search.", true},
-	{"layerdraw.read_declarations", "engine.read_declarations", "Read bounded declarations.", true},
-	{"layerdraw.read_rows", "engine.read_rows", "Read bounded typed rows.", true},
-	{"layerdraw.get_neighbors", "engine.get_neighbors", "Read bounded graph neighbors.", true},
-	{"layerdraw.inspect_subgraph", "engine.inspect_subgraph", "Inspect a bounded explicit subgraph.", true},
-	{"layerdraw.find_usages", "engine.find_usages", "Find bounded stable-address usages.", true},
-	{"layerdraw.list_references", "engine.list_references", "List bounded references.", true},
-	{"layerdraw.read_references", "engine.read_references", "Read bounded references.", true},
-	{"layerdraw.preview_operations", "runtime.preview_operations", "Preview semantic operations with impact and Access decision.", true},
-	{"layerdraw.preview_fragment", "engine.preview_fragment", "Preview a scoped LDL fragment through Workbench.", true},
-	{"layerdraw.preview_source_patch", "engine.preview_source_patch", "Preview a revision-bound source patch through Workbench.", true},
-	{"layerdraw.apply_operations", "runtime.commit_operations", "Commit a previously authorized operation batch through Runtime.", true},
-	{"layerdraw.apply_source_patch", "runtime.apply_source_patch", "Commit a previously authorized source patch through Runtime.", true},
-	{"layerdraw.stage_asset", "runtime.stage_asset", "Stage an asset through Runtime.", true},
-	{"layerdraw.format_scope", "engine.format_scope", "Format a stable source scope through Workbench.", true},
-	{"layerdraw.organize_workspace", "engine.organize_workspace", "Preview canonical source organization through Workbench.", true},
-	{"layerdraw.run_query", "runtime.execute_query", "Run an Engine-owned query bound by Runtime.", true},
-	{"layerdraw.analyze_graph", "runtime.analyze_graph", "Run bounded Engine-owned graph analysis.", true},
-	{"layerdraw.materialize_view", "engine.materialize_view", "Materialize canonical ViewData.", true},
-	{"layerdraw.plan_export", "engine.plan_export", "Create a canonical ExportPlan.", true},
-	{"layerdraw.serialize_export", "host.serialize_export", "Serialize a bounded artifact through the owning exporter.", true},
-	{"layerdraw.import_document", "host.import_document", "Preview a document import through the owning adapter.", true},
-	{"layerdraw.export_document", "host.export_document", "Publish a document export through Runtime.", true},
-	{"layerdraw.list_revisions", "runtime.list_revisions", "List bounded committed revisions.", true},
-	{"layerdraw.restore_revision", "runtime.restore_revision", "Preview and commit a revision restore through Runtime.", true},
-	{"layerdraw.registry_search", "registry.search", "Browse the canonical Registry client.", false},
-	{"layerdraw.registry_plan_install", "registry.plan_install", "Plan a Registry transaction.", true},
-	{"layerdraw.registry_apply_install", "registry.apply_install", "Commit a revalidated Registry transaction through Runtime.", true},
+	{name: "layerdraw.list_modules", operation: "engine.list_modules", description: "List modules in the bounded document scope.", bound: true},
+	{name: "layerdraw.find_symbols", operation: "engine.find_symbols", description: "Resolve exact symbols through the Engine.", bound: true},
+	{name: "layerdraw.search", operation: "native.execute_search", description: "Run revision and Access-bound project search.", bound: true},
+	{name: "layerdraw.read_declarations", operation: "engine.read_declarations", description: "Read bounded declarations.", bound: true},
+	{name: "layerdraw.read_rows", operation: "engine.read_rows", description: "Read bounded typed rows.", bound: true},
+	{name: "layerdraw.get_neighbors", operation: "engine.get_neighbors", description: "Read bounded graph neighbors.", bound: true},
+	{name: "layerdraw.inspect_subgraph", operation: "engine.inspect_subgraph", description: "Inspect a bounded explicit subgraph.", bound: true},
+	{name: "layerdraw.find_usages", operation: "engine.find_usages", description: "Find bounded stable-address usages.", bound: true},
+	{name: "layerdraw.list_references", operation: "engine.list_references", description: "List bounded references.", bound: true},
+	{name: "layerdraw.read_references", operation: "engine.read_references", description: "Read bounded references.", bound: true},
+	{name: "layerdraw.preview_operations", operation: "runtime.preview_operations", description: "Preview semantic operations with impact and Access decision.", bound: true},
+	{name: "layerdraw.preview_fragment", operation: "engine.preview_fragment", description: "Preview a scoped LDL fragment through Workbench.", bound: true},
+	{name: "layerdraw.preview_source_patch", operation: "engine.preview_source_patch", description: "Preview a revision-bound source patch through Workbench.", bound: true},
+	{name: "layerdraw.apply_operations", operation: "runtime.commit_operations", previewOperation: "runtime.preview_operations", requiredOperations: []string{"runtime.preview_operations", "runtime.commit_operations"}, description: "Re-preview, revalidate, and commit an operation batch through Runtime.", bound: true},
+	{name: "layerdraw.apply_source_patch", operation: "runtime.commit_operations", previewOperation: "engine.preview_source_patch", requiredOperations: []string{"engine.preview_source_patch", "runtime.commit_operations"}, description: "Re-preview a source patch and commit its authorized operation batch through Runtime.", bound: true},
+	{name: "layerdraw.stage_asset", operation: "runtime.stage_asset", description: "Stage an asset through Runtime.", bound: true},
+	{name: "layerdraw.format_scope", operation: "engine.format_scope", description: "Format a stable source scope through Workbench.", bound: true},
+	{name: "layerdraw.organize_workspace", operation: "engine.organize_workspace", description: "Preview canonical source organization through Workbench.", bound: true},
+	{name: "layerdraw.run_query", operation: "native.execute_query", description: "Run an Engine-owned query bound by Runtime.", bound: true},
+	{name: "layerdraw.analyze_graph", operation: "native.execute_analysis", description: "Run bounded Engine-owned graph analysis.", bound: true},
+	{name: "layerdraw.materialize_view", operation: "engine.materialize_view", description: "Materialize canonical ViewData.", bound: true},
+	{name: "layerdraw.plan_export", operation: "engine.plan_export", description: "Create a canonical ExportPlan.", bound: true},
+	{name: "layerdraw.serialize_export", description: "Serialize a bounded artifact through the configured native exporter.", bound: true},
+	{name: "layerdraw.import_document", description: "Preview a document import through the configured interchange adapter.", bound: true},
+	{name: "layerdraw.export_document", description: "Publish a document export through the configured interchange adapter.", bound: true},
+	{name: "layerdraw.list_revisions", operation: "runtime.list_revisions", description: "List bounded committed revisions.", bound: true},
+	{name: "layerdraw.restore_revision", operation: "runtime.commit_operations", previewOperation: "runtime.preview_restore", requiredOperations: []string{"runtime.preview_restore", "runtime.commit_operations"}, description: "Preview, revalidate, and commit a revision restore through Runtime.", bound: true},
+	{name: "layerdraw.registry_search", operation: "registry.search", description: "Browse the canonical Registry client.", bound: false},
+	{name: "layerdraw.registry_plan_install", operation: "registry.plan_install", description: "Plan a Registry transaction.", bound: true},
+	{name: "layerdraw.registry_apply_install", operation: "registry.commit_plan", previewOperation: "registry.plan_install", requiredOperations: []string{"registry.plan_install", "registry.commit_plan"}, description: "Re-plan, revalidate, and commit a Registry transaction.", bound: true},
 }
 
 var mappingByName = func() map[string]toolMapping {
@@ -49,3 +50,18 @@ var mappingByName = func() map[string]toolMapping {
 	}
 	return result
 }()
+
+type ToolRoute struct {
+	Name               string
+	Operation          string
+	PreviewOperation   string
+	RequiredOperations []string
+}
+
+func ToolRoutes() []ToolRoute {
+	result := make([]ToolRoute, len(toolCatalog))
+	for index, mapping := range toolCatalog {
+		result[index] = ToolRoute{Name: mapping.name, Operation: mapping.operation, PreviewOperation: mapping.previewOperation, RequiredOperations: append([]string(nil), mapping.requiredOperations...)}
+	}
+	return result
+}
