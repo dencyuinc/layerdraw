@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dencyuinc/layerdraw/internal/desktopartifact"
 )
 
 const schemaVersion = 1
@@ -62,17 +64,6 @@ type updateManifest struct {
 	PlatformSignature       *digestFile `json:"platform_signature,omitempty"`
 	Provenance              provenance  `json:"provenance"`
 	Signature               signature   `json:"signature"`
-}
-
-type capabilityDeclaration struct {
-	SchemaVersion int      `json:"schema_version"`
-	Components    []string `json:"components"`
-	Excludes      []string `json:"excludes"`
-	Security      struct {
-		PreconfiguredMCPEndpoints bool `json:"preconfigured_mcp_endpoints"`
-		ProviderCredentials       bool `json:"provider_credentials"`
-		SigningSecrets            bool `json:"signing_secrets"`
-	} `json:"security"`
 }
 
 var revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -506,48 +497,16 @@ func validateTarget(platform, format, channel string) error {
 }
 
 func validateCapabilities(path string) error {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("read capabilities: %w", err)
 	}
-	var declaration capabilityDeclaration
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&declaration); err != nil {
-		return fmt.Errorf("invalid capability declaration: %w", err)
+	_, decodeErr := desktopartifact.DecodeCapabilityDeclaration(file)
+	closeErr := file.Close()
+	if decodeErr != nil {
+		return decodeErr
 	}
-	if declaration.SchemaVersion != 1 {
-		return errors.New("unsupported capability declaration schema")
-	}
-	required := []string{"desktop-shell", "frontend-packages", "mcp-host", "native-adapters", "native-exporters", "registry", "review"}
-	for _, component := range required {
-		found := false
-		for _, actual := range declaration.Components {
-			if actual == component {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("packaged capability %q is missing", component)
-		}
-	}
-	if declaration.Security.PreconfiguredMCPEndpoints || declaration.Security.ProviderCredentials || declaration.Security.SigningSecrets {
-		return errors.New("packaged security declaration exposes runtime credentials or endpoints")
-	}
-	for _, excluded := range []string{"source-maps", "test-fixtures", "development-servers"} {
-		found := false
-		for _, actual := range declaration.Excludes {
-			if actual == excluded {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("development-only exclusion %q is missing", excluded)
-		}
-	}
-	return nil
+	return closeErr
 }
 
 type version struct {

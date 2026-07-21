@@ -306,13 +306,14 @@ func TestInvalidCommandsAndCapabilitiesFailClosed(t *testing.T) {
 	}
 	root := t.TempDir()
 	path := filepath.Join(root, "capabilities.json")
-	if err := os.WriteFile(path, []byte(`{"schema_version":1,"components":[],"excludes":[],"security":{}}`), 0o644); err != nil {
+	valid := string(validCapabilityFixture(t))
+	if err := os.WriteFile(path, []byte(strings.Replace(valid, `"engine"`, `"engine_missing"`, 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateCapabilities(path); err == nil || !strings.Contains(err.Error(), "missing") {
+	if err := validateCapabilities(path); err == nil {
 		t.Fatalf("expected closure error, got %v", err)
 	}
-	if err := os.WriteFile(path, []byte(`{"schema_version":1,"components":["desktop-shell","frontend-packages","mcp-host","native-adapters","native-exporters","registry","review"],"excludes":["development-servers","source-maps","test-fixtures"],"security":{"signing_secrets":true}}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Replace(valid, `"signing_secrets": false`, `"signing_secrets": true`, 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateCapabilities(path); err == nil || !strings.Contains(err.Error(), "exposes") {
@@ -390,7 +391,7 @@ func fixtureFiles(t *testing.T, root string) map[string]string {
 	t.Helper()
 	contents := map[string]string{
 		"installer": "desktop installer", "sbom": `{"bomFormat":"CycloneDX"}`,
-		"licenses": "Third-party notices", "capabilities": `{"schema_version":1,"components":["desktop-shell","frontend-packages","mcp-host","native-adapters","native-exporters","registry","review"],"excludes":["development-servers","source-maps","test-fixtures"],"security":{"preconfigured_mcp_endpoints":false,"provider_credentials":false,"signing_secrets":false}}`,
+		"licenses": "Third-party notices", "capabilities": string(validCapabilityFixture(t)),
 		"conformance": `{"schema_version":1,"delivery":"desktop"}`,
 		"attestation": `{"schema_version":1,"source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
 	}
@@ -404,6 +405,15 @@ func fixtureFiles(t *testing.T, root string) map[string]string {
 		result[name] = path
 	}
 	return result
+}
+
+func validCapabilityFixture(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "deploy", "desktop-capabilities.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func buildArgs(root string, files map[string]string, testSigning bool) []string {
