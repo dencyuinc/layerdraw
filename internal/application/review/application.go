@@ -69,7 +69,7 @@ func (a *Application) Create(ctx context.Context, input CreateInput) (Proposal, 
 	if input.Now.IsZero() {
 		input.Now = a.now().UTC()
 	}
-	if input.ProposalID == "" || input.Preview.CurrentRevision.DocumentID == "" || input.Preview.OperationBatch.DocumentID != input.Preview.CurrentRevision.DocumentID || input.Preview.OperationBatch.BaseRevision != input.Preview.CurrentRevision || input.Preview.Evidence.AuthoringImpact.ImpactDigest == "" || input.Preview.Evidence.AuthoringImpact.ImpactDigest != valueDigest(input.ProposeDecision.AuthoringImpactDigest) || !validDecision(input.ProposeDecision) {
+	if input.ProposalID == "" || input.Preview.CurrentRevision.DocumentID == "" || input.Preview.OperationBatch.DocumentID != input.Preview.CurrentRevision.DocumentID || !sameRevision(input.Preview.OperationBatch.BaseRevision, input.Preview.CurrentRevision) || input.Preview.Evidence.AuthoringImpact.ImpactDigest == "" || input.Preview.Evidence.AuthoringImpact.ImpactDigest != valueDigest(input.ProposeDecision.AuthoringImpactDigest) || !validDecision(input.ProposeDecision) {
 		return Proposal{}, ErrInvalid
 	}
 	if proposalIndex(a.state.Proposals, input.ProposalID) >= 0 {
@@ -103,6 +103,16 @@ func (a *Application) Create(ctx context.Context, input CreateInput) (Proposal, 
 	}
 	a.state = next
 	return cloneProposal(proposal), nil
+}
+
+func sameRevision(left, right runtimeprotocol.CommittedRevisionRef) bool {
+	if left.DocumentID != right.DocumentID || left.RevisionID != right.RevisionID || left.DefinitionHash != right.DefinitionHash || left.GraphHash != right.GraphHash {
+		return false
+	}
+	if left.ProviderVersion == nil || right.ProviderVersion == nil {
+		return left.ProviderVersion == nil && right.ProviderVersion == nil
+	}
+	return *left.ProviderVersion == *right.ProviderVersion
 }
 
 func (a *Application) Comment(ctx context.Context, input CommentInput) (Proposal, error) {

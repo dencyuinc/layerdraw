@@ -177,6 +177,20 @@ type sharedOwner struct {
 
 type registryObjectReader struct{ store registry.StagedObjectStore }
 
+// desktopReviewRuntime publishes an approved Review proposal through the
+// durable local-file path. The lower-level Host.Commit method intentionally
+// represents runtime-only publication and would leave Desktop's external file
+// baseline stale immediately after approval.
+type desktopReviewRuntime struct{ local *localdocument.Host }
+
+func (r desktopReviewRuntime) Repreview(ctx context.Context, input reviewapp.RepreviewInput) (reviewapp.RepreviewResult, error) {
+	return r.local.Repreview(ctx, input)
+}
+
+func (r desktopReviewRuntime) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitInput) (runtimeprotocol.RuntimeCommitResult, error) {
+	return r.local.SaveRuntime(ctx, input)
+}
+
 func (r registryObjectReader) OpenRegistryStagedObject(ctx context.Context, ref runtimeport.RegistryStagedObjectRef) (io.ReadCloser, error) {
 	size, err := strconv.ParseInt(string(ref.Size), 10, 64)
 	if err != nil || size < 0 {
@@ -350,7 +364,7 @@ func (o *sharedOwner) Start(context.Context) error {
 			return err
 		}
 	}
-	reviewOwner, err := reviewapp.New(context.Background(), reviewStore, o.local, o.local, nil)
+	reviewOwner, err := reviewapp.New(context.Background(), reviewStore, desktopReviewRuntime{local: o.local}, o.local, nil)
 	if err != nil {
 		return err
 	}
@@ -449,6 +463,9 @@ func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Excha
 		}
 		return desktopcontract.ExchangeResult{Operation: response.Operation, Control: response.Control}, nil
 	}
+	if exchange.Operation == string(runtimeprotocol.CommitOperationsRequestEnvelopeOperationValue) {
+		return invokeDurableRuntimeCommit(ctx, endpoint, exchange)
+	}
 	plan, terminal, err := endpoint.Prepare(ctx, exchange.Operation, exchange.Control)
 	if err != nil {
 		return desktopcontract.ExchangeResult{}, err
@@ -462,6 +479,57 @@ func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Excha
 		return desktopcontract.ExchangeResult{}, err
 	}
 	return desktopcontract.ExchangeResult{Operation: response.Operation, Control: response.Control, Blobs: sink.blobs}, nil
+}
+
+func invokeDurableRuntimeCommit(ctx context.Context, endpoint *host.Endpoint, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
+	if len(exchange.Blobs) != 0 {
+		return desktopcontract.ExchangeResult{}, errors.New("runtime commit does not accept blobs")
+	}
+	request, err := runtimeprotocol.DecodeCommitOperationsRequestEnvelope(exchange.Control)
+	if err != nil {
+		return desktopcontract.ExchangeResult{}, err
+	}
+	saveControl, err := runtimeprotocol.EncodeSaveDocumentRequestEnvelope(runtimeprotocol.SaveDocumentRequestEnvelope{
+		DeadlineAt: request.DeadlineAt,
+		Operation:  runtimeprotocol.SaveDocumentRequestEnvelopeOperationValue,
+		Payload:    request.Payload,
+		Protocol:   request.Protocol,
+		RequestID:  request.RequestID,
+	})
+	if err != nil {
+		return desktopcontract.ExchangeResult{}, err
+	}
+	translate := func(control []byte) (desktopcontract.ExchangeResult, error) {
+		saved, err := runtimeprotocol.DecodeSaveDocumentResponseEnvelope(control)
+		if err != nil {
+			return desktopcontract.ExchangeResult{}, err
+		}
+		control, err = runtimeprotocol.EncodeCommitOperationsResponseEnvelope(runtimeprotocol.CommitOperationsResponseEnvelope{
+			Diagnostics: saved.Diagnostics,
+			Failure:     saved.Failure,
+			HostRelease: saved.HostRelease,
+			Outcome:     saved.Outcome,
+			Payload:     saved.Payload,
+			Protocol:    saved.Protocol,
+			RequestID:   saved.RequestID,
+		})
+		if err != nil {
+			return desktopcontract.ExchangeResult{}, err
+		}
+		return desktopcontract.ExchangeResult{Operation: exchange.Operation, Control: control}, nil
+	}
+	plan, terminal, err := endpoint.Prepare(ctx, host.OperationSave, saveControl)
+	if err != nil {
+		return desktopcontract.ExchangeResult{}, err
+	}
+	if terminal != nil {
+		return translate(terminal.Control)
+	}
+	response, err := plan.ExecuteDispatch(ctx, exchangeBlobSource(nil), &exchangeBlobSink{})
+	if err != nil {
+		return desktopcontract.ExchangeResult{}, err
+	}
+	return translate(response.Control)
 }
 
 func runtimeHandshakeOperation() protocolcommon.CapabilityID { return "runtime.handshake" }

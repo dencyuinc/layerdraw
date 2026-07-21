@@ -3,7 +3,10 @@
 package desktopwails
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,14 +20,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
+	"github.com/dencyuinc/layerdraw/internal/adapter/registryengine"
+	"github.com/dencyuinc/layerdraw/internal/adapter/registrysource"
+	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	enginecore "github.com/dencyuinc/layerdraw/internal/engine"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
+	"github.com/dencyuinc/layerdraw/internal/registry"
 )
 
 const packagedConformanceIterations = 5
@@ -277,6 +287,7 @@ type conformanceInstance struct {
 	root  string
 	app   *desktopapp.Application
 	vault *selectionVault
+	owner *sharedOwner
 }
 
 func newConformanceInstance(ctx context.Context, external bool) (*conformanceInstance, error) {
@@ -288,6 +299,11 @@ func newConformanceInstance(ctx context.Context, external bool) (*conformanceIns
 	if err != nil {
 		os.RemoveAll(root)
 		return nil, &conformanceStageError{stage: "config", err: err}
+	}
+	owner, ok := base.Adapters[desktopcontract.ComponentBindingShell].(*sharedOwner)
+	if !ok || owner == nil {
+		os.RemoveAll(root)
+		return nil, &conformanceStageError{stage: "config", err: errors.New("canonical Desktop shared owner is unavailable")}
 	}
 	providers := map[string]ExternalProvider(nil)
 	if external {
@@ -307,7 +323,7 @@ func newConformanceInstance(ctx context.Context, external bool) (*conformanceIns
 		}
 		return nil, &conformanceStageError{stage: stage, err: errors.New("canonical Desktop application did not start")}
 	}
-	return &conformanceInstance{root: root, app: app, vault: vault}, nil
+	return &conformanceInstance{root: root, app: app, vault: vault, owner: owner}, nil
 }
 
 func (instance *conformanceInstance) close(ctx context.Context) error {
@@ -589,6 +605,100 @@ func conformanceMCP(ctx context.Context) error {
 	if err := conformanceNativeMCP(ctx, workbench.instance, tools); err != nil {
 		return err
 	}
+	opened, err := workbench.instance.openProject(ctx, conformanceAuthoringSource)
+	if err != nil {
+		return err
+	}
+	commitInput, err := conformanceCommitInput(ctx, opened, "mcp")
+	if err != nil {
+		return err
+	}
+	binding := &mcphost.Binding{DocumentID: opened.ProjectID, RevisionDigest: opened.Open.CommittedRevision.DefinitionHash, AccessFingerprint: opened.Open.Session.Scope.AccessFingerprint}
+	if err := conformanceMCPRegistry(ctx, workbench.instance); err != nil {
+		return err
+	}
+	if err := conformanceMCPReview(ctx, workbench.instance, opened, commitInput, binding); err != nil {
+		return err
+	}
+	publication, err := workbench.instance.app.ProjectPublication(ctx)
+	if err != nil || publication.Project == nil {
+		return errors.New("bundled MCP post-Review project publication failed")
+	}
+	restoreTarget := publication.Project.AuthoritativeRevision
+	currentSource, err := os.ReadFile(filepath.Join(workbench.instance.root, "document.ldl"))
+	if err != nil {
+		return err
+	}
+	if !bytes.Contains(currentSource, []byte("mcp_layer")) {
+		return errors.New("bundled MCP Review approval was not durably saved")
+	}
+	restorePreconditions, err := conformancePreconditions(ctx, string(currentSource))
+	if err != nil {
+		return err
+	}
+	awayOperations, err := engineprotocol.DecodeSemanticOperationBatch([]byte(`{"operations":[{"operation":"update_subject_field","target_address":"ldl:project:p:layer:mcp_layer","path":["display_name"],"action":"set","value":{"kind":"string","string":"Restore setup"}}]}`))
+	if err != nil {
+		return err
+	}
+	commitInput.OperationID = "conformance_restore_away"
+	commitInput.IdempotencyKey = "conformance_restore_away_idempotency"
+	commitInput.OperationBatch.BaseRevision = restoreTarget
+	commitInput.OperationBatch.ExpectedDefinitionHash = restoreTarget.DefinitionHash
+	commitInput.OperationBatch.Operations = awayOperations
+	commitInput.OperationBatch.Preconditions = restorePreconditions
+	awayPreview := workbench.instance.app.Preview(ctx, runtimeprotocol.PreviewOperationsInput{Session: opened.Open.Session, OperationBatch: commitInput.OperationBatch})
+	if awayPreview.Outcome != protocolcommon.OutcomeSuccess {
+		return fmt.Errorf("bundled MCP restore setup preview failed: %+v", awayPreview.Failure)
+	}
+	commitInput.AuthoringProof = awayPreview.Value.AuthoringProof
+	awayCommit := workbench.instance.app.Commit(ctx, commitInput)
+	if awayCommit.Outcome != protocolcommon.OutcomeSuccess || awayCommit.Value.OperationResult.CommittedRevision == nil {
+		return fmt.Errorf("bundled MCP restore setup save failed: %+v", awayCommit.Failure)
+	}
+	publication, err = workbench.instance.app.ProjectPublication(ctx)
+	if err != nil || publication.Project == nil || publication.Project.AuthoritativeRevision.RevisionID == restoreTarget.RevisionID {
+		return errors.New("bundled MCP restore setup publication failed")
+	}
+	currentSource, err = os.ReadFile(filepath.Join(workbench.instance.root, "document.ldl"))
+	if err != nil {
+		return err
+	}
+	restorePreconditions, err = conformancePreconditions(ctx, string(currentSource))
+	if err != nil {
+		return err
+	}
+	restoreOperations, err := engineprotocol.DecodeSemanticOperationBatch([]byte(`{"operations":[{"operation":"update_subject_field","target_address":"ldl:project:p:layer:mcp_layer","path":["display_name"],"action":"set","value":{"kind":"string","string":"Conformance"}}]}`))
+	if err != nil {
+		return err
+	}
+	commitInput.OperationID = "conformance_restore_commit"
+	commitInput.IdempotencyKey = "conformance_restore_commit_idempotency"
+	commitInput.OperationBatch.BaseRevision = publication.Project.AuthoritativeRevision
+	commitInput.OperationBatch.ExpectedDefinitionHash = publication.Project.AuthoritativeRevision.DefinitionHash
+	commitInput.OperationBatch.Operations = restoreOperations
+	commitInput.OperationBatch.Preconditions = restorePreconditions
+	commitInput.AuthoringProof = runtimeprotocol.AuthoringProof{}
+	binding = &mcphost.Binding{DocumentID: opened.ProjectID, RevisionDigest: publication.Project.AuthoritativeRevision.DefinitionHash, AccessFingerprint: opened.Open.Session.Scope.AccessFingerprint}
+	if err := conformanceMCPHistoryRestore(ctx, workbench.instance.app, opened, restoreTarget, commitInput, binding); err != nil {
+		return err
+	}
+	restoredSource, err := os.ReadFile(filepath.Join(workbench.instance.root, "document.ldl"))
+	if err != nil {
+		return err
+	}
+	restoredProject, err := endpoint.NewLocalDocumentEngine().CompileProject(ctx, endpoint.LocalProjectInput{
+		EntryPath:         "document.ldl",
+		ProjectSourceTree: map[string][]byte{"document.ldl": restoredSource},
+		ResolvedDependencies: endpoint.LocalResolvedDependencies{
+			Format: "layerdraw-resolved", FormatVersion: 1, Language: 1,
+		},
+	})
+	if err != nil || restoredProject.DefinitionHash != restoreTarget.DefinitionHash || restoredProject.GraphHash != restoreTarget.GraphHash {
+		return fmt.Errorf("bundled MCP restore durable read-back failed: %w", err)
+	}
+	if err := conformanceMCPAgentScope(ctx, workbench.instance.app, opened); err != nil {
+		return err
+	}
 	capabilities := workbench.instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "conformance-capabilities", Arguments: json.RawMessage(`{}`)})
 	if capabilities.Failure != nil || len(capabilities.Content) == 0 {
 		return errors.New("bundled MCP capability read failed")
@@ -621,6 +731,207 @@ func conformanceMCP(ctx context.Context) error {
 	read := workbench.instance.app.MCPReadResource(ctx, mcphost.ReadResourceRequest{URI: resources[0].URI})
 	if read.Failure != nil || len(read.Content) == 0 || read.MimeType == "" {
 		return errors.New("bundled MCP resource read failed")
+	}
+	return nil
+}
+
+func conformanceCommitInput(ctx context.Context, opened desktopapp.ProjectOpenResult, suffix string) (runtimeprotocol.RuntimeCommitInput, error) {
+	batch, err := engineprotocol.DecodeSemanticOperationBatch([]byte(fmt.Sprintf(`{"operations":[{"operation":"create_subject","subject_kind":"layer","parent_address":"ldl:project:p","id":"%s_layer","fields":{"display_name":"Conformance","order":"1"}}]}`, suffix)))
+	if err != nil {
+		return runtimeprotocol.RuntimeCommitInput{}, err
+	}
+	preconditions, err := conformancePreconditions(ctx, conformanceAuthoringSource)
+	if err != nil {
+		return runtimeprotocol.RuntimeCommitInput{}, err
+	}
+	return runtimeprotocol.RuntimeCommitInput{
+		Session: opened.Open.Session, OperationID: runtimeprotocol.OperationID("conformance_" + suffix),
+		IdempotencyKey: runtimeprotocol.IdempotencyKey("conformance_" + suffix + "_idempotency"),
+		OperationBatch: runtimeprotocol.RuntimeOperationBatch{DocumentID: opened.ProjectID, BaseRevision: opened.Open.CommittedRevision, ExpectedDefinitionHash: opened.Open.CommittedRevision.DefinitionHash, Operations: batch, Preconditions: preconditions},
+		Trigger:        runtimeprotocol.CommitTriggerAgentApply,
+	}, nil
+}
+
+func conformanceMCPRegistry(ctx context.Context, instance *conformanceInstance) error {
+	const canonicalID = "layerdraw/conformance"
+	root := filepath.Join(instance.root, "conformance-registry")
+	if err := os.MkdirAll(filepath.Join(root, filepath.Dir(registrysource.CatalogPath)), 0o700); err != nil {
+		return err
+	}
+	manifest := []byte("{\"dependencies\":{},\"entry\":\"pack.ldl\",\"format\":\"layerdraw-pack\",\"format_version\":1,\"id\":\"layerdraw/conformance\",\"language\":1,\"name\":\"conformance\",\"version\":\"1.0.0\"}\n")
+	source := []byte("entity_type conformance \"Conformance\" {\n  representation shape rect\n}\nexport { conformance }\n")
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for _, file := range []struct {
+		name string
+		data []byte
+	}{{"manifest.json", manifest}, {"pack.ldl", source}} {
+		entry, err := writer.CreateHeader(&zip.FileHeader{Name: file.name, Method: zip.Store})
+		if err != nil {
+			return err
+		}
+		if _, err := entry.Write(file.data); err != nil {
+			return err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	artifact := archive.Bytes()
+	if _, err := enginecore.New(enginecore.BuildInfo{}).ReadRegistryPack(ctx, artifact, enginecore.LayerdrawLimits{}); err != nil {
+		return fmt.Errorf("installed Registry pack fixture is invalid: %w", err)
+	}
+	digest := func(value []byte) string { sum := sha256.Sum256(value); return "sha256:" + hex.EncodeToString(sum[:]) }
+	release := registry.ArtifactRelease{Identity: registry.ArtifactIdentity{Kind: registry.ArtifactPack, CanonicalID: canonicalID, Version: "1.0.0"}, SourceID: "installed-conformance", PublisherID: "layerdraw", Digest: digest(artifact), ManifestDigest: digest(manifest), DependencyMetadataDigest: digest([]byte("[]")), Size: int64(len(artifact)), Dependencies: []registry.Dependency{}, Compatibility: []registry.CompatibilityDecision{}, License: "LicenseRef-LayerDraw-1.0", ProvenanceDigest: digest([]byte("installed-conformance"))}
+	catalog, err := json.Marshal(registrysource.Catalog{SchemaVersion: registrysource.CatalogVersion, Artifacts: []registrysource.CatalogEntry{{Release: release, ArtifactPath: "conformance.ldpack"}}})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(root, "conformance.ldpack"), artifact, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(root, registrysource.CatalogPath), catalog, 0o600); err != nil {
+		return err
+	}
+	const policyID = "installed-conformance-local"
+	if err := instance.owner.registry.PutTrustPolicy(registry.TrustPolicy{PolicyID: policyID, AllowUnsignedLocal: true, TrustedPublishers: nil, PublicKeys: map[string]ed25519.PublicKey{}, RevokedKeys: map[string]bool{}}); err != nil {
+		return err
+	}
+	configured := registry.RegistrySource{SourceID: release.SourceID, Kind: registry.SourceLocalDirectory, EndpointRef: root, TrustPolicyID: policyID, CachePolicy: "verified", Priority: 100, Connected: true}
+	found, err := (registrysource.LocalDirectory{}).Search(ctx, configured, registry.SearchInput{Query: canonicalID})
+	if err != nil || len(found) != 1 {
+		return fmt.Errorf("installed Registry source fixture failed: %w", err)
+	}
+	validator, err := registryengine.New(instance.owner.objects, instance.owner.local)
+	if err != nil {
+		return err
+	}
+	if _, err := validator.ValidateRegistryArtifact(ctx, release, artifact); err != nil {
+		return fmt.Errorf("installed Registry artifact fixture failed: %w", err)
+	}
+	if err := instance.owner.registry.ConfigureSource(configured); err != nil {
+		return err
+	}
+	if err := instance.owner.registry.ConnectSource(ctx, configured.SourceID, "installed-conformance-local"); err != nil {
+		return err
+	}
+	input, _ := json.Marshal(registry.SearchInput{Query: canonicalID})
+	request, _ := json.Marshal(registry.WireRequest{WireVersion: registry.RegistryWireVersion, Operation: registry.WireSearch, RequestID: "conformance-registry", Input: input})
+	result := instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.registry_search", RequestID: "conformance-registry", Arguments: request})
+	response, err := registry.DecodeWireResponse(result.Content, registry.WireSearch)
+	var releases []registry.ArtifactRelease
+	if result.Failure != nil || err != nil || !response.OK || json.Unmarshal(response.Value, &releases) != nil || len(releases) != 1 || releases[0].Identity.CanonicalID != canonicalID {
+		return fmt.Errorf("bundled MCP Registry search failed: failure=%+v response=%+v decode=%v", result.Failure, response.Failure, err)
+	}
+	return nil
+}
+
+func conformanceMCPHistoryRestore(ctx context.Context, app *desktopapp.Application, opened desktopapp.ProjectOpenResult, selected runtimeprotocol.CommittedRevisionRef, commit runtimeprotocol.RuntimeCommitInput, binding *mcphost.Binding) error {
+	protocol := runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}
+	list, err := runtimeprotocol.EncodeListRevisionsRequestEnvelope(runtimeprotocol.ListRevisionsRequestEnvelope{Operation: runtimeprotocol.ListRevisionsRequestEnvelopeOperationValue, Protocol: protocol, RequestID: "conformance-history", Payload: runtimeprotocol.ListRevisionsInput{Session: opened.Open.Session, MaxItems: "20", MaxOutputBytes: "1048576"}})
+	if err != nil {
+		return err
+	}
+	listed := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.list_revisions", RequestID: "conformance-history", Arguments: list, Binding: binding})
+	history, err := runtimeprotocol.DecodeListRevisionsResponseEnvelope(listed.Content)
+	if listed.Failure != nil || err != nil || history.Payload == nil || len(history.Payload.Items) == 0 {
+		return fmt.Errorf("bundled MCP history failed: failure=%+v decode=%v", listed.Failure, err)
+	}
+	foundTarget := false
+	for _, item := range history.Payload.Items {
+		if item.Revision.RevisionID == selected.RevisionID && item.Revision.DefinitionHash == selected.DefinitionHash && item.Revision.GraphHash == selected.GraphHash {
+			foundTarget = true
+			break
+		}
+	}
+	if !foundTarget {
+		return errors.New("bundled MCP history omitted the selected restore revision")
+	}
+	preview, err := runtimeprotocol.EncodeRestorePreviewRequestEnvelope(runtimeprotocol.RestorePreviewRequestEnvelope{Operation: runtimeprotocol.RestorePreviewRequestEnvelopeOperationValue, Protocol: protocol, RequestID: "conformance-restore", Payload: runtimeprotocol.RestorePreviewInput{Session: opened.Open.Session, RevisionID: selected.RevisionID}})
+	if err != nil {
+		return err
+	}
+	validated := app.Preview(ctx, runtimeprotocol.PreviewOperationsInput{Session: opened.Open.Session, OperationBatch: commit.OperationBatch})
+	if validated.Outcome != protocolcommon.OutcomeSuccess {
+		return fmt.Errorf("bundled MCP restore commit preview failed: %+v base=%+v", validated.Failure, commit.OperationBatch.BaseRevision)
+	}
+	commit.AuthoringProof = validated.Value.AuthoringProof
+	commit.Trigger = runtimeprotocol.CommitTriggerAgentApply
+	commitWire, err := runtimeprotocol.EncodeCommitOperationsRequestEnvelope(runtimeprotocol.CommitOperationsRequestEnvelope{Operation: runtimeprotocol.CommitOperationsRequestEnvelopeOperationValue, Protocol: protocol, RequestID: "conformance-restore", Payload: commit})
+	if err != nil {
+		return err
+	}
+	arguments, _ := json.Marshal(map[string]json.RawMessage{"preview": preview, "commit": commitWire})
+	restored := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.restore_revision", RequestID: "conformance-restore", Arguments: arguments, Binding: binding})
+	response, decodeErr := runtimeprotocol.DecodeCommitOperationsResponseEnvelope(restored.Content)
+	if restored.Failure != nil || decodeErr != nil || response.Outcome != protocolcommon.OutcomeSuccess || response.Payload == nil || response.Payload.OperationResult.CommittedRevision == nil {
+		return fmt.Errorf("bundled MCP restore failed: %+v", restored.Failure)
+	}
+	committed := *response.Payload.OperationResult.CommittedRevision
+	if committed.RevisionID == selected.RevisionID || committed.DefinitionHash != selected.DefinitionHash || committed.GraphHash != selected.GraphHash {
+		return fmt.Errorf("bundled MCP restore did not publish the selected revision state: selected=%s/%s/%s committed=%s/%s/%s", selected.RevisionID, selected.DefinitionHash, selected.GraphHash, committed.RevisionID, committed.DefinitionHash, committed.GraphHash)
+	}
+	readbackWire, err := runtimeprotocol.EncodeListRevisionsRequestEnvelope(runtimeprotocol.ListRevisionsRequestEnvelope{Operation: runtimeprotocol.ListRevisionsRequestEnvelopeOperationValue, Protocol: protocol, RequestID: "conformance-history-readback", Payload: runtimeprotocol.ListRevisionsInput{Session: opened.Open.Session, MaxItems: "1", MaxOutputBytes: "1048576"}})
+	if err != nil {
+		return err
+	}
+	readback := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.list_revisions", RequestID: "conformance-history-readback", Arguments: readbackWire, Binding: &mcphost.Binding{DocumentID: opened.ProjectID, RevisionDigest: committed.DefinitionHash, AccessFingerprint: opened.Open.Session.Scope.AccessFingerprint}})
+	latest, err := runtimeprotocol.DecodeListRevisionsResponseEnvelope(readback.Content)
+	if readback.Failure != nil || err != nil || latest.Payload == nil || len(latest.Payload.Items) != 1 || latest.Payload.Items[0].Revision.RevisionID != committed.RevisionID {
+		return errors.New("bundled MCP restore history read-back failed")
+	}
+	publication, err := app.ProjectPublication(ctx)
+	if err != nil || publication.Project == nil || publication.Project.AuthoritativeRevision.RevisionID != committed.RevisionID || publication.Project.AuthoritativeRevision.DefinitionHash != selected.DefinitionHash || publication.Project.AuthoritativeRevision.GraphHash != selected.GraphHash {
+		return errors.New("bundled MCP restore project read-back failed")
+	}
+	return nil
+}
+
+func conformanceMCPReview(ctx context.Context, instance *conformanceInstance, opened desktopapp.ProjectOpenResult, commit runtimeprotocol.RuntimeCommitInput, binding *mcphost.Binding) error {
+	app := instance.app
+	preview := app.Preview(ctx, runtimeprotocol.PreviewOperationsInput{Session: opened.Open.Session, OperationBatch: commit.OperationBatch})
+	if preview.Outcome != protocolcommon.OutcomeSuccess {
+		return errors.New("bundled MCP Review preview failed")
+	}
+	impact := preview.Value.PreviewEvaluation.AuthoringImpact
+	create := reviewapp.CreateInput{
+		ProposalID: "conformance-review", Proposer: accessprotocol.ActorRef{ActorID: "conformance-reviewer", Kind: "user"},
+		ProposeDecision: preview.Value.PreviewEvaluation.AuthoringDecision,
+		Preview:         reviewapp.RepreviewResult{CurrentRevision: opened.Open.CommittedRevision, DefinitionHash: preview.Value.DefinitionHash, GraphHash: preview.Value.GraphHash, OperationBatch: commit.OperationBatch, AuthoringProof: preview.Value.AuthoringProof, PreviewDecision: preview.Value.PreviewEvaluation.AuthoringDecision, Evidence: reviewapp.Evidence{SemanticDiff: semantic.SemanticDiff{Digest: impact.SemanticDiffHash, Entries: []semantic.SemanticDiffEntry{}}, SourceDiff: engineprotocol.SourceDiff{Digest: impact.SourceDiffHash, Edits: []engineprotocol.SourceEdit{}}, AuthoringImpact: impact, Diagnostics: []semantic.Diagnostic{}, AffectedUsages: []semantic.StableAddress{}, AffectedRows: []semantic.StableAddress{}, AffectedViews: []semantic.StableAddress{}, RenderPreviews: []reviewapp.ArtifactPreview{}}},
+	}
+	if create.Preview.CurrentRevision.DocumentID == "" || create.Preview.OperationBatch.DocumentID != create.Preview.CurrentRevision.DocumentID || create.Preview.OperationBatch.BaseRevision != create.Preview.CurrentRevision || create.Preview.Evidence.AuthoringImpact.ImpactDigest == "" || create.ProposeDecision.AuthoringImpactDigest == nil || create.Preview.Evidence.AuthoringImpact.ImpactDigest != *create.ProposeDecision.AuthoringImpactDigest {
+		return errors.New("bundled MCP Review evidence is inconsistent")
+	}
+	if _, err := accessprotocol.EncodeAuthoringDecision(create.ProposeDecision); err != nil {
+		return fmt.Errorf("bundled MCP Review decision is invalid: %w", err)
+	}
+	encoded, _ := json.Marshal(create)
+	created := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.review_create_proposal", RequestID: "conformance-review-create", Arguments: encoded, Binding: binding})
+	var proposal reviewapp.Proposal
+	if created.Failure != nil || json.Unmarshal(created.Content, &proposal) != nil || proposal.Status != reviewapp.StatusProposed {
+		return fmt.Errorf("bundled MCP Review proposal failed: %+v", created.Failure)
+	}
+	approval, _ := json.Marshal(map[string]any{"proposal_id": proposal.ID, "generation": proposal.Generation})
+	applied := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.review_approve_apply", RequestID: "conformance-review-approve", Arguments: approval, Binding: binding})
+	if applied.Failure != nil || json.Unmarshal(applied.Content, &proposal) != nil || proposal.Status != reviewapp.StatusApplied {
+		return fmt.Errorf("bundled MCP Review approval failed: %+v", applied.Failure)
+	}
+	return nil
+}
+
+func conformanceMCPAgentScope(ctx context.Context, app *desktopapp.Application, opened desktopapp.ProjectOpenResult) error {
+	request := desktopapp.MCPConnectRequest{ClientID: "installed-conformance", ProtocolVersion: desktopapp.MCPConnectionProtocolVersion, DocumentID: opened.ProjectID, AgentID: "installed-conformance-agent", Capabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite}, Permissions: accesscore.AgentPermissions{Read: true, Propose: true}, ExpiresAt: protocolcommon.Rfc3339Time(time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))}
+	created := app.CreateMCPConnection(ctx, request)
+	if created.Outcome != protocolcommon.OutcomeSuccess || created.Value.Status != desktopapp.MCPConnectionConnected {
+		return fmt.Errorf("bundled MCP agent scope failed: %+v", created.Failure)
+	}
+	called := app.MCPCallConnectionTool(ctx, created.Value.ConnectionID, mcphost.CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "conformance-agent-scope", Arguments: json.RawMessage(`{}`)})
+	if called.Failure != nil || len(called.Content) == 0 {
+		return fmt.Errorf("bundled MCP scoped connection failed: %+v", called.Failure)
+	}
+	revoked := app.RevokeMCPConnection(ctx, created.Value.ConnectionID)
+	if revoked.Outcome != protocolcommon.OutcomeSuccess || revoked.Value.Status != desktopapp.MCPConnectionRevoked {
+		return fmt.Errorf("bundled MCP revocation failed: %+v", revoked.Failure)
 	}
 	return nil
 }
