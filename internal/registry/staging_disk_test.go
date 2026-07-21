@@ -97,3 +97,38 @@ func TestDiskStagedObjectStoreBoundsAndConcurrentPut(t *testing.T) {
 		}
 	}
 }
+
+func TestDiskStagedObjectStoreRejectsSymlinkAndNonRegularTargets(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewDiskStagedObjectStore(root, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.PutRegistryObject(context.Background(), "text/plain", strings.NewReader("safe"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, ref.ObjectID)
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.blob")
+	if err := os.WriteFile(outside, []byte("safe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := store.OpenRegistryObject(context.Background(), ref); err == nil {
+		t.Fatal("symlinked staged object accepted")
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.OpenRegistryObject(context.Background(), ref); err == nil {
+		t.Fatal("non-regular staged object accepted")
+	}
+}

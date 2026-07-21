@@ -121,13 +121,27 @@ func (s *DiskStagedObjectStore) OpenRegistryObject(ctx context.Context, ref Stag
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	objectID := filepath.Base(ref.ObjectID)
-	if objectID != ref.ObjectID {
-		return nil, errors.New("Registry staged object reference is invalid")
-	}
-	data, err := os.ReadFile(filepath.Join(s.root, objectID))
+	root, err := os.OpenRoot(s.root)
 	if err != nil {
 		return nil, err
+	}
+	defer root.Close()
+	file, err := root.Open(ref.ObjectID)
+	if err != nil {
+		return nil, err
+	}
+	info, statErr := file.Stat()
+	if statErr != nil || !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, errors.New("Registry staged object is not a regular file")
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, s.maxBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
 	}
 	if int64(len(data)) != ref.Size || digestBytes(data) != ref.Digest {
 		return nil, errors.New("Registry staged object failed integrity verification")
