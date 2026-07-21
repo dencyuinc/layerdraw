@@ -83,7 +83,7 @@ func TestPackagedConformanceRejectsNonDesktopChildProcess(t *testing.T) {
 }
 
 func TestPackagedUIProcessTreeAllowsProbeFinalizationAfterDOMReadiness(t *testing.T) {
-	if got := conformanceScenarioTimeout("packaged_ui_process_tree"); got != 45*time.Second {
+	if got := conformanceScenarioTimeout("packaged_ui_process_tree"); got != 75*time.Second {
 		t.Fatalf("UI process-tree timeout=%v", got)
 	}
 	if got := conformanceScenarioTimeout("cold_start"); got != 30*time.Second {
