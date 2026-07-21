@@ -214,7 +214,7 @@ test("Wails client executes every shared portable compile and cancellation vecto
   let releaseCancellation;
   const cancellationGate = new Promise((resolve) => { releaseCancellation = resolve; });
   const selected = parityCorpus.cases;
-  assert.equal(selected.length, 10);
+  assert.equal(selected.length, 14);
   const byRequest = new Map(selected.map((entry) => [entry.expected.response.request_id, entry]));
   const bindings = generatedBindings({
     EngineHandshake: async (exchange) => handshakeResponse(exchange),
