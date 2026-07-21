@@ -77,8 +77,17 @@ func TestPackagedConformanceChildFailureParserIsClosed(t *testing.T) {
 
 func TestPackagedConformanceRejectsNonDesktopChildProcess(t *testing.T) {
 	rss, err := runConformanceScenarioProcess(context.Background(), "cold_start")
-	if err == nil || rss != 0 {
-		t.Fatalf("test binary impersonated installed Desktop: rss=%d err=%v", rss, err)
+	if err == nil || rss.WorkerPeakRSS != 0 {
+		t.Fatalf("test binary impersonated installed Desktop: rss=%+v err=%v", rss, err)
+	}
+}
+
+func TestPackagedUIProcessTreeAllowsProbeFinalizationAfterDOMReadiness(t *testing.T) {
+	if got := conformanceScenarioTimeout("packaged_ui_process_tree"); got != 45*time.Second {
+		t.Fatalf("UI process-tree timeout=%v", got)
+	}
+	if got := conformanceScenarioTimeout("cold_start"); got != 30*time.Second {
+		t.Fatalf("ordinary scenario timeout=%v", got)
 	}
 }
 
@@ -88,12 +97,24 @@ func TestPackagedConformanceParsesClosedChildResults(t *testing.T) {
 	executeConformanceScenario = func(context.Context, string, string) ([]byte, error) {
 		return []byte(`{"schema_version":1,"scenario":"cold_start","isolated_worker_peak_rss_mebibytes":64}`), nil
 	}
-	if rss, err := runConformanceScenarioProcess(context.Background(), "cold_start"); err != nil || rss != 64 {
-		t.Fatalf("child result rss=%d err=%v", rss, err)
+	if rss, err := runConformanceScenarioProcess(context.Background(), "cold_start"); err != nil || rss.WorkerPeakRSS != 64 {
+		t.Fatalf("child result rss=%+v err=%v", rss, err)
 	}
 	executeConformanceScenario = func(context.Context, string, string) ([]byte, error) { return []byte(`{}`), nil }
 	if _, err := runConformanceScenarioProcess(context.Background(), "cold_start"); err == nil {
 		t.Fatal("invalid child result accepted")
+	}
+	executeConformanceScenario = func(context.Context, string, string) ([]byte, error) {
+		return []byte(`{"schema_version":1,"scenario":"packaged_ui_process_tree","isolated_worker_peak_rss_mebibytes":64}`), nil
+	}
+	if _, err := runConformanceScenarioProcess(context.Background(), "packaged_ui_process_tree"); err == nil {
+		t.Fatal("UI child result without process-tree RSS accepted")
+	}
+	executeConformanceScenario = func(context.Context, string, string) ([]byte, error) {
+		return []byte(`{"schema_version":1,"scenario":"packaged_ui_process_tree","isolated_worker_peak_rss_mebibytes":64,"process_tree_peak_rss_mebibytes":256}`), nil
+	}
+	if measured, err := runConformanceScenarioProcess(context.Background(), "packaged_ui_process_tree"); err != nil || measured.ProcessTreePeakRSS != 256 {
+		t.Fatalf("UI child result=%+v err=%v", measured, err)
 	}
 	executeConformanceScenario = func(context.Context, string, string) ([]byte, error) {
 		return nil, &exec.ExitError{Stderr: []byte("LayerDraw Desktop conformance failed [scenario.cold_start.compose]\n")}
@@ -230,7 +251,7 @@ func TestPackagedConformanceFixtureCompiles(t *testing.T) {
 }
 
 func TestPackagedConformanceReportIsStrictAndExclusive(t *testing.T) {
-	report := PackagedConformanceReport{SchemaVersion: 1, SourceRevision: "0123456789abcdef0123456789abcdef01234567", Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]ConformanceSamples{}, IsolatedWorkerPeakRSSMiB: []int64{1, 1, 1, 1, 1}, ScenarioEvidence: cloneEvidence()}
+	report := PackagedConformanceReport{SchemaVersion: 1, SourceRevision: "0123456789abcdef0123456789abcdef01234567", Platform: "linux", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]ConformanceSamples{}, IsolatedWorkerPeakRSSMiB: []int64{1, 1, 1, 1, 1}, UIProcessTreePeakRSSMiB: []int64{2, 2, 2, 2, 2}, ScenarioEvidence: cloneEvidence()}
 	encoded, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
@@ -256,12 +277,16 @@ func TestRunPackagedConformanceExecutesEveryIteration(t *testing.T) {
 	original := runConformanceScenarioProcess
 	t.Cleanup(func() { runConformanceScenarioProcess = original })
 	calls := 0
-	runConformanceScenarioProcess = func(_ context.Context, name string) (int64, error) {
+	runConformanceScenarioProcess = func(_ context.Context, name string) (packagedConformanceScenarioReport, error) {
 		calls++
 		if _, ok := conformanceRunners()[name]; !ok {
-			return 0, errors.New("unknown scenario")
+			return packagedConformanceScenarioReport{}, errors.New("unknown scenario")
 		}
-		return int64(64 + calls%3), nil
+		measurement := packagedConformanceScenarioReport{WorkerPeakRSS: int64(64 + calls%3)}
+		if name == "packaged_ui_process_tree" {
+			measurement.ProcessTreePeakRSS = 128
+		}
+		return measurement, nil
 	}
 	output := filepath.Join(t.TempDir(), "conformance.json")
 	if err := RunPackagedConformance(output); err != nil {
@@ -277,7 +302,7 @@ func TestRunPackagedConformanceExecutesEveryIteration(t *testing.T) {
 	if err := decoder.Decode(&report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Iterations != packagedConformanceIterations || len(report.Scenarios) != len(conformanceEvidence) || len(report.IsolatedWorkerPeakRSSMiB) != packagedConformanceIterations {
+	if report.Iterations != packagedConformanceIterations || len(report.Scenarios) != len(conformanceEvidence) || len(report.IsolatedWorkerPeakRSSMiB) != packagedConformanceIterations || len(report.UIProcessTreePeakRSSMiB) != packagedConformanceIterations {
 		t.Fatalf("incomplete report: %+v", report)
 	}
 	if calls != packagedConformanceIterations*len(conformanceEvidence) {
@@ -316,19 +341,23 @@ func TestRunPackagedConformancePreservesClosedWorkerFailures(t *testing.T) {
 	t.Cleanup(func() { runConformanceScenarioProcess = original })
 	output := func() string { return filepath.Join(t.TempDir(), "conformance.json") }
 
-	runConformanceScenarioProcess = func(context.Context, string) (int64, error) {
-		return 0, conformanceFailure("scenario.cold_start.compose", errors.New("closed"))
+	runConformanceScenarioProcess = func(context.Context, string) (packagedConformanceScenarioReport, error) {
+		return packagedConformanceScenarioReport{}, conformanceFailure("scenario.cold_start.compose", errors.New("closed"))
 	}
 	if err := RunPackagedConformance(output()); PackagedConformanceFailureCode(err) != "scenario.cold_start.compose" {
 		t.Fatalf("typed worker failure=%v", err)
 	}
 
-	runConformanceScenarioProcess = func(context.Context, string) (int64, error) { return 0, errors.New("closed") }
+	runConformanceScenarioProcess = func(context.Context, string) (packagedConformanceScenarioReport, error) {
+		return packagedConformanceScenarioReport{}, errors.New("closed")
+	}
 	if err := RunPackagedConformance(output()); PackagedConformanceFailureCode(err) != "scenario.cold_start" {
 		t.Fatalf("untyped worker failure=%v", err)
 	}
 
-	runConformanceScenarioProcess = func(context.Context, string) (int64, error) { return 0, nil }
+	runConformanceScenarioProcess = func(context.Context, string) (packagedConformanceScenarioReport, error) {
+		return packagedConformanceScenarioReport{}, nil
+	}
 	if err := RunPackagedConformance(output()); PackagedConformanceFailureCode(err) != "measurement.memory" {
 		t.Fatalf("missing worker measurement=%v", err)
 	}

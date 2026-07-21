@@ -117,3 +117,8 @@ jobs:
           fi
           cat "$ui_probe"
           go run "${go_args[@]}" ./tools/desktopprobe -require-dom -input "$ui_probe" -capabilities deploy/desktop-capabilities.json verify
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a "$executable" --packaged-conformance-scenario packaged_ui_process_tree | tee desktop-ui-process-tree.json
+          else
+            "$executable" --packaged-conformance-scenario packaged_ui_process_tree | tee desktop-ui-process-tree.json
+          fi

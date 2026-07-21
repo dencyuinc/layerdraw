@@ -129,7 +129,7 @@ func verify(root, relativeManifest string) (manifest, error) {
 	if err := verifyReleaseEvidence(directory); err != nil {
 		return value, err
 	}
-	requiredBudgets := []string{"cold_start", "project_open", "search_analysis", "preview", "commit", "viewer_interaction", "mcp_bounded_operations", "external_reconcile", "memory", "shutdown"}
+	requiredBudgets := []string{"cold_start", "project_open", "search_analysis", "preview", "commit", "viewer_interaction", "mcp_bounded_operations", "external_reconcile", "memory", "shutdown", "packaged_ui_process_tree", "ui_process_tree_memory"}
 	if err := requireExactKeys(value.PerformanceBudgets, requiredBudgets); err != nil {
 		return value, fmt.Errorf("performance budgets: %w", err)
 	}
@@ -149,7 +149,7 @@ func verifyReleaseEvidence(root *os.Root) error {
 		"tools/build-desktop-installer.sh":       {"LayerDraw-$version.dmg", "LayerDraw-$version.exe", "LayerDraw-$version.deb", "desktop-conformance.json", "LayerDraw-bundle.cdx.json", "THIRD_PARTY_NOTICES.txt"},
 		"tools/build-desktop-update-metadata.sh": {"desktoprelease build", "desktoprelease verify", "-desktop-conformance", "desktopattestation verify"},
 		"tools/desktoprelease/main.go":           {`json:"sha256"`, `json:"signature"`, `json:"desktop_conformance"`, `json:"desktop_attestation"`},
-		"tools/desktopattestation/main.go":       {`json:"scenario_result"`, `json:"installer"`, "ed25519.Verify", "isolated worker p95 RSS"},
+		"tools/desktopattestation/main.go":       {`json:"scenario_result"`, `json:"installer"`, "ed25519.Verify", "isolated worker p95 RSS", "packaged UI process-tree p95 RSS"},
 		"tools/smoke-desktop-installer.sh":       {"desktop-capabilities.json", "desktop-conformance.json", "corrupt.dmg", "--packaged-conformance"},
 		"tools/smoke-desktop-installer.ps1":      {"desktop-capabilities.json", "desktop-conformance.json", "corrupt.exe"},
 		".github/workflows/desktop-release.yml":  {"LAYERDRAW_RELEASE_SIGNING", "desktop-release/*"},

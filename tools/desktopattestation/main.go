@@ -28,6 +28,7 @@ var revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var scenarioIDs = []string{
 	"cold_start", "project_open", "search_analysis", "preview", "commit",
 	"viewer_interaction", "mcp_bounded_operations", "external_reconcile", "shutdown",
+	"packaged_ui_process_tree",
 }
 
 var expectedEvidence = map[string]string{
@@ -35,7 +36,8 @@ var expectedEvidence = map[string]string{
 	"search_analysis": "desktop.search.query_analysis", "preview": "desktop.preview",
 	"commit": "desktop.commit_durable", "viewer_interaction": "desktop.viewer.2d_3d_interaction",
 	"mcp_bounded_operations": "desktop.mcp.bounded_operations", "external_reconcile": "desktop.external.reconcile",
-	"shutdown": "desktop.lifecycle.shutdown",
+	"shutdown":                 "desktop.lifecycle.shutdown",
+	"packaged_ui_process_tree": "desktop.ui.process_tree_memory",
 }
 
 type digestFile struct {
@@ -49,14 +51,15 @@ type samples struct {
 }
 
 type scenarioResult struct {
-	SchemaVersion  uint32             `json:"schema_version"`
-	SourceRevision string             `json:"source_revision"`
-	Platform       string             `json:"platform"`
-	ArtifactKind   string             `json:"artifact_kind"`
-	Iterations     int                `json:"iterations"`
-	Scenarios      map[string]samples `json:"scenarios"`
-	WorkerPeakRSS  []int64            `json:"isolated_worker_peak_rss_mebibytes"`
-	Evidence       map[string]string  `json:"scenario_evidence"`
+	SchemaVersion        uint32             `json:"schema_version"`
+	SourceRevision       string             `json:"source_revision"`
+	Platform             string             `json:"platform"`
+	ArtifactKind         string             `json:"artifact_kind"`
+	Iterations           int                `json:"iterations"`
+	Scenarios            map[string]samples `json:"scenarios"`
+	WorkerPeakRSS        []int64            `json:"isolated_worker_peak_rss_mebibytes"`
+	UIProcessTreePeakRSS []int64            `json:"packaged_ui_process_tree_peak_rss_mebibytes"`
+	Evidence             map[string]string  `json:"scenario_evidence"`
 }
 
 type budget struct {
@@ -281,6 +284,14 @@ func validateResult(store *artifactStore, closurePath, resultPath, revision, pla
 	observed, err := percentile95(result.WorkerPeakRSS)
 	if err != nil || observed > memory.MaxMebibytes {
 		return fmt.Errorf("isolated worker p95 RSS %dMiB exceeds %dMiB", observed, memory.MaxMebibytes)
+	}
+	uiMemory := limits.PerformanceBudgets["ui_process_tree_memory"]
+	if len(result.UIProcessTreePeakRSS) != result.Iterations || len(result.UIProcessTreePeakRSS) < uiMemory.MinIterations || uiMemory.Percentile != 95 {
+		return errors.New("packaged UI process-tree RSS evidence is invalid")
+	}
+	observed, err = percentile95(result.UIProcessTreePeakRSS)
+	if err != nil || observed > uiMemory.MaxMebibytes {
+		return fmt.Errorf("packaged UI process-tree p95 RSS %dMiB exceeds %dMiB", observed, uiMemory.MaxMebibytes)
 	}
 	return nil
 }

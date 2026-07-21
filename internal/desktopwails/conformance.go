@@ -52,13 +52,15 @@ type PackagedConformanceReport struct {
 	Iterations               int                           `json:"iterations"`
 	Scenarios                map[string]ConformanceSamples `json:"scenarios"`
 	IsolatedWorkerPeakRSSMiB []int64                       `json:"isolated_worker_peak_rss_mebibytes"`
+	UIProcessTreePeakRSSMiB  []int64                       `json:"packaged_ui_process_tree_peak_rss_mebibytes"`
 	ScenarioEvidence         map[string]string             `json:"scenario_evidence"`
 }
 
 type packagedConformanceScenarioReport struct {
-	SchemaVersion uint32 `json:"schema_version"`
-	Scenario      string `json:"scenario"`
-	WorkerPeakRSS int64  `json:"isolated_worker_peak_rss_mebibytes"`
+	SchemaVersion      uint32 `json:"schema_version"`
+	Scenario           string `json:"scenario"`
+	WorkerPeakRSS      int64  `json:"isolated_worker_peak_rss_mebibytes"`
+	ProcessTreePeakRSS int64  `json:"process_tree_peak_rss_mebibytes,omitempty"`
 }
 
 type packagedConformanceError struct {
@@ -93,15 +95,16 @@ func conformanceFailure(code string, err error) error {
 }
 
 var conformanceEvidence = map[string]string{
-	"cold_start":             "desktop.lifecycle.cold_start",
-	"project_open":           "desktop.project.open_save_restart",
-	"search_analysis":        "desktop.search.query_analysis",
-	"preview":                "desktop.preview",
-	"commit":                 "desktop.commit_durable",
-	"viewer_interaction":     "desktop.viewer.2d_3d_interaction",
-	"mcp_bounded_operations": "desktop.mcp.bounded_operations",
-	"external_reconcile":     "desktop.external.reconcile",
-	"shutdown":               "desktop.lifecycle.shutdown",
+	"cold_start":               "desktop.lifecycle.cold_start",
+	"project_open":             "desktop.project.open_save_restart",
+	"search_analysis":          "desktop.search.query_analysis",
+	"preview":                  "desktop.preview",
+	"commit":                   "desktop.commit_durable",
+	"viewer_interaction":       "desktop.viewer.2d_3d_interaction",
+	"mcp_bounded_operations":   "desktop.mcp.bounded_operations",
+	"external_reconcile":       "desktop.external.reconcile",
+	"shutdown":                 "desktop.lifecycle.shutdown",
+	"packaged_ui_process_tree": "desktop.ui.process_tree_memory",
 }
 
 func RunPackagedConformance(output string) error {
@@ -123,10 +126,11 @@ func RunPackagedConformance(output string) error {
 	}
 	for iteration := 0; iteration < packagedConformanceIterations; iteration++ {
 		var iterationPeak int64
+		var uiProcessTreePeak int64
 		for _, name := range conformanceScenarioOrder() {
 			started := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			rss, err := runConformanceScenarioProcess(ctx, name)
+			ctx, cancel := context.WithTimeout(context.Background(), conformanceScenarioTimeout(name))
+			measurement, err := runConformanceScenarioProcess(ctx, name)
 			cancel()
 			if err != nil {
 				if PackagedConformanceFailureCode(err) != "" {
@@ -141,14 +145,18 @@ func RunPackagedConformance(output string) error {
 			samples := report.Scenarios[name]
 			samples.SamplesMilliseconds = append(samples.SamplesMilliseconds, elapsed)
 			report.Scenarios[name] = samples
-			if rss > iterationPeak {
-				iterationPeak = rss
+			if measurement.WorkerPeakRSS > iterationPeak {
+				iterationPeak = measurement.WorkerPeakRSS
+			}
+			if name == "packaged_ui_process_tree" {
+				uiProcessTreePeak = measurement.ProcessTreePeakRSS
 			}
 		}
-		if iterationPeak <= 0 {
+		if iterationPeak <= 0 || uiProcessTreePeak <= 0 {
 			return conformanceFailure("measurement.memory", errors.New("packaged conformance isolated worker RSS is unavailable"))
 		}
 		report.IsolatedWorkerPeakRSSMiB = append(report.IsolatedWorkerPeakRSSMiB, iterationPeak)
+		report.UIProcessTreePeakRSSMiB = append(report.UIProcessTreePeakRSSMiB, uiProcessTreePeak)
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -160,17 +168,33 @@ func RunPackagedConformance(output string) error {
 	return nil
 }
 
-func conformanceRunners() map[string]func(context.Context) error {
-	return map[string]func(context.Context) error{
-		"cold_start":             conformanceColdStart,
-		"project_open":           conformanceProjectOpen,
-		"search_analysis":        conformanceSearchAnalysis,
-		"preview":                conformancePreview,
-		"commit":                 conformanceCommitDurable,
-		"viewer_interaction":     conformanceViewer,
-		"mcp_bounded_operations": conformanceMCP,
-		"external_reconcile":     conformanceExternal,
-		"shutdown":               conformanceShutdown,
+type conformanceRunner func(context.Context) (int64, error)
+
+func ordinaryConformanceRunner(run func(context.Context) error) conformanceRunner {
+	return func(ctx context.Context) (int64, error) { return 0, run(ctx) }
+}
+
+func conformanceScenarioTimeout(name string) time.Duration {
+	if name == "packaged_ui_process_tree" {
+		// DOM readiness may consume nearly its 30-second bound; leave time for
+		// the accessibility matrix, final RSS sample, and strict result write.
+		return 45 * time.Second
+	}
+	return 30 * time.Second
+}
+
+func conformanceRunners() map[string]conformanceRunner {
+	return map[string]conformanceRunner{
+		"cold_start":               ordinaryConformanceRunner(conformanceColdStart),
+		"project_open":             ordinaryConformanceRunner(conformanceProjectOpen),
+		"search_analysis":          ordinaryConformanceRunner(conformanceSearchAnalysis),
+		"preview":                  ordinaryConformanceRunner(conformancePreview),
+		"commit":                   ordinaryConformanceRunner(conformanceCommitDurable),
+		"viewer_interaction":       ordinaryConformanceRunner(conformanceViewer),
+		"mcp_bounded_operations":   ordinaryConformanceRunner(conformanceMCP),
+		"external_reconcile":       ordinaryConformanceRunner(conformanceExternal),
+		"shutdown":                 ordinaryConformanceRunner(conformanceShutdown),
+		"packaged_ui_process_tree": conformancePackagedUIProcessTree,
 	}
 }
 
@@ -178,28 +202,31 @@ var executeConformanceScenario = func(ctx context.Context, executable, name stri
 	return exec.CommandContext(ctx, executable, "--packaged-conformance-scenario", name).Output()
 }
 
-var runConformanceScenarioProcess = func(ctx context.Context, name string) (int64, error) {
+var runConformanceScenarioProcess = func(ctx context.Context, name string) (packagedConformanceScenarioReport, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return 0, errors.New("installed Desktop executable is unavailable")
+		return packagedConformanceScenarioReport{}, errors.New("installed Desktop executable is unavailable")
 	}
 	encoded, err := executeConformanceScenario(ctx, executable, name)
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			if code := parseConformanceChildFailure(exit.Stderr, name); code != "" {
-				return 0, conformanceFailure(code, errors.New("isolated installed Desktop scenario failed"))
+				return packagedConformanceScenarioReport{}, conformanceFailure(code, errors.New("isolated installed Desktop scenario failed"))
 			}
 		}
-		return 0, errors.New("isolated installed Desktop scenario failed")
+		return packagedConformanceScenarioReport{}, errors.New("isolated installed Desktop scenario failed")
 	}
 	var report packagedConformanceScenarioReport
 	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF || report.SchemaVersion != 1 || report.Scenario != name || report.WorkerPeakRSS <= 0 {
-		return 0, errors.New("isolated installed Desktop scenario result is invalid")
+		return packagedConformanceScenarioReport{}, errors.New("isolated installed Desktop scenario result is invalid")
 	}
-	return report.WorkerPeakRSS, nil
+	if name == "packaged_ui_process_tree" && report.ProcessTreePeakRSS <= 0 {
+		return packagedConformanceScenarioReport{}, errors.New("isolated installed Desktop UI process-tree result is invalid")
+	}
+	return report, nil
 }
 
 func parseConformanceChildFailure(stderr []byte, scenario string) string {
@@ -228,9 +255,10 @@ func RunPackagedConformanceScenario(name string, output io.Writer) error {
 	if runner == nil || output == nil {
 		return conformanceFailure("scenario.invalid", errors.New("packaged conformance scenario is invalid"))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), conformanceScenarioTimeout(name))
 	defer cancel()
-	if err := runner(ctx); err != nil {
+	processTreePeak, err := runner(ctx)
+	if err != nil {
 		var stage *conformanceStageError
 		if errors.As(err, &stage) {
 			return conformanceFailure("scenario."+name+"."+stage.stage, err)
@@ -241,7 +269,7 @@ func RunPackagedConformanceScenario(name string, output io.Writer) error {
 	if err != nil || rss <= 0 {
 		return conformanceFailure("measurement.memory", errors.New("scenario process RSS is unavailable"))
 	}
-	return json.NewEncoder(output).Encode(packagedConformanceScenarioReport{SchemaVersion: 1, Scenario: name, WorkerPeakRSS: rss})
+	return json.NewEncoder(output).Encode(packagedConformanceScenarioReport{SchemaVersion: 1, Scenario: name, WorkerPeakRSS: rss, ProcessTreePeakRSS: processTreePeak})
 }
 
 func cloneEvidence() map[string]string {
@@ -253,7 +281,7 @@ func cloneEvidence() map[string]string {
 }
 
 func conformanceScenarioOrder() []string {
-	return []string{"cold_start", "project_open", "search_analysis", "preview", "commit", "viewer_interaction", "mcp_bounded_operations", "external_reconcile", "shutdown"}
+	return []string{"cold_start", "project_open", "search_analysis", "preview", "commit", "viewer_interaction", "mcp_bounded_operations", "external_reconcile", "shutdown", "packaged_ui_process_tree"}
 }
 
 func conformancePlatform(platform desktopcontract.DesktopPlatform) (string, error) {

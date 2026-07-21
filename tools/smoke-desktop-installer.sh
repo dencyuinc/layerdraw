@@ -124,7 +124,7 @@ case "$platform" in
       gpg --verify "$current_installer.asc" "$current_installer"
     fi
     if [[ -n "${LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT:-}" ]]; then
-      "$installed_executable" --packaged-conformance "$LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT"
+      xvfb-run -a "$installed_executable" --packaged-conformance "$LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT"
     fi
     sudo dpkg -r layerdraw
     test ! -e "$installed_executable"
