@@ -172,8 +172,6 @@ export const baseShellCatalogs: LocaleCatalogs = {
     "hub.error.showDetails": "Show details",
     "hub.error.hideDetails": "Hide details",
     "hub.error.dismiss": "Dismiss",
-    "hub.mcp.enabled": "MCP on",
-    "hub.mcp.disabled": "MCP off",
 
     "workspace.back": "Projects",
     "workspace.mode.label": "Editor mode",
@@ -228,8 +226,6 @@ export const baseShellCatalogs: LocaleCatalogs = {
     "hub.error.showDetails": "詳細を表示",
     "hub.error.hideDetails": "詳細を隠す",
     "hub.error.dismiss": "閉じる",
-    "hub.mcp.enabled": "MCP オン",
-    "hub.mcp.disabled": "MCP オフ",
 
     "workspace.back": "プロジェクト",
     "workspace.mode.label": "エディタモード",

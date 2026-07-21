@@ -133,7 +133,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
       createElement("p", { role: "status" }, t.t("status.closing")));
   }
 
-  if (project === undefined) return createElement(DesktopHub, { t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, mcp, runProjectDialog, openRecentProject });
+  if (project === undefined) return createElement(DesktopHub, { t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject });
 
   const viewList = createElement("ul", { className: "ld-rail-list" }, project.views.map((view) =>
     createElement("li", { key: view.address },
@@ -226,21 +226,14 @@ interface HubProps {
   readonly recentProjects: readonly DesktopRecentProjectDTO[];
   readonly failure: string | null;
   readonly library: LibraryController | undefined;
-  readonly mcp: DesktopMCPPort | undefined;
   readonly runProjectDialog: (kind: "create" | "open") => void;
   readonly openRecentProject: (projectID: string) => void;
 }
 
-function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, mcp, runProjectDialog, openRecentProject }: HubProps): ReactNode {
+function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject }: HubProps): ReactNode {
   const [dismissed, setDismissed] = useState<string>();
-  const [mcpEnabled, setMcpEnabled] = useState<boolean>();
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot>();
 
-  useEffect(() => {
-    let cancelled = false;
-    void mcp?.status().then((status) => { if (!cancelled) setMcpEnabled(status.enabled); }, () => {});
-    return () => { cancelled = true; };
-  }, [mcp]);
   useEffect(() => {
     if (library === undefined) return;
     let cancelled = false;
@@ -257,12 +250,7 @@ function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOp
     createElement("div", { className: "ld-rail-brand" }, createElement(LayerDrawWordmark, { title: t.t("app.name") })),
     createElement("nav", { className: "ld-rail-nav", "aria-label": t.t("nav.section") },
       createElement("span", { className: "ld-rail-item ld-rail-item-active", "aria-current": "page" }, folderIcon(), t.t("nav.projects")),
-      createElement("span", { className: "ld-rail-item ld-rail-item-muted" }, libraryIcon(), t.t("nav.library"))),
-    createElement("div", { className: "ld-rail-spacer" }),
-    mcpEnabled === undefined ? null : createElement("div", { className: "ld-rail-foot" },
-      createElement("span", { className: "ld-mcp-chip", "data-enabled": mcpEnabled },
-        createElement("span", { className: "ld-mcp-dot", "aria-hidden": true }),
-        mcpEnabled ? t.t("hub.mcp.enabled") : t.t("hub.mcp.disabled"))));
+      createElement("span", { className: "ld-rail-item ld-rail-item-muted" }, libraryIcon(), t.t("nav.library"))));
 
   const actions = projectDialogs === undefined ? null : createElement("div", { className: "ld-hub-actions", "aria-label": t.t("hub.actions.label") },
     createElement(Button, { variant: "primary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? t.t("hub.action.creating") : t.t("hub.action.new")),

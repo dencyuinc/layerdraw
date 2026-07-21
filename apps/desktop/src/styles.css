@@ -75,10 +75,6 @@
 :root[data-theme="dark"] .ld-rail-nav .ld-rail-item-active { background: var(--ld-background-subtle); }
 .ld-rail-nav .ld-rail-item-muted { color: var(--ld-text-disabled); }
 .ld-rail-spacer { flex: 1; }
-.ld-rail-foot { padding: var(--ld-space-8) 10px; }
-.ld-mcp-chip { display: inline-flex; align-items: center; gap: 6px; font-size: var(--ld-font-size-12); line-height: var(--ld-font-lineHeight-16); color: var(--ld-muted); padding: 5px var(--ld-space-8); border: var(--ld-borderWidth-default) solid var(--ld-line-subtle); border-radius: var(--ld-radius-full); background: var(--ld-panel); width: fit-content; }
-.ld-mcp-dot { width: 7px; height: 7px; border-radius: var(--ld-radius-full); background: var(--ld-border-strong); }
-.ld-mcp-chip[data-enabled="true"] .ld-mcp-dot { background: var(--ld-status-success-foreground); }
 
 .ld-hub-main { min-width: 0; padding: var(--ld-space-32) var(--ld-space-40); overflow-y: auto; }
 .ld-hub-header { display: flex; align-items: center; gap: var(--ld-space-12); margin-bottom: var(--ld-space-20); }
