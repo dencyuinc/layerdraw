@@ -110,14 +110,14 @@ func TestMapAllRecipeScalarAndPredicateVariants(t *testing.T) {
 		t.Fatal("NaN accepted")
 	}
 
-	scalar := materialize.Scalar{Type: definition.ScalarString, String: "x"}
+	scalar := definition.Scalar{Type: definition.ScalarString, String: "x"}
 	address := "ldl:project:p:entity:e"
-	values := []*materialize.PredicateValue{
+	values := []*query.PredicateValue{
 		nil,
 		{Kind: query.ValueParameter, ParameterAddress: "ldl:project:p:query:q:parameter:p"},
 		{Kind: query.ValueLiteral, Scalar: &scalar},
 		{Kind: query.ValueLiteral, Address: &address},
-		{Kind: query.ValueLiteral, Scalars: []materialize.Scalar{}},
+		{Kind: query.ValueLiteral, Scalars: []definition.Scalar{}},
 		{Kind: query.ValueLiteral, Addresses: []string{}},
 	}
 	for _, value := range values {
@@ -125,40 +125,40 @@ func TestMapAllRecipeScalarAndPredicateVariants(t *testing.T) {
 			t.Fatalf("value: %v", err)
 		}
 	}
-	for _, bad := range []*materialize.PredicateValue{{Kind: "bad"}, {Kind: query.ValueLiteral}} {
+	for _, bad := range []*query.PredicateValue{{Kind: "bad"}, {Kind: query.ValueLiteral}} {
 		if _, err := mapOptionalPredicateValue(bad); err == nil {
 			t.Fatal("bad value accepted")
 		}
 	}
 
-	rowCell := materialize.RowPredicate{Kind: query.PredicateCell, ColumnAddresses: []string{}, Operator: query.OperatorExists}
-	rowState := materialize.RowPredicate{Kind: query.PredicateState, FieldPath: query.StateSystemCreatedAt, Operator: query.OperatorExists}
-	rowNot := materialize.RowPredicate{Kind: query.PredicateNot, Child: &rowCell}
-	rowAll := materialize.RowPredicate{Kind: query.PredicateAll, Children: []materialize.RowPredicate{rowCell}}
-	rowAny := materialize.RowPredicate{Kind: query.PredicateAny, Children: []materialize.RowPredicate{rowState}}
-	for _, predicate := range []materialize.RowPredicate{rowCell, rowState, rowNot, rowAll, rowAny} {
+	rowCell := query.RowPredicate{Kind: query.PredicateCell, ColumnAddresses: []string{}, OperandType: query.OperandType{Kind: query.OperandScalar, ScalarType: definition.ScalarString}, Operator: query.OperatorExists}
+	rowState := query.RowPredicate{Kind: query.PredicateState, FieldPath: query.StateSystemCreatedAt, OperandType: query.OperandType{Kind: query.OperandScalar, ScalarType: definition.ScalarDatetime}, Operator: query.OperatorExists}
+	rowNot := query.RowPredicate{Kind: query.PredicateNot, Child: &rowCell}
+	rowAll := query.RowPredicate{Kind: query.PredicateAll, Children: []query.RowPredicate{rowCell}}
+	rowAny := query.RowPredicate{Kind: query.PredicateAny, Children: []query.RowPredicate{rowState}}
+	for _, predicate := range []query.RowPredicate{rowCell, rowState, rowNot, rowAll, rowAny} {
 		if _, err := mapRowPredicate(predicate); err != nil {
 			t.Fatalf("row predicate: %v", err)
 		}
 	}
-	for _, bad := range []materialize.RowPredicate{{Kind: query.PredicateNot}, {Kind: "bad"}} {
+	for _, bad := range []query.RowPredicate{{Kind: query.PredicateNot}, {Kind: "bad"}} {
 		if _, err := mapRowPredicate(bad); err == nil {
 			t.Fatal("bad row predicate accepted")
 		}
 	}
 
-	field := materialize.Predicate{Kind: query.PredicateField, Field: "id", Operator: query.OperatorExists}
-	state := materialize.Predicate{Kind: query.PredicateState, FieldPath: query.StateSystemCreatedAt, Operator: query.OperatorExists}
-	not := materialize.Predicate{Kind: query.PredicateNot, Child: &field}
-	all := materialize.Predicate{Kind: query.PredicateAll, Children: []materialize.Predicate{field}}
-	any := materialize.Predicate{Kind: query.PredicateAny, Children: []materialize.Predicate{state}}
-	rows := materialize.Predicate{Kind: query.PredicateRows, RowPredicate: &rowCell, Quantifier: query.RowsAny, TypeAddresses: []string{}}
-	for _, predicate := range []materialize.Predicate{field, state, not, all, any, rows} {
+	field := query.Predicate{Kind: query.PredicateField, Field: "id", OperandType: query.OperandType{Kind: query.OperandScalar, ScalarType: definition.ScalarString}, Operator: query.OperatorExists}
+	state := query.Predicate{Kind: query.PredicateState, FieldPath: query.StateSystemCreatedAt, OperandType: query.OperandType{Kind: query.OperandScalar, ScalarType: definition.ScalarDatetime}, Operator: query.OperatorExists}
+	not := query.Predicate{Kind: query.PredicateNot, Child: &field}
+	all := query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{field}}
+	any := query.Predicate{Kind: query.PredicateAny, Children: []query.Predicate{state}}
+	rows := query.Predicate{Kind: query.PredicateRows, Row: &rowCell, Quantifier: query.RowsAny, TypeAddresses: []string{}}
+	for _, predicate := range []query.Predicate{field, state, not, all, any, rows} {
 		if _, err := mapRecipePredicate(predicate); err != nil {
 			t.Fatalf("predicate: %v", err)
 		}
 	}
-	for _, bad := range []materialize.Predicate{{Kind: query.PredicateNot}, {Kind: query.PredicateRows}, {Kind: "bad"}} {
+	for _, bad := range []query.Predicate{{Kind: query.PredicateNot}, {Kind: query.PredicateRows}, {Kind: "bad"}} {
 		if _, err := mapRecipePredicate(bad); err == nil {
 			t.Fatal("bad predicate accepted")
 		}
@@ -443,7 +443,7 @@ func TestDispatcherMapsSemanticResourceAndNegotiationTerminalPaths(t *testing.T)
 func TestDirectCompleteRecipeMappingWithOptionalValues(t *testing.T) {
 	description := "description"
 	normalizedQuery := materialize.Query{Common: materialize.Common{Description: &description, Tags: []string{"tag"}, Annotations: map[string]string{"a": "b"}}, ID: "q", Address: "ldl:project:p:query:q", DisplayName: "Q", StateInput: query.StateOptional, Parameters: []materialize.QueryParameter{}, Select: materialize.QuerySelect{}, Where: materialize.Predicate{Kind: query.PredicateAll, Children: []materialize.Predicate{}}, RelationWhere: materialize.Predicate{Kind: query.PredicateAny, Children: []materialize.Predicate{}}, Traverse: &materialize.QueryTraversal{Direction: definition.TraversalBoth, MinDepth: 0, MaxDepth: 1, CyclePolicy: query.CycleVisitOnce, RelationTypeAddresses: pointer([]string{})}, Result: []query.ResultMember{}, ReservedParameterIDs: []string{}}
-	compiledQuery := engine.CompiledQueryRecipe{ID: "q", Address: normalizedQuery.Address, Dependencies: query.Dependencies{LayerAddresses: []string{}, EntityTypeAddresses: []string{}, RelationTypeAddresses: []string{}, EntityAddresses: []string{}, RelationAddresses: []string{}, ColumnAddresses: []string{}, ParameterAddresses: []string{}, StateReads: []query.StateReadDependency{}}}
+	compiledQuery := engine.CompiledQueryRecipe{ID: "q", Address: normalizedQuery.Address, Where: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, RelationWhere: query.Predicate{Kind: query.PredicateAny, Children: []query.Predicate{}}, Traversal: &query.Traversal{Direction: definition.TraversalBoth, MinDepth: 0, MaxDepth: 1, CyclePolicy: query.CycleVisitOnce, RelationTypeAddresses: pointer([]string{})}, Dependencies: query.Dependencies{LayerAddresses: []string{}, EntityTypeAddresses: []string{}, RelationTypeAddresses: []string{}, EntityAddresses: []string{}, RelationAddresses: []string{}, ColumnAddresses: []string{}, ParameterAddresses: []string{}, StateReads: []query.StateReadDependency{}}}
 	mappedQuery, err := mapQueryRecipe(normalizedQuery, compiledQuery)
 	if err != nil {
 		t.Fatal(err)
@@ -898,7 +898,7 @@ func TestRemainingRecipeMapperErrorBranches(t *testing.T) {
 		t.Fatal("empty typed address pointer was retained")
 	}
 	badScalar := materialize.Scalar{Type: "bad"}
-	if _, err := mapOptionalPredicateValue(&materialize.PredicateValue{Kind: query.ValueLiteral, Scalars: []materialize.Scalar{badScalar}}); err == nil {
+	if _, err := mapOptionalPredicateValue(&query.PredicateValue{Kind: query.ValueLiteral, Scalars: []definition.Scalar{{Type: "bad"}}}); err == nil {
 		t.Fatal("invalid scalar set accepted")
 	}
 	nan := math.NaN()
@@ -909,20 +909,20 @@ func TestRemainingRecipeMapperErrorBranches(t *testing.T) {
 			t.Fatalf("parameter %d accepted", i)
 		}
 	}
-	badValue := &materialize.PredicateValue{Kind: "bad"}
-	predicates := []materialize.Predicate{
-		{Kind: query.PredicateAll, Children: []materialize.Predicate{{Kind: "bad"}}},
-		{Kind: query.PredicateNot, Child: &materialize.Predicate{Kind: "bad"}},
+	badValue := &query.PredicateValue{Kind: "bad"}
+	predicates := []query.Predicate{
+		{Kind: query.PredicateAll, Children: []query.Predicate{{Kind: "bad"}}},
+		{Kind: query.PredicateNot, Child: &query.Predicate{Kind: "bad"}},
 		{Kind: query.PredicateField, Operator: query.OperatorEqual, Value: badValue},
 		{Kind: query.PredicateState, Operator: query.OperatorEqual, Value: badValue},
-		{Kind: query.PredicateRows, Quantifier: query.RowsAny, RowPredicate: &materialize.RowPredicate{Kind: "bad"}},
+		{Kind: query.PredicateRows, Quantifier: query.RowsAny, Row: &query.RowPredicate{Kind: "bad"}},
 	}
 	for i, input := range predicates {
 		if _, err := mapRecipePredicate(input); err == nil {
 			t.Fatalf("predicate %d accepted", i)
 		}
 	}
-	rows := []materialize.RowPredicate{{Kind: query.PredicateAll, Children: []materialize.RowPredicate{{Kind: "bad"}}}, {Kind: query.PredicateNot, Child: &materialize.RowPredicate{Kind: "bad"}}, {Kind: query.PredicateCell, Operator: query.OperatorEqual, Value: badValue}, {Kind: query.PredicateState, Operator: query.OperatorEqual, Value: badValue}}
+	rows := []query.RowPredicate{{Kind: query.PredicateAll, Children: []query.RowPredicate{{Kind: "bad"}}}, {Kind: query.PredicateNot, Child: &query.RowPredicate{Kind: "bad"}}, {Kind: query.PredicateCell, Operator: query.OperatorEqual, Value: badValue}, {Kind: query.PredicateState, Operator: query.OperatorEqual, Value: badValue}}
 	for i, input := range rows {
 		if _, err := mapRowPredicate(input); err == nil {
 			t.Fatalf("row %d accepted", i)
