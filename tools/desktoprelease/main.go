@@ -60,6 +60,7 @@ type updateManifest struct {
 	Licenses                digestFile  `json:"licenses"`
 	Capabilities            digestFile  `json:"capabilities"`
 	Conformance             digestFile  `json:"desktop_conformance"`
+	DisabledFeatures        digestFile  `json:"disabled_features"`
 	Attestation             digestFile  `json:"desktop_attestation"`
 	PlatformSignature       *digestFile `json:"platform_signature,omitempty"`
 	Provenance              provenance  `json:"provenance"`
@@ -231,6 +232,7 @@ func buildCommand(args []string) error {
 	licenses := flags.String("licenses", "", "third-party license bundle")
 	capabilities := flags.String("capabilities", "", "packaged capability declaration")
 	conformance := flags.String("desktop-conformance", "", "machine-checked Desktop feature closure")
+	disabledFeatures := flags.String("disabled-features", "", "explicit Desktop disabled feature manifest")
 	attestation := flags.String("desktop-attestation", "", "signed installed Desktop conformance attestation")
 	platformSignature := flags.String("platform-signature", "", "optional detached platform signature")
 	output := flags.String("output", "", "output update manifest")
@@ -248,8 +250,8 @@ func buildCommand(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *installer == "" || *sbom == "" || *licenses == "" || *capabilities == "" || *conformance == "" || *attestation == "" || *output == "" || *version == "" || *minimum == "" || *platform == "" || *format == "" || *revision == "" || *builtAt == "" {
-		return errors.New("build requires installer, sbom, licenses, capabilities, desktop-conformance, desktop-attestation, output, version, minimum-supported-version, platform, format, source-revision, and built-at")
+	if *installer == "" || *sbom == "" || *licenses == "" || *capabilities == "" || *conformance == "" || *disabledFeatures == "" || *attestation == "" || *output == "" || *version == "" || *minimum == "" || *platform == "" || *format == "" || *revision == "" || *builtAt == "" {
+		return errors.New("build requires installer, sbom, licenses, capabilities, desktop-conformance, disabled-features, desktop-attestation, output, version, minimum-supported-version, platform, format, source-revision, and built-at")
 	}
 	if !revisionPattern.MatchString(*revision) {
 		return errors.New("source revision must be 40 lowercase hexadecimal characters")
@@ -273,6 +275,9 @@ func buildCommand(args []string) error {
 	if err := validateCapabilities(*capabilities); err != nil {
 		return err
 	}
+	if err := validateDisabledFeatures(*disabledFeatures, *conformance); err != nil {
+		return err
+	}
 	privateKey, mode, err := signingKey(*keyEnv, *testSigning)
 	if err != nil {
 		return err
@@ -282,7 +287,7 @@ func buildCommand(args []string) error {
 		MinimumSupportedVersion: *minimum, Platform: *platform, Format: *format, SigningMode: mode,
 		Provenance: provenance{SourceRepository: *repository, SourceRevision: *revision, BuildWorkflow: *workflow, BuiltAt: *builtAt},
 	}
-	for source, target := range map[string]*digestFile{*installer: &manifest.Installer, *sbom: &manifest.SBOM, *licenses: &manifest.Licenses, *capabilities: &manifest.Capabilities, *conformance: &manifest.Conformance, *attestation: &manifest.Attestation} {
+	for source, target := range map[string]*digestFile{*installer: &manifest.Installer, *sbom: &manifest.SBOM, *licenses: &manifest.Licenses, *capabilities: &manifest.Capabilities, *conformance: &manifest.Conformance, *disabledFeatures: &manifest.DisabledFeatures, *attestation: &manifest.Attestation} {
 		value, err := describeFile(source)
 		if err != nil {
 			return err
@@ -396,7 +401,7 @@ func verifyCommand(args []string) error {
 	if compareVersion(currentVersion, minimumVersion) < 0 {
 		return errors.New("current installation is incompatible with this update")
 	}
-	files := []digestFile{manifest.Installer, manifest.SBOM, manifest.Licenses, manifest.Capabilities, manifest.Conformance, manifest.Attestation}
+	files := []digestFile{manifest.Installer, manifest.SBOM, manifest.Licenses, manifest.Capabilities, manifest.Conformance, manifest.DisabledFeatures, manifest.Attestation}
 	if manifest.PlatformSignature != nil {
 		files = append(files, *manifest.PlatformSignature)
 	}
@@ -409,6 +414,17 @@ func verifyCommand(args []string) error {
 		if err != nil || actual.Size != file.Size || actual.SHA256 != file.SHA256 {
 			return fmt.Errorf("artifact digest mismatch for %s", file.Path)
 		}
+	}
+	disabledPath, err := localArtifactPath(*root, manifest.DisabledFeatures.Path)
+	if err != nil {
+		return err
+	}
+	conformancePath, err := localArtifactPath(*root, manifest.Conformance.Path)
+	if err != nil {
+		return err
+	}
+	if err := validateDisabledFeatures(disabledPath, conformancePath); err != nil {
+		return err
 	}
 	return nil
 }

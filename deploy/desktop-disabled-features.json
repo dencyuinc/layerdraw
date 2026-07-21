@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "delivery": "desktop",
+  "normative_matrix": "docs/blueprint.md#1311-feature-x-delivery-matrix",
+  "disabled_features": [
+    {"feature_id":"F01","feature":"Project management","status":"disabled","reason_code":"server_workspace_required","reason":"Cross-project management is provided by Server and is not exposed by the local Desktop delivery."},
+    {"feature_id":"F02","feature":"Workspace management","status":"disabled","reason_code":"server_workspace_required","reason":"Workspace administration requires the Server organization and workspace control plane."},
+    {"feature_id":"F41","feature":"Time Machine","status":"disabled","reason_code":"delivery_not_implemented","reason":"Time Machine is not implemented in the Desktop delivery."},
+    {"feature_id":"F44","feature":"Organization membership management","status":"disabled","reason_code":"server_organization_required","reason":"Organization membership is owned by the Server control plane."},
+    {"feature_id":"F45","feature":"Resource access control","status":"disabled","reason_code":"server_organization_required","reason":"Organization-scoped resource access control is owned by Server."},
+    {"feature_id":"F46","feature":"Sharing workflow","status":"disabled","reason_code":"server_collaboration_required","reason":"Sharing requires the Server collaboration control plane."},
+    {"feature_id":"F47","feature":"Realtime collaboration","status":"disabled","reason_code":"server_collaboration_required","reason":"Realtime multi-user collaboration requires Server and is not shipped as a Desktop capability."},
+    {"feature_id":"F58","feature":"Admin policy","status":"disabled","reason_code":"server_organization_required","reason":"Organization administration policy is owned by Server."},
+    {"feature_id":"F59","feature":"Audit","status":"disabled","reason_code":"server_organization_required","reason":"Organization audit services are owned by Server."},
+    {"feature_id":"F60","feature":"Entitlement / quota / usage","status":"disabled","reason_code":"server_organization_required","reason":"Entitlement, quota, and usage accounting are Server control-plane functions."},
+    {"feature_id":"F61","feature":"Organization management","status":"disabled","reason_code":"server_organization_required","reason":"Organization lifecycle management is owned by Server."}
+  ]
+}
