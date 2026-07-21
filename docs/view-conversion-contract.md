@@ -72,7 +72,7 @@ Step 2b: Export planning and serialization
       -> ExportArtifact + Source Manifest
 ```
 
-Step 1はrenderer非依存であり、Go EngineのView Materializerだけが規範実装する。
+Step 1はrenderer非依存であり、LayerDraw EngineのView Materializerだけが規範実装する。
 Web、desktop、VSCode、SDK、MCP Server、MCP Apps、batch export が同じ ViewData を得られなければならない。
 
 Step 2aは出力先依存でありTS Renderが実装する。Step 2bではhostが選択profileのidentity/specificationとexact asset/font requirementsを検証してclosed inputとして渡し、Go Export Plannerがrecipeとの完全一致を検証してsemantic mappingとsource bindingを持つExportPlanを生成し、versioned exporterがformat固有artifactへserializeする。Engineはこの境界でregistry解決を行わない。
@@ -206,7 +206,7 @@ RelationType は ViewData materialization の入力である。
 RelationType の projection rule により、同じ Relation instance は View ごとに edge、nested occurrence、overlay、badge、hidden support data のいずれにも変換され得る。
 いずれの場合も、生成された ViewData item は source relation refs を保持する。
 ViewRecipe の `projection.relationTypeOverrides` は RelationType default projection を View 単位で上書きできる。
-上書きはGo Engineが知っているprojection primitiveとTS Renderが知っているrender primitiveの範囲に限り、endpoint制約やcardinality schemaを変えてはならない。
+上書きはLayerDraw Engineが知っているprojection primitiveとTS Renderが知っているrender primitiveの範囲に限り、endpoint制約やcardinality schemaを変えてはならない。
 merge order は deterministic にする。
 
 ```text
@@ -970,7 +970,7 @@ ViewCategory / ViewShape を追加する前に、必ず以下を満たす。
 4. RenderData type を定義する。
 5. Plain export capability matrix に形式を追加する。
 6. DSL recipe で必要条件を保存できるようにする。
-7. Go Engine conformance testで`Master Graph -> ViewData`を検証する。
+7. LayerDraw Engine conformance testで`Master Graph -> ViewData`を検証する。
 8. Render testで`ViewData -> RenderData`、Export conformance testで`ViewData + ExportRecipe + ExportProfileRequirements -> ExportPlan -> Artifact + Source Manifest`を検証する。
 
 UI はこの後で作る。

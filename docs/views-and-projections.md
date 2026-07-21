@@ -111,7 +111,7 @@ view production_infrastructure "本番インフラ構成" topology {
 
 ## 5. Query-backed View
 
-browserではGo Engine WASMがQueryExecutionPlanを生成し、TS LadybugDB WASM adapterがそれを機械的に実行できる。TSはQueryを構築・解釈せず、typed raw rowsをGo Engineへ返す。
+browserではLayerDraw Engine WASMがQueryExecutionPlanを生成し、TS LadybugDB WASM adapterがそれを機械的に実行できる。TSはQueryを構築・解釈せず、typed raw rowsをLayerDraw Engineへ返す。
 
 この仕組みはProject Searchとは異なり、View切り出しの決定論的基盤として扱う。FTS / Vector / Hybrid Searchは探索起点候補を発見するUI / MCP operationであり、そのrankやscoreをView sourceにしない。確認済みStableAddressをQuery rootへ固定してからViewへ接続する。
 
@@ -134,7 +134,7 @@ View の抽出条件は、以下を設計対象にする。
    - named query
    - parameterized query
 
-`.ldl`にはCypher / SQLなどbackend固有のquery stringを保存しない。no-code query builderとMCPは同じtyped Query recipeを生成し、Go EngineがLadybugDB等のparameterized QueryExecutionPlanへcompileする。
+`.ldl`にはCypher / SQLなどbackend固有のquery stringを保存しない。no-code query builderとMCPは同じtyped Query recipeを生成し、LayerDraw EngineがLadybugDB等のparameterized QueryExecutionPlanへcompileする。
 
 PageRank、K-Core、Louvain、SCC、WCCのAnalysisResultもView sourceではない。分析結果からViewを作る場合は、採用するStableAddressまたは一般化したtyped predicateをQuery recipeとしてpreview / commitする。
 

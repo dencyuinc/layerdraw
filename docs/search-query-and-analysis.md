@@ -82,7 +82,7 @@ row hitはrow自身のStableAddressとowner Entity / RelationのStableAddressを
 
 ### 4.2 SearchDocument
 
-Go EngineはNormalizedDocumentから次の論理SearchDocumentを生成する。
+LayerDraw EngineはNormalizedDocumentから次の論理SearchDocumentを生成する。
 
 ```text
 SearchDocument
@@ -103,7 +103,7 @@ SearchDocument
 
 `graph_entry_addresses`はEntityなら自身、Entity rowならowner Entity、Relation / Relation rowならendpoint Entityを`from`、`to`順のlistで返す。self Relationでは重複を除く。Type、Layer、Query、View、Referenceには暗黙のgraph entryを生成しない。
 
-SearchDocumentの文字列化、field順、Unicode NFC正規化、null / absent処理、scalar表現はGo Engineだけが所有する。TS、MCP adapter、Ladybug adapter、Embedding Providerが独自にsubject textを組み立ててはならない。
+SearchDocumentの文字列化、field順、Unicode NFC正規化、null / absent処理、scalar表現はLayerDraw Engineだけが所有する。TS、MCP adapter、Ladybug adapter、Embedding Providerが独自にsubject textを組み立ててはならない。
 
 ### 4.3 標準field優先度
 
@@ -392,7 +392,7 @@ MCPは検索・探索・分析の主要操作面である。AIにraw Cypher、La
 | `layerdraw.inspect_subgraph` | 選択したEntityを中心に型、Layer、rows、incoming / outgoing Relationをbounded取得する |
 | `layerdraw.analyze_graph` | QueryResultまたは明示subgraphへ標準algorithmを適用する |
 
-`find_symbols`はID、name、kind、module等によるシンボル解決であり、Project Searchの代用ではない。`get_neighbors`は単純な隣接取得、`inspect_subgraph`はAI向けに必要な型・row・Relationを1つのbounded envelopeへまとめるconvenience operationである。両者は同じGo Engine indexとAccess結果を使う。
+`find_symbols`はID、name、kind、module等によるシンボル解決であり、Project Searchの代用ではない。`get_neighbors`は単純な隣接取得、`inspect_subgraph`はAI向けに必要な型・row・Relationを1つのbounded envelopeへまとめるconvenience operationである。両者は同じLayerDraw Engine indexとAccess結果を使う。
 
 すべてのMCP resultは次を満たす。
 
@@ -435,7 +435,7 @@ raw Cypher editorは開発・診断用に限定できるが、raw queryをLDL Qu
 
 ## 11. 実装責務
 
-### 11.1 Go Engine
+### 11.1 LayerDraw Engine
 
 - SearchDocumentとSearch Profileの規範化
 - search / analysis request validation

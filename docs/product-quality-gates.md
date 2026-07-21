@@ -66,12 +66,12 @@ Current implementation:
 境界ごとのoperation、port、状態遷移、failure、capability、version / release conformanceは[system-boundary-contracts-specification.md](system-boundary-contracts-specification.md)を規範とする。
 
 - `App.tsx` に auth、Project Hub、canvas、3D、inspector、server sync の全責務を詰め込まない
-- LDL parser、validator、formatter、StableAddress / hash、semantic operation、QueryResult、ViewData、ExportPlan、container規範はGo Engineだけに置く
+- LDL parser、validator、formatter、StableAddress / hash、semantic operation、QueryResult、ViewData、ExportPlan、container規範はLayerDraw Engineだけに置く
 - TypeScriptはgenerated protocol、Engine / Server client、Composer、layout、Render、Viewer、Library UI、React UI、ExportPlanを消費するbrowser / Node serializerに限定し、LDL意味論やExportPlanを再実装しない
 - Echo、Wails、React、VSCode handlerはframework shellに限定し、domain semanticsを置かない
-- browser LadybugDB adapterはGo Engineが生成したparameterized planだけを実行し、QueryやViewDataを組み立てない
-- SearchDocument、Hybrid fusion、SearchResult、AnalysisResultはGo Engineだけが生成し、MCP / TS / Ladybug adapterへ意味論を重複実装しない
-- AuthoringImpactはGo Engineだけが生成し、LDL外writeのHostOperationImpactはversioned owner protocolだけが宣言し、Accessが両者のPolicy decisionを所有する。document / asset / package適用はRuntime、Host metadataはServer Applicationがcommit enforcementを所有し、UI、MCP、SDK、handlerへsubject分類やoperation-to-capability mappingを重複実装しない
+- browser LadybugDB adapterはLayerDraw Engineが生成したparameterized planだけを実行し、QueryやViewDataを組み立てない
+- SearchDocument、Hybrid fusion、SearchResult、AnalysisResultはLayerDraw Engineだけが生成し、MCP / TS / Ladybug adapterへ意味論を重複実装しない
+- AuthoringImpactはLayerDraw Engineだけが生成し、LDL外writeのHostOperationImpactはversioned owner protocolだけが宣言し、Accessが両者のPolicy decisionを所有する。document / asset / package適用はRuntime、Host metadataはServer Applicationがcommit enforcementを所有し、UI、MCP、SDK、handlerへsubject分類やoperation-to-capability mappingを重複実装しない
 - RuntimeはAccess適用後のSearchDocumentだけをEmbedding ProviderとSearch Indexへ渡し、post-filterだけで検索権限を実装しない
 - サーバー API 呼び出しは auth / project / realtime の client 境界に分ける
 - native / Node WASM / browser single-thread WASM / browser multithread WASM / sidecar / server-linked Engineは、Structural Queryに加えてFTS、Vector、Hybrid、PageRank、K-Core、Louvain、SCC、WCCを同じconformance fixtureで検証する

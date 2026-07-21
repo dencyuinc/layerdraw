@@ -2,9 +2,9 @@
 
 ## 1. 基本方針
 
-LayerDraw Server はGo Engineそのものではなく、LayerDraw documentを複数のclientと保存先から扱うためのGo製host基盤である。
+LayerDraw Server はLayerDraw Engineそのものではなく、LayerDraw documentを複数のclientと保存先から扱うためのGo製host基盤である。
 
-Go Engineは`.ldl`のparse、検証、操作、Query、ViewData、ExportPlan、package semanticsを担当する。LayerDraw ServerはGo RuntimeとAccessを組み込み、Instance / Organization / Workspace管理、認証、Resource / Authoring権限、永続化、共同編集、履歴、MCP操作面を担当するmulti-organization application hostである。visual renderingはTS Presentationまたは専用serializerへ委譲する。
+LayerDraw Engine（Go実装）は`.ldl`のparse、検証、操作、Query、ViewData、ExportPlan、package semanticsを担当する。LayerDraw ServerはLayerDraw RuntimeとAccessを組み込み、Instance / Organization / Workspace管理、認証、Resource / Authoring権限、永続化、共同編集、履歴、MCP操作面を担当するmulti-organization application hostである。visual renderingはTS Presentationまたは専用serializerへ委譲する。
 
 Runtime / Host Port、Realtime、Registry、SDK、Version / Releaseの具体的契約は[system-boundary-contracts-specification.md](system-boundary-contracts-specification.md)を規範とする。
 
@@ -31,14 +31,14 @@ LayerDraw clients
       -> SQL DB / object storage / external document storage
 ```
 
-LayerDraw Serverの中核はstandalone serverに閉じ込めない。Go製LayerDraw Runtime libraryとして切り出し、外部host application、self-host server、managed cloud、Desktop、local MCP bridgeが同じdocument runtimeを内包できるようにする。
+LayerDraw Serverの中核はstandalone serverに閉じ込めない。LayerDraw Runtime library（Go実装）として切り出し、外部host application、self-host server、managed cloud、Desktop、local MCP bridgeが同じdocument runtimeを内包できるようにする。
 
 ```text
 LayerDraw Server Application
   -> Organization / Workspace / Access / Share / Audit
-  -> Go LayerDraw Runtime
-    -> Go LayerDraw Engine
-    -> Go Access component
+  -> LayerDraw Runtime
+    -> LayerDraw Engine
+    -> LayerDraw Access component
     -> DocumentStore
     -> StateBackend
     -> ArtifactStore
@@ -478,11 +478,11 @@ MCPは保存先固有APIを直接触らず、LayerDraw Runtime経由で`.ldl`と
 - embedded runtime の interface を先に固定する
 - S3 compatible adapter
 - object-storage-backed head / operation log / source tree manifest
-- Go Runtime libraryではSQL metadata repositoryをoptionalとする
+- LayerDraw Runtime libraryではSQL metadata repositoryをoptionalとする
 - `layerdraw-server`ではOrganization / Workspace / membership / ACL / audit metadata repositoryを必須とし、SQLite / PostgreSQL等のadapterを構成する
 - MCP server endpoint
 - time machine API
-- Go Engine / Runtime libraryをEcho handlerから分離する
+- LayerDraw Engine / Runtime libraryをEcho handlerから分離する
 - EchoをHTTP / WebSocket / middleware shellに限定する
 - Engine ProtocolとMCP envelopeのconformance test
 

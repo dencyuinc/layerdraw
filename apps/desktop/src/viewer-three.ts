@@ -21,7 +21,7 @@ function layerIndex(data: DiagramRenderData, key: string): number {
 }
 
 /**
- * The Desktop 2.5D surface consumes the same owner-produced RenderData as 2D.
+ * The Desktop 3D surface consumes the same owner-produced RenderData as 2D.
  * Three.js owns only projection and interaction; it does not infer semantics.
  */
 export function DesktopThreeViewer({ data, selected, onSelectionChange }: DesktopThreeViewerProps): ReactNode {
@@ -43,7 +43,7 @@ export function DesktopThreeViewer({ data, selected, onSelectionChange }: Deskto
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.domElement.className = "ld-desktop-viewer-three-canvas";
     renderer.domElement.setAttribute("role", "img");
-    renderer.domElement.setAttribute("aria-label", "Diagram 2.5D view. Drag to rotate and scroll to zoom.");
+    renderer.domElement.setAttribute("aria-label", "Diagram 3D view. Drag to rotate and scroll to zoom.");
     renderer.domElement.dataset.renderBackend = "three.js";
     element.prepend(renderer.domElement);
 
@@ -140,9 +140,9 @@ export function DesktopThreeViewer({ data, selected, onSelectionChange }: Deskto
     };
   }, [data, selected]);
 
-  if (failure) return createElement("p", { role: "alert", className: "ld-desktop-viewer-status" }, "The 2.5D renderer is unavailable.");
+  if (failure) return createElement("p", { role: "alert", className: "ld-desktop-viewer-status" }, "The 3D renderer is unavailable.");
   return createElement("div", { ref: host, className: "ld-desktop-viewer-three", "data-view-mode": "2.5d" },
-    createElement("ul", { className: "ld-desktop-visually-hidden", "aria-label": "2.5D diagram items" }, data.occurrences.map((item) =>
+    createElement("ul", { className: "ld-desktop-visually-hidden", "aria-label": "3D diagram items" }, data.occurrences.map((item) =>
       createElement("li", { key: item.render_key }, createElement("button", {
         type: "button", "aria-pressed": selected.has(item.render_key), onClick: () => onSelectionChange([item.render_key]),
         onKeyDown: (event: KeyboardEvent) => {

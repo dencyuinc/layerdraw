@@ -50,7 +50,7 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   };
   const mode = profile.viewer_mode ?? "2d";
-  const modeControl = [...document.querySelectorAll<HTMLButtonElement>(".ld-desktop-view-mode button")].find((button) => button.textContent?.trim().toLowerCase() === mode);
+  const modeControl = [...document.querySelectorAll<HTMLButtonElement>(".ld-desktop-view-mode button")].find((button) => button.dataset.mode === mode);
   modeControl?.click();
   await waitForPaint();
   const controls = [...document.querySelectorAll<HTMLElement>("button,input,select,textarea,a[href],[tabindex]")]

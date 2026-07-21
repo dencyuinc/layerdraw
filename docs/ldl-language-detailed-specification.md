@@ -4,7 +4,7 @@ status: 規範設計仕様
 
 本書は、[ldl-language-specification.md](ldl-language-specification.md)で定義するLayerDraw Language 1の構文・宣言モデルを、実装に依存せず決定的に評価するための詳細意味論を定義する。両文書を合わせてLanguage 1の完全な規範仕様とする。
 
-LayerDraw製品はこの規範意味論をGo Engineだけに実装する。Compiler / Workbenchの実装入出力は[compiler-architecture.md](compiler-architecture.md)、Go / TypeScript / framework間の境界は[architecture.md](architecture.md)に従う。これはLanguage 1の意味を実装言語依存にするものではない。
+LayerDraw製品はこの規範意味論をLayerDraw Engineだけに実装する。Compiler / Workbenchの実装入出力は[compiler-architecture.md](compiler-architecture.md)、Go / TypeScript / framework間の境界は[architecture.md](architecture.md)に従う。これはLanguage 1の意味を実装言語依存にするものではない。
 
 言語本体仕様は字句、構文、宣言、module、identity、オーサリング面を所有する。本書は宣言の出現回数と既定値、Normalized Model、Query評価、ViewDataの具現化、正準シリアライズ、ハッシュ、診断、セマンティック操作を所有する。Product、UI、RelationType、View、Registry、状態、アーキテクチャ文書は説明資料であり、本契約を再定義してはならない。
 
@@ -1783,7 +1783,7 @@ incomplete Working Documentのerror recoveryは追加診断を返してよいが
 
 ## 11. セマンティック編集操作
 
-本節は変更の意味とsource rewriteを定義し、Actorの権限を定義しない。Go Engineはoperation、scoped fragment、source patch、import等のbefore / afterから[authoring-access-control.md](authoring-access-control.md)のAuthoringImpactを生成する。operation名や`subject_kind`をAccess / Runtime / TSが独自にcapabilityへmapしてはならない。同じsemantic diffは入口にかかわらず同じAuthoringImpactを持つ。
+本節は変更の意味とsource rewriteを定義し、Actorの権限を定義しない。LayerDraw Engineはoperation、scoped fragment、source patch、import等のbefore / afterから[authoring-access-control.md](authoring-access-control.md)のAuthoringImpactを生成する。operation名や`subject_kind`をAccess / Runtime / TSが独自にcapabilityへmapしてはならない。同じsemantic diffは入口にかかわらず同じAuthoringImpactを持つ。
 
 ### 11.1 バッチエンベロープ
 
@@ -2022,7 +2022,7 @@ PortableOperationPreviewResult {
 }
 ```
 
-portable tree rootは`.layerdraw`を展開した時のcontainer rootと同じ論理rootである。`files` keyはそのrootからの相対pathで、Project source、`layerdraw.resolved.json`、`pack/<install-name>/...`の解決済みPack source、`assets/...`の検証対象bytesを同じmapに保持できる。3.1節と3.5節のpath安全規則を適用し、manifest自体の有無にかかわらずpreview中のfilesystem/network fallbackを禁止する。`entry`はこのmap内のProject `.ldl` fileを指す。`input_digest`はpath順の`{path,raw_sha256}` arrayをRFC 8785でserializeしたbytesのraw SHA-256で、各`raw_sha256`はfile bytesのraw SHA-256とする。transportは`bytes`をbinary、base64、またはresource attachmentで運んでよいが、Go Engineへ渡すbyte列とdigestは同一でなければならない。
+portable tree rootは`.layerdraw`を展開した時のcontainer rootと同じ論理rootである。`files` keyはそのrootからの相対pathで、Project source、`layerdraw.resolved.json`、`pack/<install-name>/...`の解決済みPack source、`assets/...`の検証対象bytesを同じmapに保持できる。3.1節と3.5節のpath安全規則を適用し、manifest自体の有無にかかわらずpreview中のfilesystem/network fallbackを禁止する。`entry`はこのmap内のProject `.ldl` fileを指す。`input_digest`はpath順の`{path,raw_sha256}` arrayをRFC 8785でserializeしたbytesのraw SHA-256で、各`raw_sha256`はfile bytesのraw SHA-256とする。transportは`bytes`をbinary、base64、またはresource attachmentで運んでよいが、LayerDraw Engineへ渡すbyte列とdigestは同一でなければならない。
 
 `operations`は1件以上で、supplied definition上の1つのWorking Document overlayへ順番に適用する。Host Document ID、base revision、idempotency key、actor、state、audit、および11.3節のconcurrency preconditionを入力にしてはならない。`expected_definition_hash`がpresentなら入力をcompileしたdefinition hashと一致しなければ`invalid`と`LDL1801`を返す。previewはsupplied bytes自体を競合の基準とするため、host headとのmergeや同時実行安全性を主張しない。
 
