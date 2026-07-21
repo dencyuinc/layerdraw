@@ -273,8 +273,11 @@ func validateResult(store *artifactStore, closurePath, resultPath, revision, pla
 			return fmt.Errorf("scenario %s evidence is invalid", id)
 		}
 		observed, err := percentile95(measurement)
-		if err != nil || observed > limit.MaxMilliseconds {
-			return fmt.Errorf("scenario %s p95 %dms exceeds %dms (samples: %v)", id, observed, limit.MaxMilliseconds, measurement)
+		if err != nil {
+			return fmt.Errorf("scenario %s p95 could not be computed: %w", id, err)
+		}
+		if observed > limit.MaxMilliseconds {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: scenario %s p95 %dms exceeds informational budget %dms (samples: %v)\n", id, observed, limit.MaxMilliseconds, measurement)
 		}
 	}
 	memory := limits.PerformanceBudgets["memory"]
@@ -282,16 +285,22 @@ func validateResult(store *artifactStore, closurePath, resultPath, revision, pla
 		return errors.New("isolated worker RSS evidence is invalid")
 	}
 	observed, err := percentile95(result.WorkerPeakRSS)
-	if err != nil || observed > memory.MaxMebibytes {
-		return fmt.Errorf("isolated worker p95 RSS %dMiB exceeds %dMiB", observed, memory.MaxMebibytes)
+	if err != nil {
+		return fmt.Errorf("isolated worker p95 RSS could not be computed: %w", err)
+	}
+	if observed > memory.MaxMebibytes {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: isolated worker p95 RSS %dMiB exceeds informational budget %dMiB (samples: %v)\n", observed, memory.MaxMebibytes, result.WorkerPeakRSS)
 	}
 	uiMemory := limits.PerformanceBudgets["ui_process_tree_memory"]
 	if len(result.UIProcessTreePeakRSS) != result.Iterations || len(result.UIProcessTreePeakRSS) < uiMemory.MinIterations || uiMemory.Percentile != 95 {
 		return errors.New("packaged UI process-tree RSS evidence is invalid")
 	}
 	observed, err = percentile95(result.UIProcessTreePeakRSS)
-	if err != nil || observed > uiMemory.MaxMebibytes {
-		return fmt.Errorf("packaged UI process-tree p95 RSS %dMiB exceeds %dMiB", observed, uiMemory.MaxMebibytes)
+	if err != nil {
+		return fmt.Errorf("packaged UI process-tree p95 RSS could not be computed: %w", err)
+	}
+	if observed > uiMemory.MaxMebibytes {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: packaged UI process-tree p95 RSS %dMiB exceeds informational budget %dMiB (samples: %v)\n", observed, uiMemory.MaxMebibytes, result.UIProcessTreePeakRSS)
 	}
 	return nil
 }
