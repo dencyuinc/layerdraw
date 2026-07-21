@@ -270,10 +270,17 @@ func compose(base desktopapp.Config, runtime NativeRuntime, providers map[string
 		capabilities.externalStorage = true
 		base.Capabilities = capabilities
 	}
+	var application *desktopapp.Application
 	if base.MCPCapabilities != nil {
-		application, err := desktopapp.NewCanonical(base)
-		return application, vault, err
+		application, err = desktopapp.NewCanonical(base)
+	} else {
+		application, err = desktopapp.New(base)
 	}
-	application, err := desktopapp.New(base)
-	return application, vault, err
+	if err != nil {
+		return nil, nil, err
+	}
+	if owner, ok := base.ReviewOwner.(*sharedOwner); ok {
+		owner.bindApplication(application)
+	}
+	return application, vault, nil
 }

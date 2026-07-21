@@ -602,9 +602,6 @@ func conformanceMCP(ctx context.Context) error {
 			return fmt.Errorf("bundled MCP tool %s is absent from %v", name, names)
 		}
 	}
-	if err := conformanceNativeMCP(ctx, workbench.instance, tools); err != nil {
-		return err
-	}
 	opened, err := workbench.instance.openProject(ctx, conformanceAuthoringSource)
 	if err != nil {
 		return err
@@ -732,7 +729,23 @@ func conformanceMCP(ctx context.Context) error {
 	if read.Failure != nil || len(read.Content) == 0 || read.MimeType == "" {
 		return errors.New("bundled MCP resource read failed")
 	}
-	return nil
+	if closed := workbench.instance.app.CloseProject(ctx, opened.Open.Session); closed.Outcome != protocolcommon.OutcomeSuccess {
+		return fmt.Errorf("bundled MCP authoring project close failed: %+v", closed.Failure)
+	}
+	native, err := newConformanceInstance(ctx, false)
+	if err != nil {
+		return err
+	}
+	defer native.close(context.Background())
+	enabled = native.app.SetMCPEnabled(ctx, true, desktopapp.MCPTransportLocal)
+	if enabled.Outcome != protocolcommon.OutcomeSuccess || !enabled.Value.Enabled {
+		return fmt.Errorf("bundled native MCP Host enable failed: outcome=%s failure=%+v", enabled.Outcome, enabled.Failure)
+	}
+	nativeTools, failure := native.app.MCPListTools(ctx)
+	if failure != nil {
+		return fmt.Errorf("bundled native MCP Host discovery failed: %+v", failure)
+	}
+	return conformanceNativeMCP(ctx, native, nativeTools)
 }
 
 func conformanceCommitInput(ctx context.Context, opened desktopapp.ProjectOpenResult, suffix string) (runtimeprotocol.RuntimeCommitInput, error) {

@@ -56,8 +56,9 @@ func conformanceNativeMCP(ctx context.Context, instance *conformanceInstance, to
 		}
 		result := instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: name, RequestID: requestID, Arguments: raw, Binding: binding})
 		var response nativeSearchResponseEnvelope
-		if result.Failure != nil || decodeExactBytes(result.Content, &response) != nil || response.Outcome != protocolcommon.OutcomeSuccess || len(response.Payload) == 0 {
-			return fmt.Errorf("native MCP tool %s failed: %+v", name, result.Failure)
+		decodeErr := decodeExactBytes(result.Content, &response)
+		if result.Failure != nil || decodeErr != nil || response.Outcome != protocolcommon.OutcomeSuccess || len(response.Payload) == 0 {
+			return fmt.Errorf("native MCP tool %s failed: transport=%+v decode=%v outcome=%s protocol=%+v", name, result.Failure, decodeErr, response.Outcome, response.Failure)
 		}
 		return nil
 	}
