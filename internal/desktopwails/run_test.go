@@ -53,10 +53,13 @@ func TestNativeMenuFileCommandsInvokeNativeCommandWithoutPublishingOnFailure(t *
 		t.Fatal(err)
 	}
 
-	built := nativeMenu(native.Shell, bridge)
+	built := nativeMenu(nil, native.Shell, bridge)
+	for _, top := range []string{"LayerDraw", "File", "View", "Window", "Help"} {
+		findSubmenuItem(t, built, top)
+	}
 	file := findSubmenuItem(t, built, "File")
 	newProject := findMenuAction(t, file.SubMenu, "New Project")
-	openProject := findMenuAction(t, file.SubMenu, "Open Project")
+	openProject := findMenuAction(t, file.SubMenu, "Open Project…")
 
 	newProject.Click(&menu.CallbackData{MenuItem: newProject})
 	openProject.Click(&menu.CallbackData{MenuItem: openProject})

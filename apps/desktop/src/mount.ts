@@ -26,6 +26,8 @@ export interface DesktopMountOptions extends DesktopShellPorts {
 
 export interface MountedDesktopShell {
   readonly controller: DesktopShellController;
+  /** Overrides the OS locale ("en" / "ja"); null returns to OS-follow. */
+  setLocale(locale: string | null): void;
   close(): Promise<void>;
 }
 
@@ -36,8 +38,9 @@ export interface MountedDesktopShell {
 export function mountDesktopShell(element: Element, options: DesktopMountOptions): MountedDesktopShell {
   const controller = new DesktopShellController({ lifecycle: options.lifecycle, viewer: options.viewer });
   const root: Root = createRoot(element);
-  const locale = resolveLocale(typeof navigator === "undefined" ? undefined : navigator.language);
-  root.render(createElement(I18nProvider, { locale, catalogs: baseShellCatalogs }, createElement(DesktopShell, {
+  const render = (localeOverride: string | null): void => {
+    const locale = resolveLocale(localeOverride ?? (typeof navigator === "undefined" ? undefined : navigator.language));
+    root.render(createElement(I18nProvider, { locale, catalogs: baseShellCatalogs }, createElement(DesktopShell, {
     controller,
     viewSelectionCapability: options.viewSelectionCapability,
     editorCapabilities: options.editorCapabilities,
@@ -48,9 +51,14 @@ export function mountDesktopShell(element: Element, options: DesktopMountOptions
     ...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel }),
     ...(options.library === undefined ? {} : { library: options.library }),
     ...(options.onReturnToProjects === undefined ? {} : { onReturnToProjects: options.onReturnToProjects }),
-  })));
+    })));
+  };
+  render(null);
   return {
     controller,
+    setLocale(locale: string | null) {
+      render(locale);
+    },
     async close() {
       root.unmount();
       await controller.close();

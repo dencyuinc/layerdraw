@@ -128,7 +128,7 @@ test("empty Desktop exposes native create and open actions", async () => {
   const buttons = actions.findAllByType("button");
   await act(async () => buttons[0].props.onClick());
   await act(async () => buttons[1].props.onClick());
-  assert.deepEqual(calls.map(([kind]) => kind), ["create", "open"]);
+  assert.deepEqual(calls.map(([kind]) => kind), ["open", "create"]);
   assert.ok(calls.every(([, requestID]) => requestID.startsWith("desktop-shell-")));
   await act(async () => renderer.unmount());
 });

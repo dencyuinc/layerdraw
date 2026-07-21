@@ -7,6 +7,21 @@
    without per-theme overrides here. Density is workbench scale: 13px body,
    compact padding, flat elevation (borders over shadow), radii capped at tokens. */
 
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/Inter-Variable.ttf") format("truetype-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Sans JP";
+  src: url("./fonts/NotoSansJP-Variable.ttf") format("truetype-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+
 /* UA reset: the shell owns the full window; no default body margin/border. */
 html, body { margin: 0; padding: 0; }
 body { background: var(--ld-background-canvas); }
@@ -38,7 +53,7 @@ body { background: var(--ld-background-canvas); }
   font-weight: var(--ld-font-weight-regular);
   -webkit-font-smoothing: antialiased;
 }
-.ld-desktop-shell button { font: inherit; color: inherit; cursor: pointer; }
+:where(.ld-desktop-shell button) { font: inherit; color: inherit; cursor: pointer; }
 
 /* ---- Control system (de-shadcn: flat, token radii, compact) ---------------- */
 .ld-btn {
@@ -66,7 +81,7 @@ body { background: var(--ld-background-canvas); }
 /* ---- Brand ----------------------------------------------------------------- */
 .ld-wordmark { display: inline-flex; align-items: center; }
 .ld-brand-icon { display: block; flex: 0 0 auto; border-radius: 5px; }
-.ld-wordmark-logo { display: block; height: 22px; width: auto; }
+.ld-wordmark-logo { display: block; height: 30px; width: auto; }
 .ld-wordmark-logo-dark { display: none; }
 :root[data-theme="dark"] .ld-wordmark-logo-light { display: none; }
 :root[data-theme="dark"] .ld-wordmark-logo-dark { display: block; }
@@ -88,6 +103,7 @@ body { background: var(--ld-background-canvas); }
 .ld-rail-spacer { flex: 1; }
 
 .ld-hub-main { min-width: 0; padding: var(--ld-space-32) var(--ld-space-40); overflow-y: auto; }
+.ld-hub-main > * { max-width: 62rem; }
 .ld-hub-header { display: flex; align-items: center; gap: var(--ld-space-12); margin-bottom: var(--ld-space-20); }
 .ld-hub-header h1 { flex: 1; margin: 0; font-size: var(--ld-font-size-20); font-weight: var(--ld-font-weight-semibold); line-height: var(--ld-font-lineHeight-28); }
 .ld-hub-actions { display: flex; gap: var(--ld-space-8); flex: 0 0 auto; }
@@ -99,7 +115,7 @@ body { background: var(--ld-background-canvas); }
 
 .ld-recent-list { display: flex; flex-direction: column; margin: 0 0 var(--ld-space-32); padding: 0; list-style: none; border: var(--ld-borderWidth-default) solid var(--ld-line-subtle); border-radius: var(--ld-radius-lg); overflow: hidden; background: var(--ld-panel); }
 .ld-recent-list li + li .ld-recent-row { border-top: var(--ld-borderWidth-default) solid var(--ld-line-subtle); }
-.ld-recent-row { display: flex; align-items: center; gap: 14px; width: 100%; padding: 11px var(--ld-space-16); border: 0; background: transparent; text-align: left; cursor: pointer; transition: background var(--ld-motion-duration-hover) var(--ld-motion-easing-standard); }
+.ld-recent-row { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 56px; padding: 12px var(--ld-space-16); border: 0; background: transparent; text-align: left; cursor: pointer; transition: background var(--ld-motion-duration-hover) var(--ld-motion-easing-standard); }
 .ld-recent-row:not(:disabled):hover { background: var(--ld-canvas); }
 .ld-recent-row:disabled { cursor: not-allowed; opacity: var(--ld-opacity-disabled); }
 .ld-recent-fileicon { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: 0 0 auto; border-radius: var(--ld-radius-md); background: var(--ld-color-violet-50); }
@@ -120,6 +136,8 @@ body { background: var(--ld-background-canvas); }
 .ld-template-src { font-size: 11px; line-height: 14px; color: var(--ld-text-disabled); margin-top: var(--ld-space-4); }
 .ld-template-blank { display: flex; align-items: center; justify-content: center; padding: 14px var(--ld-space-16); border: var(--ld-borderWidth-default) dashed var(--ld-line); border-radius: var(--ld-radius-lg); background: transparent; color: var(--ld-muted); font-size: 13px; cursor: pointer; }
 .ld-template-blank:not(:disabled):hover { background: var(--ld-subtle); }
+
+.ld-hub-templates-hint { margin: var(--ld-space-8) 0 0; color: var(--ld-muted); font-size: var(--ld-font-size-12); }
 
 /* ---- Banners (reason + code) ---------------------------------------------- */
 .ld-banner { display: flex; align-items: flex-start; gap: 10px; margin-bottom: var(--ld-space-24); padding: 10px 14px; border: var(--ld-borderWidth-default) solid; border-radius: var(--ld-radius-lg); font-size: 13px; line-height: 18px; }

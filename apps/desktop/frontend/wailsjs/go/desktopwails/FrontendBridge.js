@@ -12,6 +12,10 @@ export function ApplyExternalReconcile(arg1, arg2, arg3) {
   return window['go']['desktopwails']['FrontendBridge']['ApplyExternalReconcile'](arg1, arg2, arg3);
 }
 
+export function CloseCurrentProject() {
+  return window['go']['desktopwails']['FrontendBridge']['CloseCurrentProject']();
+}
+
 export function ConnectExternal(arg1) {
   return window['go']['desktopwails']['FrontendBridge']['ConnectExternal'](arg1);
 }

@@ -270,8 +270,8 @@ function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOp
       createElement("span", { className: "ld-rail-item ld-rail-item-muted" }, libraryIcon(), t.t("nav.library"))));
 
   const actions = projectDialogs === undefined ? null : createElement("div", { className: "ld-hub-actions", "aria-label": t.t("hub.actions.label") },
-    createElement(Button, { variant: "primary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? t.t("hub.action.creating") : t.t("hub.action.new")),
-    createElement(Button, { variant: "secondary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? t.t("hub.action.opening") : t.t("hub.action.open")));
+    createElement(Button, { variant: "secondary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? t.t("hub.action.opening") : t.t("hub.action.open")),
+    createElement(Button, { variant: "primary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? t.t("hub.action.creating") : t.t("hub.action.new")));
 
   const activeFailure = dialogFailure ?? (failure === null ? undefined : failure);
   const bannerVisible = activeFailure !== undefined && dismissed !== activeFailure;
@@ -296,7 +296,7 @@ function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOp
 
   const templateResults = librarySnapshot?.results.filter((release) => release.identity.kind === "template") ?? [];
   const librarySourcesConnected = librarySnapshot?.sources.some((source) => source.connected) === true;
-  const templates = !librarySourcesConnected ? null : createElement("section", { className: "ld-hub-templates", "aria-label": t.t("hub.templates.title") },
+  const templates = createElement("section", { className: "ld-hub-templates", "aria-label": t.t("hub.templates.title") },
     createElement("h2", { className: "ld-sec-label" }, t.t("hub.templates.title")),
     createElement("div", { className: "ld-template-cards" },
       templateResults.map((release) => createElement("button", {
@@ -309,7 +309,8 @@ function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOp
         createElement("span", { className: "ld-template-glyph", "aria-hidden": true }, createElement(LayerDrawIcon, { title: "", size: 15 })),
         createElement("b", null, release.identity.canonical_id),
         createElement("span", { className: "ld-template-src" }, `${release.identity.version} · ${release.source_id}`))),
-      createElement("button", { type: "button", className: "ld-template-blank", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, t.t("hub.templates.blank"))));
+      createElement("button", { type: "button", className: "ld-template-blank", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, t.t("hub.templates.blank"))),
+    librarySourcesConnected ? null : createElement("p", { className: "ld-hub-templates-hint" }, t.t("hub.templates.hint")));
 
   return createElement("main", { className: "ld-desktop-shell ld-desktop-hub", "aria-label": t.t("app.name") },
     rail,

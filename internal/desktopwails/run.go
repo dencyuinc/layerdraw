@@ -21,6 +21,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // AppOption is the packaged-shell extension seam for native display, settings,
@@ -62,7 +63,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 	}
 	probeOutput := os.Getenv("LAYERDRAW_DESKTOP_UI_PROBE_OUTPUT")
 	configured.Bind = append([]any{frontend, newShellBinding(native.Shell, bridge, probeOutput != "")}, configured.Bind...)
-	configured.Menu = nativeMenu(native.Shell, bridge)
+	configured.Menu = nativeMenu(application, native.Shell, bridge)
 	configured.SingleInstanceLock = &options.SingleInstanceLock{
 		UniqueId: "dev.layerdraw.desktop",
 		OnSecondInstanceLaunch: func(data options.SecondInstanceData) {
@@ -255,22 +256,123 @@ func safeWindowSnapshot(ctx context.Context, bridge *WailsShellBridge) (window d
 	return window, err
 }
 
-func nativeMenu(shell *desktopapp.NativeShell, bridge *WailsShellBridge) *menu.Menu {
+// menuEvent carries View-menu commands to the frontend, which owns the
+// presentation state the items control.
+const menuEvent = "desktop:menu"
+
+// recentProjectsOf tolerates a nil application so the menu can be built (and
+// unit-tested) before the composition root finishes constructing one.
+func recentProjectsOf(application *desktopapp.Application) desktopcontract.Result[[]desktopapp.RecentProject] {
+	if application == nil {
+		return desktopcontract.Result[[]desktopapp.RecentProject]{Outcome: protocolcommon.OutcomeRejected}
+	}
+	return application.RecentProjects()
+}
+
+// nativeMenu builds the OS menu per the approved shell design: app menu with
+// Language selection, File with recents and close, Edit, View toggles, Window,
+// and Help. Labels follow the approved (English) menu vocabulary; the Language
+// submenu switches the in-app catalog locale.
+func nativeMenu(application *desktopapp.Application, shell *desktopapp.NativeShell, bridge *WailsShellBridge) *menu.Menu {
 	result := menu.NewMenu()
+	runtimeShell := WailsRuntime{}
+
+	appMenu := result.AddSubmenu("LayerDraw")
+	appMenu.AddText("About LayerDraw", nil, func(*menu.CallbackData) {
+		_, _ = wailsruntime.MessageDialog(bridge.context(), wailsruntime.MessageDialogOptions{
+			Type:    wailsruntime.InfoDialog,
+			Title:   "LayerDraw",
+			Message: "LayerDraw Desktop\nTyped-graph modeling for software architecture.",
+		})
+	})
+	appMenu.AddSeparator()
+	settings := appMenu.AddText("Settings…", keys.CmdOrCtrl(","), nil)
+	settings.Disabled = true
+	language := appMenu.AddSubmenu("Language")
+	for _, locale := range []struct{ label, value string }{{"System", "system"}, {"English", "en"}, {"日本語", "ja"}} {
+		value := locale.value
+		language.Append(menu.Radio(locale.label, value == "system", nil, func(*menu.CallbackData) {
+			runtimeShell.Emit(bridge.context(), menuEvent, "locale:"+value)
+		}))
+	}
+	appMenu.AddSeparator()
+	appMenu.AddText("Quit LayerDraw", keys.CmdOrCtrl("q"), func(*menu.CallbackData) {
+		runtimeShell.Quit(bridge.context())
+	})
+
 	file := result.AddSubmenu("File")
 	file.AddText("New Project", keys.CmdOrCtrl("n"), func(*menu.CallbackData) {
 		ctx := bridge.context()
 		if invokeNativeCommand(ctx, shell, desktopcontract.CommandNewProject, desktopcontract.CommandSourceMenu) {
-			WailsRuntime{}.Emit(ctx, projectEvent)
+			runtimeShell.Emit(ctx, projectEvent)
 		}
 	})
-	file.AddText("Open Project", keys.CmdOrCtrl("o"), func(*menu.CallbackData) {
+	file.AddText("Open Project…", keys.CmdOrCtrl("o"), func(*menu.CallbackData) {
 		ctx := bridge.context()
 		if invokeNativeCommand(ctx, shell, desktopcontract.CommandOpenProject, desktopcontract.CommandSourceMenu) {
-			WailsRuntime{}.Emit(ctx, projectEvent)
+			runtimeShell.Emit(ctx, projectEvent)
 		}
 	})
+	recent := file.AddSubmenu("Open Recent")
+	if recents := recentProjectsOf(application); recents.Outcome == protocolcommon.OutcomeSuccess {
+		for _, entry := range recents.Value {
+			if entry.Availability == desktopapp.ProjectMissing {
+				continue
+			}
+			projectID := entry.ProjectID
+			label := entry.DisplayName
+			for _, internalPrefix := range []string{"doc_", "revision_", "session_", "project_"} {
+				if strings.HasPrefix(label, internalPrefix) {
+					label = ""
+					break
+				}
+			}
+			if label == "" {
+				label = "(Untitled project)"
+			}
+			recent.AddText(label, nil, func(*menu.CallbackData) {
+				ctx := bridge.context()
+				if opened := application.OpenRecentProject(ctx, projectID); opened.Outcome == protocolcommon.OutcomeSuccess {
+					runtimeShell.Emit(ctx, projectEvent)
+				}
+			})
+		}
+	}
+	if len(recent.Items) == 0 {
+		empty := recent.AddText("No recent projects", nil, nil)
+		empty.Disabled = true
+	}
+	file.AddSeparator()
+	file.AddText("Close Project", keys.Combo("w", keys.CmdOrCtrlKey, keys.ShiftKey), func(*menu.CallbackData) {
+		ctx := bridge.context()
+		if application != nil {
+			for _, session := range application.ActiveSessions() {
+				_ = application.CloseProject(ctx, session)
+			}
+		}
+		runtimeShell.Emit(ctx, projectEvent)
+	})
+	file.AddSeparator()
+	export := file.AddText("Export…", nil, nil)
+	export.Disabled = true
+
 	result.Append(menu.EditMenu())
+
+	view := result.AddSubmenu("View")
+	view.AddText("2D Canvas", nil, func(*menu.CallbackData) { runtimeShell.Emit(bridge.context(), menuEvent, "view:2d") })
+	view.AddText("3D Layers", nil, func(*menu.CallbackData) { runtimeShell.Emit(bridge.context(), menuEvent, "view:2.5d") })
+	view.AddSeparator()
+	view.AddText("Show Library", nil, func(*menu.CallbackData) { runtimeShell.Emit(bridge.context(), menuEvent, "panel:library") })
+	view.AddText("Show Review", nil, func(*menu.CallbackData) { runtimeShell.Emit(bridge.context(), menuEvent, "panel:review") })
+	view.AddText("Show AI Access", nil, func(*menu.CallbackData) { runtimeShell.Emit(bridge.context(), menuEvent, "panel:mcp") })
+
+	window := result.AddSubmenu("Window")
+	window.AddText("Minimize", keys.CmdOrCtrl("m"), func(*menu.CallbackData) { wailsruntime.WindowMinimise(bridge.context()) })
+
+	help := result.AddSubmenu("Help")
+	help.AddText("LayerDraw Documentation", nil, func(*menu.CallbackData) {
+		wailsruntime.BrowserOpenURL(bridge.context(), "https://github.com/dencyuinc/layerdraw")
+	})
 	return result
 }
 

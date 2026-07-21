@@ -21,6 +21,7 @@ export interface DesktopWailsApplicationBinding {
   OpenProjectDialog(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   RecentProjects(): Promise<DesktopHostResult<readonly DesktopRecentProjectDTO[]>>;
   OpenRecentProject(projectID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  CloseCurrentProject(): Promise<{ readonly outcome: string }>;
   ConnectExternal(input: JsonObject): Promise<DesktopHostResult<JsonObject>>;
   InspectExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
   RefreshExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
@@ -218,6 +219,11 @@ export async function createDesktopWailsComposition(
   const projectDialogs: DesktopProjectDialogPort = Object.freeze({
     create: async (id: string) => refreshAfterOpen(await application.CreateProjectDialog(id)),
     open: async (id: string) => refreshAfterOpen(await application.OpenProjectDialog(id)),
+    close: async () => {
+      const result = await application.CloseCurrentProject();
+      await lifecycle.refreshPublication();
+      return result as never;
+    },
     recent: () => application.RecentProjects(),
     openRecent: async (projectID: string) => refreshAfterOpen(await application.OpenRecentProject(projectID)),
   });

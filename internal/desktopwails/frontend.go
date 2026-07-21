@@ -213,6 +213,16 @@ func (b *FrontendBridge) RecentProjects() desktopcontract.Result[[]desktopapp.Re
 	return b.app.RecentProjects()
 }
 
+// CloseCurrentProject closes the active project session so the shell returns
+// to the hub without a process restart. Closing with no open session succeeds.
+func (b *FrontendBridge) CloseCurrentProject() desktopcontract.Result[runtimeprotocol.CloseDocumentResult] {
+	sessions := b.app.ActiveSessions()
+	if len(sessions) == 0 {
+		return desktopcontract.Result[runtimeprotocol.CloseDocumentResult]{Outcome: protocolcommon.OutcomeSuccess}
+	}
+	return b.app.CloseProject(b.context(), sessions[0])
+}
+
 func (b *FrontendBridge) OpenRecentProject(projectID string) desktopcontract.Result[desktopapp.ProjectOpenResult] {
 	return b.app.OpenRecentProject(b.context(), runtimeprotocol.DocumentID(projectID))
 }

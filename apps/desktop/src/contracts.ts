@@ -132,6 +132,8 @@ export interface DesktopProjectDialogPort {
   open(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   recent(): Promise<DesktopHostResult<readonly DesktopRecentProjectDTO[]>>;
   openRecent(projectID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  /** Close the active project session and return the shell to the hub. */
+  close(): Promise<DesktopHostResult<unknown>>;
 }
 
 /** Trusted native external-storage operations; credentials never cross this boundary. */

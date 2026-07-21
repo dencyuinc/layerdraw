@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
@@ -88,7 +89,7 @@ func (a *Application) openSelected(ctx context.Context, component desktopcontrac
 			return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentNativeQuery, true, desktopcontract.RecoveryRetry)
 		}
 	}
-	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil, opened.Session.DisplayName)
+	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil, opened.Session.DisplayName, displayLocationLabel(location.Root))
 	if trackErr != nil {
 		a.reportOpenFailure(ctx, "project lifecycle tracking", trackErr)
 		_ = host.Close(ctx, opened.Session)
@@ -104,6 +105,20 @@ func (a *Application) openSelected(ctx context.Context, component desktopcontrac
 		return desktopcontract.Result[ProjectOpenResult]{Outcome: protocolcommon.OutcomeSuccess, Value: ProjectOpenResult{Open: existing.Open, ProjectID: existing.Open.Session.Scope.DocumentID, Disposition: disposition}}
 	}
 	return desktopcontract.Result[ProjectOpenResult]{Outcome: protocolcommon.OutcomeSuccess, Value: ProjectOpenResult{Open: opened.Session.Open, History: opened.History, ProjectID: opened.Session.Open.Session.Scope.DocumentID, Disposition: disposition, ReconcilePending: opened.ExternalChange != nil}}
+}
+
+
+// displayLocationLabel renders a project root for the hub's recents list. It is
+// display-only: shortened to the user's home where possible and never used to
+// resolve storage (opening still goes through the storage adapter's tokens).
+func displayLocationLabel(root string) string {
+	if root == "" {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(root, home) {
+		return "~" + strings.TrimPrefix(root, home)
+	}
+	return root
 }
 
 func (a *Application) ReloadProject(ctx context.Context, documentID runtimeprotocol.DocumentID) (result desktopcontract.Result[ProjectOpenResult]) {
@@ -135,7 +150,11 @@ func (a *Application) reloadProject(ctx context.Context, documentID runtimeproto
 			return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentNativeQuery, true, desktopcontract.RecoveryRetry)
 		}
 	}
-	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil, opened.Session.DisplayName)
+	locationLabel := ""
+	if filepath.IsAbs(opened.Session.SourceLocator) {
+		locationLabel = displayLocationLabel(opened.Session.SourceLocator)
+	}
+	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil, opened.Session.DisplayName, locationLabel)
 	if trackErr != nil {
 		_ = host.Close(ctx, opened.Session)
 		return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)

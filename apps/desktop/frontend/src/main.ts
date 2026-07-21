@@ -7,7 +7,7 @@ import { createDesktopWailsComposition, waitForDesktopApplicationReady, type Des
 import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "../../src/wails-bindings.js";
 import { createDesktopWailsProjectOwner } from "../../src/wails-project-owner.js";
 import type { DesktopProjectHostBinding, DesktopReviewHostBinding } from "../../src/wails-owner.js";
-import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPStatus, NativeExportProfiles, OpenProjectDialog, OpenRecentProject, PlanExternalReconcile, PreviewEditor, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CloseCurrentProject, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPStatus, NativeExportProfiles, OpenProjectDialog, OpenRecentProject, PlanExternalReconcile, PreviewEditor, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { EventsOff, EventsOn, LogError } from "../wailsjs/runtime/runtime.js";
 
 async function start(): Promise<void> {
@@ -20,7 +20,7 @@ async function start(): Promise<void> {
     return;
   }
   const application = {
-    State, CreateProjectDialog, OpenProjectDialog, RecentProjects, OpenRecentProject,
+    State, CloseCurrentProject, CreateProjectDialog, OpenProjectDialog, RecentProjects, OpenRecentProject,
     ConnectExternal, InspectExternal, RefreshExternal, DisconnectExternal,
     SelectExternalRemote, AcquireExternalLease, PlanExternalReconcile, ApplyExternalReconcile,
     NativeExportProfiles, SerializeNativeExport, PublishNativeExportDialog, ImportExternalDialog,
@@ -39,17 +39,27 @@ async function start(): Promise<void> {
       review: { ReviewSnapshot, ReviewComment, ReviewApproveAndApply, ReviewWithdraw } as unknown as DesktopReviewHostBinding,
     },
   );
-  mountDesktopShell(root, {
+  const mounted = mountDesktopShell(root, {
     lifecycle: composition.lifecycle,
 		viewer: composition.viewer,
 		mcp: composition.mcp,
 		projectDialogs: composition.projectDialogs,
+		onReturnToProjects: () => { void composition.projectDialogs.close().catch(() => {}); },
 		libraryAvailability: composition.library.status === "available" ? { status: "available" } : composition.library.availability,
 		...(composition.library.status === "available" ? { library: composition.library.value } : {}),
 		reviewAvailability: composition.review.status === "available" ? { status: "available" } : composition.review.availability,
 		...(composition.review.status === "available" ? { reviewModel: composition.review.value } : {}),
     viewSelectionCapability: "engine.materialize_view",
     editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
+  });
+  EventsOn("desktop:menu", (command: unknown) => {
+    if (typeof command !== "string") return;
+    if (command.startsWith("locale:")) {
+      const locale = command.slice("locale:".length);
+      mounted.setLocale(locale === "system" ? null : locale);
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("layerdraw:menu", { detail: command }));
   });
   await signalAccessibilityProbeReady();
 }
