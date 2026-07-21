@@ -681,15 +681,12 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	available := make(map[protocolcommon.CapabilityID]bool)
+	for _, id := range packagedCapabilities() {
+		available[id] = true
+	}
 	for _, status := range handshake.CapabilityStatuses {
-		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring ||
-			status.CapabilityID == desktopcontract.CapabilityRegistry ||
-			status.CapabilityID == desktopcontract.CapabilityReview ||
-			status.CapabilityID == desktopcontract.CapabilityExternalStorage ||
-			status.CapabilityID == desktopcontract.CapabilityExport ||
-			status.CapabilityID == desktopcontract.CapabilityMCPTools ||
-			status.CapabilityID == desktopcontract.CapabilityMCPResources ||
-			status.CapabilityID == desktopcontract.CapabilityAgentScope
+		packaged := available[status.CapabilityID]
 		if status.Enabled != packaged || (!packaged && status.UnavailableReason == nil) {
 			t.Fatalf("capability availability is not truthful: %+v", status)
 		}
