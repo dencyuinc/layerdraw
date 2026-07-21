@@ -411,7 +411,10 @@ func conformanceProjectOpen(ctx context.Context) error {
 	if closed := instance.app.CloseProject(ctx, opened.Open.Session); closed.Outcome != protocolcommon.OutcomeSuccess {
 		return errors.New("project close failed")
 	}
-	return instance.close(ctx)
+	if err := instance.close(ctx); err != nil {
+		return err
+	}
+	return conformanceProjectFaultRecovery(ctx)
 }
 
 func conformancePreview(ctx context.Context) error {
