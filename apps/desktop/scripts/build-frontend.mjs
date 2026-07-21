@@ -14,6 +14,9 @@ await build({
   sourcemap: true,
   outfile: fileURLToPath(new URL("../frontend/dist/app.js", import.meta.url)),
 });
+// Token custom properties are generated from brand/tokens.json and must come
+// first so every downstream rule resolves against them.
+const tokens = await readFile(new URL("../../../packages/react/src/tokens.css", import.meta.url), "utf8");
 const desktop = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 const editor = await readFile(new URL("../../../packages/react/src/styles.css", import.meta.url), "utf8");
-await writeFile(new URL("../frontend/dist/app.css", import.meta.url), `${editor}\n${desktop}`, "utf8");
+await writeFile(new URL("../frontend/dist/app.css", import.meta.url), `${tokens}\n${editor}\n${desktop}`, "utf8");
