@@ -9,7 +9,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopShellFailure } from "./contracts.js";
+import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopRecentProjectDTO, DesktopShellFailure } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
 import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
@@ -29,6 +29,24 @@ export interface DesktopShellLabels {
   readonly recovery: string;
   readonly unavailable: string;
   readonly failure: Readonly<Record<DesktopShellFailure["message_key"], string>>;
+}
+
+/** Human-readable reasons for the closed Desktop open-failure vocabulary. */
+const openFailureReasons: Readonly<Record<string, string>> = Object.freeze({
+  "desktop.project_missing": "The project files could not be found at their last known location.",
+  "desktop.permission_denied": "LayerDraw does not have permission to read the project files.",
+  "desktop.project_conflict": "The project files on disk no longer match this LayerDraw project. Review or re-import the project.",
+  "desktop.recovery_required": "The project needs recovery before it can open.",
+  "desktop.reconcile_pending": "The project has pending external changes that must be reviewed first.",
+  "desktop.adapter_unavailable": "The project could not be loaded by the LayerDraw backend.",
+  "desktop.reconnect_failed": "The LayerDraw backend is not available.",
+  "desktop.backend_panic": "The LayerDraw backend failed unexpectedly.",
+});
+
+function openFailureMessage(code: string | undefined): string {
+  if (code === undefined) return "The project could not be opened.";
+  const reason = openFailureReasons[code] ?? "The project could not be opened.";
+  return `${reason} (${code})`;
 }
 
 const labels: DesktopShellLabels = Object.freeze({
@@ -66,8 +84,9 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const heading = useRef<HTMLHeadingElement>(null);
   const dialogSequence = useRef(0);
-  const [dialogPending, setDialogPending] = useState<"create" | "open">();
-  const [dialogFailure, setDialogFailure] = useState(false);
+  const [dialogPending, setDialogPending] = useState<"create" | "open" | "recent">();
+  const [dialogFailure, setDialogFailure] = useState<string>();
+  const [recentProjects, setRecentProjects] = useState<readonly DesktopRecentProjectDTO[]>([]);
   const project = state.lifecycle.project;
   const capability = state.lifecycle.capabilities[viewSelectionCapability];
   const viewSelectionAvailable = capability?.status === "available";
@@ -77,16 +96,33 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     return () => { void controller.stop(); };
   }, [controller]);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [project?.project_id, project?.selected_view_address]);
+  const hubVisible = project === undefined && state.lifecycle.phase === "ready";
+  useEffect(() => {
+    if (!hubVisible || projectDialogs === undefined) return;
+    let cancelled = false;
+    void projectDialogs.recent().then((result) => {
+      if (!cancelled && result.outcome === "success") setRecentProjects(result.value);
+    }, () => {});
+    return () => { cancelled = true; };
+  }, [hubVisible, projectDialogs, dialogPending]);
 
   const failure = state.failure === undefined ? null : suppliedLabels.failure[state.failure.message_key];
   const runProjectDialog = (kind: "create" | "open"): void => {
     if (projectDialogs === undefined || dialogPending !== undefined) return;
     setDialogPending(kind);
-    setDialogFailure(false);
+    setDialogFailure(undefined);
     const requestID = `desktop-shell-${kind}-${++dialogSequence.current}`;
     void projectDialogs[kind](requestID).then((result) => {
-      if (result.outcome === "failed" || result.outcome === "rejected") setDialogFailure(true);
-    }, () => setDialogFailure(true)).finally(() => setDialogPending(undefined));
+      if (result.outcome === "failed" || result.outcome === "rejected") setDialogFailure(result.failure?.code ?? "desktop.adapter_unavailable");
+    }, () => setDialogFailure("desktop.adapter_unavailable")).finally(() => setDialogPending(undefined));
+  };
+  const openRecentProject = (projectID: string): void => {
+    if (projectDialogs === undefined || dialogPending !== undefined) return;
+    setDialogPending("recent");
+    setDialogFailure(undefined);
+    void projectDialogs.openRecent(projectID).then((result) => {
+      if (result.outcome === "failed" || result.outcome === "rejected") setDialogFailure(result.failure?.code ?? "desktop.adapter_unavailable");
+    }, () => setDialogFailure("desktop.adapter_unavailable")).finally(() => setDialogPending(undefined));
   };
   if (state.lifecycle.phase === "starting") return createElement("main", { className: "ld-desktop-shell", "aria-label": suppliedLabels.application }, createElement("p", { role: "status", "aria-live": "polite" }, "Starting LayerDraw…"));
   if (state.lifecycle.phase === "recovery") return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application },
@@ -102,7 +138,17 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     projectDialogs === undefined ? null : createElement("div", { className: "ld-desktop-project-actions", "aria-label": "Project actions" },
       createElement("button", { type: "button", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? "Creating…" : "New project"),
       createElement("button", { type: "button", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? "Opening…" : "Open project")),
-    failure === null && !dialogFailure ? null : createElement("div", { role: "alert", className: "ld-desktop-notice" }, failure ?? "The project could not be opened."), featureStatus, library === undefined ? null : createElement(DesktopLibraryPanel, { library }));
+    projectDialogs === undefined || recentProjects.length === 0 ? null : createElement("section", { className: "ld-desktop-recent", "aria-label": "Recent projects" },
+      createElement("h2", null, "Recent projects"),
+      createElement("ul", null, recentProjects.map((recent) =>
+        createElement("li", { key: recent.project_id },
+          createElement("button", {
+            type: "button",
+            disabled: dialogPending !== undefined || recent.availability === "missing",
+            "aria-label": recent.availability === "missing" ? `${recent.display_name}. The project files are missing.` : recent.display_name,
+            onClick: () => openRecentProject(recent.project_id),
+          }, createElement("span", null, recent.display_name), recent.availability === "missing" ? createElement("small", null, "missing") : null))))),
+    failure === null && dialogFailure === undefined ? null : createElement("div", { role: "alert", className: "ld-desktop-notice" }, failure ?? openFailureMessage(dialogFailure)), featureStatus, library === undefined ? null : createElement(DesktopLibraryPanel, { library }));
 
   const viewList = createElement("ul", null, project.views.map((view) =>
     createElement("li", { key: view.address },

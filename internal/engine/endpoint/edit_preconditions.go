@@ -16,7 +16,7 @@ import (
 // its authoritative semantic snapshot onto the generated edit protocol. This
 // keeps the handwritten Engine/protocol mapping inside the endpoint boundary.
 func CompileProjectEditPreconditions(ctx context.Context, input LocalProjectInput, generation engineprotocol.DocumentGeneration) (engineprotocol.EngineEditPreconditions, error) {
-	compiled, err := engine.New(engine.BuildInfo{}).Compile(ctx, engine.CompileInput{
+	return compileEditPreconditions(ctx, engine.CompileInput{
 		Mode:                 engine.CompileProject,
 		EntryPath:            input.EntryPath,
 		ProjectSourceTree:    input.ProjectSourceTree,
@@ -24,7 +24,17 @@ func CompileProjectEditPreconditions(ctx context.Context, input LocalProjectInpu
 		ResolvedDependencies: input.ResolvedDependencies,
 		ReferencedAssets:     input.ReferencedAssets,
 		ResourceLimits:       input.ResourceLimits,
-	})
+	}, generation)
+}
+
+// SourceEditPreconditions projects an already-validated LocalSource onto the
+// generated edit-precondition protocol without exposing its CompileInput.
+func SourceEditPreconditions(ctx context.Context, source LocalSource, generation engineprotocol.DocumentGeneration) (engineprotocol.EngineEditPreconditions, error) {
+	return compileEditPreconditions(ctx, cloneCompileInput(source.input), generation)
+}
+
+func compileEditPreconditions(ctx context.Context, input engine.CompileInput, generation engineprotocol.DocumentGeneration) (engineprotocol.EngineEditPreconditions, error) {
+	compiled, err := engine.New(engine.BuildInfo{}).Compile(ctx, input)
 	if err != nil {
 		return engineprotocol.EngineEditPreconditions{}, err
 	}

@@ -5,6 +5,7 @@ package desktopwails
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -21,6 +22,14 @@ type LifecycleAdapter struct{ runtime NativeRuntime }
 func (a LifecycleAdapter) Publish(ctx context.Context, event desktopcontract.LifecycleEvent) error {
 	a.runtime.Emit(ctx, lifecycleEvent, event)
 	return nil
+}
+
+// logOpenDiagnostics writes the underlying project open-failure cause to the
+// process log for operator diagnosis. Only the closed failure vocabulary
+// crosses the Wails binding boundary; this sink stays inside the backend.
+func logOpenDiagnostics(_ context.Context, stage string, err error) {
+	defer func() { _ = recover() }()
+	log.Printf("desktop project open failed: stage=%q cause=%v", stage, err)
 }
 
 // RecoveryReporter publishes only the closed Desktop failure vocabulary.
@@ -258,6 +267,9 @@ func compose(base desktopapp.Config, runtime NativeRuntime, providers map[string
 	}
 	base.DisabledComponents = filteredDisabled
 	base.Recovery = RecoveryReporter{runtime: runtime}
+	if base.OpenDiagnostics == nil {
+		base.OpenDiagnostics = logOpenDiagnostics
+	}
 	if len(providers) != 0 {
 		external := NewExternalAdapter(providers)
 		base.ExternalLifecycle = external

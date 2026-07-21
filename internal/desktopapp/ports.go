@@ -36,6 +36,10 @@ type ProjectLocation struct {
 	EntryPath     string
 	Kind          string
 	PinnedContent []byte
+	// DisplayName carries the user-chosen project title from a native create
+	// dialog. It is applied through the Engine semantic-operation path after the
+	// project opens; storage adapters never rewrite LDL source with it.
+	DisplayName string
 }
 
 // ProjectStorage resolves opaque native-dialog tokens and owns project

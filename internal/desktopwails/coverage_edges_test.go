@@ -305,3 +305,8 @@ func TestReviewMCPOwnerClosedAndInvalidOperations(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenDiagnosticsLoggerIsComposedAndPanicSafe(t *testing.T) {
+	logOpenDiagnostics(context.Background(), "project open", errors.New("private cause"))
+	logOpenDiagnostics(context.Background(), "project open", nil)
+}

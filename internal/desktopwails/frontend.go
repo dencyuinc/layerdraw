@@ -213,6 +213,10 @@ func (b *FrontendBridge) RecentProjects() desktopcontract.Result[[]desktopapp.Re
 	return b.app.RecentProjects()
 }
 
+func (b *FrontendBridge) OpenRecentProject(projectID string) desktopcontract.Result[desktopapp.ProjectOpenResult] {
+	return b.app.OpenRecentProject(b.context(), runtimeprotocol.DocumentID(projectID))
+}
+
 func (b *FrontendBridge) ConnectExternal(request desktopapp.ExternalConnectionRequest) desktopcontract.Result[desktopapp.ExternalConnection] {
 	return b.app.ConnectExternal(b.context(), request)
 }

@@ -38,6 +38,8 @@ export function NativeExportProfiles():Promise<desktopcontract.Result___github_c
 
 export function OpenProjectDialog(arg1:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ProjectOpenResult_>;
 
+export function OpenRecentProject(arg1:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ProjectOpenResult_>;
+
 export function PlanExternalReconcile(arg1:runtimeprotocol.RuntimeSessionRef,arg2:desktopapp.ExternalSyncRequest,arg3:boolean):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ExternalReconcilePlan_>;
 
 export function PreviewEditor(arg1:runtimeprotocol.PreviewOperationsInput):Promise<localdocument.EditorPreviewResult>;

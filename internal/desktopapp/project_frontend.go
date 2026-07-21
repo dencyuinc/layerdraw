@@ -71,9 +71,13 @@ func (a *Application) ProjectPublication(ctx context.Context) (ProjectPublicatio
 	if err != nil {
 		return ProjectPublicationDTO{}, err
 	}
+	displayName := opened.DisplayName
+	if displayName == "" {
+		displayName = string(session.Scope.DocumentID)
+	}
 	publication.Project = &ProjectPublicationContext{
 		ProjectID: session.Scope.DocumentID, SessionGeneration: generation,
-		DisplayName: string(session.Scope.DocumentID), AuthoritativeRevision: revision,
+		DisplayName: displayName, AuthoritativeRevision: revision,
 		OpenInput:   runtimeprotocol.OpenRuntimeDocumentInput{DocumentID: session.Scope.DocumentID},
 		Persistence: persistence, Views: viewDTOs,
 		LibraryProject: LibraryProjectContextDTO{ProjectID: registryState.ProjectID, Revision: registryState.Revision, DefinitionHash: registryState.DefinitionHash, ResolvedLockDigest: registryState.DependencySnapshot.ResolvedLockDigest, DependencySnapshot: registryState.DependencySnapshot},

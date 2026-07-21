@@ -210,7 +210,10 @@ func (a *ProjectStorageAdapter) Create(_ context.Context, token string) (desktop
 	if err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
-	if _, err = file.WriteString("project project \"Untitled\" {}\n"); err == nil {
+	// This bootstrap template is the only LDL this adapter may write; the
+	// user-chosen title is applied afterwards through an Engine semantic
+	// operation, never by templating source text here.
+	if _, err = file.WriteString("project main \"Untitled\" {}\n"); err == nil {
 		err = file.Sync()
 	}
 	closeErr := file.Close()
@@ -221,7 +224,7 @@ func (a *ProjectStorageAdapter) Create(_ context.Context, token string) (desktop
 		return desktopapp.ProjectLocation{}, err
 	}
 	committed = true
-	return desktopapp.ProjectLocation{Root: root, EntryPath: "document.ldl", Kind: "project"}, nil
+	return desktopapp.ProjectLocation{Root: root, EntryPath: "document.ldl", Kind: "project", DisplayName: filepath.Base(root)}, nil
 }
 
 func (a *ProjectStorageAdapter) Open(_ context.Context, token string) (desktopapp.ProjectLocation, error) {

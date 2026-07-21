@@ -1832,3 +1832,106 @@ func TestDirectAmbiguousPublishedEvidenceAndMetadataFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestCommitProjectDisplayNameRewritesCommittedSourceThroughEngine(t *testing.T) {
+	root := t.TempDir()
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	project := writeProject(t, root, "project main \"Untitled\" {}\n")
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil || opened.Session == nil {
+		t.Fatalf("open=%+v err=%v", opened, err)
+	}
+	if opened.Session.DisplayName != "Untitled" {
+		t.Fatalf("initial display name=%q", opened.Session.DisplayName)
+	}
+	if _, err := host.CommitProjectDisplayName(context.Background(), nil, "X"); err == nil {
+		t.Fatal("nil session was accepted")
+	}
+	if _, err := host.CommitProjectDisplayName(context.Background(), opened.Session, ""); err == nil {
+		t.Fatal("empty name was accepted")
+	}
+	history, err := host.CommitProjectDisplayName(context.Background(), opened.Session, "My Diagram")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Items) < 2 {
+		t.Fatalf("history=%+v", history)
+	}
+	if opened.Session.DisplayName != "My Diagram" {
+		t.Fatalf("session display name=%q", opened.Session.DisplayName)
+	}
+	data, err := os.ReadFile(filepath.Join(project, "document.ldl"))
+	if err != nil || !strings.Contains(string(data), "\"My Diagram\"") || strings.Contains(string(data), "Untitled") {
+		t.Fatalf("committed source=%q err=%v", data, err)
+	}
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil || reopened.ExternalChange != nil {
+		t.Fatalf("reopen change=%+v err=%v", reopened.ExternalChange, err)
+	}
+	if reopened.Session.DisplayName != "My Diagram" {
+		t.Fatalf("reopened display name=%q", reopened.Session.DisplayName)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenFailsExplicitlyWhenBoundPortableIdentityChanges(t *testing.T) {
+	root := t.TempDir()
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	project := writeProject(t, root, "project main \"Untitled\" {}\n")
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project replaced \"Replaced\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project}); !errors.Is(err, ErrPortableIdentityChanged) {
+		t.Fatalf("identity change error=%v", err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReopenFailsExplicitlyWhenContainerPortableIdentityChanges(t *testing.T) {
+	root := t.TempDir()
+	instance := engine.New(engine.BuildInfo{})
+	archive, err := instance.WriteLayerdraw(context.Background(), engine.LayerdrawWriteInput{CompileInput: projectInput("project p \"P\" {}\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "document.layerdraw")
+	if err := os.WriteFile(path, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	opened, err := host.OpenContainer(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentID := opened.Session.Open.Session.Scope.DocumentID
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := instance.WriteLayerdraw(context.Background(), engine.LayerdrawWriteInput{CompileInput: projectInput("project replaced \"Replaced\" {}\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, replaced, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.OpenDocument(context.Background(), documentID); !errors.Is(err, ErrPortableIdentityChanged) {
+		t.Fatalf("container identity change error=%v", err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

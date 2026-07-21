@@ -46,6 +46,7 @@ func (a *Application) openSelected(ctx context.Context, component desktopcontrac
 	}
 	location, err := resolve(ctx, token)
 	if err != nil {
+		a.reportOpenFailure(ctx, "project storage selection", err)
 		return mapProjectOpenFailure[ProjectOpenResult](err, component)
 	}
 	if location.Root == "" || !filepath.IsAbs(location.Root) || filepath.Clean(location.Root) != location.Root {
@@ -62,16 +63,31 @@ func (a *Application) openSelected(ctx context.Context, component desktopcontrac
 		opened, err = host.OpenProject(ctx, localdocument.OpenProjectInput{Root: location.Root, EntryPath: location.EntryPath, PinnedEntry: location.PinnedContent})
 	}
 	if err != nil {
+		a.reportOpenFailure(ctx, "project open", err)
 		return mapProjectOpenFailure[ProjectOpenResult](err, desktopcontract.ComponentRuntime)
+	}
+	// A creation dialog carries the user-chosen title. It is committed through
+	// the Engine semantic-operation path before the session is published, so the
+	// committed source reflects the name the user typed into the native dialog.
+	if location.DisplayName != "" && location.Kind != "container" && opened.ExternalChange == nil {
+		history, nameErr := host.CommitProjectDisplayName(ctx, opened.Session, location.DisplayName)
+		if nameErr != nil {
+			a.reportOpenFailure(ctx, "project display name commit", nameErr)
+			_ = host.Close(context.Background(), opened.Session)
+			return mapProjectOpenFailure[ProjectOpenResult](nameErr, desktopcontract.ComponentRuntime)
+		}
+		opened.History = history
 	}
 	if a.config.NativeSearchLifecycle != nil {
 		if err := a.config.NativeSearchLifecycle.RefreshSearchIndex(ctx, opened.Session); err != nil {
+			a.reportOpenFailure(ctx, "native search index refresh", err)
 			_ = host.Close(context.Background(), opened.Session)
 			return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentNativeQuery, true, desktopcontract.RecoveryRetry)
 		}
 	}
-	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil)
+	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil, opened.Session.DisplayName)
 	if trackErr != nil {
+		a.reportOpenFailure(ctx, "project lifecycle tracking", trackErr)
 		_ = host.Close(ctx, opened.Session)
 		return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
 	}
@@ -107,6 +123,7 @@ func (a *Application) reloadProject(ctx context.Context, documentID runtimeproto
 	}()
 	opened, err := host.OpenDocument(ctx, documentID)
 	if err != nil {
+		a.reportOpenFailure(ctx, "project reload", err)
 		return mapProjectOpenFailure[ProjectOpenResult](err, desktopcontract.ComponentRuntime)
 	}
 	if a.config.NativeSearchLifecycle != nil {
@@ -115,7 +132,7 @@ func (a *Application) reloadProject(ctx context.Context, documentID runtimeproto
 			return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentNativeQuery, true, desktopcontract.RecoveryRetry)
 		}
 	}
-	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil)
+	tracked, disposition, trackErr := a.projects.opened(opened.Session.Open.Session, opened.Session.Open.CommittedRevision, opened.ExternalChange != nil, opened.Session.DisplayName)
 	if trackErr != nil {
 		_ = host.Close(ctx, opened.Session)
 		return failed[ProjectOpenResult](desktopcontract.FailureAdapterUnavailable, desktopcontract.ComponentLocalStorage, true, desktopcontract.RecoveryRetry)
@@ -139,11 +156,21 @@ func mapProjectOpenFailure[T any](err error, component desktopcontract.Component
 		return failed[T](desktopcontract.FailureProjectMissing, component, true, desktopcontract.RecoveryLocate)
 	case errors.Is(err, localdocument.ErrStateRecoveryRequired):
 		return failed[T](desktopcontract.FailureRecoveryRequired, component, false, desktopcontract.RecoveryOpenRecovery)
-	case errors.Is(err, port.ErrConflict):
+	case errors.Is(err, localdocument.ErrPortableIdentityChanged), errors.Is(err, port.ErrConflict):
 		return failed[T](desktopcontract.FailureProjectConflict, component, false, desktopcontract.RecoveryReview)
 	default:
 		return failed[T](desktopcontract.FailureAdapterUnavailable, component, true, desktopcontract.RecoveryOpenRecovery)
 	}
+}
+
+// reportOpenFailure hands the underlying open failure to the backend-only
+// diagnostics sink before it is collapsed into the closed failure vocabulary.
+func (a *Application) reportOpenFailure(ctx context.Context, stage string, err error) {
+	if a.config.OpenDiagnostics == nil || err == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	a.config.OpenDiagnostics(context.WithoutCancel(ctx), stage, err)
 }
 
 func (a *Application) Preview(ctx context.Context, input runtimeprotocol.PreviewOperationsInput) (result desktopcontract.Result[runtimeprotocol.PreviewOperationsResult]) {

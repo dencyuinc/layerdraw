@@ -36,6 +36,7 @@ type (
 type LocalSource struct {
 	input          engine.CompileInput
 	PortableID     string
+	DisplayName    string
 	DefinitionHash protocolcommon.Digest
 	GraphHash      protocolcommon.Digest
 	subjectHashes  []semantic.SubjectHash
@@ -94,7 +95,7 @@ func sourceFromSnapshot(input engine.CompileInput, snapshot engine.Snapshot) (Lo
 	for index, subject := range snapshot.SubjectSemanticHashes {
 		subjectHashes[index] = semantic.SubjectHash{Address: semantic.StableAddress(subject.Address), Kind: semantic.SubjectKind(subject.Kind), Hash: protocolcommon.Digest(subject.Hash)}
 	}
-	return LocalSource{input: cloneCompileInput(input), PortableID: snapshot.NormalizedDocument.Project.Address, DefinitionHash: protocolcommon.Digest(snapshot.DefinitionHash), GraphHash: protocolcommon.Digest(*snapshot.GraphHash), subjectHashes: subjectHashes}, nil
+	return LocalSource{input: cloneCompileInput(input), PortableID: snapshot.NormalizedDocument.Project.Address, DisplayName: snapshot.NormalizedDocument.Project.DisplayName, DefinitionHash: protocolcommon.Digest(snapshot.DefinitionHash), GraphHash: protocolcommon.Digest(*snapshot.GraphHash), subjectHashes: subjectHashes}, nil
 }
 
 func (s LocalSource) Digest() protocolcommon.Digest { return digestJSON(s.input) }

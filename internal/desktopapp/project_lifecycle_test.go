@@ -654,7 +654,7 @@ func TestProjectCloseFenceDrainsThenReassessesAndRollsBack(t *testing.T) {
 	}
 	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_fence_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_fence", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_fence", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
-	if _, _, err := lifecycle.opened(ref, revision, false); err != nil {
+	if _, _, err := lifecycle.opened(ref, revision, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	generation, err := lifecycle.begin(ref)
@@ -693,7 +693,7 @@ func TestRecoveryJournalTracksDirtyAutosaveAndProviderState(t *testing.T) {
 	}
 	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_recovery_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_recovery", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_recovery", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
-	if _, _, err := lifecycle.opened(ref, revision, false); err != nil {
+	if _, _, err := lifecycle.opened(ref, revision, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := lifecycle.mutate(ref, 0, func(state *sessionLifecycle) {
@@ -747,7 +747,7 @@ func TestAutosaveCompletionOutcomesAreClosedAndGenerationBound(t *testing.T) {
 			}
 			ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: runtimeprotocol.RuntimeSessionID(fmt.Sprintf("session_autosave_%04d", index)), SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: runtimeprotocol.DocumentID(fmt.Sprintf("document_autosave_%d", index)), LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 			revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_autosave", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
-			if _, _, err := lifecycle.opened(ref, revision, false); err != nil {
+			if _, _, err := lifecycle.opened(ref, revision, false, ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := lifecycle.mutate(ref, 0, func(state *sessionLifecycle) {
@@ -812,7 +812,7 @@ func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
 	}
 	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_failure_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_failure", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_failure", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
-	if _, _, err := lifecycle.opened(ref, revision, false); err != nil {
+	if _, _, err := lifecycle.opened(ref, revision, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	state, ok := lifecycle.session(ref)
@@ -847,7 +847,7 @@ func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	failing.saveFault = func() error { return errors.New("open journal unavailable") }
-	if _, _, err := failing.opened(ref, revision, false); err == nil || len(failing.sessions) != 0 || len(failing.state.Projects) != 0 || len(failing.state.Recoveries) != 0 {
+	if _, _, err := failing.opened(ref, revision, false, ""); err == nil || len(failing.sessions) != 0 || len(failing.state.Projects) != 0 || len(failing.state.Recoveries) != 0 {
 		t.Fatalf("failed open leaked state: sessions=%d projects=%d recoveries=%d err=%v", len(failing.sessions), len(failing.state.Projects), len(failing.state.Recoveries), err)
 	}
 	lifecycle.saveFault = func() error { return errors.New("project metadata unavailable") }
@@ -866,4 +866,180 @@ func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
 	if _, ok := lifecycle.recovery(ref.Scope.DocumentID); !ok {
 		t.Fatal("failed discard removed authoritative in-memory recovery")
 	}
+}
+
+func TestCreateProjectAppliesDialogDisplayNameThroughEngine(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "My Diagram")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project main \"Untitled\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage := &lifecycleStorageHarness{locations: map[string]ProjectLocation{
+		"create": {Root: project, EntryPath: "document.ldl", Kind: "project", DisplayName: "My Diagram"},
+	}, errs: map[string]error{}}
+	app := startLifecycleApp(t, root, project, &dialogHarness{}, storage)
+	created := app.CreateProject(context.Background(), "create")
+	if created.Outcome != protocolcommon.OutcomeSuccess || created.Value.Disposition != ProjectOpened {
+		t.Fatalf("create=%+v", created)
+	}
+	if len(created.Value.History.Items) < 2 {
+		t.Fatalf("naming commit missing from history=%+v", created.Value.History)
+	}
+	data, err := os.ReadFile(filepath.Join(project, "document.ldl"))
+	if err != nil || string(data) != "project main \"My Diagram\" {}\n" {
+		t.Fatalf("committed source=%q err=%v", data, err)
+	}
+	recent := app.RecentProjects()
+	if recent.Outcome != protocolcommon.OutcomeSuccess || len(recent.Value) != 1 || recent.Value[0].DisplayName != "My Diagram" {
+		t.Fatalf("recent=%+v", recent)
+	}
+	publication, err := app.ProjectPublication(context.Background())
+	if err != nil || publication.Project == nil || publication.Project.DisplayName != "My Diagram" {
+		t.Fatalf("publication=%+v err=%v", publication, err)
+	}
+	if result := app.Shutdown(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("shutdown=%+v", result)
+	}
+}
+
+func TestOpenFailureSurfacesExplicitCodeAndLogsUnderlyingCause(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root)
+	storage := &lifecycleStorageHarness{locations: map[string]ProjectLocation{"open": {Root: project, EntryPath: "document.ldl", Kind: "project"}}, errs: map[string]error{}}
+	type diagnostic struct {
+		stage string
+		err   error
+	}
+	var mu sync.Mutex
+	var diagnostics []diagnostic
+	config := testConfig(t, root, project)
+	config.Dialogs = &dialogHarness{}
+	config.ProjectStorage = storage
+	config.OpenDiagnostics = func(_ context.Context, stage string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		diagnostics = append(diagnostics, diagnostic{stage: stage, err: err})
+	}
+	app, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := app.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start=%+v", result)
+	}
+	opened := app.OpenProject(context.Background(), "open")
+	if opened.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("open=%+v", opened)
+	}
+	if closed := app.CloseProject(context.Background(), opened.Value.Open.Session); closed.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("close=%+v", closed)
+	}
+	// Externally replace the bound source with a valid document that carries a
+	// different portable project identity.
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project replaced \"Replaced\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened := app.OpenProject(context.Background(), "open")
+	if reopened.Outcome != protocolcommon.OutcomeFailed || reopened.Failure == nil ||
+		reopened.Failure.Code != desktopcontract.FailureProjectConflict || reopened.Failure.Recovery != desktopcontract.RecoveryReview {
+		t.Fatalf("identity change failure=%+v", reopened)
+	}
+	encoded, _ := json.Marshal(reopened)
+	if stringContains(string(encoded), project) {
+		t.Fatalf("failure leaked the native path: %s", encoded)
+	}
+	mu.Lock()
+	recorded := append([]diagnostic(nil), diagnostics...)
+	mu.Unlock()
+	if len(recorded) == 0 {
+		t.Fatal("underlying open cause was not logged")
+	}
+	last := recorded[len(recorded)-1]
+	if last.stage != "project open" || !errors.Is(last.err, localdocument.ErrPortableIdentityChanged) {
+		t.Fatalf("diagnostic=%+v", last)
+	}
+	storage.errs["denied"] = os.ErrPermission
+	if denied := app.OpenProject(context.Background(), "denied"); denied.Failure == nil || denied.Failure.Code != desktopcontract.FailurePermissionDenied {
+		t.Fatalf("denied=%+v", denied)
+	}
+	mu.Lock()
+	stages := make([]string, 0, len(diagnostics))
+	for _, value := range diagnostics {
+		stages = append(stages, value.stage)
+	}
+	mu.Unlock()
+	if !slices.Contains(stages, "project storage selection") {
+		t.Fatalf("storage stage missing from diagnostics=%v", stages)
+	}
+	_ = app.Shutdown(context.Background())
+}
+
+// TestRecentReopenAfterExternalIdentityChangeFailsExplicitly drives the real
+// recent-project route (create with a dialog name, app restart on the same
+// data root, external identity edit, OpenRecentProject) and requires an
+// explicit conflict instead of silently reopening the committed document.
+func TestRecentReopenAfterExternalIdentityChangeFailsExplicitly(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "QA-Test-Project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project main \"Untitled\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage := &lifecycleStorageHarness{locations: map[string]ProjectLocation{
+		"create": {Root: project, EntryPath: "document.ldl", Kind: "project", DisplayName: "QA-Test-Project"},
+	}, errs: map[string]error{}}
+	app := startLifecycleApp(t, root, project, &dialogHarness{}, storage)
+	created := app.CreateProject(context.Background(), "create")
+	if created.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("create=%+v", created)
+	}
+	// Quit like the native shell does: no explicit project close first.
+	if result := app.Shutdown(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("shutdown=%+v", result)
+	}
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project renamedident \"QA-Test-Project\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var stages []string
+	var causes []error
+	config := testConfig(t, root, project)
+	config.Dialogs = &dialogHarness{}
+	config.ProjectStorage = storage
+	config.OpenDiagnostics = func(_ context.Context, stage string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		stages = append(stages, stage)
+		causes = append(causes, err)
+	}
+	restarted, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := restarted.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("restart=%+v", result)
+	}
+	recent := restarted.RecentProjects()
+	if recent.Outcome != protocolcommon.OutcomeSuccess || len(recent.Value) != 1 || recent.Value[0].DisplayName != "QA-Test-Project" {
+		t.Fatalf("recent=%+v", recent)
+	}
+	reopened := restarted.OpenRecentProject(context.Background(), created.Value.ProjectID)
+	if reopened.Outcome != protocolcommon.OutcomeFailed || reopened.Failure == nil ||
+		reopened.Failure.Code != desktopcontract.FailureProjectConflict || reopened.Failure.Recovery != desktopcontract.RecoveryReview {
+		t.Fatalf("identity change reopen=%+v", reopened)
+	}
+	if publication, publicationErr := restarted.ProjectPublication(context.Background()); publicationErr != nil || publication.Project != nil {
+		t.Fatalf("workspace opened despite conflict: %+v err=%v", publication, publicationErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stages) == 0 || stages[len(stages)-1] != "project reload" || !errors.Is(causes[len(causes)-1], localdocument.ErrPortableIdentityChanged) {
+		t.Fatalf("diagnostics stages=%v causes=%v", stages, causes)
+	}
+	_ = restarted.Shutdown(context.Background())
 }
