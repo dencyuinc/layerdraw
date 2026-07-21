@@ -21,6 +21,10 @@ type processRSS struct {
 	measured  bool
 }
 
+var packagedUIProbeCommand = func(ctx context.Context, executable, output string) *exec.Cmd {
+	return exec.CommandContext(ctx, executable, "--packaged-ui-probe", output)
+}
+
 func conformancePackagedUIProcessTree(ctx context.Context) (int64, error) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -32,7 +36,7 @@ func conformancePackagedUIProcessTree(ctx context.Context) (int64, error) {
 	}
 	defer os.RemoveAll(root)
 	output := filepath.Join(root, "ui-probe.json")
-	command := exec.CommandContext(ctx, executable, "--packaged-ui-probe", output)
+	command := packagedUIProbeCommand(ctx, executable, output)
 	command.Stdout, command.Stderr = io.Discard, io.Discard
 	// The UI process owns one transient state root. Clear caller-provided probe
 	// state and action together: PowerShell installer smoke variables persist in
