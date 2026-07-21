@@ -58,7 +58,7 @@ func TestPackagedStdioExecutesPortableCompilerCorpus(t *testing.T) {
 	if err := json.Unmarshal(data, &corpus); err != nil {
 		t.Fatal(err)
 	}
-	if corpus.SchemaVersion != 1 || len(corpus.Cases) != 10 || len(corpus.RequiredFeatures) != 10 || len(corpus.Normalization) != 3 {
+	if corpus.SchemaVersion != 1 || len(corpus.Cases) != 14 || len(corpus.RequiredFeatures) != 13 || len(corpus.Normalization) != 3 {
 		t.Fatalf("portable corpus is incomplete: cases=%d features=%d normalization=%d", len(corpus.Cases), len(corpus.RequiredFeatures), len(corpus.Normalization))
 	}
 
