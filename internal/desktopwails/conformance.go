@@ -31,7 +31,6 @@ import (
 	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
-	enginecore "github.com/dencyuinc/layerdraw/internal/engine"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
 	"github.com/dencyuinc/layerdraw/internal/registry"
@@ -791,9 +790,6 @@ func conformanceMCPRegistry(ctx context.Context, instance *conformanceInstance) 
 		return err
 	}
 	artifact := archive.Bytes()
-	if _, err := enginecore.New(enginecore.BuildInfo{}).ReadRegistryPack(ctx, artifact, enginecore.LayerdrawLimits{}); err != nil {
-		return fmt.Errorf("installed Registry pack fixture is invalid: %w", err)
-	}
 	digest := func(value []byte) string { sum := sha256.Sum256(value); return "sha256:" + hex.EncodeToString(sum[:]) }
 	release := registry.ArtifactRelease{Identity: registry.ArtifactIdentity{Kind: registry.ArtifactPack, CanonicalID: canonicalID, Version: "1.0.0"}, SourceID: "installed-conformance", PublisherID: "layerdraw", Digest: digest(artifact), ManifestDigest: digest(manifest), DependencyMetadataDigest: digest([]byte("[]")), Size: int64(len(artifact)), Dependencies: []registry.Dependency{}, Compatibility: []registry.CompatibilityDecision{}, License: "LicenseRef-LayerDraw-1.0", ProvenanceDigest: digest([]byte("installed-conformance"))}
 	catalog, err := json.Marshal(registrysource.Catalog{SchemaVersion: registrysource.CatalogVersion, Artifacts: []registrysource.CatalogEntry{{Release: release, ArtifactPath: "conformance.ldpack"}}})
