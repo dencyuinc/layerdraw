@@ -1,19 +1,40 @@
 {
-  "schema_version": 1,
-  "components": [
-    "desktop-shell",
-    "frontend-packages",
-    "mcp-host",
-    "native-adapters",
-    "native-exporters",
-    "registry",
-    "review"
+  "schema_version": 2,
+  "desktop_manifest": {
+    "version": 1,
+    "components": [
+      "engine", "runtime", "access", "native_query_search_analysis",
+      "search_index", "embedding_provider", "registry_client", "review",
+      "native_exporters", "mcp_host", "local_storage", "external_storage",
+      "wails_binding_shell"
+    ],
+    "frontend_assets": [
+      "@layerdraw/protocol", "@layerdraw/engine-client/wails",
+      "@layerdraw/registry-client/host", "@layerdraw/composer",
+      "@layerdraw/render", "@layerdraw/export", "@layerdraw/viewer",
+      "@layerdraw/review", "@layerdraw/react", "@layerdraw/library"
+    ],
+    "required_capabilities": [
+      "desktop.authoring", "desktop.query", "desktop.search", "desktop.analysis",
+      "desktop.registry", "desktop.review", "desktop.export", "desktop.mcp.tools",
+      "desktop.mcp.resources", "desktop.agent_scope_management"
+    ],
+    "optional_capabilities": ["desktop.external_storage"]
+  },
+  "capability_statuses": [
+    {"capability_id":"desktop.authoring","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.query","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.search","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.analysis","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.registry","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.review","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.export","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.mcp.tools","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.mcp.resources","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.agent_scope_management","enabled":true,"protocol_version":"1.0"},
+    {"capability_id":"desktop.external_storage","enabled":true,"protocol_version":"1.0"}
   ],
-  "excludes": [
-    "development-servers",
-    "source-maps",
-    "test-fixtures"
-  ],
+  "excludes": ["development-servers", "source-maps", "test-fixtures"],
   "security": {
     "preconfigured_mcp_endpoints": false,
     "provider_credentials": false,

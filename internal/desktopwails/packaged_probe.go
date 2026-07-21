@@ -11,21 +11,24 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	desktopadapter "github.com/dencyuinc/layerdraw/internal/adapter/desktop"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 )
 
 type PackagedProbeResult struct {
-	SchemaVersion      uint32                               `json:"schema_version"`
-	Platform           desktopcontract.DesktopPlatform      `json:"platform"`
-	WailsRuntimeBridge bool                                 `json:"wails_runtime_bridge"`
-	SettingsRoundTrip  bool                                 `json:"settings_round_trip"`
-	ProjectRoundTrip   bool                                 `json:"project_round_trip"`
-	AssociationHandoff desktopcontract.FileAssociationKind  `json:"association_handoff"`
-	DOMRoundTrip       bool                                 `json:"dom_round_trip,omitempty"`
-	Accessibility      *desktopcontract.AccessibilityReport `json:"accessibility,omitempty"`
-	UIMatrix           []PackagedUIProbeResult              `json:"ui_matrix,omitempty"`
-	Failure            *PackagedUIProbeFailure              `json:"failure,omitempty"`
+	SchemaVersion      uint32                                     `json:"schema_version"`
+	Platform           desktopcontract.DesktopPlatform            `json:"platform"`
+	CapabilityManifest desktopcontract.Manifest                   `json:"capability_manifest"`
+	CapabilityStatuses []protocolcommon.RequestedCapabilityStatus `json:"capability_statuses"`
+	WailsRuntimeBridge bool                                       `json:"wails_runtime_bridge"`
+	SettingsRoundTrip  bool                                       `json:"settings_round_trip"`
+	ProjectRoundTrip   bool                                       `json:"project_round_trip"`
+	AssociationHandoff desktopcontract.FileAssociationKind        `json:"association_handoff"`
+	DOMRoundTrip       bool                                       `json:"dom_round_trip,omitempty"`
+	Accessibility      *desktopcontract.AccessibilityReport       `json:"accessibility,omitempty"`
+	UIMatrix           []PackagedUIProbeResult                    `json:"ui_matrix,omitempty"`
+	Failure            *PackagedUIProbeFailure                    `json:"failure,omitempty"`
 }
 
 type PackagedUIProbeFailure struct {
@@ -57,6 +60,15 @@ func RunPackagedProbe(output io.Writer) error {
 }
 
 func executePackagedProbe() (PackagedProbeResult, error) {
+	manifest := desktopcontract.DefaultManifest()
+	handshake, err := (nativeCapabilities{}).Negotiate(context.Background(), manifest)
+	if err != nil {
+		return PackagedProbeResult{}, err
+	}
+	negotiated := desktopcontract.NegotiateCapabilitiesFor(manifest, handshake, packagedRequiredCapabilities())
+	if negotiated.Outcome != protocolcommon.OutcomeSuccess {
+		return PackagedProbeResult{}, errors.New("packaged Desktop capability probe failed")
+	}
 	root, persistent, err := packagedProbeStateRoot()
 	if err != nil {
 		return PackagedProbeResult{}, err
@@ -120,7 +132,8 @@ func executePackagedProbe() (PackagedProbeResult, error) {
 	bridge := NewWailsShellBridge()
 	var _ desktopadapter.WailsRuntimeBridge = bridge
 	return PackagedProbeResult{
-		SchemaVersion: 1, Platform: CurrentPlatform(), WailsRuntimeBridge: true,
+		SchemaVersion: 1, Platform: CurrentPlatform(), CapabilityManifest: manifest,
+		CapabilityStatuses: negotiated.Value.CapabilityStatuses, WailsRuntimeBridge: true,
 		SettingsRoundTrip: true, ProjectRoundTrip: true, AssociationHandoff: handoff.Kind,
 	}, nil
 }

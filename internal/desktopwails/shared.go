@@ -42,7 +42,7 @@ const (
 	desktopEndpoint = "layerdraw-desktop"
 )
 
-var packagedCapabilities = []protocolcommon.CapabilityID{
+var basePackagedCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityAuthoring,
 	desktopcontract.CapabilityExport,
 	desktopcontract.CapabilityMCPTools,
@@ -53,7 +53,7 @@ var packagedCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityReview,
 }
 
-var packagedRequiredCapabilities = []protocolcommon.CapabilityID{
+var basePackagedRequiredCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityAuthoring,
 	desktopcontract.CapabilityRegistry,
 	desktopcontract.CapabilityReview,
@@ -61,6 +61,22 @@ var packagedRequiredCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityMCPTools,
 	desktopcontract.CapabilityMCPResources,
 	desktopcontract.CapabilityAgentScope,
+}
+
+func packagedCapabilities() []protocolcommon.CapabilityID {
+	result := append([]protocolcommon.CapabilityID(nil), basePackagedCapabilities...)
+	if packagedNativeSearchEnabled() {
+		result = append(result, desktopcontract.CapabilityQuery, desktopcontract.CapabilitySearch, desktopcontract.CapabilityAnalysis)
+	}
+	return result
+}
+
+func packagedRequiredCapabilities() []protocolcommon.CapabilityID {
+	result := append([]protocolcommon.CapabilityID(nil), basePackagedRequiredCapabilities...)
+	if packagedNativeSearchEnabled() {
+		result = append(result, desktopcontract.CapabilityQuery, desktopcontract.CapabilitySearch, desktopcontract.CapabilityAnalysis)
+	}
+	return result
 }
 
 // NewSharedConfig wires the owners that are actually packaged in Desktop.
@@ -114,7 +130,7 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		Capabilities:                  nativeCapabilities{},
 		ExternalPublication:           owner,
 		ExternalLifecycle:             external,
-		EffectiveRequiredCapabilities: append([]protocolcommon.CapabilityID(nil), packagedRequiredCapabilities...),
+		EffectiveRequiredCapabilities: packagedRequiredCapabilities(),
 		DisabledComponents:            append([]desktopcontract.ComponentID(nil), disabled...),
 		HostPorts: desktopcontract.HostPorts{
 			Credentials: credentials, LocalActor: platformActor{},
@@ -542,8 +558,9 @@ func (capabilities nativeCapabilities) Negotiate(ctx context.Context, manifest d
 		return protocolcommon.HandshakeResult{}, errors.New("desktop capability negotiation failed")
 	}
 	value := *response.Payload
-	enabled := make(map[protocolcommon.CapabilityID]bool, len(packagedCapabilities))
-	for _, id := range packagedCapabilities {
+	capabilitiesList := packagedCapabilities()
+	enabled := make(map[protocolcommon.CapabilityID]bool, len(capabilitiesList))
+	for _, id := range capabilitiesList {
 		enabled[id] = true
 	}
 	if capabilities.externalStorage {
