@@ -4,6 +4,7 @@ package desktopwails
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -13,7 +14,43 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
+	"github.com/dencyuinc/layerdraw/internal/registry"
 )
+
+type registryDispatchStub struct{ response []byte }
+
+func (s registryDispatchStub) DispatchRegistry(context.Context, []byte) []byte { return s.response }
+
+func TestFrontendRegistryDispatchIsRawStrictAndCorrelated(t *testing.T) {
+	validResponse, err := json.Marshal(registry.WireResponse{
+		WireVersion: registry.RegistryWireVersion, Operation: registry.WireListSources,
+		RequestID: "request-a", OK: true, Value: json.RawMessage(`[]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := NewFrontendBridge(nil, registryDispatchStub{response: validResponse})
+	valid := `{"wire_version":"1.0","operation":"registry.list_sources","request_id":"request-a","input":{}}`
+	var response registry.WireResponse
+	if err := json.Unmarshal([]byte(bridge.RegistryDispatch(valid)), &response); err != nil || !response.OK || response.RequestID != "request-a" {
+		t.Fatalf("valid response=%+v err=%v", response, err)
+	}
+	unknown := `{"wire_version":"1.0","operation":"registry.list_sources","request_id":"request-a","input":{},"smuggled":true}`
+	if err := json.Unmarshal([]byte(bridge.RegistryDispatch(unknown)), &response); err != nil || response.Failure == nil || response.Failure.Code != registry.FailureUnsupportedFormat {
+		t.Fatalf("unknown field response=%+v err=%v", response, err)
+	}
+	mismatched, err := json.Marshal(registry.WireResponse{
+		WireVersion: registry.RegistryWireVersion, Operation: registry.WireListSources,
+		RequestID: "request-b", OK: true, Value: json.RawMessage(`[]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge = NewFrontendBridge(nil, registryDispatchStub{response: mismatched})
+	if err := json.Unmarshal([]byte(bridge.RegistryDispatch(valid)), &response); err != nil || response.RequestID != "request-a" || response.Failure == nil || response.Failure.Code != registry.FailureRepairRequired {
+		t.Fatalf("correlation response=%+v err=%v", response, err)
+	}
+}
 
 func TestFrontendBridgeExposesContextFreeGeneratedInvoke(t *testing.T) {
 	base, err := NewSharedConfig(filepath.Join(t.TempDir(), "data"))
@@ -44,6 +81,10 @@ func TestFrontendBridgeExposesContextFreeGeneratedInvoke(t *testing.T) {
 	result := bridge.Invoke("EngineHandshake", desktopcontract.Exchange{Operation: "engine.handshake", Control: control, Blobs: []desktopcontract.Blob{}})
 	if result.Outcome != protocolcommon.OutcomeSuccess || !result.Validate() || bridge.State() != desktopcontract.LifecycleReady {
 		t.Fatalf("invoke=%+v state=%s", result, bridge.State())
+	}
+	publication, err := bridge.ProjectPublication()
+	if err != nil || publication.Phase != string(desktopcontract.LifecycleReady) || publication.Project != nil {
+		t.Fatalf("DTO-only empty project publication=%+v err=%v", publication, err)
 	}
 }
 

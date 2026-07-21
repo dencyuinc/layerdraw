@@ -16,11 +16,11 @@ New-Item -ItemType Directory -Force -Path $install, $data | Out-Null
 $env:APPDATA = $data
 $env:LAYERDRAW_DESKTOP_PROBE_STATE_KEY = $probeStateKey
 
-function Invoke-Probe([string]$Executable, [string]$Action) {
+function Invoke-Probe([string]$Executable, [string]$Action, [string]$Capabilities) {
   $env:LAYERDRAW_DESKTOP_PROBE_ACTION = $Action
   & $Executable --packaged-probe | Set-Content -Path $probe
   if ($LASTEXITCODE -ne 0) { throw "packaged probe failed during $Action" }
-  go run ./tools/desktopprobe -input $probe verify
+  go run ./tools/desktopprobe -input $probe -capabilities $Capabilities verify
   if ($LASTEXITCODE -ne 0) { throw "packaged probe verification failed during $Action" }
 }
 
@@ -45,7 +45,8 @@ try {
   if (-not (Test-Path (Join-Path $install "legal\host\layerdraw-host.exe.cdx.json"))) { throw "MCP Host SBOM is missing" }
   $developmentAssets = Get-ChildItem -Recurse -File $install | Where-Object { $_.Extension -eq ".map" -or $_.FullName -match "(testdata|test-fixtures)" }
   if ($developmentAssets) { throw "Windows installer contains development-only assets" }
-  Invoke-Probe $executable "initialize"
+  $capabilityDeclaration = Join-Path $install "legal\desktop-capabilities.json"
+  Invoke-Probe $executable "initialize" $capabilityDeclaration
 
   $corrupt = Join-Path $root "corrupt.exe"
   [IO.File]::WriteAllBytes($corrupt, [IO.File]::ReadAllBytes($CurrentInstaller)[0..63])
@@ -59,10 +60,10 @@ try {
   }
   if (-not $corruptRejected) { throw "corrupt installer was accepted" }
   if (-not (Test-Path $executable)) { throw "failed update removed the installed application" }
-  Invoke-Probe $executable "verify"
+  Invoke-Probe $executable "verify" $capabilityDeclaration
 
   Install-LayerDraw $CurrentInstaller
-  Invoke-Probe $executable "verify"
+  Invoke-Probe $executable "verify" $capabilityDeclaration
   if ($env:LAYERDRAW_EXPECT_SIGNED -eq "1") {
     foreach ($signedBinary in @($executable, $companionHost)) {
       if ((Get-AuthenticodeSignature $signedBinary).Status -ne "Valid") { throw "installed binary signature is not valid: $signedBinary" }

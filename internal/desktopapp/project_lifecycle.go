@@ -693,6 +693,29 @@ func (l *projectLifecycle) sessionRefs() []runtimeprotocol.RuntimeSessionRef {
 	return result
 }
 
+func (l *projectLifecycle) active() (runtimeprotocol.RuntimeSessionRef, uint64, string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.sessions) != 1 {
+		return runtimeprotocol.RuntimeSessionRef{}, 0, "", false
+	}
+	for _, value := range l.sessions {
+		persistence := "clean"
+		switch {
+		case value.providerPending:
+			persistence = "reconcile_pending"
+		case value.pendingPreview:
+			persistence = "preview_pending"
+		case value.ephemeralEdits:
+			persistence = "ephemeral"
+		case value.autosavePending:
+			persistence = "durable_pending"
+		}
+		return value.session, value.generation, persistence, true
+	}
+	return runtimeprotocol.RuntimeSessionRef{}, 0, "", false
+}
+
 func (l *projectLifecycle) saveLocked() error {
 	if l.saveFault != nil {
 		if err := l.saveFault(); err != nil {

@@ -4,25 +4,36 @@ package desktopwails
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
+	"github.com/dencyuinc/layerdraw/internal/adapter/registryengine"
+	"github.com/dencyuinc/layerdraw/internal/adapter/registrysource"
+	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/host"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
+	"github.com/dencyuinc/layerdraw/internal/registry"
+	runtimeport "github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 const (
@@ -31,26 +42,71 @@ const (
 	desktopEndpoint = "layerdraw-desktop"
 )
 
-var packagedCapabilities = []protocolcommon.CapabilityID{
+var basePackagedCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityAuthoring,
+	desktopcontract.CapabilityExport,
+	desktopcontract.CapabilityMCPTools,
+	desktopcontract.CapabilityMCPResources,
+	desktopcontract.CapabilityAgentScope,
+	desktopcontract.CapabilityExternalStorage,
+	desktopcontract.CapabilityRegistry,
+	desktopcontract.CapabilityReview,
+}
+
+var basePackagedRequiredCapabilities = []protocolcommon.CapabilityID{
+	desktopcontract.CapabilityAuthoring,
+	desktopcontract.CapabilityRegistry,
+	desktopcontract.CapabilityReview,
 	desktopcontract.CapabilityExport,
 	desktopcontract.CapabilityMCPTools,
 	desktopcontract.CapabilityMCPResources,
 	desktopcontract.CapabilityAgentScope,
 }
 
+func packagedCapabilities() []protocolcommon.CapabilityID {
+	result := append([]protocolcommon.CapabilityID(nil), basePackagedCapabilities...)
+	if packagedNativeSearchEnabled() {
+		result = append(result, desktopcontract.CapabilityQuery, desktopcontract.CapabilitySearch, desktopcontract.CapabilityAnalysis)
+	}
+	return result
+}
+
+func packagedRequiredCapabilities() []protocolcommon.CapabilityID {
+	result := append([]protocolcommon.CapabilityID(nil), basePackagedRequiredCapabilities...)
+	if packagedNativeSearchEnabled() {
+		result = append(result, desktopcontract.CapabilityQuery, desktopcontract.CapabilitySearch, desktopcontract.CapabilityAnalysis)
+	}
+	return result
+}
+
 // NewSharedConfig wires the owners that are actually packaged in Desktop.
 // Build-tagged native owners fail closed at startup when their verified bundle
 // is absent; unavailable owners remain disabled and undiscoverable.
 func NewSharedConfig(root string) (desktopapp.Config, error) {
-	owner := &sharedOwner{root: root}
+	objects, err := registry.NewDiskStagedObjectStore(filepath.Join(root, "registry", "objects"), registry.DefaultMaxStagedObjectBytes)
+	if err != nil {
+		return desktopapp.Config{}, err
+	}
+	transactions, err := registry.NewDiskTransactionStore(filepath.Join(root, "registry", "transactions"))
+	if err != nil {
+		return desktopapp.Config{}, err
+	}
+	sources, err := registry.NewDiskSourceStateStore(filepath.Join(root, "registry", "sources.json"))
+	if err != nil {
+		return desktopapp.Config{}, err
+	}
+	credentials := newPlatformCredentialPort()
+	external, err := desktopapp.NewReferenceExternalStorage(desktopapp.ReferenceExternalStorageConfig{Root: root, Credentials: credentials})
+	if err != nil {
+		return desktopapp.Config{}, err
+	}
+	owner := &sharedOwner{root: root, objects: objects, transactions: transactions, sources: sources, credentials: credentials}
 	clients, err := packagedClients(owner)
 	if err != nil {
 		return desktopapp.Config{}, err
 	}
 	adapters := map[desktopcontract.ComponentID]desktopapp.Adapter{}
 	disabled := []desktopcontract.ComponentID{
-		desktopcontract.ComponentRegistryClient, desktopcontract.ComponentReview,
 		desktopcontract.ComponentNativeExporters,
 	}
 	if !packagedNativeSearchEnabled() {
@@ -64,22 +120,34 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 			adapters[id] = owner
 		}
 	}
+	adapters[desktopcontract.ComponentRegistryClient] = enabledComponent{}
+	adapters[desktopcontract.ComponentReview] = enabledComponent{}
+	adapters[desktopcontract.ComponentExternalStorage] = external
 	adapters[desktopcontract.ComponentBindingShell] = owner
 	return desktopapp.Config{
 		Root: root, ReleaseVersion: desktopRelease, EndpointInstanceID: desktopEndpoint,
 		ReleaseManifestDigest: desktopDigest, Adapters: adapters, Bindings: clients,
 		Capabilities:                  nativeCapabilities{},
 		ExternalPublication:           owner,
-		EffectiveRequiredCapabilities: append([]protocolcommon.CapabilityID(nil), packagedCapabilities...),
+		ExternalLifecycle:             external,
+		EffectiveRequiredCapabilities: packagedRequiredCapabilities(),
 		DisabledComponents:            append([]desktopcontract.ComponentID(nil), disabled...),
 		HostPorts: desktopcontract.HostPorts{
-			Credentials: newPlatformCredentialPort(), LocalActor: platformActor{},
+			Credentials: credentials, LocalActor: platformActor{},
 			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{},
 		},
 		MCPCapabilities:       owner,
 		NativeSearchLifecycle: packagedNativeSearchLifecycle(owner),
+		MCPApplicationOwner:   reviewMCPOwner{shared: owner},
+		RegistryStagedObjects: registryObjectReader{store: objects},
+		ReviewOwner:           owner,
 	}, nil
 }
+
+type enabledComponent struct{}
+
+func (enabledComponent) Start(context.Context) error    { return nil }
+func (enabledComponent) Shutdown(context.Context) error { return nil }
 
 type disabledComponent struct{}
 
@@ -98,6 +166,71 @@ type sharedOwner struct {
 	nativeSearch bool
 	searchLife   host.SearchDocumentLifecycle
 	closeSearch  func()
+	objects      *registry.DiskStagedObjectStore
+	transactions *registry.DiskTransactionStore
+	sources      *registry.DiskSourceStateStore
+	credentials  desktopcontract.CredentialPort
+	registry     *registry.Registry
+	registryWire *registry.HostBinding
+	review       *reviewapp.Application
+	application  *desktopapp.Application
+}
+
+type registryObjectReader struct{ store registry.StagedObjectStore }
+
+// desktopReviewRuntime publishes an approved Review proposal through the
+// Desktop application commit path so durable storage and project lifecycle
+// state advance atomically.
+type desktopReviewRuntime struct{ owner *sharedOwner }
+
+func (r desktopReviewRuntime) Repreview(ctx context.Context, input reviewapp.RepreviewInput) (reviewapp.RepreviewResult, error) {
+	r.owner.mu.RLock()
+	local := r.owner.local
+	r.owner.mu.RUnlock()
+	if local == nil {
+		return reviewapp.RepreviewResult{}, errors.New("desktop Review runtime is unavailable")
+	}
+	return local.Repreview(ctx, input)
+}
+
+func (r desktopReviewRuntime) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitInput) (runtimeprotocol.RuntimeCommitResult, error) {
+	r.owner.mu.RLock()
+	application := r.owner.application
+	r.owner.mu.RUnlock()
+	if application == nil {
+		return runtimeprotocol.RuntimeCommitResult{}, errors.New("desktop Review application is unavailable")
+	}
+	result := application.Commit(ctx, input)
+	if !result.Validate() || result.Outcome != protocolcommon.OutcomeSuccess {
+		return runtimeprotocol.RuntimeCommitResult{}, errors.New("desktop Review commit failed closed")
+	}
+	return result.Value, nil
+}
+
+func (o *sharedOwner) bindApplication(application *desktopapp.Application) {
+	o.mu.Lock()
+	o.application = application
+	o.mu.Unlock()
+}
+
+func (r registryObjectReader) OpenRegistryStagedObject(ctx context.Context, ref runtimeport.RegistryStagedObjectRef) (io.ReadCloser, error) {
+	size, err := strconv.ParseInt(string(ref.Size), 10, 64)
+	if err != nil || size < 0 {
+		return nil, errors.New("Registry staged object size is invalid")
+	}
+	return r.store.OpenRegistryObject(ctx, registry.StagedObjectRef{ObjectID: ref.ObjectID, Digest: string(ref.Digest), Size: size, MediaType: ref.MediaType})
+}
+
+type registryCredentialResolver struct {
+	port desktopcontract.CredentialPort
+}
+
+func (r registryCredentialResolver) ResolveCredential(ctx context.Context, ref string) ([]byte, error) {
+	result := r.port.Resolve(ctx, desktopcontract.CredentialRef{ID: ref})
+	if !result.Validate() || result.Outcome != protocolcommon.OutcomeSuccess || len(result.Value) == 0 {
+		return nil, errors.New("Registry credential is unavailable")
+	}
+	return result.Value, nil
 }
 
 func (o *sharedOwner) RevalidateExternalPublication(ctx context.Context, intent desktopapp.ExternalPublicationIntent) desktopcontract.Result[struct{}] {
@@ -117,6 +250,51 @@ func (o *sharedOwner) RevalidateExternalPublication(ctx context.Context, intent 
 	return desktopcontract.Result[struct{}]{Outcome: protocolcommon.OutcomeSuccess, Value: struct{}{}}
 }
 
+func (o *sharedOwner) ReviewSnapshot() any {
+	o.mu.RLock()
+	owner := o.review
+	o.mu.RUnlock()
+	if owner == nil {
+		return reviewapp.Snapshot{Version: 1, Proposals: []reviewapp.Proposal{}}
+	}
+	return owner.Snapshot()
+}
+
+func (o *sharedOwner) ReviewComment(ctx context.Context, input desktopapp.ReviewCommentRequest, actor accessprotocol.ActorRef) (any, error) {
+	o.mu.RLock()
+	owner := o.review
+	o.mu.RUnlock()
+	if owner == nil {
+		return nil, errors.New("desktop Review owner is unavailable")
+	}
+	var target reviewapp.Target
+	if err := json.Unmarshal(input.Target, &target); err != nil {
+		return nil, reviewapp.ErrInvalid
+	}
+	return owner.Comment(ctx, reviewapp.CommentInput{ProposalID: input.ProposalID, Generation: input.Generation, CommentID: input.CommentID, Author: actor, Body: input.Body, Target: target})
+}
+
+func (o *sharedOwner) ReviewApproveAndApply(ctx context.Context, input desktopapp.ReviewApprovalRequest, session runtimeprotocol.RuntimeSessionRef, actor accessprotocol.ActorRef) (any, error) {
+	o.mu.RLock()
+	owner := o.review
+	o.mu.RUnlock()
+	if owner == nil {
+		return nil, errors.New("desktop Review owner is unavailable")
+	}
+	operation := runtimeprotocol.OperationID(fmt.Sprintf("review_%s_%d", input.ProposalID, input.Generation))
+	return owner.ApproveAndApply(ctx, reviewapp.ApprovalInput{ProposalID: input.ProposalID, Generation: input.Generation, Session: session, Approver: actor, OperationID: operation, IdempotencyKey: runtimeprotocol.IdempotencyKey(operation), Trigger: runtimeprotocol.CommitTriggerAgentApply})
+}
+
+func (o *sharedOwner) ReviewWithdraw(ctx context.Context, id string, generation uint64, actor accessprotocol.ActorRef) (any, error) {
+	o.mu.RLock()
+	owner := o.review
+	o.mu.RUnlock()
+	if owner == nil {
+		return nil, errors.New("desktop Review owner is unavailable")
+	}
+	return owner.Withdraw(ctx, id, generation, actor)
+}
+
 func (o *sharedOwner) Snapshot(context.Context) (mcphost.CapabilitySnapshot, error) {
 	operations := map[string]mcphost.OperationCapability{}
 	generated := map[string]bool{}
@@ -127,10 +305,14 @@ func (o *sharedOwner) Snapshot(context.Context) (mcphost.CapabilitySnapshot, err
 	for _, route := range mcphost.ToolRoutes() {
 		for _, operation := range append([]string{route.Operation, route.PreviewOperation}, route.RequiredOperations...) {
 			native := strings.HasPrefix(operation, "native.") && o.nativeSearch
-			if operation != "" && generated[operation] && (strings.HasPrefix(operation, "engine.") || strings.HasPrefix(operation, "runtime.") || native) {
+			registryOperation := strings.HasPrefix(operation, "registry.")
+			if operation != "" && generated[operation] && (strings.HasPrefix(operation, "engine.") || strings.HasPrefix(operation, "runtime.") || registryOperation || native) {
 				operations[operation] = mcphost.OperationCapability{Enabled: true, InputSchema: append(json.RawMessage(nil), schema...), OutputSchema: append(json.RawMessage(nil), schema...)}
 			}
 		}
+	}
+	for _, operation := range []string{"review.list_proposals", "review.create_proposal", "review.comment", "review.approve_apply", "review.withdraw"} {
+		operations[operation] = mcphost.OperationCapability{Enabled: true, InputSchema: append(json.RawMessage(nil), schema...), OutputSchema: append(json.RawMessage(nil), schema...)}
 	}
 	digest := protocolcommon.Digest(desktopDigest)
 	return mcphost.CapabilitySnapshot{
@@ -164,6 +346,50 @@ func (o *sharedOwner) Start(context.Context) error {
 	if o.root == "" {
 		o.root = o.local.DataRoot()
 	}
+	validator, err := registryengine.New(o.objects, o.local)
+	if err != nil {
+		return err
+	}
+	registryOwner, err := registry.New(validator, registrysource.AccessPort{Evaluator: accesscore.Evaluator{}}, o.local, o.local, registrysource.CredentialBroker{Resolver: registryCredentialResolver{o.credentials}}, o.transactions)
+	if err != nil {
+		return err
+	}
+	localSource := registrysource.LocalDirectory{}
+	remoteSource, err := registrysource.NewHTTPS(&http.Client{})
+	if err != nil {
+		return err
+	}
+	for _, kind := range []registry.SourceKind{registry.SourceLocalDirectory, registry.SourceGit} {
+		registryOwner.RegisterClient(kind, localSource)
+		registryOwner.RegisterConnector(kind, localSource)
+	}
+	for _, kind := range []registry.SourceKind{registry.SourceOfficial, registry.SourceOrganizationPrivate, registry.SourceSelfHosted} {
+		registryOwner.RegisterClient(kind, remoteSource)
+		registryOwner.RegisterConnector(kind, remoteSource)
+	}
+	if err := registryOwner.PutTrustPolicy(registry.TrustPolicy{PolicyID: "desktop-local", AllowUnsignedLocal: true, TrustedPublishers: map[string]bool{}, PublicKeys: map[string]ed25519.PublicKey{}, RevokedKeys: map[string]bool{}}); err != nil {
+		return err
+	}
+	if o.sources != nil {
+		if err := registryOwner.AttachSourceStateStore(context.Background(), o.sources); err != nil {
+			return err
+		}
+	}
+	registryWire, err := registry.NewHostBinding(registryOwner)
+	if err != nil {
+		return err
+	}
+	var reviewStore reviewapp.Store = reviewapp.NewMemoryStore()
+	if o.root != "" {
+		reviewStore, err = reviewapp.NewFileStore(filepath.Join(o.root, "review"))
+		if err != nil {
+			return err
+		}
+	}
+	reviewOwner, err := reviewapp.New(context.Background(), reviewStore, desktopReviewRuntime{owner: o}, o.local, nil)
+	if err != nil {
+		return err
+	}
 	engine, err := engineendpoint.NewHostEngineFacade(desktopRelease, "unknown", desktopDigest, desktopEndpoint, engineendpoint.TransportInProcess)
 	if err != nil {
 		return err
@@ -178,13 +404,15 @@ func (o *sharedOwner) Start(context.Context) error {
 		return err
 	}
 	o.endpoint, o.engine, o.nativeSearch, o.searchLife, o.closeSearch = endpoint, engine, search != nil, lifecycle, closeSearch
+	o.endpoint, o.engine, o.registry, o.registryWire, o.review = endpoint, engine, registryOwner, registryWire, reviewOwner
 	return nil
 }
 
 func (o *sharedOwner) Shutdown(context.Context) error {
 	o.mu.Lock()
 	closeSearch := o.closeSearch
-	o.endpoint, o.engine, o.local, o.nativeSearch, o.searchLife, o.closeSearch = nil, nil, nil, false, nil, nil
+	o.endpoint, o.engine, o.registry, o.registryWire, o.review, o.local, o.application = nil, nil, nil, nil, nil, nil, nil
+	o.nativeSearch, o.searchLife, o.closeSearch = false, nil, nil
 	o.mu.Unlock()
 	if closeSearch != nil {
 		closeSearch()
@@ -192,15 +420,51 @@ func (o *sharedOwner) Shutdown(context.Context) error {
 	return nil
 }
 
+func (o *sharedOwner) DispatchRegistry(ctx context.Context, wire []byte) []byte {
+	o.mu.RLock()
+	binding := o.registryWire
+	o.mu.RUnlock()
+	if binding == nil {
+		return registryWireFailure(registry.WireOperation("registry.invalid"), "", registry.FailureUnavailable, "desktop_registry")
+	}
+	return binding.Dispatch(ctx, wire)
+}
+
+func (o *sharedOwner) PreviewEditor(ctx context.Context, input runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error) {
+	o.mu.RLock()
+	local := o.local
+	o.mu.RUnlock()
+	if local == nil {
+		return localdocument.EditorPreviewResult{}, errors.New("desktop editor preview is unavailable")
+	}
+	return local.PreviewEditor(ctx, input)
+}
+
+func (o *sharedOwner) MaterializeProjectView(ctx context.Context, session runtimeprotocol.RuntimeSessionRef, address string) (semantic.ViewData, error) {
+	o.mu.RLock()
+	local := o.local
+	o.mu.RUnlock()
+	if local == nil {
+		return semantic.ViewData{}, errors.New("desktop view materialization is unavailable")
+	}
+	return local.MaterializeProjectView(ctx, session, address)
+}
+
 func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
 	o.mu.RLock()
-	endpoint, engine := o.endpoint, o.engine
+	endpoint, engine, registryWire, application := o.endpoint, o.engine, o.registryWire, o.application
 	o.mu.RUnlock()
 	if endpoint == nil || engine == nil {
 		return desktopcontract.ExchangeResult{}, errors.New("desktop shared owner is not started")
 	}
 	if result, err, handled := invokePackagedNativeSearch(ctx, endpoint, exchange); handled {
 		return result, err
+	}
+	if strings.HasPrefix(exchange.Operation, "registry.") {
+		if registryWire == nil || len(exchange.Blobs) != 0 {
+			return desktopcontract.ExchangeResult{}, errors.New("desktop Registry owner is unavailable")
+		}
+		return desktopcontract.ExchangeResult{Operation: exchange.Operation, Control: registryWire.Dispatch(ctx, exchange.Control)}, nil
 	}
 	if exchange.Operation == string(engineprotocol.HandshakeRequestEnvelopeOperationValue) {
 		request, err := engineprotocol.DecodeHandshakeRequestEnvelope(exchange.Control)
@@ -221,6 +485,9 @@ func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Excha
 		}
 		return desktopcontract.ExchangeResult{Operation: response.Operation, Control: response.Control}, nil
 	}
+	if exchange.Operation == string(runtimeprotocol.CommitOperationsRequestEnvelopeOperationValue) {
+		return invokeDurableRuntimeCommit(ctx, application, exchange)
+	}
 	plan, terminal, err := endpoint.Prepare(ctx, exchange.Operation, exchange.Control)
 	if err != nil {
 		return desktopcontract.ExchangeResult{}, err
@@ -234,6 +501,36 @@ func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Excha
 		return desktopcontract.ExchangeResult{}, err
 	}
 	return desktopcontract.ExchangeResult{Operation: response.Operation, Control: response.Control, Blobs: sink.blobs}, nil
+}
+
+func invokeDurableRuntimeCommit(ctx context.Context, application *desktopapp.Application, exchange desktopcontract.Exchange) (desktopcontract.ExchangeResult, error) {
+	if len(exchange.Blobs) != 0 {
+		return desktopcontract.ExchangeResult{}, errors.New("runtime commit does not accept blobs")
+	}
+	if application == nil {
+		return desktopcontract.ExchangeResult{}, errors.New("desktop application is unavailable")
+	}
+	request, err := runtimeprotocol.DecodeCommitOperationsRequestEnvelope(exchange.Control)
+	if err != nil {
+		return desktopcontract.ExchangeResult{}, err
+	}
+	committed := application.Commit(ctx, request.Payload)
+	if !committed.Validate() || committed.Outcome != protocolcommon.OutcomeSuccess {
+		return desktopcontract.ExchangeResult{}, errors.New("desktop runtime commit failed closed")
+	}
+	payload := committed.Value
+	control, err := runtimeprotocol.EncodeCommitOperationsResponseEnvelope(runtimeprotocol.CommitOperationsResponseEnvelope{
+		Diagnostics: []protocolcommon.ProtocolDiagnostic{},
+		HostRelease: desktopRelease,
+		Outcome:     protocolcommon.OutcomeSuccess,
+		Payload:     &payload,
+		Protocol:    request.Protocol,
+		RequestID:   request.RequestID,
+	})
+	if err != nil {
+		return desktopcontract.ExchangeResult{}, err
+	}
+	return desktopcontract.ExchangeResult{Operation: exchange.Operation, Control: control}, nil
 }
 
 func runtimeHandshakeOperation() protocolcommon.CapabilityID { return "runtime.handshake" }
@@ -330,8 +627,9 @@ func (capabilities nativeCapabilities) Negotiate(ctx context.Context, manifest d
 		return protocolcommon.HandshakeResult{}, errors.New("desktop capability negotiation failed")
 	}
 	value := *response.Payload
-	enabled := make(map[protocolcommon.CapabilityID]bool, len(packagedCapabilities))
-	for _, id := range packagedCapabilities {
+	capabilitiesList := packagedCapabilities()
+	enabled := make(map[protocolcommon.CapabilityID]bool, len(capabilitiesList))
+	for _, id := range capabilitiesList {
 		enabled[id] = true
 	}
 	if capabilities.externalStorage {
@@ -378,7 +676,7 @@ func packagedClients(owner *sharedOwner) (desktopcontract.ClientSet, error) {
 	for index := 0; index < root.NumField(); index++ {
 		ownerField := root.Field(index)
 		ownerName := root.Type().Field(index).Name
-		actual := ownerName == "Engine" || ownerName == "Runtime" || (ownerName == "NativeQuery" && packagedNativeSearchEnabled())
+		actual := ownerName == "Engine" || ownerName == "Runtime" || ownerName == "Registry" || (ownerName == "NativeQuery" && packagedNativeSearchEnabled())
 		for fieldIndex := 0; fieldIndex < ownerField.NumField(); fieldIndex++ {
 			field := ownerField.Field(fieldIndex)
 			if field.Kind() == reflect.Interface {

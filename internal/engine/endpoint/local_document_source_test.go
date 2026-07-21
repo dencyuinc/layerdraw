@@ -164,6 +164,81 @@ func TestHostEngineFacadeOwnsOneNegotiatedEngineBoundary(t *testing.T) {
 	}
 }
 
+func TestRuntimeBridgePublishesAndMaterializesQueryBackedViews(t *testing.T) {
+	ctx := context.Background()
+	const sourceText = `project p "Project" {}
+layers {
+  app "Application" @10
+}
+entity_type service "Service" {
+  representation shape rect
+  columns {
+    environment "Environment" enum [prod, dev] required default prod
+  }
+}
+entities service @app {
+  api "API"
+}
+rows service [environment] {
+  api primary: prod
+}
+query all "All" {
+  select {
+    entity_types [service]
+    roots [api]
+  }
+  result [seed_entities]
+}
+view inventory "Inventory" inventory {
+  source query all {}
+  table {
+    rows entity_rows
+    entity_types [service]
+    entity_id
+    column environment {
+      source attribute environment entity_types [service]
+    }
+  }
+}
+`
+	local := NewLocalDocumentEngine()
+	source, err := local.CompileProject(ctx, LocalProjectInput{
+		EntryPath: "document.ldl", ProjectSourceTree: map[string][]byte{"document.ldl": []byte(sourceText)},
+		ResolvedDependencies: LocalResolvedDependencies{Format: "layerdraw-resolved", FormatVersion: 1, Language: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _, err := source.EncodedInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := local.NewRuntimeEngineBridge("view-test-endpoint")
+	working, err := bridge.Open(ctx, "document_view", "revision_1", source.DefinitionHash, source.GraphHash, encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	views, err := bridge.Views(working)
+	if err != nil || len(views) != 1 || views[0].Address != "ldl:project:p:view:inventory" || views[0].DisplayName != "Inventory" {
+		t.Fatalf("views=%+v err=%v", views, err)
+	}
+	materialized, err := bridge.MaterializeQueryView(ctx, working, views[0].Address)
+	if err != nil || materialized.ViewAddress != semantic.ViewAddress(views[0].Address) {
+		t.Fatalf("materialized=%+v err=%v", materialized, err)
+	}
+	if _, err := bridge.MaterializeQueryView(ctx, working, "ldl:project:p/view:missing"); err == nil {
+		t.Fatal("missing view was materialized")
+	}
+	stale := working
+	stale.Generation = "2"
+	if _, err := bridge.Views(stale); err == nil {
+		t.Fatal("stale working document exposed views")
+	}
+	if _, err := bridge.MaterializeQueryView(ctx, stale, views[0].Address); err == nil {
+		t.Fatal("stale working document materialized a view")
+	}
+}
+
 func localBridgePreconditions(snapshot engine.Snapshot, working BridgeWorking) engineprotocol.EngineEditPreconditions {
 	result := engineprotocol.EngineEditPreconditions{
 		DocumentGeneration:    engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: "local-test-endpoint", Value: working.Handle}, Value: protocolcommon.CanonicalUint64(working.Generation)},

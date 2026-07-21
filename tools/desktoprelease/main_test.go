@@ -140,6 +140,7 @@ func TestVerifyRejectsDigestMismatchDowngradeAndIncompatibleClient(t *testing.T)
 	}{
 		{name: "digest", current: "1.1.0", mutate: "installer", want: "digest mismatch"},
 		{name: "conformance digest", current: "1.1.0", mutate: "conformance", want: "digest mismatch"},
+		{name: "disabled features digest", current: "1.1.0", mutate: "disabled", want: "digest mismatch"},
 		{name: "attestation digest", current: "1.1.0", mutate: "attestation", want: "digest mismatch"},
 		{name: "downgrade", current: "1.2.0", want: "downgrade or reinstall"},
 		{name: "incompatible", current: "0.9.0", want: "incompatible"},
@@ -148,7 +149,7 @@ func TestVerifyRejectsDigestMismatchDowngradeAndIncompatibleClient(t *testing.T)
 		t.Run(test.name, func(t *testing.T) {
 			root, manifestPath := buildFixture(t, true)
 			if test.mutate != "" {
-				path := map[string]string{"installer": "LayerDraw.dmg", "conformance": "desktop-conformance.json", "attestation": "desktop-attestation.json"}[test.mutate]
+				path := map[string]string{"installer": "LayerDraw.dmg", "conformance": "desktop-conformance.json", "disabled": "desktop-disabled-features.json", "attestation": "desktop-attestation.json"}[test.mutate]
 				if err := os.WriteFile(filepath.Join(root, path), []byte("tampered"), 0o644); err != nil {
 					t.Fatal(err)
 				}
@@ -306,13 +307,14 @@ func TestInvalidCommandsAndCapabilitiesFailClosed(t *testing.T) {
 	}
 	root := t.TempDir()
 	path := filepath.Join(root, "capabilities.json")
-	if err := os.WriteFile(path, []byte(`{"schema_version":1,"components":[],"excludes":[],"security":{}}`), 0o644); err != nil {
+	valid := string(validCapabilityFixture(t))
+	if err := os.WriteFile(path, []byte(strings.Replace(valid, `"engine"`, `"engine_missing"`, 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateCapabilities(path); err == nil || !strings.Contains(err.Error(), "missing") {
+	if err := validateCapabilities(path); err == nil {
 		t.Fatalf("expected closure error, got %v", err)
 	}
-	if err := os.WriteFile(path, []byte(`{"schema_version":1,"components":["desktop-shell","frontend-packages","mcp-host","native-adapters","native-exporters","registry","review"],"excludes":["development-servers","source-maps","test-fixtures"],"security":{"signing_secrets":true}}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Replace(valid, `"signing_secrets": false`, `"signing_secrets": true`, 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateCapabilities(path); err == nil || !strings.Contains(err.Error(), "exposes") {
@@ -390,13 +392,14 @@ func fixtureFiles(t *testing.T, root string) map[string]string {
 	t.Helper()
 	contents := map[string]string{
 		"installer": "desktop installer", "sbom": `{"bomFormat":"CycloneDX"}`,
-		"licenses": "Third-party notices", "capabilities": `{"schema_version":1,"components":["desktop-shell","frontend-packages","mcp-host","native-adapters","native-exporters","registry","review"],"excludes":["development-servers","source-maps","test-fixtures"],"security":{"preconfigured_mcp_endpoints":false,"provider_credentials":false,"signing_secrets":false}}`,
-		"conformance": `{"schema_version":1,"delivery":"desktop"}`,
+		"licenses": "Third-party notices", "capabilities": string(validCapabilityFixture(t)),
+		"conformance": `{"schema_version":1,"delivery":"desktop","normative_matrix":"docs/blueprint.md#1311-feature-x-delivery-matrix","features":{"F01":{"feature":"Project management","delivered":false,"evidence":[]}},"acceptance_suites":{},"faults":{},"release_evidence":[],"performance_budgets":{}}`,
+		"disabled":    `{"schema_version":1,"delivery":"desktop","normative_matrix":"docs/blueprint.md#1311-feature-x-delivery-matrix","disabled_features":[{"feature_id":"F01","feature":"Project management","status":"disabled","reason_code":"server_only","reason":"Not in Desktop."}]}`,
 		"attestation": `{"schema_version":1,"source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
 	}
 	result := map[string]string{}
 	for name, content := range contents {
-		filename := map[string]string{"installer": "LayerDraw.dmg", "sbom": "LayerDraw.cdx.json", "licenses": "THIRD_PARTY_NOTICES.txt", "capabilities": "desktop-capabilities.json", "conformance": "desktop-conformance.json", "attestation": "desktop-attestation.json"}[name]
+		filename := map[string]string{"installer": "LayerDraw.dmg", "sbom": "LayerDraw.cdx.json", "licenses": "THIRD_PARTY_NOTICES.txt", "capabilities": "desktop-capabilities.json", "conformance": "desktop-conformance.json", "disabled": "desktop-disabled-features.json", "attestation": "desktop-attestation.json"}[name]
 		path := filepath.Join(root, filename)
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -406,8 +409,17 @@ func fixtureFiles(t *testing.T, root string) map[string]string {
 	return result
 }
 
+func validCapabilityFixture(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "deploy", "desktop-capabilities.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func buildArgs(root string, files map[string]string, testSigning bool) []string {
-	args := []string{"build", "-installer", files["installer"], "-sbom", files["sbom"], "-licenses", files["licenses"], "-capabilities", files["capabilities"], "-desktop-conformance", files["conformance"], "-desktop-attestation", files["attestation"], "-output", filepath.Join(root, "update.json"), "-version", "1.2.0", "-minimum-supported-version", "1.0.0", "-platform", "darwin", "-format", "dmg", "-channel", "stable", "-source-revision", strings.Repeat("a", 40), "-built-at", "2026-07-20T00:00:00Z"}
+	args := []string{"build", "-installer", files["installer"], "-sbom", files["sbom"], "-licenses", files["licenses"], "-capabilities", files["capabilities"], "-desktop-conformance", files["conformance"], "-disabled-features", files["disabled"], "-desktop-attestation", files["attestation"], "-output", filepath.Join(root, "update.json"), "-version", "1.2.0", "-minimum-supported-version", "1.0.0", "-platform", "darwin", "-format", "dmg", "-channel", "stable", "-source-revision", strings.Repeat("a", 40), "-built-at", "2026-07-20T00:00:00Z"}
 	if testSigning {
 		args = append(args, "-test-signing")
 	}

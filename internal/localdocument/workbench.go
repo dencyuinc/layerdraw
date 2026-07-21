@@ -5,27 +5,102 @@ package localdocument
 import (
 	"context"
 	"errors"
+	"io"
 	"sort"
 	"strconv"
 	"sync"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 type runtimeWorkbench struct {
-	bridge *engineendpoint.RuntimeEngineBridge
-	engine *engineendpoint.LocalDocumentEngine
-	mu     sync.RWMutex
-	kinds  map[runtimeprotocol.DocumentID]port.ExternalFileKind
+	bridge            *engineendpoint.RuntimeEngineBridge
+	engine            *engineendpoint.LocalDocumentEngine
+	mu                sync.RWMutex
+	kinds             map[runtimeprotocol.DocumentID]port.ExternalFileKind
+	registryReader    port.RegistryStagedObjectReader
+	registryBaselines map[string][]byte
 }
+
+const maxRegistryObjectBytes int64 = 64 << 20
 
 func (w *runtimeWorkbench) BindExternal(documentID runtimeprotocol.DocumentID, kind port.ExternalFileKind) {
 	w.mu.Lock()
 	w.kinds[documentID] = kind
 	w.mu.Unlock()
+}
+
+func (w *runtimeWorkbench) RegisterRegistryBaseline(handle string, encoded []byte) {
+	w.mu.Lock()
+	w.registryBaselines[handle] = append([]byte(nil), encoded...)
+	w.mu.Unlock()
+}
+
+func (w *runtimeWorkbench) registryBase(handle string) ([]byte, bool) {
+	if encoded, ok := w.bridge.SearchEncodedInput(handle); ok {
+		return encoded, true
+	}
+	w.mu.RLock()
+	encoded, ok := w.registryBaselines[handle]
+	w.mu.RUnlock()
+	return append([]byte(nil), encoded...), ok
+}
+
+func (w *runtimeWorkbench) PrepareRegistryRevision(ctx context.Context, input port.PrepareRegistryRevisionInput) (port.PreparedRevision, error) {
+	return w.prepareRegistryRevision(ctx, input.BaseRevision, input.ProjectMutation, true)
+}
+
+func (w *runtimeWorkbench) PrepareInitialRegistryRevision(ctx context.Context, input port.PrepareInitialRegistryRevisionInput) (port.PreparedRevision, error) {
+	return w.prepareRegistryRevision(ctx, input.BaselineRevision, input.ProjectMutation, false)
+}
+
+func (w *runtimeWorkbench) prepareRegistryRevision(ctx context.Context, base runtimeprotocol.CommittedRevisionRef, mutation port.RegistryProjectMutation, retain bool) (port.PreparedRevision, error) {
+	encoded, ok := w.registryBase(mutation.SnapshotHandle)
+	if !ok || engineendpoint.LocalCompileInputRef(encoded).Digest != mutation.SourceClosureDigest || w.registryReader == nil {
+		return port.PreparedRevision{}, port.ErrConflict
+	}
+	artifacts := make([]engineendpoint.RegistryProjectArtifactInput, 0, len(mutation.Artifacts))
+	artifactBytes := make([][]byte, 0, len(mutation.Artifacts))
+	for _, artifact := range mutation.Artifacts {
+		reader, err := w.registryReader.OpenRegistryStagedObject(ctx, artifact.Object)
+		if err != nil {
+			return port.PreparedRevision{}, err
+		}
+		contents, readErr := io.ReadAll(io.LimitReader(reader, maxRegistryObjectBytes+1))
+		closeErr := reader.Close()
+		if readErr != nil || closeErr != nil || int64(len(contents)) > maxRegistryObjectBytes {
+			return port.PreparedRevision{}, port.ErrConflict
+		}
+		artifacts = append(artifacts, engineendpoint.RegistryProjectArtifactInput{Bytes: contents, RegistrySource: artifact.RegistrySource})
+		artifactBytes = append(artifactBytes, contents)
+	}
+	var prepared engineendpoint.RegistryProjectPreparation
+	var err error
+	if !retain && len(mutation.Artifacts) == 1 && mutation.Artifacts[0].Object.MediaType == "application/vnd.layerdraw.project" && len(mutation.RemoveCanonicalIDs) == 0 {
+		prepared, err = w.engine.PrepareRegistryTemplate(ctx, encoded, artifactBytes[0])
+	} else {
+		prepared, err = w.engine.PrepareRegistryProject(ctx, engineendpoint.RegistryProjectMutationInput{BaseEncoded: encoded, Artifacts: artifacts, RemoveCanonicalIDs: append([]string(nil), mutation.RemoveCanonicalIDs...)})
+	}
+	if err != nil {
+		return port.PreparedRevision{}, err
+	}
+	ref := engineendpoint.LocalCompileInputRef(prepared.EncodedInput)
+	result := port.PreparedRevision{AuthoringImpact: prepared.AuthoringImpact, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, Sources: port.SourceBlobSet{Revision: base, Blobs: []port.SourceBlob{{Ref: ref, Contents: prepared.EncodedInput}}}, Manifest: ref}
+	if retain {
+		working, ok := w.Working(mutation.SnapshotHandle, base)
+		if !ok {
+			return port.PreparedRevision{}, port.ErrConflict
+		}
+		bridgeWorking := engineendpoint.BridgeWorking{Handle: working.Handle, Generation: string(working.Generation), DocumentID: string(base.DocumentID), RevisionID: string(base.RevisionID), DefinitionHash: working.DefinitionHash, GraphHash: working.GraphHash}
+		if err := w.bridge.RetainRegistryPrepared(ctx, bridgeWorking, engineendpoint.BridgePrepared{AuthoringImpact: prepared.AuthoringImpact, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, EncodedInput: prepared.EncodedInput}); err != nil {
+			return port.PreparedRevision{}, err
+		}
+	}
+	return result, nil
 }
 
 func (w *runtimeWorkbench) Open(ctx context.Context, in port.OpenWorkingDocumentInput) (port.WorkingDocument, error) {
@@ -58,7 +133,7 @@ func (w *runtimeWorkbench) Preview(ctx context.Context, in port.PreviewWorkingDo
 	}
 	ref := engineendpoint.LocalCompileInputRef(prepared.EncodedInput)
 	sources := port.SourceBlobSet{Revision: in.Document.BaseRevision, Blobs: []port.SourceBlob{{Ref: ref, Contents: prepared.EncodedInput}}}
-	result := port.PreparedRevision{AuthoringImpact: prepared.AuthoringImpact, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, Sources: sources, Manifest: ref}
+	result := port.PreparedRevision{AuthoringImpact: prepared.AuthoringImpact, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash, Preview: prepared.Preview, Sources: sources, Manifest: ref}
 	w.mu.RLock()
 	kind, fileBacked := w.kinds[in.Document.BaseRevision.DocumentID]
 	w.mu.RUnlock()
@@ -91,6 +166,14 @@ func (w *runtimeWorkbench) Preview(ctx context.Context, in port.PreviewWorkingDo
 		}
 	}
 	return result, nil
+}
+
+func (w *runtimeWorkbench) views(document port.WorkingDocument) ([]engineendpoint.BridgeView, error) {
+	return w.bridge.Views(engineendpoint.BridgeWorking{Handle: document.Handle, Generation: string(document.Generation), DocumentID: string(document.BaseRevision.DocumentID), RevisionID: string(document.BaseRevision.RevisionID), DefinitionHash: document.DefinitionHash, GraphHash: document.GraphHash})
+}
+
+func (w *runtimeWorkbench) materializeView(ctx context.Context, document port.WorkingDocument, address string) (semantic.ViewData, error) {
+	return w.bridge.MaterializeQueryView(ctx, engineendpoint.BridgeWorking{Handle: document.Handle, Generation: string(document.Generation), DocumentID: string(document.BaseRevision.DocumentID), RevisionID: string(document.BaseRevision.RevisionID), DefinitionHash: document.DefinitionHash, GraphHash: document.GraphHash}, address)
 }
 
 func (w *runtimeWorkbench) Checkpoint(ctx context.Context, in port.CheckpointWorkingDocumentInput) (port.WorkingDocument, error) {

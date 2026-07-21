@@ -75,7 +75,7 @@ if [[ "$platform" == "windows" ]]; then
   # Keep dependency order explicit on Windows, where parallel workspace builds
   # can race while replacing dist directories. Filters with no matching package
   # are harmless, which keeps this compatible with branches predating review.
-  for package in protocol composer render viewer engine-client client-sdk review react desktop; do
+  for package in protocol composer render viewer engine-client client-sdk export registry-client library review react desktop; do
     corepack pnpm --filter "@layerdraw/$package" build
   done
 else
@@ -139,6 +139,7 @@ go run "$repository_root/tools/desktoprelease" merge-sbom \
   -output "$temporary/legal/LayerDraw-bundle.cdx.json"
 cp "$repository_root/deploy/desktop-capabilities.json" "$temporary/legal/"
 cp "$repository_root/deploy/desktop-conformance.json" "$temporary/legal/"
+cp "$repository_root/deploy/desktop-disabled-features.json" "$temporary/legal/"
 
 if [[ "$platform" == "windows" ]]; then
 	if [[ "${LAYERDRAW_RELEASE_SIGNING:-0}" == "1" ]]; then
@@ -217,3 +218,4 @@ cp "$temporary/legal/LayerDraw-bundle.cdx.json" "$output/LayerDraw-$version.cdx.
 cp "$temporary/legal/THIRD_PARTY_NOTICES.txt" "$output/LayerDraw-$version-THIRD_PARTY_NOTICES.txt"
 cp "$repository_root/deploy/desktop-capabilities.json" "$output/LayerDraw-$version-capabilities.json"
 cp "$repository_root/deploy/desktop-conformance.json" "$output/LayerDraw-$version-conformance.json"
+cp "$repository_root/deploy/desktop-disabled-features.json" "$output/LayerDraw-$version-disabled-features.json"

@@ -8,16 +8,18 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dencyuinc/layerdraw/internal/desktopartifact"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/desktopwails"
 )
 
 func main() {
 	input := flag.String("input", "", "path to packaged Desktop probe JSON")
+	capabilities := flag.String("capabilities", "", "path to installed Desktop capability declaration")
 	requireDOM := flag.Bool("require-dom", false, "require a completed Wails DOM accessibility round trip")
 	flag.Parse()
-	if flag.NArg() != 1 || flag.Arg(0) != "verify" || *input == "" {
-		fail("usage: desktopprobe -input <path> verify")
+	if flag.NArg() != 1 || flag.Arg(0) != "verify" || *input == "" || *capabilities == "" {
+		fail("usage: desktopprobe -input <path> -capabilities <path> verify")
 	}
 	file, err := os.Open(*input)
 	if err != nil {
@@ -30,6 +32,15 @@ func main() {
 	if err := decoder.Decode(&value); err != nil || value.SchemaVersion != 1 || !value.Platform.Validate() ||
 		!value.WailsRuntimeBridge || !value.SettingsRoundTrip || !value.ProjectRoundTrip || value.AssociationHandoff != desktopcontract.FileAssociationLDL {
 		fail("Desktop probe output invalid")
+	}
+	declarationFile, err := os.Open(*capabilities)
+	if err != nil {
+		fail("Desktop capability declaration unavailable")
+	}
+	declaration, err := desktopartifact.DecodeCapabilityDeclaration(declarationFile)
+	closeErr := declarationFile.Close()
+	if err != nil || closeErr != nil || desktopartifact.ValidateProbeParity(declaration, value.CapabilityManifest, value.CapabilityStatuses) != nil {
+		fail("Desktop capability declaration does not match the installed executable")
 	}
 	if *requireDOM && (!value.DOMRoundTrip || value.Accessibility == nil || !value.Accessibility.LabelsComplete ||
 		!value.Accessibility.FocusOrderValid || !value.Accessibility.KeyboardWorkflowValid ||

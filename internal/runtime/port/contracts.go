@@ -33,6 +33,78 @@ type Workbench interface {
 	Checkpoint(context.Context, CheckpointWorkingDocumentInput) (WorkingDocument, error)
 }
 
+type RegistryStagedObjectRef struct {
+	ObjectID  string
+	Digest    protocolcommon.Digest
+	Size      protocolcommon.CanonicalUint64
+	MediaType string
+}
+
+type PrepareRegistryRevisionInput struct {
+	Scope                      runtimeprotocol.RuntimeScope
+	BaseRevision               runtimeprotocol.CommittedRevisionRef
+	RegistryTransactionID      string
+	PlanDigest                 protocolcommon.Digest
+	MutationDigest             protocolcommon.Digest
+	ExpectedResolvedLockDigest protocolcommon.Digest
+	StagedObjects              []RegistryStagedObjectRef
+	ProjectMutation            RegistryProjectMutation
+}
+
+// RegistryRevisionPreparer is the Engine-owned handoff from verified staged
+// package bytes to a complete Runtime PreparedRevision. Runtime never parses
+// LDL, expands archives, or fabricates source blobs from plan metadata.
+type RegistryRevisionPreparer interface {
+	PrepareRegistryRevision(context.Context, PrepareRegistryRevisionInput) (PreparedRevision, error)
+	PrepareInitialRegistryRevision(context.Context, PrepareInitialRegistryRevisionInput) (PreparedRevision, error)
+}
+
+type PrepareInitialRegistryRevisionInput struct {
+	Scope                      runtimeprotocol.RuntimeScope
+	BaselineRevision           runtimeprotocol.CommittedRevisionRef
+	RegistryTransactionID      string
+	PlanDigest                 protocolcommon.Digest
+	MutationDigest             protocolcommon.Digest
+	ExpectedResolvedLockDigest protocolcommon.Digest
+	StagedObjects              []RegistryStagedObjectRef
+	ProjectMutation            RegistryProjectMutation
+}
+
+type RegistryProjectMutation struct {
+	SnapshotHandle      string
+	SourceClosureDigest protocolcommon.Digest
+	Artifacts           []RegistryProjectArtifactRef
+	RemoveCanonicalIDs  []string
+}
+
+type RegistryProjectArtifactRef struct {
+	Object         RegistryStagedObjectRef
+	RegistrySource string
+}
+
+type RegistryStagedObjectReader interface {
+	OpenRegistryStagedObject(context.Context, RegistryStagedObjectRef) (io.ReadCloser, error)
+}
+
+// InitialRegistryRevisionPublisher owns the no-head publication point used by
+// templates. Implementations must be idempotent by operation/idempotency key
+// and return ErrConflict if any unrelated head already exists.
+type InitialRegistryRevisionPublisher interface {
+	PublishInitialRegistryRevision(context.Context, PublishInitialRegistryRevisionInput) (runtimeprotocol.CommittedRevisionRef, error)
+}
+
+type PublishInitialRegistryRevisionInput struct {
+	Scope             runtimeprotocol.RuntimeScope
+	OperationID       runtimeprotocol.OperationID
+	IdempotencyKey    runtimeprotocol.IdempotencyKey
+	Prepared          PreparedRevision
+	DecisionDigest    protocolcommon.Digest
+	EvaluationDigest  protocolcommon.Digest
+	Actor             accessprotocol.ActorRef
+	Trigger           runtimeprotocol.CommitTrigger
+	PreviewEvaluation runtimeprotocol.PreviewEvaluation
+}
+
 // WorkingDocumentCloser is optional because some remote Engine facades expire
 // handles server-side. Local hosts implement it to release retained bytes on
 // bounded close and repeated open/close cycles.
@@ -66,6 +138,7 @@ type PreparedRevision struct {
 	AuthoringImpact semantic.AuthoringImpact
 	DefinitionHash  protocolcommon.Digest
 	GraphHash       protocolcommon.Digest
+	Preview         engineprotocol.WorkbenchPreviewResult
 	// Sources is the complete canonical source closure produced by Workbench.
 	// Every ref identity is unique and Contents must match its declared size and
 	// sha256 digest before Runtime may pass the set to StageRevision.

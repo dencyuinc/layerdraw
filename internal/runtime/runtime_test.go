@@ -42,6 +42,19 @@ func TestNegotiationAdvertisesOnlyWiredCapabilities(t *testing.T) {
 	}
 }
 
+func TestRegistryOwnerOperationsAreUnavailableWithoutExplicitComposition(t *testing.T) {
+	runtime := newTestRuntimeWithOperations(t, Ports{}, Operations{})
+	if _, rejection := runtime.CommitRegistryPlan(context.Background(), RegistryCommitInput{}); rejection == nil || rejection.Code != runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable {
+		t.Fatalf("Registry commit rejection=%v", rejection)
+	}
+	if _, rejection := runtime.CommitInitialRegistryTemplate(context.Background(), InitialRegistryCommitInput{}); rejection == nil || rejection.Code != runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable {
+		t.Fatalf("initial Registry commit rejection=%v", rejection)
+	}
+	if rejection := runtime.CloseDocument(context.Background(), runtimeprotocol.RuntimeSessionRef{}); rejection == nil || rejection.Code != runtimeprotocol.RuntimeFailureCodeRuntimeCapabilityUnavailable {
+		t.Fatalf("close rejection=%v", rejection)
+	}
+}
+
 func TestHostOperationActionsAreClosedByOperationKind(t *testing.T) {
 	tests := []struct {
 		kind   accessprotocol.HostOperationKind

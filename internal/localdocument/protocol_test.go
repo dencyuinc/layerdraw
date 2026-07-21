@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -53,6 +54,63 @@ func TestAuthorizeHostOperationRevalidatesCurrentSessionRevisionAndImpact(t *tes
 	}
 }
 
+func TestProjectViewsListAndMaterializeQueryBackedViews(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root, `project p "P" {}
+entity_type service "Service" {
+  representation shape rect
+  columns {
+    environment "Environment" enum [prod, dev]
+  }
+}
+query services "Services" {
+  select {
+    entity_types [service]
+  }
+  result [seed_entities]
+}
+view catalog "Catalog" inventory {
+  source query services {}
+  table {
+    rows entity_rows
+    entity_types [service]
+    entity_id
+    column environment {
+      source attribute environment entity_types [service]
+    }
+  }
+}
+`)
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	views, err := host.ProjectViews(context.Background(), opened.Session.Open.Session)
+	if err != nil || len(views) != 1 || views[0].Address != "ldl:project:p:view:catalog" || views[0].Label != "Catalog" || views[0].Shape != "table" {
+		t.Fatalf("project views = %+v, %v", views, err)
+	}
+	materialized, err := host.MaterializeProjectView(context.Background(), opened.Session.Open.Session, views[0].Address)
+	if err != nil || string(materialized.ViewAddress) != views[0].Address || materialized.Kind != "table" {
+		t.Fatalf("materialized view = %+v, %v", materialized, err)
+	}
+	if _, err := host.MaterializeProjectView(context.Background(), opened.Session.Open.Session, "missing"); err == nil {
+		t.Fatal("missing view materialized")
+	}
+	session, err := host.SessionFor(opened.Session.Open.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryState, err := host.CurrentRegistryProjectState(context.Background(), session.PortableID)
+	if err != nil || registryState.ProjectID != session.PortableID || registryState.Revision != string(opened.Session.Open.CommittedRevision.RevisionID) || registryState.DependencySnapshot.ResolvedLockDigest == "" || registryState.PackTreeManifest == "" {
+		t.Fatalf("Registry project state = %+v, %v", registryState, err)
+	}
+	encoded, err := host.ReadRegistryProjectSnapshot(context.Background(), registryState.EngineSnapshot)
+	if err != nil || len(encoded) == 0 {
+		t.Fatalf("Registry project snapshot bytes=%d err=%v", len(encoded), err)
+	}
+}
+
 func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *testing.T) {
 	root := t.TempDir()
 	source := "project p \"P\" {}\n"
@@ -67,6 +125,10 @@ func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *t
 	ownerPreview, err := host.Preview(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: owner.Session.Open.Session, OperationBatch: batch})
 	if err != nil {
 		t.Fatal(err)
+	}
+	editorPreview, err := host.PreviewEditor(context.Background(), runtimeprotocol.PreviewOperationsInput{Session: owner.Session.Open.Session, OperationBatch: batch})
+	if err != nil || editorPreview.Preview.PreviewID == nil || editorPreview.Preview.AuthoringImpact == nil || editorPreview.Preview.AuthoringImpact.ImpactDigest != ownerPreview.PreviewEvaluation.AuthoringImpact.ImpactDigest || !reflect.DeepEqual(editorPreview.Runtime.AuthoringProof, ownerPreview.AuthoringProof) || editorPreview.Grant.AccessFingerprint != owner.Session.Open.AccessSummary.AccessFingerprint {
+		t.Fatalf("editor preview did not preserve Engine/Runtime/Access evidence: %+v err=%v", editorPreview, err)
 	}
 	clock := host.config.Clock.Now()
 	delegate := func(id string, apply bool) accesscore.Delegation {

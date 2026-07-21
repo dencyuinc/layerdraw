@@ -54,7 +54,7 @@ export async function auditAccessibility(profile: AccessibilityProfile): Promise
   modeControl?.click();
   await waitForPaint();
   const controls = [...document.querySelectorAll<HTMLElement>("button,input,select,textarea,a[href],[tabindex]")]
-    .filter((node) => node.tabIndex >= 0 && !node.hasAttribute("disabled"));
+    .filter((node) => node.tabIndex >= 0 && !node.hasAttribute("disabled") && node.getClientRects().length > 0 && node.closest("details:not([open])") === null);
   const labelsComplete = controls.every((node) =>
     (node.textContent?.trim().length ?? 0) > 0 || node.hasAttribute("aria-label") || node.hasAttribute("aria-labelledby") ||
     ("labels" in node && Array.from((node as HTMLInputElement).labels ?? []).some((label) => (label.textContent?.trim().length ?? 0) > 0)) ||

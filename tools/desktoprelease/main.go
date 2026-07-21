@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dencyuinc/layerdraw/internal/desktopartifact"
 )
 
 const schemaVersion = 1
@@ -58,21 +60,11 @@ type updateManifest struct {
 	Licenses                digestFile  `json:"licenses"`
 	Capabilities            digestFile  `json:"capabilities"`
 	Conformance             digestFile  `json:"desktop_conformance"`
+	DisabledFeatures        digestFile  `json:"disabled_features"`
 	Attestation             digestFile  `json:"desktop_attestation"`
 	PlatformSignature       *digestFile `json:"platform_signature,omitempty"`
 	Provenance              provenance  `json:"provenance"`
 	Signature               signature   `json:"signature"`
-}
-
-type capabilityDeclaration struct {
-	SchemaVersion int      `json:"schema_version"`
-	Components    []string `json:"components"`
-	Excludes      []string `json:"excludes"`
-	Security      struct {
-		PreconfiguredMCPEndpoints bool `json:"preconfigured_mcp_endpoints"`
-		ProviderCredentials       bool `json:"provider_credentials"`
-		SigningSecrets            bool `json:"signing_secrets"`
-	} `json:"security"`
 }
 
 var revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -240,6 +232,7 @@ func buildCommand(args []string) error {
 	licenses := flags.String("licenses", "", "third-party license bundle")
 	capabilities := flags.String("capabilities", "", "packaged capability declaration")
 	conformance := flags.String("desktop-conformance", "", "machine-checked Desktop feature closure")
+	disabledFeatures := flags.String("disabled-features", "", "explicit Desktop disabled feature manifest")
 	attestation := flags.String("desktop-attestation", "", "signed installed Desktop conformance attestation")
 	platformSignature := flags.String("platform-signature", "", "optional detached platform signature")
 	output := flags.String("output", "", "output update manifest")
@@ -257,8 +250,8 @@ func buildCommand(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *installer == "" || *sbom == "" || *licenses == "" || *capabilities == "" || *conformance == "" || *attestation == "" || *output == "" || *version == "" || *minimum == "" || *platform == "" || *format == "" || *revision == "" || *builtAt == "" {
-		return errors.New("build requires installer, sbom, licenses, capabilities, desktop-conformance, desktop-attestation, output, version, minimum-supported-version, platform, format, source-revision, and built-at")
+	if *installer == "" || *sbom == "" || *licenses == "" || *capabilities == "" || *conformance == "" || *disabledFeatures == "" || *attestation == "" || *output == "" || *version == "" || *minimum == "" || *platform == "" || *format == "" || *revision == "" || *builtAt == "" {
+		return errors.New("build requires installer, sbom, licenses, capabilities, desktop-conformance, disabled-features, desktop-attestation, output, version, minimum-supported-version, platform, format, source-revision, and built-at")
 	}
 	if !revisionPattern.MatchString(*revision) {
 		return errors.New("source revision must be 40 lowercase hexadecimal characters")
@@ -282,6 +275,9 @@ func buildCommand(args []string) error {
 	if err := validateCapabilities(*capabilities); err != nil {
 		return err
 	}
+	if err := validateDisabledFeatures(*disabledFeatures, *conformance); err != nil {
+		return err
+	}
 	privateKey, mode, err := signingKey(*keyEnv, *testSigning)
 	if err != nil {
 		return err
@@ -291,7 +287,7 @@ func buildCommand(args []string) error {
 		MinimumSupportedVersion: *minimum, Platform: *platform, Format: *format, SigningMode: mode,
 		Provenance: provenance{SourceRepository: *repository, SourceRevision: *revision, BuildWorkflow: *workflow, BuiltAt: *builtAt},
 	}
-	for source, target := range map[string]*digestFile{*installer: &manifest.Installer, *sbom: &manifest.SBOM, *licenses: &manifest.Licenses, *capabilities: &manifest.Capabilities, *conformance: &manifest.Conformance, *attestation: &manifest.Attestation} {
+	for source, target := range map[string]*digestFile{*installer: &manifest.Installer, *sbom: &manifest.SBOM, *licenses: &manifest.Licenses, *capabilities: &manifest.Capabilities, *conformance: &manifest.Conformance, *disabledFeatures: &manifest.DisabledFeatures, *attestation: &manifest.Attestation} {
 		value, err := describeFile(source)
 		if err != nil {
 			return err
@@ -405,7 +401,7 @@ func verifyCommand(args []string) error {
 	if compareVersion(currentVersion, minimumVersion) < 0 {
 		return errors.New("current installation is incompatible with this update")
 	}
-	files := []digestFile{manifest.Installer, manifest.SBOM, manifest.Licenses, manifest.Capabilities, manifest.Conformance, manifest.Attestation}
+	files := []digestFile{manifest.Installer, manifest.SBOM, manifest.Licenses, manifest.Capabilities, manifest.Conformance, manifest.DisabledFeatures, manifest.Attestation}
 	if manifest.PlatformSignature != nil {
 		files = append(files, *manifest.PlatformSignature)
 	}
@@ -418,6 +414,17 @@ func verifyCommand(args []string) error {
 		if err != nil || actual.Size != file.Size || actual.SHA256 != file.SHA256 {
 			return fmt.Errorf("artifact digest mismatch for %s", file.Path)
 		}
+	}
+	disabledPath, err := localArtifactPath(*root, manifest.DisabledFeatures.Path)
+	if err != nil {
+		return err
+	}
+	conformancePath, err := localArtifactPath(*root, manifest.Conformance.Path)
+	if err != nil {
+		return err
+	}
+	if err := validateDisabledFeatures(disabledPath, conformancePath); err != nil {
+		return err
 	}
 	return nil
 }
@@ -506,48 +513,16 @@ func validateTarget(platform, format, channel string) error {
 }
 
 func validateCapabilities(path string) error {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("read capabilities: %w", err)
 	}
-	var declaration capabilityDeclaration
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&declaration); err != nil {
-		return fmt.Errorf("invalid capability declaration: %w", err)
+	_, decodeErr := desktopartifact.DecodeCapabilityDeclaration(file)
+	closeErr := file.Close()
+	if decodeErr != nil {
+		return decodeErr
 	}
-	if declaration.SchemaVersion != 1 {
-		return errors.New("unsupported capability declaration schema")
-	}
-	required := []string{"desktop-shell", "frontend-packages", "mcp-host", "native-adapters", "native-exporters", "registry", "review"}
-	for _, component := range required {
-		found := false
-		for _, actual := range declaration.Components {
-			if actual == component {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("packaged capability %q is missing", component)
-		}
-	}
-	if declaration.Security.PreconfiguredMCPEndpoints || declaration.Security.ProviderCredentials || declaration.Security.SigningSecrets {
-		return errors.New("packaged security declaration exposes runtime credentials or endpoints")
-	}
-	for _, excluded := range []string{"source-maps", "test-fixtures", "development-servers"} {
-		found := false
-		for _, actual := range declaration.Excludes {
-			if actual == excluded {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("development-only exclusion %q is missing", excluded)
-		}
-	}
-	return nil
+	return closeErr
 }
 
 type version struct {

@@ -27,8 +27,9 @@ mkdir -p "$XDG_CONFIG_HOME"
 verify_probe() {
   local executable="$1"
   local action="$2"
+  local capabilities="$3"
   LAYERDRAW_DESKTOP_PROBE_ACTION="$action" "$executable" --packaged-probe > "$temporary/probe.json"
-  go run ./tools/desktopprobe -input "$temporary/probe.json" verify
+  go run ./tools/desktopprobe -input "$temporary/probe.json" -capabilities "$capabilities" verify
 }
 
 verify_payload() {
@@ -74,18 +75,20 @@ case "$platform" in
     install_dmg "$previous_installer"
     installed_executable="$installed_app/Contents/MacOS/LayerDraw"
     verify_payload "$installed_app" "$installed_app/Contents/Resources/layerdraw/bin/layerdraw-host" "$installed_app/Contents/Resources/layerdraw/desktop-capabilities.json" "$installed_app/Contents/Resources/layerdraw/host/layerdraw-host.cdx.json" "$installed_app/Contents/Resources/layerdraw/desktop-conformance.json" "$installed_app/Contents/Resources/layerdraw/native"
-    verify_probe "$installed_executable" initialize
+    capability_declaration="$installed_app/Contents/Resources/layerdraw/desktop-capabilities.json"
+    verify_probe "$installed_executable" initialize "$capability_declaration"
 
     corrupt="$temporary/corrupt.dmg"
     head -c 64 "$current_installer" > "$corrupt"
     if hdiutil attach -quiet -nobrowse "$corrupt" >/dev/null 2>&1; then printf 'Corrupt DMG was accepted.\n' >&2; exit 1; fi
     test -x "$installed_executable"
-    verify_probe "$installed_executable" verify
+    verify_probe "$installed_executable" verify "$capability_declaration"
 
     install_dmg "$current_installer"
     installed_executable="$installed_app/Contents/MacOS/LayerDraw"
     verify_payload "$installed_app" "$installed_app/Contents/Resources/layerdraw/bin/layerdraw-host" "$installed_app/Contents/Resources/layerdraw/desktop-capabilities.json" "$installed_app/Contents/Resources/layerdraw/host/layerdraw-host.cdx.json" "$installed_app/Contents/Resources/layerdraw/desktop-conformance.json" "$installed_app/Contents/Resources/layerdraw/native"
-    verify_probe "$installed_executable" verify
+    capability_declaration="$installed_app/Contents/Resources/layerdraw/desktop-capabilities.json"
+    verify_probe "$installed_executable" verify "$capability_declaration"
     if [[ "${LAYERDRAW_EXPECT_SIGNED:-0}" == "1" ]]; then
       codesign --verify --strict "$current_installer"
       codesign --verify --deep --strict "$installed_app"
@@ -105,22 +108,23 @@ case "$platform" in
     sudo dpkg -i "$previous_installer"
     installed_executable="/usr/bin/layerdraw"
     verify_payload "/usr/share/layerdraw" "/usr/lib/layerdraw/layerdraw-host" "/usr/share/layerdraw/legal/desktop-capabilities.json" "/usr/share/layerdraw/legal/host/layerdraw-host.cdx.json" "/usr/share/layerdraw/legal/desktop-conformance.json" "/usr/lib/layerdraw/native"
-    verify_probe "$installed_executable" initialize
+    capability_declaration="/usr/share/layerdraw/legal/desktop-capabilities.json"
+    verify_probe "$installed_executable" initialize "$capability_declaration"
 
     corrupt="$temporary/corrupt.deb"
     head -c 64 "$current_installer" > "$corrupt"
     if sudo dpkg -i "$corrupt" >/dev/null 2>&1; then printf 'Corrupt deb was accepted.\n' >&2; exit 1; fi
     test -x "$installed_executable"
-    verify_probe "$installed_executable" verify
+    verify_probe "$installed_executable" verify "$capability_declaration"
 
     sudo dpkg -i "$current_installer"
     verify_payload "/usr/share/layerdraw" "/usr/lib/layerdraw/layerdraw-host" "/usr/share/layerdraw/legal/desktop-capabilities.json" "/usr/share/layerdraw/legal/host/layerdraw-host.cdx.json" "/usr/share/layerdraw/legal/desktop-conformance.json" "/usr/lib/layerdraw/native"
-    verify_probe "$installed_executable" verify
+    verify_probe "$installed_executable" verify "$capability_declaration"
     if [[ "${LAYERDRAW_EXPECT_SIGNED:-0}" == "1" ]]; then
       gpg --verify "$current_installer.asc" "$current_installer"
     fi
     if [[ -n "${LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT:-}" ]]; then
-      "$installed_executable" --packaged-conformance "$LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT"
+      xvfb-run -a "$installed_executable" --packaged-conformance "$LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT"
     fi
     sudo dpkg -r layerdraw
     test ! -e "$installed_executable"

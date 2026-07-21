@@ -53,6 +53,8 @@ jobs:
             pnpm --filter @layerdraw/viewer build
             pnpm --filter @layerdraw/engine-client build
             pnpm --filter @layerdraw/client-sdk build
+            pnpm --filter @layerdraw/registry-client build
+            pnpm --filter @layerdraw/library build
             pnpm --filter @layerdraw/review build
             pnpm --filter @layerdraw/react build
             pnpm --filter @layerdraw/desktop build
@@ -106,7 +108,7 @@ jobs:
           "$executable" --packaged-probe | tee desktop-probe.json
           go_args=()
           if [[ "$RUNNER_OS" == "Linux" ]]; then go_args=(-tags webkit2_41); fi
-          go run "${go_args[@]}" ./tools/desktopprobe -input desktop-probe.json verify
+          go run "${go_args[@]}" ./tools/desktopprobe -input desktop-probe.json -capabilities deploy/desktop-capabilities.json verify
           ui_probe="$PWD/desktop-ui-probe.json"
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             xvfb-run -a "$executable" --packaged-ui-probe "$ui_probe"
@@ -114,4 +116,9 @@ jobs:
             "$executable" --packaged-ui-probe "$ui_probe"
           fi
           cat "$ui_probe"
-          go run "${go_args[@]}" ./tools/desktopprobe -require-dom -input "$ui_probe" verify
+          go run "${go_args[@]}" ./tools/desktopprobe -require-dom -input "$ui_probe" -capabilities deploy/desktop-capabilities.json verify
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a "$executable" --packaged-conformance-scenario packaged_ui_process_tree | tee desktop-ui-process-tree.json
+          else
+            "$executable" --packaged-conformance-scenario packaged_ui_process_tree | tee desktop-ui-process-tree.json
+          fi

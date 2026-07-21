@@ -8,13 +8,15 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { DesktopMCPPort, DesktopShellFailure } from "./contracts.js";
+import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopShellFailure } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
 import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
 import { ReviewPanel } from "@layerdraw/react/review";
 import type { ReviewModel } from "@layerdraw/review";
+import type { LibraryController } from "@layerdraw/library";
 import { DesktopMCPPanel } from "./mcp-panel.js";
+import { DesktopLibraryPanel } from "./library-panel.js";
 
 export interface DesktopShellLabels {
   readonly application: string;
@@ -47,6 +49,9 @@ export interface DesktopShellProps {
   readonly editorCapabilities: DesktopEditorCapabilityIDs;
   /** Canonical Review owner shared with MCP; omitted only when no project Review session exists. */
   readonly reviewModel?: ReviewModel;
+  readonly library?: LibraryController;
+  readonly libraryAvailability?: DesktopFeatureAvailability;
+  readonly reviewAvailability?: DesktopFeatureAvailability;
   readonly mcp?: DesktopMCPPort;
   readonly labels?: DesktopShellLabels;
 }
@@ -55,7 +60,7 @@ function statusChip(kind: string, text: string): ReactNode {
   return createElement("span", { className: "ld-desktop-chip", "data-status": kind }, text);
 }
 
-export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, mcp, labels: suppliedLabels = labels }: DesktopShellProps): ReactNode {
+export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, library, libraryAvailability, reviewAvailability, mcp, labels: suppliedLabels = labels }: DesktopShellProps): ReactNode {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const heading = useRef<HTMLHeadingElement>(null);
   const project = state.lifecycle.project;
@@ -74,7 +79,12 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     createElement("h1", null, suppliedLabels.application), createElement("p", { role: "alert" }, suppliedLabels.recovery),
     createElement("button", { type: "button", disabled: state.pending_action !== undefined, onClick: () => { void controller.reviewRecovery(); } }, suppliedLabels.reviewRecovery));
   if (state.lifecycle.phase === "draining" || state.lifecycle.phase === "stopped") return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("p", { role: "status" }, "LayerDraw is closing…"));
-  if (project === undefined) return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("h1", null, suppliedLabels.application), createElement("p", null, suppliedLabels.noProject));
+  const featureStatus = libraryAvailability === undefined && reviewAvailability === undefined ? null : createElement("section", { "aria-label": "Desktop capabilities" },
+    createElement("h2", null, "Capabilities"),
+    createElement("ul", null,
+      libraryAvailability === undefined ? null : createElement("li", { "data-status": libraryAvailability.status }, `Library: ${libraryAvailability.status}`),
+      reviewAvailability === undefined ? null : createElement("li", { "data-status": reviewAvailability.status }, `Review: ${reviewAvailability.status}`)));
+  if (project === undefined) return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("h1", null, suppliedLabels.application), createElement("p", null, suppliedLabels.noProject), featureStatus, library === undefined ? null : createElement(DesktopLibraryPanel, { library }));
 
   const viewList = createElement("ul", null, project.views.map((view) =>
     createElement("li", { key: view.address },
@@ -113,6 +123,8 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
           createElement("p", { className: "ld-desktop-storage-consequence" }, project.storage.disconnect_consequence ?? "Disconnecting keeps the local project and stops external sync."),
           createElement("button", { type: "button", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, "Disconnect")) : null,
         createElement(DesktopEditorSurface, { project, capabilities: editorCapabilities }),
+        library === undefined ? null : createElement(DesktopLibraryPanel, { library, project: project.library_project }),
+        featureStatus,
         reviewModel === undefined ? null : createElement(ReviewPanel, { model: reviewModel }),
         createElement(DesktopMCPPanel, { mcp: mcp ?? unavailableMCP, projectID: project.project_id }))),
     createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : state.pending_action === "disconnect_storage" ? "Disconnecting external storage…" : ""));

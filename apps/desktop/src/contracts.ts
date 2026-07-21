@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import type { BrowserDocumentSession, BrowserEditor } from "@layerdraw/client-sdk/editor";
+import type { LibraryProjectContext } from "@layerdraw/library";
 import type { CapabilityID } from "@layerdraw/protocol/common";
 import type { ExportPlan, ViewData } from "@layerdraw/protocol/semantic";
+import type { CommittedRevisionRef, OpenRuntimeDocumentInput } from "@layerdraw/protocol/runtime";
 import type { ViewDataUpdate, Viewer, ViewerSnapshot } from "@layerdraw/viewer";
 
 export type DesktopLifecyclePhase = "starting" | "ready" | "recovery" | "draining" | "stopped";
@@ -54,6 +56,19 @@ export interface DesktopProjectContext {
 	disconnect_consequence?: string;
   }>;
   readonly persistence: "clean" | "preview_pending" | "ephemeral" | "durable_pending" | "reconcile_pending";
+  readonly library_project: LibraryProjectContext;
+}
+
+/** JSON-only project state emitted by Go. Executable editor/viewer objects are
+ * attached by the trusted frontend owner after generated-client negotiation. */
+export interface DesktopProjectPublicationContextDTO extends Omit<DesktopProjectContext, "editor" | "editor_session" | "authoritative_revision_token" | "authoritative_revision_label" | "access" | "storage"> {
+  readonly authoritative_revision: CommittedRevisionRef;
+  readonly open_input: OpenRuntimeDocumentInput;
+}
+
+export interface DesktopProjectPublicationDTO {
+  readonly phase: DesktopLifecyclePhase;
+  readonly project?: DesktopProjectPublicationContextDTO;
 }
 
 export type DesktopViewerFrame = Readonly<{
@@ -87,6 +102,44 @@ export interface DesktopProjectLifecyclePort {
   showRecoveryOptions(signal: AbortSignal): Promise<void>;
 	/** Disconnects through the host; the shell never handles credentials. */
 	disconnectExternal(signal: AbortSignal): Promise<void>;
+}
+
+export type DesktopHostResult<T> =
+  | Readonly<{ outcome: "success"; value: T }>
+  | Readonly<{ outcome: "failed" | "rejected" | "cancelled"; failure?: Readonly<{ code: string; retryable?: boolean }> }>;
+
+/** JSON-only result returned by the native create/open project dialogs. */
+export interface DesktopProjectOpenDTO {
+  readonly open: Readonly<Record<string, unknown>>;
+  readonly history: Readonly<Record<string, unknown>>;
+  readonly project_id: string;
+  readonly disposition: string;
+  readonly reconcile_pending: boolean;
+  readonly recovery?: Readonly<Record<string, unknown>>;
+}
+
+export interface DesktopRecentProjectDTO {
+  readonly project_id: string;
+  readonly display_name: string;
+  readonly [field: string]: unknown;
+}
+
+export interface DesktopProjectDialogPort {
+  create(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  open(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  recent(): Promise<DesktopHostResult<readonly DesktopRecentProjectDTO[]>>;
+}
+
+/** Trusted native external-storage operations; credentials never cross this boundary. */
+export interface DesktopExternalStoragePort {
+  connect(input: Readonly<Record<string, unknown>>): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  inspect(connectionID: string): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  refresh(connectionID: string): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  disconnect(connectionID: string): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  selectRemote(input: Readonly<Record<string, unknown>>): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  acquireLease(session: Readonly<Record<string, unknown>>, binding: Readonly<Record<string, unknown>>): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  planReconcile(session: Readonly<Record<string, unknown>>, input: Readonly<Record<string, unknown>>, restricted: boolean): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
+  applyReconcile(session: Readonly<Record<string, unknown>>, plan: Readonly<Record<string, unknown>>, resolution: string): Promise<DesktopHostResult<Readonly<Record<string, unknown>>>>;
 }
 
 export interface DesktopNativeExportProfile {

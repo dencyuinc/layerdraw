@@ -415,6 +415,10 @@ func TestPackagedCompositionReadyCallsOwnersAndStops(t *testing.T) {
 	if opened.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("project open through application host: %+v", opened)
 	}
+	publication, err := application.ProjectPublication(context.Background())
+	if err != nil || publication.Project == nil || publication.Project.ProjectID != opened.Value.Open.Session.Scope.DocumentID || publication.Project.LibraryProject.ProjectID == "" || publication.Project.LibraryProject.ResolvedLockDigest == "" || publication.Project.LibraryProject.DependencySnapshot.Installs == nil || publication.Project.Views == nil {
+		t.Fatalf("project publication=%+v err=%v", publication, err)
+	}
 	inspectControl, err := runtimeprotocol.EncodeInspectDocumentRequestEnvelope(runtimeprotocol.InspectDocumentRequestEnvelope{
 		Operation: runtimeprotocol.InspectDocumentRequestEnvelopeOperationValue,
 		Protocol:  runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"},
@@ -652,8 +656,8 @@ func TestCompositionRejectsMissingRuntimeAndMismatchedExternalLifecycle(t *testi
 	if _, err := Compose(base, nil, nil); err == nil {
 		t.Fatal("nil runtime accepted")
 	}
-	if _, err := Compose(base, &nativeStub{}, map[string]ExternalProvider{"provider": providerStub{}}); err == nil {
-		t.Fatal("external lifecycle accepted without capability lifecycle adapter")
+	if _, err := Compose(base, &nativeStub{}, map[string]ExternalProvider{"provider": providerStub{}}); err != nil {
+		t.Fatalf("packaged external provider replacement was rejected: %v", err)
 	}
 	if err := Run(base, nil, nil); err == nil {
 		t.Fatal("nil assets accepted")
@@ -677,12 +681,12 @@ func TestClosedSharedPortsRemainTyped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	available := make(map[protocolcommon.CapabilityID]bool)
+	for _, id := range packagedCapabilities() {
+		available[id] = true
+	}
 	for _, status := range handshake.CapabilityStatuses {
-		packaged := status.CapabilityID == desktopcontract.CapabilityAuthoring ||
-			status.CapabilityID == desktopcontract.CapabilityExport ||
-			status.CapabilityID == desktopcontract.CapabilityMCPTools ||
-			status.CapabilityID == desktopcontract.CapabilityMCPResources ||
-			status.CapabilityID == desktopcontract.CapabilityAgentScope
+		packaged := available[status.CapabilityID]
 		if status.Enabled != packaged || (!packaged && status.UnavailableReason == nil) {
 			t.Fatalf("capability availability is not truthful: %+v", status)
 		}

@@ -69,7 +69,7 @@ func (a *Application) Create(ctx context.Context, input CreateInput) (Proposal, 
 	if input.Now.IsZero() {
 		input.Now = a.now().UTC()
 	}
-	if input.ProposalID == "" || input.Preview.CurrentRevision.DocumentID == "" || input.Preview.OperationBatch.DocumentID != input.Preview.CurrentRevision.DocumentID || input.Preview.OperationBatch.BaseRevision != input.Preview.CurrentRevision || input.Preview.Evidence.AuthoringImpact.ImpactDigest == "" || input.Preview.Evidence.AuthoringImpact.ImpactDigest != valueDigest(input.ProposeDecision.AuthoringImpactDigest) || !validDecision(input.ProposeDecision) {
+	if input.ProposalID == "" || input.Preview.CurrentRevision.DocumentID == "" || input.Preview.OperationBatch.DocumentID != input.Preview.CurrentRevision.DocumentID || !sameRevision(input.Preview.OperationBatch.BaseRevision, input.Preview.CurrentRevision) || input.Preview.Evidence.AuthoringImpact.ImpactDigest == "" || input.Preview.Evidence.AuthoringImpact.ImpactDigest != valueDigest(input.ProposeDecision.AuthoringImpactDigest) || !validDecision(input.ProposeDecision) {
 		return Proposal{}, ErrInvalid
 	}
 	if proposalIndex(a.state.Proposals, input.ProposalID) >= 0 {
@@ -103,6 +103,16 @@ func (a *Application) Create(ctx context.Context, input CreateInput) (Proposal, 
 	}
 	a.state = next
 	return cloneProposal(proposal), nil
+}
+
+func sameRevision(left, right runtimeprotocol.CommittedRevisionRef) bool {
+	if left.DocumentID != right.DocumentID || left.RevisionID != right.RevisionID || left.DefinitionHash != right.DefinitionHash || left.GraphHash != right.GraphHash {
+		return false
+	}
+	if left.ProviderVersion == nil || right.ProviderVersion == nil {
+		return left.ProviderVersion == nil && right.ProviderVersion == nil
+	}
+	return *left.ProviderVersion == *right.ProviderVersion
 }
 
 func (a *Application) Comment(ctx context.Context, input CommentInput) (Proposal, error) {
@@ -175,6 +185,9 @@ func (a *Application) ApproveAndApply(ctx context.Context, input ApprovalInput) 
 	if current.Proposer.Kind == "agent" && current.Proposer == input.Approver {
 		return Proposal{}, ErrSelfApproval
 	}
+	if current.Status == StatusApproved {
+		return a.commitPending(ctx, index, input)
+	}
 	repreview, err := a.runtime.Repreview(ctx, RepreviewInput{Session: input.Session, Batch: current.OperationBatch})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, ErrCancelled) {
@@ -189,7 +202,10 @@ func (a *Application) ApproveAndApply(ctx context.Context, input ApprovalInput) 
 		}
 		return a.recordFailure(ctx, index, status, "revision_changed", ErrStale)
 	}
-	if repreview.Evidence.SemanticDiff.Digest != current.Evidence.SemanticDiff.Digest || repreview.Evidence.AuthoringImpact.ImpactDigest != current.Evidence.AuthoringImpact.ImpactDigest || repreview.DefinitionHash != current.ProposedDefinitionHash {
+	// AuthoringImpact is the Engine-owned closure over semantic and source diff
+	// hashes. Repreview adapters need not duplicate the full presentation diff
+	// merely to prove the same mutation at approval time.
+	if repreview.Evidence.SemanticDiff.Digest != current.Evidence.SemanticDiff.Digest || repreview.Evidence.AuthoringImpact.ImpactDigest != current.Evidence.AuthoringImpact.ImpactDigest || repreview.DefinitionHash != current.ProposedDefinitionHash || repreview.GraphHash != current.ProposedGraphHash {
 		return a.recordFailure(ctx, index, StatusConflicting, "proposal_changed", ErrConflict)
 	}
 	decision, err := a.access.AuthorizeApprover(ctx, ApprovalRequest{Approver: input.Approver, Revision: repreview.CurrentRevision, Impact: repreview.Evidence.AuthoringImpact, Decision: repreview.PreviewDecision})
@@ -202,7 +218,33 @@ func (a *Application) ApproveAndApply(ctx context.Context, input ApprovalInput) 
 	if decision.Outcome != accessprotocol.AuthoringDecisionOutcomeAllow || !sameCapabilities(decision.RequiredCapabilities, current.RequiredCapabilities) {
 		return a.recordFailure(ctx, index, StatusDenied, "approver_insufficient", ErrDenied)
 	}
-	commit := runtimeprotocol.RuntimeCommitInput{Session: input.Session, OperationBatch: repreview.OperationBatch, AuthoringProof: repreview.AuthoringProof, OperationID: input.OperationID, IdempotencyKey: input.IdempotencyKey, Trigger: input.Trigger, CancellationToken: input.Cancellation}
+	next := cloneSnapshot(a.state)
+	pending := &next.Proposals[index]
+	pending.UpdatedAt = a.now().UTC()
+	pending.ApprovedBy = &input.Approver
+	pending.AccessEvaluationDigest = decision.EvaluationDigest
+	pending.AccessDecisionDigest = decision.DecisionDigest
+	pending.Status = StatusApproved
+	pending.PendingCommit = &PendingCommit{
+		OperationID: input.OperationID, IdempotencyKey: input.IdempotencyKey,
+		OperationBatch: repreview.OperationBatch, AuthoringProof: repreview.AuthoringProof,
+		Approver: input.Approver, AccessEvaluationDigest: decision.EvaluationDigest,
+		AccessDecisionDigest: decision.DecisionDigest, Trigger: input.Trigger,
+	}
+	if err := a.store.Save(ctx, next); err != nil {
+		return Proposal{}, err
+	}
+	a.state = next
+	return a.commitPending(ctx, index, input)
+}
+
+func (a *Application) commitPending(ctx context.Context, index int, input ApprovalInput) (Proposal, error) {
+	current := a.state.Proposals[index]
+	pending := current.PendingCommit
+	if pending == nil || pending.OperationID == "" || pending.IdempotencyKey == "" || pending.OperationID != input.OperationID || pending.IdempotencyKey != input.IdempotencyKey || pending.Approver != input.Approver || input.Session.Scope.DocumentID == "" || input.Session.Scope.DocumentID != pending.OperationBatch.DocumentID || pending.OperationBatch.DocumentID != current.CurrentRevision.DocumentID {
+		return Proposal{}, ErrConflict
+	}
+	commit := runtimeprotocol.RuntimeCommitInput{Session: input.Session, OperationBatch: pending.OperationBatch, AuthoringProof: pending.AuthoringProof, OperationID: pending.OperationID, IdempotencyKey: pending.IdempotencyKey, Trigger: pending.Trigger, CancellationToken: input.Cancellation}
 	result, err := a.runtime.Commit(ctx, commit)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, ErrCancelled) {
@@ -214,10 +256,11 @@ func (a *Application) ApproveAndApply(ctx context.Context, input ApprovalInput) 
 	proposal := &next.Proposals[index]
 	proposal.Generation++
 	proposal.UpdatedAt = a.now().UTC()
-	proposal.ApprovedBy = &input.Approver
-	proposal.AccessEvaluationDigest = decision.EvaluationDigest
-	proposal.AccessDecisionDigest = decision.DecisionDigest
+	proposal.ApprovedBy = &pending.Approver
+	proposal.AccessEvaluationDigest = pending.AccessEvaluationDigest
+	proposal.AccessDecisionDigest = pending.AccessDecisionDigest
 	proposal.Status = StatusApproved
+	proposal.PendingCommit = nil
 	switch result.OperationResult.Status {
 	case runtimeprotocol.OperationResultStatusCommitted, runtimeprotocol.OperationResultStatusCommittedExternalFailed, runtimeprotocol.OperationResultStatusCommittedExternalPending, runtimeprotocol.OperationResultStatusCommittedStateStale:
 		if result.OperationResult.CommittedRevision == nil {
@@ -270,10 +313,13 @@ func (a *Application) recordFailure(ctx context.Context, index int, status Statu
 	proposal := &next.Proposals[index]
 	proposal.Status = status
 	proposal.LastFailure = code
+	proposal.PendingCommit = nil
 	proposal.Generation++
 	proposal.UpdatedAt = a.now().UTC()
 	markStaleComments(proposal)
-	if err := a.store.Save(ctx, next); err != nil {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := a.store.Save(persistCtx, next); err != nil {
 		return Proposal{}, err
 	}
 	a.state = next
@@ -341,7 +387,8 @@ func validateSnapshot(snapshot Snapshot) error {
 	}
 	seen := map[string]bool{}
 	for _, proposal := range snapshot.Proposals {
-		if proposal.ID == "" || proposal.Generation == 0 || seen[proposal.ID] {
+		pending := proposal.PendingCommit != nil
+		if proposal.ID == "" || proposal.Generation == 0 || seen[proposal.ID] || pending != (proposal.Status == StatusApproved) || (pending && (proposal.PendingCommit.OperationID == "" || proposal.PendingCommit.IdempotencyKey == "" || proposal.ApprovedBy == nil || proposal.PendingCommit.Approver != *proposal.ApprovedBy || proposal.PendingCommit.OperationBatch.DocumentID != proposal.CurrentRevision.DocumentID)) {
 			return ErrInvalid
 		}
 		seen[proposal.ID] = true

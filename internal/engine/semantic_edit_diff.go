@@ -748,7 +748,7 @@ func buildPlannedAuthoringImpactContext(ctx context.Context, before, after Snaps
 		}
 		return entries[i].Action < entries[j].Action
 	})
-	capOrder := map[AuthoringCapability]int{CapabilityGraphWrite: 1, CapabilityProjectConfigure: 3, CapabilityQueryWrite: 4, CapabilityReferenceWrite: 5, CapabilitySchemaWrite: 6, CapabilitySourceMaintain: 7, CapabilityViewWrite: 8}
+	capOrder := map[AuthoringCapability]int{CapabilityGraphWrite: 1, CapabilityPackageManage: 2, CapabilityProjectConfigure: 3, CapabilityQueryWrite: 4, CapabilityReferenceWrite: 5, CapabilitySchemaWrite: 6, CapabilitySourceMaintain: 7, CapabilityViewWrite: 8}
 	required := make([]AuthoringCapability, 0, len(caps))
 	for cap := range caps {
 		required = append(required, cap)

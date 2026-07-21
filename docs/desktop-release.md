@@ -83,10 +83,14 @@ Marketplace delivery are not asserted by this evidence.
 
 Each installed platform emits a strict scenario result for the exact release commit. Five or more
 iterations cover cold process start, project open, Search/Analysis, preview, durable commit, 2D/3D
-Viewer interaction, bounded MCP operations, external reconcile, and shutdown. Each workflow runs
-in an isolated installed-Desktop worker process; the result records the largest worker peak RSS per
-iteration and computes p95 against the declared budget. This evidence does not claim WebView or MCP
-descendant-process memory: final Desktop closure requires a separate packaged UI process-tree
-scenario. The release job then signs an attestation binding the scenario result, closure manifest, exact
+Viewer interaction, bounded MCP operations, external reconcile, shutdown, and a real packaged UI
+process-tree run. Each workflow runs scenarios in isolated installed-Desktop worker processes. The UI
+scenario launches the same installed executable through `--packaged-ui-probe`, waits for the complete
+DOM/accessibility matrix, and repeatedly sums resident memory for the Desktop PID and every descendant
+PID, including platform WebView and any companion process alive during the run. The strict result records
+both largest worker RSS and packaged UI process-tree peak RSS for every iteration; independent p95
+budgets reject missing, zero, truncated, or excessive measurements. Linux runs under Xvfb, while macOS
+and Windows use their native WebView hosts on the corresponding packaged runners. The release job then
+signs an attestation binding the scenario result, closure manifest, exact
 installer digest, source revision, and platform. Update metadata generation fails closed unless
 that independent signature and every bound digest verify against the configured trust anchor.

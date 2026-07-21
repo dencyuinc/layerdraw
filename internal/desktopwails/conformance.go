@@ -3,7 +3,10 @@
 package desktopwails
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,14 +20,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	accesscore "github.com/dencyuinc/layerdraw/internal/access"
+	"github.com/dencyuinc/layerdraw/internal/adapter/registryengine"
+	"github.com/dencyuinc/layerdraw/internal/adapter/registrysource"
+	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
+	"github.com/dencyuinc/layerdraw/internal/registry"
 )
 
 const packagedConformanceIterations = 5
@@ -43,13 +52,15 @@ type PackagedConformanceReport struct {
 	Iterations               int                           `json:"iterations"`
 	Scenarios                map[string]ConformanceSamples `json:"scenarios"`
 	IsolatedWorkerPeakRSSMiB []int64                       `json:"isolated_worker_peak_rss_mebibytes"`
+	UIProcessTreePeakRSSMiB  []int64                       `json:"packaged_ui_process_tree_peak_rss_mebibytes"`
 	ScenarioEvidence         map[string]string             `json:"scenario_evidence"`
 }
 
 type packagedConformanceScenarioReport struct {
-	SchemaVersion uint32 `json:"schema_version"`
-	Scenario      string `json:"scenario"`
-	WorkerPeakRSS int64  `json:"isolated_worker_peak_rss_mebibytes"`
+	SchemaVersion      uint32 `json:"schema_version"`
+	Scenario           string `json:"scenario"`
+	WorkerPeakRSS      int64  `json:"isolated_worker_peak_rss_mebibytes"`
+	ProcessTreePeakRSS int64  `json:"process_tree_peak_rss_mebibytes,omitempty"`
 }
 
 type packagedConformanceError struct {
@@ -84,15 +95,16 @@ func conformanceFailure(code string, err error) error {
 }
 
 var conformanceEvidence = map[string]string{
-	"cold_start":             "desktop.lifecycle.cold_start",
-	"project_open":           "desktop.project.open_save_restart",
-	"search_analysis":        "desktop.search.query_analysis",
-	"preview":                "desktop.preview",
-	"commit":                 "desktop.commit_durable",
-	"viewer_interaction":     "desktop.viewer.2d_3d_interaction",
-	"mcp_bounded_operations": "desktop.mcp.bounded_operations",
-	"external_reconcile":     "desktop.external.reconcile",
-	"shutdown":               "desktop.lifecycle.shutdown",
+	"cold_start":               "desktop.lifecycle.cold_start",
+	"project_open":             "desktop.project.open_save_restart",
+	"search_analysis":          "desktop.search.query_analysis",
+	"preview":                  "desktop.preview",
+	"commit":                   "desktop.commit_durable",
+	"viewer_interaction":       "desktop.viewer.2d_3d_interaction",
+	"mcp_bounded_operations":   "desktop.mcp.bounded_operations",
+	"external_reconcile":       "desktop.external.reconcile",
+	"shutdown":                 "desktop.lifecycle.shutdown",
+	"packaged_ui_process_tree": "desktop.ui.process_tree_memory",
 }
 
 func RunPackagedConformance(output string) error {
@@ -114,10 +126,11 @@ func RunPackagedConformance(output string) error {
 	}
 	for iteration := 0; iteration < packagedConformanceIterations; iteration++ {
 		var iterationPeak int64
+		var uiProcessTreePeak int64
 		for _, name := range conformanceScenarioOrder() {
 			started := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			rss, err := runConformanceScenarioProcess(ctx, name)
+			ctx, cancel := context.WithTimeout(context.Background(), conformanceScenarioTimeout(name))
+			measurement, err := runConformanceScenarioProcess(ctx, name)
 			cancel()
 			if err != nil {
 				if PackagedConformanceFailureCode(err) != "" {
@@ -132,14 +145,18 @@ func RunPackagedConformance(output string) error {
 			samples := report.Scenarios[name]
 			samples.SamplesMilliseconds = append(samples.SamplesMilliseconds, elapsed)
 			report.Scenarios[name] = samples
-			if rss > iterationPeak {
-				iterationPeak = rss
+			if measurement.WorkerPeakRSS > iterationPeak {
+				iterationPeak = measurement.WorkerPeakRSS
+			}
+			if name == "packaged_ui_process_tree" {
+				uiProcessTreePeak = measurement.ProcessTreePeakRSS
 			}
 		}
-		if iterationPeak <= 0 {
+		if iterationPeak <= 0 || uiProcessTreePeak <= 0 {
 			return conformanceFailure("measurement.memory", errors.New("packaged conformance isolated worker RSS is unavailable"))
 		}
 		report.IsolatedWorkerPeakRSSMiB = append(report.IsolatedWorkerPeakRSSMiB, iterationPeak)
+		report.UIProcessTreePeakRSSMiB = append(report.UIProcessTreePeakRSSMiB, uiProcessTreePeak)
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -151,17 +168,33 @@ func RunPackagedConformance(output string) error {
 	return nil
 }
 
-func conformanceRunners() map[string]func(context.Context) error {
-	return map[string]func(context.Context) error{
-		"cold_start":             conformanceColdStart,
-		"project_open":           conformanceProjectOpen,
-		"search_analysis":        conformanceSearchAnalysis,
-		"preview":                conformancePreview,
-		"commit":                 conformanceCommitDurable,
-		"viewer_interaction":     conformanceViewer,
-		"mcp_bounded_operations": conformanceMCP,
-		"external_reconcile":     conformanceExternal,
-		"shutdown":               conformanceShutdown,
+type conformanceRunner func(context.Context) (int64, error)
+
+func ordinaryConformanceRunner(run func(context.Context) error) conformanceRunner {
+	return func(ctx context.Context) (int64, error) { return 0, run(ctx) }
+}
+
+func conformanceScenarioTimeout(name string) time.Duration {
+	if name == "packaged_ui_process_tree" {
+		// DOM readiness may consume nearly its 30-second bound; leave time for
+		// the accessibility matrix, final RSS sample, and strict result write.
+		return 45 * time.Second
+	}
+	return 30 * time.Second
+}
+
+func conformanceRunners() map[string]conformanceRunner {
+	return map[string]conformanceRunner{
+		"cold_start":               ordinaryConformanceRunner(conformanceColdStart),
+		"project_open":             ordinaryConformanceRunner(conformanceProjectOpen),
+		"search_analysis":          ordinaryConformanceRunner(conformanceSearchAnalysis),
+		"preview":                  ordinaryConformanceRunner(conformancePreview),
+		"commit":                   ordinaryConformanceRunner(conformanceCommitDurable),
+		"viewer_interaction":       ordinaryConformanceRunner(conformanceViewer),
+		"mcp_bounded_operations":   ordinaryConformanceRunner(conformanceMCP),
+		"external_reconcile":       ordinaryConformanceRunner(conformanceExternal),
+		"shutdown":                 ordinaryConformanceRunner(conformanceShutdown),
+		"packaged_ui_process_tree": conformancePackagedUIProcessTree,
 	}
 }
 
@@ -169,28 +202,31 @@ var executeConformanceScenario = func(ctx context.Context, executable, name stri
 	return exec.CommandContext(ctx, executable, "--packaged-conformance-scenario", name).Output()
 }
 
-var runConformanceScenarioProcess = func(ctx context.Context, name string) (int64, error) {
+var runConformanceScenarioProcess = func(ctx context.Context, name string) (packagedConformanceScenarioReport, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return 0, errors.New("installed Desktop executable is unavailable")
+		return packagedConformanceScenarioReport{}, errors.New("installed Desktop executable is unavailable")
 	}
 	encoded, err := executeConformanceScenario(ctx, executable, name)
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			if code := parseConformanceChildFailure(exit.Stderr, name); code != "" {
-				return 0, conformanceFailure(code, errors.New("isolated installed Desktop scenario failed"))
+				return packagedConformanceScenarioReport{}, conformanceFailure(code, errors.New("isolated installed Desktop scenario failed"))
 			}
 		}
-		return 0, errors.New("isolated installed Desktop scenario failed")
+		return packagedConformanceScenarioReport{}, errors.New("isolated installed Desktop scenario failed")
 	}
 	var report packagedConformanceScenarioReport
 	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF || report.SchemaVersion != 1 || report.Scenario != name || report.WorkerPeakRSS <= 0 {
-		return 0, errors.New("isolated installed Desktop scenario result is invalid")
+		return packagedConformanceScenarioReport{}, errors.New("isolated installed Desktop scenario result is invalid")
 	}
-	return report.WorkerPeakRSS, nil
+	if name == "packaged_ui_process_tree" && report.ProcessTreePeakRSS <= 0 {
+		return packagedConformanceScenarioReport{}, errors.New("isolated installed Desktop UI process-tree result is invalid")
+	}
+	return report, nil
 }
 
 func parseConformanceChildFailure(stderr []byte, scenario string) string {
@@ -219,9 +255,10 @@ func RunPackagedConformanceScenario(name string, output io.Writer) error {
 	if runner == nil || output == nil {
 		return conformanceFailure("scenario.invalid", errors.New("packaged conformance scenario is invalid"))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), conformanceScenarioTimeout(name))
 	defer cancel()
-	if err := runner(ctx); err != nil {
+	processTreePeak, err := runner(ctx)
+	if err != nil {
 		var stage *conformanceStageError
 		if errors.As(err, &stage) {
 			return conformanceFailure("scenario."+name+"."+stage.stage, err)
@@ -232,7 +269,7 @@ func RunPackagedConformanceScenario(name string, output io.Writer) error {
 	if err != nil || rss <= 0 {
 		return conformanceFailure("measurement.memory", errors.New("scenario process RSS is unavailable"))
 	}
-	return json.NewEncoder(output).Encode(packagedConformanceScenarioReport{SchemaVersion: 1, Scenario: name, WorkerPeakRSS: rss})
+	return json.NewEncoder(output).Encode(packagedConformanceScenarioReport{SchemaVersion: 1, Scenario: name, WorkerPeakRSS: rss, ProcessTreePeakRSS: processTreePeak})
 }
 
 func cloneEvidence() map[string]string {
@@ -244,7 +281,7 @@ func cloneEvidence() map[string]string {
 }
 
 func conformanceScenarioOrder() []string {
-	return []string{"cold_start", "project_open", "search_analysis", "preview", "commit", "viewer_interaction", "mcp_bounded_operations", "external_reconcile", "shutdown"}
+	return []string{"cold_start", "project_open", "search_analysis", "preview", "commit", "viewer_interaction", "mcp_bounded_operations", "external_reconcile", "shutdown", "packaged_ui_process_tree"}
 }
 
 func conformancePlatform(platform desktopcontract.DesktopPlatform) (string, error) {
@@ -277,6 +314,7 @@ type conformanceInstance struct {
 	root  string
 	app   *desktopapp.Application
 	vault *selectionVault
+	owner *sharedOwner
 }
 
 func newConformanceInstance(ctx context.Context, external bool) (*conformanceInstance, error) {
@@ -288,6 +326,11 @@ func newConformanceInstance(ctx context.Context, external bool) (*conformanceIns
 	if err != nil {
 		os.RemoveAll(root)
 		return nil, &conformanceStageError{stage: "config", err: err}
+	}
+	owner, ok := base.Adapters[desktopcontract.ComponentBindingShell].(*sharedOwner)
+	if !ok || owner == nil {
+		os.RemoveAll(root)
+		return nil, &conformanceStageError{stage: "config", err: errors.New("canonical Desktop shared owner is unavailable")}
 	}
 	providers := map[string]ExternalProvider(nil)
 	if external {
@@ -307,7 +350,7 @@ func newConformanceInstance(ctx context.Context, external bool) (*conformanceIns
 		}
 		return nil, &conformanceStageError{stage: stage, err: errors.New("canonical Desktop application did not start")}
 	}
-	return &conformanceInstance{root: root, app: app, vault: vault}, nil
+	return &conformanceInstance{root: root, app: app, vault: vault, owner: owner}, nil
 }
 
 func (instance *conformanceInstance) close(ctx context.Context) error {
@@ -368,7 +411,10 @@ func conformanceProjectOpen(ctx context.Context) error {
 	if closed := instance.app.CloseProject(ctx, opened.Open.Session); closed.Outcome != protocolcommon.OutcomeSuccess {
 		return errors.New("project close failed")
 	}
-	return instance.close(ctx)
+	if err := instance.close(ctx); err != nil {
+		return err
+	}
+	return conformanceProjectFaultRecovery(ctx)
 }
 
 func conformancePreview(ctx context.Context) error {
@@ -586,7 +632,98 @@ func conformanceMCP(ctx context.Context) error {
 			return fmt.Errorf("bundled MCP tool %s is absent from %v", name, names)
 		}
 	}
-	if err := conformanceNativeMCP(ctx, workbench.instance, tools); err != nil {
+	opened, err := workbench.instance.openProject(ctx, conformanceAuthoringSource)
+	if err != nil {
+		return err
+	}
+	commitInput, err := conformanceCommitInput(ctx, opened, "mcp")
+	if err != nil {
+		return err
+	}
+	binding := &mcphost.Binding{DocumentID: opened.ProjectID, RevisionDigest: opened.Open.CommittedRevision.DefinitionHash, AccessFingerprint: opened.Open.Session.Scope.AccessFingerprint}
+	if err := conformanceMCPRegistry(ctx, workbench.instance); err != nil {
+		return err
+	}
+	if err := conformanceMCPReview(ctx, workbench.instance, opened, commitInput, binding); err != nil {
+		return err
+	}
+	publication, err := workbench.instance.app.ProjectPublication(ctx)
+	if err != nil || publication.Project == nil {
+		return errors.New("bundled MCP post-Review project publication failed")
+	}
+	restoreTarget := publication.Project.AuthoritativeRevision
+	currentSource, err := os.ReadFile(filepath.Join(workbench.instance.root, "document.ldl"))
+	if err != nil {
+		return err
+	}
+	if !bytes.Contains(currentSource, []byte("mcp_layer")) {
+		return errors.New("bundled MCP Review approval was not durably saved")
+	}
+	restorePreconditions, err := conformancePreconditions(ctx, string(currentSource))
+	if err != nil {
+		return err
+	}
+	awayOperations, err := engineprotocol.DecodeSemanticOperationBatch([]byte(`{"operations":[{"operation":"update_subject_field","target_address":"ldl:project:p:layer:mcp_layer","path":["display_name"],"action":"set","value":{"kind":"string","string":"Restore setup"}}]}`))
+	if err != nil {
+		return err
+	}
+	commitInput.OperationID = "conformance_restore_away"
+	commitInput.IdempotencyKey = "conformance_restore_away_idempotency"
+	commitInput.OperationBatch.BaseRevision = restoreTarget
+	commitInput.OperationBatch.ExpectedDefinitionHash = restoreTarget.DefinitionHash
+	commitInput.OperationBatch.Operations = awayOperations
+	commitInput.OperationBatch.Preconditions = restorePreconditions
+	awayPreview := workbench.instance.app.Preview(ctx, runtimeprotocol.PreviewOperationsInput{Session: opened.Open.Session, OperationBatch: commitInput.OperationBatch})
+	if awayPreview.Outcome != protocolcommon.OutcomeSuccess {
+		return fmt.Errorf("bundled MCP restore setup preview failed: %+v", awayPreview.Failure)
+	}
+	commitInput.AuthoringProof = awayPreview.Value.AuthoringProof
+	awayCommit := workbench.instance.app.Commit(ctx, commitInput)
+	if awayCommit.Outcome != protocolcommon.OutcomeSuccess || awayCommit.Value.OperationResult.CommittedRevision == nil {
+		return fmt.Errorf("bundled MCP restore setup save failed: %+v", awayCommit.Failure)
+	}
+	publication, err = workbench.instance.app.ProjectPublication(ctx)
+	if err != nil || publication.Project == nil || publication.Project.AuthoritativeRevision.RevisionID == restoreTarget.RevisionID {
+		return errors.New("bundled MCP restore setup publication failed")
+	}
+	currentSource, err = os.ReadFile(filepath.Join(workbench.instance.root, "document.ldl"))
+	if err != nil {
+		return err
+	}
+	restorePreconditions, err = conformancePreconditions(ctx, string(currentSource))
+	if err != nil {
+		return err
+	}
+	restoreOperations, err := engineprotocol.DecodeSemanticOperationBatch([]byte(`{"operations":[{"operation":"update_subject_field","target_address":"ldl:project:p:layer:mcp_layer","path":["display_name"],"action":"set","value":{"kind":"string","string":"Conformance"}}]}`))
+	if err != nil {
+		return err
+	}
+	commitInput.OperationID = "conformance_restore_commit"
+	commitInput.IdempotencyKey = "conformance_restore_commit_idempotency"
+	commitInput.OperationBatch.BaseRevision = publication.Project.AuthoritativeRevision
+	commitInput.OperationBatch.ExpectedDefinitionHash = publication.Project.AuthoritativeRevision.DefinitionHash
+	commitInput.OperationBatch.Operations = restoreOperations
+	commitInput.OperationBatch.Preconditions = restorePreconditions
+	commitInput.AuthoringProof = runtimeprotocol.AuthoringProof{}
+	binding = &mcphost.Binding{DocumentID: opened.ProjectID, RevisionDigest: publication.Project.AuthoritativeRevision.DefinitionHash, AccessFingerprint: opened.Open.Session.Scope.AccessFingerprint}
+	if err := conformanceMCPHistoryRestore(ctx, workbench.instance.app, opened, restoreTarget, commitInput, binding); err != nil {
+		return err
+	}
+	restoredSource, err := os.ReadFile(filepath.Join(workbench.instance.root, "document.ldl"))
+	if err != nil {
+		return err
+	}
+	restoredProject, err := endpoint.NewLocalDocumentEngine().CompileProject(ctx, endpoint.LocalProjectInput{
+		EntryPath:         "document.ldl",
+		ProjectSourceTree: map[string][]byte{"document.ldl": restoredSource},
+		ResolvedDependencies: endpoint.LocalResolvedDependencies{
+			Format: "layerdraw-resolved", FormatVersion: 1, Language: 1,
+		},
+	})
+	if err != nil || restoredProject.DefinitionHash != restoreTarget.DefinitionHash || restoredProject.GraphHash != restoreTarget.GraphHash {
+		return fmt.Errorf("bundled MCP restore durable read-back failed: %w", err)
+	}
+	if err := conformanceMCPAgentScope(ctx, workbench.instance.app, opened); err != nil {
 		return err
 	}
 	capabilities := workbench.instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "conformance-capabilities", Arguments: json.RawMessage(`{}`)})
@@ -621,6 +758,220 @@ func conformanceMCP(ctx context.Context) error {
 	read := workbench.instance.app.MCPReadResource(ctx, mcphost.ReadResourceRequest{URI: resources[0].URI})
 	if read.Failure != nil || len(read.Content) == 0 || read.MimeType == "" {
 		return errors.New("bundled MCP resource read failed")
+	}
+	if closed := workbench.instance.app.CloseProject(ctx, opened.Open.Session); closed.Outcome != protocolcommon.OutcomeSuccess {
+		return fmt.Errorf("bundled MCP authoring project close failed: %+v", closed.Failure)
+	}
+	native, err := newConformanceInstance(ctx, false)
+	if err != nil {
+		return err
+	}
+	defer native.close(context.Background())
+	enabled = native.app.SetMCPEnabled(ctx, true, desktopapp.MCPTransportLocal)
+	if enabled.Outcome != protocolcommon.OutcomeSuccess || !enabled.Value.Enabled {
+		return fmt.Errorf("bundled native MCP Host enable failed: outcome=%s failure=%+v", enabled.Outcome, enabled.Failure)
+	}
+	nativeTools, failure := native.app.MCPListTools(ctx)
+	if failure != nil {
+		return fmt.Errorf("bundled native MCP Host discovery failed: %+v", failure)
+	}
+	return conformanceNativeMCP(ctx, native, nativeTools)
+}
+
+func conformanceCommitInput(ctx context.Context, opened desktopapp.ProjectOpenResult, suffix string) (runtimeprotocol.RuntimeCommitInput, error) {
+	batch, err := engineprotocol.DecodeSemanticOperationBatch([]byte(fmt.Sprintf(`{"operations":[{"operation":"create_subject","subject_kind":"layer","parent_address":"ldl:project:p","id":"%s_layer","fields":{"display_name":"Conformance","order":"1"}}]}`, suffix)))
+	if err != nil {
+		return runtimeprotocol.RuntimeCommitInput{}, err
+	}
+	preconditions, err := conformancePreconditions(ctx, conformanceAuthoringSource)
+	if err != nil {
+		return runtimeprotocol.RuntimeCommitInput{}, err
+	}
+	return runtimeprotocol.RuntimeCommitInput{
+		Session: opened.Open.Session, OperationID: runtimeprotocol.OperationID("conformance_" + suffix),
+		IdempotencyKey: runtimeprotocol.IdempotencyKey("conformance_" + suffix + "_idempotency"),
+		OperationBatch: runtimeprotocol.RuntimeOperationBatch{DocumentID: opened.ProjectID, BaseRevision: opened.Open.CommittedRevision, ExpectedDefinitionHash: opened.Open.CommittedRevision.DefinitionHash, Operations: batch, Preconditions: preconditions},
+		Trigger:        runtimeprotocol.CommitTriggerAgentApply,
+	}, nil
+}
+
+func conformanceMCPRegistry(ctx context.Context, instance *conformanceInstance) error {
+	const canonicalID = "layerdraw/conformance"
+	root := filepath.Join(instance.root, "conformance-registry")
+	if err := os.MkdirAll(filepath.Join(root, filepath.Dir(registrysource.CatalogPath)), 0o700); err != nil {
+		return err
+	}
+	manifest := []byte("{\"dependencies\":{},\"entry\":\"pack.ldl\",\"format\":\"layerdraw-pack\",\"format_version\":1,\"id\":\"layerdraw/conformance\",\"language\":1,\"name\":\"conformance\",\"version\":\"1.0.0\"}\n")
+	source := []byte("entity_type conformance \"Conformance\" {\n  representation shape rect\n}\nexport { conformance }\n")
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for _, file := range []struct {
+		name string
+		data []byte
+	}{{"manifest.json", manifest}, {"pack.ldl", source}} {
+		entry, err := writer.CreateHeader(&zip.FileHeader{Name: file.name, Method: zip.Store})
+		if err != nil {
+			return err
+		}
+		if _, err := entry.Write(file.data); err != nil {
+			return err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	artifact := archive.Bytes()
+	digest := func(value []byte) string { sum := sha256.Sum256(value); return "sha256:" + hex.EncodeToString(sum[:]) }
+	release := registry.ArtifactRelease{Identity: registry.ArtifactIdentity{Kind: registry.ArtifactPack, CanonicalID: canonicalID, Version: "1.0.0"}, SourceID: "installed-conformance", PublisherID: "layerdraw", Digest: digest(artifact), ManifestDigest: digest(manifest), DependencyMetadataDigest: digest([]byte("[]")), Size: int64(len(artifact)), Dependencies: []registry.Dependency{}, Compatibility: []registry.CompatibilityDecision{}, License: "LicenseRef-LayerDraw-1.0", ProvenanceDigest: digest([]byte("installed-conformance"))}
+	catalog, err := json.Marshal(registrysource.Catalog{SchemaVersion: registrysource.CatalogVersion, Artifacts: []registrysource.CatalogEntry{{Release: release, ArtifactPath: "conformance.ldpack"}}})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(root, "conformance.ldpack"), artifact, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(root, registrysource.CatalogPath), catalog, 0o600); err != nil {
+		return err
+	}
+	const policyID = "installed-conformance-local"
+	if err := instance.owner.registry.PutTrustPolicy(registry.TrustPolicy{PolicyID: policyID, AllowUnsignedLocal: true, TrustedPublishers: nil, PublicKeys: map[string]ed25519.PublicKey{}, RevokedKeys: map[string]bool{}}); err != nil {
+		return err
+	}
+	configured := registry.RegistrySource{SourceID: release.SourceID, Kind: registry.SourceLocalDirectory, EndpointRef: root, TrustPolicyID: policyID, CachePolicy: "verified", Priority: 100, Connected: true}
+	found, err := (registrysource.LocalDirectory{}).Search(ctx, configured, registry.SearchInput{Query: canonicalID})
+	if err != nil || len(found) != 1 {
+		return fmt.Errorf("installed Registry source fixture failed: %w", err)
+	}
+	validator, err := registryengine.New(instance.owner.objects, instance.owner.local)
+	if err != nil {
+		return err
+	}
+	if _, err := validator.ValidateRegistryArtifact(ctx, release, artifact); err != nil {
+		return fmt.Errorf("installed Registry artifact fixture failed: %w", err)
+	}
+	if err := instance.owner.registry.ConfigureSource(configured); err != nil {
+		return err
+	}
+	if err := instance.owner.registry.ConnectSource(ctx, configured.SourceID, "installed-conformance-local"); err != nil {
+		return err
+	}
+	input, _ := json.Marshal(registry.SearchInput{Query: canonicalID})
+	request, _ := json.Marshal(registry.WireRequest{WireVersion: registry.RegistryWireVersion, Operation: registry.WireSearch, RequestID: "conformance-registry", Input: input})
+	result := instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.registry_search", RequestID: "conformance-registry", Arguments: request})
+	response, err := registry.DecodeWireResponse(result.Content, registry.WireSearch)
+	var releases []registry.ArtifactRelease
+	if result.Failure != nil || err != nil || !response.OK || json.Unmarshal(response.Value, &releases) != nil || len(releases) != 1 || releases[0].Identity.CanonicalID != canonicalID {
+		return fmt.Errorf("bundled MCP Registry search failed: failure=%+v response=%+v decode=%v", result.Failure, response.Failure, err)
+	}
+	return nil
+}
+
+func conformanceMCPHistoryRestore(ctx context.Context, app *desktopapp.Application, opened desktopapp.ProjectOpenResult, selected runtimeprotocol.CommittedRevisionRef, commit runtimeprotocol.RuntimeCommitInput, binding *mcphost.Binding) error {
+	protocol := runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"}
+	list, err := runtimeprotocol.EncodeListRevisionsRequestEnvelope(runtimeprotocol.ListRevisionsRequestEnvelope{Operation: runtimeprotocol.ListRevisionsRequestEnvelopeOperationValue, Protocol: protocol, RequestID: "conformance-history", Payload: runtimeprotocol.ListRevisionsInput{Session: opened.Open.Session, MaxItems: "20", MaxOutputBytes: "1048576"}})
+	if err != nil {
+		return err
+	}
+	listed := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.list_revisions", RequestID: "conformance-history", Arguments: list, Binding: binding})
+	history, err := runtimeprotocol.DecodeListRevisionsResponseEnvelope(listed.Content)
+	if listed.Failure != nil || err != nil || history.Payload == nil || len(history.Payload.Items) == 0 {
+		return fmt.Errorf("bundled MCP history failed: failure=%+v decode=%v", listed.Failure, err)
+	}
+	foundTarget := false
+	for _, item := range history.Payload.Items {
+		if item.Revision.RevisionID == selected.RevisionID && item.Revision.DefinitionHash == selected.DefinitionHash && item.Revision.GraphHash == selected.GraphHash {
+			foundTarget = true
+			break
+		}
+	}
+	if !foundTarget {
+		return errors.New("bundled MCP history omitted the selected restore revision")
+	}
+	preview, err := runtimeprotocol.EncodeRestorePreviewRequestEnvelope(runtimeprotocol.RestorePreviewRequestEnvelope{Operation: runtimeprotocol.RestorePreviewRequestEnvelopeOperationValue, Protocol: protocol, RequestID: "conformance-restore", Payload: runtimeprotocol.RestorePreviewInput{Session: opened.Open.Session, RevisionID: selected.RevisionID}})
+	if err != nil {
+		return err
+	}
+	validated := app.Preview(ctx, runtimeprotocol.PreviewOperationsInput{Session: opened.Open.Session, OperationBatch: commit.OperationBatch})
+	if validated.Outcome != protocolcommon.OutcomeSuccess {
+		return fmt.Errorf("bundled MCP restore commit preview failed: %+v base=%+v", validated.Failure, commit.OperationBatch.BaseRevision)
+	}
+	commit.AuthoringProof = validated.Value.AuthoringProof
+	commit.Trigger = runtimeprotocol.CommitTriggerAgentApply
+	commitWire, err := runtimeprotocol.EncodeCommitOperationsRequestEnvelope(runtimeprotocol.CommitOperationsRequestEnvelope{Operation: runtimeprotocol.CommitOperationsRequestEnvelopeOperationValue, Protocol: protocol, RequestID: "conformance-restore", Payload: commit})
+	if err != nil {
+		return err
+	}
+	arguments, _ := json.Marshal(map[string]json.RawMessage{"preview": preview, "commit": commitWire})
+	restored := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.restore_revision", RequestID: "conformance-restore", Arguments: arguments, Binding: binding})
+	response, decodeErr := runtimeprotocol.DecodeCommitOperationsResponseEnvelope(restored.Content)
+	if restored.Failure != nil || decodeErr != nil || response.Outcome != protocolcommon.OutcomeSuccess || response.Payload == nil || response.Payload.OperationResult.CommittedRevision == nil {
+		return fmt.Errorf("bundled MCP restore failed: %+v", restored.Failure)
+	}
+	committed := *response.Payload.OperationResult.CommittedRevision
+	if committed.RevisionID == selected.RevisionID || committed.DefinitionHash != selected.DefinitionHash || committed.GraphHash != selected.GraphHash {
+		return fmt.Errorf("bundled MCP restore did not publish the selected revision state: selected=%s/%s/%s committed=%s/%s/%s", selected.RevisionID, selected.DefinitionHash, selected.GraphHash, committed.RevisionID, committed.DefinitionHash, committed.GraphHash)
+	}
+	readbackWire, err := runtimeprotocol.EncodeListRevisionsRequestEnvelope(runtimeprotocol.ListRevisionsRequestEnvelope{Operation: runtimeprotocol.ListRevisionsRequestEnvelopeOperationValue, Protocol: protocol, RequestID: "conformance-history-readback", Payload: runtimeprotocol.ListRevisionsInput{Session: opened.Open.Session, MaxItems: "1", MaxOutputBytes: "1048576"}})
+	if err != nil {
+		return err
+	}
+	readback := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.list_revisions", RequestID: "conformance-history-readback", Arguments: readbackWire, Binding: &mcphost.Binding{DocumentID: opened.ProjectID, RevisionDigest: committed.DefinitionHash, AccessFingerprint: opened.Open.Session.Scope.AccessFingerprint}})
+	latest, err := runtimeprotocol.DecodeListRevisionsResponseEnvelope(readback.Content)
+	if readback.Failure != nil || err != nil || latest.Payload == nil || len(latest.Payload.Items) != 1 || latest.Payload.Items[0].Revision.RevisionID != committed.RevisionID {
+		return errors.New("bundled MCP restore history read-back failed")
+	}
+	publication, err := app.ProjectPublication(ctx)
+	if err != nil || publication.Project == nil || publication.Project.AuthoritativeRevision.RevisionID != committed.RevisionID || publication.Project.AuthoritativeRevision.DefinitionHash != selected.DefinitionHash || publication.Project.AuthoritativeRevision.GraphHash != selected.GraphHash {
+		return errors.New("bundled MCP restore project read-back failed")
+	}
+	return nil
+}
+
+func conformanceMCPReview(ctx context.Context, instance *conformanceInstance, opened desktopapp.ProjectOpenResult, commit runtimeprotocol.RuntimeCommitInput, binding *mcphost.Binding) error {
+	app := instance.app
+	preview := app.Preview(ctx, runtimeprotocol.PreviewOperationsInput{Session: opened.Open.Session, OperationBatch: commit.OperationBatch})
+	if preview.Outcome != protocolcommon.OutcomeSuccess {
+		return fmt.Errorf("bundled MCP Review preview failed: failure=%+v base=%s/%s", preview.Failure, commit.OperationBatch.BaseRevision.RevisionID, commit.OperationBatch.BaseRevision.DefinitionHash)
+	}
+	impact := preview.Value.PreviewEvaluation.AuthoringImpact
+	create := reviewapp.CreateInput{
+		ProposalID: "conformance-review", Proposer: accessprotocol.ActorRef{ActorID: "conformance-reviewer", Kind: "user"},
+		ProposeDecision: preview.Value.PreviewEvaluation.AuthoringDecision,
+		Preview:         reviewapp.RepreviewResult{CurrentRevision: opened.Open.CommittedRevision, DefinitionHash: preview.Value.DefinitionHash, GraphHash: preview.Value.GraphHash, OperationBatch: commit.OperationBatch, AuthoringProof: preview.Value.AuthoringProof, PreviewDecision: preview.Value.PreviewEvaluation.AuthoringDecision, Evidence: reviewapp.Evidence{SemanticDiff: semantic.SemanticDiff{Digest: impact.SemanticDiffHash, Entries: []semantic.SemanticDiffEntry{}}, SourceDiff: engineprotocol.SourceDiff{Digest: impact.SourceDiffHash, Edits: []engineprotocol.SourceEdit{}}, AuthoringImpact: impact, Diagnostics: []semantic.Diagnostic{}, AffectedUsages: []semantic.StableAddress{}, AffectedRows: []semantic.StableAddress{}, AffectedViews: []semantic.StableAddress{}, RenderPreviews: []reviewapp.ArtifactPreview{}}},
+	}
+	if create.Preview.CurrentRevision.DocumentID == "" || create.Preview.OperationBatch.DocumentID != create.Preview.CurrentRevision.DocumentID || create.Preview.OperationBatch.BaseRevision != create.Preview.CurrentRevision || create.Preview.Evidence.AuthoringImpact.ImpactDigest == "" || create.ProposeDecision.AuthoringImpactDigest == nil || create.Preview.Evidence.AuthoringImpact.ImpactDigest != *create.ProposeDecision.AuthoringImpactDigest {
+		return errors.New("bundled MCP Review evidence is inconsistent")
+	}
+	if _, err := accessprotocol.EncodeAuthoringDecision(create.ProposeDecision); err != nil {
+		return fmt.Errorf("bundled MCP Review decision is invalid: %w", err)
+	}
+	encoded, _ := json.Marshal(create)
+	created := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.review_create_proposal", RequestID: "conformance-review-create", Arguments: encoded, Binding: binding})
+	var proposal reviewapp.Proposal
+	if created.Failure != nil || json.Unmarshal(created.Content, &proposal) != nil || proposal.Status != reviewapp.StatusProposed {
+		return fmt.Errorf("bundled MCP Review proposal failed: %+v", created.Failure)
+	}
+	approval, _ := json.Marshal(map[string]any{"proposal_id": proposal.ID, "generation": proposal.Generation})
+	applied := app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.review_approve_apply", RequestID: "conformance-review-approve", Arguments: approval, Binding: binding})
+	if applied.Failure != nil || json.Unmarshal(applied.Content, &proposal) != nil || proposal.Status != reviewapp.StatusApplied {
+		return fmt.Errorf("bundled MCP Review approval failed: %+v", applied.Failure)
+	}
+	return nil
+}
+
+func conformanceMCPAgentScope(ctx context.Context, app *desktopapp.Application, opened desktopapp.ProjectOpenResult) error {
+	request := desktopapp.MCPConnectRequest{ClientID: "installed-conformance", ProtocolVersion: desktopapp.MCPConnectionProtocolVersion, DocumentID: opened.ProjectID, AgentID: "installed-conformance-agent", Capabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityGraphWrite}, Permissions: accesscore.AgentPermissions{Read: true, Propose: true}, ExpiresAt: protocolcommon.Rfc3339Time(time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))}
+	created := app.CreateMCPConnection(ctx, request)
+	if created.Outcome != protocolcommon.OutcomeSuccess || created.Value.Status != desktopapp.MCPConnectionConnected {
+		return fmt.Errorf("bundled MCP agent scope failed: %+v", created.Failure)
+	}
+	called := app.MCPCallConnectionTool(ctx, created.Value.ConnectionID, mcphost.CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "conformance-agent-scope", Arguments: json.RawMessage(`{}`)})
+	if called.Failure != nil || len(called.Content) == 0 {
+		return fmt.Errorf("bundled MCP scoped connection failed: %+v", called.Failure)
+	}
+	revoked := app.RevokeMCPConnection(ctx, created.Value.ConnectionID)
+	if revoked.Outcome != protocolcommon.OutcomeSuccess || revoked.Value.Status != desktopapp.MCPConnectionRevoked {
+		return fmt.Errorf("bundled MCP revocation failed: %+v", revoked.Failure)
 	}
 	return nil
 }

@@ -203,20 +203,27 @@ func (p *projectPort) NewRegistryDocumentState(_ context.Context, _ ArtifactIden
 	state.ProjectID = "new-project"
 	state.DocumentID = "new-document"
 	state.Revision = ""
-	state.DefinitionHash = ""
+	state.DefinitionHash = testDigest('d')
 	state.DependencySnapshot = ProjectDependencySnapshot{}
 	state.RuntimeSessionID = "runtime-session-template"
+	state.EngineSnapshot = RegistryProjectSnapshot{Kind: RegistryProjectSnapshotEmptyTemplate, Handle: "engine-template-baseline", DocumentID: state.DocumentID, DefinitionHash: state.DefinitionHash, SourceClosureDigest: testDigest('e')}
 	return state, p.err
 }
 
 type runtimePort struct {
-	calls       atomic.Int64
-	err         error
-	result      *RuntimeCommitResult
-	block       chan struct{}
-	recovery    RuntimeRegistryOutcome
-	recoveryErr error
-	last        RuntimeCommitInput
+	calls        atomic.Int64
+	initialCalls atomic.Int64
+	err          error
+	result       *RuntimeCommitResult
+	block        chan struct{}
+	recovery     RuntimeRegistryOutcome
+	recoveryErr  error
+	last         RuntimeCommitInput
+}
+
+func (r *runtimePort) CommitInitialRegistryTemplate(ctx context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
+	r.initialCalls.Add(1)
+	return r.CommitRegistryPlan(ctx, input)
 }
 
 func (r *runtimePort) CommitRegistryPlan(_ context.Context, input RuntimeCommitInput) (RuntimeCommitResult, error) {
@@ -304,7 +311,7 @@ func newTestEnv(t *testing.T, store TransactionStore) *testEnv {
 	}
 	v := &validator{}
 	access := &accessPort{}
-	project := &projectPort{state: ProjectState{ProjectID: "p", DocumentID: "doc", LocalScopeID: "local", Revision: "r1", DefinitionHash: testDigest('1'), DependencySnapshot: ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{}}, PackTreeManifest: testDigest('9'), HostCapabilities: []string{"render.svg"}, RuntimeSessionID: "runtime-session-project", LeaseToken: "lease-token-project", GrantSnapshot: accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: protocolcommon.Digest(testDigest('a')), ActorRef: accessprotocol.ActorRef{ActorID: "user", Kind: "user"}, GrantedCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage, semantic.AuthoringCapabilitySchemaWrite}, HostDocumentID: "doc", IssuedAt: protocolcommon.Rfc3339Time(testNow.Format(time.RFC3339)), LocalScopeID: "local", MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}}}
+	project := &projectPort{state: ProjectState{ProjectID: "p", DocumentID: "doc", LocalScopeID: "local", Revision: "r1", DefinitionHash: testDigest('1'), DependencySnapshot: ProjectDependencySnapshot{ResolvedLockDigest: testDigest('0'), Installs: []LockedArtifact{}}, PackTreeManifest: testDigest('9'), HostCapabilities: []string{"render.svg"}, RuntimeSessionID: "runtime-session-project", LeaseToken: "lease-token-project", EngineSnapshot: RegistryProjectSnapshot{Kind: RegistryProjectSnapshotWorking, Handle: "engine-project-snapshot", DocumentID: "doc", Revision: "r1", DefinitionHash: testDigest('1'), SourceClosureDigest: testDigest('e')}, GrantSnapshot: accessprotocol.AuthoringGrantSnapshot{AccessFingerprint: protocolcommon.Digest(testDigest('a')), ActorRef: accessprotocol.ActorRef{ActorID: "user", Kind: "user"}, GrantedCapabilities: []semantic.AuthoringCapability{semantic.AuthoringCapabilityPackageManage, semantic.AuthoringCapabilitySchemaWrite}, HostDocumentID: "doc", IssuedAt: protocolcommon.Rfc3339Time(testNow.Format(time.RFC3339)), LocalScopeID: "local", MembershipVersion: "1", PolicyRefs: []accessprotocol.PolicyRef{}}}}
 	runtime := &runtimePort{}
 	broker := credentialBroker{lease: CredentialLease{Credential: []byte("opaque"), ExpiresAt: testNow.Add(time.Hour)}}
 	registry, err := New(v, access, runtime, project, broker, store)
@@ -348,6 +355,17 @@ func planRequest(env *testEnv, action Action, identity ArtifactIdentity) PlanReq
 func addRelease(env *testEnv, release ArtifactRelease, data []byte) {
 	env.client.releases = append(env.client.releases, release)
 	env.client.bytes[release.Digest] = append([]byte{}, data...)
+}
+
+func TestPlanRejectsUnboundEngineProjectSnapshot(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	request := planRequest(env, ActionInstall, ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "layerdraw/base", Version: "1.0.0"})
+	env.project.mu.Lock()
+	env.project.state.EngineSnapshot.DefinitionHash = testDigest('f')
+	env.project.mu.Unlock()
+	if _, err := env.registry.Plan(context.Background(), request); !IsFailure(err, FailurePlanStale) {
+		t.Fatalf("mismatched Engine snapshot was accepted: %v", err)
+	}
 }
 
 func TestInstallPlanBindsTrustTypedAccessAndFreshCommitState(t *testing.T) {

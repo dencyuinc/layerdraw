@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dencyuinc/layerdraw/internal/engine"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
@@ -161,7 +162,7 @@ func TestGoLadybugExecutesBoundedProjectedPageRank(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	for _, query := range []string{"CREATE NODE TABLE SearchNode(id STRING, PRIMARY KEY(id))", "CREATE REL TABLE SearchEdge(FROM SearchNode TO SearchNode, id STRING)", "CREATE (:SearchNode {id: 'a'}), (:SearchNode {id: 'b'})", "MATCH (a:SearchNode {id: 'a'}), (b:SearchNode {id: 'b'}) CREATE (a)-[:SearchEdge {id: 'ab'}]->(b)", `CALL PROJECT_GRAPH('test_graph', {'SearchNode': 'n.id IN ["a","b"]'}, {'SearchEdge': 'true'})`} {
+	for _, query := range []string{"CREATE NODE TABLE SearchNode(id STRING, PRIMARY KEY(id))", "CREATE REL TABLE SearchEdge(FROM SearchNode TO SearchNode, id STRING)", "CREATE (:SearchNode {id: 'a'}), (:SearchNode {id: 'b'})", "MATCH (a:SearchNode {id: 'a'}), (b:SearchNode {id: 'b'}) CREATE (a)-[:SearchEdge {id: 'ab'}]->(b)", `CALL PROJECT_GRAPH('test_graph', {'SearchNode': 'n.id IN ["a","b"]'}, {'SearchEdge': 'r.id IN ["ab"]'})`} {
 		if err := session.controlLocked(query); err != nil {
 			t.Fatalf("query=%s: %v", query, err)
 		}
@@ -169,6 +170,29 @@ func TestGoLadybugExecutesBoundedProjectedPageRank(t *testing.T) {
 	rows, err := session.queryLocked("CALL page_rank('test_graph') RETURN node.id AS address, rank AS metric_value ORDER BY address")
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestGoLadybugExecutesEngineAnalysisPlan(t *testing.T) {
+	session, err := OpenGoLadybugSessionWithExtensions(filepath.Join(t.TempDir(), "analysis.lbug"), []string{testFTSExtension(t), filepath.Join(filepath.Dir(testFTSExtension(t)), "libvector.lbug_extension"), filepath.Join(filepath.Dir(testFTSExtension(t)), "libalgo.lbug_extension")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	for _, query := range []string{"CREATE NODE TABLE SearchNode(id STRING, PRIMARY KEY(id))", "CREATE REL TABLE SearchEdge(FROM SearchNode TO SearchNode, id STRING, from_id STRING, to_id STRING)", "CREATE (:SearchNode {id: 'ldl:project:p:entity:alpha'}), (:SearchNode {id: 'ldl:project:p:entity:beta'})", "MATCH (a:SearchNode {id: 'ldl:project:p:entity:alpha'}), (b:SearchNode {id: 'ldl:project:p:entity:beta'}) CREATE (a)-[:SearchEdge {id: 'ldl:project:p:relation:alpha_beta', from_id: a.id, to_id: b.id}]->(b)"} {
+		if err := session.controlLocked(query); err != nil {
+			t.Fatalf("fixture query=%s: %v", query, err)
+		}
+	}
+	plan, _, err := engine.BuildNativeAnalysisPlan([]byte(`{"kind":"analyze_graph","algorithm":"page_rank","entity_addresses":["ldl:project:p:entity:alpha","ldl:project:p:entity:beta"],"relation_addresses":["ldl:project:p:relation:alpha_beta"],"parameters":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, statement := range plan.Statements {
+		rows := &nativeRows{}
+		if err := session.ExecutePrepared(context.Background(), LadybugStatement{Query: statement.Query, Parameters: map[string]port.RawValue{}}, port.ExecutionLimits{MaxRows: 16, MaxBytes: 4096}, rows); err != nil {
+			t.Fatalf("statement %d %+v: %v", index, statement, err)
+		}
 	}
 }
 

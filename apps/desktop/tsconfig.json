@@ -10,5 +10,5 @@
     "target": "ES2024",
     "verbatimModuleSyntax": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "frontend/src/**/*.ts", "test/**/*.ts"]
 }

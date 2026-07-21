@@ -40,6 +40,7 @@ const project = {
   project_id: "project:roadmap", session_generation: 1, display_name: "Desktop roadmap", authoritative_revision_token: "revision:12", authoritative_revision_label: "Revision 12",
   editor, editor_session: editorSession, views: [{ address: "view:diagram", label: "System map", shape: "diagram" }, { address: "view:table", label: "Inventory", shape: "table" }],
   selected_view_address: "view:diagram", access: { status: "allowed", label: "Local owner" }, storage: { kind: "local", status: "connected", label: "On this Mac" }, persistence: "clean",
+  library_project: { project_id: "ldl:project:roadmap", revision: "revision:12", definition_hash: "sha256:definition", resolved_lock_digest: "sha256:lock", dependency_snapshot: { resolved_lock_digest: "sha256:lock", installs: [] } },
 };
 let available = true;
 let sequence = 0;
@@ -68,8 +69,24 @@ const mcp = {
 	async createConnection(request) { const value = { connection_id: "connection-1", client_id: request.client_id, session_id: "session-1", protocol_version: request.protocol_version, document_id: request.document_id, delegation_id: "delegation-1", agent_id: request.agent_id, capabilities: request.capabilities, permissions: request.permissions, expires_at: request.expires_at, generation: "1", status: "connected" }; mcpConnections = [value]; calls.push(["mcp-connect", request]); return { outcome: "success", value }; },
 	async revokeConnection(id) { mcpConnections = mcpConnections.map((value) => ({ ...value, status: "revoked" })); calls.push(["mcp-revoke", id]); return { outcome: "success", value: mcpConnections[0] }; },
 };
+const registrySource = { source_id: "official", kind: "official", endpoint_ref: "https://registry.layerdraw.test", trust_policy_id: "desktop-local", cache_policy: "on_demand", priority: 100, connected: true, revision: 1 };
+const registryRelease = { identity: { kind: "pack", canonical_id: "layerdraw/catalog", version: "1.0.0" }, source_id: "official", publisher_id: "layerdraw", digest: "sha256:artifact", manifest_digest: "sha256:manifest", dependency_metadata_digest: "sha256:dependencies", size: 10, dependencies: [], compatibility: [], license: "MIT", provenance_digest: "sha256:provenance" };
+let libraryState = { status: "idle", query: "", sources: [], results: [], capabilities: { browse: true, manage_sources: true, plan_transactions: true, commit_transactions: true, author_artifacts: true } };
+const libraryPublish = (extension) => structuredClone(libraryState = { ...libraryState, ...extension });
+const library = {
+  snapshot: () => structuredClone(libraryState), cancel() {},
+  async refreshSources() { calls.push(["library-sources"]); return libraryPublish({ status: "ready", sources: [registrySource] }); },
+  async search(query, kind) { calls.push(["library-search", query, kind]); return libraryPublish({ status: "ready", query, results: [registryRelease] }); },
+  select(identity) { calls.push(["library-select", identity.canonical_id]); return libraryPublish({ selected: registryRelease, status: "ready" }); },
+  async preview(action, context) { calls.push(["library-preview", action, context.project_id]); return libraryPublish({ status: "awaiting_confirmation", plan: { transaction_id: "tx", plan_digest: "sha256:plan", action, artifacts: [{ release: registryRelease }], migration_required: false } }); },
+  async confirm(operation, idempotency) { calls.push(["library-confirm", operation, idempotency]); return libraryPublish({ status: "committed", transaction: { plan: libraryState.plan, events: [{ state: "committed" }] } }); },
+  async configureSource(source) { calls.push(["library-configure", source.source_id]); return libraryPublish({ status: "ready", sources: [{ ...source, connected: false, revision: 1 }] }); },
+  async connectSource(sourceID, connection) { calls.push(["library-connect", sourceID, connection]); return libraryPublish({ status: "ready", sources: [{ ...registrySource, source_id: sourceID, connected: true }] }); },
+  async disconnectSource(sourceID) { calls.push(["library-disconnect", sourceID]); return libraryPublish({ status: "ready", sources: [{ ...registrySource, source_id: sourceID, connected: false }] }); },
+  async recoverTransaction(transactionID) { calls.push(["library-recover", transactionID]); return libraryPublish({ status: "committed" }); },
+};
 mountDesktopShell(document.querySelector("#root"), {
-	lifecycle, viewer: viewerPort, mcp, viewSelectionCapability: "engine.materialize_view",
+	lifecycle, viewer: viewerPort, mcp, library, viewSelectionCapability: "engine.materialize_view",
   editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
 });
 window.go = { desktopwails: { ShellBinding: {

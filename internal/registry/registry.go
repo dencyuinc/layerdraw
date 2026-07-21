@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 )
@@ -181,6 +182,14 @@ type ValidatedArtifact struct {
 	AuthoringImpact            *semantic.AuthoringImpact `json:"authoring_impact,omitempty"`
 	AddressMigrationPlanDigest string                    `json:"address_migration_plan_digest"`
 	Diagnostics                []string                  `json:"diagnostics"`
+	StagedObjects              []StagedObjectRef         `json:"staged_objects"`
+}
+
+type StagedObjectRef struct {
+	ObjectID  string `json:"object_id"`
+	Digest    string `json:"digest"`
+	Size      int64  `json:"size"`
+	MediaType string `json:"media_type"`
 }
 
 // PackageValidator is implemented by the Go Engine package facade. Registry
@@ -216,6 +225,8 @@ type ProjectMutationPlan struct {
 	AuthoringImpactDigest      string                   `json:"authoring_impact_digest"`
 	HostOperationImpactDigest  string                   `json:"host_operation_impact_digest"`
 	EvaluationDigest           string                   `json:"evaluation_digest"`
+	StagedObjects              []StagedObjectRef        `json:"staged_objects"`
+	EngineSnapshot             RegistryProjectSnapshot  `json:"engine_snapshot"`
 }
 type RegistryMutationBuildInput struct {
 	Action             Action                    `json:"action"`
@@ -368,6 +379,13 @@ type RuntimeCommitResult struct {
 type RuntimePort interface {
 	CommitRegistryPlan(context.Context, RuntimeCommitInput) (RuntimeCommitResult, error)
 }
+
+// TemplateInitialPublicationPort is intentionally separate from RuntimePort:
+// creating a Document has no committed base/head and must never be disguised
+// as an update against an empty revision string.
+type TemplateInitialPublicationPort interface {
+	CommitInitialRegistryTemplate(context.Context, RuntimeCommitInput) (RuntimeCommitResult, error)
+}
 type RuntimeRegistryStatus string
 
 const (
@@ -401,12 +419,51 @@ type ProjectState struct {
 	GrantSnapshot       accessprotocol.AuthoringGrantSnapshot
 	RuntimeSessionID    string
 	LeaseToken          string
+	EngineSnapshot      RegistryProjectSnapshot
 }
+
+type RegistryProjectSnapshotKind string
+
+const (
+	RegistryProjectSnapshotWorking       RegistryProjectSnapshotKind = "runtime_working_document"
+	RegistryProjectSnapshotEmptyTemplate RegistryProjectSnapshotKind = "empty_template_baseline"
+)
+
+// RegistryProjectSnapshot is an opaque Engine-owned input binding. Registry
+// can compare its portable identity but cannot decode the handle, source tree,
+// or LDL. PackageValidator is the sole consumer of Handle.
+type RegistryProjectSnapshot struct {
+	Kind                RegistryProjectSnapshotKind `json:"kind"`
+	Handle              string                      `json:"handle"`
+	DocumentID          string                      `json:"document_id"`
+	Revision            string                      `json:"revision,omitempty"`
+	DefinitionHash      string                      `json:"definition_hash,omitempty"`
+	GraphHash           string                      `json:"graph_hash,omitempty"`
+	SourceClosureDigest string                      `json:"source_closure_digest"`
+}
+
 type ProjectStatePort interface {
 	CurrentRegistryProjectState(context.Context, string) (ProjectState, error)
 }
 type TemplateDocumentPort interface {
 	NewRegistryDocumentState(context.Context, ArtifactIdentity) (ProjectState, error)
+}
+
+func validRegistryProjectSnapshot(state ProjectState, template bool) bool {
+	snapshot := state.EngineSnapshot
+	if snapshot.Handle == "" || snapshot.DocumentID != state.DocumentID {
+		return false
+	}
+	if _, err := protocolcommon.EncodeDigest(protocolcommon.Digest(snapshot.SourceClosureDigest)); err != nil {
+		return false
+	}
+	if template {
+		if _, err := protocolcommon.EncodeDigest(protocolcommon.Digest(state.DefinitionHash)); err != nil {
+			return false
+		}
+		return snapshot.Kind == RegistryProjectSnapshotEmptyTemplate && snapshot.Revision == "" && state.Revision == "" && snapshot.DefinitionHash == state.DefinitionHash
+	}
+	return snapshot.Kind == RegistryProjectSnapshotWorking && snapshot.Revision == state.Revision && snapshot.DefinitionHash == state.DefinitionHash
 }
 
 type CredentialLease struct {
@@ -530,9 +587,15 @@ type Registry struct {
 	credentials      CredentialBroker
 	connectors       map[SourceKind]SourceConnector
 	transactions     TransactionStore
+	sourceStore      SourceStateStore
 	now              func() time.Time
 	verifiedCache    map[string]verifiedCacheEntry
 	maxArtifactBytes int64
+}
+
+type SourceStateStore interface {
+	LoadRegistrySources(context.Context) ([]RegistrySource, error)
+	SaveRegistrySources(context.Context, []RegistrySource) error
 }
 
 type verifiedCacheEntry struct {
@@ -566,6 +629,31 @@ func (r *Registry) RegisterPackageAuthor(author PackageAuthor) {
 	defer r.mu.Unlock()
 	r.author = author
 }
+
+func (r *Registry) AttachSourceStateStore(ctx context.Context, store SourceStateStore) error {
+	if store == nil {
+		return errors.New("Registry source state store is required")
+	}
+	sources, err := store.LoadRegistrySources(ctx)
+	if err != nil {
+		return err
+	}
+	loaded := make(map[string]RegistrySource, len(sources))
+	for _, source := range sources {
+		if source.SourceID == "" || source.EndpointRef == "" || source.TrustPolicyID == "" || loaded[source.SourceID].SourceID != "" {
+			return errors.New("persisted Registry source state is invalid")
+		}
+		if source.Kind != SourceLocalDirectory && source.Kind != SourceGit {
+			source.Connected = false
+			source.AuthConnectionRef = ""
+		}
+		loaded[source.SourceID] = source
+	}
+	r.mu.Lock()
+	r.sources, r.sourceStore = loaded, store
+	r.mu.Unlock()
+	return nil
+}
 func (r *Registry) PutTrustPolicy(policy TrustPolicy) error {
 	if policy.PolicyID == "" {
 		return errors.New("trust policy id is required")
@@ -595,7 +683,14 @@ func (r *Registry) ConfigureSource(source RegistrySource) error {
 	} else {
 		source.Revision = 1
 	}
-	r.sources[source.SourceID] = source
+	next := cloneSourceMap(r.sources)
+	next[source.SourceID] = source
+	if r.sourceStore != nil {
+		if err := r.sourceStore.SaveRegistrySources(context.Background(), sourceMapValues(next)); err != nil {
+			return fail(FailureUnavailable, source.SourceID, true, err)
+		}
+	}
+	r.sources = next
 	return nil
 }
 func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef string) error {
@@ -608,9 +703,13 @@ func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef st
 	if !ok || connector == nil || connectionRef == "" {
 		return fail(FailureUnavailable, sourceID, true, nil)
 	}
-	lease, err := r.credentials.ResolveRegistryConnection(ctx, connectionRef)
-	if err != nil || lease.ConnectionRef != connectionRef || len(lease.Credential) == 0 || !lease.ExpiresAt.After(r.now()) {
-		return fail(FailurePolicyDenied, sourceID, true, err)
+	lease := CredentialLease{ConnectionRef: connectionRef, ExpiresAt: r.now().Add(time.Hour)}
+	if source.Kind != SourceLocalDirectory && source.Kind != SourceGit {
+		var err error
+		lease, err = r.credentials.ResolveRegistryConnection(ctx, connectionRef)
+		if err != nil || lease.ConnectionRef != connectionRef || len(lease.Credential) == 0 || !lease.ExpiresAt.After(r.now()) {
+			return fail(FailurePolicyDenied, sourceID, true, err)
+		}
 	}
 	if err := connector.ProbeRegistrySource(ctx, source, lease); err != nil {
 		return fail(FailureUnavailable, sourceID, true, err)
@@ -625,7 +724,14 @@ func (r *Registry) ConnectSource(ctx context.Context, sourceID, connectionRef st
 	source.AuthConnectionRef = connectionRef
 	source.Connected = true
 	source.Revision++
-	r.sources[sourceID] = source
+	next := cloneSourceMap(r.sources)
+	next[sourceID] = source
+	if r.sourceStore != nil {
+		if err := r.sourceStore.SaveRegistrySources(context.WithoutCancel(ctx), sourceMapValues(next)); err != nil {
+			return fail(FailureUnavailable, sourceID, true, err)
+		}
+	}
+	r.sources = next
 	return nil
 }
 func (r *Registry) DisconnectSource(sourceID string) error {
@@ -638,8 +744,32 @@ func (r *Registry) DisconnectSource(sourceID string) error {
 	source.Connected = false
 	source.AuthConnectionRef = ""
 	source.Revision++
-	r.sources[sourceID] = source
+	next := cloneSourceMap(r.sources)
+	next[sourceID] = source
+	if r.sourceStore != nil {
+		if err := r.sourceStore.SaveRegistrySources(context.Background(), sourceMapValues(next)); err != nil {
+			return fail(FailureUnavailable, sourceID, true, err)
+		}
+	}
+	r.sources = next
 	return nil
+}
+
+func cloneSourceMap(values map[string]RegistrySource) map[string]RegistrySource {
+	result := make(map[string]RegistrySource, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func sourceMapValues(values map[string]RegistrySource) []RegistrySource {
+	result := make([]RegistrySource, 0, len(values))
+	for _, value := range values {
+		result = append(result, value)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].SourceID < result[j].SourceID })
+	return result
 }
 func (r *Registry) Sources() []RegistrySource {
 	r.mu.RLock()
@@ -807,7 +937,7 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 			return InstallPlan{}, fail(FailureUnavailable, "template_document_allocator", true, nil)
 		}
 		state, err = allocator.NewRegistryDocumentState(ctx, request.Requested)
-		if err != nil || state.DocumentID == "" || state.RuntimeSessionID == "" {
+		if err != nil || state.DocumentID == "" || !validRegistryProjectSnapshot(state, true) {
 			return InstallPlan{}, fail(FailureUnavailable, "template_document_allocator", true, err)
 		}
 		request.ProjectID = state.ProjectID
@@ -819,7 +949,7 @@ func (r *Registry) Plan(ctx context.Context, request PlanRequest) (result Instal
 		if err != nil {
 			return InstallPlan{}, fail(FailureUnavailable, request.ProjectID, true, err)
 		}
-		if state.ProjectID != request.ProjectID || state.DocumentID == "" || state.Revision != request.BaseRevision || state.DefinitionHash != request.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != request.ExpectedResolvedLockDigest || state.RuntimeSessionID == "" {
+		if state.ProjectID != request.ProjectID || state.DocumentID == "" || state.Revision != request.BaseRevision || state.DefinitionHash != request.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != request.ExpectedResolvedLockDigest || state.RuntimeSessionID == "" || !validRegistryProjectSnapshot(state, false) {
 			return InstallPlan{}, fail(FailurePlanStale, request.ProjectID, true, nil)
 		}
 	}
@@ -1129,12 +1259,12 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		}
 		requested := tx.Plan.RequestedRoot
 		state, err = allocator.NewRegistryDocumentState(ctx, requested)
-		if err != nil || state.DocumentID != boundDocumentID {
+		if err != nil || state.DocumentID != boundDocumentID || !validRegistryProjectSnapshot(state, true) {
 			return RuntimeCommitResult{}, fail(FailurePlanStale, tx.Plan.NewDocumentID, true, err)
 		}
 	} else {
 		state, err = r.projectState.CurrentRegistryProjectState(ctx, tx.Plan.ProjectID)
-		if err != nil || state.DocumentID != boundDocumentID || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
+		if err != nil || state.DocumentID != boundDocumentID || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest || !validRegistryProjectSnapshot(state, false) {
 			return RuntimeCommitResult{}, fail(FailurePlanStale, input.Plan.TransactionID, true, err)
 		}
 	}
@@ -1224,7 +1354,17 @@ func (r *Registry) Commit(ctx context.Context, input RuntimeCommitInput) (Runtim
 		}
 		return RuntimeCommitResult{}, fail(FailureRepairRequired, input.Plan.TransactionID, true, errors.New("concurrent publication already started"))
 	}
-	result, err := r.runtime.CommitRegistryPlan(ctx, input)
+	var result RuntimeCommitResult
+	if tx.Plan.CreatesNewDocument {
+		initial, ok := r.runtime.(TemplateInitialPublicationPort)
+		if !ok {
+			err = errors.New("Runtime initial Registry publication facade is unavailable")
+		} else {
+			result, err = initial.CommitInitialRegistryTemplate(ctx, input)
+		}
+	} else {
+		result, err = r.runtime.CommitRegistryPlan(ctx, input)
+	}
 	if err != nil {
 		nextState := StateRolledBack
 		code := FailureUnavailable
@@ -1408,18 +1548,18 @@ func (r *Registry) refreshRecoveryRuntimeInput(ctx context.Context, tx Transacti
 			return RuntimeCommitInput{}, errors.New("template document allocator unavailable")
 		}
 		state, err = allocator.NewRegistryDocumentState(ctx, tx.Plan.RequestedRoot)
-		if err != nil || state.DocumentID != boundDocumentID {
+		if err != nil || state.DocumentID != boundDocumentID || !validRegistryProjectSnapshot(state, true) {
 			return RuntimeCommitInput{}, errors.New("template document allocation changed during recovery")
 		}
 	} else {
 		state, err = r.projectState.CurrentRegistryProjectState(ctx, tx.Plan.ProjectID)
-		if err != nil || state.DocumentID != boundDocumentID || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest {
+		if err != nil || state.DocumentID != boundDocumentID || state.Revision != tx.Plan.BaseRevision || state.DefinitionHash != tx.Plan.ExpectedDefinitionHash || state.DependencySnapshot.ResolvedLockDigest != tx.Plan.ExpectedResolvedLockDigest || !validRegistryProjectSnapshot(state, false) {
 			return RuntimeCommitInput{}, errors.New("project preconditions changed during recovery")
 		}
 	}
 	hostCapabilities := append([]string{}, state.HostCapabilities...)
 	sort.Strings(hostCapabilities)
-	if state.RuntimeSessionID == "" || digestJSON(hostCapabilities) != tx.Plan.HostCapabilitiesDigest {
+	if (!tx.Plan.CreatesNewDocument && state.RuntimeSessionID == "") || digestJSON(hostCapabilities) != tx.Plan.HostCapabilitiesDigest {
 		return RuntimeCommitInput{}, errors.New("Runtime session or host capabilities changed during recovery")
 	}
 	for _, binding := range tx.Plan.SourceBindings {

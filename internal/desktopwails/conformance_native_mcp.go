@@ -15,7 +15,7 @@ import (
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
-func conformanceNativeMCP(ctx context.Context, instance *conformanceInstance, tools []mcphost.Tool) error {
+func conformanceNativeMCP(ctx context.Context, instance *conformanceInstance, tools []mcphost.Tool) (resultErr error) {
 	for _, name := range []string{"layerdraw.search", "layerdraw.run_query", "layerdraw.analyze_graph"} {
 		found := false
 		for _, tool := range tools {
@@ -29,6 +29,18 @@ func conformanceNativeMCP(ctx context.Context, instance *conformanceInstance, to
 	if err != nil {
 		return fmt.Errorf("native MCP project open failed: %w", err)
 	}
+	// The installed conformance parent reuses one Desktop application for the
+	// native-tool and durable authoring workflows. Always release this project
+	// session before the next workflow opens a different source; otherwise the
+	// lifecycle correctly returns the already-open project and the later
+	// authoring preconditions become stale. Cleanup failures are evidence
+	// failures rather than being hidden behind a successful tool result.
+	defer func() {
+		closed := instance.app.CloseProject(ctx, opened.Open.Session)
+		if closed.Outcome != protocolcommon.OutcomeSuccess && resultErr == nil {
+			resultErr = fmt.Errorf("native MCP project close failed: %+v", closed.Failure)
+		}
+	}()
 	revision := opened.Open.CommittedRevision
 	accessDigest := string(opened.Open.AccessSummary.AccessFingerprint)
 	snapshot := port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: string(revision.DocumentID), CommittedRevision: string(revision.RevisionID), DefinitionHash: string(revision.DefinitionHash)}
@@ -44,8 +56,9 @@ func conformanceNativeMCP(ctx context.Context, instance *conformanceInstance, to
 		}
 		result := instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: name, RequestID: requestID, Arguments: raw, Binding: binding})
 		var response nativeSearchResponseEnvelope
-		if result.Failure != nil || decodeExactBytes(result.Content, &response) != nil || response.Outcome != protocolcommon.OutcomeSuccess || len(response.Payload) == 0 {
-			return fmt.Errorf("native MCP tool %s failed: %+v", name, result.Failure)
+		decodeErr := decodeExactBytes(result.Content, &response)
+		if result.Failure != nil || decodeErr != nil || response.Outcome != protocolcommon.OutcomeSuccess || len(response.Payload) == 0 {
+			return fmt.Errorf("native MCP tool %s failed: transport=%+v decode=%v outcome=%s protocol=%+v", name, result.Failure, decodeErr, response.Outcome, response.Failure)
 		}
 		return nil
 	}

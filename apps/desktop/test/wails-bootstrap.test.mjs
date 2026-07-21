@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDesktopWailsComposition, createDesktopWailsLifecycle, createUnopenedViewer, desktopLifecycleEvent } from "../dist/index.js";
+import { createDesktopWailsComposition, createDesktopWailsLifecycle, createUnavailableViewer, desktopLifecycleEvent } from "../dist/index.js";
 import { wailsEngineBindingDescriptors, wailsRuntimeBindingDescriptors } from "@layerdraw/engine-client/wails";
 
 test("Wails bootstrap derives only lifecycle framing and fails closed before a project publication", async () => {
@@ -14,7 +14,8 @@ test("Wails bootstrap derives only lifecycle framing and fails closed before a p
   };
   const lifecycle = await createDesktopWailsLifecycle({ async State() { return "ready"; } }, runtime);
   assert.equal(eventName, desktopLifecycleEvent);
-  assert.deepEqual(lifecycle.getSnapshot(), { sequence: 0, phase: "ready", capabilities: {} });
+  assert.equal(lifecycle.getSnapshot().phase, "ready");
+  assert.deepEqual(lifecycle.getSnapshot().capabilities["desktop.project"], { status: "unavailable", reason: "host_disabled" });
   let calls = 0;
   const unsubscribe = lifecycle.subscribe(() => { calls += 1; });
   eventListener({ state: "draining" });
@@ -24,23 +25,57 @@ test("Wails bootstrap derives only lifecycle framing and fails closed before a p
   eventListener({ state: "forged" });
   assert.equal(calls, 1);
   assert.equal(lifecycle.getSnapshot().phase, "recovery");
-  await assert.rejects(lifecycle.selectView("view", new AbortController().signal));
-  await assert.rejects(lifecycle.showRecoveryOptions(new AbortController().signal));
+  await lifecycle.selectView("view", new AbortController().signal);
+  assert.equal(lifecycle.getSnapshot().failure.code, "desktop.selection_failed");
+  await lifecycle.showRecoveryOptions(new AbortController().signal);
+  assert.equal(lifecycle.getSnapshot().failure.code, "desktop.lifecycle_failed");
 });
 
-test("unopened Viewer never accepts hostless publications", async () => {
-  const viewer = createUnopenedViewer();
-  assert.deepEqual(viewer.getState(), { status: "empty", reason: "no_snapshot" });
+test("capability-disabled Viewer reports an explicit closed state", async () => {
+  const viewer = createUnavailableViewer();
+  assert.equal(viewer.getState().status, "unsupported_profile");
+  assert.equal(viewer.getState().error.details.reason, "host_disabled");
   const rejected = await viewer.setViewData({});
   assert.equal(rejected.ok, false);
-  assert.equal(rejected.error.code, "viewer.input_invalid");
+  assert.equal(rejected.error.code, "viewer.profile_unsupported");
   await viewer.dispose();
   assert.equal(viewer.getState().status, "disposed");
+});
+
+test("project-owner actions use typed publications instead of frontend reconstruction", async () => {
+  const calls = [];
+  const project = { project_id: "project", session_generation: 7, display_name: "Project", authoritative_revision_token: "revision", authoritative_revision_label: "r1", editor: {}, editor_session: {}, views: [{ address: "view:main", label: "Main", shape: "diagram" }], selected_view_address: "view:main", access: { status: "allowed", label: "Allowed" }, storage: { kind: "local", status: "connected", label: "Local" }, persistence: "clean" };
+  const publication = { sequence: 3, phase: "ready", capabilities: {}, project };
+  const owner = {
+    async ProjectPublication() { return publication; },
+    async SelectProjectView(input) { calls.push(["select", input]); return { outcome: "success", publication: { ...publication, sequence: 4 } }; },
+    async ShowProjectRecoveryOptions(input) { calls.push(["recovery", input]); return { outcome: "success", publication }; },
+    async DisconnectProjectExternal(input) { calls.push(["disconnect", input]); return { outcome: "success", publication }; },
+    CreateProjectViewer() { return createUnavailableViewer(); },
+  };
+  const lifecycle = await createDesktopWailsLifecycle({ async State() { return "ready"; } }, { EventsOn() {}, EventsOff() {} }, owner);
+  await lifecycle.selectView("view:main", new AbortController().signal);
+  await lifecycle.showRecoveryOptions(new AbortController().signal);
+  await lifecycle.disconnectExternal(new AbortController().signal);
+  assert.deepEqual(calls.map(([kind]) => kind), ["select", "recovery", "disconnect"]);
+  assert.equal(calls[0][1].session_generation, 7);
+  assert.equal(calls[0][1].view_address, "view:main");
 });
 
 test("Wails composition exposes the exact generated Engine and Runtime closure", async () => {
   const application = {
     async State() { return "ready"; },
+    async CreateProjectDialog() { return { outcome: "failed" }; },
+    async OpenProjectDialog() { return { outcome: "failed" }; },
+    async RecentProjects() { return { outcome: "success", value: [] }; },
+    async ConnectExternal() { return { outcome: "failed" }; },
+    async InspectExternal() { return { outcome: "failed" }; },
+    async RefreshExternal() { return { outcome: "failed" }; },
+    async DisconnectExternal() { return { outcome: "failed" }; },
+    async SelectExternalRemote() { return { outcome: "failed" }; },
+    async AcquireExternalLease() { return { outcome: "failed" }; },
+    async PlanExternalReconcile() { return { outcome: "failed" }; },
+    async ApplyExternalReconcile() { return { outcome: "failed" }; },
     async NativeExportProfiles() { return { outcome: "success", value: [{ format: "json", schema_version: 1, requires_shape: [] }] }; },
     async SerializeNativeExport() { return { outcome: "success", value: { artifact: { artifact_id: "artifact", logical_path: "view.json", media_type: "application/json", content_digest: `sha256:${"a".repeat(64)}` }, source_manifest: {} } }; },
     async PublishNativeExportDialog() { return { outcome: "success", value: { published: true } }; },
@@ -55,7 +90,10 @@ test("Wails composition exposes the exact generated Engine and Runtime closure",
   const expected = [...wailsEngineBindingDescriptors, ...wailsRuntimeBindingDescriptors].map((item) => item.generatedMethod).sort();
   assert.deepEqual(Object.keys(composition.generatedBindings).sort(), expected);
   assert.equal(composition.lifecycle.getSnapshot().phase, "ready");
-  assert.equal(composition.viewer.getState().status, "empty");
+  assert.equal(composition.viewer.getState().status, "unsupported_profile");
+  assert.equal(composition.library.status, "unavailable");
+  assert.equal(composition.review.status, "unavailable");
+  assert.equal((await composition.projectDialogs.recent()).outcome, "success");
   assert.equal((await composition.mcp.status()).enabled, false);
   assert.equal((await composition.nativeInterchange.profiles())[0].format, "json");
   const controller = new AbortController(); controller.abort();

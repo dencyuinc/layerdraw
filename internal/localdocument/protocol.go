@@ -67,32 +67,47 @@ func (h *Host) Inspect(ref runtimeprotocol.RuntimeSessionRef) (runtimeprotocol.R
 // local authorization authority. It creates no recovery record and publishes
 // no definition, state, asset, history, or filesystem bytes.
 func (h *Host) Preview(ctx context.Context, input runtimeprotocol.PreviewOperationsInput) (runtimeprotocol.PreviewOperationsResult, error) {
+	result, err := h.PreviewEditor(ctx, input)
+	return result.Runtime, err
+}
+
+type EditorPreviewResult struct {
+	Preview engineprotocol.WorkbenchPreviewResult   `json:"preview"`
+	Runtime runtimeprotocol.PreviewOperationsResult `json:"runtime"`
+	Grant   accessprotocol.AuthoringGrantSummary    `json:"grant_summary"`
+}
+
+// PreviewEditor retains the Engine-owned semantic/source evidence alongside
+// Runtime and Access proof. Framework adapters serialize this typed closure;
+// they never reconstruct preview semantics in JavaScript.
+func (h *Host) PreviewEditor(ctx context.Context, input runtimeprotocol.PreviewOperationsInput) (EditorPreviewResult, error) {
 	session, err := h.SessionFor(input.Session)
 	if err != nil {
-		return runtimeprotocol.PreviewOperationsResult{}, err
+		return EditorPreviewResult{}, err
 	}
 	ctx = h.accessContext(ctx, session)
 	current := session.Open.CommittedRevision
 	if input.OperationBatch.DocumentID != current.DocumentID || !sameCommittedRevision(input.OperationBatch.BaseRevision, current) || input.OperationBatch.ExpectedDefinitionHash != current.DefinitionHash {
-		return runtimeprotocol.PreviewOperationsResult{}, port.ErrConflict
+		return EditorPreviewResult{}, port.ErrConflict
 	}
 	preconditions := input.OperationBatch.Preconditions
 	preconditions.DocumentGeneration = h.documentGeneration(session)
 	prepared, err := h.workbench.Preview(ctx, port.PreviewWorkingDocumentInput{Document: session.working, Batch: input.OperationBatch.Operations, Preconditions: preconditions, MaxOperations: "4096"})
 	if err != nil {
-		return runtimeprotocol.PreviewOperationsResult{}, err
+		return EditorPreviewResult{}, err
 	}
-	grant, _, err := h.authority.ResolveGrant(ctx, input.Session.Scope)
+	grant, grantSummary, err := h.authority.ResolveGrant(ctx, input.Session.Scope)
 	if err != nil {
-		return runtimeprotocol.PreviewOperationsResult{}, err
+		return EditorPreviewResult{}, err
 	}
 	evaluation := accessprotocol.EvaluateAuthoringInput{AuthoringImpact: &prepared.AuthoringImpact, GrantSnapshot: grant, HostOperationImpacts: []accessprotocol.HostOperationImpact{}, RequestIntent: "propose"}
 	decision, rejection := h.runtime.Authorize(ctx, runtimehost.AuthorizationRequest{Scope: input.Session.Scope, CurrentRevision: current, Evaluation: evaluation})
 	if rejection != nil {
-		return runtimeprotocol.PreviewOperationsResult{}, rejection
+		return EditorPreviewResult{}, rejection
 	}
 	proof := runtimeprotocol.AuthoringProof{AccessFingerprint: grant.AccessFingerprint, BaseRevision: current, DecisionDigest: decision.DecisionDigest, EvaluationDigest: decision.EvaluationDigest, MembershipVersion: grant.MembershipVersion, PolicyRefs: grant.PolicyRefs}
-	return runtimeprotocol.PreviewOperationsResult{PreviewEvaluation: runtimeprotocol.PreviewEvaluation{AuthoringImpact: prepared.AuthoringImpact, AuthoringDecision: decision}, AuthoringProof: proof, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash}, nil
+	runtimeResult := runtimeprotocol.PreviewOperationsResult{PreviewEvaluation: runtimeprotocol.PreviewEvaluation{AuthoringImpact: prepared.AuthoringImpact, AuthoringDecision: decision}, AuthoringProof: proof, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash}
+	return EditorPreviewResult{Preview: prepared.Preview, Runtime: runtimeResult, Grant: grantSummary}, nil
 }
 
 func sameCommittedRevision(left, right runtimeprotocol.CommittedRevisionRef) bool {

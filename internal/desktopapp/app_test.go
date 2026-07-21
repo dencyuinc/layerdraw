@@ -904,11 +904,19 @@ func TestProjectCreateOpenReloadCloseAndRestartDurability(t *testing.T) {
 	if err != nil || app.Start(context.Background()).Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("start err=%v", err)
 	}
+	emptyPublication, err := app.ProjectPublication(context.Background())
+	if err != nil || emptyPublication.Project != nil || emptyPublication.Phase != string(desktopcontract.LifecycleReady) {
+		t.Fatalf("empty publication=%+v err=%v", emptyPublication, err)
+	}
 	created := app.CreateProject(context.Background(), "opaque-create-token")
 	if created.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("create=%+v", created)
 	}
 	documentID := created.Value.Open.CommittedRevision.DocumentID
+	publication, err := app.ProjectPublication(context.Background())
+	if err != nil || publication.Project == nil || publication.Project.ProjectID != documentID || publication.Project.LibraryProject.ProjectID == "" || publication.Project.LibraryProject.DefinitionHash == "" || publication.Project.LibraryProject.ResolvedLockDigest == "" {
+		t.Fatalf("publication=%+v err=%v", publication, err)
+	}
 	cancelled := app.OpenProject(context.Background(), "")
 	if cancelled.Outcome != protocolcommon.OutcomeCancelled || !cancelled.Validate() {
 		t.Fatalf("dialog cancellation=%+v", cancelled)

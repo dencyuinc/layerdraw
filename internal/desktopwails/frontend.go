@@ -4,12 +4,21 @@ package desktopwails
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"sync"
 
+	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
+	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
+	"github.com/dencyuinc/layerdraw/internal/localdocument"
+	"github.com/dencyuinc/layerdraw/internal/registry"
 )
 
 // FrontendBridge is the context-free Wails surface consumed by generated
@@ -17,13 +26,29 @@ import (
 // supplies only the app-owned lifecycle context Wails cannot inject into bound
 // method parameters.
 type FrontendBridge struct {
-	mu  sync.RWMutex
-	ctx context.Context
-	app *desktopapp.Application
+	mu       sync.RWMutex
+	ctx      context.Context
+	app      *desktopapp.Application
+	registry registryDispatcher
+	preview  editorPreviewDispatcher
 }
 
-func NewFrontendBridge(app *desktopapp.Application) *FrontendBridge {
-	return &FrontendBridge{ctx: context.Background(), app: app}
+type registryDispatcher interface {
+	DispatchRegistry(context.Context, []byte) []byte
+}
+
+type editorPreviewDispatcher interface {
+	PreviewEditor(context.Context, runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error)
+	MaterializeProjectView(context.Context, runtimeprotocol.RuntimeSessionRef, string) (semantic.ViewData, error)
+}
+
+func NewFrontendBridge(app *desktopapp.Application, dispatchers ...registryDispatcher) *FrontendBridge {
+	bridge := &FrontendBridge{ctx: context.Background(), app: app}
+	if len(dispatchers) != 0 {
+		bridge.registry = dispatchers[0]
+		bridge.preview, _ = dispatchers[0].(editorPreviewDispatcher)
+	}
+	return bridge
 }
 
 func (b *FrontendBridge) setContext(ctx context.Context) {
@@ -43,8 +68,133 @@ func (b *FrontendBridge) context() context.Context {
 
 func (b *FrontendBridge) State() desktopcontract.LifecycleState { return b.app.State() }
 
+func (b *FrontendBridge) ProjectPublication() (desktopapp.ProjectPublicationDTO, error) {
+	return b.app.ProjectPublication(b.context())
+}
+
+func (b *FrontendBridge) PreviewEditor(input runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error) {
+	if b.preview == nil {
+		return localdocument.EditorPreviewResult{}, errors.New("desktop editor preview is unavailable")
+	}
+	return b.preview.PreviewEditor(b.context(), input)
+}
+
+type ProjectViewMaterialization struct {
+	ViewData     semantic.ViewData     `json:"view_data"`
+	ViewDataHash protocolcommon.Digest `json:"view_data_hash"`
+}
+
+func (b *FrontendBridge) MaterializeProjectView(session runtimeprotocol.RuntimeSessionRef, address string) (ProjectViewMaterialization, error) {
+	if b.preview == nil {
+		return ProjectViewMaterialization{}, errors.New("desktop view materialization is unavailable")
+	}
+	viewData, err := b.preview.MaterializeProjectView(b.context(), session, address)
+	if err != nil {
+		return ProjectViewMaterialization{}, err
+	}
+	encoded, err := semantic.EncodeViewData(viewData)
+	if err != nil {
+		return ProjectViewMaterialization{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	return ProjectViewMaterialization{ViewData: viewData, ViewDataHash: protocolcommon.Digest(fmt.Sprintf("sha256:%x", digest))}, nil
+}
+
 func (b *FrontendBridge) Invoke(method string, exchange desktopcontract.Exchange) desktopapp.BindingResult {
 	return b.app.Invoke(b.context(), method, exchange)
+}
+
+// RegistryDispatch is the single typed Wails Registry transport. The generated
+// method table remains authoritative; the frontend cannot select an unrelated
+// owner method for a valid Registry operation.
+func (b *FrontendBridge) RegistryDispatch(requestJSON string) string {
+	requestBytes := []byte(requestJSON)
+	var envelope struct {
+		Operation registry.WireOperation `json:"operation"`
+		RequestID string                 `json:"request_id"`
+	}
+	if err := json.Unmarshal(requestBytes, &envelope); err != nil {
+		return string(registryWireFailure(registry.WireOperation("registry.invalid"), "", registry.FailureUnsupportedFormat, "wire_request"))
+	}
+	request, err := registry.DecodeWireRequest(requestBytes, envelope.Operation)
+	if err != nil || b.registry == nil {
+		code, subject := registry.FailureUnsupportedFormat, "wire_request"
+		if err == nil {
+			code, subject = registry.FailureUnavailable, "desktop_registry"
+		}
+		return string(registryWireFailure(envelope.Operation, envelope.RequestID, code, subject))
+	}
+	responseBytes := b.registry.DispatchRegistry(b.context(), requestBytes)
+	response, err := registry.DecodeWireResponse(responseBytes, request.Operation)
+	if err != nil || response.RequestID != request.RequestID {
+		return string(registryWireFailure(request.Operation, request.RequestID, registry.FailureRepairRequired, "wire_response"))
+	}
+	return string(responseBytes)
+}
+
+func registryWireFailure(operation registry.WireOperation, requestID, code, subject string) []byte {
+	response, _ := json.Marshal(registry.WireResponse{
+		WireVersion: registry.RegistryWireVersion,
+		Operation:   operation,
+		RequestID:   requestID,
+		Failure:     &registry.WireFailure{Code: code, Subject: subject, Actionable: true},
+	})
+	return response
+}
+
+func (b *FrontendBridge) ReviewSnapshot() (reviewapp.Snapshot, error) {
+	value, err := b.app.ReviewSnapshot()
+	if err != nil {
+		return reviewapp.Snapshot{}, err
+	}
+	snapshot, ok := value.(reviewapp.Snapshot)
+	if !ok {
+		return reviewapp.Snapshot{}, errors.New("desktop Review snapshot contract mismatch")
+	}
+	return snapshot, nil
+}
+
+type ReviewCommentRequest struct {
+	ProposalID string           `json:"proposal_id"`
+	Generation uint64           `json:"generation"`
+	CommentID  string           `json:"comment_id"`
+	Body       string           `json:"body"`
+	Target     reviewapp.Target `json:"target"`
+}
+
+func (b *FrontendBridge) ReviewComment(input ReviewCommentRequest) (reviewapp.Proposal, error) {
+	target, err := json.Marshal(input.Target)
+	if err != nil {
+		return reviewapp.Proposal{}, err
+	}
+	value, err := b.app.ReviewComment(b.context(), desktopapp.ReviewCommentRequest{ProposalID: input.ProposalID, Generation: input.Generation, CommentID: input.CommentID, Body: input.Body, Target: target})
+	return reviewProposal(value, err)
+}
+
+func (b *FrontendBridge) ReviewApproveAndApply(input desktopapp.ReviewApprovalRequest) (reviewapp.Proposal, error) {
+	value, err := b.app.ReviewApproveAndApply(b.context(), input)
+	return reviewProposal(value, err)
+}
+
+type ReviewWithdrawRequest struct {
+	ProposalID string `json:"proposal_id"`
+	Generation uint64 `json:"generation"`
+}
+
+func (b *FrontendBridge) ReviewWithdraw(input ReviewWithdrawRequest) (reviewapp.Proposal, error) {
+	value, err := b.app.ReviewWithdraw(b.context(), input.ProposalID, input.Generation)
+	return reviewProposal(value, err)
+}
+
+func reviewProposal(value any, err error) (reviewapp.Proposal, error) {
+	if err != nil {
+		return reviewapp.Proposal{}, err
+	}
+	proposal, ok := value.(reviewapp.Proposal)
+	if !ok {
+		return reviewapp.Proposal{}, errors.New("desktop Review proposal contract mismatch")
+	}
+	return proposal, nil
 }
 
 func (b *FrontendBridge) CreateProjectDialog(requestID string) desktopcontract.Result[desktopapp.ProjectOpenResult] {

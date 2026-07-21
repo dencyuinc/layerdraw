@@ -114,7 +114,23 @@ type Proposal struct {
 	UpdatedAt              time.Time                             `json:"updated_at"`
 	ApprovedBy             *accessprotocol.ActorRef              `json:"approved_by,omitempty"`
 	CommittedRevision      *runtimeprotocol.CommittedRevisionRef `json:"committed_revision,omitempty"`
+	PendingCommit          *PendingCommit                        `json:"pending_commit,omitempty"`
 	LastFailure            string                                `json:"last_failure,omitempty"`
+}
+
+// PendingCommit is the exact Runtime candidate durably recorded before the
+// first commit attempt. Recovery changes only the Runtime session lease; it
+// must replay this evidence without repreviewing a mutation that may already
+// have committed.
+type PendingCommit struct {
+	OperationID            runtimeprotocol.OperationID           `json:"operation_id"`
+	IdempotencyKey         runtimeprotocol.IdempotencyKey        `json:"idempotency_key"`
+	OperationBatch         runtimeprotocol.RuntimeOperationBatch `json:"operation_batch"`
+	AuthoringProof         runtimeprotocol.AuthoringProof        `json:"authoring_proof"`
+	Approver               accessprotocol.ActorRef               `json:"approver"`
+	AccessEvaluationDigest protocolcommon.Digest                 `json:"access_evaluation_digest"`
+	AccessDecisionDigest   protocolcommon.Digest                 `json:"access_decision_digest"`
+	Trigger                runtimeprotocol.CommitTrigger         `json:"trigger"`
 }
 
 type Snapshot struct {
