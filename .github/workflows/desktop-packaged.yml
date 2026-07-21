@@ -53,6 +53,8 @@ jobs:
             pnpm --filter @layerdraw/viewer build
             pnpm --filter @layerdraw/engine-client build
             pnpm --filter @layerdraw/client-sdk build
+            pnpm --filter @layerdraw/registry-client build
+            pnpm --filter @layerdraw/library build
             pnpm --filter @layerdraw/review build
             pnpm --filter @layerdraw/react build
             pnpm --filter @layerdraw/desktop build

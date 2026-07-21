@@ -56,7 +56,9 @@ func (e Engine) BuildRegistryProjectMutation(ctx context.Context, in RegistryPro
 		}
 		removed[id] = true
 	}
-	installs := make(map[string]ResolvedPack, len(next.ResolvedDependencies.Installs)+len(in.Artifacts))
+	// Avoid capacity arithmetic over caller-controlled collection sizes. The map
+	// grows safely as validated installs and artifacts are admitted below.
+	installs := make(map[string]ResolvedPack)
 	for _, installed := range next.ResolvedDependencies.Installs {
 		if !removed[installed.CanonicalID] {
 			installs[installed.CanonicalID] = installed

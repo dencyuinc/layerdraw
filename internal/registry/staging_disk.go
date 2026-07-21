@@ -121,7 +121,11 @@ func (s *DiskStagedObjectStore) OpenRegistryObject(ctx context.Context, ref Stag
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(s.root, ref.ObjectID))
+	objectID := filepath.Base(ref.ObjectID)
+	if objectID != ref.ObjectID {
+		return nil, errors.New("Registry staged object reference is invalid")
+	}
+	data, err := os.ReadFile(filepath.Join(s.root, objectID))
 	if err != nil {
 		return nil, err
 	}
