@@ -274,7 +274,7 @@ func validateResult(store *artifactStore, closurePath, resultPath, revision, pla
 		}
 		observed, err := percentile95(measurement)
 		if err != nil || observed > limit.MaxMilliseconds {
-			return fmt.Errorf("scenario %s p95 exceeds %dms", id, limit.MaxMilliseconds)
+			return fmt.Errorf("scenario %s p95 %dms exceeds %dms (samples: %v)", id, observed, limit.MaxMilliseconds, measurement)
 		}
 	}
 	memory := limits.PerformanceBudgets["memory"]

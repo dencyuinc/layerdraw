@@ -88,6 +88,33 @@ func TestMemoryBudgetFailureReportsOnlyMeasurements(t *testing.T) {
 	}
 }
 
+func TestScenarioBudgetFailureReportsObservedSamples(t *testing.T) {
+	root := t.TempDir()
+	store, err := openArtifactStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	budgets := map[string]budget{"memory": {MaxMebibytes: 512, MinIterations: 5, Percentile: 95}, "ui_process_tree_memory": {MaxMebibytes: 1024, MinIterations: 5, Percentile: 95}}
+	for _, id := range scenarioIDs {
+		budgets[id] = budget{MaxMilliseconds: 100, MinIterations: 5, Percentile: 95}
+	}
+	writeJSON(t, filepath.Join(root, "closure.json"), closure{SchemaVersion: 1, Delivery: "desktop", PerformanceBudgets: budgets})
+	revision := strings.Repeat("a", 40)
+	result := scenarioResult{SchemaVersion: 1, SourceRevision: revision, Platform: "windows", ArtifactKind: "installed_desktop", Iterations: 5, Scenarios: map[string]samples{}, Evidence: map[string]string{}, WorkerPeakRSS: []int64{100, 101, 102, 103, 104}, UIProcessTreePeakRSS: []int64{300, 301, 302, 303, 304}}
+	for _, id := range scenarioIDs {
+		result.Scenarios[id] = samples{Milliseconds: []int64{10, 11, 12, 13, 14}}
+		result.Evidence[id] = expectedEvidence[id]
+	}
+	result.Scenarios["cold_start"] = samples{Milliseconds: []int64{90, 95, 101, 110, 150}}
+	writeJSON(t, filepath.Join(root, "result.json"), result)
+	err = validateResult(store, "closure.json", "result.json", revision, "windows")
+	wantMessage := "scenario cold_start p95 150ms exceeds 100ms (samples: [90 95 101 110 150])"
+	if err == nil || err.Error() != wantMessage {
+		t.Fatalf("scenario p95 failure=%v, want %q", err, wantMessage)
+	}
+}
+
 func TestReleaseClosureDecodesStrictly(t *testing.T) {
 	store, err := openArtifactStore(filepath.Join("..", "..", "deploy"))
 	if err != nil {

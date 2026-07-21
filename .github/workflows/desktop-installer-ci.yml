@@ -103,3 +103,12 @@ jobs:
             -source-revision "$GITHUB_SHA" -platform "${{ matrix.platform }}" -test-signing
           ./tools/build-desktop-update-metadata.sh test "${{ matrix.platform }}" "${{ matrix.format }}" \
             0.0.2 "$GITHUB_SHA" "$RUNNER_TEMP/desktop-current"
+
+      - name: Upload scenario and attestation evidence for diagnosis
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.format }}-diagnostics
+          path: ${{ runner.temp }}/desktop-current/*.json
+          if-no-files-found: warn
+          retention-days: 7
