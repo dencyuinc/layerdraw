@@ -1,0 +1,80 @@
+/* SPDX-License-Identifier: LicenseRef-LayerDraw-1.0 */
+
+/*
+ * Tailwind v4 entry for the shared UI primitives.
+ *
+ * The default Tailwind theme (slate palette and friends) is deliberately NOT
+ * imported: the @theme below is the complete theme, and every value resolves
+ * to the generated token custom properties (brand/tokens.json -> tokens.css).
+ * Raw color values are prohibited here; content scanning is restricted to the
+ * primitives module so only classes used by primitives are emitted.
+ */
+
+@import "tailwindcss/utilities.css" source(none);
+@source "./primitives";
+
+@theme {
+  /* Colors — semantic only, all resolved from token variables. */
+  --color-app: var(--ld-background-app);
+  --color-canvas: var(--ld-background-canvas);
+  --color-surface: var(--ld-background-surface);
+  --color-subtle: var(--ld-background-subtle);
+  --color-raised: var(--ld-background-raised);
+  --color-scrim: var(--ld-background-scrim);
+  --color-ink: var(--ld-text-primary);
+  --color-secondary: var(--ld-text-secondary);
+  --color-muted: var(--ld-text-muted);
+  --color-disabled: var(--ld-text-disabled);
+  --color-line: var(--ld-border-default);
+  --color-line-subtle: var(--ld-border-subtle);
+  --color-line-strong: var(--ld-border-strong);
+  --color-selected: var(--ld-border-selected);
+  --color-primary: var(--ld-action-primary-background);
+  --color-primary-hover: var(--ld-action-primary-hover);
+  --color-primary-active: var(--ld-action-primary-active);
+  --color-primary-fg: var(--ld-action-primary-foreground);
+  --color-secondary-bg: var(--ld-action-secondary-background);
+  --color-secondary-hover: var(--ld-action-secondary-hover);
+  --color-secondary-border: var(--ld-action-secondary-border);
+  --color-ghost-hover: var(--ld-action-ghost-hover);
+  --color-ghost-active: var(--ld-action-ghost-active);
+  --color-focus: var(--ld-action-focusRing);
+  --color-danger: var(--ld-action-danger-background);
+  --color-danger-fg: var(--ld-status-danger-foreground);
+  --color-danger-bg: var(--ld-status-danger-background);
+  --color-danger-border: var(--ld-status-danger-border);
+  --color-warning-fg: var(--ld-status-warning-foreground);
+  --color-warning-bg: var(--ld-status-warning-background);
+  --color-warning-border: var(--ld-status-warning-border);
+
+  /* Typography */
+  --font-sans: var(--ld-font-family-sans);
+  --font-mono: var(--ld-font-family-mono);
+  --text-xs: var(--ld-font-size-12);
+  --text-xs--line-height: var(--ld-font-lineHeight-16);
+  --text-sm: 13px;
+  --text-sm--line-height: var(--ld-font-lineHeight-18, 18px);
+  --text-base: var(--ld-font-size-14);
+  --text-base--line-height: var(--ld-font-lineHeight-20);
+  --text-lg: var(--ld-font-size-16);
+  --text-lg--line-height: var(--ld-font-lineHeight-24);
+  --text-xl: var(--ld-font-size-20);
+  --text-xl--line-height: var(--ld-font-lineHeight-28);
+
+  /* Spacing base unit (token space scale is 4px-based). */
+  --spacing: 4px;
+
+  /* Radii — capped at the token scale (4/6/8px). */
+  --radius-sm: var(--ld-radius-sm);
+  --radius-md: var(--ld-radius-md);
+  --radius-lg: var(--ld-radius-lg);
+  --radius-full: var(--ld-radius-full);
+
+  /* Elevation — shadow tokens only (flat otherwise). */
+  --shadow-menu: var(--ld-shadow-menu);
+  --shadow-dialog: var(--ld-shadow-dialog);
+
+  /* Motion */
+  --ease-standard: var(--ld-motion-easing-standard);
+  --default-transition-duration: var(--ld-motion-duration-hover);
+}
