@@ -891,7 +891,7 @@ func conformanceMCPReview(ctx context.Context, instance *conformanceInstance, op
 	app := instance.app
 	preview := app.Preview(ctx, runtimeprotocol.PreviewOperationsInput{Session: opened.Open.Session, OperationBatch: commit.OperationBatch})
 	if preview.Outcome != protocolcommon.OutcomeSuccess {
-		return errors.New("bundled MCP Review preview failed")
+		return fmt.Errorf("bundled MCP Review preview failed: failure=%+v base=%s/%s", preview.Failure, commit.OperationBatch.BaseRevision.RevisionID, commit.OperationBatch.BaseRevision.DefinitionHash)
 	}
 	impact := preview.Value.PreviewEvaluation.AuthoringImpact
 	create := reviewapp.CreateInput{
