@@ -8,58 +8,26 @@ import {
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type RefObject,
 } from "react";
-import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopRecentProjectDTO, DesktopShellFailure } from "./contracts.js";
+import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopRecentProjectDTO } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
 import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
 import { ReviewPanel } from "@layerdraw/react/review";
+import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react/i18n";
 import type { ReviewModel } from "@layerdraw/review";
 import type { LibraryController } from "@layerdraw/library";
 import { DesktopMCPPanel } from "./mcp-panel.js";
 import { DesktopLibraryPanel } from "./library-panel.js";
+import { LayerDrawWordmark } from "./brand.js";
 
-export interface DesktopShellLabels {
-  readonly application: string;
-  readonly views: string;
-  readonly canvas: string;
-  readonly inspector: string;
-  readonly reviewRecovery: string;
-  readonly noProject: string;
-  readonly recovery: string;
-  readonly unavailable: string;
-  readonly failure: Readonly<Record<DesktopShellFailure["message_key"], string>>;
-}
-
-/** Human-readable reasons for the closed Desktop open-failure vocabulary. */
-const openFailureReasons: Readonly<Record<string, string>> = Object.freeze({
-  "desktop.project_missing": "The project files could not be found at their last known location.",
-  "desktop.permission_denied": "LayerDraw does not have permission to read the project files.",
-  "desktop.project_conflict": "The project files on disk no longer match this LayerDraw project. Review or re-import the project.",
-  "desktop.recovery_required": "The project needs recovery before it can open.",
-  "desktop.reconcile_pending": "The project has pending external changes that must be reviewed first.",
-  "desktop.adapter_unavailable": "The project could not be loaded by the LayerDraw backend.",
-  "desktop.reconnect_failed": "The LayerDraw backend is not available.",
-  "desktop.backend_panic": "The LayerDraw backend failed unexpectedly.",
-});
-
-function openFailureMessage(code: string | undefined): string {
-  if (code === undefined) return "The project could not be opened.";
-  const reason = openFailureReasons[code] ?? "The project could not be opened.";
-  return `${reason} (${code})`;
-}
-
-const labels: DesktopShellLabels = Object.freeze({
-  application: "LayerDraw Desktop", views: "Views", canvas: "Canvas", inspector: "Project status", reviewRecovery: "Review recovery options",
-  noProject: "Open or create a project to begin.", recovery: "LayerDraw needs recovery before this project can open.", unavailable: "This action is unavailable.",
-  failure: {
-    "desktop.error.lifecycle_failed": "Recovery options could not be opened.",
-    "desktop.error.selection_failed": "The selected view could not be opened.",
-    "desktop.error.viewer_rejected": "The view update was rejected.",
-    "desktop.error.viewer_failed": "The view could not be displayed.",
-    "desktop.error.context_mismatch": "A stale view update was ignored.",
-  },
-});
+/**
+ * Fallback translator so the shell renders correctly when no I18nProvider is
+ * present (unit tests). The real frontend wraps the shell in an I18nProvider
+ * that follows the OS locale; switching locale never touches this component.
+ */
+const defaultTranslator: Translator = createTranslator("en", baseShellCatalogs);
 
 export interface DesktopShellProps {
   readonly controller: DesktopShellController;
@@ -73,20 +41,31 @@ export interface DesktopShellProps {
   readonly reviewAvailability?: DesktopFeatureAvailability;
   readonly mcp?: DesktopMCPPort;
   readonly projectDialogs?: DesktopProjectDialogPort;
-  readonly labels?: DesktopShellLabels;
+  /**
+   * Returns from the open workspace to the project hub without a process
+   * restart. When omitted the breadcrumb renders as a non-interactive location
+   * indicator (the host close binding is wired separately).
+   */
+  readonly onReturnToProjects?: () => void;
 }
 
 function statusChip(kind: string, text: string): ReactNode {
   return createElement("span", { className: "ld-desktop-chip", "data-status": kind }, text);
 }
 
-export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, library, libraryAvailability, reviewAvailability, mcp, projectDialogs, labels: suppliedLabels = labels }: DesktopShellProps): ReactNode {
+type EditorMode = "structure" | "views";
+
+export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, library, libraryAvailability, reviewAvailability, mcp, projectDialogs, onReturnToProjects }: DesktopShellProps): ReactNode {
+  const contextTranslator = useOptionalI18n();
+  const t = contextTranslator ?? defaultTranslator;
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const heading = useRef<HTMLHeadingElement>(null);
   const dialogSequence = useRef(0);
   const [dialogPending, setDialogPending] = useState<"create" | "open" | "recent">();
   const [dialogFailure, setDialogFailure] = useState<string>();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [recentProjects, setRecentProjects] = useState<readonly DesktopRecentProjectDTO[]>([]);
+  const [editorMode, setEditorMode] = useState<EditorMode>("views");
   const project = state.lifecycle.project;
   const capability = state.lifecycle.capabilities[viewSelectionCapability];
   const viewSelectionAvailable = capability?.status === "available";
@@ -106,7 +85,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     return () => { cancelled = true; };
   }, [hubVisible, projectDialogs, dialogPending]);
 
-  const failure = state.failure === undefined ? null : suppliedLabels.failure[state.failure.message_key];
+  const failure = state.failure === undefined ? null : t.t(`error.${state.failure.message_key}`);
   const runProjectDialog = (kind: "create" | "open"): void => {
     if (projectDialogs === undefined || dialogPending !== undefined) return;
     setDialogPending(kind);
@@ -124,56 +103,56 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
       if (result.outcome === "failed" || result.outcome === "rejected") setDialogFailure(result.failure?.code ?? "desktop.adapter_unavailable");
     }, () => setDialogFailure("desktop.adapter_unavailable")).finally(() => setDialogPending(undefined));
   };
-  if (state.lifecycle.phase === "starting") return createElement("main", { className: "ld-desktop-shell", "aria-label": suppliedLabels.application }, createElement("p", { role: "status", "aria-live": "polite" }, "Starting LayerDraw…"));
-  if (state.lifecycle.phase === "recovery") return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application },
-    createElement("h1", null, suppliedLabels.application), createElement("p", { role: "alert" }, suppliedLabels.recovery),
-    createElement("button", { type: "button", disabled: state.pending_action !== undefined, onClick: () => { void controller.reviewRecovery(); } }, suppliedLabels.reviewRecovery));
-  if (state.lifecycle.phase === "draining" || state.lifecycle.phase === "stopped") return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("p", { role: "status" }, "LayerDraw is closing…"));
-  const featureStatus = libraryAvailability === undefined && reviewAvailability === undefined ? null : createElement("section", { "aria-label": "Desktop capabilities" },
-    createElement("h2", null, "Capabilities"),
-    createElement("ul", null,
-      libraryAvailability === undefined ? null : createElement("li", { "data-status": libraryAvailability.status }, `Library: ${libraryAvailability.status}`),
-      reviewAvailability === undefined ? null : createElement("li", { "data-status": reviewAvailability.status }, `Review: ${reviewAvailability.status}`)));
-  if (project === undefined) return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("h1", null, suppliedLabels.application), createElement("p", null, suppliedLabels.noProject),
-    projectDialogs === undefined ? null : createElement("div", { className: "ld-desktop-project-actions", "aria-label": "Project actions" },
-      createElement("button", { type: "button", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? "Creating…" : "New project"),
-      createElement("button", { type: "button", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? "Opening…" : "Open project")),
-    projectDialogs === undefined || recentProjects.length === 0 ? null : createElement("section", { className: "ld-desktop-recent", "aria-label": "Recent projects" },
-      createElement("h2", null, "Recent projects"),
-      createElement("ul", null, recentProjects.map((recent) =>
-        createElement("li", { key: recent.project_id },
-          createElement("button", {
-            type: "button",
-            disabled: dialogPending !== undefined || recent.availability === "missing",
-            "aria-label": recent.availability === "missing" ? `${recent.display_name}. The project files are missing.` : recent.display_name,
-            onClick: () => openRecentProject(recent.project_id),
-          }, createElement("span", null, recent.display_name), recent.availability === "missing" ? createElement("small", null, "missing") : null))))),
-    failure === null && dialogFailure === undefined ? null : createElement("div", { role: "alert", className: "ld-desktop-notice" }, failure ?? openFailureMessage(dialogFailure)), featureStatus, library === undefined ? null : createElement(DesktopLibraryPanel, { library }));
 
-  const viewList = createElement("ul", null, project.views.map((view) =>
+  if (state.lifecycle.phase === "starting") {
+    return createElement("main", { className: "ld-desktop-shell ld-desktop-boot", "aria-label": t.t("app.name") },
+      createElement("div", { className: "ld-desktop-boot-mark" }, createElement(LayerDrawWordmark, { title: t.t("app.name") })),
+      createElement("p", { role: "status", "aria-live": "polite" }, t.t("status.starting")));
+  }
+  if (state.lifecycle.phase === "recovery") {
+    return createElement("main", { className: "ld-desktop-shell ld-desktop-boot", "aria-label": t.t("app.name") },
+      createElement("div", { className: "ld-desktop-boot-mark" }, createElement(LayerDrawWordmark, { title: t.t("app.name") })),
+      createElement("p", { role: "alert" }, t.t("recovery.title")),
+      createElement("button", { type: "button", className: "ld-btn ld-btn-primary", disabled: state.pending_action !== undefined, onClick: () => { void controller.reviewRecovery(); } }, t.t("recovery.action")));
+  }
+  if (state.lifecycle.phase === "draining" || state.lifecycle.phase === "stopped") {
+    return createElement("main", { className: "ld-desktop-shell ld-desktop-boot", "aria-label": t.t("app.name") },
+      createElement("p", { role: "status" }, t.t("status.closing")));
+  }
+
+  if (project === undefined) return renderHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject });
+
+  const viewList = createElement("ul", { className: "ld-rail-list" }, project.views.map((view) =>
     createElement("li", { key: view.address },
       createElement("button", {
         type: "button",
+        className: "ld-rail-item",
         disabled: !viewSelectionAvailable || state.pending_action !== undefined,
         "aria-current": view.address === project.selected_view_address ? "page" : undefined,
-        "aria-label": !viewSelectionAvailable ? `${view.label}. ${suppliedLabels.unavailable}` : view.label,
+        "aria-label": !viewSelectionAvailable ? `${view.label}. ${t.t("status.unavailable")}` : view.label,
         onClick: () => { void controller.selectView(view.address); },
-      }, createElement("span", null, view.label), createElement("small", null, view.shape))),
+      }, createElement("span", { className: "ld-rail-item-label" }, view.label), createElement("small", null, view.shape))),
   ));
 
-  return createElement("main", { className: "ld-desktop-shell", "aria-label": suppliedLabels.application },
-    createElement("header", { className: "ld-desktop-titlebar" },
-      createElement("div", null, createElement("p", { className: "ld-desktop-eyebrow" }, suppliedLabels.application), createElement("h1", { ref: heading, tabIndex: -1 }, project.display_name)),
-      createElement("div", { className: "ld-desktop-statuses", "aria-label": suppliedLabels.inspector },
+  const structurePlaceholder = createElement("div", { className: "ld-rail-empty" },
+    createElement("p", null, t.t("workspace.mode.structure")),
+    createElement("small", null, "—"));
+
+  return createElement("main", { className: "ld-desktop-shell ld-desktop-app", "aria-label": t.t("app.name") },
+    createElement("header", { className: "ld-workspace-topbar" },
+      createElement("div", { className: "ld-workspace-lead" },
+        renderBreadcrumb(t, project.display_name, heading, onReturnToProjects),
+        renderModeSwitch(t, editorMode, setEditorMode)),
+      createElement("div", { className: "ld-desktop-statuses", "aria-label": t.t("workspace.inspector") },
         statusChip(project.storage.status, project.storage.label), statusChip(project.access.status, project.access.label), statusChip(project.persistence, project.authoritative_revision_label))),
-    failure === null ? null : createElement("div", { role: state.failure?.recoverable === true ? "status" : "alert", className: "ld-desktop-notice" }, failure),
+    failure === null ? null : createElement("div", { role: state.failure?.recoverable === true ? "status" : "alert", className: "ld-banner ld-banner-warning" }, failure),
     createElement("div", { className: "ld-desktop-workspace" },
-      createElement("nav", { className: "ld-desktop-sidebar", "aria-label": suppliedLabels.views },
-        createElement("h2", null, suppliedLabels.views),
-        viewList),
-      createElement("section", { className: "ld-desktop-canvas", "aria-label": suppliedLabels.canvas },
+      createElement("nav", { className: "ld-desktop-sidebar", "aria-label": t.t("workspace.views") },
+        createElement("h2", null, editorMode === "views" ? t.t("workspace.views") : t.t("workspace.mode.structure")),
+        editorMode === "views" ? viewList : structurePlaceholder),
+      createElement("section", { className: "ld-desktop-canvas", "aria-label": t.t("workspace.canvas") },
         createElement(DesktopViewerSurface, { state: state.viewer, onSelectionChange: (keys) => controller.setViewerSelection(keys) })),
-      createElement("aside", { className: "ld-desktop-inspector", "aria-label": suppliedLabels.inspector },
+      createElement("aside", { className: "ld-desktop-inspector", "aria-label": t.t("workspace.inspector") },
         project.storage.kind === "external" ? createElement("section", { className: "ld-desktop-storage", "aria-label": "External storage" },
           createElement("h2", null, "External storage"),
           createElement("dl", null,
@@ -185,13 +164,118 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
           project.storage.status === "conflict" || project.storage.status === "reconcile_pending"
             ? createElement("p", { role: "status", className: "ld-desktop-storage-warning" }, "Review external changes before publishing.") : null,
           createElement("p", { className: "ld-desktop-storage-consequence" }, project.storage.disconnect_consequence ?? "Disconnecting keeps the local project and stops external sync."),
-          createElement("button", { type: "button", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, "Disconnect")) : null,
+          createElement("button", { type: "button", className: "ld-btn ld-btn-danger-quiet", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, "Disconnect")) : null,
         createElement(DesktopEditorSurface, { project, capabilities: editorCapabilities }),
         library === undefined ? null : createElement(DesktopLibraryPanel, { library, project: project.library_project }),
-        featureStatus,
+        renderFeatureStatus(libraryAvailability, reviewAvailability),
         reviewModel === undefined ? null : createElement(ReviewPanel, { model: reviewModel }),
         createElement(DesktopMCPPanel, { mcp: mcp ?? unavailableMCP, projectID: project.project_id }))),
     createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : state.pending_action === "disconnect_storage" ? "Disconnecting external storage…" : ""));
+}
+
+function renderBreadcrumb(t: Translator, projectName: string, heading: RefObject<HTMLHeadingElement | null>, onReturnToProjects: (() => void) | undefined): ReactNode {
+  const back = onReturnToProjects === undefined
+    ? createElement("span", { className: "ld-breadcrumb-root" }, t.t("workspace.back"))
+    : createElement("button", { type: "button", className: "ld-breadcrumb-back", onClick: () => onReturnToProjects() },
+        createElement("span", { "aria-hidden": true }, "‹ "), t.t("workspace.back"));
+  return createElement("nav", { className: "ld-breadcrumb", "aria-label": t.t("workspace.back") },
+    back,
+    createElement("span", { className: "ld-breadcrumb-sep", "aria-hidden": true }, "/"),
+    createElement("h1", { ref: heading, tabIndex: -1, className: "ld-breadcrumb-current" }, projectName));
+}
+
+function renderModeSwitch(t: Translator, mode: EditorMode, setMode: (mode: EditorMode) => void): ReactNode {
+  const option = (value: EditorMode, label: string): ReactNode =>
+    createElement("button", {
+      type: "button",
+      className: "ld-segment",
+      "aria-pressed": mode === value,
+      onClick: () => setMode(value),
+    }, label);
+  return createElement("div", { className: "ld-mode-switch", role: "group", "aria-label": t.t("workspace.mode.label") },
+    option("structure", t.t("workspace.mode.structure")),
+    option("views", t.t("workspace.mode.views")));
+}
+
+interface HubProps {
+  readonly t: Translator;
+  readonly projectDialogs: DesktopProjectDialogPort | undefined;
+  readonly dialogPending: "create" | "open" | "recent" | undefined;
+  readonly dialogFailure: string | undefined;
+  readonly detailsOpen: boolean;
+  readonly setDetailsOpen: (open: boolean) => void;
+  readonly recentProjects: readonly DesktopRecentProjectDTO[];
+  readonly failure: string | null;
+  readonly library: LibraryController | undefined;
+  readonly runProjectDialog: (kind: "create" | "open") => void;
+  readonly openRecentProject: (projectID: string) => void;
+}
+
+function renderHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject }: HubProps): ReactNode {
+  const rail = createElement("aside", { className: "ld-rail", "aria-label": t.t("nav.section") },
+    createElement("div", { className: "ld-rail-brand" }, createElement(LayerDrawWordmark, { title: t.t("app.name") })),
+    createElement("nav", { className: "ld-rail-nav", "aria-label": t.t("nav.section") },
+      createElement("span", { className: "ld-rail-item ld-rail-item-active", "aria-current": "page" }, t.t("nav.projects")),
+      createElement("span", { className: "ld-rail-item ld-rail-item-muted" }, t.t("nav.library"))));
+
+  const actions = projectDialogs === undefined ? null : createElement("div", { className: "ld-hub-actions", "aria-label": t.t("hub.actions.label") },
+    createElement("button", { type: "button", className: "ld-btn ld-btn-primary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? t.t("hub.action.creating") : t.t("hub.action.new")),
+    createElement("button", { type: "button", className: "ld-btn ld-btn-secondary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? t.t("hub.action.opening") : t.t("hub.action.open")));
+
+  const errorBanner = failure === null && dialogFailure === undefined ? null : createElement("div", { role: "alert", className: "ld-banner ld-banner-danger" },
+    createElement("div", { className: "ld-banner-body" },
+      createElement("p", { className: "ld-banner-title" }, t.t("hub.error.title")),
+      createElement("p", { className: "ld-banner-reason" }, dialogFailure === undefined ? failure : t.error(dialogFailure))),
+    dialogFailure === undefined ? null : createElement("button", { type: "button", className: "ld-banner-toggle", "aria-expanded": detailsOpen, onClick: () => setDetailsOpen(!detailsOpen) }, detailsOpen ? t.t("hub.error.hideDetails") : t.t("hub.error.showDetails")),
+    dialogFailure === undefined || !detailsOpen ? null : createElement("p", { className: "ld-banner-details" }, createElement("code", null, dialogFailure)));
+
+  const recent = projectDialogs === undefined ? null : createElement("section", { className: "ld-hub-recent", "aria-label": t.t("hub.recent.title") },
+    createElement("h2", null, t.t("hub.recent.title")),
+    recentProjects.length === 0
+      ? createElement("p", { className: "ld-hub-empty" }, t.t("hub.recent.empty"))
+      : createElement("ul", { className: "ld-recent-list" }, recentProjects.map((entry) => renderRecentRow(t, entry, dialogPending, openRecentProject))));
+
+  const templates = library === undefined ? null : createElement("section", { className: "ld-hub-templates", "aria-label": t.t("hub.templates.title") },
+    createElement("h2", null, t.t("hub.templates.title")),
+    createElement(DesktopLibraryPanel, { library }));
+
+  return createElement("main", { className: "ld-desktop-shell ld-desktop-hub", "aria-label": t.t("app.name") },
+    rail,
+    createElement("div", { className: "ld-hub-main" },
+      createElement("header", { className: "ld-hub-header" },
+        createElement("div", { className: "ld-hub-heading" },
+          createElement("h1", null, t.t("hub.title")),
+          createElement("p", null, t.t("hub.subtitle"))),
+        actions),
+      errorBanner,
+      recent,
+      templates));
+}
+
+function renderRecentRow(t: Translator, entry: DesktopRecentProjectDTO, dialogPending: string | undefined, openRecentProject: (projectID: string) => void): ReactNode {
+  const missing = entry.availability === "missing";
+  const opened = typeof entry.last_opened_at === "string" ? t.t("hub.recent.opened", { when: t.formatRelativeTime(entry.last_opened_at) }) : "";
+  return createElement("li", { key: entry.project_id },
+    createElement("button", {
+      type: "button",
+      className: "ld-recent-row",
+      disabled: dialogPending !== undefined || missing,
+      "aria-label": missing ? `${entry.display_name}. ${t.t("hub.recent.missing")}` : entry.display_name,
+      onClick: () => openRecentProject(entry.project_id),
+    },
+      createElement("span", { className: "ld-recent-name" }, entry.display_name),
+      missing
+        ? createElement("span", { className: "ld-recent-badge", "data-status": "missing" }, t.t("hub.recent.missing"))
+        : createElement("time", { className: "ld-recent-meta" }, opened)));
+}
+
+function renderFeatureStatus(libraryAvailability: DesktopFeatureAvailability | undefined, reviewAvailability: DesktopFeatureAvailability | undefined): ReactNode {
+  if (libraryAvailability === undefined && reviewAvailability === undefined) return null;
+  return createElement("section", { className: "ld-feature-status", "aria-label": "Desktop capabilities" },
+    createElement("h2", null, "Capabilities"),
+    createElement("ul", null,
+      libraryAvailability === undefined ? null : createElement("li", { "data-status": libraryAvailability.status }, `Library: ${libraryAvailability.status}`),
+      reviewAvailability === undefined ? null : createElement("li", { "data-status": reviewAvailability.status }, `Review: ${reviewAvailability.status}`)));
 }
 
 const unavailableMCP: DesktopMCPPort = Object.freeze<DesktopMCPPort>({

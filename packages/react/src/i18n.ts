@@ -137,6 +137,11 @@ export function useI18n(): Translator {
   return value;
 }
 
+/** Access the active translator without requiring a provider (undefined if absent). */
+export function useOptionalI18n(): Translator | undefined {
+  return useContext(I18nContext);
+}
+
 /**
  * Shared shell strings for the navigable Desktop/Browser shell (hub, workspace
  * frame, lifecycle, and the closed diagnostic-code reasons). `en` is canonical;

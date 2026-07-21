@@ -9,6 +9,7 @@ const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.setContent("<!doctype html><meta name='viewport' content='width=device-width'><div id='root'></div>");
+  await page.addStyleTag({ path: new URL("../../../packages/react/dist/tokens.css", import.meta.url).pathname });
   await page.addStyleTag({ path: new URL("../dist/styles.css", import.meta.url).pathname });
   await page.addScriptTag({ content: bundled.outputFiles[0].text });
   await page.getByRole("heading", { name: "Desktop roadmap" }).waitFor();

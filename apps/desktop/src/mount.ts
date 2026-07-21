@@ -8,7 +8,8 @@ import { DesktopShellController } from "./controller.js";
 import type { DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import type { ReviewModel } from "@layerdraw/review";
 import type { LibraryController } from "@layerdraw/library";
-import { DesktopShell, type DesktopShellLabels } from "./shell.js";
+import { I18nProvider, baseShellCatalogs, resolveLocale } from "@layerdraw/react/i18n";
+import { DesktopShell } from "./shell.js";
 
 export interface DesktopMountOptions extends DesktopShellPorts {
   readonly mcp: DesktopMCPPort;
@@ -19,7 +20,8 @@ export interface DesktopMountOptions extends DesktopShellPorts {
   readonly library?: LibraryController;
   readonly libraryAvailability?: DesktopFeatureAvailability;
   readonly reviewAvailability?: DesktopFeatureAvailability;
-  readonly labels?: DesktopShellLabels;
+  /** Returns to the project hub from an open workspace without a process restart. */
+  readonly onReturnToProjects?: () => void;
 }
 
 export interface MountedDesktopShell {
@@ -34,7 +36,8 @@ export interface MountedDesktopShell {
 export function mountDesktopShell(element: Element, options: DesktopMountOptions): MountedDesktopShell {
   const controller = new DesktopShellController({ lifecycle: options.lifecycle, viewer: options.viewer });
   const root: Root = createRoot(element);
-  root.render(createElement(DesktopShell, {
+  const locale = resolveLocale(typeof navigator === "undefined" ? undefined : navigator.language);
+  root.render(createElement(I18nProvider, { locale, catalogs: baseShellCatalogs }, createElement(DesktopShell, {
     controller,
     viewSelectionCapability: options.viewSelectionCapability,
     editorCapabilities: options.editorCapabilities,
@@ -44,8 +47,8 @@ export function mountDesktopShell(element: Element, options: DesktopMountOptions
     ...(options.reviewAvailability === undefined ? {} : { reviewAvailability: options.reviewAvailability }),
     ...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel }),
     ...(options.library === undefined ? {} : { library: options.library }),
-    ...(options.labels === undefined ? {} : { labels: options.labels }),
-  }));
+    ...(options.onReturnToProjects === undefined ? {} : { onReturnToProjects: options.onReturnToProjects }),
+  })));
   return {
     controller,
     async close() {

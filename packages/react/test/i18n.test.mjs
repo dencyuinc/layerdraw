@@ -16,6 +16,7 @@ import {
   mergeCatalogs,
   resolveLocale,
   useI18n,
+  useOptionalI18n,
 } from "../dist/i18n.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -94,6 +95,24 @@ test("I18nProvider supplies a translator and switching locale re-renders without
   });
   assert.equal(renderer.root.findByType("span").children.join(""), "新規プロジェクト");
   await act(async () => renderer.unmount());
+});
+
+test("useOptionalI18n returns the translator inside a provider and undefined outside", async () => {
+  const seen = {};
+  function Probe({ id }) {
+    seen[id] = useOptionalI18n();
+    return null;
+  }
+  await act(async () => {
+    TestRenderer.create(React.createElement(Probe, { id: "orphan" }));
+  });
+  assert.equal(seen.orphan, undefined);
+  await act(async () => {
+    TestRenderer.create(
+      React.createElement(I18nProvider, { locale: "en", catalogs: baseShellCatalogs }, React.createElement(Probe, { id: "wrapped" })),
+    );
+  });
+  assert.equal(seen.wrapped?.locale, "en");
 });
 
 test("useI18n throws outside a provider", async () => {

@@ -106,7 +106,7 @@ test("startup, recovery, empty, draining, and stopped lifecycle states stay oper
   await act(async () => renderer.root.findByType("button").props.onClick());
   assert.deepEqual(controller.calls.at(-1), ["recovery-options"]);
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 2, phase: "ready", capabilities: {} } })));
-  assert.match(renderer.root.findByType("p").children.join(""), /Open or create/);
+  assert.match(renderer.root.findByType("p").children.join(""), /Open an existing project/);
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 3, phase: "draining", capabilities: {} } })));
   assert.match(renderer.root.findByProps({ role: "status" }).children.join(""), /closing/);
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 4, phase: "stopped", capabilities: {} } })));

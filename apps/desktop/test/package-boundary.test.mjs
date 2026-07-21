@@ -21,7 +21,7 @@ test("Desktop frontend composes typed packages without native path, transport di
 
 test("Desktop styles have explicit wide, narrow, focus, and reduced-motion behavior", async () => {
   const styles = await readFile(new URL("../dist/styles.css", import.meta.url), "utf8");
-  assert.match(styles, /grid-template-columns: minmax\(11rem, 15rem\).*minmax\(15rem, 20rem\)/);
+  assert.match(styles, /grid-template-columns: minmax\(11rem, var\(--ld-layout-shell-navigationWidth\)\).*minmax\(15rem, var\(--ld-layout-shell-inspectorWidth\)\)/);
   assert.match(styles, /@media \(max-width: 42rem\)/);
   assert.match(styles, /:focus/);
   assert.match(styles, /prefers-reduced-motion: reduce/);
