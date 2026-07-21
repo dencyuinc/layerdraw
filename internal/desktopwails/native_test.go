@@ -415,6 +415,10 @@ func TestPackagedCompositionReadyCallsOwnersAndStops(t *testing.T) {
 	if opened.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("project open through application host: %+v", opened)
 	}
+	publication, err := application.ProjectPublication(context.Background())
+	if err != nil || publication.Project == nil || publication.Project.ProjectID != opened.Value.Open.Session.Scope.DocumentID || publication.Project.LibraryProject.ProjectID == "" || publication.Project.LibraryProject.ResolvedLockDigest == "" || publication.Project.LibraryProject.DependencySnapshot.Installs == nil || publication.Project.Views == nil {
+		t.Fatalf("project publication=%+v err=%v", publication, err)
+	}
 	inspectControl, err := runtimeprotocol.EncodeInspectDocumentRequestEnvelope(runtimeprotocol.InspectDocumentRequestEnvelope{
 		Operation: runtimeprotocol.InspectDocumentRequestEnvelopeOperationValue,
 		Protocol:  runtimeprotocol.RuntimeProtocolRef{Name: runtimeprotocol.RuntimeProtocolRefNameValue, Version: "1.0"},

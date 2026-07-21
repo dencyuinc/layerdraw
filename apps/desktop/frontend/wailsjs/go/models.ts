@@ -434,6 +434,44 @@ export namespace desktopapp {
 		    return a;
 		}
 	}
+	export class LibraryProjectContextDTO {
+	    project_id: string;
+	    revision: string;
+	    definition_hash: string;
+	    resolved_lock_digest: string;
+	    dependency_snapshot: registry.ProjectDependencySnapshot;
+	
+	    static createFrom(source: any = {}) {
+	        return new LibraryProjectContextDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.project_id = source["project_id"];
+	        this.revision = source["revision"];
+	        this.definition_hash = source["definition_hash"];
+	        this.resolved_lock_digest = source["resolved_lock_digest"];
+	        this.dependency_snapshot = this.convertValues(source["dependency_snapshot"], registry.ProjectDependencySnapshot);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class MCPConnectRequest {
 	    client_id: string;
 	    protocol_version: string;
@@ -708,6 +746,7 @@ export namespace desktopapp {
 	    open_input: runtimeprotocol.OpenRuntimeDocumentInput;
 	    persistence: string;
 	    views: ProjectViewDTO[];
+	    library_project: LibraryProjectContextDTO;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProjectPublicationContext(source);
@@ -722,6 +761,7 @@ export namespace desktopapp {
 	        this.open_input = this.convertValues(source["open_input"], runtimeprotocol.OpenRuntimeDocumentInput);
 	        this.persistence = source["persistence"];
 	        this.views = this.convertValues(source["views"], ProjectViewDTO);
+	        this.library_project = this.convertValues(source["library_project"], LibraryProjectContextDTO);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3921,6 +3961,103 @@ export namespace protocolcommon {
 	
 	
 	
+
+}
+
+export namespace registry {
+	
+	export class ArtifactIdentity {
+	    kind: string;
+	    canonical_id: string;
+	    version: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ArtifactIdentity(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.canonical_id = source["canonical_id"];
+	        this.version = source["version"];
+	    }
+	}
+	export class LockedArtifact {
+	    identity: ArtifactIdentity;
+	    source_id: string;
+	    publisher_id: string;
+	    digest: string;
+	    provenance_digest: string;
+	    dependency_metadata_digest: string;
+	    dependencies: ArtifactIdentity[];
+	    pinned: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LockedArtifact(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.identity = this.convertValues(source["identity"], ArtifactIdentity);
+	        this.source_id = source["source_id"];
+	        this.publisher_id = source["publisher_id"];
+	        this.digest = source["digest"];
+	        this.provenance_digest = source["provenance_digest"];
+	        this.dependency_metadata_digest = source["dependency_metadata_digest"];
+	        this.dependencies = this.convertValues(source["dependencies"], ArtifactIdentity);
+	        this.pinned = source["pinned"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ProjectDependencySnapshot {
+	    resolved_lock_digest: string;
+	    installs: LockedArtifact[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ProjectDependencySnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.resolved_lock_digest = source["resolved_lock_digest"];
+	        this.installs = this.convertValues(source["installs"], LockedArtifact);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 

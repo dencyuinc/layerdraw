@@ -8,6 +8,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	"github.com/dencyuinc/layerdraw/internal/registry"
 )
 
 // ProjectPublicationDTO is a JSON-only snapshot for the trusted frontend
@@ -25,6 +26,15 @@ type ProjectPublicationContext struct {
 	OpenInput             runtimeprotocol.OpenRuntimeDocumentInput `json:"open_input"`
 	Persistence           string                                   `json:"persistence"`
 	Views                 []ProjectViewDTO                         `json:"views"`
+	LibraryProject        LibraryProjectContextDTO                 `json:"library_project"`
+}
+
+type LibraryProjectContextDTO struct {
+	ProjectID          string                             `json:"project_id"`
+	Revision           string                             `json:"revision"`
+	DefinitionHash     string                             `json:"definition_hash"`
+	ResolvedLockDigest string                             `json:"resolved_lock_digest"`
+	DependencySnapshot registry.ProjectDependencySnapshot `json:"dependency_snapshot"`
 }
 
 type ProjectViewDTO struct {
@@ -57,11 +67,16 @@ func (a *Application) ProjectPublication(ctx context.Context) (ProjectPublicatio
 	for _, view := range views {
 		viewDTOs = append(viewDTOs, ProjectViewDTO{Address: view.Address, Label: view.Label, Shape: view.Shape})
 	}
+	registryState, err := host.CurrentRegistryProjectState(ctx, opened.PortableID)
+	if err != nil {
+		return ProjectPublicationDTO{}, err
+	}
 	publication.Project = &ProjectPublicationContext{
 		ProjectID: session.Scope.DocumentID, SessionGeneration: generation,
 		DisplayName: string(session.Scope.DocumentID), AuthoritativeRevision: revision,
 		OpenInput:   runtimeprotocol.OpenRuntimeDocumentInput{DocumentID: session.Scope.DocumentID},
 		Persistence: persistence, Views: viewDTOs,
+		LibraryProject: LibraryProjectContextDTO{ProjectID: registryState.ProjectID, Revision: registryState.Revision, DefinitionHash: registryState.DefinitionHash, ResolvedLockDigest: registryState.DependencySnapshot.ResolvedLockDigest, DependencySnapshot: registryState.DependencySnapshot},
 	}
 	return publication, nil
 }

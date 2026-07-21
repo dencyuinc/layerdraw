@@ -79,15 +79,17 @@ export class LibraryController {
     if (!selected) return this.#fail({ code: "registry.unavailable", subject: identity.canonical_id, actionable: true });
     return this.#publish({ ...this.#state, selected, plan: undefined, transaction: undefined, failure: undefined, status: "ready" });
   }
-  async preview(action: RegistryAction, project: LibraryProjectContext): Promise<LibrarySnapshot> {
+  async preview(action: RegistryAction, project?: LibraryProjectContext): Promise<LibrarySnapshot> {
     if (!this.#state.capabilities.plan_transactions) return this.#deny("plan_transactions");
     if (!this.#state.selected) return this.#fail({ code: "registry.unavailable", subject: "selection", actionable: true });
+    if (action !== "create_from_template" && project === undefined) return this.#fail({ code: "registry.unavailable", subject: "project", actionable: true });
+    const context = project ?? { project_id: "template", revision: "template", definition_hash: "template", resolved_lock_digest: "template", dependency_snapshot: { resolved_lock_digest: "template", installs: [] } };
     const input: RegistryPlanInput = {
-      action, project_id: project.project_id, base_revision: project.revision,
-      expected_definition_hash: project.definition_hash,
-      expected_resolved_lock_digest: project.resolved_lock_digest,
+      action, project_id: context.project_id, base_revision: context.revision,
+      expected_definition_hash: context.definition_hash,
+      expected_resolved_lock_digest: context.resolved_lock_digest,
       requested: this.#state.selected.identity,
-      dependency_snapshot: project.dependency_snapshot,
+      dependency_snapshot: context.dependency_snapshot,
     };
     const signal = this.#begin("previewing");
     const result = await this.#client.plan(input, signal);

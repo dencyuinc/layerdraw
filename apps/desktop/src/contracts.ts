@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import type { BrowserDocumentSession, BrowserEditor } from "@layerdraw/client-sdk/editor";
+import type { LibraryProjectContext } from "@layerdraw/library";
 import type { CapabilityID } from "@layerdraw/protocol/common";
 import type { ExportPlan, ViewData } from "@layerdraw/protocol/semantic";
 import type { CommittedRevisionRef, OpenRuntimeDocumentInput } from "@layerdraw/protocol/runtime";
@@ -55,6 +56,7 @@ export interface DesktopProjectContext {
 	disconnect_consequence?: string;
   }>;
   readonly persistence: "clean" | "preview_pending" | "ephemeral" | "durable_pending" | "reconcile_pending";
+  readonly library_project: LibraryProjectContext;
 }
 
 /** JSON-only project state emitted by Go. Executable editor/viewer objects are

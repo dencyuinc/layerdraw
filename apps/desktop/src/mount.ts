@@ -7,6 +7,7 @@ import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopShellPorts } fr
 import { DesktopShellController } from "./controller.js";
 import type { DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import type { ReviewModel } from "@layerdraw/review";
+import type { LibraryController } from "@layerdraw/library";
 import { DesktopShell, type DesktopShellLabels } from "./shell.js";
 
 export interface DesktopMountOptions extends DesktopShellPorts {
@@ -14,6 +15,7 @@ export interface DesktopMountOptions extends DesktopShellPorts {
   readonly viewSelectionCapability: CapabilityID;
   readonly editorCapabilities: DesktopEditorCapabilityIDs;
   readonly reviewModel?: ReviewModel;
+  readonly library?: LibraryController;
   readonly libraryAvailability?: DesktopFeatureAvailability;
   readonly reviewAvailability?: DesktopFeatureAvailability;
   readonly labels?: DesktopShellLabels;
@@ -39,6 +41,7 @@ export function mountDesktopShell(element: Element, options: DesktopMountOptions
     ...(options.libraryAvailability === undefined ? {} : { libraryAvailability: options.libraryAvailability }),
     ...(options.reviewAvailability === undefined ? {} : { reviewAvailability: options.reviewAvailability }),
     ...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel }),
+    ...(options.library === undefined ? {} : { library: options.library }),
     ...(options.labels === undefined ? {} : { labels: options.labels }),
   }));
   return {

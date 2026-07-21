@@ -43,6 +43,7 @@ async function start(): Promise<void> {
 		viewer: composition.viewer,
 		mcp: composition.mcp,
 		libraryAvailability: composition.library.status === "available" ? { status: "available" } : composition.library.availability,
+		...(composition.library.status === "available" ? { library: composition.library.value } : {}),
 		reviewAvailability: composition.review.status === "available" ? { status: "available" } : composition.review.availability,
 		...(composition.review.status === "available" ? { reviewModel: composition.review.value } : {}),
     viewSelectionCapability: "engine.materialize_view",

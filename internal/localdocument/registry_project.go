@@ -47,6 +47,12 @@ func (h *Host) CurrentRegistryProjectState(ctx context.Context, projectID string
 	if !ok {
 		return registry.ProjectState{}, errors.New("Registry project source snapshot is unavailable")
 	}
+	if metadata.DependencySnapshot.ResolvedLockDigest == "" {
+		metadata.DependencySnapshot = registry.ProjectDependencySnapshot{ResolvedLockDigest: registryDigestEmptyLock(), Installs: []registry.LockedArtifact{}}
+	}
+	if metadata.PackTreeManifest == "" {
+		metadata.PackTreeManifest = string(digest)
+	}
 	grant, _, err := h.authority.ResolveGrant(ctx, open.Session.Scope)
 	if err != nil {
 		return registry.ProjectState{}, err

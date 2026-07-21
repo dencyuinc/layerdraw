@@ -97,6 +97,18 @@ view catalog "Catalog" inventory {
 	if _, err := host.MaterializeProjectView(context.Background(), opened.Session.Open.Session, "missing"); err == nil {
 		t.Fatal("missing view materialized")
 	}
+	session, err := host.SessionFor(opened.Session.Open.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryState, err := host.CurrentRegistryProjectState(context.Background(), session.PortableID)
+	if err != nil || registryState.ProjectID != session.PortableID || registryState.Revision != string(opened.Session.Open.CommittedRevision.RevisionID) || registryState.DependencySnapshot.ResolvedLockDigest == "" || registryState.PackTreeManifest == "" {
+		t.Fatalf("Registry project state = %+v, %v", registryState, err)
+	}
+	encoded, err := host.ReadRegistryProjectSnapshot(context.Background(), registryState.EngineSnapshot)
+	if err != nil || len(encoded) == 0 {
+		t.Fatalf("Registry project snapshot bytes=%d err=%v", len(encoded), err)
+	}
 }
 
 func TestDelegatedAgentRoutesEnforceProposalApplyAssetsRevocationAndRestart(t *testing.T) {

@@ -34,6 +34,17 @@ try {
 	await mcp.getByRole("button", { name: "Connect agent" }).click();
 	await mcp.getByRole("button", { name: "Revoke access" }).click();
 	assert.deepEqual((await page.evaluate(() => window.desktopWorkflow.calls.filter((call) => call[0].startsWith("mcp-")))).map((call) => call[0]), ["mcp-enable", "mcp-connect", "mcp-restart", "mcp-connect", "mcp-revoke"]);
+  const library = page.getByRole("region", { name: "Library" });
+  await library.waitFor();
+  const browse = library.getByRole("form", { name: "Browse Registry" });
+  await browse.getByRole("searchbox", { name: "Search" }).fill("catalog");
+  await browse.getByRole("button", { name: "Browse" }).click();
+  await library.getByRole("button", { name: /layerdraw\/catalog/ }).click();
+  await library.getByRole("button", { name: "Preview install" }).click();
+  await library.getByRole("region", { name: "Registry change preview" }).waitFor();
+  await library.getByRole("button", { name: "Confirm and apply" }).click();
+  await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "library-confirm"));
+  assert.deepEqual((await page.evaluate(() => window.desktopWorkflow.calls.filter((call) => call[0].startsWith("library-")))).map((call) => call[0]), ["library-sources", "library-search", "library-select", "library-preview", "library-confirm"]);
   const inventory = page.getByRole("button", { name: "Inventory" });
   await inventory.click();
   await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "select" && call[1] === "view:table"));
@@ -81,7 +92,7 @@ try {
     const report = await page.evaluate((value) => window.desktopWorkflow.audit(value), profile);
     assert.equal(report.labels_complete, true);
     assert.equal(report.screen_reader_semantics, true);
-    assert.equal(report.focus_order_valid, true);
+    assert.equal(report.focus_order_valid, true, String(report.focus_order_failures));
     assert.equal(report.keyboard_workflow_valid, true);
     assert.ok(report.minimum_contrast >= 4.5, `contrast ${report.minimum_contrast}`);
     assert.equal(report.zoom_layout_valid, true);
