@@ -108,7 +108,7 @@ jobs:
           "$executable" --packaged-probe | tee desktop-probe.json
           go_args=()
           if [[ "$RUNNER_OS" == "Linux" ]]; then go_args=(-tags webkit2_41); fi
-          go run "${go_args[@]}" ./tools/desktopprobe -input desktop-probe.json verify
+          go run "${go_args[@]}" ./tools/desktopprobe -input desktop-probe.json -capabilities deploy/desktop-capabilities.json verify
           ui_probe="$PWD/desktop-ui-probe.json"
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             xvfb-run -a "$executable" --packaged-ui-probe "$ui_probe"
@@ -116,4 +116,4 @@ jobs:
             "$executable" --packaged-ui-probe "$ui_probe"
           fi
           cat "$ui_probe"
-          go run "${go_args[@]}" ./tools/desktopprobe -require-dom -input "$ui_probe" verify
+          go run "${go_args[@]}" ./tools/desktopprobe -require-dom -input "$ui_probe" -capabilities deploy/desktop-capabilities.json verify
