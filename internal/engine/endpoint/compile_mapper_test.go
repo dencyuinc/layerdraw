@@ -483,6 +483,71 @@ func TestDirectCompleteRecipeMappingWithOptionalValues(t *testing.T) {
 	}
 }
 
+func TestMapQueryRecipeRejectsInvalidCompiledClauses(t *testing.T) {
+	base := materialize.Query{ID: "q", Address: "ldl:project:p:query:q", DisplayName: "Q", StateInput: query.StateOptional, Parameters: []materialize.QueryParameter{}, Select: materialize.QuerySelect{}, Where: materialize.Predicate{}, RelationWhere: materialize.Predicate{}, Result: []query.ResultMember{}, ReservedParameterIDs: []string{}}
+	dependencies := query.Dependencies{LayerAddresses: []string{}, EntityTypeAddresses: []string{}, RelationTypeAddresses: []string{}, EntityAddresses: []string{}, RelationAddresses: []string{}, ColumnAddresses: []string{}, ParameterAddresses: []string{}, StateReads: []query.StateReadDependency{}}
+
+	badWhere := engine.CompiledQueryRecipe{ID: "q", Address: base.Address, Where: query.Predicate{Kind: "bad"}, RelationWhere: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, Dependencies: dependencies}
+	if _, err := mapQueryRecipe(base, badWhere); err == nil {
+		t.Fatal("unsupported compiled where predicate accepted")
+	}
+
+	badRelationWhere := engine.CompiledQueryRecipe{ID: "q", Address: base.Address, Where: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, RelationWhere: query.Predicate{Kind: "bad"}, Dependencies: dependencies}
+	if _, err := mapQueryRecipe(base, badRelationWhere); err == nil {
+		t.Fatal("unsupported compiled relation_where predicate accepted")
+	}
+
+	badTraversal := engine.CompiledQueryRecipe{ID: "q", Address: base.Address, Where: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, RelationWhere: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, Traversal: &query.Traversal{MinDepth: -1}, Dependencies: dependencies}
+	if _, err := mapQueryRecipe(base, badTraversal); err == nil {
+		t.Fatal("negative compiled traversal min depth accepted")
+	}
+
+	badMaxDepth := engine.CompiledQueryRecipe{ID: "q", Address: base.Address, Where: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, RelationWhere: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, Traversal: &query.Traversal{MinDepth: 0, MaxDepth: -1}, Dependencies: dependencies}
+	if _, err := mapQueryRecipe(base, badMaxDepth); err == nil {
+		t.Fatal("negative compiled traversal max depth accepted")
+	}
+
+	withParameters := base
+	withParameters.Parameters = []materialize.QueryParameter{{ID: "p", Address: "ldl:project:p:query:q:parameter:p", ValueType: definition.ScalarInteger, Required: true, Min: pointer(1.0), ReservedEnumValues: []string{}}}
+	badParameterCompiled := engine.CompiledQueryRecipe{ID: "q", Address: base.Address, Where: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, RelationWhere: query.Predicate{Kind: query.PredicateAll, Children: []query.Predicate{}}, Dependencies: dependencies}
+	withParameters.Parameters[0].Min = pointer(math.Inf(1))
+	if _, err := mapQueryRecipe(withParameters, badParameterCompiled); err == nil {
+		t.Fatal("invalid Query parameter accepted")
+	}
+}
+
+func TestMapCompiledTableColumnSourcePopulatesOptionalFields(t *testing.T) {
+	minimal := mapCompiledTableColumnSource(view.TableColumnSource{Kind: view.ColumnDerivedCount})
+	if minimal.Field != nil || minimal.ColumnAddresses != nil || minimal.Endpoint != nil || minimal.Direction != nil || minimal.FieldPath != nil {
+		t.Fatalf("minimal compiled table column source populated optional fields: %+v", minimal)
+	}
+
+	full := mapCompiledTableColumnSource(view.TableColumnSource{
+		Kind:                  view.ColumnRelationEndpoint,
+		Field:                 "id",
+		ColumnAddresses:       []string{"ldl:project:p:view:v:table-column:c"},
+		Endpoint:              definition.ProjectionEndpointFrom,
+		Direction:             definition.TraversalBoth,
+		RelationTypeAddresses: pointer([]string{}),
+		StateFieldPath:        query.StateSystemCreatedAt,
+	})
+	if full.Field == nil || *full.Field != "id" {
+		t.Fatalf("compiled table column source field missing: %+v", full)
+	}
+	if full.ColumnAddresses == nil || len(*full.ColumnAddresses) != 1 {
+		t.Fatalf("compiled table column source column addresses missing: %+v", full)
+	}
+	if full.Endpoint == nil || *full.Endpoint != string(definition.ProjectionEndpointFrom) {
+		t.Fatalf("compiled table column source endpoint missing: %+v", full)
+	}
+	if full.Direction == nil || *full.Direction != string(definition.TraversalBoth) {
+		t.Fatalf("compiled table column source direction missing: %+v", full)
+	}
+	if full.FieldPath == nil || string(*full.FieldPath) != string(query.StateSystemCreatedAt) {
+		t.Fatalf("compiled table column source field path missing: %+v", full)
+	}
+}
+
 func TestCompiledViewShapeAuthority(t *testing.T) {
 	if err := applyCompiledViewShape(&semantic.ViewRecipeShape{Kind: "context"}, view.Shape{Kind: view.ShapeTable}); err == nil {
 		t.Fatal("mismatched shape kind accepted")
