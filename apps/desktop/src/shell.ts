@@ -16,11 +16,12 @@ import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-
 import { DesktopViewerSurface } from "./viewer-surface.js";
 import { ReviewPanel } from "@layerdraw/react/review";
 import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react/i18n";
+import { Button, Tab, TabsList, TabsRoot } from "@layerdraw/react/primitives";
 import type { ReviewModel } from "@layerdraw/review";
-import type { LibraryController } from "@layerdraw/library";
+import type { LibraryController, LibrarySnapshot } from "@layerdraw/library";
 import { DesktopMCPPanel } from "./mcp-panel.js";
 import { DesktopLibraryPanel } from "./library-panel.js";
-import { LayerDrawWordmark } from "./brand.js";
+import { LayerDrawIcon, LayerDrawWordmark } from "./brand.js";
 
 /**
  * Fallback translator so the shell renders correctly when no I18nProvider is
@@ -28,6 +29,18 @@ import { LayerDrawWordmark } from "./brand.js";
  * that follows the OS locale; switching locale never touches this component.
  */
 const defaultTranslator: Translator = createTranslator("en", baseShellCatalogs);
+
+/**
+ * Present a project display name, refusing to surface internal identifiers.
+ * Legacy recents whose stored name is a raw `doc_…`/`revision_…` identifier
+ * render as the localized untitled label instead (internal IDs belong to
+ * diagnostics affordances only).
+ */
+export function presentProjectName(t: Translator, displayName: string | undefined): string {
+  const trimmed = displayName?.trim() ?? "";
+  if (trimmed === "" || /^(doc|revision|session|project)_[0-9a-zA-Z]/u.test(trimmed)) return t.t("hub.recent.untitled");
+  return trimmed;
+}
 
 export interface DesktopShellProps {
   readonly controller: DesktopShellController;
@@ -120,7 +133,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
       createElement("p", { role: "status" }, t.t("status.closing")));
   }
 
-  if (project === undefined) return renderHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject });
+  if (project === undefined) return createElement(DesktopHub, { t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, mcp, runProjectDialog, openRecentProject });
 
   const viewList = createElement("ul", { className: "ld-rail-list" }, project.views.map((view) =>
     createElement("li", { key: view.address },
@@ -185,16 +198,22 @@ function renderBreadcrumb(t: Translator, projectName: string, heading: RefObject
 }
 
 function renderModeSwitch(t: Translator, mode: EditorMode, setMode: (mode: EditorMode) => void): ReactNode {
-  const option = (value: EditorMode, label: string): ReactNode =>
-    createElement("button", {
-      type: "button",
-      className: "ld-segment",
-      "aria-pressed": mode === value,
-      onClick: () => setMode(value),
-    }, label);
-  return createElement("div", { className: "ld-mode-switch", role: "group", "aria-label": t.t("workspace.mode.label") },
-    option("structure", t.t("workspace.mode.structure")),
-    option("views", t.t("workspace.mode.views")));
+  return createElement(TabsRoot, { value: mode, onValueChange: (value: unknown) => setMode(value as EditorMode) },
+    createElement(TabsList, { "aria-label": t.t("workspace.mode.label") },
+      createElement(Tab, { value: "structure" }, t.t("workspace.mode.structure")),
+      createElement(Tab, { value: "views" }, t.t("workspace.mode.views"))));
+}
+
+/** Lucide folder icon (product system icon family). */
+function folderIcon(): ReactNode {
+  return createElement("svg", { viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true },
+    createElement("path", { d: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" }));
+}
+
+/** Lucide library icon (product system icon family). */
+function libraryIcon(): ReactNode {
+  return createElement("svg", { viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true },
+    createElement("path", { d: "m16 6 4 14" }), createElement("path", { d: "M12 6v14" }), createElement("path", { d: "M8 8v12" }), createElement("path", { d: "M4 4v16" }));
 }
 
 interface HubProps {
@@ -207,45 +226,91 @@ interface HubProps {
   readonly recentProjects: readonly DesktopRecentProjectDTO[];
   readonly failure: string | null;
   readonly library: LibraryController | undefined;
+  readonly mcp: DesktopMCPPort | undefined;
   readonly runProjectDialog: (kind: "create" | "open") => void;
   readonly openRecentProject: (projectID: string) => void;
 }
 
-function renderHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject }: HubProps): ReactNode {
+function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, mcp, runProjectDialog, openRecentProject }: HubProps): ReactNode {
+  const [dismissed, setDismissed] = useState<string>();
+  const [mcpEnabled, setMcpEnabled] = useState<boolean>();
+  const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot>();
+
+  useEffect(() => {
+    let cancelled = false;
+    void mcp?.status().then((status) => { if (!cancelled) setMcpEnabled(status.enabled); }, () => {});
+    return () => { cancelled = true; };
+  }, [mcp]);
+  useEffect(() => {
+    if (library === undefined) return;
+    let cancelled = false;
+    void library.refreshSources().then(async (snapshot) => {
+      if (cancelled) return;
+      if (!snapshot.sources.some((source) => source.connected)) { setLibrarySnapshot(snapshot); return; }
+      const results = await library.search("", "template");
+      if (!cancelled) setLibrarySnapshot(results);
+    }, () => {});
+    return () => { cancelled = true; library.cancel(); };
+  }, [library]);
+
   const rail = createElement("aside", { className: "ld-rail", "aria-label": t.t("nav.section") },
     createElement("div", { className: "ld-rail-brand" }, createElement(LayerDrawWordmark, { title: t.t("app.name") })),
     createElement("nav", { className: "ld-rail-nav", "aria-label": t.t("nav.section") },
-      createElement("span", { className: "ld-rail-item ld-rail-item-active", "aria-current": "page" }, t.t("nav.projects")),
-      createElement("span", { className: "ld-rail-item ld-rail-item-muted" }, t.t("nav.library"))));
+      createElement("span", { className: "ld-rail-item ld-rail-item-active", "aria-current": "page" }, folderIcon(), t.t("nav.projects")),
+      createElement("span", { className: "ld-rail-item ld-rail-item-muted" }, libraryIcon(), t.t("nav.library"))),
+    createElement("div", { className: "ld-rail-spacer" }),
+    mcpEnabled === undefined ? null : createElement("div", { className: "ld-rail-foot" },
+      createElement("span", { className: "ld-mcp-chip", "data-enabled": mcpEnabled },
+        createElement("span", { className: "ld-mcp-dot", "aria-hidden": true }),
+        mcpEnabled ? t.t("hub.mcp.enabled") : t.t("hub.mcp.disabled"))));
 
   const actions = projectDialogs === undefined ? null : createElement("div", { className: "ld-hub-actions", "aria-label": t.t("hub.actions.label") },
-    createElement("button", { type: "button", className: "ld-btn ld-btn-primary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? t.t("hub.action.creating") : t.t("hub.action.new")),
-    createElement("button", { type: "button", className: "ld-btn ld-btn-secondary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? t.t("hub.action.opening") : t.t("hub.action.open")));
+    createElement(Button, { variant: "primary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? t.t("hub.action.creating") : t.t("hub.action.new")),
+    createElement(Button, { variant: "secondary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? t.t("hub.action.opening") : t.t("hub.action.open")));
 
-  const errorBanner = failure === null && dialogFailure === undefined ? null : createElement("div", { role: "alert", className: "ld-banner ld-banner-danger" },
+  const activeFailure = dialogFailure ?? (failure === null ? undefined : failure);
+  const bannerVisible = activeFailure !== undefined && dismissed !== activeFailure;
+  const errorBanner = !bannerVisible ? null : createElement("div", { role: "alert", className: "ld-banner ld-banner-danger" },
+    createElement("svg", { className: "ld-banner-icon", viewBox: "0 0 24 24", "aria-hidden": true },
+      createElement("path", { d: "M12 9v4" }), createElement("path", { d: "M12 17h.01" }),
+      createElement("path", { d: "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3l-8.5-14.1a2 2 0 0 0-3.4 0Z" })),
     createElement("div", { className: "ld-banner-body" },
-      createElement("p", { className: "ld-banner-title" }, t.t("hub.error.title")),
-      createElement("p", { className: "ld-banner-reason" }, dialogFailure === undefined ? failure : t.error(dialogFailure))),
+      createElement("p", { className: "ld-banner-reason" },
+        createElement("b", null, t.t("hub.error.title")),
+        " ",
+        dialogFailure === undefined ? failure : t.error(dialogFailure)),
+      dialogFailure === undefined || !detailsOpen ? null : createElement("p", { className: "ld-banner-details" }, createElement("code", null, dialogFailure))),
     dialogFailure === undefined ? null : createElement("button", { type: "button", className: "ld-banner-toggle", "aria-expanded": detailsOpen, onClick: () => setDetailsOpen(!detailsOpen) }, detailsOpen ? t.t("hub.error.hideDetails") : t.t("hub.error.showDetails")),
-    dialogFailure === undefined || !detailsOpen ? null : createElement("p", { className: "ld-banner-details" }, createElement("code", null, dialogFailure)));
+    createElement("button", { type: "button", className: "ld-banner-dismiss", "aria-label": t.t("hub.error.dismiss"), onClick: () => setDismissed(activeFailure) }, "×"));
 
   const recent = projectDialogs === undefined ? null : createElement("section", { className: "ld-hub-recent", "aria-label": t.t("hub.recent.title") },
-    createElement("h2", null, t.t("hub.recent.title")),
+    createElement("h2", { className: "ld-sec-label" }, t.t("hub.recent.title")),
     recentProjects.length === 0
       ? createElement("p", { className: "ld-hub-empty" }, t.t("hub.recent.empty"))
       : createElement("ul", { className: "ld-recent-list" }, recentProjects.map((entry) => renderRecentRow(t, entry, dialogPending, openRecentProject))));
 
-  const templates = library === undefined ? null : createElement("section", { className: "ld-hub-templates", "aria-label": t.t("hub.templates.title") },
-    createElement("h2", null, t.t("hub.templates.title")),
-    createElement(DesktopLibraryPanel, { library }));
+  const templateResults = librarySnapshot?.results.filter((release) => release.identity.kind === "template") ?? [];
+  const librarySourcesConnected = librarySnapshot?.sources.some((source) => source.connected) === true;
+  const templates = !librarySourcesConnected ? null : createElement("section", { className: "ld-hub-templates", "aria-label": t.t("hub.templates.title") },
+    createElement("h2", { className: "ld-sec-label" }, t.t("hub.templates.title")),
+    createElement("div", { className: "ld-template-cards" },
+      templateResults.map((release) => createElement("button", {
+        type: "button",
+        key: `${release.identity.canonical_id}:${release.identity.version}`,
+        className: "ld-template-card",
+        disabled: dialogPending !== undefined,
+        onClick: () => runProjectDialog("create"),
+      },
+        createElement("span", { className: "ld-template-glyph", "aria-hidden": true }, createElement(LayerDrawIcon, { title: "", size: 15 })),
+        createElement("b", null, release.identity.canonical_id),
+        createElement("span", { className: "ld-template-src" }, `${release.identity.version} · ${release.source_id}`))),
+      createElement("button", { type: "button", className: "ld-template-blank", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, t.t("hub.templates.blank"))));
 
   return createElement("main", { className: "ld-desktop-shell ld-desktop-hub", "aria-label": t.t("app.name") },
     rail,
     createElement("div", { className: "ld-hub-main" },
       createElement("header", { className: "ld-hub-header" },
-        createElement("div", { className: "ld-hub-heading" },
-          createElement("h1", null, t.t("hub.title")),
-          createElement("p", null, t.t("hub.subtitle"))),
+        createElement("h1", null, t.t("hub.title")),
         actions),
       errorBanner,
       recent,
@@ -254,19 +319,25 @@ function renderHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpe
 
 function renderRecentRow(t: Translator, entry: DesktopRecentProjectDTO, dialogPending: string | undefined, openRecentProject: (projectID: string) => void): ReactNode {
   const missing = entry.availability === "missing";
+  const name = presentProjectName(t, entry.display_name);
+  const location = typeof entry["location_label"] === "string" ? entry["location_label"] : undefined;
   const opened = typeof entry.last_opened_at === "string" ? t.t("hub.recent.opened", { when: t.formatRelativeTime(entry.last_opened_at) }) : "";
   return createElement("li", { key: entry.project_id },
     createElement("button", {
       type: "button",
       className: "ld-recent-row",
       disabled: dialogPending !== undefined || missing,
-      "aria-label": missing ? `${entry.display_name}. ${t.t("hub.recent.missing")}` : entry.display_name,
+      "aria-label": missing ? `${name}. ${t.t("hub.recent.missing")}` : name,
       onClick: () => openRecentProject(entry.project_id),
     },
-      createElement("span", { className: "ld-recent-name" }, entry.display_name),
+      createElement("span", { className: "ld-recent-fileicon", "aria-hidden": true }, createElement(LayerDrawIcon, { title: "", size: 16 })),
+      createElement("span", { className: "ld-recent-meta" },
+        createElement("span", { className: "ld-recent-name" }, name),
+        location === undefined ? null : createElement("span", { className: "ld-recent-path" }, location)),
       missing
         ? createElement("span", { className: "ld-recent-badge", "data-status": "missing" }, t.t("hub.recent.missing"))
-        : createElement("time", { className: "ld-recent-meta" }, opened)));
+        : createElement("time", { className: "ld-recent-when" }, opened),
+      createElement("span", { className: "ld-recent-chev", "aria-hidden": true }, "›")));
 }
 
 function renderFeatureStatus(libraryAvailability: DesktopFeatureAvailability | undefined, reviewAvailability: DesktopFeatureAvailability | undefined): ReactNode {
