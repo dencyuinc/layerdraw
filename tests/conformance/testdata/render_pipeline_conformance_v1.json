@@ -365,9 +365,9 @@
   "state": {
     "policy": "optional",
     "input": "snapshot",
-    "render_digest": "sha256:799118e89d89935c6aaa9798a9c47903d38d99d31ae2e08d6d638263031ec40b",
+    "render_digest": "sha256:070056e0706e73c885811b4ed4e5907a4c33eafb66d2ac041ed6234dba163554",
     "viewer_status": "ready",
-    "source_manifest_digest": "sha256:87dae2f26e75a754a7ae8ae85c191092d46a54bd38d646ad8666874dd9103c62",
+    "source_manifest_digest": "sha256:5b4d82794333c624691dbd6ac9b3bcf8acace848d468b4fbd0daf7fae25179bd",
     "source_manifest_representations": 1
   }
 }

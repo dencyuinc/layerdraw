@@ -517,7 +517,7 @@ func TestMapQueryRecipeRejectsInvalidCompiledClauses(t *testing.T) {
 }
 
 func TestMapCompiledTableColumnSourcePopulatesOptionalFields(t *testing.T) {
-	minimal := mapCompiledTableColumnSource(view.TableColumnSource{Kind: view.ColumnDerivedCount})
+	minimal := mapCompiledTableColumnSource(view.TableColumnSource{Kind: view.ColumnDerivedCount, ColumnAddresses: []string{}})
 	if minimal.Field != nil || minimal.ColumnAddresses != nil || minimal.Endpoint != nil || minimal.Direction != nil || minimal.FieldPath != nil {
 		t.Fatalf("minimal compiled table column source populated optional fields: %+v", minimal)
 	}
@@ -572,6 +572,10 @@ func TestCompiledViewShapeAuthority(t *testing.T) {
 	scalar, err := mapTableValueType(view.TableValueType{Kind: view.TableValueScalar, ScalarType: definition.ScalarEnum, EnumValues: []string{"z", "a"}, Format: &format})
 	if err != nil || scalar.ScalarType == nil || scalar.EnumValues == nil || !reflect.DeepEqual(*scalar.EnumValues, []string{"a", "z"}) || scalar.Format == nil {
 		t.Fatalf("scalar table value mapping failed: %+v err=%v", scalar, err)
+	}
+	integer, err := mapTableValueType(view.TableValueType{Kind: view.TableValueScalar, ScalarType: definition.ScalarInteger, EnumValues: []string{}})
+	if err != nil || integer.EnumValues != nil {
+		t.Fatalf("integer table value retained empty enum metadata: %+v err=%v", integer, err)
 	}
 	if _, err := mapTableValueType(view.TableValueType{Kind: view.TableValueScalar}); err == nil {
 		t.Fatal("scalar table value without scalar type accepted")

@@ -216,6 +216,88 @@ func TestDispatchCompileProjectQueryClausesProduceValidRecipeBlob(t *testing.T) 
 	}
 }
 
+func TestDispatchCompileProjectDerivedCountProducesValidViewRecipeBlob(t *testing.T) {
+	const source = `project p "Project" {}
+
+entity_type service "Service" {
+  representation shape rect
+}
+
+layers {
+  app "Application" @1
+}
+
+relation_type calls "Calls" dependency {
+  from caller types [service] layers [app]
+  to callee types [service] layers [app]
+  label "calls"
+}
+
+entities service @app {
+  api "API"
+  database "Database"
+}
+
+relations calls {
+  api_database: api -> database
+}
+
+query all "All" {
+  select {}
+}
+
+view inventory "Inventory" inventory {
+  source query all {}
+  table {
+    rows entity_rows
+    entity_types [service]
+    column outgoing_calls {
+      source derived_count outgoing relations [calls]
+    }
+  }
+}
+`
+	sourceBytes := []byte(source)
+	request := compileRequest(sourceBytes)
+	sink := &memoryBlobSink{}
+	response, err := NewCompileDispatcher(engine.New(engine.BuildInfo{})).DispatchCompile(
+		context.Background(),
+		compileContext(t),
+		request,
+		sourceFor(request.Payload.ProjectSourceTree[0].Blob, sourceBytes),
+		sink,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Outcome != protocolcommon.OutcomeSuccess || response.Payload == nil || response.Failure != nil || len(response.Diagnostics) != 0 {
+		t.Fatalf("derived-count compile response = %+v", response)
+	}
+
+	var recipeBlob []byte
+	for _, blob := range sink.blobs {
+		if blob.Ref.MediaType == string(engineprotocol.ViewRecipeBlobRefMediaTypeValue) {
+			recipeBlob = blob.Bytes
+			break
+		}
+	}
+	if recipeBlob == nil {
+		t.Fatalf("view recipe blob was not published: %+v", sink.blobs)
+	}
+	document, err := semantic.DecodeCompiledViewRecipeDocument(recipeBlob)
+	if err != nil {
+		t.Fatalf("decode view recipe blob: %v", err)
+	}
+	columns := document.Recipe.Shape.Table.Columns
+	if len(columns) != 1 {
+		t.Fatalf("view recipe columns = %+v", columns)
+	}
+	columnSource := columns[0].Source
+	if columnSource.Kind != "derived_count" || columnSource.Direction == nil || *columnSource.Direction != "outgoing" || columnSource.RelationTypeAddresses == nil || !slices.Equal(*columnSource.RelationTypeAddresses, []semantic.RelationTypeAddress{"ldl:project:p:relation-type:calls"}) {
+		t.Fatalf("derived-count column source = %+v", columnSource)
+	}
+}
+
 func TestPrepareDispatchWorkbenchOpenListAndReadModules(t *testing.T) {
 	sourceBytes := []byte(allRecipeDeclarationsFixture)
 	compile := compileRequest(sourceBytes)

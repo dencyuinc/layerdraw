@@ -786,7 +786,7 @@ func mapCompiledTableColumnSource(input viewcompiler.TableColumnSource) semantic
 	if input.Field != "" {
 		result.Field = stringPointer(input.Field)
 	}
-	if input.ColumnAddresses != nil {
+	if len(input.ColumnAddresses) != 0 {
 		values := typedStrings[semantic.ColumnAddress](input.ColumnAddresses)
 		result.ColumnAddresses = &values
 	}
@@ -841,7 +841,7 @@ func mapTableValueType(input viewcompiler.TableValueType) (semantic.ViewTableVal
 		}
 		scalarType := semantic.ValueType(input.ScalarType)
 		result.ScalarType = &scalarType
-		if input.EnumValues != nil {
+		if len(input.EnumValues) != 0 {
 			values := sortedStrings(input.EnumValues)
 			result.EnumValues = &values
 		}
@@ -864,7 +864,7 @@ func mapTableColumnSource(input materialize.TableColumnSource) semantic.ViewTabl
 	if input.Field != "" {
 		result.Field = stringPointer(input.Field)
 	}
-	if input.ColumnAddresses != nil {
+	if len(input.ColumnAddresses) != 0 {
 		values := typedStrings[semantic.ColumnAddress](input.ColumnAddresses)
 		result.ColumnAddresses = &values
 	}
