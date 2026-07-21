@@ -976,3 +976,70 @@ func TestOpenFailureSurfacesExplicitCodeAndLogsUnderlyingCause(t *testing.T) {
 	}
 	_ = app.Shutdown(context.Background())
 }
+
+// TestRecentReopenAfterExternalIdentityChangeFailsExplicitly drives the real
+// recent-project route (create with a dialog name, app restart on the same
+// data root, external identity edit, OpenRecentProject) and requires an
+// explicit conflict instead of silently reopening the committed document.
+func TestRecentReopenAfterExternalIdentityChangeFailsExplicitly(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "QA-Test-Project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project main \"Untitled\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage := &lifecycleStorageHarness{locations: map[string]ProjectLocation{
+		"create": {Root: project, EntryPath: "document.ldl", Kind: "project", DisplayName: "QA-Test-Project"},
+	}, errs: map[string]error{}}
+	app := startLifecycleApp(t, root, project, &dialogHarness{}, storage)
+	created := app.CreateProject(context.Background(), "create")
+	if created.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("create=%+v", created)
+	}
+	// Quit like the native shell does: no explicit project close first.
+	if result := app.Shutdown(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("shutdown=%+v", result)
+	}
+	if err := os.WriteFile(filepath.Join(project, "document.ldl"), []byte("project renamedident \"QA-Test-Project\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var stages []string
+	var causes []error
+	config := testConfig(t, root, project)
+	config.Dialogs = &dialogHarness{}
+	config.ProjectStorage = storage
+	config.OpenDiagnostics = func(_ context.Context, stage string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		stages = append(stages, stage)
+		causes = append(causes, err)
+	}
+	restarted, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := restarted.Start(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("restart=%+v", result)
+	}
+	recent := restarted.RecentProjects()
+	if recent.Outcome != protocolcommon.OutcomeSuccess || len(recent.Value) != 1 || recent.Value[0].DisplayName != "QA-Test-Project" {
+		t.Fatalf("recent=%+v", recent)
+	}
+	reopened := restarted.OpenRecentProject(context.Background(), created.Value.ProjectID)
+	if reopened.Outcome != protocolcommon.OutcomeFailed || reopened.Failure == nil ||
+		reopened.Failure.Code != desktopcontract.FailureProjectConflict || reopened.Failure.Recovery != desktopcontract.RecoveryReview {
+		t.Fatalf("identity change reopen=%+v", reopened)
+	}
+	if publication, publicationErr := restarted.ProjectPublication(context.Background()); publicationErr != nil || publication.Project != nil {
+		t.Fatalf("workspace opened despite conflict: %+v err=%v", publication, publicationErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stages) == 0 || stages[len(stages)-1] != "project reload" || !errors.Is(causes[len(causes)-1], localdocument.ErrPortableIdentityChanged) {
+		t.Fatalf("diagnostics stages=%v causes=%v", stages, causes)
+	}
+	_ = restarted.Shutdown(context.Background())
+}

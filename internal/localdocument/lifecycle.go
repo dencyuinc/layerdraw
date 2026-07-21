@@ -452,6 +452,9 @@ func (h *Host) currentExternalDigest(ctx context.Context, binding documentBindin
 		if err != nil {
 			return "", err
 		}
+		if err := boundPortableIdentity(binding, candidate); err != nil {
+			return "", err
+		}
 		return candidate.Digest(), nil
 	case "container":
 		data, err := os.ReadFile(binding.Locator)
@@ -462,12 +465,27 @@ func (h *Host) currentExternalDigest(ctx context.Context, binding documentBindin
 		if err != nil {
 			return "", err
 		}
+		if err := boundPortableIdentity(binding, candidate); err != nil {
+			return "", err
+		}
 		return candidate.Digest(), nil
 	case "registry":
 		return committed.Digest(), nil
 	default:
 		return "", errors.New("unknown local source kind")
 	}
+}
+
+// boundPortableIdentity refuses to treat an external source whose portable
+// project identity diverged from the stable binding as a modification of the
+// bound document. Reopening such a source silently would hand the committed
+// document a different project underneath it; callers must surface an explicit
+// review/re-import decision instead.
+func boundPortableIdentity(binding documentBinding, candidate engineendpoint.LocalSource) error {
+	if candidate.PortableID == binding.PortableID {
+		return nil
+	}
+	return fmt.Errorf("%w: bound %q, external %q", ErrPortableIdentityChanged, binding.PortableID, candidate.PortableID)
 }
 
 // RelocateProject changes only the host-private source locator for an existing

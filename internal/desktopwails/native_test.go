@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -892,5 +894,77 @@ func TestSharedOwnerAndBlobBridgesRemainClosedAndOwned(t *testing.T) {
 	}
 	if err := owner.Shutdown(ctx); err != nil {
 		t.Fatalf("idempotent owner shutdown: %v", err)
+	}
+}
+
+// TestBridgeRecentReopenAfterIdentityEditFailsWithLoggedCause drives the real
+// packaged route end to end: native save dialog -> production storage adapter
+// and template -> Engine-committed dialog name -> app restart on the same data
+// root -> external identity edit -> FrontendBridge.OpenRecentProject. The UI
+// must receive an explicit conflict and the backend log must carry the cause.
+func TestBridgeRecentReopenAfterIdentityEditFailsWithLoggedCause(t *testing.T) {
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	base, err := NewSharedConfig(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := &nativeStub{save: filepath.Join(t.TempDir(), "QA-Test-Project")}
+	application, err := Compose(base, native, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := NewFrontendBridge(application)
+	bridge.setContext(context.Background())
+	if started := application.Start(context.Background()); started.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start=%+v", started)
+	}
+	created := bridge.CreateProjectDialog("qa-create")
+	if created.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("create=%+v", created)
+	}
+	entry := filepath.Join(native.save, "document.ldl")
+	data, err := os.ReadFile(entry)
+	if err != nil || string(data) != "project main \"QA-Test-Project\" {}\n" {
+		t.Fatalf("committed source=%q err=%v", data, err)
+	}
+	if stopped := application.Shutdown(context.Background()); stopped.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("shutdown=%+v", stopped)
+	}
+	if err := os.WriteFile(entry, []byte("project renamedident \"QA-Test-Project\" {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restartedBase, err := NewSharedConfig(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Compose(restartedBase, native, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedBridge := NewFrontendBridge(restarted)
+	restartedBridge.setContext(context.Background())
+	if started := restarted.Start(context.Background()); started.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("restart=%+v", started)
+	}
+	defer restarted.Shutdown(context.Background())
+	recent := restartedBridge.RecentProjects()
+	if recent.Outcome != protocolcommon.OutcomeSuccess || len(recent.Value) != 1 || recent.Value[0].DisplayName != "QA-Test-Project" {
+		t.Fatalf("recent=%+v", recent)
+	}
+	var logs strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	reopened := restartedBridge.OpenRecentProject(string(recent.Value[0].ProjectID))
+	log.SetOutput(previous)
+	if reopened.Outcome != protocolcommon.OutcomeFailed || reopened.Failure == nil ||
+		reopened.Failure.Code != desktopcontract.FailureProjectConflict || reopened.Failure.Recovery != desktopcontract.RecoveryReview {
+		t.Fatalf("identity change reopen=%+v", reopened)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "desktop project open failed") || !strings.Contains(logged, "portable project identity changed") {
+		t.Fatalf("open cause was not logged: %q", logged)
+	}
+	if publication, publicationErr := restartedBridge.ProjectPublication(); publicationErr != nil || publication.Project != nil {
+		t.Fatalf("workspace opened despite conflict: %+v err=%v", publication, publicationErr)
 	}
 }

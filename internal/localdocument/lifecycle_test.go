@@ -1900,3 +1900,38 @@ func TestOpenFailsExplicitlyWhenBoundPortableIdentityChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestReopenFailsExplicitlyWhenContainerPortableIdentityChanges(t *testing.T) {
+	root := t.TempDir()
+	instance := engine.New(engine.BuildInfo{})
+	archive, err := instance.WriteLayerdraw(context.Background(), engine.LayerdrawWriteInput{CompileInput: projectInput("project p \"P\" {}\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "document.layerdraw")
+	if err := os.WriteFile(path, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	opened, err := host.OpenContainer(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentID := opened.Session.Open.Session.Scope.DocumentID
+	if err := host.Close(context.Background(), opened.Session); err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := instance.WriteLayerdraw(context.Background(), engine.LayerdrawWriteInput{CompileInput: projectInput("project replaced \"Replaced\" {}\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, replaced, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.OpenDocument(context.Background(), documentID); !errors.Is(err, ErrPortableIdentityChanged) {
+		t.Fatalf("container identity change error=%v", err)
+	}
+	if err := host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
