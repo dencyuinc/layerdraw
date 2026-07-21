@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
@@ -60,5 +61,102 @@ func TestCoordinatorCommitInitialRegistryTemplateRejectsExistingHead(t *testing.
 	result, rejection := rt.CommitInitialRegistryTemplate(context.Background(), initialRegistryCommitFixture(host))
 	if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusRejected || result.OperationResult.ConflictEvidence == nil || host.initialPublishCalls != 0 {
 		t.Fatalf("result=%+v rejection=%v publishes=%d", result, rejection, host.initialPublishCalls)
+	}
+}
+
+func TestInitialRegistryCommitFaultMatrixIsClosedAndNeverDoublePublishes(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*coordinatorHost, *InitialRegistryCommitInput)
+	}{
+		{name: "malformed baseline", configure: func(_ *coordinatorHost, in *InitialRegistryCommitInput) { in.BaselineRevision.DocumentID = "other" }},
+		{name: "scope unavailable", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.scopeErr = errors.New("scope unavailable") }},
+		{name: "operation journal read", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.recoveryGetErrOnCall = 1 }},
+		{name: "idempotency journal read", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.recoveryGetErrOnCall = 2 }},
+		{name: "reservation transport", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) {
+			h.createPendingErr = errors.New("journal unavailable")
+		}},
+		{name: "conflicting reservation", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.createPendingConflictRecord = true }},
+		{name: "invalid reservation", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) {
+			h.mutateCreateRecord = func(record *port.RecoveryRecord) { record.Status.Phase = runtimeprotocol.RecoveryPhaseStaged }
+		}},
+		{name: "prepare transport", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) {
+			h.registryPrepareErr = errors.New("Engine unavailable")
+		}},
+		{name: "invalid prepared closure", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.invalidRegistryPrepared = true }},
+		{name: "head transport", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.failHeadOnCall = 1 }},
+		{name: "abandon transport", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) {
+			h.registryPrepareErr, h.abandonErr = errors.New("Engine unavailable"), errors.New("journal abandon unavailable")
+		}},
+		{name: "grant unavailable", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.failGrantOnCall = 1 }},
+		{name: "apply denied", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.denyApply = true }},
+		{name: "pending transition", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) {
+			h.advanceErrFrom = runtimeprotocol.RecoveryPhasePending
+		}},
+		{name: "publication fence", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) {
+			h.publicationFenceErr = errors.New("fence unavailable")
+		}},
+		{name: "publication grant unavailable", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.failGrantOnCall = 2 }},
+		{name: "publication denied", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.denyPublish = true }},
+		{name: "publication decision changed", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.mismatchPublish = true }},
+		{name: "staged transition", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) {
+			h.advanceErrFrom = runtimeprotocol.RecoveryPhaseStaged
+		}},
+		{name: "publication unavailable", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) {
+			h.initialPublishErr = errors.New("publication unavailable")
+		}},
+		{name: "invalid publication", configure: func(h *coordinatorHost, _ *InitialRegistryCommitInput) { h.invalidInitialPublish = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			host, rt := newCoordinatorFixture(t)
+			host.mu.Lock()
+			host.head = port.DocumentHead{}
+			host.mu.Unlock()
+			input := initialRegistryCommitFixture(host)
+			test.configure(host, &input)
+			result, rejection := rt.CommitInitialRegistryTemplate(context.Background(), input)
+			if rejection == nil && result.OperationResult.Status == "" {
+				t.Fatalf("fault lost terminal meaning: result=%+v rejection=%v", result, rejection)
+			}
+			if host.initialPublishCalls > 1 {
+				t.Fatalf("initial publication repeated %d times", host.initialPublishCalls)
+			}
+		})
+	}
+}
+
+func TestInitialRegistryPostPublicationFaultsRemainCommittedStateStale(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		configure    func(*coordinatorHost)
+		wantRejected bool
+	}{
+		{name: "history", configure: func(h *coordinatorHost) { h.historyErr = errors.New("history unavailable") }},
+		{name: "state", configure: func(h *coordinatorHost) { h.stateHeadErr = errors.New("state unavailable") }, wantRejected: true},
+		{name: "published transition", configure: func(h *coordinatorHost) { h.advanceErrFrom = runtimeprotocol.RecoveryPhasePublished }, wantRejected: true},
+		{name: "state transition", configure: func(h *coordinatorHost) { h.advanceErrFrom = runtimeprotocol.RecoveryPhaseStatePending }, wantRejected: true},
+		{name: "audit transition", configure: func(h *coordinatorHost) { h.advanceErrFrom = runtimeprotocol.RecoveryPhaseAuditPending }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, rt := newCoordinatorFixture(t)
+			host.mu.Lock()
+			host.head = port.DocumentHead{}
+			host.mu.Unlock()
+			test.configure(host)
+			result, rejection := rt.CommitInitialRegistryTemplate(context.Background(), initialRegistryCommitFixture(host))
+			if test.wantRejected {
+				if rejection == nil || host.initialPublishCalls != 1 {
+					t.Fatalf("result=%+v rejection=%v publishes=%d", result, rejection, host.initialPublishCalls)
+				}
+				return
+			}
+			if rejection != nil {
+				t.Fatal(rejection)
+			}
+			if result.OperationResult.CommittedRevision == nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommittedStateStale {
+				t.Fatalf("result=%+v", result)
+			}
+		})
 	}
 }
