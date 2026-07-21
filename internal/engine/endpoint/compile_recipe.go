@@ -217,11 +217,11 @@ func mapQueryRecipe(input materialize.Query, compiled engine.CompiledQueryRecipe
 	}
 	result.Description = cloneStringPointer(input.Description)
 	var err error
-	result.Where, err = mapRecipePredicate(input.Where)
+	result.Where, err = mapRecipePredicate(compiled.Where)
 	if err != nil {
 		return semantic.QueryRecipe{}, err
 	}
-	result.RelationWhere, err = mapRecipePredicate(input.RelationWhere)
+	result.RelationWhere, err = mapRecipePredicate(compiled.RelationWhere)
 	if err != nil {
 		return semantic.QueryRecipe{}, err
 	}
@@ -235,16 +235,16 @@ func mapQueryRecipe(input materialize.Query, compiled engine.CompiledQueryRecipe
 		}
 		result.Parameters[i] = mapped
 	}
-	if input.Traverse != nil {
-		minDepth, err := nonNegativeSafe(input.Traverse.MinDepth)
+	if compiled.Traversal != nil {
+		minDepth, err := nonNegativeSafe(compiled.Traversal.MinDepth)
 		if err != nil {
 			return semantic.QueryRecipe{}, err
 		}
-		maxDepth, err := nonNegativeSafe(input.Traverse.MaxDepth)
+		maxDepth, err := nonNegativeSafe(compiled.Traversal.MaxDepth)
 		if err != nil {
 			return semantic.QueryRecipe{}, err
 		}
-		result.Traverse = &semantic.QueryRecipeTraversal{Direction: string(input.Traverse.Direction), MinDepth: minDepth, MaxDepth: maxDepth, CyclePolicy: string(input.Traverse.CyclePolicy), RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](input.Traverse.RelationTypeAddresses)}
+		result.Traverse = &semantic.QueryRecipeTraversal{Direction: string(compiled.Traversal.Direction), MinDepth: minDepth, MaxDepth: maxDepth, CyclePolicy: string(compiled.Traversal.CyclePolicy), RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](compiled.Traversal.RelationTypeAddresses)}
 	}
 	return result, nil
 }
@@ -301,7 +301,7 @@ func mapQuerySelect(input materialize.QuerySelect) semantic.QueryRecipeSelect {
 	return semantic.QueryRecipeSelect{LayerAddresses: typedStringSlicePointer[semantic.LayerAddress](input.LayerAddresses), EntityTypeAddresses: typedStringSlicePointer[semantic.EntityTypeAddress](input.EntityTypeAddresses), RelationTypeAddresses: typedStringSlicePointer[semantic.RelationTypeAddress](input.RelationTypeAddresses), RootAddresses: typedStringSlicePointer[semantic.EntityAddress](input.RootAddresses)}
 }
 
-func mapRecipePredicate(input materialize.Predicate) (semantic.RecipePredicate, error) {
+func mapRecipePredicate(input query.Predicate) (semantic.RecipePredicate, error) {
 	result := semantic.RecipePredicate{Kind: string(input.Kind)}
 	switch input.Kind {
 	case query.PredicateAll, query.PredicateAny:
@@ -326,6 +326,11 @@ func mapRecipePredicate(input materialize.Predicate) (semantic.RecipePredicate, 
 	case query.PredicateField:
 		result.Field = stringPointer(input.Field)
 		result.Operator = stringPointer(string(input.Operator))
+		operand, err := mapRecipeOperandType(input.OperandType)
+		if err != nil {
+			return semantic.RecipePredicate{}, err
+		}
+		result.OperandType = &operand
 		value, err := mapOptionalPredicateValue(input.Value)
 		if err != nil {
 			return semantic.RecipePredicate{}, err
@@ -334,16 +339,21 @@ func mapRecipePredicate(input materialize.Predicate) (semantic.RecipePredicate, 
 	case query.PredicateState:
 		result.FieldPath = typedStringPointer[semantic.StateFieldPath](string(input.FieldPath))
 		result.Operator = stringPointer(string(input.Operator))
+		operand, err := mapRecipeOperandType(input.OperandType)
+		if err != nil {
+			return semantic.RecipePredicate{}, err
+		}
+		result.OperandType = &operand
 		value, err := mapOptionalPredicateValue(input.Value)
 		if err != nil {
 			return semantic.RecipePredicate{}, err
 		}
 		result.Value = value
 	case query.PredicateRows:
-		if input.RowPredicate == nil {
+		if input.Row == nil {
 			return semantic.RecipePredicate{}, fmt.Errorf("rows predicate lacks row predicate")
 		}
-		predicate, err := mapRowPredicate(*input.RowPredicate)
+		predicate, err := mapRowPredicate(*input.Row)
 		if err != nil {
 			return semantic.RecipePredicate{}, err
 		}
@@ -357,7 +367,7 @@ func mapRecipePredicate(input materialize.Predicate) (semantic.RecipePredicate, 
 	return result, nil
 }
 
-func mapRowPredicate(input materialize.RowPredicate) (semantic.RecipeRowPredicate, error) {
+func mapRowPredicate(input query.RowPredicate) (semantic.RecipeRowPredicate, error) {
 	result := semantic.RecipeRowPredicate{Kind: string(input.Kind)}
 	switch input.Kind {
 	case query.PredicateAll, query.PredicateAny:
@@ -383,6 +393,11 @@ func mapRowPredicate(input materialize.RowPredicate) (semantic.RecipeRowPredicat
 		addresses := typedStrings[semantic.ColumnAddress](input.ColumnAddresses)
 		result.ColumnAddresses = &addresses
 		result.Operator = stringPointer(string(input.Operator))
+		operand, err := mapRecipeOperandType(input.OperandType)
+		if err != nil {
+			return semantic.RecipeRowPredicate{}, err
+		}
+		result.OperandType = &operand
 		value, err := mapOptionalPredicateValue(input.Value)
 		if err != nil {
 			return semantic.RecipeRowPredicate{}, err
@@ -391,6 +406,11 @@ func mapRowPredicate(input materialize.RowPredicate) (semantic.RecipeRowPredicat
 	case query.PredicateState:
 		result.FieldPath = typedStringPointer[semantic.StateFieldPath](string(input.FieldPath))
 		result.Operator = stringPointer(string(input.Operator))
+		operand, err := mapRecipeOperandType(input.OperandType)
+		if err != nil {
+			return semantic.RecipeRowPredicate{}, err
+		}
+		result.OperandType = &operand
 		value, err := mapOptionalPredicateValue(input.Value)
 		if err != nil {
 			return semantic.RecipeRowPredicate{}, err
@@ -402,7 +422,21 @@ func mapRowPredicate(input materialize.RowPredicate) (semantic.RecipeRowPredicat
 	return result, nil
 }
 
-func mapOptionalPredicateValue(input *materialize.PredicateValue) (*semantic.RecipePredicateValue, error) {
+func mapRecipeOperandType(input query.OperandType) (semantic.RecipeOperandType, error) {
+	result := semantic.RecipeOperandType{Kind: string(input.Kind)}
+	switch input.Kind {
+	case query.OperandAddress:
+		result.AddressKind = typedStringPointer[semantic.SubjectKind](strings.ReplaceAll(string(input.AddressKind), "-", "_"))
+	case query.OperandScalar:
+		result.ScalarType = typedStringPointer[semantic.ValueType](string(input.ScalarType))
+	case query.OperandStringSet:
+	default:
+		return semantic.RecipeOperandType{}, fmt.Errorf("unsupported Query operand type")
+	}
+	return result, nil
+}
+
+func mapOptionalPredicateValue(input *query.PredicateValue) (*semantic.RecipePredicateValue, error) {
 	if input == nil {
 		return nil, nil
 	}
@@ -417,7 +451,7 @@ func mapOptionalPredicateValue(input *materialize.PredicateValue) (*semantic.Rec
 	}
 	switch {
 	case input.Scalar != nil:
-		value, err := mapRecipeScalar(*input.Scalar)
+		value, err := mapRecipeScalar(materialize.Scalar{Type: input.Scalar.Type, String: input.Scalar.String, Int: input.Scalar.Int, Float: input.Scalar.Float, Bool: input.Scalar.Bool})
 		if err != nil {
 			return nil, err
 		}
@@ -429,7 +463,7 @@ func mapOptionalPredicateValue(input *materialize.PredicateValue) (*semantic.Rec
 	case input.Scalars != nil:
 		values := make([]semantic.RecipeScalar, len(input.Scalars))
 		for i, item := range input.Scalars {
-			value, err := mapRecipeScalar(item)
+			value, err := mapRecipeScalar(materialize.Scalar{Type: item.Type, String: item.String, Int: item.Int, Float: item.Float, Bool: item.Bool})
 			if err != nil {
 				return nil, err
 			}

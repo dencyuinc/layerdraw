@@ -162,6 +162,60 @@ func TestDispatchCompileProjectSuccessPublishesExactOpaqueArtifacts(t *testing.T
 	}
 }
 
+func TestDispatchCompileProjectQueryClausesProduceValidRecipeBlob(t *testing.T) {
+	sourceBytes := []byte(strings.Replace(allRecipeDeclarationsFixture, `  result [seed_entities, induced_relations]
+`, `  where all {
+    field display_name exists
+  }
+  relation_where all {
+    field type exists
+  }
+  traverse outgoing 0..1 visit_once relations [link]
+  result [seed_entities, traversed_entities, path_relations, induced_relations]
+`, 1))
+	request := compileRequest(sourceBytes)
+	sink := &memoryBlobSink{}
+	response, err := NewCompileDispatcher(engine.New(engine.BuildInfo{})).DispatchCompile(
+		context.Background(),
+		compileContext(t),
+		request,
+		sourceFor(request.Payload.ProjectSourceTree[0].Blob, sourceBytes),
+		sink,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Outcome != protocolcommon.OutcomeSuccess || response.Payload == nil || response.Failure != nil {
+		t.Fatalf("query compile response = %+v", response)
+	}
+
+	var recipeBlob []byte
+	for _, blob := range sink.blobs {
+		if blob.Ref.MediaType == string(engineprotocol.QueryRecipeBlobRefMediaTypeValue) {
+			recipeBlob = blob.Bytes
+			break
+		}
+	}
+	if recipeBlob == nil {
+		t.Fatalf("query recipe blob was not published: %+v", sink.blobs)
+	}
+	document, err := semantic.DecodeCompiledQueryRecipeDocument(recipeBlob)
+	if err != nil {
+		t.Fatalf("decode query recipe blob: %v", err)
+	}
+	where := (*document.Recipe.Where.Children)[0]
+	relationWhere := (*document.Recipe.RelationWhere.Children)[0]
+	if where.OperandType == nil || where.OperandType.Kind != "scalar" || where.OperandType.ScalarType == nil || *where.OperandType.ScalarType != "string" {
+		t.Fatalf("where operand type = %+v", where.OperandType)
+	}
+	if relationWhere.OperandType == nil || relationWhere.OperandType.Kind != "address" || relationWhere.OperandType.AddressKind == nil || *relationWhere.OperandType.AddressKind != "relation_type" {
+		t.Fatalf("relation_where operand type = %+v", relationWhere.OperandType)
+	}
+	if document.Recipe.Traverse == nil || document.Recipe.Traverse.Direction != "outgoing" || document.Recipe.Traverse.RelationTypeAddresses == nil || len(*document.Recipe.Traverse.RelationTypeAddresses) != 1 {
+		t.Fatalf("traverse = %+v", document.Recipe.Traverse)
+	}
+}
+
 func TestPrepareDispatchWorkbenchOpenListAndReadModules(t *testing.T) {
 	sourceBytes := []byte(allRecipeDeclarationsFixture)
 	compile := compileRequest(sourceBytes)
