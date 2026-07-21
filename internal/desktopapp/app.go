@@ -134,6 +134,7 @@ type Application struct {
 	config Config
 
 	mu                  sync.Mutex
+	projectOpen         sync.Mutex
 	shutdown            sync.Mutex
 	state               desktopcontract.LifecycleState
 	host                *localdocument.Host

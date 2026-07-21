@@ -25,6 +25,12 @@ func (a *Application) OpenProject(ctx context.Context, selectionToken string) de
 }
 
 func (a *Application) openSelected(ctx context.Context, component desktopcontract.ComponentID, token string, resolve func(context.Context, string) (ProjectLocation, error)) (result desktopcontract.Result[ProjectOpenResult]) {
+	// Opening a project crosses the storage, Runtime, native-search, and
+	// lifecycle owners. Serialize that publication boundary so concurrent UI
+	// or association requests for the same project cannot race native index
+	// creation before projectLifecycle can turn the later request into Focused.
+	a.projectOpen.Lock()
+	defer a.projectOpen.Unlock()
 	done, host, requestFailure := a.beginHost(component)
 	if requestFailure != nil {
 		return desktopcontract.Result[ProjectOpenResult]{Outcome: protocolcommon.OutcomeFailed, Failure: requestFailure}
