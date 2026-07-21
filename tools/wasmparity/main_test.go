@@ -32,12 +32,15 @@ func TestGeneratedParityCorpusIsCurrentAndDeterministic(t *testing.T) {
 		"single_module_project", "multi_module_project", "installed_pack_project", "root_pack", "asset_project",
 		"all_declarations_project", "deterministic_rejection", "resource_limit_rejection", "representative_large_graph", "cancellation",
 	}
+	wantNames = slices.Insert(wantNames, len(wantNames)-1,
+		"query_where", "query_relation_where", "query_traverse", "query_where_relation_where_traverse",
+	)
 	gotNames := make([]string, len(first.Cases))
 	for index, test := range first.Cases {
 		gotNames[index] = test.Name
 	}
 	if first.SchemaVersion != 1 || first.EngineReleaseVariable != engineReleaseVariable ||
-		!reflect.DeepEqual(gotNames, wantNames) || len(first.RequiredFeatures) != 10 || len(first.Normalization) != 3 {
+		!reflect.DeepEqual(gotNames, wantNames) || len(first.RequiredFeatures) != 13 || len(first.Normalization) != 3 {
 		t.Fatalf("incomplete parity corpus: names=%v features=%v normalization=%v", gotNames, first.RequiredFeatures, first.Normalization)
 	}
 	for _, test := range first.Cases {
