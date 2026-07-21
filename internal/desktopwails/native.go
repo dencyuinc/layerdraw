@@ -183,10 +183,30 @@ func (a *ProjectStorageAdapter) Create(_ context.Context, token string) (desktop
 	if strings.ToLower(filepath.Ext(path)) != ".ldl" {
 		return desktopapp.ProjectLocation{}, errors.New("project entry must be LDL")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	// A Desktop-created project owns a dedicated source-tree root. Treating the
+	// save panel's parent directory as the root makes unrelated sibling LDL
+	// files part of the project (for example every LDL in Downloads), and also
+	// violates the canonical GUI project layout.
+	root := strings.TrimSuffix(path, filepath.Ext(path))
+	if root == "" || root == filepath.Dir(root) {
+		return desktopapp.ProjectLocation{}, errors.New("project root is invalid")
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(root)
+		}
+	}()
+	for _, directory := range []string{"schema/entity_types", "schema/relation_types", "layers", "views", "references", "pack", "assets"} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(directory)), 0o700); err != nil {
+			return desktopapp.ProjectLocation{}, err
+		}
+	}
+	entry := filepath.Join(root, "document.ldl")
+	file, err := os.OpenFile(entry, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
@@ -200,7 +220,8 @@ func (a *ProjectStorageAdapter) Create(_ context.Context, token string) (desktop
 	if err != nil {
 		return desktopapp.ProjectLocation{}, err
 	}
-	return desktopapp.ProjectLocation{Root: filepath.Dir(path), EntryPath: filepath.Base(path), Kind: "project"}, nil
+	committed = true
+	return desktopapp.ProjectLocation{Root: root, EntryPath: "document.ldl", Kind: "project"}, nil
 }
 
 func (a *ProjectStorageAdapter) Open(_ context.Context, token string) (desktopapp.ProjectLocation, error) {

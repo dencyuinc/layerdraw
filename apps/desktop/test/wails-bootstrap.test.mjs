@@ -2,8 +2,21 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDesktopWailsComposition, createDesktopWailsLifecycle, createUnavailableViewer, desktopLifecycleEvent } from "../dist/index.js";
+import { createDesktopWailsComposition, createDesktopWailsLifecycle, createUnavailableViewer, desktopLifecycleEvent, waitForDesktopApplicationReady } from "../dist/index.js";
 import { wailsEngineBindingDescriptors, wailsRuntimeBindingDescriptors } from "@layerdraw/engine-client/wails";
+
+test("Wails bootstrap waits for native startup before invoking generated bindings", async () => {
+  const phases = ["stopped", "starting", "ready"];
+  let calls = 0;
+  await waitForDesktopApplicationReady({ async State() { calls += 1; return phases.shift() ?? "ready"; } }, { timeoutMs: 100, pollIntervalMs: 0 });
+  assert.equal(calls, 3);
+  let transientCalls = 0;
+  await waitForDesktopApplicationReady({ async State() { transientCalls += 1; if (transientCalls === 1) throw new Error("binding unavailable"); return "ready"; } }, { timeoutMs: 100, pollIntervalMs: 0 });
+  assert.equal(transientCalls, 2);
+  await assert.rejects(waitForDesktopApplicationReady({ async State() { return "recovery"; } }, { timeoutMs: 100, pollIntervalMs: 0 }), /failed to become ready/);
+  await assert.rejects(waitForDesktopApplicationReady({ async State() { return "stopped"; } }, { timeoutMs: 0, pollIntervalMs: 0 }), /timed out/);
+  await assert.rejects(waitForDesktopApplicationReady({ async State() { return "ready"; } }, { timeoutMs: -1 }), /options are invalid/);
+});
 
 test("Wails bootstrap derives only lifecycle framing and fails closed before a project publication", async () => {
   let eventName;
@@ -46,14 +59,20 @@ test("project-owner actions use typed publications instead of frontend reconstru
   const calls = [];
   const project = { project_id: "project", session_generation: 7, display_name: "Project", authoritative_revision_token: "revision", authoritative_revision_label: "r1", editor: {}, editor_session: {}, views: [{ address: "view:main", label: "Main", shape: "diagram" }], selected_view_address: "view:main", access: { status: "allowed", label: "Allowed" }, storage: { kind: "local", status: "connected", label: "Local" }, persistence: "clean" };
   const publication = { sequence: 3, phase: "ready", capabilities: {}, project };
+  let publicationCalls = 0;
+  const eventListeners = new Map();
   const owner = {
-    async ProjectPublication() { return publication; },
+    async ProjectPublication() { publicationCalls += 1; return publication; },
     async SelectProjectView(input) { calls.push(["select", input]); return { outcome: "success", publication: { ...publication, sequence: 4 } }; },
     async ShowProjectRecoveryOptions(input) { calls.push(["recovery", input]); return { outcome: "success", publication }; },
     async DisconnectProjectExternal(input) { calls.push(["disconnect", input]); return { outcome: "success", publication }; },
     CreateProjectViewer() { return createUnavailableViewer(); },
   };
-  const lifecycle = await createDesktopWailsLifecycle({ async State() { return "ready"; } }, { EventsOn() {}, EventsOff() {} }, owner);
+  const lifecycle = await createDesktopWailsLifecycle({ async State() { return "ready"; } }, { EventsOn(name, listener) { eventListeners.set(name, listener); }, EventsOff() {} }, owner);
+  eventListeners.get("layerdraw:desktop-project")();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(publicationCalls, 2);
+  assert.equal(lifecycle.getSnapshot().sequence, 4);
   await lifecycle.selectView("view:main", new AbortController().signal);
   await lifecycle.showRecoveryOptions(new AbortController().signal);
   await lifecycle.disconnectExternal(new AbortController().signal);

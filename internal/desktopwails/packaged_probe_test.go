@@ -363,6 +363,44 @@ func TestNativeCommandInvocationUsesCurrentBackendGeneration(t *testing.T) {
 	invokeNativeCommand(context.Background(), binding.shell, desktopcontract.CommandSaveProject, desktopcontract.CommandSourceMenu)
 }
 
+// erroringCommandRouter always fails Status, simulating a native command
+// backend that is unreachable. invokeNativeCommand must treat that as a
+// non-actionable menu invocation rather than panicking or invoking a stale
+// command table.
+type erroringCommandRouter struct{}
+
+func (erroringCommandRouter) Status(context.Context) ([]desktopcontract.CommandStatus, error) {
+	return nil, errors.New("command backend unavailable")
+}
+
+func (erroringCommandRouter) Route(context.Context, desktopcontract.CommandInvocation) (desktopcontract.CommandStatus, error) {
+	return desktopcontract.CommandStatus{}, errors.New("command backend unavailable")
+}
+
+func TestInvokeNativeCommandHandlesUnavailableStatusesAndUnknownCommands(t *testing.T) {
+	runtime := &fakeWailsShellRuntime{
+		screens: []wailsruntime.Screen{{IsPrimary: true, Width: 1920, Height: 1080}},
+		width:   1280, height: 800, emitted: make(chan []any, 1),
+	}
+	bridge := newWailsShellBridge(runtime.calls())
+	native, err := desktopapp.NewPlatformNativeShell(desktopapp.PlatformNativeShellConfig{
+		Platform: CurrentPlatform(), StateRoot: t.TempDir(), Runtime: bridge,
+		Commands: erroringCommandRouter{}, CrashRecovery: probeCrashRecovery{},
+		Errors: wailsErrorSurface{runtime: &nativeStub{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invokeNativeCommand(context.Background(), native.Shell, desktopcontract.CommandSettings, desktopcontract.CommandSourceMenu) {
+		t.Fatal("invocation succeeded despite an unavailable command backend")
+	}
+
+	binding, _, _, _ := newBindingFixture(t, nil)
+	if invokeNativeCommand(context.Background(), binding.shell, desktopcontract.CommandID("desktop.unknown"), desktopcontract.CommandSourceMenu) {
+		t.Fatal("invocation succeeded for a command absent from the status table")
+	}
+}
+
 func TestAssociatedPathIsConsumedInsideTrustedProjectLifecycle(t *testing.T) {
 	root := t.TempDir()
 	base, err := NewSharedConfig(filepath.Join(root, "state"))

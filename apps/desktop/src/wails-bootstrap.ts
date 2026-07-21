@@ -11,6 +11,7 @@ import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "./wails
 import type { DesktopLibraryFeature, DesktopProjectOwnerBinding, DesktopRegistryHostBinding, DesktopReviewFeature, DesktopReviewHostBinding } from "./wails-owner.js";
 
 export const desktopLifecycleEvent = "layerdraw:desktop-lifecycle";
+export const desktopProjectEvent = "layerdraw:desktop-project";
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
@@ -45,6 +46,7 @@ export interface DesktopWailsMCPBinding {
 export interface DesktopWailsRuntimeBinding {
   EventsOn(name: string, listener: (event: unknown) => void): void;
   EventsOff(name: string): void;
+  LogError?(message: string): void;
 }
 
 export interface DesktopWailsOwnerBindings {
@@ -105,6 +107,30 @@ function eventPhase(value: unknown): DesktopLifecyclePhase {
 }
 
 const unavailable: DesktopFeatureAvailability = Object.freeze({ status: "unavailable", reason: "host_disabled" });
+
+export async function waitForDesktopApplicationReady(
+  application: Pick<DesktopWailsApplicationBinding, "State">,
+  options: Readonly<{ timeoutMs?: number; pollIntervalMs?: number }> = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 10;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || !Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 0) {
+    throw new Error("Desktop readiness options are invalid");
+  }
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const phase = lifecyclePhase(await application.State());
+      if (phase === "ready") return;
+      if (phase === "recovery" || phase === "draining") throw new Error("Desktop backend failed to become ready");
+    } catch (error) {
+      if (error instanceof Error && error.message === "Desktop backend failed to become ready") throw error;
+    }
+    if (Date.now() >= deadline) throw new Error("Desktop backend readiness timed out");
+    await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
+
 function unavailableCapabilities(): Readonly<Record<CapabilityID, DesktopFeatureAvailability>> {
   return Object.freeze({
     "desktop.project": unavailable,
@@ -121,12 +147,13 @@ export async function createDesktopWailsLifecycle(
   runtime: DesktopWailsRuntimeBinding,
   owner?: DesktopProjectOwnerBinding,
 ): Promise<RefreshableDesktopLifecycle> {
-  let sequence = 0;
   const owned = owner === undefined ? undefined : await owner.ProjectPublication();
+  let sequence = owned?.sequence ?? 0;
   let snapshot: DesktopLifecycleSnapshot = owned ?? Object.freeze({ sequence, phase: lifecyclePhase(await application.State()), capabilities: unavailableCapabilities() });
   const listeners = new Set<() => void>();
   const publish = (next: DesktopLifecycleSnapshot): void => {
-    snapshot = Object.freeze({ ...next, sequence: ++sequence });
+    sequence = Math.max(sequence + 1, next.sequence);
+    snapshot = Object.freeze({ ...next, sequence });
     for (const listener of [...listeners]) listener();
   };
   const failUnavailable = (code: "desktop.selection_failed" | "desktop.lifecycle_failed"): void => {
@@ -146,6 +173,14 @@ export async function createDesktopWailsLifecycle(
   };
   const onLifecycle = (event: unknown): void => publish({ ...snapshot, phase: eventPhase(event) });
   runtime.EventsOn(desktopLifecycleEvent, onLifecycle);
+  if (owner !== undefined) {
+    runtime.EventsOn(desktopProjectEvent, () => {
+      void owner.ProjectPublication().then(publish, (error: unknown) => {
+        runtime.LogError?.(`Desktop project publication failed: ${error instanceof Error ? `${error.name}: ${error.message}` : "unknown error"}`);
+        failUnavailable("desktop.lifecycle_failed");
+      });
+    });
+  }
   return Object.freeze({
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -173,7 +208,10 @@ export async function createDesktopWailsComposition(
     revokeConnection: (connectionID: string) => mcpBinding.RevokeMCPConnection(connectionID),
   });
 	const refreshAfterOpen = async (result: Awaited<ReturnType<DesktopWailsApplicationBinding["CreateProjectDialog"]>>) => {
-		if (result.outcome === "success") await lifecycle.refreshPublication();
+		if (result.outcome === "success") {
+			await lifecycle.refreshPublication();
+			if (lifecycle.getSnapshot().project === undefined) throw new Error("Desktop project publication remained empty after a successful open");
+		}
 		return result;
 	};
   const projectDialogs: DesktopProjectDialogPort = Object.freeze({ create: async (id: string) => refreshAfterOpen(await application.CreateProjectDialog(id)), open: async (id: string) => refreshAfterOpen(await application.OpenProjectDialog(id)), recent: () => application.RecentProjects() });

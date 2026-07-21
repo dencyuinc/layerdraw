@@ -5,10 +5,11 @@ import {
   createElement,
   useEffect,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopShellFailure } from "./contracts.js";
+import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopShellFailure } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
 import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
@@ -53,6 +54,7 @@ export interface DesktopShellProps {
   readonly libraryAvailability?: DesktopFeatureAvailability;
   readonly reviewAvailability?: DesktopFeatureAvailability;
   readonly mcp?: DesktopMCPPort;
+  readonly projectDialogs?: DesktopProjectDialogPort;
   readonly labels?: DesktopShellLabels;
 }
 
@@ -60,9 +62,12 @@ function statusChip(kind: string, text: string): ReactNode {
   return createElement("span", { className: "ld-desktop-chip", "data-status": kind }, text);
 }
 
-export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, library, libraryAvailability, reviewAvailability, mcp, labels: suppliedLabels = labels }: DesktopShellProps): ReactNode {
+export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, library, libraryAvailability, reviewAvailability, mcp, projectDialogs, labels: suppliedLabels = labels }: DesktopShellProps): ReactNode {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const heading = useRef<HTMLHeadingElement>(null);
+  const dialogSequence = useRef(0);
+  const [dialogPending, setDialogPending] = useState<"create" | "open">();
+  const [dialogFailure, setDialogFailure] = useState(false);
   const project = state.lifecycle.project;
   const capability = state.lifecycle.capabilities[viewSelectionCapability];
   const viewSelectionAvailable = capability?.status === "available";
@@ -74,6 +79,15 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [project?.project_id, project?.selected_view_address]);
 
   const failure = state.failure === undefined ? null : suppliedLabels.failure[state.failure.message_key];
+  const runProjectDialog = (kind: "create" | "open"): void => {
+    if (projectDialogs === undefined || dialogPending !== undefined) return;
+    setDialogPending(kind);
+    setDialogFailure(false);
+    const requestID = `desktop-shell-${kind}-${++dialogSequence.current}`;
+    void projectDialogs[kind](requestID).then((result) => {
+      if (result.outcome === "failed" || result.outcome === "rejected") setDialogFailure(true);
+    }, () => setDialogFailure(true)).finally(() => setDialogPending(undefined));
+  };
   if (state.lifecycle.phase === "starting") return createElement("main", { className: "ld-desktop-shell", "aria-label": suppliedLabels.application }, createElement("p", { role: "status", "aria-live": "polite" }, "Starting LayerDraw…"));
   if (state.lifecycle.phase === "recovery") return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application },
     createElement("h1", null, suppliedLabels.application), createElement("p", { role: "alert" }, suppliedLabels.recovery),
@@ -84,7 +98,11 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     createElement("ul", null,
       libraryAvailability === undefined ? null : createElement("li", { "data-status": libraryAvailability.status }, `Library: ${libraryAvailability.status}`),
       reviewAvailability === undefined ? null : createElement("li", { "data-status": reviewAvailability.status }, `Review: ${reviewAvailability.status}`)));
-  if (project === undefined) return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("h1", null, suppliedLabels.application), createElement("p", null, suppliedLabels.noProject), featureStatus, library === undefined ? null : createElement(DesktopLibraryPanel, { library }));
+  if (project === undefined) return createElement("main", { className: "ld-desktop-shell ld-desktop-centered", "aria-label": suppliedLabels.application }, createElement("h1", null, suppliedLabels.application), createElement("p", null, suppliedLabels.noProject),
+    projectDialogs === undefined ? null : createElement("div", { className: "ld-desktop-project-actions", "aria-label": "Project actions" },
+      createElement("button", { type: "button", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, dialogPending === "create" ? "Creating…" : "New project"),
+      createElement("button", { type: "button", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? "Opening…" : "Open project")),
+    failure === null && !dialogFailure ? null : createElement("div", { role: "alert", className: "ld-desktop-notice" }, failure ?? "The project could not be opened."), featureStatus, library === undefined ? null : createElement(DesktopLibraryPanel, { library }));
 
   const viewList = createElement("ul", null, project.views.map((view) =>
     createElement("li", { key: view.address },

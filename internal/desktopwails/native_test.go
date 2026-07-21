@@ -86,13 +86,35 @@ func TestCreateProjectUsesExclusiveFileAndValidSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(location.Root, location.EntryPath))
-	if err != nil || string(data) != "project project \"Untitled\" {}\n" {
+	if err != nil || string(data) != "project project \"Untitled\" {}\n" || location.Root != native.save || location.EntryPath != "document.ldl" {
 		t.Fatalf("created source: %q %v", data, err)
 	}
-	native.save = filepath.Join(location.Root, location.EntryPath)
+	for _, directory := range []string{"schema/entity_types", "schema/relation_types", "layers", "views", "references", "pack", "assets"} {
+		if info, statErr := os.Stat(filepath.Join(location.Root, filepath.FromSlash(directory))); statErr != nil || !info.IsDir() {
+			t.Fatalf("created project directory %q: %v", directory, statErr)
+		}
+	}
+	native.save = location.Root + ".ldl"
 	second := NewDialogAdapter(native, vault).Select(context.Background(), desktopcontract.DialogRequest{Kind: desktopcontract.DialogCreateProject, RequestID: "create-2"})
 	if _, err := NewProjectStorageAdapter(vault).Create(context.Background(), second.Value.Token); err == nil {
 		t.Fatal("existing project was overwritten")
+	}
+}
+
+// TestCreateProjectRejectsRootlessEntryPath exercises the guard that stops a
+// save-panel selection from collapsing the dedicated project source-tree root
+// to the filesystem root itself (for example, a bare ".ldl" selection at "/").
+// The check must fire before any directory is created on disk.
+func TestCreateProjectRejectsRootlessEntryPath(t *testing.T) {
+	t.Parallel()
+	native := &nativeStub{save: "/.ldl"}
+	vault := newSelectionVault()
+	selection := NewDialogAdapter(native, vault).Select(context.Background(), desktopcontract.DialogRequest{Kind: desktopcontract.DialogCreateProject, RequestID: "create-rootless"})
+	if selection.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("selection: %+v", selection)
+	}
+	if _, err := NewProjectStorageAdapter(vault).Create(context.Background(), selection.Value.Token); err == nil {
+		t.Fatal("rootless project entry path was accepted")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 const recoveryEvent = "layerdraw:desktop-recovery"
 const lifecycleEvent = "layerdraw:desktop-lifecycle"
+const projectEvent = "layerdraw:desktop-project"
 
 type LifecycleAdapter struct{ runtime NativeRuntime }
 

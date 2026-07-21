@@ -114,6 +114,25 @@ test("startup, recovery, empty, draining, and stopped lifecycle states stay oper
   await act(async () => renderer.unmount());
 });
 
+test("empty Desktop exposes native create and open actions", async () => {
+  const controller = fakeController(shellState({ lifecycle: { sequence: 2, phase: "ready", capabilities: {} } }));
+  const calls = [];
+  const projectDialogs = {
+    async create(requestID) { calls.push(["create", requestID]); return { outcome: "cancelled" }; },
+    async open(requestID) { calls.push(["open", requestID]); return { outcome: "cancelled" }; },
+    async recent() { return { outcome: "success", value: [] }; },
+  };
+  let renderer;
+  await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopShell, { controller, projectDialogs, viewSelectionCapability: "engine.materialize_view", editorCapabilities })); });
+  const actions = renderer.root.findByProps({ "aria-label": "Project actions" });
+  const buttons = actions.findAllByType("button");
+  await act(async () => buttons[0].props.onClick());
+  await act(async () => buttons[1].props.onClick());
+  assert.deepEqual(calls.map(([kind]) => kind), ["create", "open"]);
+  assert.ok(calls.every(([, requestID]) => requestID.startsWith("desktop-shell-")));
+  await act(async () => renderer.unmount());
+});
+
 test("Viewer empty, loading, cancelling, disposed, and recoverable states have status surfaces", async () => {
   for (const state of [
     { status: "empty", reason: "view_empty" }, { status: "loading", operation: "snapshot" }, { status: "cancelling" }, { status: "disposed" },
