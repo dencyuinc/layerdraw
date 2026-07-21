@@ -466,7 +466,7 @@ export async function handshakeAndCompileCorpus(
   caseNames,
 ) {
   if (corpus.schema_version !== 1 || corpus.engine_release_variable !== "$engine_release" ||
-      corpus.cases.length !== 10 || corpus.required_features.length !== 10 || corpus.normalization.length !== 3) {
+      corpus.cases.length !== 14 || corpus.required_features.length !== 13 || corpus.normalization.length !== 3) {
     throw new Error("transport-neutral parity corpus is incompatible");
   }
   const handshake = await performRequest(transport, `${suffix}-handshake-exchange`, {

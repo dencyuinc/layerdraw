@@ -12,6 +12,10 @@ const parityCases = [
   "deterministic_rejection",
   "resource_limit_rejection",
   "representative_large_graph",
+  "query_where",
+  "query_relation_where",
+  "query_traverse",
+  "query_where_relation_where_traverse",
   "cancellation",
 ];
 const viewDataCases = [
