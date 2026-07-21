@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/dencyuinc/layerdraw/internal/privatefs"
 )
 
 const maxSnapshotBytes = 16 << 20
@@ -110,5 +112,5 @@ func (s *FileStore) Save(ctx context.Context, snapshot Snapshot) error {
 		return err
 	}
 	defer directory.Close()
-	return directory.Sync()
+	return privatefs.SyncDirectory(directory)
 }
