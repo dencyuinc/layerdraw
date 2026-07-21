@@ -46,6 +46,161 @@ func testFinalizedPlan(t *testing.T, id string) InstallPlan {
 	return plan
 }
 
+type registryCloneMarshalFailure struct{}
+
+func (registryCloneMarshalFailure) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("marshal failed")
+}
+
+type registryCloneUnmarshalFailure string
+
+func (*registryCloneUnmarshalFailure) UnmarshalJSON([]byte) error {
+	return errors.New("unmarshal failed")
+}
+
+func TestRegistryProjectSnapshotValidationAndCloneFailureBranches(t *testing.T) {
+	digest := testDigest('a')
+	working := ProjectState{
+		DocumentID:     "doc",
+		Revision:       "r1",
+		DefinitionHash: digest,
+		EngineSnapshot: RegistryProjectSnapshot{
+			Kind:                RegistryProjectSnapshotWorking,
+			Handle:              "handle",
+			DocumentID:          "doc",
+			Revision:            "r1",
+			DefinitionHash:      digest,
+			SourceClosureDigest: digest,
+		},
+	}
+	if !validRegistryProjectSnapshot(working, false) {
+		t.Fatal("valid working snapshot rejected")
+	}
+	mutations := []func(*ProjectState){
+		func(state *ProjectState) { state.EngineSnapshot.Handle = "" },
+		func(state *ProjectState) { state.EngineSnapshot.DocumentID = "other" },
+		func(state *ProjectState) { state.EngineSnapshot.SourceClosureDigest = "invalid" },
+		func(state *ProjectState) { state.EngineSnapshot.Kind = RegistryProjectSnapshotEmptyTemplate },
+		func(state *ProjectState) { state.EngineSnapshot.Revision = "other" },
+		func(state *ProjectState) { state.EngineSnapshot.DefinitionHash = testDigest('b') },
+	}
+	for _, mutate := range mutations {
+		state := working
+		mutate(&state)
+		if validRegistryProjectSnapshot(state, false) {
+			t.Fatalf("invalid working snapshot accepted: %+v", state.EngineSnapshot)
+		}
+	}
+	template := working
+	template.Revision = ""
+	template.EngineSnapshot.Kind = RegistryProjectSnapshotEmptyTemplate
+	template.EngineSnapshot.Revision = ""
+	if !validRegistryProjectSnapshot(template, true) {
+		t.Fatal("valid template snapshot rejected")
+	}
+	for _, mutate := range []func(*ProjectState){
+		func(state *ProjectState) { state.DefinitionHash = "invalid" },
+		func(state *ProjectState) { state.EngineSnapshot.Kind = RegistryProjectSnapshotWorking },
+		func(state *ProjectState) { state.EngineSnapshot.Revision = "r1" },
+		func(state *ProjectState) { state.Revision = "r1" },
+		func(state *ProjectState) { state.EngineSnapshot.DefinitionHash = testDigest('b') },
+	} {
+		state := template
+		mutate(&state)
+		if validRegistryProjectSnapshot(state, true) {
+			t.Fatalf("invalid template snapshot accepted: %+v", state)
+		}
+	}
+	for _, clone := range []func(){
+		func() { cloneJSONValue(registryCloneMarshalFailure{}) },
+		func() { cloneJSONValue(registryCloneUnmarshalFailure("value")) },
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("clone failure did not panic")
+				}
+			}()
+			clone()
+		}()
+	}
+}
+
+type sourceClientFunc func(context.Context, RegistrySource, SearchInput) ([]ArtifactRelease, error)
+
+func (f sourceClientFunc) Search(ctx context.Context, source RegistrySource, input SearchInput) ([]ArtifactRelease, error) {
+	return f(ctx, source, input)
+}
+
+func TestRegistryRemainingDeterministicBranches(t *testing.T) {
+	if err := decodeWireInput(WireOperation("registry.unknown"), json.RawMessage(`{}`)); err == nil {
+		t.Fatal("unknown wire input accepted")
+	}
+	if err := decodeWireValue(WireOperation("registry.unknown"), json.RawMessage(`{}`)); err == nil {
+		t.Fatal("unknown wire value accepted")
+	}
+	identity := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "existing", Version: "1.0.0"}
+	resolved := map[string]PlanArtifact{artifactKey(identity): {Release: ArtifactRelease{Identity: identity}}}
+	if err := (&Registry{}).resolve(context.Background(), identity, false, resolved, map[string]bool{}); err != nil {
+		t.Fatalf("existing resolution err=%v", err)
+	}
+
+	root := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "root", Version: "1.0.0"}
+	a := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "a", Version: "1.0.0"}
+	b := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "b", Version: "1.0.0"}
+	snapshot := ProjectDependencySnapshot{Installs: []LockedArtifact{
+		{Identity: root, Dependencies: []ArtifactIdentity{b, a}},
+		{Identity: a},
+		{Identity: b},
+	}}
+	delta, err := buildLockDelta(ActionUpdate, snapshot, map[string]PlanArtifact{}, root, false)
+	if err != nil || len(delta.Removed) != 2 || delta.Removed[0].Identity.CanonicalID != "a" || delta.Removed[1].Identity.CanonicalID != "b" {
+		t.Fatalf("sorted removals=%+v err=%v", delta.Removed, err)
+	}
+
+	registryValue := &Registry{
+		sources: map[string]RegistrySource{"source": {SourceID: "source", Kind: SourceOfficial, Connected: true}},
+		clients: map[SourceKind]SourceClient{},
+	}
+	registryValue.clients[SourceOfficial] = sourceClientFunc(func(context.Context, RegistrySource, SearchInput) ([]ArtifactRelease, error) {
+		registryValue.mu.Lock()
+		delete(registryValue.sources, "source")
+		registryValue.mu.Unlock()
+		return []ArtifactRelease{{Identity: ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "candidate", Version: "1.0.0"}, SourceID: "source"}}, nil
+	})
+	if _, err := registryValue.Search(context.Background(), SearchInput{Query: "candidate"}); !IsFailure(err, FailureUnavailable) {
+		t.Fatalf("removed search source err=%v", err)
+	}
+}
+
+func TestHostBindingRejectsStaleCommitDigest(t *testing.T) {
+	env := newTestEnv(t, NewMemoryTransactionStore())
+	identity := ArtifactIdentity{Kind: ArtifactPack, CanonicalID: "host/stale", Version: "1.0.0"}
+	data := []byte("host-stale")
+	release := signedRelease(t, env.privateKey, identity, data, nil)
+	addRelease(env, release, data)
+	plan, err := env.registry.Plan(context.Background(), planRequest(env, ActionInstall, identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := NewHostBinding(env.registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(WireCommitInput{TransactionID: plan.TransactionID, PlanDigest: testDigest('f'), OperationID: "op", IdempotencyKey: "key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(WireRequest{WireVersion: RegistryWireVersion, Operation: WireCommit, RequestID: "stale", Input: input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := DecodeWireResponse(binding.Dispatch(context.Background(), wire), WireCommit)
+	if err != nil || response.OK || response.Failure == nil || response.Failure.Code != FailurePlanStale {
+		t.Fatalf("stale commit response=%+v err=%v", response, err)
+	}
+}
+
 func dispatchForTest(t *testing.T, binding *HostBinding, operation WireOperation, input any) WireResponse {
 	t.Helper()
 	encodedInput, err := json.Marshal(input)

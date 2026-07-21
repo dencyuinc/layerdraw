@@ -4,6 +4,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,10 @@ import (
 	"sync"
 	"testing"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
 
 func TestDiskStagedObjectStoreDurabilityIntegrityAndDeduplication(t *testing.T) {
 	root := t.TempDir()
@@ -130,5 +135,101 @@ func TestDiskStagedObjectStoreRejectsSymlinkAndNonRegularTargets(t *testing.T) {
 	}
 	if _, err := store.OpenRegistryObject(context.Background(), ref); err == nil {
 		t.Fatal("non-regular staged object accepted")
+	}
+}
+
+func TestDiskStagedObjectStoreRejectsUnsafeRootsAndInvalidOperations(t *testing.T) {
+	for _, root := range []string{"", "relative", t.TempDir() + "/objects/../objects"} {
+		if _, err := NewDiskStagedObjectStore(root, 1); err == nil {
+			t.Fatalf("unsafe root accepted: %q", root)
+		}
+	}
+	rootFile := filepath.Join(t.TempDir(), "objects")
+	if err := os.WriteFile(rootFile, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewDiskStagedObjectStore(filepath.Join(rootFile, "nested"), 1); err == nil {
+		t.Fatal("root below file accepted")
+	}
+
+	store, err := NewDiskStagedObjectStore(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.maxBytes != DefaultMaxStagedObjectBytes {
+		t.Fatalf("default max=%d", store.maxBytes)
+	}
+	for _, test := range []struct {
+		media string
+		body  io.Reader
+		size  int64
+	}{
+		{"text/plain", nil, 0},
+		{"text/plain\x00bad", strings.NewReader(""), 0},
+		{"text/plain\rbad", strings.NewReader(""), 0},
+		{"text/plain", strings.NewReader(""), -1},
+		{"text/plain", failingReader{}, 0},
+	} {
+		if _, err := store.PutRegistryObject(context.Background(), test.media, test.body, test.size); err == nil {
+			t.Fatalf("invalid put accepted: media=%q size=%d", test.media, test.size)
+		}
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.PutRegistryObject(cancelled, "text/plain", strings.NewReader("x"), 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled put err=%v", err)
+	}
+
+	valid, err := store.PutRegistryObject(context.Background(), "text/plain", strings.NewReader("x"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.OpenRegistryObject(cancelled, valid); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled open err=%v", err)
+	}
+	missing := valid
+	missing.Digest = "sha256:" + strings.Repeat("0", 64)
+	missing.ObjectID = strings.Repeat("0", 64) + ".blob"
+	if _, err := store.OpenRegistryObject(context.Background(), missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing open err=%v", err)
+	}
+	for _, invalid := range []StagedObjectRef{
+		{ObjectID: valid.ObjectID, Digest: valid.Digest, Size: -1, MediaType: valid.MediaType},
+		{ObjectID: valid.ObjectID, Digest: valid.Digest, Size: DefaultMaxStagedObjectBytes + 1, MediaType: valid.MediaType},
+		{ObjectID: valid.ObjectID, Digest: valid.Digest, Size: valid.Size, MediaType: ""},
+		{ObjectID: valid.ObjectID, Digest: "sha256:ABC", Size: valid.Size, MediaType: valid.MediaType},
+	} {
+		if _, err := store.OpenRegistryObject(context.Background(), invalid); err == nil {
+			t.Fatalf("invalid ref accepted: %+v", invalid)
+		}
+	}
+}
+
+func TestDiskStagedObjectStoreFilesystemFailures(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	store := &DiskStagedObjectStore{root: missingRoot, maxBytes: 32}
+	if _, err := store.PutRegistryObject(context.Background(), "text/plain", strings.NewReader("x"), 1); err == nil {
+		t.Fatal("put below missing root succeeded")
+	}
+	ref := StagedObjectRef{ObjectID: strings.Repeat("0", 64) + ".blob", Digest: "sha256:" + strings.Repeat("0", 64), Size: 1, MediaType: "text/plain"}
+	if _, err := store.OpenRegistryObject(context.Background(), ref); err == nil {
+		t.Fatal("open below missing root succeeded")
+	}
+
+	root := t.TempDir()
+	store = &DiskStagedObjectStore{root: root, maxBytes: 32}
+	data := "collision-directory"
+	digest := digestBytes([]byte(data))
+	target := filepath.Join(root, strings.TrimPrefix(digest, "sha256:")+".blob")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutRegistryObject(context.Background(), "text/plain", strings.NewReader(data), int64(len(data))); err == nil {
+		t.Fatal("non-regular collision target accepted")
+	}
+
+	oversized := &DiskStagedObjectStore{root: t.TempDir(), maxBytes: 1}
+	if _, err := oversized.PutRegistryObject(context.Background(), "text/plain", strings.NewReader("xx"), 1); err == nil {
+		t.Fatal("reader exceeding declared maximum accepted")
 	}
 }
