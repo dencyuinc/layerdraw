@@ -88,9 +88,14 @@ process-tree run. Each workflow runs scenarios in isolated installed-Desktop wor
 scenario launches the same installed executable through `--packaged-ui-probe`, waits for the complete
 DOM/accessibility matrix, and repeatedly sums resident memory for the Desktop PID and every descendant
 PID, including platform WebView and any companion process alive during the run. The strict result records
-both largest worker RSS and packaged UI process-tree peak RSS for every iteration; independent p95
-budgets reject missing, zero, truncated, or excessive measurements. Linux runs under Xvfb, while macOS
-and Windows use their native WebView hosts on the corresponding packaged runners. The release job then
-signs an attestation binding the scenario result, closure manifest, exact
-installer digest, source revision, and platform. Update metadata generation fails closed unless
-that independent signature and every bound digest verify against the configured trust anchor.
+both largest worker RSS and packaged UI process-tree peak RSS for every iteration; missing, zero, or
+truncated measurements still fail closed, because those mean the run produced no usable evidence. The
+p95 time and RSS budgets in `deploy/desktop-conformance.json` are informational: an overrun is logged as
+a warning with the observed percentile and samples and does not fail attestation creation or
+verification, since a slow-but-measured run still records real evidence. Linux runs under Xvfb, while
+macOS and Windows use their native WebView hosts on the corresponding packaged runners. The release job
+then signs an attestation binding the scenario result, closure manifest, exact installer digest, source
+revision, and platform. Update metadata generation fails closed unless that independent signature and
+every bound digest verify against the configured trust anchor. Restoring these budgets as a hard release
+gate requires first adopting human-reviewed thresholds in `product-quality-gates.md`; until then this
+evidence is measurement, not enforcement.
