@@ -7,7 +7,7 @@ import { createDesktopWailsComposition, waitForDesktopApplicationReady, type Des
 import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "../../src/wails-bindings.js";
 import { createDesktopWailsProjectOwner } from "../../src/wails-project-owner.js";
 import type { DesktopProjectHostBinding, DesktopReviewHostBinding } from "../../src/wails-owner.js";
-import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPStatus, NativeExportProfiles, OpenProjectDialog, PlanExternalReconcile, PreviewEditor, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPStatus, NativeExportProfiles, OpenProjectDialog, OpenRecentProject, PlanExternalReconcile, PreviewEditor, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { EventsOff, EventsOn, LogError } from "../wailsjs/runtime/runtime.js";
 
 async function start(): Promise<void> {
@@ -20,7 +20,7 @@ async function start(): Promise<void> {
     return;
   }
   const application = {
-    State, CreateProjectDialog, OpenProjectDialog, RecentProjects,
+    State, CreateProjectDialog, OpenProjectDialog, RecentProjects, OpenRecentProject,
     ConnectExternal, InspectExternal, RefreshExternal, DisconnectExternal,
     SelectExternalRemote, AcquireExternalLease, PlanExternalReconcile, ApplyExternalReconcile,
     NativeExportProfiles, SerializeNativeExport, PublishNativeExportDialog, ImportExternalDialog,

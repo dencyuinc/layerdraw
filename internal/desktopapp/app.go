@@ -78,13 +78,18 @@ type Config struct {
 	Bindings                      desktopcontract.ClientSet
 	Adapters                      map[desktopcontract.ComponentID]Adapter
 	Recovery                      RecoveryReporter
-	ExternalLifecycle             ExternalLifecycleAdapter
-	ExternalPublication           ExternalPublicationGate
-	NativeInterchange             NativeInterchangePort
-	NativeSearchLifecycle         NativeSearchLifecycle
-	Now                           func() time.Time
-	RegistryStagedObjects         port.RegistryStagedObjectReader
-	ReviewOwner                   ReviewOwner
+	// OpenDiagnostics is an optional backend-only sink for project open and
+	// create failures. It receives the failing stage and the underlying error
+	// so operators can diagnose reason-less UI failures; the value never
+	// crosses the Wails boundary.
+	OpenDiagnostics       func(context.Context, string, error)
+	ExternalLifecycle     ExternalLifecycleAdapter
+	ExternalPublication   ExternalPublicationGate
+	NativeInterchange     NativeInterchangePort
+	NativeSearchLifecycle NativeSearchLifecycle
+	Now                   func() time.Time
+	RegistryStagedObjects port.RegistryStagedObjectReader
+	ReviewOwner           ReviewOwner
 }
 
 type ReviewOwner interface {

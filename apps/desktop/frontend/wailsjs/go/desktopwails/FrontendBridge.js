@@ -60,6 +60,10 @@ export function OpenProjectDialog(arg1) {
   return window['go']['desktopwails']['FrontendBridge']['OpenProjectDialog'](arg1);
 }
 
+export function OpenRecentProject(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['OpenRecentProject'](arg1);
+}
+
 export function PlanExternalReconcile(arg1, arg2, arg3) {
   return window['go']['desktopwails']['FrontendBridge']['PlanExternalReconcile'](arg1, arg2, arg3);
 }

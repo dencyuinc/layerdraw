@@ -108,6 +108,9 @@ func TestFrontendBridgeDelegatesProjectSurfaceWithFallbackContext(t *testing.T) 
 	if result := bridge.RecentProjects(); result.Outcome != protocolcommon.OutcomeSuccess || len(result.Value) != 0 {
 		t.Fatalf("recent projects were not delegated: %+v", result)
 	}
+	if result := bridge.OpenRecentProject("doc_missing"); result.Outcome != protocolcommon.OutcomeFailed || result.Failure == nil {
+		t.Fatalf("open recent project was not delegated: %+v", result)
+	}
 	if result := bridge.ConnectExternal(desktopapp.ExternalConnectionRequest{}); result.Failure == nil {
 		t.Fatalf("connect external=%+v", result)
 	}

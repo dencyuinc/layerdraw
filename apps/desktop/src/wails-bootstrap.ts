@@ -20,6 +20,7 @@ export interface DesktopWailsApplicationBinding {
   CreateProjectDialog(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   OpenProjectDialog(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   RecentProjects(): Promise<DesktopHostResult<readonly DesktopRecentProjectDTO[]>>;
+  OpenRecentProject(projectID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   ConnectExternal(input: JsonObject): Promise<DesktopHostResult<JsonObject>>;
   InspectExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
   RefreshExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
@@ -214,7 +215,12 @@ export async function createDesktopWailsComposition(
 		}
 		return result;
 	};
-  const projectDialogs: DesktopProjectDialogPort = Object.freeze({ create: async (id: string) => refreshAfterOpen(await application.CreateProjectDialog(id)), open: async (id: string) => refreshAfterOpen(await application.OpenProjectDialog(id)), recent: () => application.RecentProjects() });
+  const projectDialogs: DesktopProjectDialogPort = Object.freeze({
+    create: async (id: string) => refreshAfterOpen(await application.CreateProjectDialog(id)),
+    open: async (id: string) => refreshAfterOpen(await application.OpenProjectDialog(id)),
+    recent: () => application.RecentProjects(),
+    openRecent: async (projectID: string) => refreshAfterOpen(await application.OpenRecentProject(projectID)),
+  });
   const externalStorage: DesktopExternalStoragePort = Object.freeze({
     connect: (input: JsonObject) => application.ConnectExternal(input), inspect: (id: string) => application.InspectExternal(id), refresh: (id: string) => application.RefreshExternal(id), disconnect: (id: string) => application.DisconnectExternal(id),
     selectRemote: (input: JsonObject) => application.SelectExternalRemote(input), acquireLease: (session: JsonObject, binding: JsonObject) => application.AcquireExternalLease(session, binding),

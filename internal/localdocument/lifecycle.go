@@ -46,6 +46,13 @@ const (
 // the state in response to this error.
 var ErrStateRecoveryRequired = errors.New("local document state requires recovery")
 
+// ErrPortableIdentityChanged identifies a bound local source whose compiled
+// portable project identity no longer matches the stable document binding.
+// This happens when the source at a known location is externally replaced or
+// its project identifier is rewritten; opening it requires an explicit review
+// or a fresh import rather than silently rebinding the stable document.
+var ErrPortableIdentityChanged = errors.New("portable project identity changed at bound source")
+
 type Clock interface{ Now() time.Time }
 
 type systemClock struct{}
@@ -149,6 +156,7 @@ type relocationJournal struct {
 type Session struct {
 	Open          runtimeprotocol.OpenRuntimeDocumentResult
 	PortableID    string
+	DisplayName   string
 	SourceKind    string
 	SourceLocator string
 	SourceDigest  protocolcommon.Digest
@@ -607,7 +615,7 @@ func (h *Host) openSource(ctx context.Context, kind, locator string, source engi
 			return OpenResult{}, err
 		}
 	} else if binding.PortableID != portableID {
-		return OpenResult{}, errors.New("portable project identity changed at bound source")
+		return OpenResult{}, fmt.Errorf("%w: bound %q, selected %q", ErrPortableIdentityChanged, binding.PortableID, portableID)
 	}
 	// Keep source identity selection serialized until Runtime has opened the
 	// bound document. Concurrent Desktop opens then observe one stable binding;
@@ -676,7 +684,7 @@ func (h *Host) openBound(ctx context.Context, binding documentBinding, externalD
 	if !ok {
 		return OpenResult{}, errors.New("working document binding unavailable")
 	}
-	session := &Session{Open: opened, PortableID: binding.PortableID, SourceKind: binding.Kind, SourceLocator: binding.Locator, SourceDigest: binding.SourceDigest, working: working, sourceInput: sourceInput}
+	session := &Session{Open: opened, PortableID: binding.PortableID, DisplayName: sourceInput.DisplayName, SourceKind: binding.Kind, SourceLocator: binding.Locator, SourceDigest: binding.SourceDigest, working: working, sourceInput: sourceInput}
 	h.mu.Lock()
 	h.sessions[opened.Session.RuntimeSessionID] = session
 	h.mu.Unlock()

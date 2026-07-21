@@ -14,6 +14,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
+	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	runtimehost "github.com/dencyuinc/layerdraw/internal/runtime"
 	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
@@ -161,6 +162,40 @@ func (h *Host) SaveRuntime(ctx context.Context, input runtimeprotocol.RuntimeCom
 		return runtimeprotocol.RuntimeCommitResult{}, port.ErrConflict
 	}
 	return h.Save(ctx, saveInput(session, input, runtimeprotocol.CommitTriggerExplicitSave))
+}
+
+// CommitProjectDisplayName applies a user-chosen project title through the
+// Engine semantic-operation path and commits it as an explicit save. The Engine
+// rewrites the committed source; the host never templates LDL text. It returns
+// the refreshed revision history so callers can publish the committed rename.
+func (h *Host) CommitProjectDisplayName(ctx context.Context, session *Session, name string) (runtimeprotocol.RevisionPage, error) {
+	if session == nil || name == "" {
+		return runtimeprotocol.RevisionPage{}, errors.New("project display name commit requires a session and a name")
+	}
+	preconditions, err := engineendpoint.SourceEditPreconditions(ctx, session.sourceInput, h.documentGeneration(session))
+	if err != nil {
+		return runtimeprotocol.RevisionPage{}, err
+	}
+	target := semantic.StableAddress(session.PortableID)
+	action := "set"
+	path := []string{"display_name"}
+	value := name
+	batch := engineprotocol.SemanticOperationBatch{Operations: []engineprotocol.SemanticOperation{{NonCreateSemanticOperation: &engineprotocol.NonCreateSemanticOperation{
+		Operation:     engineprotocol.NonCreateSemanticOperationKindUpdateSubjectField,
+		TargetAddress: &target,
+		Path:          &path,
+		Action:        &action,
+		Value:         &engineprotocol.SemanticOperationValue{Kind: engineprotocol.SemanticOperationValueKindString, String: &value},
+	}}}}
+	if _, err := h.Save(ctx, SaveInput{Session: session, Operations: batch, Preconditions: preconditions}); err != nil {
+		return runtimeprotocol.RevisionPage{}, err
+	}
+	session.DisplayName = name
+	history, rejection := h.runtime.ListRevisions(ctx, runtimeprotocol.ListRevisionsInput{Session: session.Open.Session, MaxItems: "128", MaxOutputBytes: "1048576"})
+	if rejection != nil {
+		return runtimeprotocol.RevisionPage{}, rejection
+	}
+	return history, nil
 }
 
 func (h *Host) applyCommit(session *Session, result runtimeprotocol.RuntimeCommitResult) error {

@@ -106,7 +106,7 @@ export interface DesktopProjectLifecyclePort {
 
 export type DesktopHostResult<T> =
   | Readonly<{ outcome: "success"; value: T }>
-  | Readonly<{ outcome: "failed" | "rejected" | "cancelled"; failure?: Readonly<{ code: string; retryable?: boolean }> }>;
+  | Readonly<{ outcome: "failed" | "rejected" | "cancelled"; failure?: Readonly<{ code: string; retryable?: boolean; recovery?: string }> }>;
 
 /** JSON-only result returned by the native create/open project dialogs. */
 export interface DesktopProjectOpenDTO {
@@ -121,6 +121,9 @@ export interface DesktopProjectOpenDTO {
 export interface DesktopRecentProjectDTO {
   readonly project_id: string;
   readonly display_name: string;
+  readonly availability?: "available" | "missing";
+  readonly pinned?: boolean;
+  readonly last_opened_at?: string;
   readonly [field: string]: unknown;
 }
 
@@ -128,6 +131,7 @@ export interface DesktopProjectDialogPort {
   create(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   open(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   recent(): Promise<DesktopHostResult<readonly DesktopRecentProjectDTO[]>>;
+  openRecent(projectID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
 }
 
 /** Trusted native external-storage operations; credentials never cross this boundary. */

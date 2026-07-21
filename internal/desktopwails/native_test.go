@@ -86,8 +86,11 @@ func TestCreateProjectUsesExclusiveFileAndValidSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(location.Root, location.EntryPath))
-	if err != nil || string(data) != "project project \"Untitled\" {}\n" || location.Root != native.save || location.EntryPath != "document.ldl" {
+	if err != nil || string(data) != "project main \"Untitled\" {}\n" || location.Root != native.save || location.EntryPath != "document.ldl" {
 		t.Fatalf("created source: %q %v", data, err)
+	}
+	if location.DisplayName != "new-project" {
+		t.Fatalf("created display name: %q", location.DisplayName)
 	}
 	for _, directory := range []string{"schema/entity_types", "schema/relation_types", "layers", "views", "references", "pack", "assets"} {
 		if info, statErr := os.Stat(filepath.Join(location.Root, filepath.FromSlash(directory))); statErr != nil || !info.IsDir() {
