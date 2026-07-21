@@ -15,6 +15,7 @@
     "./query-viewer": {"types": "./dist/query-viewer.d.ts", "import": "./dist/query-viewer.js"},
     "./recovery": {"types": "./dist/recovery.d.ts", "import": "./dist/recovery.js"},
     "./review": {"types": "./dist/review.d.ts", "import": "./dist/review.js"},
+    "./i18n": {"types": "./dist/i18n.d.ts", "import": "./dist/i18n.js"},
     "./tokens.css": "./dist/tokens.css",
     "./styles.css": "./dist/styles.css"
   },
