@@ -4,8 +4,26 @@ package desktopwails
 
 import (
 	"os"
+	"slices"
 	"testing"
 )
+
+func TestPackagedUIProbeEnvironmentClearsPersistentInstallerProbeState(t *testing.T) {
+	environment := packagedUIProbeEnvironment([]string{
+		"PATH=/bin", "LAYERDRAW_DESKTOP_PROBE_STATE_KEY=persistent",
+		"layerdraw_desktop_probe_action=verify", "OTHER=value",
+	})
+	if !slices.Contains(environment, "PATH=/bin") || !slices.Contains(environment, "OTHER=value") ||
+		!slices.Contains(environment, "LAYERDRAW_DESKTOP_PROBE_STATE_KEY=") ||
+		!slices.Contains(environment, "LAYERDRAW_DESKTOP_PROBE_ACTION=") {
+		t.Fatalf("sanitized environment=%v", environment)
+	}
+	for _, entry := range environment {
+		if entry == "LAYERDRAW_DESKTOP_PROBE_STATE_KEY=persistent" || entry == "layerdraw_desktop_probe_action=verify" {
+			t.Fatalf("persistent installer probe state survived: %q", entry)
+		}
+	}
+}
 
 func TestProcessTreeRSSIncludesOnlyRootAndTransitiveDescendants(t *testing.T) {
 	table := map[int]processRSS{

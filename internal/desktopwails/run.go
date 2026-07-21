@@ -153,10 +153,7 @@ func runPackagedUIProbe(ctx context.Context, output string, shell *desktopapp.Na
 		return
 	}
 	probe = stateProbe
-	// WebView2 performs first-run initialization after a fresh installer launch
-	// on Windows. Keep this bounded while allowing that cold path to publish the
-	// same DOM-ready handshake exercised by warm packaged probes.
-	readyCtx, cancelReady := context.WithTimeout(ctx, 60*time.Second)
+	readyCtx, cancelReady := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelReady()
 	if err := bridge.waitAccessibilityProbeReady(readyCtx); err != nil {
 		return

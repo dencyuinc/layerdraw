@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -33,10 +34,10 @@ func conformancePackagedUIProcessTree(ctx context.Context) (int64, error) {
 	output := filepath.Join(root, "ui-probe.json")
 	command := exec.CommandContext(ctx, executable, "--packaged-ui-probe", output)
 	command.Stdout, command.Stderr = io.Discard, io.Discard
-	// The UI process owns one transient state root. Clear any caller-provided
-	// persistent probe key so repeated/concurrent conformance runs cannot share
-	// state or be poisoned by the invoking environment.
-	command.Env = append(os.Environ(), "LAYERDRAW_DESKTOP_PROBE_STATE_KEY=")
+	// The UI process owns one transient state root. Clear caller-provided probe
+	// state and action together: PowerShell installer smoke variables persist in
+	// the process environment, unlike the command-scoped Unix assignments.
+	command.Env = packagedUIProbeEnvironment(os.Environ())
 	if err := command.Start(); err != nil {
 		return 0, errors.New("packaged Desktop UI process failed to start")
 	}
@@ -55,6 +56,20 @@ func conformancePackagedUIProcessTree(ctx context.Context) (int64, error) {
 		return 0, errors.New("packaged Desktop UI process-tree evidence is invalid")
 	}
 	return peak, nil
+}
+
+func packagedUIProbeEnvironment(base []string) []string {
+	const state = "LAYERDRAW_DESKTOP_PROBE_STATE_KEY"
+	const action = "LAYERDRAW_DESKTOP_PROBE_ACTION"
+	result := make([]string, 0, len(base)+2)
+	for _, entry := range base {
+		name, _, found := strings.Cut(entry, "=")
+		if found && (strings.EqualFold(name, state) || strings.EqualFold(name, action)) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, state+"=", action+"=")
 }
 
 func measureProcessTreeUntilExit(ctx context.Context, rootPID int, command *exec.Cmd) (int64, error) {

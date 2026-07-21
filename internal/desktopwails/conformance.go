@@ -176,10 +176,9 @@ func ordinaryConformanceRunner(run func(context.Context) error) conformanceRunne
 
 func conformanceScenarioTimeout(name string) time.Duration {
 	if name == "packaged_ui_process_tree" {
-		// A freshly installed Windows WebView can spend well over 30 seconds on
-		// first-run initialization. Leave time for its 60-second readiness bound,
+		// DOM readiness may consume nearly its 30-second bound; leave time for
 		// the accessibility matrix, final RSS sample, and strict result write.
-		return 75 * time.Second
+		return 45 * time.Second
 	}
 	return 30 * time.Second
 }
