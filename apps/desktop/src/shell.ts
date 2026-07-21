@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopRecentProjectDTO } from "./contracts.js";
+import type { DesktopProjectContext, DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopRecentProjectDTO } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
 import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
@@ -63,7 +63,20 @@ export interface DesktopShellProps {
 }
 
 function statusChip(kind: string, text: string): ReactNode {
-  return createElement("span", { className: "ld-desktop-chip", "data-status": kind }, text);
+  return createElement("span", { className: "ld-desktop-chip", "data-status": kind, key: kind }, text);
+}
+
+/**
+ * Only abnormal states surface as chips; healthy storage/access/persistence
+ * stay silent and internal identifiers (revision hashes) never render.
+ */
+function renderAbnormalStatuses(t: Translator, project: DesktopProjectContext): ReactNode {
+  const chips: ReactNode[] = [];
+  if (project.storage.status === "conflict") chips.push(statusChip("conflict", t.t("workspace.status.conflict")));
+  if (project.storage.status === "reconcile_pending") chips.push(statusChip("reconcile_pending", t.t("workspace.status.reconcile_pending")));
+  if (project.access.status === "denied") chips.push(statusChip("denied", t.t("workspace.status.denied")));
+  if (chips.length === 0) return null;
+  return createElement("div", { className: "ld-desktop-statuses", "aria-label": t.t("workspace.inspector") }, chips);
 }
 
 type EditorMode = "structure" | "views";
@@ -156,8 +169,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
       createElement("div", { className: "ld-workspace-lead" },
         renderBreadcrumb(t, project.display_name, heading, onReturnToProjects),
         renderModeSwitch(t, editorMode, setEditorMode)),
-      createElement("div", { className: "ld-desktop-statuses", "aria-label": t.t("workspace.inspector") },
-        statusChip(project.storage.status, project.storage.label), statusChip(project.access.status, project.access.label), statusChip(project.persistence, project.authoritative_revision_label))),
+      renderAbnormalStatuses(t, project)),
     failure === null ? null : createElement("div", { role: state.failure?.recoverable === true ? "status" : "alert", className: "ld-banner ld-banner-warning" }, failure),
     createElement("div", { className: "ld-desktop-workspace" },
       createElement("nav", { className: "ld-desktop-sidebar", "aria-label": t.t("workspace.views") },
@@ -166,23 +178,21 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
       createElement("section", { className: "ld-desktop-canvas", "aria-label": t.t("workspace.canvas") },
         createElement(DesktopViewerSurface, { state: state.viewer, onSelectionChange: (keys) => controller.setViewerSelection(keys) })),
       createElement("aside", { className: "ld-desktop-inspector", "aria-label": t.t("workspace.inspector") },
-        project.storage.kind === "external" ? createElement("section", { className: "ld-desktop-storage", "aria-label": "External storage" },
-          createElement("h2", null, "External storage"),
+        inspectorSection(t.t("inspector.section.editing"), true, createElement(DesktopEditorSurface, { project, capabilities: editorCapabilities })),
+        project.storage.kind === "external" ? inspectorSection(t.t("inspector.section.storage"), true, createElement("section", { className: "ld-desktop-storage", "aria-label": t.t("inspector.section.storage") },
           createElement("dl", null,
-            createElement("div", null, createElement("dt", null, "Provider"), createElement("dd", null, project.storage.provider_label ?? project.storage.label)),
-            createElement("div", null, createElement("dt", null, "Account"), createElement("dd", null, project.storage.account_label ?? "Unavailable")),
-            createElement("div", null, createElement("dt", null, "Scope"), createElement("dd", null, project.storage.scope_label ?? "Unavailable")),
-            createElement("div", null, createElement("dt", null, "Last sync"), createElement("dd", null, project.storage.last_sync_label ?? "Never")),
-            createElement("div", null, createElement("dt", null, "Pending"), createElement("dd", null, String(project.storage.pending_changes ?? 0)))),
+            createElement("div", null, createElement("dt", null, t.t("storage.provider")), createElement("dd", null, project.storage.provider_label ?? project.storage.label)),
+            createElement("div", null, createElement("dt", null, t.t("storage.account")), createElement("dd", null, project.storage.account_label ?? t.t("storage.unavailable"))),
+            createElement("div", null, createElement("dt", null, t.t("storage.scope")), createElement("dd", null, project.storage.scope_label ?? t.t("storage.unavailable"))),
+            createElement("div", null, createElement("dt", null, t.t("storage.lastSync")), createElement("dd", null, project.storage.last_sync_label ?? t.t("storage.never"))),
+            createElement("div", null, createElement("dt", null, t.t("storage.pending")), createElement("dd", null, String(project.storage.pending_changes ?? 0)))),
           project.storage.status === "conflict" || project.storage.status === "reconcile_pending"
-            ? createElement("p", { role: "status", className: "ld-desktop-storage-warning" }, "Review external changes before publishing.") : null,
-          createElement("p", { className: "ld-desktop-storage-consequence" }, project.storage.disconnect_consequence ?? "Disconnecting keeps the local project and stops external sync."),
-          createElement("button", { type: "button", className: "ld-btn ld-btn-danger-quiet", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, "Disconnect")) : null,
-        createElement(DesktopEditorSurface, { project, capabilities: editorCapabilities }),
-        library === undefined ? null : createElement(DesktopLibraryPanel, { library, project: project.library_project }),
-        renderFeatureStatus(libraryAvailability, reviewAvailability),
-        reviewModel === undefined ? null : createElement(ReviewPanel, { model: reviewModel }),
-        createElement(DesktopMCPPanel, { mcp: mcp ?? unavailableMCP, projectID: project.project_id }))),
+            ? createElement("p", { role: "status", className: "ld-desktop-storage-warning" }, t.t("storage.review")) : null,
+          createElement("p", { className: "ld-desktop-storage-consequence" }, project.storage.disconnect_consequence ?? t.t("storage.consequence")),
+          createElement("button", { type: "button", className: "ld-btn ld-btn-danger-quiet", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, t.t("storage.disconnect")))) : null,
+        library === undefined ? null : inspectorSection(t.t("inspector.section.library"), false, createElement(DesktopLibraryPanel, { library, project: project.library_project })),
+        reviewModel === undefined ? null : inspectorSection(t.t("inspector.section.review"), false, createElement(ReviewPanel, { model: reviewModel })),
+        inspectorSection(t.t("inspector.section.mcp"), false, createElement(DesktopMCPPanel, { mcp: mcp ?? unavailableMCP, projectID: project.project_id })))),
     createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : state.pending_action === "disconnect_storage" ? "Disconnecting external storage…" : ""));
 }
 
@@ -228,6 +238,13 @@ interface HubProps {
   readonly library: LibraryController | undefined;
   readonly runProjectDialog: (kind: "create" | "open") => void;
   readonly openRecentProject: (projectID: string) => void;
+}
+
+
+function inspectorSection(label: string, open: boolean, children: ReactNode): ReactNode {
+  return createElement("details", { className: "ld-inspector-section", open },
+    createElement("summary", null, label),
+    createElement("div", { className: "ld-inspector-section-body" }, children));
 }
 
 function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject }: HubProps): ReactNode {
@@ -328,14 +345,6 @@ function renderRecentRow(t: Translator, entry: DesktopRecentProjectDTO, dialogPe
       createElement("span", { className: "ld-recent-chev", "aria-hidden": true }, "›")));
 }
 
-function renderFeatureStatus(libraryAvailability: DesktopFeatureAvailability | undefined, reviewAvailability: DesktopFeatureAvailability | undefined): ReactNode {
-  if (libraryAvailability === undefined && reviewAvailability === undefined) return null;
-  return createElement("section", { className: "ld-feature-status", "aria-label": "Desktop capabilities" },
-    createElement("h2", null, "Capabilities"),
-    createElement("ul", null,
-      libraryAvailability === undefined ? null : createElement("li", { "data-status": libraryAvailability.status }, `Library: ${libraryAvailability.status}`),
-      reviewAvailability === undefined ? null : createElement("li", { "data-status": reviewAvailability.status }, `Review: ${reviewAvailability.status}`)));
-}
 
 const unavailableMCP: DesktopMCPPort = Object.freeze<DesktopMCPPort>({
 	async status() { return { enabled: false, transport: "local", instructions: "", generation: 0 }; },

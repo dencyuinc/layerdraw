@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import { createElement, type ReactNode } from "react";
-import { layerdrawIconDataUri } from "./brand-assets.js";
+import { layerdrawIconDataUri, layerdrawLogoOnDarkDataUri, layerdrawLogoOnLightDataUri } from "./brand-assets.js";
 
 export interface LayerDrawBrandProps {
   /** Accessible name (the localized application name). */
@@ -17,9 +17,13 @@ export function LayerDrawIcon({ title, size = 22 }: LayerDrawBrandProps & { read
   return createElement("img", { className: "ld-brand-icon", src: layerdrawIconDataUri, alt: title, width: size, height: size });
 }
 
-/** Brand row for chrome: canonical icon + wordmark text in brand ink. */
+/**
+ * Canonical logo lockup (icon + wordmark as authored in brand/, including the
+ * wordmark typeface and ink baked into the SVG). The light and dark lockups
+ * both render; the active theme picks one via CSS.
+ */
 export function LayerDrawWordmark({ title }: LayerDrawBrandProps): ReactNode {
   return createElement("span", { className: "ld-wordmark", role: "img", "aria-label": title },
-    createElement("img", { className: "ld-brand-icon", src: layerdrawIconDataUri, alt: "", "aria-hidden": true, width: 22, height: 22 }),
-    createElement("span", { className: "ld-wordmark-text" }, "LayerDraw"));
+    createElement("img", { className: "ld-wordmark-logo ld-wordmark-logo-light", src: layerdrawLogoOnLightDataUri, alt: "", "aria-hidden": true, height: 22 }),
+    createElement("img", { className: "ld-wordmark-logo ld-wordmark-logo-dark", src: layerdrawLogoOnDarkDataUri, alt: "", "aria-hidden": true, height: 22 }));
 }

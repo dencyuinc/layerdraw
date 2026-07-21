@@ -2,6 +2,7 @@
 
 import type { LibraryController, LibraryProjectContext, LibrarySnapshot } from "@layerdraw/library";
 import type { RegistryAction, RegistryArtifactKind, RegistrySourceKind } from "@layerdraw/registry-client";
+import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react";
 import { createElement, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 export interface DesktopLibraryPanelProps {
@@ -15,7 +16,10 @@ function actionFor(kind: RegistryArtifactKind, requested: RegistryAction): Regis
   return kind === "template" ? "create_from_template" : requested === "update" ? "update" : "install";
 }
 
+const defaultTranslator: Translator = createTranslator("en", baseShellCatalogs);
+
 export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelProps): ReactNode {
+  const t = useOptionalI18n() ?? defaultTranslator;
   const [snapshot, setSnapshot] = useState<LibrarySnapshot>(() => library.snapshot());
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<"" | RegistryArtifactKind>("");
@@ -45,17 +49,17 @@ export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelPro
   const selected = snapshot.selected;
   const selectedAction = selected === undefined ? action : actionFor(selected.identity.kind, action);
 
-  return createElement("section", { className: "ld-library-panel", "aria-label": "Library" },
+  return createElement("section", { className: "ld-library-panel", "aria-label": t.t("library.title") },
     createElement("div", { className: "ld-library-heading" },
-      createElement("div", null, createElement("h2", null, "Library"), createElement("p", null, "Browse trusted packs and templates.")),
+      createElement("div", null, createElement("h2", null, t.t("library.title")), createElement("p", null, t.t("library.subtitle"))),
       createElement("span", { role: "status", "aria-live": "polite", "data-status": snapshot.status }, snapshot.status.replaceAll("_", " "))),
-    snapshot.failure === undefined ? null : createElement("p", { role: "alert", className: "ld-library-failure" }, `Library request failed: ${snapshot.failure.code}`),
-    createElement("form", { onSubmit: search, "aria-label": "Browse Registry" },
-      createElement("label", null, "Search", createElement("input", { type: "search", value: query, disabled: busy, onChange: (event) => setQuery(event.currentTarget.value) })),
-      createElement("label", null, "Kind", createElement("select", { value: kind, disabled: busy, onChange: (event) => setKind((event.currentTarget as HTMLSelectElement).value as "" | RegistryArtifactKind) },
-        createElement("option", { value: "" }, "All"), createElement("option", { value: "pack" }, "Packs"), createElement("option", { value: "template" }, "Templates"))),
-      createElement("button", { type: "submit", disabled: busy }, "Browse")),
-    createElement("ul", { className: "ld-library-results", "aria-label": "Registry results" }, snapshot.results.map((release) =>
+    snapshot.failure === undefined ? null : createElement("p", { role: "alert", className: "ld-library-failure" }, t.t("library.failed", { code: snapshot.failure.code })),
+    createElement("form", { onSubmit: search, "aria-label": t.t("library.browse") },
+      createElement("label", null, t.t("library.search"), createElement("input", { type: "search", value: query, disabled: busy, onChange: (event) => setQuery(event.currentTarget.value) })),
+      createElement("label", null, t.t("library.kind"), createElement("select", { value: kind, disabled: busy, onChange: (event) => setKind((event.currentTarget as HTMLSelectElement).value as "" | RegistryArtifactKind) },
+        createElement("option", { value: "" }, t.t("library.kind.all")), createElement("option", { value: "pack" }, t.t("library.kind.packs")), createElement("option", { value: "template" }, t.t("library.kind.templates")))),
+      createElement("button", { type: "submit", disabled: busy }, t.t("library.browse"))),
+    createElement("ul", { className: "ld-library-results", "aria-label": t.t("library.results") }, snapshot.results.map((release) =>
       createElement("li", { key: `${release.identity.kind}:${release.identity.canonical_id}:${release.identity.version}` },
         createElement("button", { type: "button", disabled: busy, "aria-pressed": selected?.digest === release.digest, onClick: () => setSnapshot(library.select(release.identity)) },
           createElement("strong", null, release.identity.canonical_id), createElement("span", null, `${release.identity.version} · ${release.identity.kind}`), createElement("small", null, release.source_id))))),

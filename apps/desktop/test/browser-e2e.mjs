@@ -23,9 +23,10 @@ try {
   assert.equal(await undo.isEnabled(), true);
   await undo.click();
 	assert.deepEqual(await page.evaluate(() => window.desktopWorkflow.calls.at(-1)), ["undo"]);
-	const mcp = page.getByRole("region", { name: "MCP connections" });
+	await page.locator("summary", { hasText: "AI access (MCP)" }).click();
+	const mcp = page.getByRole("region", { name: "AI access (MCP)" });
 	await mcp.waitFor();
-	await mcp.getByRole("button", { name: "Enable MCP" }).click();
+	await mcp.getByRole("button", { name: "Allow AI connections" }).click();
 	await mcp.getByText("Connection instructions").waitFor();
 	await mcp.getByRole("button", { name: "Connect agent" }).click();
 	await mcp.getByText(/Proposal only/).waitFor();
@@ -36,9 +37,10 @@ try {
 	await mcp.getByRole("button", { name: "Connect agent" }).click();
 	await mcp.getByRole("button", { name: "Revoke access" }).click();
 	assert.deepEqual((await page.evaluate(() => window.desktopWorkflow.calls.filter((call) => call[0].startsWith("mcp-")))).map((call) => call[0]), ["mcp-enable", "mcp-connect", "mcp-restart", "mcp-connect", "mcp-revoke"]);
+  await page.locator("summary", { hasText: "Library" }).click();
   const library = page.getByRole("region", { name: "Library" });
   await library.waitFor();
-  const browse = library.getByRole("form", { name: "Browse Registry" });
+  const browse = library.getByRole("form", { name: "Browse" });
   await browse.getByRole("searchbox", { name: "Search" }).fill("catalog");
   await browse.getByRole("button", { name: "Browse" }).click();
   await library.getByRole("button", { name: /layerdraw\/catalog/ }).click();

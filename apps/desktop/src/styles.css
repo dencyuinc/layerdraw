@@ -7,6 +7,11 @@
    without per-theme overrides here. Density is workbench scale: 13px body,
    compact padding, flat elevation (borders over shadow), radii capped at tokens. */
 
+/* UA reset: the shell owns the full window; no default body margin/border. */
+html, body { margin: 0; padding: 0; }
+body { background: var(--ld-background-canvas); }
+#root { min-height: 100dvh; }
+
 .ld-desktop-shell {
   --ld-ink: var(--ld-text-primary);
   /* Chrome labels use the secondary tier so small text clears WCAG AA on both
@@ -46,12 +51,12 @@
   transition: background var(--ld-motion-duration-hover) var(--ld-motion-easing-standard), border-color var(--ld-motion-duration-hover) var(--ld-motion-easing-standard);
 }
 .ld-btn:disabled { cursor: not-allowed; opacity: var(--ld-opacity-disabled); }
-.ld-btn-primary { background: var(--ld-accent); color: var(--ld-accent-fg); }
-.ld-btn-primary:not(:disabled):hover { background: var(--ld-accent-hover); }
-.ld-btn-secondary { background: var(--ld-action-secondary-background); color: var(--ld-action-secondary-foreground); border-color: var(--ld-action-secondary-border); }
-.ld-btn-secondary:not(:disabled):hover { background: var(--ld-action-secondary-hover); }
-.ld-btn-danger-quiet { background: transparent; color: var(--ld-status-danger-foreground); border-color: var(--ld-status-danger-border); }
-.ld-btn-danger-quiet:not(:disabled):hover { background: var(--ld-status-danger-background); }
+.ld-desktop-shell .ld-btn-primary { background: var(--ld-accent); color: var(--ld-accent-fg); }
+.ld-desktop-shell .ld-btn-primary:not(:disabled):hover { background: var(--ld-accent-hover); }
+.ld-desktop-shell .ld-btn-secondary { background: var(--ld-action-secondary-background); color: var(--ld-action-secondary-foreground); border-color: var(--ld-action-secondary-border); }
+.ld-desktop-shell .ld-btn-secondary:not(:disabled):hover { background: var(--ld-action-secondary-hover); }
+.ld-desktop-shell .ld-btn-danger-quiet { background: transparent; color: var(--ld-status-danger-foreground); border-color: var(--ld-status-danger-border); }
+.ld-desktop-shell .ld-btn-danger-quiet:not(:disabled):hover { background: var(--ld-status-danger-background); }
 
 /* ---- Boot / recovery / draining states ------------------------------------ */
 .ld-desktop-boot { display: grid; place-content: center; justify-items: center; gap: var(--ld-space-16); padding: var(--ld-space-48); text-align: center; background: var(--ld-canvas); }
@@ -59,10 +64,16 @@
 .ld-desktop-boot p { margin: 0; color: var(--ld-secondary); }
 
 /* ---- Brand ----------------------------------------------------------------- */
-.ld-wordmark { display: inline-flex; align-items: center; gap: var(--ld-space-8); }
+.ld-wordmark { display: inline-flex; align-items: center; }
 .ld-brand-icon { display: block; flex: 0 0 auto; border-radius: 5px; }
-.ld-wordmark-text { font-size: var(--ld-font-size-14); font-weight: var(--ld-font-weight-semibold); letter-spacing: 0.1px; color: var(--ld-color-brand-ink); }
-:root[data-theme="dark"] .ld-wordmark-text { color: var(--ld-text-primary); }
+.ld-wordmark-logo { display: block; height: 22px; width: auto; }
+.ld-wordmark-logo-dark { display: none; }
+:root[data-theme="dark"] .ld-wordmark-logo-light { display: none; }
+:root[data-theme="dark"] .ld-wordmark-logo-dark { display: block; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ld-wordmark-logo-light { display: none; }
+  :root:not([data-theme="light"]) .ld-wordmark-logo-dark { display: block; }
+}
 
 /* ---- Project hub (approved mock: rail 224px on bg-app, main on bg-canvas) -- */
 .ld-desktop-hub { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 100dvh; background: var(--ld-canvas); }
@@ -243,6 +254,15 @@
 .ld-library-sources[open] { padding: var(--ld-space-8); border: var(--ld-borderWidth-default) solid var(--ld-line-subtle); border-radius: var(--ld-radius-md); }
 .ld-library-sources form { grid-template-columns: 1fr 1fr; }
 .ld-library-sources form button { align-self: end; }
+
+/* ---- Inspector sections ---------------------------------------------------- */
+.ld-inspector-section { border-bottom: var(--ld-borderWidth-default) solid var(--ld-line-subtle); padding: var(--ld-space-8) 0 var(--ld-space-12); }
+.ld-inspector-section:first-child { padding-top: 0; }
+.ld-inspector-section > summary { list-style: none; display: flex; align-items: center; gap: var(--ld-space-8); padding: var(--ld-space-4) 0; cursor: pointer; font-size: var(--ld-font-size-12); font-weight: var(--ld-font-weight-semibold); letter-spacing: 0.4px; text-transform: uppercase; color: var(--ld-muted); user-select: none; }
+.ld-inspector-section > summary::-webkit-details-marker { display: none; }
+.ld-inspector-section > summary::before { content: "›"; display: inline-block; transition: transform var(--ld-motion-duration-hover) var(--ld-motion-easing-standard); color: var(--ld-border-strong); }
+.ld-inspector-section[open] > summary::before { transform: rotate(90deg); }
+.ld-inspector-section-body { padding-top: var(--ld-space-8); }
 
 /* ---- Utilities & responsive ------------------------------------------------ */
 .ld-desktop-table-scroll { overflow: auto; }

@@ -77,6 +77,9 @@ func (a *Application) openSelected(ctx context.Context, component desktopcontrac
 			return mapProjectOpenFailure[ProjectOpenResult](nameErr, desktopcontract.ComponentRuntime)
 		}
 		opened.History = history
+		// The tracked recents entry must carry the committed name, not the
+		// pre-commit bootstrap title captured when the session opened.
+		opened.Session.DisplayName = location.DisplayName
 	}
 	if a.config.NativeSearchLifecycle != nil {
 		if err := a.config.NativeSearchLifecycle.RefreshSearchIndex(ctx, opened.Session); err != nil {

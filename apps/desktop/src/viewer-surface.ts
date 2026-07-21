@@ -2,6 +2,7 @@
 
 import type { RenderBounds, RenderData } from "@layerdraw/render";
 import type { ViewerPublication, ViewerState } from "@layerdraw/viewer";
+import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react";
 import { createElement, useState, type KeyboardEvent, type ReactNode } from "react";
 import { DesktopThreeViewer } from "./viewer-three.js";
 
@@ -71,10 +72,13 @@ function publicationSurface(publication: ViewerPublication, mode: "2d" | "2.5d",
   }, connections, visualItems(data).map((item) => rect(item.key, item.bounds, item.label, selected.has(item.key), () => onSelectionChange([item.key]))));
 }
 
+const defaultViewerTranslator: Translator = createTranslator("en", baseShellCatalogs);
+
 export function DesktopViewerSurface({ state, onSelectionChange }: DesktopViewerSurfaceProps): ReactNode {
+  const s_translator = useOptionalI18n() ?? defaultViewerTranslator;
   const [mode, setMode] = useState<"2d" | "2.5d">("2d");
   if (state.status === "loading" || state.status === "cancelling") return createElement("p", { role: "status", "aria-live": "polite" }, "Loading view…");
-  if (state.status === "empty") return createElement("p", { className: "ld-desktop-empty" }, state.reason === "view_empty" ? "This view is empty." : "Select a view to begin.");
+  if (state.status === "empty") return createElement("p", { className: "ld-desktop-empty" }, s_translator.t(state.reason === "view_empty" ? "workspace.empty.view" : "workspace.empty.select"));
   if (state.status === "disposed") return createElement("p", { role: "status" }, "Viewer closed.");
   const publication = "publication" in state ? state.publication : state.previous;
   return createElement("div", { className: "ld-desktop-viewer", "data-viewer-state": state.status },
@@ -82,5 +86,5 @@ export function DesktopViewerSurface({ state, onSelectionChange }: DesktopViewer
       createElement("button", { type: "button", "data-mode": "2d", "aria-pressed": mode === "2d", onClick: () => setMode("2d") }, "2D"),
       createElement("button", { type: "button", "data-mode": "2.5d", "aria-pressed": mode === "2.5d", onClick: () => setMode("2.5d") }, "3D")),
     publication === undefined ? null : publicationSurface(publication, mode, onSelectionChange),
-    state.status === "ready" ? null : createElement("p", { role: "status", className: "ld-desktop-viewer-status" }, "The view needs attention."));
+    state.status === "ready" ? null : createElement("p", { role: "status", className: "ld-desktop-viewer-status" }, s_translator.t("workspace.attention")));
 }

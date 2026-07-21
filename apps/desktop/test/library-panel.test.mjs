@@ -39,7 +39,7 @@ test("Library panel executes browse, template preview, confirmation, and source 
   await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopLibraryPanel, { library })); });
   assert.deepEqual(library.calls[0], ["sources"]);
 
-  const browse = renderer.root.findByProps({ "aria-label": "Browse Registry" });
+  const browse = renderer.root.findByProps({ "aria-label": "Browse" });
   await act(async () => browse.findByProps({ type: "search" }).props.onChange({ currentTarget: { value: "starter" } }));
   await act(async () => browse.props.onSubmit({ preventDefault() {} }));
   assert.deepEqual(library.calls.find((call) => call[0] === "search"), ["search", "starter", undefined]);

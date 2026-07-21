@@ -10,6 +10,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
 const ICON_PATH = new URL("../../../brand/png/layerdraw-icon-128.png", import.meta.url);
+const LOGO_LIGHT_PATH = new URL("../../../brand/layerdraw-logo-on-light.svg", import.meta.url);
+const LOGO_DARK_PATH = new URL("../../../brand/layerdraw-logo-on-dark.svg", import.meta.url);
 const OUT_PATH = new URL("../src/brand-assets.ts", import.meta.url);
 
 function dataUri(url, mime) {
@@ -24,6 +26,14 @@ const source = `// SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 /** Canonical LayerDraw app icon (brand/png/layerdraw-icon-128.png). */
 export const layerdrawIconDataUri =
   "${dataUri(ICON_PATH, "image/png")}";
+
+/** Canonical full logo lockup for light surfaces (brand/layerdraw-logo-on-light.svg). */
+export const layerdrawLogoOnLightDataUri =
+  "${dataUri(LOGO_LIGHT_PATH, "image/svg+xml")}";
+
+/** Canonical full logo lockup for dark surfaces (brand/layerdraw-logo-on-dark.svg). */
+export const layerdrawLogoOnDarkDataUri =
+  "${dataUri(LOGO_DARK_PATH, "image/svg+xml")}";
 `;
 
 writeFileSync(OUT_PATH, source, "utf8");
