@@ -119,7 +119,14 @@ func localRoot(source registry.RegistrySource) (string, error) {
 		return "", errors.New("invalid local Registry endpoint")
 	}
 	value := source.EndpointRef
-	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" {
+	// A native Windows absolute path begins with a drive letter and colon.
+	// net/url interprets that drive letter as a URL scheme, so recognize native
+	// absolute paths before accepting the explicit file: URL form.
+	if !filepath.IsAbs(value) {
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme == "" {
+			return "", errors.New("invalid local Registry endpoint")
+		}
 		if parsed.Scheme != "file" || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 			return "", errors.New("invalid local Registry endpoint")
 		}
