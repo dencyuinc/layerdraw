@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -146,6 +147,109 @@ func TestCatalogAndEndpointValidationFailClosed(t *testing.T) {
 	}
 	if _, err := resolveRemotePath(&urlFixture, "../secret"); err == nil {
 		t.Fatal("remote traversal accepted")
+	}
+}
+
+func TestLocalDirectoryRejectsInvalidBindingsAndSupportsFileURL(t *testing.T) {
+	root := t.TempDir()
+	body := []byte("pack bytes")
+	release := fixtureRelease("", body)
+	writeCatalog(t, root, Catalog{SchemaVersion: CatalogVersion, Artifacts: []CatalogEntry{{Release: release, ArtifactPath: "demo.ldpack"}}})
+	if err := os.WriteFile(filepath.Join(root, "demo.ldpack"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := LocalDirectory{}
+	source := registry.RegistrySource{SourceID: "git", Kind: registry.SourceGit, EndpointRef: (&url.URL{Scheme: "file", Path: filepath.ToSlash(root)}).String()}
+	if err := client.ProbeRegistrySource(context.Background(), source, registry.CredentialLease{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.OpenArtifact(context.Background(), source, fixtureRelease("git", []byte("different"))); err == nil {
+		t.Fatal("catalog artifact with a different digest was opened")
+	}
+	if err := client.ProbeRegistrySource(context.Background(), source, registry.CredentialLease{Credential: []byte("secret")}); err == nil {
+		t.Fatal("local source accepted credentials")
+	}
+	badKind := source
+	badKind.Kind = registry.SourceOfficial
+	if err := client.ProbeRegistrySource(context.Background(), badKind, registry.CredentialLease{}); err == nil {
+		t.Fatal("remote kind was accepted by local transport")
+	}
+	for _, endpoint := range []string{"relative", "file://host/path", "file:///path?query=x", "file:///path#fragment", string([]byte{'/', 'x', 0})} {
+		bad := source
+		bad.EndpointRef = endpoint
+		if _, err := localRoot(bad); err == nil {
+			t.Fatalf("invalid local endpoint accepted: %q", endpoint)
+		}
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.Search(cancelled, source, registry.SearchInput{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled search err=%v", err)
+	}
+}
+
+func TestCatalogSearchFilteringSortingAndSourceBinding(t *testing.T) {
+	body := []byte("pack")
+	first := fixtureRelease("", body)
+	first.Identity.Version = "1.0.0"
+	second := first
+	second.Identity.Version = "2.0.0"
+	second.PublisherID = "Acme"
+	template := first
+	template.Identity = registry.ArtifactIdentity{Kind: registry.ArtifactTemplate, CanonicalID: "example/template", Version: "1.0.0"}
+	catalog := Catalog{SchemaVersion: CatalogVersion, Artifacts: []CatalogEntry{{Release: first}, {Release: template}, {Release: second}}}
+	source := registry.RegistrySource{SourceID: "bound"}
+	pack := registry.ArtifactPack
+	found, err := searchCatalog(source, catalog, registry.SearchInput{Query: "EXAMPLE", Kind: &pack})
+	if err != nil || len(found) != 2 || found[0].Identity.Version != "2.0.0" || found[1].Identity.Version != "1.0.0" {
+		t.Fatalf("found=%+v err=%v", found, err)
+	}
+	if unmatched, err := searchCatalog(source, catalog, registry.SearchInput{Query: "missing"}); err != nil || len(unmatched) != 0 {
+		t.Fatalf("unmatched=%+v err=%v", unmatched, err)
+	}
+	bound := first
+	bound.SourceID = "other"
+	if _, err := searchCatalog(source, Catalog{SchemaVersion: CatalogVersion, Artifacts: []CatalogEntry{{Release: bound}}}, registry.SearchInput{}); err == nil {
+		t.Fatal("catalog source mismatch was accepted")
+	}
+}
+
+func TestHTTPSRejectsUnavailableLeaseStatusAndSizeMismatch(t *testing.T) {
+	body := []byte("remote pack")
+	release := fixtureRelease("remote", body)
+	catalog := Catalog{SchemaVersion: CatalogVersion, Artifacts: []CatalogEntry{{Release: release, ArtifactPath: "artifact.ldpack"}}}
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/base/" + CatalogPath:
+			_, _ = writer.Write(encoded)
+		case "/base/artifact.ldpack":
+			writer.Header().Set("Content-Length", "1")
+			_, _ = writer.Write([]byte("x"))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client, err := NewHTTPS(server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := registry.RegistrySource{SourceID: "remote", Kind: registry.SourceSelfHosted, EndpointRef: server.URL + "/base", AuthConnectionRef: "connection"}
+	if _, err := client.Search(context.Background(), source, registry.SearchInput{}); err == nil {
+		t.Fatal("authenticated source was read without a lease")
+	}
+	if err := client.ProbeRegistrySource(context.Background(), source, registry.CredentialLease{ConnectionRef: "connection", Credential: []byte("token"), ExpiresAt: time.Now().Add(-time.Minute)}); err == nil {
+		t.Fatal("expired credential lease was accepted")
+	}
+	if err := client.ProbeRegistrySource(context.Background(), source, registry.CredentialLease{ConnectionRef: "connection", Credential: []byte("token"), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.OpenArtifact(context.Background(), source, release); err == nil {
+		t.Fatal("artifact response with mismatched size was accepted")
 	}
 }
 
