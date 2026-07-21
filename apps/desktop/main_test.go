@@ -58,6 +58,21 @@ func TestPackagedConformanceRejectsRelativeOutput(t *testing.T) {
 	}
 }
 
+func TestPackagedConformanceScenarioRunsInIsolatedDesktopProcess(t *testing.T) {
+	originalArgs := os.Args
+	originalScenario := runPackagedConformanceScenario
+	t.Cleanup(func() { os.Args, runPackagedConformanceScenario = originalArgs, originalScenario })
+	os.Args = []string{"LayerDraw", "--packaged-conformance-scenario", "cold_start"}
+	called := false
+	runPackagedConformanceScenario = func(name string, output io.Writer) error {
+		called = name == "cold_start" && output != nil
+		return nil
+	}
+	if err := run(); err != nil || !called {
+		t.Fatalf("isolated scenario dispatch called=%v err=%v", called, err)
+	}
+}
+
 func TestRunBuildsPackagedDesktopComposition(t *testing.T) {
 	root := t.TempDir()
 	originalDir, originalStart := userConfigDir, startDesktop

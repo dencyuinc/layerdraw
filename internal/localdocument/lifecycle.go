@@ -109,6 +109,10 @@ type Host struct {
 	closed       bool
 }
 
+// DataRoot returns the trusted application-owned root used to compose sibling
+// native owners. It is internal-only and never crosses a transport boundary.
+func (h *Host) DataRoot() string { return h.config.Root }
+
 type autosaveJob struct {
 	cancelScheduled func()
 	started         bool

@@ -34,6 +34,8 @@ Tagged release jobs fail before packaging when the credentials for their platfor
 - `LAYERDRAW_LINUX_GPG_PRIVATE_KEY` and `LAYERDRAW_LINUX_GPG_PASSPHRASE`;
 - `LAYERDRAW_DESKTOP_UPDATE_SIGNING_KEY` and its independently configured trust anchor,
   `LAYERDRAW_DESKTOP_UPDATE_PUBLIC_KEY`.
+- `LAYERDRAW_DESKTOP_ATTESTATION_SIGNING_KEY` and its independently configured trust anchor,
+  `LAYERDRAW_DESKTOP_ATTESTATION_PUBLIC_KEY`.
 
 Certificates and keys are exposed only in the tag/manual-only release workflow, guarded by the
 protected `desktop-release` environment. Pull requests run the separate installer CI workflow,
@@ -45,7 +47,8 @@ creation. Checkout credentials are disabled, and only the final release job rece
 
 Every platform has a signed JSON manifest that binds the installer SHA-256 digest and size,
 any detached platform signature, artifact-specific SBOM and notices, packaged capabilities,
-source revision, build workflow, timestamp, channel, target version, and minimum compatible installed version. Verification
+the machine-checked Desktop conformance closure, source revision, build workflow, timestamp,
+channel, target version, and minimum compatible installed version. Verification
 rejects unknown fields, an untrusted key, altered metadata, altered payloads, platform/channel
 mismatch, downgrade/reinstall, and clients older than the declared compatibility floor.
 
@@ -65,3 +68,25 @@ components and asserts that provider credentials, signing secrets, or preconfigu
 endpoints are absent. Development servers, test fixtures, and source maps are excluded. The
 release workflow publishes the installer, detached platform signature where applicable, signed
 update manifest, SBOMs, capability declaration, notices, and provenance together.
+
+`deploy/desktop-conformance.json` is also part of the installer and signed update payload. It maps
+all 62 normative Feature x Delivery Matrix rows to an executable Go test or to the exact Desktop
+`-` exclusion. `tools/desktopconformance` rejects matrix drift, missing test symbols, incomplete
+acceptance suites, missing adversarial cases, incomplete release evidence, and missing performance
+budgets. The three-platform packaged workflow executes every time-bounded performance evidence
+test; installer smoke tests prove the closure file survives fresh install and upgrade.
+
+The explicit Desktop exclusions are F01, F02, F41, F44-F47, and F58-F61. They remain disabled
+features, not latent capabilities inferred from linked packages. App-store readiness, server,
+Organization/Workspace management, sharing, realtime collaboration, VS Code, MCP Apps, and
+Marketplace delivery are not asserted by this evidence.
+
+Each installed platform emits a strict scenario result for the exact release commit. Five or more
+iterations cover cold process start, project open, Search/Analysis, preview, durable commit, 2D/3D
+Viewer interaction, bounded MCP operations, external reconcile, and shutdown. Each workflow runs
+in an isolated installed-Desktop worker process; the result records the largest worker peak RSS per
+iteration and computes p95 against the declared budget. This evidence does not claim WebView or MCP
+descendant-process memory: final Desktop closure requires a separate packaged UI process-tree
+scenario. The release job then signs an attestation binding the scenario result, closure manifest, exact
+installer digest, source revision, and platform. Update metadata generation fails closed unless
+that independent signature and every bound digest verify against the configured trust anchor.

@@ -31,6 +31,8 @@ if [[ "$platform" == "windows" ]] && ! command -v makensis >/dev/null 2>&1; then
   exit 1
 fi
 
+go run "$repository_root/tools/desktopconformance" -root "$repository_root" verify
+
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/layerdraw-desktop-installer.XXXXXX")"
 preserved=(go.mod go.sum apps/desktop/wails.json apps/desktop/frontend/wailsjs/runtime/runtime.d.ts apps/desktop/frontend/wailsjs/runtime/runtime.js)
 mkdir -p "$temporary/preserved"
@@ -49,6 +51,15 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$output" "$temporary/legal" "$temporary/runtime"
+
+native_dir="$("$repository_root/tools/install-ladybug-native.sh")"
+native_stage="$temporary/native"
+mkdir -p "$native_stage"
+install -m 0644 "$native_dir/libfts.lbug_extension" "$native_stage/"
+install -m 0644 "$native_dir/libvector.lbug_extension" "$native_stage/"
+install -m 0644 "$native_dir/libalgo.lbug_extension" "$native_stage/"
+install -m 0644 "$native_dir/ladybug-native.json" "$native_stage/"
+if [[ "$platform" == "windows" ]]; then install -m 0755 "$native_dir/lbug_shared.dll" "$native_stage/"; fi
 
 node - "$repository_root/apps/desktop/wails.json" "$version" <<'NODE'
 const fs = require("node:fs");
@@ -75,10 +86,17 @@ output_name="LayerDraw"
 if [[ "$platform" == "windows" ]]; then output_name="LayerDraw.exe"; fi
 build_args=(-clean -trimpath -s -skipbindings -o "$output_name")
 if [[ "$platform" == "windows" ]]; then build_args+=(-nsis); fi
-if [[ "$platform" == "linux" ]]; then build_args+=(-tags webkit2_41); fi
+native_link_flags=""
+if [[ "$platform" == "linux" ]]; then
+  build_args+=(-tags webkit2_41,ladybug_native)
+  native_link_flags="-Wl,--export-dynamic"
+else
+  build_args+=(-tags ladybug_native)
+fi
 (
   cd "$repository_root/apps/desktop"
-  go run "github.com/wailsapp/wails/v2/cmd/wails@$wails_version" build "${build_args[@]}"
+  CGO_ENABLED=1 CGO_CFLAGS="-I$native_dir ${CGO_CFLAGS:-}" CGO_LDFLAGS="-L$native_dir $native_link_flags ${CGO_LDFLAGS:-}" \
+    go run "github.com/wailsapp/wails/v2/cmd/wails@$wails_version" build "${build_args[@]}"
 )
 
 binary="$repository_root/apps/desktop/build/bin/LayerDraw"
@@ -92,7 +110,20 @@ if [[ "$platform" == "windows" ]]; then
   nsis_binary="$binary"
   if command -v cygpath >/dev/null 2>&1; then nsis_binary="$(cygpath -w "$binary")"; fi
 fi
-go run "$repository_root/tools/licensecheck" bundle -binary "$binary" -output "$temporary/legal" -version "$version" -include-production-npm
+fts_component="$native_stage/libfts.lbug_extension"
+vector_component="$native_stage/libvector.lbug_extension"
+algo_component="$native_stage/libalgo.lbug_extension"
+if [[ "$platform" == "windows" ]] && command -v cygpath >/dev/null 2>&1; then
+  fts_component="$(cygpath -w "$fts_component")"
+  vector_component="$(cygpath -w "$vector_component")"
+  algo_component="$(cygpath -w "$algo_component")"
+fi
+go run "$repository_root/tools/licensecheck" bundle -binary "$binary" -output "$temporary/legal" -version "$version" \
+		-include-production-npm \
+		-bundled-component "three|0.179.1|apps/desktop/frontend/dist/app.js|MIT|apps/desktop/node_modules/three/LICENSE|bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601" \
+		-bundled-component "LadybugDB FTS extension|0.17.0|$fts_component|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0" \
+		-bundled-component "LadybugDB Vector extension|0.17.0|$vector_component|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0" \
+		-bundled-component "LadybugDB Algo extension|0.17.0|$algo_component|MIT|docs/legal/licenses/LadybugDB-MIT.txt|c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0"
 desktop_sbom="$temporary/legal/$(basename "$binary").cdx.json"
 host="$temporary/runtime/layerdraw-host"
 if [[ "$platform" == "windows" ]]; then host="$host.exe"; fi
@@ -107,6 +138,7 @@ go run "$repository_root/tools/desktoprelease" merge-sbom \
   -companion "$companion_sbom" \
   -output "$temporary/legal/LayerDraw-bundle.cdx.json"
 cp "$repository_root/deploy/desktop-capabilities.json" "$temporary/legal/"
+cp "$repository_root/deploy/desktop-conformance.json" "$temporary/legal/"
 
 if [[ "$platform" == "windows" ]]; then
 	if [[ "${LAYERDRAW_RELEASE_SIGNING:-0}" == "1" ]]; then
@@ -124,6 +156,8 @@ if [[ "$platform" == "windows" ]]; then
   cp -R "$temporary/legal/." "$installer_root/layerdraw-legal/"
   mkdir -p "$installer_root/layerdraw-runtime"
   cp "$host" "$installer_root/layerdraw-runtime/"
+  mkdir -p "$installer_root/layerdraw-native"
+  cp -R "$native_stage/." "$installer_root/layerdraw-native/"
   node - "$installer_root/project.nsi" <<'NODE'
 const fs = require("node:fs");
 const path = process.argv[2];
@@ -131,9 +165,10 @@ let source = fs.readFileSync(path, "utf8");
 const anchor = '    CreateShortcut "$SMPROGRAMS\\${INFO_PRODUCTNAME}.lnk"';
 const include = '!include "wails_tools.nsh"';
 const legal = '    SetOutPath "$INSTDIR\\legal"\r\n    File /r "layerdraw-legal\\*"\r\n    SetOutPath "$INSTDIR\\runtime"\r\n    File /r "layerdraw-runtime\\*"\r\n    SetOutPath $INSTDIR\r\n\r\n';
+const native = '    SetOutPath "$INSTDIR\\native"\r\n    File /r "layerdraw-native\\*"\r\n    SetOutPath $INSTDIR\r\n    File "layerdraw-native\\lbug_shared.dll"\r\n\r\n';
 if (!source.includes(anchor) || !source.includes(include)) throw new Error("Wails NSIS template anchor was not found");
 source = source.replace(include, '!define PRODUCT_EXECUTABLE "LayerDraw.exe"\r\n' + include);
-  source = source.replace(anchor, legal + anchor);
+  source = source.replace(anchor, legal + native + anchor);
 fs.writeFileSync(path, source);
 NODE
   (
@@ -148,6 +183,8 @@ case "$platform" in
     cp -R "$temporary/legal/." "$app/Contents/Resources/layerdraw/"
     mkdir -p "$app/Contents/Resources/layerdraw/bin"
     cp "$host" "$app/Contents/Resources/layerdraw/bin/"
+    mkdir -p "$app/Contents/Resources/layerdraw/native"
+    cp -R "$native_stage/." "$app/Contents/Resources/layerdraw/native/"
     if [[ "${LAYERDRAW_RELEASE_SIGNING:-0}" == "1" ]]; then
       : "${LAYERDRAW_MACOS_SIGNING_IDENTITY:?release signing requires LAYERDRAW_MACOS_SIGNING_IDENTITY}"
       codesign --force --options runtime --timestamp --sign "$LAYERDRAW_MACOS_SIGNING_IDENTITY" "$app/Contents/Resources/layerdraw/bin/layerdraw-host"
@@ -167,6 +204,8 @@ case "$platform" in
     install -m 0755 "$binary" "$package_root/usr/bin/layerdraw"
     mkdir -p "$package_root/usr/lib/layerdraw"
     install -m 0755 "$host" "$package_root/usr/lib/layerdraw/layerdraw-host"
+    mkdir -p "$package_root/usr/lib/layerdraw/native"
+    cp -R "$native_stage/." "$package_root/usr/lib/layerdraw/native/"
     cp -R "$temporary/legal/." "$package_root/usr/share/layerdraw/legal/"
     sed "s/@VERSION@/$version/g" "$repository_root/deploy/linux/layerdraw.control" > "$package_root/DEBIAN/control"
     cp "$repository_root/deploy/linux/layerdraw.desktop" "$package_root/usr/share/applications/"
@@ -177,3 +216,4 @@ esac
 cp "$temporary/legal/LayerDraw-bundle.cdx.json" "$output/LayerDraw-$version.cdx.json"
 cp "$temporary/legal/THIRD_PARTY_NOTICES.txt" "$output/LayerDraw-$version-THIRD_PARTY_NOTICES.txt"
 cp "$repository_root/deploy/desktop-capabilities.json" "$output/LayerDraw-$version-capabilities.json"
+cp "$repository_root/deploy/desktop-conformance.json" "$output/LayerDraw-$version-conformance.json"

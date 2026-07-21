@@ -77,6 +77,14 @@ linkage, private settings round trip, and opaque association handoff without
 launching another application. The `Desktop packaged probes` CI matrix builds
 and executes that same binary on macOS, Windows, and Linux.
 
+Packaged delivery closure is machine-readable in `deploy/desktop-conformance.json`. Every
+normative Desktop matrix row is either bound to an existing executable test symbol or recorded as
+the exact normative exclusion. The closure additionally fixes the installed workflow, MCP,
+adversarial recovery, ownership-boundary, transport-parity, accessibility, release-evidence, and
+performance suites. CI validates the manifest against `docs/blueprint.md` and executes each
+time-bounded performance evidence test on all three packaged platforms before release evidence can
+be built.
+
 Persisted window bounds are schema-versioned and normalized against the live
 display work areas. Invalid, oversized, or off-screen bounds recover onto a
 usable primary display; theme and zoom use closed values and zoom is bounded to

@@ -139,14 +139,17 @@ func TestVerifyRejectsDigestMismatchDowngradeAndIncompatibleClient(t *testing.T)
 		name, current, mutate, want string
 	}{
 		{name: "digest", current: "1.1.0", mutate: "installer", want: "digest mismatch"},
+		{name: "conformance digest", current: "1.1.0", mutate: "conformance", want: "digest mismatch"},
+		{name: "attestation digest", current: "1.1.0", mutate: "attestation", want: "digest mismatch"},
 		{name: "downgrade", current: "1.2.0", want: "downgrade or reinstall"},
 		{name: "incompatible", current: "0.9.0", want: "incompatible"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root, manifestPath := buildFixture(t, true)
-			if test.mutate == "installer" {
-				if err := os.WriteFile(filepath.Join(root, "LayerDraw.dmg"), []byte("tampered"), 0o644); err != nil {
+			if test.mutate != "" {
+				path := map[string]string{"installer": "LayerDraw.dmg", "conformance": "desktop-conformance.json", "attestation": "desktop-attestation.json"}[test.mutate]
+				if err := os.WriteFile(filepath.Join(root, path), []byte("tampered"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -388,10 +391,12 @@ func fixtureFiles(t *testing.T, root string) map[string]string {
 	contents := map[string]string{
 		"installer": "desktop installer", "sbom": `{"bomFormat":"CycloneDX"}`,
 		"licenses": "Third-party notices", "capabilities": `{"schema_version":1,"components":["desktop-shell","frontend-packages","mcp-host","native-adapters","native-exporters","registry","review"],"excludes":["development-servers","source-maps","test-fixtures"],"security":{"preconfigured_mcp_endpoints":false,"provider_credentials":false,"signing_secrets":false}}`,
+		"conformance": `{"schema_version":1,"delivery":"desktop"}`,
+		"attestation": `{"schema_version":1,"source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
 	}
 	result := map[string]string{}
 	for name, content := range contents {
-		filename := map[string]string{"installer": "LayerDraw.dmg", "sbom": "LayerDraw.cdx.json", "licenses": "THIRD_PARTY_NOTICES.txt", "capabilities": "desktop-capabilities.json"}[name]
+		filename := map[string]string{"installer": "LayerDraw.dmg", "sbom": "LayerDraw.cdx.json", "licenses": "THIRD_PARTY_NOTICES.txt", "capabilities": "desktop-capabilities.json", "conformance": "desktop-conformance.json", "attestation": "desktop-attestation.json"}[name]
 		path := filepath.Join(root, filename)
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -402,7 +407,7 @@ func fixtureFiles(t *testing.T, root string) map[string]string {
 }
 
 func buildArgs(root string, files map[string]string, testSigning bool) []string {
-	args := []string{"build", "-installer", files["installer"], "-sbom", files["sbom"], "-licenses", files["licenses"], "-capabilities", files["capabilities"], "-output", filepath.Join(root, "update.json"), "-version", "1.2.0", "-minimum-supported-version", "1.0.0", "-platform", "darwin", "-format", "dmg", "-channel", "stable", "-source-revision", strings.Repeat("a", 40), "-built-at", "2026-07-20T00:00:00Z"}
+	args := []string{"build", "-installer", files["installer"], "-sbom", files["sbom"], "-licenses", files["licenses"], "-capabilities", files["capabilities"], "-desktop-conformance", files["conformance"], "-desktop-attestation", files["attestation"], "-output", filepath.Join(root, "update.json"), "-version", "1.2.0", "-minimum-supported-version", "1.0.0", "-platform", "darwin", "-format", "dmg", "-channel", "stable", "-source-revision", strings.Repeat("a", 40), "-built-at", "2026-07-20T00:00:00Z"}
 	if testSigning {
 		args = append(args, "-test-signing")
 	}

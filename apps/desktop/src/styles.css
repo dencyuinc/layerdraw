@@ -78,6 +78,7 @@
 .ld-desktop-view-mode button[aria-pressed="true"] { color: var(--ld-accent); background: var(--ld-accent-soft); font-weight: 700; }
 .ld-desktop-viewer-three { position: relative; min-width: 35rem; min-height: 32rem; overflow: hidden; }
 .ld-desktop-viewer-three-canvas { display: block; width: 100%; height: 32rem; touch-action: none; }
+.ld-desktop-viewer-three ul button { border: 0; color: var(--ld-ink); background: var(--ld-panel); }
 .ld-desktop-viewer-canvas { display: block; width: 100%; min-width: 35rem; min-height: 32rem; }
 .ld-desktop-viewer-path { fill: none; stroke: #77948b; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .ld-desktop-viewer-item { cursor: pointer; }

@@ -21,13 +21,18 @@ var frontend embed.FS
 var userConfigDir = os.UserConfigDir
 var runPackagedProbe = func(output io.Writer) error { return desktopwails.RunPackagedProbe(output) }
 var runPackagedConformance = desktopwails.RunPackagedConformance
+var runPackagedConformanceScenario = desktopwails.RunPackagedConformanceScenario
 var startDesktop = func(config desktopapp.Config, assets fs.FS) error {
 	return desktopwails.Run(config, assets, nil)
 }
 
 func main() {
 	if err := run(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "LayerDraw Desktop failed to start")
+		if code := desktopwails.PackagedConformanceFailureCode(err); code != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "LayerDraw Desktop conformance failed [%s]\n", code)
+		} else {
+			_, _ = fmt.Fprintln(os.Stderr, "LayerDraw Desktop failed to start")
+		}
 		os.Exit(1)
 	}
 }
@@ -42,6 +47,9 @@ func run() error {
 			return errors.New("packaged Desktop conformance output is invalid")
 		}
 		return runPackagedConformance(output)
+	}
+	if len(os.Args) == 3 && os.Args[1] == "--packaged-conformance-scenario" {
+		return runPackagedConformanceScenario(os.Args[2], os.Stdout)
 	}
 	if len(os.Args) == 3 && os.Args[1] == "--packaged-ui-probe" {
 		output, err := filepath.Abs(os.Args[2])

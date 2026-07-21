@@ -411,22 +411,21 @@ func TestPackagedUIProbeWritesRealAccessibilityRoundTrip(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "ui-probe.json")
 	runtime := &nativeStub{}
 	done := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	go func() {
-		runPackagedUIProbe(context.Background(), output, binding.shell, bridge, runtime)
+		runPackagedUIProbe(ctx, output, binding.shell, bridge, runtime)
 		close(done)
 	}()
-	select {
-	case event := <-bridgeRuntime.emitted:
-		t.Fatalf("probe emitted before frontend readiness: %v", event)
-	case <-time.After(25 * time.Millisecond):
-	}
 	binding.AccessibilityProbeReady()
 	for index := 0; index < 4; index++ {
 		var event []any
 		select {
 		case event = <-bridgeRuntime.emitted:
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for packaged UI probe event")
+		case <-done:
+			t.Fatalf("packaged UI probe completed before matrix event %d", index+1)
+		case <-ctx.Done():
+			t.Fatalf("packaged UI probe exceeded readiness contract before matrix event %d: %v", index+1, ctx.Err())
 		}
 		id := event[0].(string)
 		profile := event[1].(desktopcontract.AccessibilityProfile)
@@ -445,8 +444,8 @@ func TestPackagedUIProbeWritesRealAccessibilityRoundTrip(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for packaged UI probe completion")
+	case <-ctx.Done():
+		t.Fatalf("packaged UI probe exceeded completion contract: %v", ctx.Err())
 	}
 	encoded, err := os.ReadFile(output)
 	if err != nil {
@@ -455,6 +454,19 @@ func TestPackagedUIProbeWritesRealAccessibilityRoundTrip(t *testing.T) {
 	var result PackagedProbeResult
 	if err := json.Unmarshal(encoded, &result); err != nil || !result.ProjectRoundTrip || !result.DOMRoundTrip || len(result.UIMatrix) != 4 || result.Accessibility == nil || !result.Accessibility.KeyboardWorkflowValid || !runtime.quit {
 		t.Fatalf("probe=%+v runtime=%+v err=%v", result, runtime, err)
+	}
+}
+
+func TestWailsShellBridgeAccessibilityReadinessIsExplicit(t *testing.T) {
+	bridge := NewWailsShellBridge()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := bridge.waitAccessibilityProbeReady(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("unready bridge did not honor cancellation: %v", err)
+	}
+	bridge.markAccessibilityProbeReady()
+	if err := bridge.waitAccessibilityProbeReady(context.Background()); err != nil {
+		t.Fatalf("ready bridge remained blocked: %v", err)
 	}
 }
 

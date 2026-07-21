@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/user"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -38,22 +39,30 @@ var packagedCapabilities = []protocolcommon.CapabilityID{
 	desktopcontract.CapabilityAgentScope,
 }
 
-// NewSharedConfig wires the Engine and Runtime owners that are actually
-// packaged in Desktop. Other typed binding slots stay fail-closed and their
-// capabilities are reported disabled until their production owners land.
+// NewSharedConfig wires the owners that are actually packaged in Desktop.
+// Build-tagged native owners fail closed at startup when their verified bundle
+// is absent; unavailable owners remain disabled and undiscoverable.
 func NewSharedConfig(root string) (desktopapp.Config, error) {
-	owner := &sharedOwner{}
+	owner := &sharedOwner{root: root}
 	clients, err := packagedClients(owner)
 	if err != nil {
 		return desktopapp.Config{}, err
 	}
 	adapters := map[desktopcontract.ComponentID]desktopapp.Adapter{}
-	for _, id := range []desktopcontract.ComponentID{
-		desktopcontract.ComponentNativeQuery, desktopcontract.ComponentSearchIndex,
-		desktopcontract.ComponentEmbeddingProvider, desktopcontract.ComponentRegistryClient,
-		desktopcontract.ComponentReview, desktopcontract.ComponentNativeExporters,
-	} {
+	disabled := []desktopcontract.ComponentID{
+		desktopcontract.ComponentRegistryClient, desktopcontract.ComponentReview,
+		desktopcontract.ComponentNativeExporters,
+	}
+	if !packagedNativeSearchEnabled() {
+		disabled = append(disabled, desktopcontract.ComponentNativeQuery, desktopcontract.ComponentSearchIndex, desktopcontract.ComponentEmbeddingProvider)
+	}
+	for _, id := range disabled {
 		adapters[id] = disabledComponent{}
+	}
+	if packagedNativeSearchEnabled() {
+		for _, id := range []desktopcontract.ComponentID{desktopcontract.ComponentNativeQuery, desktopcontract.ComponentSearchIndex, desktopcontract.ComponentEmbeddingProvider} {
+			adapters[id] = owner
+		}
 	}
 	adapters[desktopcontract.ComponentBindingShell] = owner
 	return desktopapp.Config{
@@ -62,16 +71,13 @@ func NewSharedConfig(root string) (desktopapp.Config, error) {
 		Capabilities:                  nativeCapabilities{},
 		ExternalPublication:           owner,
 		EffectiveRequiredCapabilities: append([]protocolcommon.CapabilityID(nil), packagedCapabilities...),
-		DisabledComponents: []desktopcontract.ComponentID{
-			desktopcontract.ComponentNativeQuery, desktopcontract.ComponentSearchIndex,
-			desktopcontract.ComponentEmbeddingProvider, desktopcontract.ComponentRegistryClient,
-			desktopcontract.ComponentReview, desktopcontract.ComponentNativeExporters,
-		},
+		DisabledComponents:            append([]desktopcontract.ComponentID(nil), disabled...),
 		HostPorts: desktopcontract.HostPorts{
 			Credentials: newPlatformCredentialPort(), LocalActor: platformActor{},
 			LocalOwner: unavailableOwner{}, Delegations: unavailableDelegations{},
 		},
-		MCPCapabilities: owner,
+		MCPCapabilities:       owner,
+		NativeSearchLifecycle: packagedNativeSearchLifecycle(owner),
 	}, nil
 }
 
@@ -84,10 +90,14 @@ func (disabledComponent) Shutdown(context.Context) error { return nil }
 // Runtime bindings. It is started with the binding shell and closed before the
 // application-local project host shuts down.
 type sharedOwner struct {
-	mu       sync.RWMutex
-	local    *localdocument.Host
-	endpoint *host.Endpoint
-	engine   *engineendpoint.HostEngineFacade
+	mu           sync.RWMutex
+	root         string
+	local        *localdocument.Host
+	endpoint     *host.Endpoint
+	engine       *engineendpoint.HostEngineFacade
+	nativeSearch bool
+	searchLife   host.SearchDocumentLifecycle
+	closeSearch  func()
 }
 
 func (o *sharedOwner) RevalidateExternalPublication(ctx context.Context, intent desktopapp.ExternalPublicationIntent) desktopcontract.Result[struct{}] {
@@ -116,7 +126,8 @@ func (o *sharedOwner) Snapshot(context.Context) (mcphost.CapabilitySnapshot, err
 	schema := json.RawMessage(`{"type":"object","additionalProperties":true}`)
 	for _, route := range mcphost.ToolRoutes() {
 		for _, operation := range append([]string{route.Operation, route.PreviewOperation}, route.RequiredOperations...) {
-			if operation != "" && generated[operation] && (strings.HasPrefix(operation, "engine.") || strings.HasPrefix(operation, "runtime.")) {
+			native := strings.HasPrefix(operation, "native.") && o.nativeSearch
+			if operation != "" && generated[operation] && (strings.HasPrefix(operation, "engine.") || strings.HasPrefix(operation, "runtime.") || native) {
 				operations[operation] = mcphost.OperationCapability{Enabled: true, InputSchema: append(json.RawMessage(nil), schema...), OutputSchema: append(json.RawMessage(nil), schema...)}
 			}
 		}
@@ -150,22 +161,34 @@ func (o *sharedOwner) Start(context.Context) error {
 	if o.local == nil {
 		return errors.New("desktop local host is not bound")
 	}
+	if o.root == "" {
+		o.root = o.local.DataRoot()
+	}
 	engine, err := engineendpoint.NewHostEngineFacade(desktopRelease, "unknown", desktopDigest, desktopEndpoint, engineendpoint.TransportInProcess)
 	if err != nil {
 		return err
 	}
-	endpoint, err := host.New(host.Config{LocalHost: o.local, Engine: engine})
+	search, lifecycle, closeSearch, err := openPackagedNativeSearch(filepath.Join(o.root, "native-search"), o.local, engine)
 	if err != nil {
 		return err
 	}
-	o.endpoint, o.engine = endpoint, engine
+	endpoint, err := host.New(host.Config{LocalHost: o.local, Engine: engine, Search: search, SearchLifecycle: lifecycle})
+	if err != nil {
+		closeSearch()
+		return err
+	}
+	o.endpoint, o.engine, o.nativeSearch, o.searchLife, o.closeSearch = endpoint, engine, search != nil, lifecycle, closeSearch
 	return nil
 }
 
 func (o *sharedOwner) Shutdown(context.Context) error {
 	o.mu.Lock()
-	o.endpoint, o.engine, o.local = nil, nil, nil
+	closeSearch := o.closeSearch
+	o.endpoint, o.engine, o.local, o.nativeSearch, o.searchLife, o.closeSearch = nil, nil, nil, false, nil, nil
 	o.mu.Unlock()
+	if closeSearch != nil {
+		closeSearch()
+	}
 	return nil
 }
 
@@ -175,6 +198,9 @@ func (o *sharedOwner) Invoke(ctx context.Context, exchange desktopcontract.Excha
 	o.mu.RUnlock()
 	if endpoint == nil || engine == nil {
 		return desktopcontract.ExchangeResult{}, errors.New("desktop shared owner is not started")
+	}
+	if result, err, handled := invokePackagedNativeSearch(ctx, endpoint, exchange); handled {
+		return result, err
 	}
 	if exchange.Operation == string(engineprotocol.HandshakeRequestEnvelopeOperationValue) {
 		request, err := engineprotocol.DecodeHandshakeRequestEnvelope(exchange.Control)
@@ -351,11 +377,20 @@ func packagedClients(owner *sharedOwner) (desktopcontract.ClientSet, error) {
 	decoder := reflect.ValueOf(closedOwnerDecoder{})
 	for index := 0; index < root.NumField(); index++ {
 		ownerField := root.Field(index)
-		actual := root.Type().Field(index).Name == "Engine" || root.Type().Field(index).Name == "Runtime"
+		ownerName := root.Type().Field(index).Name
+		actual := ownerName == "Engine" || ownerName == "Runtime" || (ownerName == "NativeQuery" && packagedNativeSearchEnabled())
 		for fieldIndex := 0; fieldIndex < ownerField.NumField(); fieldIndex++ {
 			field := ownerField.Field(fieldIndex)
 			if field.Kind() == reflect.Interface {
-				field.Set(decoder)
+				if ownerName == "NativeQuery" && packagedNativeSearchEnabled() {
+					nativeDecoder, ok := packagedNativeSearchDecoder()
+					if !ok {
+						return desktopcontract.ClientSet{}, errors.New("desktop native decoder is unavailable")
+					}
+					field.Set(reflect.ValueOf(nativeDecoder))
+				} else {
+					field.Set(decoder)
+				}
 			} else if actual {
 				field.Set(available)
 			} else {

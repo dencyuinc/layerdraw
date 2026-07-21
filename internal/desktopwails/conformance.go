@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
@@ -33,14 +36,51 @@ type ConformanceSamples struct {
 }
 
 type PackagedConformanceReport struct {
-	SchemaVersion               uint32                        `json:"schema_version"`
-	SourceRevision              string                        `json:"source_revision"`
-	Platform                    string                        `json:"platform"`
-	ArtifactKind                string                        `json:"artifact_kind"`
-	Iterations                  int                           `json:"iterations"`
-	Scenarios                   map[string]ConformanceSamples `json:"scenarios"`
-	ProcessTreePeakRSSMebibytes []int64                       `json:"process_tree_peak_rss_mebibytes"`
-	ScenarioEvidence            map[string]string             `json:"scenario_evidence"`
+	SchemaVersion            uint32                        `json:"schema_version"`
+	SourceRevision           string                        `json:"source_revision"`
+	Platform                 string                        `json:"platform"`
+	ArtifactKind             string                        `json:"artifact_kind"`
+	Iterations               int                           `json:"iterations"`
+	Scenarios                map[string]ConformanceSamples `json:"scenarios"`
+	IsolatedWorkerPeakRSSMiB []int64                       `json:"isolated_worker_peak_rss_mebibytes"`
+	ScenarioEvidence         map[string]string             `json:"scenario_evidence"`
+}
+
+type packagedConformanceScenarioReport struct {
+	SchemaVersion uint32 `json:"schema_version"`
+	Scenario      string `json:"scenario"`
+	WorkerPeakRSS int64  `json:"isolated_worker_peak_rss_mebibytes"`
+}
+
+type packagedConformanceError struct {
+	code string
+	err  error
+}
+
+type conformanceStageError struct {
+	stage string
+	err   error
+}
+
+func (failure *conformanceStageError) Error() string { return failure.stage }
+func (failure *conformanceStageError) Unwrap() error { return failure.err }
+
+func (failure *packagedConformanceError) Error() string { return failure.code }
+func (failure *packagedConformanceError) Unwrap() error { return failure.err }
+
+// PackagedConformanceFailureCode returns a closed, non-sensitive diagnostic
+// code suitable for installer CI. Raw native paths and provider errors remain
+// inside the process boundary.
+func PackagedConformanceFailureCode(err error) string {
+	var failure *packagedConformanceError
+	if errors.As(err, &failure) {
+		return failure.code
+	}
+	return ""
+}
+
+func conformanceFailure(code string, err error) error {
+	return &packagedConformanceError{code: code, err: err}
 }
 
 var conformanceEvidence = map[string]string{
@@ -57,22 +97,62 @@ var conformanceEvidence = map[string]string{
 
 func RunPackagedConformance(output string) error {
 	if !filepath.IsAbs(output) || filepath.Clean(output) != output {
-		return errors.New("packaged conformance output must be absolute")
+		return conformanceFailure("invocation.output", errors.New("packaged conformance output must be absolute"))
 	}
 	revision := os.Getenv("LAYERDRAW_CONFORMANCE_SOURCE_REVISION")
 	if !sourceRevisionPattern.MatchString(revision) {
-		return errors.New("packaged conformance source revision is invalid")
+		return conformanceFailure("invocation.revision", errors.New("packaged conformance source revision is invalid"))
 	}
 	platform, err := conformancePlatform(CurrentPlatform())
 	if err != nil {
-		return err
+		return conformanceFailure("invocation.platform", err)
 	}
 	report := PackagedConformanceReport{
 		SchemaVersion: 1, SourceRevision: revision, Platform: platform,
 		ArtifactKind: "installed_desktop", Iterations: packagedConformanceIterations,
 		Scenarios: map[string]ConformanceSamples{}, ScenarioEvidence: cloneEvidence(),
 	}
-	runners := map[string]func(context.Context) error{
+	for iteration := 0; iteration < packagedConformanceIterations; iteration++ {
+		var iterationPeak int64
+		for _, name := range conformanceScenarioOrder() {
+			started := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			rss, err := runConformanceScenarioProcess(ctx, name)
+			cancel()
+			if err != nil {
+				if PackagedConformanceFailureCode(err) != "" {
+					return err
+				}
+				return conformanceFailure("scenario."+name, fmt.Errorf("iteration %d: %w", iteration+1, err))
+			}
+			elapsed := time.Since(started).Milliseconds()
+			if elapsed < 1 {
+				elapsed = 1
+			}
+			samples := report.Scenarios[name]
+			samples.SamplesMilliseconds = append(samples.SamplesMilliseconds, elapsed)
+			report.Scenarios[name] = samples
+			if rss > iterationPeak {
+				iterationPeak = rss
+			}
+		}
+		if iterationPeak <= 0 {
+			return conformanceFailure("measurement.memory", errors.New("packaged conformance isolated worker RSS is unavailable"))
+		}
+		report.IsolatedWorkerPeakRSSMiB = append(report.IsolatedWorkerPeakRSSMiB, iterationPeak)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		return conformanceFailure("result.encode", err)
+	}
+	if err := writeExclusivePackagedProbe(output, append(encoded, '\n')); err != nil {
+		return conformanceFailure("result.write", err)
+	}
+	return nil
+}
+
+func conformanceRunners() map[string]func(context.Context) error {
+	return map[string]func(context.Context) error{
 		"cold_start":             conformanceColdStart,
 		"project_open":           conformanceProjectOpen,
 		"search_analysis":        conformanceSearchAnalysis,
@@ -83,34 +163,76 @@ func RunPackagedConformance(output string) error {
 		"external_reconcile":     conformanceExternal,
 		"shutdown":               conformanceShutdown,
 	}
-	for iteration := 0; iteration < packagedConformanceIterations; iteration++ {
-		for _, name := range conformanceScenarioOrder() {
-			started := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			err := runners[name](ctx)
-			cancel()
-			if err != nil {
-				return fmt.Errorf("packaged conformance scenario %s iteration %d: %w", name, iteration+1, err)
-			}
-			elapsed := time.Since(started).Milliseconds()
-			if elapsed < 1 {
-				elapsed = 1
-			}
-			samples := report.Scenarios[name]
-			samples.SamplesMilliseconds = append(samples.SamplesMilliseconds, elapsed)
-			report.Scenarios[name] = samples
-		}
-		rss, err := processTreePeakRSSMebibytes()
-		if err != nil || rss <= 0 {
-			return errors.New("packaged conformance process-tree RSS is unavailable")
-		}
-		report.ProcessTreePeakRSSMebibytes = append(report.ProcessTreePeakRSSMebibytes, rss)
-	}
-	encoded, err := json.Marshal(report)
+}
+
+var executeConformanceScenario = func(ctx context.Context, executable, name string) ([]byte, error) {
+	return exec.CommandContext(ctx, executable, "--packaged-conformance-scenario", name).Output()
+}
+
+var runConformanceScenarioProcess = func(ctx context.Context, name string) (int64, error) {
+	executable, err := os.Executable()
 	if err != nil {
-		return err
+		return 0, errors.New("installed Desktop executable is unavailable")
 	}
-	return writeExclusivePackagedProbe(output, append(encoded, '\n'))
+	encoded, err := executeConformanceScenario(ctx, executable, name)
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			if code := parseConformanceChildFailure(exit.Stderr, name); code != "" {
+				return 0, conformanceFailure(code, errors.New("isolated installed Desktop scenario failed"))
+			}
+		}
+		return 0, errors.New("isolated installed Desktop scenario failed")
+	}
+	var report packagedConformanceScenarioReport
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&report) != nil || decoder.Decode(new(any)) != io.EOF || report.SchemaVersion != 1 || report.Scenario != name || report.WorkerPeakRSS <= 0 {
+		return 0, errors.New("isolated installed Desktop scenario result is invalid")
+	}
+	return report.WorkerPeakRSS, nil
+}
+
+func parseConformanceChildFailure(stderr []byte, scenario string) string {
+	const prefix = "LayerDraw Desktop conformance failed ["
+	line := strings.TrimSpace(string(stderr))
+	if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, "]") {
+		return ""
+	}
+	code := strings.TrimSuffix(strings.TrimPrefix(line, prefix), "]")
+	if !strings.HasPrefix(code, "scenario."+scenario) && code != "measurement.memory" {
+		return ""
+	}
+	for _, character := range code {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' && character != '.' {
+			return ""
+		}
+	}
+	return code
+}
+
+// RunPackagedConformanceScenario executes one isolated workflow for the
+// installed conformance parent process. It is intentionally not a user-facing
+// Desktop mode and emits only a strict measurement envelope.
+func RunPackagedConformanceScenario(name string, output io.Writer) error {
+	runner := conformanceRunners()[name]
+	if runner == nil || output == nil {
+		return conformanceFailure("scenario.invalid", errors.New("packaged conformance scenario is invalid"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := runner(ctx); err != nil {
+		var stage *conformanceStageError
+		if errors.As(err, &stage) {
+			return conformanceFailure("scenario."+name+"."+stage.stage, err)
+		}
+		return conformanceFailure("scenario."+name, err)
+	}
+	rss, err := isolatedWorkerPeakRSSMebibytes()
+	if err != nil || rss <= 0 {
+		return conformanceFailure("measurement.memory", errors.New("scenario process RSS is unavailable"))
+	}
+	return json.NewEncoder(output).Encode(packagedConformanceScenarioReport{SchemaVersion: 1, Scenario: name, WorkerPeakRSS: rss})
 }
 
 func cloneEvidence() map[string]string {
@@ -160,12 +282,12 @@ type conformanceInstance struct {
 func newConformanceInstance(ctx context.Context, external bool) (*conformanceInstance, error) {
 	root, err := os.MkdirTemp("", "layerdraw-packaged-conformance-*")
 	if err != nil {
-		return nil, err
+		return nil, &conformanceStageError{stage: "root", err: err}
 	}
 	base, err := NewSharedConfig(root)
 	if err != nil {
 		os.RemoveAll(root)
-		return nil, err
+		return nil, &conformanceStageError{stage: "config", err: err}
 	}
 	providers := map[string]ExternalProvider(nil)
 	if external {
@@ -175,11 +297,15 @@ func newConformanceInstance(ctx context.Context, external bool) (*conformanceIns
 	app, vault, err := compose(base, conformanceRuntime{}, providers)
 	if err != nil {
 		os.RemoveAll(root)
-		return nil, err
+		return nil, &conformanceStageError{stage: "compose", err: err}
 	}
 	if started := app.Start(ctx); started.Outcome != protocolcommon.OutcomeSuccess {
 		os.RemoveAll(root)
-		return nil, fmt.Errorf("canonical Desktop application did not start: %+v", started.Failure)
+		stage := "start"
+		if started.Failure != nil && started.Failure.Validate() {
+			stage += "_" + string(started.Failure.Component)
+		}
+		return nil, &conformanceStageError{stage: stage, err: errors.New("canonical Desktop application did not start")}
 	}
 	return &conformanceInstance{root: root, app: app, vault: vault}, nil
 }
@@ -212,7 +338,11 @@ func (instance *conformanceInstance) openProject(ctx context.Context, source str
 	}
 	opened := instance.app.OpenProject(ctx, token)
 	if opened.Outcome != protocolcommon.OutcomeSuccess || opened.Value.Open.Session.RuntimeSessionID == "" {
-		return desktopapp.ProjectOpenResult{}, errors.New("project did not cross the Wails storage boundary")
+		stage := "project_open"
+		if opened.Failure != nil && opened.Failure.Validate() {
+			stage += "_" + string(opened.Failure.Component)
+		}
+		return desktopapp.ProjectOpenResult{}, &conformanceStageError{stage: stage, err: errors.New("project did not cross the Wails storage boundary")}
 	}
 	return opened.Value, nil
 }
@@ -389,7 +519,7 @@ func conformanceSearchAnalysis(ctx context.Context) error {
 		return fmt.Errorf("Wails query failed: desktop=%s owner=%s failure=%+v diagnostics=%+v decode=%v", result.Outcome, queryResponse.Outcome, queryResponse.Failure, queryResponse.Diagnostics, err)
 	}
 	workbench.query = queryResponse.Payload.Result
-	inspect := engineprotocol.InspectSubgraphRequestEnvelope{Operation: engineprotocol.InspectSubgraphRequestEnvelopeOperationValue, Protocol: conformanceEngineProtocol(), RequestID: "conformance-analysis", Payload: engineprotocol.InspectSubgraphInput{Depth: 2, DocumentGeneration: workbench.generation, Limits: conformanceLimits(), RootAddresses: []semantic.EntityAddress{"ldl:project:p:entity:a"}}}
+	inspect := engineprotocol.InspectSubgraphRequestEnvelope{Operation: engineprotocol.InspectSubgraphRequestEnvelopeOperationValue, Protocol: conformanceEngineProtocol(), RequestID: "conformance-analysis", Payload: engineprotocol.InspectSubgraphInput{Depth: 2, DocumentGeneration: workbench.generation, Limits: conformanceLimits(), RootAddresses: []semantic.EntityAddress{"ldl:project:p:entity:alpha"}}}
 	control, _ = engineprotocol.EncodeInspectSubgraphRequestEnvelope(inspect)
 	result = workbench.instance.app.Invoke(ctx, "EngineInspectSubgraph", desktopcontract.Exchange{Operation: string(inspect.Operation), Control: control})
 	analysis, err := engineprotocol.DecodeInspectSubgraphResponseEnvelope(result.Value.Control)
@@ -455,6 +585,9 @@ func conformanceMCP(ctx context.Context) error {
 			}
 			return fmt.Errorf("bundled MCP tool %s is absent from %v", name, names)
 		}
+	}
+	if err := conformanceNativeMCP(ctx, workbench.instance, tools); err != nil {
+		return err
 	}
 	capabilities := workbench.instance.app.MCPCallTool(ctx, mcphost.CallToolRequest{Name: "layerdraw.get_capabilities", RequestID: "conformance-capabilities", Arguments: json.RawMessage(`{}`)})
 	if capabilities.Failure != nil || len(capabilities.Content) == 0 {
@@ -560,8 +693,25 @@ entity_type service "Service" {
   representation shape rect
 }
 
+relation_type calls "Calls" data_flow {
+  allow_self false
+  duplicate_policy allow
+  from caller types [service] layers [app]
+  to callee types [service] layers [app]
+  cardinality {
+    to_per_from 0..*
+    from_per_to 0..*
+  }
+  label "calls"
+}
+
 entities service @app {
-  a "Service A"
+  alpha "Service A"
+  beta "Service B"
+}
+
+relations calls {
+  alpha_beta: alpha -> beta
 }
 
 query all "All" {

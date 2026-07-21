@@ -210,7 +210,15 @@ func (m *LocalProjectionModel) Embed(ctx context.Context, text string) ([]float3
 		norm2 += float64(value * value)
 	}
 	if norm2 == 0 {
-		return nil, ErrEmbeddingProfileMismatch
+		// Signed feature hashing can cancel every bucket for short inputs. A
+		// second independent projection keeps valid text representable while
+		// preserving deterministic, unit-normalized local embeddings.
+		mac := hmac.New(sha256.New, m.seed)
+		_, _ = mac.Write([]byte(norm.NFC.String(text)))
+		sum := mac.Sum(nil)
+		index := int(binary.LittleEndian.Uint64(sum[:8]) % uint64(m.dimensions))
+		values[index] = 1
+		norm2 = 1
 	}
 	scale := float32(1 / math.Sqrt(norm2))
 	for i := range values {

@@ -19,6 +19,7 @@ import (
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
+	"github.com/dencyuinc/layerdraw/internal/runtime/port"
 )
 
 type canonicalTransportStub struct{ started, stopped bool }
@@ -442,6 +443,86 @@ func TestDesktopMCPOwnerRedactsGeneratedClientAndDecodeFailures(t *testing.T) {
 				t.Fatal("invalid generated response accepted")
 			}
 		})
+	}
+}
+
+func TestNativeMCPBindingMustMatchRuntimeAuthority(t *testing.T) {
+	digest := testMCPDigest()
+	documentID := runtimeprotocol.DocumentID("document-native")
+	binding := &mcphost.Binding{DocumentID: documentID, RevisionDigest: digest, AccessFingerprint: digest}
+	payload := struct {
+		Session                *runtimeprotocol.RuntimeSessionRef `json:"session"`
+		Snapshot               port.DocumentSnapshotRef           `json:"snapshot"`
+		AccessProjectionDigest string                             `json:"access_projection_digest"`
+	}{
+		Session: &runtimeprotocol.RuntimeSessionRef{
+			RuntimeSessionID: "session-native", SessionGeneration: "1",
+			Scope: runtimeprotocol.RuntimeScope{DocumentID: documentID, AccessFingerprint: digest, LocalScopeID: "local-native"},
+		},
+		Snapshot:               port.DocumentSnapshotRef{Kind: port.SnapshotHostRevision, HostDocumentID: string(documentID), CommittedRevision: "revision-native", DefinitionHash: string(digest)},
+		AccessProjectionDigest: string(digest),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := json.Marshal(struct {
+		Operation string          `json:"operation"`
+		Payload   json.RawMessage `json:"payload"`
+	}{Operation: "native.execute_search", Payload: payloadBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := mcphost.OwnerRequest{Operation: "native.execute_search", Arguments: arguments, Binding: binding}
+	if err := validateNativeMCPBinding(request); err != nil {
+		t.Fatalf("matching native authority rejected: %v", err)
+	}
+	goWirePayload, err := json.Marshal(struct {
+		Session                *runtimeprotocol.RuntimeSessionRef `json:"session"`
+		Snapshot               port.DocumentSnapshotRef           `json:"snapshot"`
+		AccessProjectionDigest string
+	}{payload.Session, payload.Snapshot, payload.AccessProjectionDigest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goWireArguments, err := json.Marshal(struct {
+		Operation string          `json:"operation"`
+		Payload   json.RawMessage `json:"payload"`
+	}{Operation: "native.execute_search", Payload: goWirePayload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goWireRequest := request
+	goWireRequest.Arguments = goWireArguments
+	if err := validateNativeMCPBinding(goWireRequest); err != nil {
+		t.Fatalf("Go wire native authority rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*mcphost.OwnerRequest){
+		"missing":  func(request *mcphost.OwnerRequest) { request.Binding = nil },
+		"document": func(request *mcphost.OwnerRequest) { request.Binding.DocumentID = "document-other" },
+		"revision": func(request *mcphost.OwnerRequest) {
+			request.Binding.RevisionDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		},
+		"access": func(request *mcphost.OwnerRequest) {
+			request.Binding.AccessFingerprint = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := request
+			copied := *binding
+			candidate.Binding = &copied
+			mutate(&candidate)
+			var ownerErr *mcphost.OwnerError
+			if err := validateNativeMCPBinding(candidate); !errors.As(err, &ownerErr) || ownerErr.Code != mcphost.ErrorStaleBinding {
+				t.Fatalf("mismatch error=%v", err)
+			}
+		})
+	}
+	malformed := request
+	malformed.Arguments = json.RawMessage(`{"operation":"native.execute_search","payload":{}}`)
+	var ownerErr *mcphost.OwnerError
+	if err := validateNativeMCPBinding(malformed); !errors.As(err, &ownerErr) || ownerErr.Code != mcphost.ErrorInvalidRequest {
+		t.Fatalf("malformed error=%v", err)
 	}
 }
 

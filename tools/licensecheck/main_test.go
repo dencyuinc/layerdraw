@@ -217,6 +217,20 @@ func TestReadFileWithinRejectsPathsOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestBundledLadybugLicenseHasCanonicalCrossPlatformBytes(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "legal", "licenses", "LadybugDB-MIT.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "\r") {
+		t.Fatal("Ladybug license contains CRLF bytes; .gitattributes must preserve LF on every runner")
+	}
+	digest := sha256.Sum256(data)
+	if got := hex.EncodeToString(digest[:]); got != "c7ac924b150ec18a9d9c7136a8cd533bcfa33109ea7b4b7712ea952a245186b0" {
+		t.Fatalf("Ladybug license digest=%s", got)
+	}
+}
+
 func TestWriteDependencyInventory(t *testing.T) {
 	root := t.TempDir()
 	for path, content := range map[string]string{

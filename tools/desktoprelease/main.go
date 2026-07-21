@@ -57,6 +57,8 @@ type updateManifest struct {
 	SBOM                    digestFile  `json:"sbom"`
 	Licenses                digestFile  `json:"licenses"`
 	Capabilities            digestFile  `json:"capabilities"`
+	Conformance             digestFile  `json:"desktop_conformance"`
+	Attestation             digestFile  `json:"desktop_attestation"`
 	PlatformSignature       *digestFile `json:"platform_signature,omitempty"`
 	Provenance              provenance  `json:"provenance"`
 	Signature               signature   `json:"signature"`
@@ -237,6 +239,8 @@ func buildCommand(args []string) error {
 	sbom := flags.String("sbom", "", "artifact-specific CycloneDX SBOM")
 	licenses := flags.String("licenses", "", "third-party license bundle")
 	capabilities := flags.String("capabilities", "", "packaged capability declaration")
+	conformance := flags.String("desktop-conformance", "", "machine-checked Desktop feature closure")
+	attestation := flags.String("desktop-attestation", "", "signed installed Desktop conformance attestation")
 	platformSignature := flags.String("platform-signature", "", "optional detached platform signature")
 	output := flags.String("output", "", "output update manifest")
 	version := flags.String("version", "", "release version")
@@ -253,8 +257,8 @@ func buildCommand(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *installer == "" || *sbom == "" || *licenses == "" || *capabilities == "" || *output == "" || *version == "" || *minimum == "" || *platform == "" || *format == "" || *revision == "" || *builtAt == "" {
-		return errors.New("build requires installer, sbom, licenses, capabilities, output, version, minimum-supported-version, platform, format, source-revision, and built-at")
+	if *installer == "" || *sbom == "" || *licenses == "" || *capabilities == "" || *conformance == "" || *attestation == "" || *output == "" || *version == "" || *minimum == "" || *platform == "" || *format == "" || *revision == "" || *builtAt == "" {
+		return errors.New("build requires installer, sbom, licenses, capabilities, desktop-conformance, desktop-attestation, output, version, minimum-supported-version, platform, format, source-revision, and built-at")
 	}
 	if !revisionPattern.MatchString(*revision) {
 		return errors.New("source revision must be 40 lowercase hexadecimal characters")
@@ -287,7 +291,7 @@ func buildCommand(args []string) error {
 		MinimumSupportedVersion: *minimum, Platform: *platform, Format: *format, SigningMode: mode,
 		Provenance: provenance{SourceRepository: *repository, SourceRevision: *revision, BuildWorkflow: *workflow, BuiltAt: *builtAt},
 	}
-	for source, target := range map[string]*digestFile{*installer: &manifest.Installer, *sbom: &manifest.SBOM, *licenses: &manifest.Licenses, *capabilities: &manifest.Capabilities} {
+	for source, target := range map[string]*digestFile{*installer: &manifest.Installer, *sbom: &manifest.SBOM, *licenses: &manifest.Licenses, *capabilities: &manifest.Capabilities, *conformance: &manifest.Conformance, *attestation: &manifest.Attestation} {
 		value, err := describeFile(source)
 		if err != nil {
 			return err
@@ -401,7 +405,7 @@ func verifyCommand(args []string) error {
 	if compareVersion(currentVersion, minimumVersion) < 0 {
 		return errors.New("current installation is incompatible with this update")
 	}
-	files := []digestFile{manifest.Installer, manifest.SBOM, manifest.Licenses, manifest.Capabilities}
+	files := []digestFile{manifest.Installer, manifest.SBOM, manifest.Licenses, manifest.Capabilities, manifest.Conformance, manifest.Attestation}
 	if manifest.PlatformSignature != nil {
 		files = append(files, *manifest.PlatformSignature)
 	}

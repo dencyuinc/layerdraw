@@ -41,6 +41,7 @@ try {
   $companionHost = Join-Path $install "runtime\layerdraw-host.exe"
   if (-not (Test-Path $companionHost)) { throw "packaged MCP Host is missing" }
   if (-not (Test-Path (Join-Path $install "legal\desktop-capabilities.json"))) { throw "capability declaration is missing" }
+  if (-not (Test-Path (Join-Path $install "legal\desktop-conformance.json"))) { throw "Desktop conformance declaration is missing" }
   if (-not (Test-Path (Join-Path $install "legal\host\layerdraw-host.exe.cdx.json"))) { throw "MCP Host SBOM is missing" }
   $developmentAssets = Get-ChildItem -Recurse -File $install | Where-Object { $_.Extension -eq ".map" -or $_.FullName -match "(testdata|test-fixtures)" }
   if ($developmentAssets) { throw "Windows installer contains development-only assets" }
@@ -66,6 +67,10 @@ try {
     foreach ($signedBinary in @($executable, $companionHost)) {
       if ((Get-AuthenticodeSignature $signedBinary).Status -ne "Valid") { throw "installed binary signature is not valid: $signedBinary" }
     }
+  }
+  if ($env:LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT) {
+    $conformance = Start-Process -FilePath $executable -ArgumentList @("--packaged-conformance", $env:LAYERDRAW_DESKTOP_CONFORMANCE_OUTPUT) -NoNewWindow -Wait -PassThru
+    if ($conformance.ExitCode -ne 0) { throw "installed Desktop conformance scenario failed: $($conformance.ExitCode)" }
   }
   $uninstaller = Join-Path $install "uninstall.exe"
   $removed = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru

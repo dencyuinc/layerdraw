@@ -21,6 +21,7 @@ import (
 	accesscore "github.com/dencyuinc/layerdraw/internal/access"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
 	"github.com/dencyuinc/layerdraw/internal/engine"
+	"github.com/dencyuinc/layerdraw/internal/localdocument"
 )
 
 var desktopTestNow = time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
@@ -72,6 +73,16 @@ type adapterStub struct {
 	stopErr  error
 	started  chan struct{}
 	release  <-chan struct{}
+}
+
+type nativeSearchLifecycleStub struct {
+	err   error
+	calls int
+}
+
+func (stub *nativeSearchLifecycleStub) RefreshSearchIndex(context.Context, *localdocument.Session) error {
+	stub.calls++
+	return stub.err
 }
 
 func (a *adapterStub) Start(context.Context) error {
@@ -763,6 +774,25 @@ type stopPanicAdapter struct{}
 func (stopPanicAdapter) Start(context.Context) error    { return nil }
 func (stopPanicAdapter) Shutdown(context.Context) error { panic("secret") }
 
+type nonComparableAdapter struct{ values []string }
+
+func (nonComparableAdapter) Start(context.Context) error    { return nil }
+func (nonComparableAdapter) Shutdown(context.Context) error { return nil }
+
+func TestAdapterAlreadyStartedUsesExactComparableIdentity(t *testing.T) {
+	started := &adapterStub{id: desktopcontract.ComponentReview}
+	app := &Application{
+		config:  Config{Adapters: map[desktopcontract.ComponentID]Adapter{desktopcontract.ComponentReview: started}},
+		started: []desktopcontract.ComponentID{desktopcontract.ComponentReview},
+	}
+	if !app.adapterAlreadyStarted(started) {
+		t.Fatal("started adapter identity was not detected")
+	}
+	if app.adapterAlreadyStarted(&adapterStub{id: desktopcontract.ComponentReview}) || app.adapterAlreadyStarted(panicAdapter{}) || app.adapterAlreadyStarted(nonComparableAdapter{values: []string{"value"}}) || app.adapterAlreadyStarted(nil) {
+		t.Fatal("distinct, mismatched, non-comparable, or nil adapter reused a started identity")
+	}
+}
+
 func TestShutdownContinuesAfterAdapterFailures(t *testing.T) {
 	root := t.TempDir()
 	config := testConfig(t, root, writeProject(t, root))
@@ -902,6 +932,43 @@ func TestProjectCreateOpenReloadCloseAndRestartDurability(t *testing.T) {
 	afterRestart := restarted.ReloadProject(context.Background(), documentID)
 	if afterRestart.Outcome != protocolcommon.OutcomeSuccess || afterRestart.Value.Open.CommittedRevision.RevisionID != created.Value.Open.CommittedRevision.RevisionID {
 		t.Fatalf("durable revision unavailable: %+v", afterRestart)
+	}
+	_ = restarted.Shutdown(context.Background())
+}
+
+func TestProjectOpenAndReloadFailClosedWhenNativeSearchRefreshFails(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root)
+	config := testConfig(t, root, project)
+	failing := &nativeSearchLifecycleStub{err: errors.New("native search unavailable")}
+	config.NativeSearchLifecycle = failing
+	app, err := New(config)
+	if err != nil || app.Start(context.Background()).Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("start err=%v", err)
+	}
+	opened := app.OpenProject(context.Background(), "opaque")
+	if opened.Failure == nil || opened.Failure.Component != desktopcontract.ComponentNativeQuery || failing.calls != 1 {
+		t.Fatalf("open=%+v refresh calls=%d", opened, failing.calls)
+	}
+	_ = app.Shutdown(context.Background())
+
+	reloadConfig := testConfig(t, root, project)
+	restarted, err := New(reloadConfig)
+	if err != nil || restarted.Start(context.Background()).Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("restart err=%v", err)
+	}
+	initial := restarted.OpenProject(context.Background(), "opaque")
+	if initial.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("initial open=%+v", initial)
+	}
+	documentID := initial.Value.ProjectID
+	if closed := restarted.CloseProject(context.Background(), initial.Value.Open.Session); closed.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("close=%+v", closed)
+	}
+	restarted.config.NativeSearchLifecycle = failing
+	reloaded := restarted.ReloadProject(context.Background(), documentID)
+	if reloaded.Failure == nil || reloaded.Failure.Component != desktopcontract.ComponentNativeQuery || failing.calls != 2 {
+		t.Fatalf("reload=%+v refresh calls=%d", reloaded, failing.calls)
 	}
 	_ = restarted.Shutdown(context.Background())
 }

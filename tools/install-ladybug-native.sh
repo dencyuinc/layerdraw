@@ -8,6 +8,8 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version="0.17.0"
 platform="$(uname -s)"
 machine="$(uname -m)"
+archive_kind="tar"
+library_files=(liblbug.a)
 
 case "$platform/$machine" in
   Darwin/arm64)
@@ -45,6 +47,17 @@ case "$platform/$machine" in
     extension_digest="5faab293191ebdf69f9152d724a5731d3cf83b781688f95106b8e4b64b222a8f"
     vector_digest="36889a00ee8be202709c6cbfc38a15a966378f8d5d0796ceae5be19bba124192"
     algo_digest="a699abc2b6574a1e020e9aaf865c6935b83d875cbb24cb17362fc44727bca891"
+    ;;
+  MINGW*/x86_64|MSYS*/x86_64|CYGWIN*/x86_64)
+    asset="liblbug-windows-x86_64.zip"
+    digest="4e00186f7634eb8688e1c0e77855ef302114b7ff289757bd5f33044850ccdfc5"
+    target_platform="windows-amd64"
+    extension_platform="win_amd64"
+    extension_digest="1bf03d062579f9360cf992918fcd6370f6cac49f0a1fb6d7971a913579063f1b"
+    vector_digest="18332984fba353bc5626d33f7e8fb0052b13b5840451fd07643e6818106017f1"
+    algo_digest="45654fd85938a3c22b8d1012aff1c2213f956ba33a75de3eed934943a3ad7c19"
+    archive_kind="zip"
+    library_files=(lbug_shared.dll lbug_shared.lib)
     ;;
   *)
     printf 'Unsupported Ladybug native platform: %s/%s\n' "$platform" "$machine" >&2
@@ -119,8 +132,12 @@ fi
 
 stage="$(mktemp -d "$(dirname "$install_root")/.ladybug-install.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
-tar -xzf "$archive" -C "$stage"
-for required in lbug.h lbug.hpp liblbug.a; do
+if [[ "$archive_kind" == "zip" ]]; then
+  unzip -q "$archive" -d "$stage"
+else
+  tar -xzf "$archive" -C "$stage"
+fi
+for required in lbug.h lbug.hpp "${library_files[@]}"; do
   if [[ ! -f "$stage/$required" ]]; then
     printf 'Ladybug archive is missing %s\n' "$required" >&2
     exit 1
@@ -129,7 +146,16 @@ done
 cp "$extension_archive" "$stage/libfts.lbug_extension"
 cp "$vector_archive" "$stage/libvector.lbug_extension"
 cp "$algo_archive" "$stage/libalgo.lbug_extension"
-unexpected="$(find "$stage" -mindepth 1 -maxdepth 1 -type f ! -name lbug.h ! -name lbug.hpp ! -name liblbug.a ! -name libfts.lbug_extension ! -name libvector.lbug_extension ! -name libalgo.lbug_extension -print -quit)"
+printf '{"schema_version":1,"ladybug_version":"%s","platform":"%s","files":{"libfts.lbug_extension":"%s","libvector.lbug_extension":"%s","libalgo.lbug_extension":"%s"}}\n' \
+  "$version" "$target_platform" "$extension_digest" "$vector_digest" "$algo_digest" > "$stage/ladybug-native.json"
+unexpected=""
+while IFS= read -r candidate; do
+  name="$(basename "$candidate")"
+  case "$name" in
+    lbug.h|lbug.hpp|liblbug.a|lbug_shared.dll|lbug_shared.lib|libfts.lbug_extension|libvector.lbug_extension|libalgo.lbug_extension|ladybug-native.json) ;;
+    *) unexpected="$candidate"; break ;;
+  esac
+done < <(find "$stage" -mindepth 1 -maxdepth 1 -type f -print)
 if [[ -n "$unexpected" ]]; then
   printf 'Ladybug archive contains unexpected file: %s\n' "$unexpected" >&2
   exit 1
