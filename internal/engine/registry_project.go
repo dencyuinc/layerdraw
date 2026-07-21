@@ -130,6 +130,19 @@ func (e Engine) BuildRegistryProjectMutation(ctx context.Context, in RegistryPro
 		return RegistryProjectMutation{}, err
 	}
 	if !containsAuthoringCapability(impact.RequiredCapabilities, CapabilityPackageManage) {
+		impact.Entries = append(impact.Entries, AuthoringImpactEntry{
+			Capability: CapabilityPackageManage, Action: "update", SubjectKind: "project", SubjectAddress: rootProjectAddress(after),
+			ChangedFieldPaths: []AuthoredFieldPath{}, BeforeRefs: []string{}, AfterRefs: []string{}, SourceRefs: []SourceRange{},
+		})
+		sort.Slice(impact.Entries, func(i, j int) bool {
+			if compared := compareStableAddressText(impact.Entries[i].SubjectAddress, impact.Entries[j].SubjectAddress); compared != 0 {
+				return compared < 0
+			}
+			if impact.Entries[i].Capability != impact.Entries[j].Capability {
+				return impact.Entries[i].Capability < impact.Entries[j].Capability
+			}
+			return impact.Entries[i].Action < impact.Entries[j].Action
+		})
 		impact.RequiredCapabilities = append(impact.RequiredCapabilities, CapabilityPackageManage)
 		sort.Slice(impact.RequiredCapabilities, func(i, j int) bool {
 			return string(impact.RequiredCapabilities[i]) < string(impact.RequiredCapabilities[j])

@@ -20,11 +20,20 @@ func TestBuildRegistryProjectMutationInstallsAndRemovesClosedPack(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(installed.Input.ResolvedDependencies.Installs) != 1 || string(installed.Input.InstalledPackTree["pack/schema/pack.ldl"]) != string(source) || !containsAuthoringCapability(installed.AuthoringImpact.RequiredCapabilities, CapabilityPackageManage) || installed.AuthoringImpact.ImpactDigest == "" {
+	if len(installed.Input.ResolvedDependencies.Installs) != 1 || string(installed.Input.InstalledPackTree["pack/schema/pack.ldl"]) != string(source) || !containsAuthoringCapability(installed.AuthoringImpact.RequiredCapabilities, CapabilityPackageManage) || !containsPackageManageEntry(installed.AuthoringImpact.Entries) || installed.AuthoringImpact.ImpactDigest == "" {
 		t.Fatalf("installed=%+v impact=%+v", installed.Input.ResolvedDependencies, installed.AuthoringImpact)
 	}
 	removed, err := instance.BuildRegistryProjectMutation(context.Background(), RegistryProjectMutationInput{Base: installed.Input, RemoveCanonicalIDs: []string{"example/schema"}})
 	if err != nil || len(removed.Input.ResolvedDependencies.Installs) != 0 || len(removed.Input.InstalledPackTree) != 0 || !containsAuthoringCapability(removed.AuthoringImpact.RequiredCapabilities, CapabilityPackageManage) {
 		t.Fatalf("removed=%+v err=%v", removed, err)
 	}
+}
+
+func containsPackageManageEntry(entries []AuthoringImpactEntry) bool {
+	for _, entry := range entries {
+		if entry.Capability == CapabilityPackageManage && entry.SubjectKind == "project" && entry.SubjectAddress != "" {
+			return true
+		}
+	}
+	return false
 }
