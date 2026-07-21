@@ -4,7 +4,7 @@
 
 LayerDraw は AI agent が大規模な構造モデルを、全文を毎回読まずに把握・編集できることを製品要件とする。
 
-AI にとっての正本は project-local LDL source tree である。ただし、MCP の標準更新入力を自由な source 全文や正規化 JSON にはしない。Go Engine が作る SemanticIndex、StableAddress、semantic operation、scoped LDL fragment を組み合わせる。
+AI にとっての正本は project-local LDL source tree である。ただし、MCP の標準更新入力を自由な source 全文や正規化 JSON にはしない。LayerDraw Engine が作る SemanticIndex、StableAddress、semantic operation、scoped LDL fragment を組み合わせる。
 
 MCP toolの公開範囲、CapabilityManifest、Engine-only / Runtime-required境界、Document I/OとView exportの区別は[system-boundary-contracts-specification.md](system-boundary-contracts-specification.md) 9章を規範とする。FTS / Vector / Hybridによる起点発見、Structural Query、Graph Analysisの意味とAI workflowは[search-query-and-analysis.md](search-query-and-analysis.md)、Schema / Graph等の編集権限分離は[authoring-access-control.md](authoring-access-control.md)を規範とする。
 
@@ -35,7 +35,7 @@ MCP の JSON は command protocol であり、第二の canonical document model
 
 ## 3. 実装責務
 
-### 3.1 Go Engine / Workbench
+### 3.1 LayerDraw Engine / Workbench
 
 次を唯一の権威実装として所有する。
 

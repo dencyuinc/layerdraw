@@ -366,7 +366,7 @@ actor ID、raw source URI、external ID などを削る。
 
 ## 7. Query、View、およびExport
 
-State依存Query / Viewでは、Go Runtimeがbackend stateからAccess判定済みのimmutable StateQuerySnapshotを1件構築し、Go Engineへ明示入力する。
+State依存Query / Viewでは、LayerDraw Runtimeがbackend stateからAccess判定済みのimmutable StateQuerySnapshotを1件構築し、LayerDraw Engineへ明示入力する。
 
 ```text
 LayerDrawProject (.ldl recipe)
@@ -412,9 +412,9 @@ public repository に `.ldstate.json` を commit するかは project policy で
 
 ## 9. Integration Obligations
 
-- Go EngineはStateQuerySnapshotをpure inputとして評価し、backendを解決しない。
-- Go RuntimeはBackendBinding、state取得、Access判定の適用、snapshot固定、hash / subject compatibility、sync / reconcileを所有する。
-- Go Accessはactor、credential scope、共有ACL、agent scopeからfield-level allow / redact decisionを生成し、state値やbackend credentialを保持しない。
+- LayerDraw EngineはStateQuerySnapshotをpure inputとして評価し、backendを解決しない。
+- LayerDraw RuntimeはBackendBinding、state取得、Access判定の適用、snapshot固定、hash / subject compatibility、sync / reconcileを所有する。
+- LayerDraw Accessはactor、credential scope、共有ACL、agent scopeからfield-level allow / redact decisionを生成し、state値やbackend credentialを保持しない。
 - Host adapterは認証済みStorage / Connectionを提供し、credentialをEngineへ渡さない。
 - Go package componentは`.ldstate.json`と`.layerdraw/state/`の規範serialization / validationを所有する。
 - stateなしimportはprovenance unknownとし、編集時に新stateを生成しても過去metadataを推測しない。

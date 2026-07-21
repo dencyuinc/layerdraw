@@ -35,6 +35,6 @@ capability is unavailable; the client never substitutes local semantics.
 
 The Workbench facade exposes the portable open, bounded inspection, source
 preview, apply, cancellation, and close lifecycle. It forwards generated Engine
-Protocol values plus BlobRef attachments and relies on the Go Engine for every
+Protocol values plus BlobRef attachments and relies on the LayerDraw Engine for every
 semantic decision; the client does not parse LDL, retain source, classify edits,
 or synthesize canonical source updates.

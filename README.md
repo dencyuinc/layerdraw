@@ -47,7 +47,7 @@ flowchart LR
     A[AI agent / MCP] --> O
     S[LDL source tree] --> E
     T[State snapshot] --> E
-    O --> E[Go Engine]
+    O --> E[LayerDraw Engine]
     E --> G[Normalized typed graph]
     G --> Q[Query and analysis]
     Q --> V[View materialization]
@@ -55,7 +55,7 @@ flowchart LR
     R --> X[Diagram · Table · Matrix · Tree · Flow · Diff]
 ```
 
-The Go Engine is the single authority for LDL parsing, validation, identity, query planning, semantic operations, and ViewData materialization. TypeScript owns clients, editor presentation, layout, rendering, and host integration. The frontend does not implement a second LDL semantics layer.
+The LayerDraw Engine (implemented in Go) is the single authority for LDL parsing, validation, identity, query planning, semantic operations, and ViewData materialization. TypeScript owns clients, editor presentation, layout, rendering, and host integration. The frontend does not implement a second LDL semantics layer.
 
 ## LayerDraw Language
 

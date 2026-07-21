@@ -218,7 +218,7 @@ Diagram 上の表示:
 
 ## 9. 同期方式
 
-同期transportはWebSocketによるroom単位のpush、競合検出はdocument revisionとown-subject semantic hashによる楽観的競合制御を共通境界にする。revision付きcommand log、CRDT、OTは`RealtimeRoom` adapterの実装として選択できるが、Go Engineの意味モデルには埋め込まない。
+同期transportはWebSocketによるroom単位のpush、競合検出はdocument revisionとown-subject semantic hashによる楽観的競合制御を共通境界にする。revision付きcommand log、CRDT、OTは`RealtimeRoom` adapterの実装として選択できるが、LayerDraw Engineの意味モデルには埋め込まない。
 
 対応するもの:
 

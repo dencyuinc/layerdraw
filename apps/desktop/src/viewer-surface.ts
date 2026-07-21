@@ -80,7 +80,7 @@ export function DesktopViewerSurface({ state, onSelectionChange }: DesktopViewer
   return createElement("div", { className: "ld-desktop-viewer", "data-viewer-state": state.status },
     publication?.render_data.kind !== "diagram" ? null : createElement("div", { className: "ld-desktop-view-mode", role: "toolbar", "aria-label": "Viewer dimension" },
       createElement("button", { type: "button", "aria-pressed": mode === "2d", onClick: () => setMode("2d") }, "2D"),
-      createElement("button", { type: "button", "aria-pressed": mode === "2.5d", onClick: () => setMode("2.5d") }, "2.5D")),
+      createElement("button", { type: "button", "aria-pressed": mode === "2.5d", onClick: () => setMode("2.5d") }, "3D")),
     publication === undefined ? null : publicationSurface(publication, mode, onSelectionChange),
     state.status === "ready" ? null : createElement("p", { role: "status", className: "ld-desktop-viewer-status" }, "The view needs attention."));
 }

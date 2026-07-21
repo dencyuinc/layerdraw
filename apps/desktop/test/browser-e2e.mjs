@@ -56,8 +56,8 @@ try {
   await page.keyboard.press("Enter");
   assert.deepEqual(await page.evaluate(() => window.desktopWorkflow.calls.at(-1)), ["viewer", "node:one"]);
 
-  await page.getByRole("button", { name: "2.5D" }).click();
-  const threeCanvas = page.getByRole("img", { name: /Diagram 2\.5D view/ });
+  await page.getByRole("button", { name: "3D" }).click();
+  const threeCanvas = page.getByRole("img", { name: /Diagram 3D view/ });
   await threeCanvas.waitFor();
   await page.waitForFunction(() => document.querySelector(".ld-desktop-viewer-three-canvas")?.dataset.renderReady === "true");
   assert.equal(await threeCanvas.evaluate((canvas) => {

@@ -1192,7 +1192,7 @@ dependency data_flow control_flow deployment network security containment
 ownership sequence impact reference governance
 ```
 
-ドメイン固有の意味は、個別のprojectまたはPack RelationTypeに属する。Language 1は安定したsemantic vocabularyと閉じたprojection / render primitive identifierだけを規定する。LayerDraw製品ではGo Engineがsemantic / projection primitiveを検証し、TS Render capability profileがrender primitive対応可否を検証する。
+ドメイン固有の意味は、個別のprojectまたはPack RelationTypeに属する。Language 1は安定したsemantic vocabularyと閉じたprojection / render primitive identifierだけを規定する。LayerDraw製品ではLayerDraw Engineがsemantic / projection primitiveを検証し、TS Render capability profileがrender primitive対応可否を検証する。
 
 省略されたすべての値は詳細仕様のデフォルトを使用する。特に、duplicate-policyのデフォルトは `deny_same_type_between_same_endpoints` であり、traversal participation flagsはデフォルトでfalseであり、明示的に空のendpoint selectorはエラーである。
 
@@ -2614,7 +2614,7 @@ Generated normalized JSON schema と semantic index schema は、equivalent sema
 ## 31. 関連契約
 
 - [blueprint.md](blueprint.md): product architecture と delivery boundary。
-- [architecture.md](architecture.md): Go Engine、TypeScript presentation、framework shell、およびdelivery artifactの実装境界。
+- [architecture.md](architecture.md): LayerDraw Engine、TypeScript presentation、framework shell、およびdelivery artifactの実装境界。
 - [compiler-architecture.md](compiler-architecture.md): canonical Compiler / Workbenchの閉じた入出力とbuild target。
 - [ai-integration.md](ai-integration.md): MCPのscoped read、semantic operation、scoped LDL fragment、およびcontext budget。
 - [ldl-language-detailed-specification.md](ldl-language-detailed-specification.md): normative normalized、evaluation、formatting、hash、diagnostic、および operation semantics。
