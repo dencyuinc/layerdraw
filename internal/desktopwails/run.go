@@ -259,10 +259,16 @@ func nativeMenu(shell *desktopapp.NativeShell, bridge *WailsShellBridge) *menu.M
 	result := menu.NewMenu()
 	file := result.AddSubmenu("File")
 	file.AddText("New Project", keys.CmdOrCtrl("n"), func(*menu.CallbackData) {
-		invokeNativeCommand(bridge.context(), shell, desktopcontract.CommandNewProject, desktopcontract.CommandSourceMenu)
+		ctx := bridge.context()
+		if invokeNativeCommand(ctx, shell, desktopcontract.CommandNewProject, desktopcontract.CommandSourceMenu) {
+			WailsRuntime{}.Emit(ctx, projectEvent)
+		}
 	})
 	file.AddText("Open Project", keys.CmdOrCtrl("o"), func(*menu.CallbackData) {
-		invokeNativeCommand(bridge.context(), shell, desktopcontract.CommandOpenProject, desktopcontract.CommandSourceMenu)
+		ctx := bridge.context()
+		if invokeNativeCommand(ctx, shell, desktopcontract.CommandOpenProject, desktopcontract.CommandSourceMenu) {
+			WailsRuntime{}.Emit(ctx, projectEvent)
+		}
 	})
 	result.Append(menu.EditMenu())
 	return result

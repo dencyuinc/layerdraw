@@ -101,7 +101,11 @@ func (b *FrontendBridge) MaterializeProjectView(session runtimeprotocol.RuntimeS
 }
 
 func (b *FrontendBridge) Invoke(method string, exchange desktopcontract.Exchange) desktopapp.BindingResult {
-	return b.app.Invoke(b.context(), method, exchange)
+	result := b.app.Invoke(b.context(), method, exchange)
+	if result.Failure == nil && result.Value.Blobs == nil {
+		result.Value.Blobs = []desktopcontract.Blob{}
+	}
+	return result
 }
 
 // RegistryDispatch is the single typed Wails Registry transport. The generated

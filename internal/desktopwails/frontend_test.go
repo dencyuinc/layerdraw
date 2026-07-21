@@ -79,7 +79,7 @@ func TestFrontendBridgeExposesContextFreeGeneratedInvoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := bridge.Invoke("EngineHandshake", desktopcontract.Exchange{Operation: "engine.handshake", Control: control, Blobs: []desktopcontract.Blob{}})
-	if result.Outcome != protocolcommon.OutcomeSuccess || !result.Validate() || bridge.State() != desktopcontract.LifecycleReady {
+	if result.Outcome != protocolcommon.OutcomeSuccess || !result.Validate() || result.Value.Blobs == nil || bridge.State() != desktopcontract.LifecycleReady {
 		t.Fatalf("invoke=%+v state=%s", result, bridge.State())
 	}
 	publication, err := bridge.ProjectPublication()

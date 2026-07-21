@@ -37,9 +37,10 @@ import (
 )
 
 const (
-	desktopRelease  = "0.0.0-dev"
-	desktopDigest   = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-	desktopEndpoint = "layerdraw-desktop"
+	desktopRelease   = "0.0.0-dev"
+	desktopDigest    = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	desktopEndpoint  = "layerdraw-desktop"
+	desktopTransport = "wails"
 )
 
 var basePackagedCapabilities = []protocolcommon.CapabilityID{
@@ -390,7 +391,7 @@ func (o *sharedOwner) Start(context.Context) error {
 	if err != nil {
 		return err
 	}
-	engine, err := engineendpoint.NewHostEngineFacade(desktopRelease, "unknown", desktopDigest, desktopEndpoint, engineendpoint.TransportInProcess)
+	engine, err := engineendpoint.NewHostEngineFacade(desktopRelease, "unknown", desktopDigest, desktopEndpoint, desktopTransport)
 	if err != nil {
 		return err
 	}
@@ -611,7 +612,7 @@ func (capabilities nativeCapabilities) Negotiate(ctx context.Context, manifest d
 	descriptor, err := engineendpoint.NewDescriptor(engineendpoint.DescriptorConfig{
 		EngineRelease: desktopRelease, SourceRevision: "unknown",
 		ReleaseManifestDigest: desktopDigest, EndpointInstanceID: desktopEndpoint,
-		Transports: []string{engineendpoint.TransportInProcess}, Limits: engineendpoint.DefaultLimitPolicy(),
+		Transports: []string{desktopTransport}, Limits: engineendpoint.DefaultLimitPolicy(),
 	})
 	if err != nil {
 		return protocolcommon.HandshakeResult{}, err

@@ -97,15 +97,16 @@ func (p wailsErrorSurface) Present(ctx context.Context, value desktopcontract.Er
 	return nil
 }
 
-func invokeNativeCommand(ctx context.Context, shell *desktopapp.NativeShell, id desktopcontract.CommandID, source desktopcontract.CommandSource) {
+func invokeNativeCommand(ctx context.Context, shell *desktopapp.NativeShell, id desktopcontract.CommandID, source desktopcontract.CommandSource) bool {
 	statuses := shell.CommandStatus(ctx)
 	if statuses.Outcome != protocolcommon.OutcomeSuccess {
-		return
+		return false
 	}
 	for _, status := range statuses.Value {
 		if status.ID == id {
-			_ = shell.InvokeCommand(ctx, desktopcontract.CommandInvocation{ID: id, Source: source, StatusGeneration: status.Generation})
-			return
+			result := shell.InvokeCommand(ctx, desktopcontract.CommandInvocation{ID: id, Source: source, StatusGeneration: status.Generation})
+			return result.Outcome == protocolcommon.OutcomeSuccess
 		}
 	}
+	return false
 }
