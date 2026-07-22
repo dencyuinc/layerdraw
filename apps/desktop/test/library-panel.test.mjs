@@ -54,10 +54,8 @@ test("Library panel executes browse, template preview, confirmation, and source 
   assert.equal(confirmation[1], confirmation[2]);
 
   const sources = renderer.root.findByProps({ "aria-label": "Sources" });
-  const connection = sources.findByProps({ "aria-label": "Connection reference" });
-  await act(async () => connection.props.onChange({ currentTarget: { value: "credential:local" } }));
   await act(async () => sources.findAllByType("button").find((button) => button.children.includes("Connect")).props.onClick());
-  assert.deepEqual(library.calls.find((call) => call[0] === "connect"), ["connect", "local", "credential:local"]);
+  assert.deepEqual(library.calls.find((call) => call[0] === "connect"), ["connect", "local", "local"]);
 
   await act(async () => sources.findAllByType("button").find((button) => String(button.children.join("")).includes("Add source")).props.onClick());
   const configure = renderer.root.findByProps({ "aria-label": "Add source" });

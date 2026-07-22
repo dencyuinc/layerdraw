@@ -58,7 +58,7 @@ export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelPro
   const [sourceID, setSourceID] = useState("");
   const [sourceKind, setSourceKind] = useState<RegistrySourceKind>("local_directory");
   const [endpoint, setEndpoint] = useState("");
-  const [connection, setConnection] = useState("");
+  const [credentialRefs, setCredentialRefs] = useState<Readonly<Record<string, string>>>({});
   const [searched, setSearched] = useState(false);
   const operationSequence = useRef(0);
   const busy = ["loading", "previewing", "applying"].includes(snapshot.status);
@@ -170,33 +170,43 @@ export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelPro
     <section className="ld-library-sourcecard" aria-label={t.t("library.sources")}>
       <h2 className="ld-sec-label">{t.t("library.sources")}</h2>
       <div className="ld-settings-card">
-        {snapshot.sources.length === 0 ? null : snapshot.sources.map((source) => (
-          <div key={source.source_id} className="ld-settings-row">
-            <span className="ld-settings-row-label">
-              {source.source_id}
-              <small>{t.t(`library.sourceKind.${source.kind}`)}</small>
-            </span>
-            <span className="ld-settings-row-control">
-              <span className="ld-settings-badge" data-on={source.connected}>{source.connected ? t.t("library.source.connected") : t.t("library.source.disconnected")}</span>
-              {source.connected
-                ? <button type="button" className="ld-btn ld-btn-secondary" disabled={busy} onClick={() => { void update(library.disconnectSource(source.source_id)); }}>{t.t("library.source.disconnect")}</button>
-                : <button type="button" className="ld-btn ld-btn-secondary" disabled={busy || connection.trim() === ""} onClick={() => { void update(library.connectSource(source.source_id, connection.trim())); }}>{t.t("library.source.connect")}</button>}
-            </span>
-          </div>
-        ))}
+        {snapshot.sources.length === 0 ? null : snapshot.sources.map((source) => {
+          const needsCredential = source.kind !== "local_directory" && source.kind !== "git";
+          const credentialRef = credentialRefs[source.source_id] ?? "";
+          return (
+            <div key={source.source_id} className="ld-settings-row">
+              <span className="ld-settings-row-label">
+                {source.source_id}
+                <small>{`${t.t(`library.sourceKind.${source.kind}`)} · ${source.endpoint_ref}`}</small>
+                {!source.connected && needsCredential ? <small>{t.t("library.source.credentialHint")}</small> : null}
+              </span>
+              <span className="ld-settings-row-control">
+                <span className="ld-settings-badge" data-on={source.connected}>{source.connected ? t.t("library.source.connected") : t.t("library.source.disconnected")}</span>
+                {!source.connected && needsCredential ? (
+                  <input
+                    className="ld-settings-input"
+                    value={credentialRef}
+                    disabled={busy}
+                    placeholder={t.t("library.source.credentialPlaceholder")}
+                    aria-label={t.t("library.source.credentialRef")}
+                    onChange={(event) => { const value = event.currentTarget.value; setCredentialRefs((current) => ({ ...current, [source.source_id]: value })); }}
+                  />
+                ) : null}
+                {source.connected
+                  ? <button type="button" className="ld-btn ld-btn-secondary" disabled={busy} onClick={() => { void update(library.disconnectSource(source.source_id)); }}>{t.t("library.source.disconnect")}</button>
+                  : <button type="button" className="ld-btn ld-btn-primary" disabled={busy || (needsCredential && credentialRef.trim() === "")} onClick={() => { void update(library.connectSource(source.source_id, needsCredential ? credentialRef.trim() : "local")); }}>{t.t("library.source.connect")}</button>}
+              </span>
+            </div>
+          );
+        })}
         {snapshot.sources.some((source) => !source.connected) ? (
-          <div className="ld-settings-row">
-            <span className="ld-settings-row-label">{t.t("library.source.connectionRef")}</span>
-            <span className="ld-settings-row-control">
-              <input className="ld-settings-input" value={connection} disabled={busy} aria-label={t.t("library.source.connectionRef")} onChange={(event) => setConnection(event.currentTarget.value)} />
-            </span>
-          </div>
+          <p className="ld-settings-hint ld-library-sourcehint">{t.t("library.source.connectHint")}</p>
         ) : null}
         {addOpen ? (
           <form onSubmit={configure} aria-label={t.t("library.source.add")}>
             <div className="ld-settings-row">
               <span className="ld-settings-row-label">{t.t("library.source.id")}</span>
-              <span className="ld-settings-row-control"><input className="ld-settings-input" value={sourceID} disabled={busy} aria-label={t.t("library.source.id")} onChange={(event) => setSourceID(event.currentTarget.value)} /></span>
+              <span className="ld-settings-row-control"><input className="ld-settings-input" value={sourceID} disabled={busy} placeholder={t.t("library.source.idPlaceholder")} aria-label={t.t("library.source.id")} onChange={(event) => setSourceID(event.currentTarget.value)} /></span>
             </div>
             <div className="ld-settings-row">
               <span className="ld-settings-row-label">{t.t("library.source.kind")}</span>
@@ -205,8 +215,11 @@ export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelPro
               </span>
             </div>
             <div className="ld-settings-row">
-              <span className="ld-settings-row-label">{t.t("library.source.endpoint")}</span>
-              <span className="ld-settings-row-control"><input className="ld-settings-input" value={endpoint} disabled={busy} aria-label={t.t("library.source.endpoint")} onChange={(event) => setEndpoint(event.currentTarget.value)} /></span>
+              <span className="ld-settings-row-label">
+                {t.t("library.source.endpoint")}
+                <small>{t.t("library.source.exampleLabel", { value: t.t(`library.source.endpointExample.${sourceKind}`) })}</small>
+              </span>
+              <span className="ld-settings-row-control"><input className="ld-settings-input" value={endpoint} disabled={busy} placeholder={t.t(`library.source.endpointExample.${sourceKind}`)} aria-label={t.t("library.source.endpoint")} onChange={(event) => setEndpoint(event.currentTarget.value)} /></span>
             </div>
             <div className="ld-settings-formfoot">
               <button type="submit" className="ld-btn ld-btn-primary" disabled={busy || sourceID.trim() === "" || endpoint.trim() === ""}>{t.t("library.source.add")}</button>
