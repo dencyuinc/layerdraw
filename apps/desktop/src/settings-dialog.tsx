@@ -220,7 +220,7 @@ function ConnectionConfig({ t, mcp, connectionID }: { readonly t: Translator; re
   );
 }
 
-function AgentAccessPane({ t, mcp, projectID }: { readonly t: Translator; readonly mcp: DesktopMCPPort; readonly projectID: string }): ReactNode {
+function AgentAccessPane({ t, mcp, projectID, projectName }: { readonly t: Translator; readonly mcp: DesktopMCPPort; readonly projectID: string; readonly projectName: string }): ReactNode {
   const [enabled, setEnabled] = useState<boolean>();
   const [instructions, setInstructions] = useState("");
   const [connections, setConnections] = useState<readonly DesktopMCPConnection[]>();
@@ -261,7 +261,7 @@ function AgentAccessPane({ t, mcp, projectID }: { readonly t: Translator; readon
   return (
     <section className="ld-settings-pane">
       <h2>{t.t("settings.agentAccess.title")}</h2>
-      <p className="ld-settings-desc">{t.t("settings.agentAccess.description")}</p>
+      <p className="ld-settings-desc">{t.t("settings.agentAccess.description", { name: projectName })}</p>
       {failure ? <p role="alert" className="ld-settings-error">{t.t("settings.saveFailed")}</p> : null}
       {!enabled ? <p className="ld-settings-empty">{t.t("settings.agentAccess.enableFirst")}</p> : (
         <div>
@@ -375,17 +375,14 @@ export function DesktopSettingsDialog({ settings, initialPane, mcp, projectName,
             {navItem(t, "general", pane, t.t("settings.nav.general"), setPane)}
             {mcp === undefined ? null : navItem(t, "mcp_defaults", pane, t.t("settings.nav.mcpDefaults"), setPane)}
             {mcp === undefined || projectName === undefined ? null : (
-              <span className="ld-settings-nav-group">
-                {t.t("settings.group.project")}
-                <small>{projectName}</small>
-              </span>
+              <span className="ld-settings-nav-group">{t.t("settings.group.project")}</span>
             )}
             {mcp === undefined || projectName === undefined || projectID === undefined ? null : navItem(t, "agent_access", pane, t.t("settings.nav.agentAccess"), setPane)}
           </nav>
           <div className="ld-settings-body">
             {pane === "general" ? <GeneralPane t={t} settings={settings} {...(onLocaleChange === undefined ? {} : { onLocaleChange })} /> : null}
             {pane === "mcp_defaults" && mcp !== undefined ? <MCPDefaultsPane t={t} mcp={mcp} /> : null}
-            {pane === "agent_access" && mcp !== undefined && projectID !== undefined ? <AgentAccessPane t={t} mcp={mcp} projectID={projectID} /> : null}
+            {pane === "agent_access" && mcp !== undefined && projectID !== undefined ? <AgentAccessPane t={t} mcp={mcp} projectID={projectID} projectName={projectName ?? ""} /> : null}
           </div>
         </div>
       </div>

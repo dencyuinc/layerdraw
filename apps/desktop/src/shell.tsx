@@ -290,7 +290,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
         </aside>
       )}
       {settingsDialog}
-      <div className="ld-desktop-visually-hidden" role="status" aria-live="polite" aria-atomic={true}>{state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : state.pending_action === "disconnect_storage" ? "Disconnecting external storage…" : ""}</div>
+      <div className="ld-desktop-visually-hidden" role="status" aria-live="polite" aria-atomic={true}>{state.pending_action === undefined ? "" : t.t(`workspace.pending.${state.pending_action}`)}</div>
     </main>
   );
 }

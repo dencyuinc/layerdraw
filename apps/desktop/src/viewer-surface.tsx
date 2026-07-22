@@ -99,9 +99,9 @@ const defaultViewerTranslator: Translator = createTranslator("en", baseShellCata
 export function DesktopViewerSurface({ state, onSelectionChange }: DesktopViewerSurfaceProps): ReactNode {
   const s_translator = useOptionalI18n() ?? defaultViewerTranslator;
   const [mode, setMode] = useState<"2d" | "2.5d">("2d");
-  if (state.status === "loading" || state.status === "cancelling") return <p role="status" aria-live="polite">Loading view…</p>;
+  if (state.status === "loading" || state.status === "cancelling") return <p role="status" aria-live="polite">{s_translator.t("workspace.viewer.loading")}</p>;
   if (state.status === "empty") return <p className="ld-desktop-empty">{s_translator.t(state.reason === "view_empty" ? "workspace.empty.view" : "workspace.empty.select")}</p>;
-  if (state.status === "disposed") return <p role="status">Viewer closed.</p>;
+  if (state.status === "disposed") return <p role="status">{s_translator.t("workspace.viewer.closed")}</p>;
   const publication = "publication" in state ? state.publication : state.previous;
   return (
     <div className="ld-desktop-viewer" data-viewer-state={state.status}>

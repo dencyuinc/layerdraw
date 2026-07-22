@@ -153,7 +153,7 @@ export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelPro
   const plan = snapshot.plan === undefined || snapshot.status !== "awaiting_confirmation" ? null : (
     <section className="ld-library-detail" aria-label={t.t("library.plan.title")}>
       <h3>{t.t("library.plan.title")}</h3>
-      <p className="ld-library-card-meta">{`${snapshot.plan.action.replaceAll("_", " ")} · ${t.t("library.plan.artifacts", { count: String(snapshot.plan.artifacts.length) })}`}</p>
+      <p className="ld-library-card-meta">{`${t.t(`library.action.${snapshot.plan.action}`)} · ${t.t("library.plan.artifacts", { count: String(snapshot.plan.artifacts.length) })}`}</p>
       <p className="ld-hub-templates-hint">{snapshot.plan.migration_required ? t.t("library.plan.migration") : t.t("library.plan.noMigration")}</p>
       <button type="button" className="ld-btn ld-btn-primary" disabled={busy} onClick={() => { const id = `desktop-library-${Date.now()}-${++operationSequence.current}`; void update(library.confirm(id, id)); }}>{t.t("library.plan.apply")}</button>
     </section>
@@ -174,7 +174,7 @@ export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelPro
           <div key={source.source_id} className="ld-settings-row">
             <span className="ld-settings-row-label">
               {source.source_id}
-              <small>{source.kind.replaceAll("_", " ")}</small>
+              <small>{t.t(`library.sourceKind.${source.kind}`)}</small>
             </span>
             <span className="ld-settings-row-control">
               <span className="ld-settings-badge" data-on={source.connected}>{source.connected ? t.t("library.source.connected") : t.t("library.source.disconnected")}</span>
@@ -201,7 +201,7 @@ export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelPro
             <div className="ld-settings-row">
               <span className="ld-settings-row-label">{t.t("library.source.kind")}</span>
               <span className="ld-settings-row-control">
-                {tokenSelect(t.t("library.source.kind"), sourceKind, sourceKinds.map((value) => ({ value, label: value.replaceAll("_", " ") })), (value) => setSourceKind(value as RegistrySourceKind))}
+                {tokenSelect(t.t("library.source.kind"), sourceKind, sourceKinds.map((value) => ({ value, label: t.t(`library.sourceKind.${value}`) })), (value) => setSourceKind(value as RegistrySourceKind))}
               </span>
             </div>
             <div className="ld-settings-row">
