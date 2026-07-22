@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import type { CapabilityID } from "@layerdraw/protocol/common";
-import { createElement, useId, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useId, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { useCapability, useEditorCommands, useEditorState, type EditorState } from "./provider.js";
 
 export type EditorAction = "apply" | "undo" | "redo" | "retry" | "cancel-preview";
@@ -71,20 +71,24 @@ export function EditorCommandButton({
     if (origin?.isConnected) origin.focus({ preventScroll: true });
   };
 
-  return createElement("span", { className: "ld-control" },
-    createElement("button", {
-      ...buttonProps,
-      ref: buttonRef,
-      type: buttonProps.type ?? "button",
-      disabled,
-      "aria-disabled": disabled,
-      "aria-busy": status === "pending",
-      "aria-describedby": descriptionId,
-      "data-layerdraw-command": action,
-      "data-action-state": status,
-      onClick: () => { void invoke(); },
-    }, children),
-    createElement("span", { id: descriptionId, className: "ld-visually-hidden" }, description),
+  return (
+    <span className="ld-control">
+      <button
+        {...buttonProps}
+        ref={buttonRef}
+        type={buttonProps.type ?? "button"}
+        disabled={disabled}
+        aria-disabled={disabled}
+        aria-busy={status === "pending"}
+        aria-describedby={descriptionId}
+        data-layerdraw-command={action}
+        data-action-state={status}
+        onClick={() => { void invoke(); }}
+      >
+        {children}
+      </button>
+      <span id={descriptionId} className="ld-visually-hidden">{description}</span>
+    </span>
   );
 }
 

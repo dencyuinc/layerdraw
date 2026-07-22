@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import type { DiagramRenderData } from "@layerdraw/render";
-import { createElement, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
@@ -140,15 +140,23 @@ export function DesktopThreeViewer({ data, selected, onSelectionChange }: Deskto
     };
   }, [data, selected]);
 
-  if (failure) return createElement("p", { role: "alert", className: "ld-desktop-viewer-status" }, "The 3D renderer is unavailable.");
-  return createElement("div", { ref: host, className: "ld-desktop-viewer-three", "data-view-mode": "2.5d" },
-    createElement("ul", { className: "ld-desktop-visually-hidden", "aria-label": "3D diagram items" }, data.occurrences.map((item) =>
-      createElement("li", { key: item.render_key }, createElement("button", {
-        type: "button", "aria-pressed": selected.has(item.render_key), onClick: () => onSelectionChange([item.render_key]),
-        onKeyDown: (event: KeyboardEvent) => {
-          if (event.key !== "Enter" && event.key !== " ") return;
-          event.preventDefault();
-          onSelectionChange([item.render_key]);
-        },
-      }, labelFor(data, item.render_key))))));
+  if (failure) return <p role="alert" className="ld-desktop-viewer-status">The 3D renderer is unavailable.</p>;
+  return (
+    <div ref={host} className="ld-desktop-viewer-three" data-view-mode="2.5d">
+      <ul className="ld-desktop-visually-hidden" aria-label="3D diagram items">
+        {data.occurrences.map((item) => (
+          <li key={item.render_key}>
+            <button
+              type="button" aria-pressed={selected.has(item.render_key)} onClick={() => onSelectionChange([item.render_key])}
+              onKeyDown={(event: KeyboardEvent) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                onSelectionChange([item.render_key]);
+              }}
+            >{labelFor(data, item.render_key)}</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }

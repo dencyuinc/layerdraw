@@ -4,7 +4,6 @@ import type { EditorEdit } from "@layerdraw/composer";
 import type { SymbolReadItem } from "@layerdraw/protocol/engine";
 import type { SourceRange, StableAddress, SubjectKind } from "@layerdraw/protocol/semantic";
 import {
-  createElement,
   useDeferredValue,
   useEffect,
   useId,
@@ -128,43 +127,56 @@ export function DocumentOutline({
     event.preventDefault();
   };
 
-  return createElement("section", { className: "ld-navigation", "aria-label": label },
-    createElement("label", { htmlFor: searchId, className: "ld-navigation-search-label" }, "Search structure"),
-    createElement("input", {
-      id: searchId,
-      type: "search",
-      value: query,
-      onChange: (event: ChangeEvent<HTMLInputElement>) => setQuery(event.currentTarget.value),
-      "aria-controls": `${searchId}-results`,
-    }),
-    reconciled.stale && createElement("button", {
-      type: "button",
-      className: "ld-navigation-stale",
-      onClick: () => reconciled.lastSourceRange && onNavigateSource?.(reconciled.lastSourceRange, reconciled.address),
-    }, "Selected item changed or was deleted. Open its last source location."),
-    createElement("ul", {
-      id: `${searchId}-results`,
-      role: "listbox",
-      tabIndex: 0,
-      "aria-label": `${label} results`,
-      "aria-activedescendant": visibleSelection === undefined ? undefined : `${searchId}-${encodeURIComponent(visibleSelection)}`,
-      onKeyDown: handleKeys,
-    }, visible.map((item) => createElement("li", {
-      id: `${searchId}-${encodeURIComponent(item.address)}`,
-      key: item.address,
-      role: "option",
-      "aria-selected": item.address === reconciled.address,
-      "aria-disabled": item.availability === "denied" || item.availability === "unavailable",
-      "data-address": item.address,
-      "data-kind": item.kind,
-      "data-availability": item.availability ?? "available",
-      onClick: () => select(item),
-      onDoubleClick: () => onNavigateSource?.(item.source_range, item.address),
-    }, createElement("span", { className: "ld-navigation-name" }, item.display_name || item.address),
-    createElement("span", { className: "ld-navigation-kind" }, item.kind)))),
-    matches.length === 0
-      ? createElement("p", { role: "status" }, emptyLabel)
-      : matches.length > visible.length && createElement("p", { role: "status" }, `${visible.length} of ${matches.length} results shown.`));
+  return (
+    <section className="ld-navigation" aria-label={label}>
+      <label htmlFor={searchId} className="ld-navigation-search-label">Search structure</label>
+      <input
+        id={searchId}
+        type="search"
+        value={query}
+        onChange={(event: ChangeEvent<HTMLInputElement>) => setQuery(event.currentTarget.value)}
+        aria-controls={`${searchId}-results`}
+      />
+      {reconciled.stale && (
+        <button
+          type="button"
+          className="ld-navigation-stale"
+          onClick={() => reconciled.lastSourceRange && onNavigateSource?.(reconciled.lastSourceRange, reconciled.address)}
+        >
+          Selected item changed or was deleted. Open its last source location.
+        </button>
+      )}
+      <ul
+        id={`${searchId}-results`}
+        role="listbox"
+        tabIndex={0}
+        aria-label={`${label} results`}
+        aria-activedescendant={visibleSelection === undefined ? undefined : `${searchId}-${encodeURIComponent(visibleSelection)}`}
+        onKeyDown={handleKeys}
+      >
+        {visible.map((item) => (
+          <li
+            id={`${searchId}-${encodeURIComponent(item.address)}`}
+            key={item.address}
+            role="option"
+            aria-selected={item.address === reconciled.address}
+            aria-disabled={item.availability === "denied" || item.availability === "unavailable"}
+            data-address={item.address}
+            data-kind={item.kind}
+            data-availability={item.availability ?? "available"}
+            onClick={() => select(item)}
+            onDoubleClick={() => onNavigateSource?.(item.source_range, item.address)}
+          >
+            <span className="ld-navigation-name">{item.display_name || item.address}</span>
+            <span className="ld-navigation-kind">{item.kind}</span>
+          </li>
+        ))}
+      </ul>
+      {matches.length === 0
+        ? <p role="status">{emptyLabel}</p>
+        : matches.length > visible.length && <p role="status">{`${visible.length} of ${matches.length} results shown.`}</p>}
+    </section>
+  );
 }
 
 export interface SemanticInspectorField {
@@ -200,17 +212,27 @@ export function SourceNavigationList({
   onNavigateSource,
   label = "Diagnostics and source locations",
 }: SourceNavigationListProps): ReactNode {
-  return createElement("ul", { className: "ld-source-navigation", "aria-label": label }, targets.map((target) => {
-    const state = target.availability ?? "available";
-    const disabled = state === "denied" || state === "unavailable";
-    return createElement("li", { key: target.id, "data-availability": state }, createElement("button", {
-      type: "button",
-      title: target.description,
-      disabled,
-      "aria-disabled": disabled,
-      onClick: disabled ? undefined : () => onNavigateSource(target.source_range, target.address),
-    }, target.label));
-  }));
+  return (
+    <ul className="ld-source-navigation" aria-label={label}>
+      {targets.map((target) => {
+        const state = target.availability ?? "available";
+        const disabled = state === "denied" || state === "unavailable";
+        return (
+          <li key={target.id} data-availability={state}>
+            <button
+              type="button"
+              title={target.description}
+              disabled={disabled}
+              aria-disabled={disabled}
+              onClick={disabled ? undefined : () => onNavigateSource(target.source_range, target.address)}
+            >
+              {target.label}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 export interface SemanticInspectorProps {
@@ -222,29 +244,37 @@ export interface SemanticInspectorProps {
 export function SemanticInspector({ address, fields, label = "Semantic inspector" }: SemanticInspectorProps): ReactNode {
   const commands = useEditorCommands();
   const fieldPrefix = useId();
-  return createElement("section", { className: "ld-semantic-inspector", "aria-label": label, "data-address": address },
-    fields.map((field) => {
-      const state = field.availability ?? "available";
-      const disabled = field.onDraftChange === undefined || field.buildEdit === undefined || state !== "available";
-      const inputId = `${fieldPrefix}-${encodeURIComponent(field.id)}`;
-      return createElement("div", { key: field.id, className: "ld-inspector-field", "data-availability": state },
-        createElement("label", { className: "ld-inspector-label", htmlFor: inputId }, field.label),
-        createElement("input", {
-          id: inputId,
-          value: field.draft,
-          disabled,
-          "aria-disabled": disabled,
-          "aria-description": field.description,
-          onChange: disabled ? undefined : (event: ChangeEvent<HTMLInputElement>) => field.onDraftChange?.(event.currentTarget.value),
-        }),
-        createElement("button", {
-          type: "button",
-          disabled,
-          "aria-disabled": disabled,
-          title: field.description,
-          onClick: disabled ? undefined : () => {
-            if (field.buildEdit !== undefined) void commands.preview(field.buildEdit(field.draft));
-          },
-        }, "Preview change"));
-    }));
+  return (
+    <section className="ld-semantic-inspector" aria-label={label} data-address={address}>
+      {fields.map((field) => {
+        const state = field.availability ?? "available";
+        const disabled = field.onDraftChange === undefined || field.buildEdit === undefined || state !== "available";
+        const inputId = `${fieldPrefix}-${encodeURIComponent(field.id)}`;
+        return (
+          <div key={field.id} className="ld-inspector-field" data-availability={state}>
+            <label className="ld-inspector-label" htmlFor={inputId}>{field.label}</label>
+            <input
+              id={inputId}
+              value={field.draft}
+              disabled={disabled}
+              aria-disabled={disabled}
+              aria-description={field.description}
+              onChange={disabled ? undefined : (event: ChangeEvent<HTMLInputElement>) => field.onDraftChange?.(event.currentTarget.value)}
+            />
+            <button
+              type="button"
+              disabled={disabled}
+              aria-disabled={disabled}
+              title={field.description}
+              onClick={disabled ? undefined : () => {
+                if (field.buildEdit !== undefined) void commands.preview(field.buildEdit(field.draft));
+              }}
+            >
+              Preview change
+            </button>
+          </div>
+        );
+      })}
+    </section>
+  );
 }

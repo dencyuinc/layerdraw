@@ -7,7 +7,6 @@ import type { MaterializeViewInput } from "@layerdraw/protocol/engine";
 import type { ViewData } from "@layerdraw/protocol/semantic";
 import type { Viewer, ViewerOperationResult, ViewerPublication, ViewerSnapshot, ViewerState } from "@layerdraw/viewer";
 import {
-  createElement,
   useEffect,
   useId,
   useMemo,
@@ -69,16 +68,25 @@ function initialDraft(fields: readonly QueryViewField[]): QueryViewDraft {
 
 function fieldControl(field: QueryViewField, controlId: string, value: QueryViewFieldValue, set: (value: QueryViewFieldValue) => void): ReactNode {
   const common = { id: controlId, name: field.id, required: field.required, "aria-describedby": field.description === undefined ? undefined : `${controlId}-description` };
-  if (field.type === "boolean") return createElement("input", { ...common, type: "checkbox", checked: Boolean(value), onChange: (event: ChangeEvent<HTMLInputElement>) => set(event.currentTarget.checked) });
-  if (field.type === "select") return createElement("select", { ...common, value: String(value), onChange: (event: ChangeEvent<HTMLSelectElement>) => set(event.currentTarget.value) },
-    field.options.map((option) => createElement("option", { key: option.value, value: option.value }, option.label)));
-  return createElement("input", {
-    ...common,
-    type: field.type,
-    value,
-    ...(field.type === "text" ? { placeholder: field.placeholder } : { min: field.min, max: field.max, step: field.step }),
-    onChange: (event: ChangeEvent<HTMLInputElement>) => set(field.type === "number" ? event.currentTarget.valueAsNumber : event.currentTarget.value),
-  });
+  if (field.type === "boolean") {
+    return <input {...common} type="checkbox" checked={Boolean(value)} onChange={(event: ChangeEvent<HTMLInputElement>) => set(event.currentTarget.checked)} />;
+  }
+  if (field.type === "select") {
+    return (
+      <select {...common} value={String(value)} onChange={(event: ChangeEvent<HTMLSelectElement>) => set(event.currentTarget.value)}>
+        {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input
+      {...common}
+      type={field.type}
+      value={value as string | number}
+      {...(field.type === "text" ? { placeholder: field.placeholder } : { min: field.min, max: field.max, step: field.step })}
+      onChange={(event: ChangeEvent<HTMLInputElement>) => set(field.type === "number" ? event.currentTarget.valueAsNumber : event.currentTarget.value)}
+    />
+  );
 }
 
 export interface QueryViewComposerProps {
@@ -119,32 +127,55 @@ export function QueryViewComposer({ definitions, selectedId, onSelect, intents, 
     }
   };
 
-  return createElement("section", { className: "ld-query-view-composer", "aria-labelledby": `${formId}-heading` },
-    createElement("h2", { id: `${formId}-heading` }, heading),
-    createElement("label", { htmlFor: `${formId}-definition` }, "Selected definition"),
-    createElement("select", {
-      id: `${formId}-definition`, value: selectedId ?? "", onChange: (event: ChangeEvent<HTMLSelectElement>) => onSelect(event.currentTarget.value),
-    }, createElement("option", { value: "" }, "Select…"), definitions.map((definition) => createElement("option", {
-      key: definition.id, value: definition.id, disabled: definition.availability?.status !== undefined && definition.availability.status !== "available",
-    }, `${definition.label} (${definition.kind})`))),
-    selected?.description === undefined ? null : createElement("p", null, selected.description),
-    createElement("div", { className: "ld-query-view-actions", role: "toolbar", "aria-label": "Query and view actions" }, intents.map((intent) => {
-      const blocked = intent.availability.status !== "available" || (intent.target_id !== undefined && intent.target_id !== selectedId);
-      const reason = intent.availability.status === "available" ? undefined : intent.availability.reason;
-      return createElement("button", { key: intent.id, type: "button", disabled: blocked, "aria-disabled": blocked, title: reason, onClick: () => begin(intent) }, intent.label);
-    })),
-    localError === undefined ? null : createElement("div", { role: "alert" }, localError),
-    active === undefined ? null : createElement("form", { onSubmit: submit, "data-query-view-action": active.kind },
-      createElement("h3", null, active.label),
-      active.fields.map((field) => {
-        const controlId = `${formId}-${field.id}`;
-        return createElement("div", { key: field.id, className: "ld-query-view-field" },
-          createElement("label", { htmlFor: controlId }, field.label),
-          fieldControl(field, controlId, draft[field.id] ?? "", (value) => setDraft((current) => Object.freeze({ ...current, [field.id]: value }))),
-          field.description === undefined ? null : createElement("small", { id: `${controlId}-description` }, field.description));
-      }),
-      createElement("button", { type: "submit", disabled: active.availability.status !== "available" || (active.target_id !== undefined && active.target_id !== selectedId) }, active.label),
-      createElement("button", { type: "button", onClick: () => { setActiveId(undefined); setLocalError(undefined); } }, "Cancel")),
+  return (
+    <section className="ld-query-view-composer" aria-labelledby={`${formId}-heading`}>
+      <h2 id={`${formId}-heading`}>{heading}</h2>
+      <label htmlFor={`${formId}-definition`}>Selected definition</label>
+      <select id={`${formId}-definition`} value={selectedId ?? ""} onChange={(event: ChangeEvent<HTMLSelectElement>) => onSelect(event.currentTarget.value)}>
+        <option value="">Select…</option>
+        {definitions.map((definition) => (
+          <option
+            key={definition.id}
+            value={definition.id}
+            disabled={definition.availability?.status !== undefined && definition.availability.status !== "available"}
+          >
+            {`${definition.label} (${definition.kind})`}
+          </option>
+        ))}
+      </select>
+      {selected?.description === undefined ? null : <p>{selected.description}</p>}
+      <div className="ld-query-view-actions" role="toolbar" aria-label="Query and view actions">
+        {intents.map((intent) => {
+          const blocked = intent.availability.status !== "available" || (intent.target_id !== undefined && intent.target_id !== selectedId);
+          const reason = intent.availability.status === "available" ? undefined : intent.availability.reason;
+          return (
+            <button key={intent.id} type="button" disabled={blocked} aria-disabled={blocked} title={reason} onClick={() => begin(intent)}>
+              {intent.label}
+            </button>
+          );
+        })}
+      </div>
+      {localError === undefined ? null : <div role="alert">{localError}</div>}
+      {active === undefined ? null : (
+        <form onSubmit={submit} data-query-view-action={active.kind}>
+          <h3>{active.label}</h3>
+          {active.fields.map((field) => {
+            const controlId = `${formId}-${field.id}`;
+            return (
+              <div key={field.id} className="ld-query-view-field">
+                <label htmlFor={controlId}>{field.label}</label>
+                {fieldControl(field, controlId, draft[field.id] ?? "", (value) => setDraft((current) => Object.freeze({ ...current, [field.id]: value })))}
+                {field.description === undefined ? null : <small id={`${controlId}-description`}>{field.description}</small>}
+              </div>
+            );
+          })}
+          <button type="submit" disabled={active.availability.status !== "available" || (active.target_id !== undefined && active.target_id !== selectedId)}>
+            {active.label}
+          </button>
+          <button type="button" onClick={() => { setActiveId(undefined); setLocalError(undefined); }}>Cancel</button>
+        </form>
+      )}
+    </section>
   );
 }
 
@@ -232,10 +263,13 @@ export interface LiveViewerProps extends UseLiveViewerOptions {
 
 export function LiveViewer({ children, ...options }: LiveViewerProps): ReactNode {
   const state = useLiveViewer(options);
-  return createElement("section", { className: "ld-live-viewer", "aria-busy": state.status === "debouncing" || state.status === "materializing", "data-viewer-state": state.status },
-    state.status === "error" ? createElement("div", { role: "alert" }, "The view could not be materialized.") : null,
-    state.status === "unavailable" ? createElement("div", { role: state.requirement === "required" ? "alert" : "status" }, state.reason) : null,
-    children(state));
+  return (
+    <section className="ld-live-viewer" aria-busy={state.status === "debouncing" || state.status === "materializing"} data-viewer-state={state.status}>
+      {state.status === "error" ? <div role="alert">The view could not be materialized.</div> : null}
+      {state.status === "unavailable" ? <div role={state.requirement === "required" ? "alert" : "status"}>{state.reason}</div> : null}
+      {children(state)}
+    </section>
+  );
 }
 
 export function useMaterializeCapability(capabilityId: CapabilityID, requirement: "optional" | "required" = "optional"): QueryViewAvailability {

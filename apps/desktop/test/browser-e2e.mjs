@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
 import { build } from "esbuild-wasm";
 
-const bundled = await build({ entryPoints: [new URL("./browser-fixture.mjs", import.meta.url).pathname], bundle: true, format: "iife", platform: "browser", write: false });
+const bundled = await build({ entryPoints: [new URL("./browser-fixture.mjs", import.meta.url).pathname], bundle: true, format: "iife", platform: "browser", jsx: "automatic", write: false });
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });

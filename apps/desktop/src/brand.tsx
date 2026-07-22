@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-import { createElement, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { layerdrawIconDataUri, layerdrawLogoOnDarkDataUri, layerdrawLogoOnLightDataUri } from "./brand-assets.js";
 
 export interface LayerDrawBrandProps {
@@ -14,7 +14,7 @@ export interface LayerDrawBrandProps {
  * brand asset change).
  */
 export function LayerDrawIcon({ title, size = 22 }: LayerDrawBrandProps & { readonly size?: number }): ReactNode {
-  return createElement("img", { className: "ld-brand-icon", src: layerdrawIconDataUri, alt: title, width: size, height: size });
+  return <img className="ld-brand-icon" src={layerdrawIconDataUri} alt={title} width={size} height={size} />;
 }
 
 /**
@@ -23,7 +23,10 @@ export function LayerDrawIcon({ title, size = 22 }: LayerDrawBrandProps & { read
  * both render; the active theme picks one via CSS.
  */
 export function LayerDrawWordmark({ title }: LayerDrawBrandProps): ReactNode {
-  return createElement("span", { className: "ld-wordmark", role: "img", "aria-label": title },
-    createElement("img", { className: "ld-wordmark-logo ld-wordmark-logo-light", src: layerdrawLogoOnLightDataUri, alt: "", "aria-hidden": true, height: 22 }),
-    createElement("img", { className: "ld-wordmark-logo ld-wordmark-logo-dark", src: layerdrawLogoOnDarkDataUri, alt: "", "aria-hidden": true, height: 22 }));
+  return (
+    <span className="ld-wordmark" role="img" aria-label={title}>
+      <img className="ld-wordmark-logo ld-wordmark-logo-light" src={layerdrawLogoOnLightDataUri} alt="" aria-hidden={true} height={22} />
+      <img className="ld-wordmark-logo ld-wordmark-logo-dark" src={layerdrawLogoOnDarkDataUri} alt="" aria-hidden={true} height={22} />
+    </span>
+  );
 }

@@ -14,6 +14,7 @@ await build({
   bundle: true,
   format: "iife",
   platform: "browser",
+  jsx: "automatic",
   target: ["chrome120"],
   sourcemap: true,
   outfile: fileURLToPath(new URL("../frontend/dist/app.js", import.meta.url)),

@@ -15,7 +15,6 @@ import type { ConflictEvidence } from "@layerdraw/protocol/runtime";
 import type { Diagnostic } from "@layerdraw/protocol/semantic";
 import {
   createContext,
-  createElement,
   useCallback,
   useContext,
   useEffect,
@@ -166,7 +165,7 @@ export function EditorProvider({ editor, session, children }: EditorProviderProp
     [editor, session, snapshot, pendingAction, error],
   );
   const value = useMemo(() => ({ state, commands }), [state, commands]);
-  return createElement(EditorContext.Provider, { value }, children);
+  return <EditorContext.Provider value={value}>{children}</EditorContext.Provider>;
 }
 
 function useRequiredContext(): EditorContextValue {

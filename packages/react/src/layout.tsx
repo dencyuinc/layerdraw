@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import {
-  createElement,
   useCallback,
   useEffect,
   useRef,
@@ -14,11 +13,11 @@ import { useEditorState } from "./provider.js";
 function classes(base: string, extra: string | undefined): string { return extra === undefined ? base : `${base} ${extra}`; }
 
 export function EditorShell({ className, ...props }: HTMLAttributes<HTMLDivElement>): ReactNode {
-  return createElement("div", { ...props, className: classes("ld-editor-shell", className) });
+  return <div {...props} className={classes("ld-editor-shell", className)} />;
 }
 
 export function EditorWorkspace({ className, ...props }: HTMLAttributes<HTMLDivElement>): ReactNode {
-  return createElement("div", { ...props, className: classes("ld-editor-workspace", className) });
+  return <div {...props} className={classes("ld-editor-workspace", className)} />;
 }
 
 export interface EditorPanelProps extends HTMLAttributes<HTMLElement> {
@@ -27,12 +26,14 @@ export interface EditorPanelProps extends HTMLAttributes<HTMLElement> {
 }
 
 export function EditorPanel({ label, placement = "primary", className, ...props }: EditorPanelProps): ReactNode {
-  return createElement("section", {
-    ...props,
-    "aria-label": label,
-    "data-placement": placement,
-    className: classes("ld-editor-panel", className),
-  });
+  return (
+    <section
+      {...props}
+      aria-label={label}
+      data-placement={placement}
+      className={classes("ld-editor-panel", className)}
+    />
+  );
 }
 
 export interface EditorToolbarProps extends HTMLAttributes<HTMLDivElement> {
@@ -60,14 +61,16 @@ export function EditorToolbar({ label, className, onKeyDown, ...props }: EditorT
     buttons[next]?.focus();
     event.preventDefault();
   }, [onKeyDown]);
-  return createElement("div", {
-    ...props,
-    ref,
-    role: "toolbar",
-    "aria-label": label,
-    className: classes("ld-editor-toolbar", className),
-    onKeyDown: handleKeyDown,
-  });
+  return (
+    <div
+      {...props}
+      ref={ref}
+      role="toolbar"
+      aria-label={label}
+      className={classes("ld-editor-toolbar", className)}
+      onKeyDown={handleKeyDown}
+    />
+  );
 }
 
 export interface EditorLiveRegionProps {
@@ -87,7 +90,7 @@ function defaultAnnouncement(state: ReturnType<typeof useEditorState>): string {
 
 export function EditorLiveRegion({ format = defaultAnnouncement }: EditorLiveRegionProps): ReactNode {
   const state = useEditorState();
-  return createElement("div", { className: "ld-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, format(state));
+  return <div className="ld-visually-hidden" role="status" aria-live="polite" aria-atomic>{format(state)}</div>;
 }
 
 export interface RestoreFocusProps { readonly children?: ReactNode; }

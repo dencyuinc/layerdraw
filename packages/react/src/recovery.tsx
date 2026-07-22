@@ -5,7 +5,6 @@ import type { ComposerIntent } from "@layerdraw/composer";
 import type { ProtocolDiagnostic } from "@layerdraw/protocol/common";
 import type { Diagnostic } from "@layerdraw/protocol/semantic";
 import {
-  createElement,
   useEffect,
   useId,
   useRef,
@@ -184,48 +183,117 @@ export function AuthoringRecoveryWorkflow({
         : state.snapshot.apply_result?.persistence === "ephemeral" ? "Ephemeral local change"
           : state.session?.persistence === "durable" ? "Durable session; change not yet committed" : "Ephemeral local session";
 
-  return createElement("section", { className: "ld-authoring-recovery", "aria-labelledby": `${id}-heading`, "data-workflow-status": status },
-    createElement("h2", { id: `${id}-heading` }, heading),
-    createElement("dl", { className: "ld-operation-context" },
-      createElement("dt", null, "Operation"), createElement("dd", null, displayedContext.operation_id),
-      createElement("dt", null, "Revision"), createElement("dd", null, displayedContext.revision),
-      createElement("dt", null, "Persistence"), createElement("dd", { "data-persistence": persistence }, persistenceLabel)),
-    createElement("p", { role: status === "denied" || status === "disconnected" || status === "failed" ? "alert" : "status" },
-      status === "disconnected" ? connection.status === "disconnected" ? connection.reason : "The editor transport is disconnected."
-        : status === "denied" ? "Authoring access was denied."
-          : status === "approval-required" ? approvalReady ? "Review the authoritative impact before requesting approval." : "Approval is required but no complete trusted approval review is available."
-            : status === "approval-cancelled" ? "Approval was cancelled. The change was not applied."
-              : status === "stale" ? "The document revision changed. Your original intent is preserved."
-                : status === "conflict" ? "The authoring intent conflicts with the current document."
-                  : status === "applied-durable" ? "Changes are committed durably."
-                    : status === "applied-host" ? "The host persisted the change."
-                      : status === "applied-not-committed" ? "The Runtime did not commit the change."
-                        : status === "applied-ephemeral" ? "Changes are applied locally and remain ephemeral."
-                          : status === "failed" ? "The authoring operation failed." : ""),
-    localError === undefined ? null : createElement("p", { role: "alert" }, localError),
-    diagnostics.length === 0 ? null : createElement("nav", { "aria-label": "Diagnostic groups" },
-      createElement("ul", null, [...bySeverity.keys()].map((severity) => createElement("li", { key: severity }, createElement("a", { href: `#${id}-diagnostics-${severity}` }, `${severity} (${bySeverity.get(severity)?.length ?? 0})`))))),
-    [...bySeverity].map(([severity, items]) => createElement("section", { key: severity, id: `${id}-diagnostics-${severity}`, "aria-label": `${severity} diagnostics` },
-      createElement("h3", null, severity),
-      createElement("ol", null, items.map((diagnostic, index) => createElement("li", { key: `${diagnostic.code}-${index}` },
-        createElement("code", null, diagnostic.code), " ", diagnosticMessage(diagnostic)))))),
-    state.impact === undefined ? null : createElement("section", { "aria-label": "Authoring impact" },
-      createElement("h3", null, "Authoring impact"),
-      createElement("p", null, `${state.impact.entries.length} impacted subject(s)`),
-      createElement("ul", null, state.impact.entries.map((entry, index) => createElement("li", { key: `${entry.subject_address ?? entry.owner_address ?? "impact"}-${index}` }, `${entry.action}: ${entry.subject_kind} (${entry.capability})`)))),
-    state.grant === undefined ? null : createElement("section", { "aria-label": "Grant summary" },
-      createElement("h3", null, "Grant summary"),
-      createElement("p", null, `Granted: ${state.grant.granted_capabilities.join(", ") || "none"}`),
-      createElement("p", null, `Constrained: ${state.grant.constrained_capabilities.join(", ") || "none"}`)),
-    state.conflicts.length === 0 ? null : createElement("section", { "aria-label": "Conflicts" }, createElement("h3", null, "Conflicts"),
-      createElement("ol", null, state.conflicts.map((conflict, index) => createElement("li", { key: index }, "kind" in conflict ? conflict.kind : "Runtime revision conflict")))),
-    createElement("div", { className: "ld-recovery-actions", role: "group", "aria-label": "Recovery actions" },
-      status === "review" || status === "approval-required" ? createElement("button", { type: "button", disabled: disabled || (status === "approval-required" && !approvalReady), onClick: apply }, status === "approval-required" ? "Request approval and apply" : "Apply") : null,
-      status === "stale" || status === "conflict" ? createElement("button", { type: "button", disabled: disabled || handlers.refresh === undefined, onClick: () => runHost("refresh", handlers.refresh === undefined ? undefined : (signal) => handlers.refresh?.(intent, signal) ?? Promise.resolve()) }, "Refresh") : null,
-      status === "stale" || status === "conflict" || status === "approval-cancelled" ? createElement("button", { type: "button", disabled: disabled || intent === undefined, onClick: repreview }, "Re-preview intent") : null,
-      (status === "failed" || status === "stale" || status === "conflict") && state.snapshot.failure?.recoverable === true ? createElement("button", { type: "button", disabled, onClick: retry }, "Retry") : null,
-      status === "disconnected" ? createElement("button", { type: "button", disabled: disabled || handlers.reopen === undefined, onClick: () => runHost("reopen", handlers.reopen) }, "Reopen session") : null,
-      status === "stale" || status === "conflict" || status === "approval-cancelled" ? createElement("button", { type: "button", disabled: disabled || handlers.discard === undefined, onClick: () => runHost("discard", handlers.discard === undefined ? undefined : (signal) => handlers.discard?.(intent, signal) ?? Promise.resolve()) }, "Discard intent") : null),
-    pending === undefined ? null : createElement("p", { role: "status" }, `${pending} in progress.`),
+  return (
+    <section className="ld-authoring-recovery" aria-labelledby={`${id}-heading`} data-workflow-status={status}>
+      <h2 id={`${id}-heading`}>{heading}</h2>
+      <dl className="ld-operation-context">
+        <dt>Operation</dt>
+        <dd>{displayedContext.operation_id}</dd>
+        <dt>Revision</dt>
+        <dd>{displayedContext.revision}</dd>
+        <dt>Persistence</dt>
+        <dd data-persistence={persistence}>{persistenceLabel}</dd>
+      </dl>
+      <p role={status === "denied" || status === "disconnected" || status === "failed" ? "alert" : "status"}>
+        {status === "disconnected" ? connection.status === "disconnected" ? connection.reason : "The editor transport is disconnected."
+          : status === "denied" ? "Authoring access was denied."
+            : status === "approval-required" ? approvalReady ? "Review the authoritative impact before requesting approval." : "Approval is required but no complete trusted approval review is available."
+              : status === "approval-cancelled" ? "Approval was cancelled. The change was not applied."
+                : status === "stale" ? "The document revision changed. Your original intent is preserved."
+                  : status === "conflict" ? "The authoring intent conflicts with the current document."
+                    : status === "applied-durable" ? "Changes are committed durably."
+                      : status === "applied-host" ? "The host persisted the change."
+                        : status === "applied-not-committed" ? "The Runtime did not commit the change."
+                          : status === "applied-ephemeral" ? "Changes are applied locally and remain ephemeral."
+                            : status === "failed" ? "The authoring operation failed." : ""}
+      </p>
+      {localError === undefined ? null : <p role="alert">{localError}</p>}
+      {diagnostics.length === 0 ? null : (
+        <nav aria-label="Diagnostic groups">
+          <ul>
+            {[...bySeverity.keys()].map((severity) => (
+              <li key={severity}>
+                <a href={`#${id}-diagnostics-${severity}`}>{`${severity} (${bySeverity.get(severity)?.length ?? 0})`}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
+      {[...bySeverity].map(([severity, items]) => (
+        <section key={severity} id={`${id}-diagnostics-${severity}`} aria-label={`${severity} diagnostics`}>
+          <h3>{severity}</h3>
+          <ol>
+            {items.map((diagnostic, index) => (
+              <li key={`${diagnostic.code}-${index}`}>
+                <code>{diagnostic.code}</code> {diagnosticMessage(diagnostic)}
+              </li>
+            ))}
+          </ol>
+        </section>
+      ))}
+      {state.impact === undefined ? null : (
+        <section aria-label="Authoring impact">
+          <h3>Authoring impact</h3>
+          <p>{`${state.impact.entries.length} impacted subject(s)`}</p>
+          <ul>
+            {state.impact.entries.map((entry, index) => (
+              <li key={`${entry.subject_address ?? entry.owner_address ?? "impact"}-${index}`}>{`${entry.action}: ${entry.subject_kind} (${entry.capability})`}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {state.grant === undefined ? null : (
+        <section aria-label="Grant summary">
+          <h3>Grant summary</h3>
+          <p>{`Granted: ${state.grant.granted_capabilities.join(", ") || "none"}`}</p>
+          <p>{`Constrained: ${state.grant.constrained_capabilities.join(", ") || "none"}`}</p>
+        </section>
+      )}
+      {state.conflicts.length === 0 ? null : (
+        <section aria-label="Conflicts">
+          <h3>Conflicts</h3>
+          <ol>
+            {state.conflicts.map((conflict, index) => (
+              <li key={index}>{"kind" in conflict ? conflict.kind : "Runtime revision conflict"}</li>
+            ))}
+          </ol>
+        </section>
+      )}
+      <div className="ld-recovery-actions" role="group" aria-label="Recovery actions">
+        {status === "review" || status === "approval-required" ? (
+          <button type="button" disabled={disabled || (status === "approval-required" && !approvalReady)} onClick={apply}>
+            {status === "approval-required" ? "Request approval and apply" : "Apply"}
+          </button>
+        ) : null}
+        {status === "stale" || status === "conflict" ? (
+          <button
+            type="button"
+            disabled={disabled || handlers.refresh === undefined}
+            onClick={() => runHost("refresh", handlers.refresh === undefined ? undefined : (signal) => handlers.refresh?.(intent, signal) ?? Promise.resolve())}
+          >
+            Refresh
+          </button>
+        ) : null}
+        {status === "stale" || status === "conflict" || status === "approval-cancelled" ? (
+          <button type="button" disabled={disabled || intent === undefined} onClick={repreview}>Re-preview intent</button>
+        ) : null}
+        {(status === "failed" || status === "stale" || status === "conflict") && state.snapshot.failure?.recoverable === true ? (
+          <button type="button" disabled={disabled} onClick={retry}>Retry</button>
+        ) : null}
+        {status === "disconnected" ? (
+          <button type="button" disabled={disabled || handlers.reopen === undefined} onClick={() => runHost("reopen", handlers.reopen)}>Reopen session</button>
+        ) : null}
+        {status === "stale" || status === "conflict" || status === "approval-cancelled" ? (
+          <button
+            type="button"
+            disabled={disabled || handlers.discard === undefined}
+            onClick={() => runHost("discard", handlers.discard === undefined ? undefined : (signal) => handlers.discard?.(intent, signal) ?? Promise.resolve())}
+          >
+            Discard intent
+          </button>
+        ) : null}
+      </div>
+      {pending === undefined ? null : <p role="status">{`${pending} in progress.`}</p>}
+    </section>
   );
 }

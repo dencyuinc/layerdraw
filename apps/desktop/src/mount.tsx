@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 import type { CapabilityID } from "@layerdraw/protocol/common";
-import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopSettingsPort, DesktopShellPorts } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
@@ -42,19 +41,23 @@ export function mountDesktopShell(element: Element, options: DesktopMountOptions
   const root: Root = createRoot(element);
   const render = (localeOverride: string | null): void => {
     const locale = resolveLocale(localeOverride ?? (typeof navigator === "undefined" ? undefined : navigator.language));
-    root.render(createElement(I18nProvider, { locale, catalogs: baseShellCatalogs }, createElement(DesktopShell, {
-    controller,
-    viewSelectionCapability: options.viewSelectionCapability,
-    editorCapabilities: options.editorCapabilities,
-    mcp: options.mcp,
-    ...(options.projectDialogs === undefined ? {} : { projectDialogs: options.projectDialogs }),
-    ...(options.libraryAvailability === undefined ? {} : { libraryAvailability: options.libraryAvailability }),
-    ...(options.reviewAvailability === undefined ? {} : { reviewAvailability: options.reviewAvailability }),
-    ...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel }),
-    ...(options.library === undefined ? {} : { library: options.library }),
-    ...(options.onReturnToProjects === undefined ? {} : { onReturnToProjects: options.onReturnToProjects }),
-    ...(options.settings === undefined ? {} : { settings: options.settings, onLocaleChange: (locale: string) => render(locale === "system" ? null : locale) }),
-    })));
+    root.render(
+      <I18nProvider locale={locale} catalogs={baseShellCatalogs}>
+        <DesktopShell
+          controller={controller}
+          viewSelectionCapability={options.viewSelectionCapability}
+          editorCapabilities={options.editorCapabilities}
+          mcp={options.mcp}
+          {...(options.projectDialogs === undefined ? {} : { projectDialogs: options.projectDialogs })}
+          {...(options.libraryAvailability === undefined ? {} : { libraryAvailability: options.libraryAvailability })}
+          {...(options.reviewAvailability === undefined ? {} : { reviewAvailability: options.reviewAvailability })}
+          {...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel })}
+          {...(options.library === undefined ? {} : { library: options.library })}
+          {...(options.onReturnToProjects === undefined ? {} : { onReturnToProjects: options.onReturnToProjects })}
+          {...(options.settings === undefined ? {} : { settings: options.settings, onLocaleChange: (locale: string) => render(locale === "system" ? null : locale) })}
+        />
+      </I18nProvider>
+    );
   };
   render(null);
   return {

@@ -10,7 +10,6 @@
 
 import {
   createContext,
-  createElement,
   useContext,
   useMemo,
   type ReactNode,
@@ -128,7 +127,7 @@ export interface I18nProviderProps {
 /** Provide the active translator; switching `locale` re-renders the subtree. */
 export function I18nProvider({ locale, catalogs, children }: I18nProviderProps): ReactNode {
   const translator = useMemo(() => createTranslator(locale, catalogs), [locale, catalogs]);
-  return createElement(I18nContext.Provider, { value: translator }, children);
+  return <I18nContext.Provider value={translator}>{children}</I18nContext.Provider>;
 }
 
 export function useI18n(): Translator {

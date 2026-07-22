@@ -4,7 +4,7 @@
 // restyled with LayerDraw tokens: flat elevation, token radii (6px), compact
 // workbench density. No default shadcn visual language survives.
 
-import { createElement, type ComponentProps, type ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { Button as BaseButton } from "@base-ui-components/react/button";
 import { cn } from "./cn.js";
 
@@ -36,8 +36,5 @@ export type ButtonProps = ComponentProps<typeof BaseButton> & {
 };
 
 export function Button({ variant = "secondary", size = "compact", className, ...props }: ButtonProps): ReactNode {
-  return createElement(BaseButton, {
-    ...props,
-    className: cn(base, variants[variant], sizes[size], typeof className === "string" ? className : undefined),
-  });
+  return <BaseButton {...props} className={cn(base, variants[variant], sizes[size], typeof className === "string" ? className : undefined)} />;
 }

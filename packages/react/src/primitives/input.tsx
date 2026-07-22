@@ -3,7 +3,7 @@
 // shadcn/ui-style Input over the Base UI primitive, restyled with tokens:
 // 4px radius (compact control), 1px token border, surface background.
 
-import { createElement, type ComponentProps, type ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { Input as BaseInput } from "@base-ui-components/react/input";
 import { cn } from "./cn.js";
 
@@ -16,8 +16,5 @@ const inputClasses =
 export type InputProps = ComponentProps<typeof BaseInput>;
 
 export function Input({ className, ...props }: InputProps): ReactNode {
-  return createElement(BaseInput, {
-    ...props,
-    className: cn(inputClasses, typeof className === "string" ? className : undefined),
-  });
+  return <BaseInput {...props} className={cn(inputClasses, typeof className === "string" ? className : undefined)} />;
 }

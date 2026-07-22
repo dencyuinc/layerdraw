@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "declaration": true,
+    "jsx": "react-jsx",
     "exactOptionalPropertyTypes": true,
     "lib": ["DOM", "DOM.Iterable", "ES2024"],
     "module": "NodeNext",
@@ -11,5 +12,5 @@
     "target": "ES2024",
     "verbatimModuleSyntax": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
