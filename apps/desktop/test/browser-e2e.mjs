@@ -29,6 +29,9 @@ try {
   await settingsDialog.getByRole("switch", { name: /Allow AI clients/ }).click();
   await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "mcp-enable"));
   await settingsDialog.getByRole("button", { name: "AI permissions" }).click();
+  await settingsDialog.getByText("stale-agent").waitFor();
+  await settingsDialog.getByRole("button", { name: "Delete connection record" }).click();
+  await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "mcp-delete" && call[1] === "connection-expired"));
   await settingsDialog.getByText("No AI clients have connected to this project.").waitFor();
   await page.keyboard.press("Escape");
   assert.equal(await page.getByRole("dialog", { name: "Settings" }).count(), 0);

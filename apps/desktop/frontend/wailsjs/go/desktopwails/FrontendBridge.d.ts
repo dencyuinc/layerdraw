@@ -22,6 +22,8 @@ export function CreateMCPConnection(arg1:desktopapp.MCPConnectRequest):Promise<d
 
 export function CreateProjectDialog(arg1:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ProjectOpenResult_>;
 
+export function DeleteMCPConnection(arg1:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_MCPConnection_>;
+
 export function DisconnectExternal(arg1:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ExternalConnection_>;
 
 export function ImportExternalDialog(arg1:desktopapp.ExternalImportRequest):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_exporter_ImportPreview_>;

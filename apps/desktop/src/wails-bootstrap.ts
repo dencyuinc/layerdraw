@@ -44,6 +44,7 @@ export interface DesktopWailsMCPBinding {
   CreateMCPConnection(request: DesktopMCPConnectRequest): Promise<DesktopMCPResult<DesktopMCPConnection>>;
   RevokeMCPConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
   MCPClientConfig(connectionID: string): Promise<string>;
+  DeleteMCPConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
 }
 
 export interface DesktopWailsRuntimeBinding {
@@ -206,6 +207,7 @@ export async function createDesktopWailsComposition(
     status: () => mcpBinding.MCPStatus(),
     setEnabled: (enabled: boolean) => mcpBinding.SetMCPEnabled(enabled, "local"),
     clientConfig: (connectionID: string) => mcpBinding.MCPClientConfig(connectionID),
+    deleteConnection: (connectionID: string) => mcpBinding.DeleteMCPConnection(connectionID),
     restart: () => mcpBinding.RestartMCP(),
     listConnections: () => mcpBinding.ListMCPConnections(),
     createConnection: (request: DesktopMCPConnectRequest) => mcpBinding.CreateMCPConnection(request),

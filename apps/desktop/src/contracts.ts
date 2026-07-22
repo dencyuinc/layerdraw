@@ -253,4 +253,6 @@ export interface DesktopMCPPort {
 	revokeConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
 	/** Copy-paste MCP client configuration for a connection (stdio bridge command). */
 	clientConfig?(connectionID: string): Promise<string>;
+	/** Remove a terminated (expired/revoked/restarted) connection from the store. */
+	deleteConnection?(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
 }

@@ -176,6 +176,14 @@ function scopeChipButton(label: string, granted: boolean, disabled: boolean, onT
   }, label);
 }
 
+function trashIcon(): ReactNode {
+  return createElement("svg", { viewBox: "0 0 24 24", width: 14, height: 14, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true },
+    createElement("path", { d: "M3 6h18" }),
+    createElement("path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }),
+    createElement("path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }),
+    createElement("path", { d: "M10 11v6M14 11v6" }));
+}
+
 function ConnectionConfig({ t, mcp, connectionID }: { readonly t: Translator; readonly mcp: DesktopMCPPort; readonly connectionID: string }): ReactNode {
   const [config, setConfig] = useState<string>();
   const [copied, setCopied] = useState(false);
@@ -283,7 +291,11 @@ function AgentAccessPane({ t, mcp, projectID }: { readonly t: Translator; readon
               createElement("div", { className: "ld-settings-agent-head" },
                 createElement("b", null, connection.agent_id),
                 createElement("span", { className: "ld-settings-badge", "data-on": connection.status === "connected" }, t.t(`mcp.state.${connection.status}`)),
-                createElement("span", { className: "ld-settings-agent-exp" }, t.t("settings.agentAccess.expires", { when: t.formatDate(connection.expires_at) }))),
+                createElement("span", { className: "ld-settings-agent-exp" }, t.t("settings.agentAccess.expires", { when: t.formatDate(connection.expires_at) })),
+                connection.status === "connected" || connection.status === "revoking" || mcp.deleteConnection === undefined ? null : createElement("button", {
+                  type: "button", className: "ld-settings-trash", "aria-label": t.t("settings.agentAccess.delete"), disabled: busy,
+                  onClick: () => run(() => mcp.deleteConnection?.(connection.connection_id) ?? Promise.resolve({ outcome: "failed" })),
+                }, trashIcon())),
               createElement("div", { className: "ld-settings-agent-row" },
                 createElement("b", null, t.t("settings.agentAccess.scopes")),
                 scopeChips(t, connection),

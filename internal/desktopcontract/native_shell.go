@@ -43,6 +43,9 @@ type DesktopSettings struct {
 	// Locale overrides the OS UI language. Empty or "system" follows the OS;
 	// concrete values are catalog locales ("en", "ja").
 	Locale string `json:"locale,omitempty"`
+	// MCPEnabled restores the AI-connection switch across launches so external
+	// MCP clients survive Desktop restarts.
+	MCPEnabled bool `json:"mcp_enabled,omitempty"`
 }
 
 func (s DesktopSettings) Validate() bool {

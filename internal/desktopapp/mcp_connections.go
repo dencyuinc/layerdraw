@@ -248,6 +248,29 @@ func (a *Application) ListMCPConnections() []MCPConnection {
 	return result
 }
 
+// DeleteMCPConnection removes a terminated connection (expired, revoked, or
+// host-restarted) from the persisted store. Live connections must be revoked
+// first; deletion never bypasses delegation revocation.
+func (a *Application) DeleteMCPConnection(connectionID string) desktopcontract.Result[MCPConnection] {
+	a.mcpMu.Lock()
+	defer a.mcpMu.Unlock()
+	connection, ok := a.mcpConnections[connectionID]
+	if !ok || connection.Status == MCPConnectionConnected || connection.Status == MCPConnectionRevoking {
+		return failed[MCPConnection](desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, false, desktopcontract.RecoveryReview)
+	}
+	next := make(map[string]MCPConnection, len(a.mcpConnections)-1)
+	for id, value := range a.mcpConnections {
+		if id != connectionID {
+			next[id] = value
+		}
+	}
+	if err := a.mcpStore.save(a.mcpGeneration, next); err != nil {
+		return failed[MCPConnection](desktopcontract.FailureAgentDelegation, desktopcontract.ComponentAccess, true, desktopcontract.RecoveryRetry)
+	}
+	a.mcpConnections = next
+	return desktopcontract.Result[MCPConnection]{Outcome: protocolcommon.OutcomeSuccess, Value: connection}
+}
+
 func (a *Application) RevokeMCPConnection(ctx context.Context, connectionID string) desktopcontract.Result[MCPConnection] {
 	a.mcpMu.Lock()
 	connection, ok := a.mcpConnections[connectionID]

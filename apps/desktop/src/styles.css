@@ -424,3 +424,6 @@ button.ld-settings-scope:disabled { cursor: not-allowed; opacity: var(--ld-opaci
 .ld-workspace-brand .ld-wordmark-logo { height: 22px; }
 
 .ld-settings-select-popup { min-width: var(--anchor-width, 220px); box-sizing: border-box; }
+
+.ld-settings-trash { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: var(--ld-radius-sm); background: transparent; color: var(--ld-muted); }
+.ld-settings-trash:hover:not(:disabled) { background: var(--ld-status-danger-background); color: var(--ld-status-danger-foreground); }

@@ -28,6 +28,10 @@ export function CreateProjectDialog(arg1) {
   return window['go']['desktopwails']['FrontendBridge']['CreateProjectDialog'](arg1);
 }
 
+export function DeleteMCPConnection(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['DeleteMCPConnection'](arg1);
+}
+
 export function DisconnectExternal(arg1) {
   return window['go']['desktopwails']['FrontendBridge']['DisconnectExternal'](arg1);
 }

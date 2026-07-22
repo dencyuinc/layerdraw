@@ -60,7 +60,11 @@ const viewerPort = {
 };
 let mcpEnabled = false;
 let mcpGeneration = 1;
-let mcpConnections = [];
+let mcpConnections = [{
+	connection_id: "connection-expired", client_id: "Old client", session_id: "session-0", protocol_version: "desktop-mcp-v1",
+	document_id: "project:roadmap", delegation_id: "delegation-0", agent_id: "stale-agent", capabilities: ["graph:write"],
+	permissions: { read: true, export: false, propose: true, apply: false }, expires_at: "2026-01-01T00:00:00Z", generation: "1", status: "expired",
+}];
 const mcp = {
 	async status() { return { enabled: mcpEnabled, transport: "local", instructions: "Use the local Desktop MCP entrypoint.", generation: mcpGeneration }; },
 	async setEnabled(enabled) { mcpEnabled = enabled; mcpGeneration += 1; calls.push(["mcp-enable", enabled]); return { outcome: "success", value: await this.status() }; },
@@ -68,6 +72,8 @@ const mcp = {
 	async listConnections() { return mcpConnections; },
 	async createConnection(request) { const value = { connection_id: "connection-1", client_id: request.client_id, session_id: "session-1", protocol_version: request.protocol_version, document_id: request.document_id, delegation_id: "delegation-1", agent_id: request.agent_id, capabilities: request.capabilities, permissions: request.permissions, expires_at: request.expires_at, generation: "1", status: "connected" }; mcpConnections = [value]; calls.push(["mcp-connect", request]); return { outcome: "success", value }; },
 	async revokeConnection(id) { mcpConnections = mcpConnections.map((value) => ({ ...value, status: "revoked" })); calls.push(["mcp-revoke", id]); return { outcome: "success", value: mcpConnections[0] }; },
+	async deleteConnection(id) { mcpConnections = mcpConnections.filter((value) => value.connection_id !== id); calls.push(["mcp-delete", id]); return { outcome: "success", value: undefined }; },
+	async clientConfig(id) { calls.push(["mcp-config", id]); return JSON.stringify({ mcpServers: { layerdraw: { command: "LayerDraw", args: ["--mcp-stdio", id] } } }, undefined, 2); },
 };
 const registrySource = { source_id: "official", kind: "official", endpoint_ref: "https://registry.layerdraw.test", trust_policy_id: "desktop-local", cache_policy: "on_demand", priority: 100, connected: true, revision: 1 };
 const registryRelease = { identity: { kind: "pack", canonical_id: "layerdraw/catalog", version: "1.0.0" }, source_id: "official", publisher_id: "layerdraw", digest: "sha256:artifact", manifest_digest: "sha256:manifest", dependency_metadata_digest: "sha256:dependencies", size: 10, dependencies: [], compatibility: [], license: "MIT", provenance_digest: "sha256:provenance" };

@@ -29,6 +29,7 @@ type FrontendBridge struct {
 	mu       sync.RWMutex
 	ctx      context.Context
 	app      *desktopapp.Application
+	shell    *desktopapp.NativeShell
 	registry registryDispatcher
 	preview  editorPreviewDispatcher
 }
@@ -283,8 +284,43 @@ func (b *FrontendBridge) MCPClientConfig(connectionID string) string {
 	return MCPClientConfigJSON(connectionID)
 }
 
+func (b *FrontendBridge) DeleteMCPConnection(connectionID string) desktopcontract.Result[desktopapp.MCPConnection] {
+	return b.app.DeleteMCPConnection(connectionID)
+}
+
 func (b *FrontendBridge) SetMCPEnabled(enabled bool, transport desktopapp.MCPTransportKind) desktopcontract.Result[desktopapp.MCPStatus] {
-	return b.app.SetMCPEnabled(b.context(), enabled, transport)
+	result := b.app.SetMCPEnabled(b.context(), enabled, transport)
+	if result.Outcome == protocolcommon.OutcomeSuccess {
+		b.persistMCPEnabled(enabled)
+	}
+	return result
+}
+
+// persistMCPEnabled mirrors the AI-connection switch into native settings so
+// the next launch restores it; failures stay silent because the runtime state
+// already changed and remains authoritative for this session.
+func (b *FrontendBridge) persistMCPEnabled(enabled bool) {
+	b.mu.Lock()
+	shell := b.shell
+	b.mu.Unlock()
+	if shell == nil {
+		return
+	}
+	current := shell.CurrentSettings(b.context())
+	if current.Outcome != protocolcommon.OutcomeSuccess || current.Value.MCPEnabled == enabled {
+		return
+	}
+	next := current.Value
+	next.MCPEnabled = enabled
+	_ = shell.UpdateSettings(b.context(), next)
+}
+
+// AttachNativeShell hands the bridge the settings owner; production Run wires
+// it, probe compositions leave it absent.
+func (b *FrontendBridge) attachNativeShell(shell *desktopapp.NativeShell) {
+	b.mu.Lock()
+	b.shell = shell
+	b.mu.Unlock()
 }
 
 func (b *FrontendBridge) CreateMCPConnection(request desktopapp.MCPConnectRequest) desktopcontract.Result[desktopapp.MCPConnection] {

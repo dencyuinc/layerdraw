@@ -966,6 +966,7 @@ export namespace desktopcontract {
 	    theme: string;
 	    zoom_percent: number;
 	    locale?: string;
+	    mcp_enabled?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new DesktopSettings(source);
@@ -977,6 +978,7 @@ export namespace desktopcontract {
 	        this.theme = source["theme"];
 	        this.zoom_percent = source["zoom_percent"];
 	        this.locale = source["locale"];
+	        this.mcp_enabled = source["mcp_enabled"];
 	    }
 	}
 	export class Exchange {

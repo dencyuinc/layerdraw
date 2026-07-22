@@ -53,6 +53,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 	acceptAssociationArguments(native.Associations, os.Args[1:], "")
 	registryOwner, _ := base.Adapters[desktopcontract.ComponentBindingShell].(registryDispatcher)
 	frontend := NewFrontendBridge(application, registryOwner)
+	frontend.attachNativeShell(native.Shell)
 	configured := &options.App{
 		Title: "LayerDraw", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 640,
 		AssetServer: &assetserver.Options{Assets: assets}, StartHidden: true,
@@ -127,6 +128,9 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 		} else {
 			localeState.set(restored.Value.Settings.Locale)
 			wailsruntime.MenuSetApplicationMenu(ctx, nativeMenu(application, native.Shell, bridge, localeState))
+			if restored.Value.Settings.MCPEnabled {
+				_ = application.SetMCPEnabled(ctx, true, desktopapp.MCPTransportLocal)
+			}
 		}
 		openAssociatedProjects(ctx, native, selectionVault, application)
 		runtime.ShowWindow(ctx)
