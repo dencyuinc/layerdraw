@@ -406,3 +406,12 @@ body { background: var(--ld-background-canvas); }
 .ld-review-sheet { position: fixed; top: var(--ld-layout-shell-headerHeight); right: 0; bottom: 26px; z-index: 30; width: min(24rem, 90vw); display: flex; flex-direction: column; gap: var(--ld-space-8); padding: var(--ld-space-16); border-left: var(--ld-borderWidth-default) solid var(--ld-line); background: var(--ld-panel); box-shadow: var(--ld-shadow-menu); overflow-y: auto; }
 .ld-review-sheet-head { display: flex; align-items: center; justify-content: space-between; }
 .ld-review-sheet-head h2 { margin: 0; font-size: var(--ld-font-size-14); font-weight: var(--ld-font-weight-semibold); }
+
+.ld-settings-select-positioner { z-index: 60; }
+.ld-settings-input { padding: 5px 8px; border: var(--ld-borderWidth-default) solid var(--ld-line); border-radius: var(--ld-radius-sm); background: var(--ld-panel); color: var(--ld-ink); font: inherit; font-size: var(--ld-font-size-13, 13px); min-width: 14rem; }
+.ld-settings-formrow { padding: 10px 16px; border-bottom: var(--ld-borderWidth-default) solid var(--ld-line-subtle); margin-top: 0; }
+.ld-settings-formfoot { display: flex; justify-content: flex-end; padding: 10px 16px; }
+.ld-settings-hint { margin: 0 0 var(--ld-space-16); font-size: var(--ld-font-size-12); color: var(--ld-muted); overflow-wrap: anywhere; }
+.ld-settings-hint code { font-family: var(--ld-font-family-mono, monospace); font-size: var(--ld-font-size-11, 11px); background: var(--ld-subtle); border-radius: 3px; padding: 1px 5px; }
+button.ld-settings-scope { appearance: none; cursor: pointer; }
+button.ld-settings-scope:disabled { cursor: not-allowed; opacity: var(--ld-opacity-disabled); }

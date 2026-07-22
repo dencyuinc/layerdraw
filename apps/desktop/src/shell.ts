@@ -167,7 +167,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
   const settingsDialog = !settingsOpen || settings === undefined ? null : createElement(DesktopSettingsDialog, {
     settings,
     ...(mcp === undefined ? {} : { mcp }),
-    ...(project === undefined ? {} : { projectName: project.display_name }),
+    ...(project === undefined ? {} : { projectName: project.display_name, projectID: project.project_id }),
     onClose: () => setSettingsOpen(false),
     ...(onLocaleChange === undefined ? {} : { onLocaleChange }),
   });

@@ -22,7 +22,9 @@ try {
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("layerdraw:menu", { detail: "settings" })));
   const settingsDialog = page.getByRole("dialog", { name: "Settings" });
   await settingsDialog.waitFor();
-  await settingsDialog.getByRole("combobox", { name: "Theme" }).waitFor();
+  await settingsDialog.getByRole("combobox", { name: "Theme" }).click();
+  await page.getByRole("option", { name: "Dark" }).click();
+  await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "settings-update" && call[1].theme === "dark"));
   await settingsDialog.getByRole("button", { name: "AI access defaults" }).click();
   await settingsDialog.getByRole("switch", { name: /Allow AI clients/ }).click();
   await page.waitForFunction(() => window.desktopWorkflow.calls.some((call) => call[0] === "mcp-enable"));
