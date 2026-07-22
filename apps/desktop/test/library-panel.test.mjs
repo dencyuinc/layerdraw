@@ -45,24 +45,24 @@ test("Library panel executes browse, template preview, confirmation, and source 
   assert.deepEqual(library.calls.find((call) => call[0] === "search"), ["search", "starter", undefined]);
 
   await act(async () => renderer.root.findByProps({ "aria-label": "Registry results" }).findByType("button").props.onClick());
-  await act(async () => renderer.root.findByProps({ "aria-label": "Selected artifact" }).findByType("button").props.onClick());
+  await act(async () => renderer.root.findByProps({ "aria-label": "Selected" }).findByType("button").props.onClick());
   assert.deepEqual(library.calls.find((call) => call[0] === "preview"), ["preview", "create_from_template", undefined]);
 
-  await act(async () => renderer.root.findByProps({ "aria-label": "Registry change preview" }).findByType("button").props.onClick());
+  await act(async () => renderer.root.findByProps({ "aria-label": "Confirm registry change" }).findByType("button").props.onClick());
   const confirmation = library.calls.find((call) => call[0] === "confirm");
   assert.match(confirmation[1], /^desktop-library-/);
   assert.equal(confirmation[1], confirmation[2]);
 
-  const details = renderer.root.findByType("details");
-  const connection = details.findAllByType("input")[0];
+  const sources = renderer.root.findByProps({ "aria-label": "Sources" });
+  const connection = sources.findByProps({ "aria-label": "Connection reference" });
   await act(async () => connection.props.onChange({ currentTarget: { value: "credential:local" } }));
-  await act(async () => details.findAllByType("button").find((button) => button.children.includes("Connect")).props.onClick());
+  await act(async () => sources.findAllByType("button").find((button) => button.children.includes("Connect")).props.onClick());
   assert.deepEqual(library.calls.find((call) => call[0] === "connect"), ["connect", "local", "credential:local"]);
 
-  const configure = renderer.root.findByProps({ "aria-label": "Configure Registry source" });
-  const inputs = configure.findAllByType("input");
-  await act(async () => inputs[0].props.onChange({ currentTarget: { value: "team" } }));
-  await act(async () => inputs[1].props.onChange({ currentTarget: { value: "https://registry.example" } }));
+  await act(async () => sources.findAllByType("button").find((button) => String(button.children.join("")).includes("Add source")).props.onClick());
+  const configure = renderer.root.findByProps({ "aria-label": "Add source" });
+  await act(async () => configure.findByProps({ "aria-label": "Source ID" }).props.onChange({ currentTarget: { value: "team" } }));
+  await act(async () => configure.findByProps({ "aria-label": "Endpoint" }).props.onChange({ currentTarget: { value: "https://registry.example" } }));
   await act(async () => configure.props.onSubmit({ preventDefault() {} }));
   assert.equal(library.calls.find((call) => call[0] === "configure")[1].source_id, "team");
 
