@@ -43,6 +43,7 @@ export interface DesktopWailsMCPBinding {
   ListMCPConnections(): Promise<readonly DesktopMCPConnection[]>;
   CreateMCPConnection(request: DesktopMCPConnectRequest): Promise<DesktopMCPResult<DesktopMCPConnection>>;
   RevokeMCPConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
+  MCPClientConfig(connectionID: string): Promise<string>;
 }
 
 export interface DesktopWailsRuntimeBinding {
@@ -204,6 +205,7 @@ export async function createDesktopWailsComposition(
   const mcp: DesktopMCPPort = Object.freeze({
     status: () => mcpBinding.MCPStatus(),
     setEnabled: (enabled: boolean) => mcpBinding.SetMCPEnabled(enabled, "local"),
+    clientConfig: (connectionID: string) => mcpBinding.MCPClientConfig(connectionID),
     restart: () => mcpBinding.RestartMCP(),
     listConnections: () => mcpBinding.ListMCPConnections(),
     createConnection: (request: DesktopMCPConnectRequest) => mcpBinding.CreateMCPConnection(request),

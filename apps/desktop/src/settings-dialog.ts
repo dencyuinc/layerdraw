@@ -164,6 +164,30 @@ function scopeChipButton(label: string, granted: boolean, disabled: boolean, onT
   }, label);
 }
 
+function ConnectionConfig({ t, mcp, connectionID }: { readonly t: Translator; readonly mcp: DesktopMCPPort; readonly connectionID: string }): ReactNode {
+  const [config, setConfig] = useState<string>();
+  const [copied, setCopied] = useState(false);
+  if (mcp.clientConfig === undefined) return null;
+  if (config === undefined) {
+    return createElement("div", { className: "ld-settings-agent-row" },
+      createElement("button", {
+        type: "button", className: "ld-btn ld-btn-secondary",
+        onClick: () => { void mcp.clientConfig?.(connectionID).then(setConfig, () => {}); },
+      }, t.t("settings.agentAccess.config.show")));
+  }
+  return createElement("div", { className: "ld-settings-config" },
+    createElement("div", { className: "ld-settings-agent-row" },
+      createElement("b", null, t.t("settings.agentAccess.config")),
+      createElement("button", {
+        type: "button", className: "ld-btn ld-btn-secondary",
+        onClick: () => {
+          void navigator.clipboard?.writeText(config).then(() => setCopied(true), () => {});
+        },
+      }, copied ? t.t("settings.agentAccess.copied") : t.t("settings.agentAccess.copy"))),
+    createElement("pre", null, config),
+    createElement("p", { className: "ld-settings-hint" }, t.t("settings.agentAccess.configHint")));
+}
+
 function AgentAccessPane({ t, mcp, projectID }: { readonly t: Translator; readonly mcp: DesktopMCPPort; readonly projectID: string }): ReactNode {
   const [enabled, setEnabled] = useState<boolean>();
   const [instructions, setInstructions] = useState("");
@@ -258,7 +282,8 @@ function AgentAccessPane({ t, mcp, projectID }: { readonly t: Translator; readon
               createElement("div", { className: "ld-settings-agent-row" },
                 createElement("b", null, t.t("settings.agentAccess.targets")),
                 createElement("span", { className: "ld-settings-scopes" }, connection.capabilities.map((capability) =>
-                  createElement("span", { key: capability, className: "ld-settings-scope", "data-granted": true }, t.t(`settings.capability.${capability}`))))))))));
+                  createElement("span", { key: capability, className: "ld-settings-scope", "data-granted": true }, t.t(`settings.capability.${capability}`))))),
+              connection.status !== "connected" ? null : createElement(ConnectionConfig, { t, mcp, connectionID: connection.connection_id }))))));
 }
 
 export function DesktopSettingsDialog({ settings, mcp, projectName, projectID, onClose, onLocaleChange }: DesktopSettingsDialogProps): ReactNode {

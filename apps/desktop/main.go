@@ -73,6 +73,9 @@ func run() error {
 	if err := os.MkdirAll(dataRoot, 0o700); err != nil {
 		return err
 	}
+	if len(os.Args) == 3 && os.Args[1] == "--mcp-stdio" {
+		return desktopwails.RunMCPStdioBridge(dataRoot, os.Args[2])
+	}
 	assets, err := fs.Sub(frontend, "frontend/dist")
 	if err != nil {
 		return err

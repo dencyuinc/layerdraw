@@ -251,4 +251,6 @@ export interface DesktopMCPPort {
 	listConnections(): Promise<readonly DesktopMCPConnection[]>;
 	createConnection(request: DesktopMCPConnectRequest): Promise<DesktopMCPResult<DesktopMCPConnection>>;
 	revokeConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
+	/** Copy-paste MCP client configuration for a connection (stdio bridge command). */
+	clientConfig?(connectionID: string): Promise<string>;
 }

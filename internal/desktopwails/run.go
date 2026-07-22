@@ -108,6 +108,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 			openAssociatedProjects(bridge.context(), native, selectionVault, application)
 		}
 	}
+	var mcpSocket *mcpSocketServer
 	configured.OnStartup = func(ctx context.Context) {
 		defer close(startupReady)
 		bridge.setContext(ctx)
@@ -117,6 +118,9 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 			WailsRuntime{}.Emit(ctx, recoveryEvent, *result.Failure)
 			runtime.ShowWindow(ctx)
 			return
+		}
+		if socket, socketErr := startMCPSocket(application, base.Root); socketErr == nil {
+			mcpSocket = socket
 		}
 		if restored := native.Shell.Restore(ctx); restored.Outcome != protocolcommon.OutcomeSuccess && restored.Failure != nil {
 			WailsRuntime{}.Emit(ctx, recoveryEvent, *restored.Failure)
@@ -137,6 +141,9 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 		return assessment.Outcome != protocolcommon.OutcomeSuccess || !assessment.Value.CanQuit
 	}
 	configured.OnShutdown = func(ctx context.Context) {
+		if mcpSocket != nil {
+			mcpSocket.close()
+		}
 		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
 		result := application.Shutdown(shutdown)

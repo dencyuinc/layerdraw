@@ -48,6 +48,10 @@ export function ListMCPConnections() {
   return window['go']['desktopwails']['FrontendBridge']['ListMCPConnections']();
 }
 
+export function MCPClientConfig(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['MCPClientConfig'](arg1);
+}
+
 export function MCPStatus() {
   return window['go']['desktopwails']['FrontendBridge']['MCPStatus']();
 }

@@ -30,7 +30,7 @@ export function Tab({ className, ...props }: TabProps): ReactNode {
     className: cn(
       "inline-flex h-[26px] items-center rounded-sm border-0 bg-transparent px-3 font-sans text-xs font-medium text-secondary " +
         "cursor-pointer transition-colors hover:text-ink " +
-        "data-[selected]:bg-surface data-[selected]:text-ink data-[selected]:shadow-menu " +
+        "aria-selected:bg-surface aria-selected:text-ink aria-selected:shadow-menu " +
         "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus",
       typeof className === "string" ? className : undefined,
     ),

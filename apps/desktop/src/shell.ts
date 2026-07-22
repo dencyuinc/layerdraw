@@ -193,7 +193,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
   return createElement("main", { className: "ld-desktop-shell ld-desktop-app", "aria-label": t.t("app.name") },
     createElement("header", { className: "ld-workspace-topbar" },
       createElement("div", { className: "ld-workspace-lead" },
-        createElement("span", { className: "ld-workspace-brand", "aria-hidden": true }, createElement(LayerDrawIcon, { title: "", size: 20 })),
+        createElement("span", { className: "ld-workspace-brand" }, createElement(LayerDrawWordmark, { title: t.t("app.name") })),
         renderBreadcrumb(t, project.display_name, heading, onReturnToProjects)),
       createElement("div", { className: "ld-workspace-trail" },
         renderAbnormalStatuses(t, project),

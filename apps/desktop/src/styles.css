@@ -415,3 +415,10 @@ body { background: var(--ld-background-canvas); }
 .ld-settings-hint code { font-family: var(--ld-font-family-mono, monospace); font-size: var(--ld-font-size-11, 11px); background: var(--ld-subtle); border-radius: 3px; padding: 1px 5px; }
 button.ld-settings-scope { appearance: none; cursor: pointer; }
 button.ld-settings-scope:disabled { cursor: not-allowed; opacity: var(--ld-opacity-disabled); }
+
+.ld-settings-row-control [role="combobox"] { width: 220px; justify-content: space-between; }
+.ld-settings-input { width: 220px; min-width: 0; }
+.ld-settings-config { padding: 10px 16px; border-top: var(--ld-borderWidth-default) solid var(--ld-line-subtle); }
+.ld-settings-config pre { margin: var(--ld-space-8) 0; padding: var(--ld-space-12); border: var(--ld-borderWidth-default) solid var(--ld-line-subtle); border-radius: var(--ld-radius-md); background: var(--ld-canvas); font-family: var(--ld-font-family-mono, monospace); font-size: var(--ld-font-size-11, 11px); line-height: 1.5; overflow-x: auto; }
+.ld-settings-config .ld-settings-agent-row { margin-top: 0; }
+.ld-workspace-brand .ld-wordmark-logo { height: 22px; }

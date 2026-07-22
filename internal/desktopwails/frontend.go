@@ -277,6 +277,12 @@ func (b *FrontendBridge) ImportExternalDialog(input desktopapp.ExternalImportReq
 
 func (b *FrontendBridge) MCPStatus() desktopapp.MCPStatus { return b.app.MCPStatus() }
 
+// MCPClientConfig returns the copy-paste MCP client configuration for a
+// connection created in Settings (the Desktop binary as a stdio server).
+func (b *FrontendBridge) MCPClientConfig(connectionID string) string {
+	return MCPClientConfigJSON(connectionID)
+}
+
 func (b *FrontendBridge) SetMCPEnabled(enabled bool, transport desktopapp.MCPTransportKind) desktopcontract.Result[desktopapp.MCPStatus] {
 	return b.app.SetMCPEnabled(b.context(), enabled, transport)
 }

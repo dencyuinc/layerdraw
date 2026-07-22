@@ -32,6 +32,8 @@ export function Invoke(arg1:string,arg2:desktopcontract.Exchange):Promise<deskto
 
 export function ListMCPConnections():Promise<Array<desktopapp.MCPConnection>>;
 
+export function MCPClientConfig(arg1:string):Promise<string>;
+
 export function MCPStatus():Promise<desktopapp.MCPStatus>;
 
 export function MaterializeProjectView(arg1:runtimeprotocol.RuntimeSessionRef,arg2:string):Promise<desktopwails.ProjectViewMaterialization>;
