@@ -11,6 +11,8 @@ type SettingsPane = "general" | "mcp_defaults" | "agent_access";
 
 export interface DesktopSettingsDialogProps {
   readonly settings: DesktopSettingsPort;
+  /** Pane to open on (defaults to General); the View menu deep-links to AI panes. */
+  readonly initialPane?: "general" | "mcp_defaults" | "agent_access";
   readonly mcp?: DesktopMCPPort;
   /** Present only while a project is open; enables the Project nav group. */
   readonly projectName?: string;
@@ -43,7 +45,7 @@ function tokenSelect(ariaLabel: string, value: string, options: readonly SelectO
       createElement(SelectIcon, null, createElement("svg", { viewBox: "0 0 16 16", width: 12, height: 12, fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true }, createElement("path", { d: "m4 6 4 4 4-4" })))),
     createElement(SelectPortal, null,
       createElement(SelectPositioner, { sideOffset: 4, className: "ld-settings-select-positioner" },
-        createElement(SelectPopup, null, options.map((option) =>
+        createElement(SelectPopup, { className: "ld-settings-select-popup" }, options.map((option) =>
           createElement(SelectItem, { key: option.value, value: option.value },
             createElement(SelectItemText, null, option.label)))))));
 }
@@ -143,7 +145,17 @@ function MCPDefaultsPane({ t, mcp }: { readonly t: Translator; readonly mcp: Des
           className: "ld-settings-toggle",
           disabled: pending,
           onClick: toggle,
-        }))));
+        })),
+      !status.enabled ? null : settingsRow(t.t("mcp.restart"), t.t("settings.mcp.restart.hint"),
+        createElement("button", {
+          type: "button", className: "ld-btn ld-btn-secondary", disabled: pending,
+          onClick: () => {
+            setPending(true);
+            void mcp.restart().then((result) => {
+              if (result.outcome === "success" && result.value !== undefined) setStatus(result.value);
+            }, () => {}).finally(() => setPending(false));
+          },
+        }, t.t("mcp.restart")))));
 }
 
 interface ConnectDraft {
@@ -286,9 +298,9 @@ function AgentAccessPane({ t, mcp, projectID }: { readonly t: Translator; readon
               connection.status !== "connected" ? null : createElement(ConnectionConfig, { t, mcp, connectionID: connection.connection_id }))))));
 }
 
-export function DesktopSettingsDialog({ settings, mcp, projectName, projectID, onClose, onLocaleChange }: DesktopSettingsDialogProps): ReactNode {
+export function DesktopSettingsDialog({ settings, initialPane, mcp, projectName, projectID, onClose, onLocaleChange }: DesktopSettingsDialogProps): ReactNode {
   const t = useOptionalI18n() ?? defaultTranslator;
-  const [pane, setPane] = useState<SettingsPane>("general");
+  const [pane, setPane] = useState<SettingsPane>(initialPane ?? "general");
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape") onClose(); };

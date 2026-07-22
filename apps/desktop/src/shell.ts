@@ -98,6 +98,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
   const [recentProjects, setRecentProjects] = useState<readonly DesktopRecentProjectDTO[]>([]);
   const [editorMode, setEditorMode] = useState<EditorMode>("views");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPane, setSettingsPane] = useState<"general" | "mcp_defaults" | "agent_access">("general");
   const [hubPage, setHubPage] = useState<"projects" | "library">("projects");
   const [reviewOpen, setReviewOpen] = useState(false);
   const project = state.lifecycle.project;
@@ -112,12 +113,15 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     if (typeof window === "undefined") return;
     const onMenu = (event: Event): void => {
       const command = (event as CustomEvent).detail;
-      if (command === "settings" && settings !== undefined) setSettingsOpen(true);
+      if (settings !== undefined) {
+        if (command === "settings") { setSettingsPane("general"); setSettingsOpen(true); }
+        if (command === "panel:mcp") { setSettingsPane(controller.getSnapshot().lifecycle.project === undefined ? "mcp_defaults" : "agent_access"); setSettingsOpen(true); }
+      }
       if (command === "panel:review") setReviewOpen(true);
     };
     window.addEventListener("layerdraw:menu", onMenu);
     return () => window.removeEventListener("layerdraw:menu", onMenu);
-  }, [settings]);
+  }, [settings, controller]);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [project?.project_id, project?.selected_view_address]);
   const hubVisible = project === undefined && state.lifecycle.phase === "ready";
   useEffect(() => {
@@ -166,6 +170,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
 
   const settingsDialog = !settingsOpen || settings === undefined ? null : createElement(DesktopSettingsDialog, {
     settings,
+    initialPane: settingsPane,
     ...(mcp === undefined ? {} : { mcp }),
     ...(project === undefined ? {} : { projectName: project.display_name, projectID: project.project_id }),
     onClose: () => setSettingsOpen(false),
