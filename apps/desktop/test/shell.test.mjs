@@ -56,7 +56,6 @@ test("Desktop shell exposes landmarks, authoritative context, view navigation, a
   const details = renderer.root.findAllByType("button").find((button) => button.props["aria-label"] === "Details");
   await act(async () => details.props.onClick());
   assert.deepEqual(controller.calls.at(-1), ["select", "view:table"]);
-  assert.equal(renderer.root.findByProps({ "aria-label": "Authoring commands" }).props.role, "toolbar");
   await act(async () => renderer.unmount());
   assert.deepEqual(controller.calls.at(-1), ["stop"]);
 });

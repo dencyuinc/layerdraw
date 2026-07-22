@@ -13,7 +13,7 @@ import {
 import type { DesktopProjectContext, DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopRecentProjectDTO, DesktopSettingsPort } from "./contracts.js";
 import { DesktopSettingsDialog } from "./settings-dialog.js";
 import { DesktopShellController } from "./controller.js";
-import { DesktopEditorSurface, type DesktopEditorCapabilityIDs } from "./editor-surface.js";
+import type { DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
 import { ReviewPanel } from "@layerdraw/react/review";
 import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react/i18n";
@@ -21,7 +21,6 @@ import { Button, Tab, TabsList, TabsRoot } from "@layerdraw/react/primitives";
 import type { ReviewModel } from "@layerdraw/review";
 import type { ViewerState } from "@layerdraw/viewer";
 import type { LibraryController, LibrarySnapshot } from "@layerdraw/library";
-import { DesktopMCPPanel } from "./mcp-panel.js";
 import { DesktopLibraryPanel } from "./library-panel.js";
 import { LayerDrawIcon, LayerDrawWordmark } from "./brand.js";
 
@@ -99,6 +98,8 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
   const [recentProjects, setRecentProjects] = useState<readonly DesktopRecentProjectDTO[]>([]);
   const [editorMode, setEditorMode] = useState<EditorMode>("views");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [hubPage, setHubPage] = useState<"projects" | "library">("projects");
+  const [reviewOpen, setReviewOpen] = useState(false);
   const project = state.lifecycle.project;
   const capability = state.lifecycle.capabilities[viewSelectionCapability];
   const viewSelectionAvailable = capability?.status === "available";
@@ -108,9 +109,11 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     return () => { void controller.stop(); };
   }, [controller]);
   useEffect(() => {
-    if (typeof window === "undefined" || settings === undefined) return;
+    if (typeof window === "undefined") return;
     const onMenu = (event: Event): void => {
-      if ((event as CustomEvent).detail === "settings") setSettingsOpen(true);
+      const command = (event as CustomEvent).detail;
+      if (command === "settings" && settings !== undefined) setSettingsOpen(true);
+      if (command === "panel:review") setReviewOpen(true);
     };
     window.addEventListener("layerdraw:menu", onMenu);
     return () => window.removeEventListener("layerdraw:menu", onMenu);
@@ -169,7 +172,7 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     ...(onLocaleChange === undefined ? {} : { onLocaleChange }),
   });
 
-  if (project === undefined) return createElement(DesktopHub, { t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject, settingsDialog });
+  if (project === undefined) return createElement(DesktopHub, { t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject, settingsDialog, hubPage, setHubPage, ...(libraryAvailability === undefined ? {} : { libraryAvailability }) });
 
   const viewList = createElement("ul", { className: "ld-rail-list" }, project.views.map((view) =>
     createElement("li", { key: view.address },
@@ -189,7 +192,9 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
 
   return createElement("main", { className: "ld-desktop-shell ld-desktop-app", "aria-label": t.t("app.name") },
     createElement("header", { className: "ld-workspace-topbar" },
-      renderBreadcrumb(t, project.display_name, heading, onReturnToProjects),
+      createElement("div", { className: "ld-workspace-lead" },
+        createElement("span", { className: "ld-workspace-brand", "aria-hidden": true }, createElement(LayerDrawIcon, { title: "", size: 20 })),
+        renderBreadcrumb(t, project.display_name, heading, onReturnToProjects)),
       createElement("div", { className: "ld-workspace-trail" },
         renderAbnormalStatuses(t, project),
         createElement("span", { className: "ld-workspace-save", role: "status" }, persistenceLabel))),
@@ -207,7 +212,6 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
         selectedView === undefined ? null : createElement("header", { className: "ld-insp-head" },
           createElement("span", { className: "ld-insp-kind" }, t.t("workspace.kind.view")),
           createElement("h2", null, selectedView.label)),
-        inspectorSection(t.t("inspector.section.editing"), true, createElement(DesktopEditorSurface, { project, capabilities: editorCapabilities })),
         project.storage.kind === "external" ? inspectorSection(t.t("inspector.section.storage"), true, createElement("section", { className: "ld-desktop-storage", "aria-label": t.t("inspector.section.storage") },
           createElement("dl", null,
             createElement("div", null, createElement("dt", null, t.t("storage.provider")), createElement("dd", null, project.storage.provider_label ?? project.storage.label)),
@@ -218,11 +222,13 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
           project.storage.status === "conflict" || project.storage.status === "reconcile_pending"
             ? createElement("p", { role: "status", className: "ld-desktop-storage-warning" }, t.t("storage.review")) : null,
           createElement("p", { className: "ld-desktop-storage-consequence" }, project.storage.disconnect_consequence ?? t.t("storage.consequence")),
-          createElement("button", { type: "button", className: "ld-btn ld-btn-danger-quiet", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, t.t("storage.disconnect")))) : null,
-        library === undefined ? null : inspectorSection(t.t("inspector.section.library"), false, createElement(DesktopLibraryPanel, { library, project: project.library_project })),
-        reviewModel === undefined ? null : inspectorSection(t.t("inspector.section.review"), false, createElement(ReviewPanel, { model: reviewModel })),
-        inspectorSection(t.t("inspector.section.mcp"), false, createElement(DesktopMCPPanel, { mcp: mcp ?? unavailableMCP, projectID: project.project_id })))),
+          createElement("button", { type: "button", className: "ld-btn ld-btn-danger-quiet", disabled: state.pending_action !== undefined, onClick: () => { void controller.disconnectExternal(); } }, t.t("storage.disconnect")))) : null)),
     renderStatusbar(t, state.viewer, selectedView?.label),
+    !reviewOpen || reviewModel === undefined ? null : createElement("aside", { className: "ld-review-sheet", role: "dialog", "aria-label": t.t("inspector.section.review") },
+      createElement("header", { className: "ld-review-sheet-head" },
+        createElement("h2", null, t.t("inspector.section.review")),
+        createElement("button", { type: "button", className: "ld-settings-close", "aria-label": t.t("settings.close"), onClick: () => setReviewOpen(false) }, "×")),
+      createElement(ReviewPanel, { model: reviewModel })),
     settingsDialog,
     createElement("div", { className: "ld-desktop-visually-hidden", role: "status", "aria-live": "polite", "aria-atomic": true }, state.pending_action === "select_view" ? "Opening view…" : state.pending_action === "review_recovery" ? "Opening recovery options…" : state.pending_action === "disconnect_storage" ? "Disconnecting external storage…" : ""));
 }
@@ -304,6 +310,9 @@ interface HubProps {
   readonly runProjectDialog: (kind: "create" | "open") => void;
   readonly openRecentProject: (projectID: string) => void;
   readonly settingsDialog?: ReactNode;
+  readonly hubPage: "projects" | "library";
+  readonly setHubPage: (page: "projects" | "library") => void;
+  readonly libraryAvailability?: DesktopFeatureAvailability;
 }
 
 
@@ -313,7 +322,7 @@ function inspectorSection(label: string, open: boolean, children: ReactNode): Re
     createElement("div", { className: "ld-inspector-section-body" }, children));
 }
 
-function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject, settingsDialog }: HubProps): ReactNode {
+function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOpen, setDetailsOpen, recentProjects, failure, library, runProjectDialog, openRecentProject, settingsDialog, hubPage, setHubPage, libraryAvailability }: HubProps): ReactNode {
   const [dismissed, setDismissed] = useState<string>();
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot>();
 
@@ -332,8 +341,8 @@ function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOp
   const rail = createElement("aside", { className: "ld-rail", "aria-label": t.t("nav.section") },
     createElement("div", { className: "ld-rail-brand" }, createElement(LayerDrawWordmark, { title: t.t("app.name") })),
     createElement("nav", { className: "ld-rail-nav", "aria-label": t.t("nav.section") },
-      createElement("span", { className: "ld-rail-item ld-rail-item-active", "aria-current": "page" }, folderIcon(), t.t("nav.projects")),
-      createElement("span", { className: "ld-rail-item ld-rail-item-muted" }, libraryIcon(), t.t("nav.library"))));
+      createElement("button", { type: "button", className: `ld-rail-item${hubPage === "projects" ? " ld-rail-item-active" : ""}`, "aria-current": hubPage === "projects" ? "page" : undefined, onClick: () => setHubPage("projects") }, folderIcon(), t.t("nav.projects")),
+      createElement("button", { type: "button", className: `ld-rail-item${hubPage === "library" ? " ld-rail-item-active" : ""}`, "aria-current": hubPage === "library" ? "page" : undefined, onClick: () => setHubPage("library") }, libraryIcon(), t.t("nav.library"))));
 
   const actions = projectDialogs === undefined ? null : createElement("div", { className: "ld-hub-actions", "aria-label": t.t("hub.actions.label") },
     createElement(Button, { variant: "secondary", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("open") }, dialogPending === "open" ? t.t("hub.action.opening") : t.t("hub.action.open")),
@@ -378,15 +387,22 @@ function DesktopHub({ t, projectDialogs, dialogPending, dialogFailure, detailsOp
       createElement("button", { type: "button", className: "ld-template-blank", disabled: dialogPending !== undefined, onClick: () => runProjectDialog("create") }, t.t("hub.templates.blank"))),
     librarySourcesConnected ? null : createElement("p", { className: "ld-hub-templates-hint" }, t.t("hub.templates.hint")));
 
+  const projectsMain = createElement("div", { className: "ld-hub-main" },
+    createElement("header", { className: "ld-hub-header" },
+      createElement("h1", null, t.t("hub.title")),
+      actions),
+    errorBanner,
+    recent,
+    templates);
+  const libraryMain = createElement("div", { className: "ld-hub-main" },
+    createElement("header", { className: "ld-hub-header" },
+      createElement("h1", null, t.t("nav.library"))),
+    library === undefined
+      ? createElement("p", { className: "ld-hub-empty" }, libraryAvailability !== undefined && libraryAvailability.status === "unavailable" ? t.error(`desktop.library_${libraryAvailability.reason}`) : t.t("status.unavailable"))
+      : createElement(DesktopLibraryPanel, { library }));
   return createElement("main", { className: "ld-desktop-shell ld-desktop-hub", "aria-label": t.t("app.name") },
     rail,
-    createElement("div", { className: "ld-hub-main" },
-      createElement("header", { className: "ld-hub-header" },
-        createElement("h1", null, t.t("hub.title")),
-        actions),
-      errorBanner,
-      recent,
-      templates),
+    hubPage === "library" ? libraryMain : projectsMain,
     settingsDialog ?? null);
 }
 
@@ -414,11 +430,3 @@ function renderRecentRow(t: Translator, entry: DesktopRecentProjectDTO, dialogPe
 }
 
 
-const unavailableMCP: DesktopMCPPort = Object.freeze<DesktopMCPPort>({
-	async status() { return { enabled: false, transport: "local", instructions: "", generation: 0 }; },
-	async setEnabled() { return { outcome: "failed", failure: { code: "desktop.mcp_disabled", retryable: false, recovery: "configure_adapter" } }; },
-	async restart() { return { outcome: "failed", failure: { code: "desktop.mcp_disabled", retryable: false, recovery: "configure_adapter" } }; },
-	async listConnections() { return []; },
-	async createConnection() { return { outcome: "failed", failure: { code: "desktop.mcp_disabled", retryable: false, recovery: "configure_adapter" } }; },
-	async revokeConnection() { return { outcome: "failed", failure: { code: "desktop.mcp_disabled", retryable: false, recovery: "configure_adapter" } }; },
-});

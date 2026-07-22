@@ -85,8 +85,13 @@ const library = {
   async disconnectSource(sourceID) { calls.push(["library-disconnect", sourceID]); return libraryPublish({ status: "ready", sources: [{ ...registrySource, source_id: sourceID, connected: false }] }); },
   async recoverTransaction(transactionID) { calls.push(["library-recover", transactionID]); return libraryPublish({ status: "committed" }); },
 };
+let storedSettings = { schema_version: 1, theme: "light", zoom_percent: 100, locale: "en" };
+const settings = {
+  async load() { calls.push(["settings-load"]); return { outcome: "success", value: storedSettings }; },
+  async update(value) { calls.push(["settings-update", value]); storedSettings = value; return { outcome: "success", value }; },
+};
 mountDesktopShell(document.querySelector("#root"), {
-	lifecycle, viewer: viewerPort, mcp, library, viewSelectionCapability: "engine.materialize_view",
+	lifecycle, viewer: viewerPort, mcp, library, settings, viewSelectionCapability: "engine.materialize_view",
   editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
 });
 window.go = { desktopwails: { ShellBinding: {

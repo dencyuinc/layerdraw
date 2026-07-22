@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-import { createElement, useEffect, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createElement, useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react/i18n";
+import { SelectIcon, SelectItem, SelectItemText, SelectPopup, SelectPortal, SelectPositioner, SelectRoot, SelectTrigger, SelectValue } from "@layerdraw/react/primitives";
 import type { DesktopMCPConnection, DesktopMCPPort, DesktopMCPStatus, DesktopSettingsDTO, DesktopSettingsPort } from "./contracts.js";
 
 const defaultTranslator: Translator = createTranslator("en", baseShellCatalogs);
@@ -25,6 +26,25 @@ function navItem(t: Translator, pane: SettingsPane, active: SettingsPane, label:
     "aria-current": pane === active ? "page" : undefined,
     onClick: () => select(pane),
   }, label);
+}
+
+interface SelectOption { readonly value: string; readonly label: string }
+
+/** shadcn/Base UI Select composition shared by every settings row. */
+function tokenSelect(ariaLabel: string, value: string, options: readonly SelectOption[], onChange: (value: string) => void): ReactNode {
+  return createElement(SelectRoot, {
+    value,
+    onValueChange: (next: unknown) => { if (typeof next === "string") onChange(next); },
+    items: Object.fromEntries(options.map((option) => [option.value, option.label])),
+  },
+    createElement(SelectTrigger, { "aria-label": ariaLabel },
+      createElement(SelectValue, null),
+      createElement(SelectIcon, null, createElement("svg", { viewBox: "0 0 16 16", width: 12, height: 12, fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true }, createElement("path", { d: "m4 6 4 4 4-4" })))),
+    createElement(SelectPortal, null,
+      createElement(SelectPositioner, { sideOffset: 4 },
+        createElement(SelectPopup, null, options.map((option) =>
+          createElement(SelectItem, { key: option.value, value: option.value },
+            createElement(SelectItemText, null, option.label)))))));
 }
 
 function settingsRow(label: string, hint: string | undefined, control: ReactNode): ReactNode {
@@ -72,34 +92,23 @@ function GeneralPane({ t, settings, onLocaleChange }: { readonly t: Translator; 
     failed ? createElement("p", { role: "alert", className: "ld-settings-error" }, t.t("settings.saveFailed")) : null,
     createElement("div", { className: "ld-settings-card" },
       settingsRow(t.t("settings.language.label"), t.t("settings.language.hint"),
-        createElement("select", {
-          value: locale,
-          "aria-label": t.t("settings.language.label"),
-          onChange: (event: ChangeEvent<HTMLSelectElement>) => {
-            const value = event.target.value;
-            commit({ ...current, locale: value });
-            onLocaleChange?.(value);
-          },
-        },
-          createElement("option", { value: "system" }, t.t("settings.language.system")),
-          createElement("option", { value: "en" }, "English"),
-          createElement("option", { value: "ja" }, "日本語"))),
+        tokenSelect(t.t("settings.language.label"), locale, [
+          { value: "system", label: t.t("settings.language.system") },
+          { value: "en", label: "English" },
+          { value: "ja", label: "日本語" },
+        ], (value) => {
+          commit({ ...current, locale: value });
+          onLocaleChange?.(value);
+        })),
       settingsRow(t.t("settings.theme.label"), t.t("settings.theme.hint"),
-        createElement("select", {
-          value: current.theme,
-          "aria-label": t.t("settings.theme.label"),
-          onChange: (event: ChangeEvent<HTMLSelectElement>) => commit({ ...current, theme: event.target.value as DesktopSettingsDTO["theme"] }),
-        },
-          createElement("option", { value: "system" }, t.t("settings.theme.system")),
-          createElement("option", { value: "light" }, t.t("settings.theme.light")),
-          createElement("option", { value: "dark" }, t.t("settings.theme.dark")))),
+        tokenSelect(t.t("settings.theme.label"), current.theme, [
+          { value: "system", label: t.t("settings.theme.system") },
+          { value: "light", label: t.t("settings.theme.light") },
+          { value: "dark", label: t.t("settings.theme.dark") },
+        ], (value) => commit({ ...current, theme: value as DesktopSettingsDTO["theme"] }))),
       settingsRow(t.t("settings.zoom.label"), t.t("settings.zoom.hint"),
-        createElement("select", {
-          value: String(current.zoom_percent),
-          "aria-label": t.t("settings.zoom.label"),
-          onChange: (event: ChangeEvent<HTMLSelectElement>) => commit({ ...current, zoom_percent: Number(event.target.value) }),
-        }, [50, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300].map((percent) =>
-          createElement("option", { key: percent, value: String(percent) }, `${percent}%`))))));
+        tokenSelect(t.t("settings.zoom.label"), String(current.zoom_percent), [50, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300].map((percent) => ({ value: String(percent), label: `${percent}%` })),
+          (value) => commit({ ...current, zoom_percent: Number(value) })))));
 }
 
 function MCPDefaultsPane({ t, mcp }: { readonly t: Translator; readonly mcp: DesktopMCPPort }): ReactNode {
