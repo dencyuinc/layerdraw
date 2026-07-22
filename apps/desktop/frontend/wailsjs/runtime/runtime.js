@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
+
 /*
  _       __      _ __
 | |     / /___ _(_) /____
