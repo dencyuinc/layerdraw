@@ -3,6 +3,7 @@
 import type { LibraryController, LibraryProjectContext, LibrarySnapshot } from "@layerdraw/library";
 import type { RegistryAction, RegistryArtifactKind, RegistrySourceKind } from "@layerdraw/registry-client";
 import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react";
+import { tokenSelect } from "./token-select.js";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 export interface DesktopLibraryPanelProps {
@@ -200,9 +201,7 @@ export function DesktopLibraryPanel({ library, project }: DesktopLibraryPanelPro
             <div className="ld-settings-row">
               <span className="ld-settings-row-label">{t.t("library.source.kind")}</span>
               <span className="ld-settings-row-control">
-                <select className="ld-library-select" value={sourceKind} disabled={busy} aria-label={t.t("library.source.kind")} onChange={(event) => setSourceKind((event.currentTarget as HTMLSelectElement).value as RegistrySourceKind)}>
-                  {sourceKinds.map((value) => <option value={value} key={value}>{value.replaceAll("_", " ")}</option>)}
-                </select>
+                {tokenSelect(t.t("library.source.kind"), sourceKind, sourceKinds.map((value) => ({ value, label: value.replaceAll("_", " ") })), (value) => setSourceKind(value as RegistrySourceKind))}
               </span>
             </div>
             <div className="ld-settings-row">

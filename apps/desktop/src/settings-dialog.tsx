@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react/i18n";
-import { SelectIcon, SelectItem, SelectItemText, SelectPopup, SelectPortal, SelectPositioner, SelectRoot, SelectTrigger, SelectValue } from "@layerdraw/react/primitives";
+import { tokenSelect } from "./token-select.js";
 import type { DesktopMCPConnection, DesktopMCPPort, DesktopMCPStatus, DesktopSettingsDTO, DesktopSettingsPort } from "./contracts.js";
 
 const defaultTranslator: Translator = createTranslator("en", baseShellCatalogs);
@@ -30,37 +30,6 @@ function navItem(t: Translator, pane: SettingsPane, active: SettingsPane, label:
       aria-current={pane === active ? "page" : undefined}
       onClick={() => select(pane)}
     >{label}</button>
-  );
-}
-
-interface SelectOption { readonly value: string; readonly label: string }
-
-/** shadcn/Base UI Select composition shared by every settings row. */
-function tokenSelect(ariaLabel: string, value: string, options: readonly SelectOption[], onChange: (value: string) => void): ReactNode {
-  return (
-    <SelectRoot
-      value={value}
-      onValueChange={(next: unknown) => { if (typeof next === "string") onChange(next); }}
-      items={Object.fromEntries(options.map((option) => [option.value, option.label]))}
-    >
-      <SelectTrigger aria-label={ariaLabel}>
-        <SelectValue />
-        <SelectIcon>
-          <svg viewBox="0 0 16 16" width={12} height={12} fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden={true}><path d="m4 6 4 4 4-4" /></svg>
-        </SelectIcon>
-      </SelectTrigger>
-      <SelectPortal>
-        <SelectPositioner sideOffset={4} className="ld-settings-select-positioner">
-          <SelectPopup className="ld-settings-select-popup">
-            {options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                <SelectItemText>{option.label}</SelectItemText>
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </SelectPositioner>
-      </SelectPortal>
-    </SelectRoot>
   );
 }
 

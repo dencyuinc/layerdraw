@@ -274,27 +274,6 @@ body { background: var(--ld-background-canvas); }
 .ld-mcp-connection dd { margin: 0; max-width: 11rem; overflow-wrap: anywhere; text-align: right; }
 .ld-mcp-proposal { margin: 0; padding: var(--ld-space-8); border-radius: var(--ld-radius-sm); background: var(--ld-subtle); font-size: var(--ld-font-size-12); }
 
-.ld-library-panel { display: grid; gap: var(--ld-space-12); width: 100%; }
-.ld-desktop-inspector .ld-library-panel { margin-top: var(--ld-space-20); padding-top: var(--ld-space-16); border-top: var(--ld-borderWidth-default) solid var(--ld-line-subtle); text-align: left; }
-.ld-hub-templates .ld-library-panel { padding: var(--ld-space-16); border: var(--ld-borderWidth-default) solid var(--ld-line-subtle); border-radius: var(--ld-radius-lg); background: var(--ld-panel); }
-.ld-library-heading, .ld-library-heading > div, .ld-library-results button, .ld-library-sources li > div { display: flex; align-items: center; justify-content: space-between; gap: var(--ld-space-8); }
-.ld-library-heading > div:first-child { display: block; }
-.ld-library-heading h2, .ld-library-heading p, .ld-library-selection h3, .ld-library-plan h3, .ld-library-plan p { margin: 0; }
-.ld-library-heading p, .ld-library-results small, .ld-library-failure { color: var(--ld-muted); font-size: var(--ld-font-size-12); }
-.ld-library-panel form { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--ld-space-8); align-items: end; }
-.ld-library-panel label { display: grid; gap: var(--ld-space-2); color: var(--ld-muted); font-size: var(--ld-font-size-12); }
-.ld-library-panel input, .ld-library-panel select, .ld-library-panel button { min-width: 0; border: var(--ld-borderWidth-default) solid var(--ld-line); border-radius: var(--ld-radius-sm); padding: var(--ld-space-8); color: var(--ld-ink); background: var(--ld-panel); font: inherit; }
-.ld-library-panel button:not(:disabled):hover, .ld-library-panel button:not(:disabled):focus-visible { border-color: var(--ld-accent); background: var(--ld-subtle); }
-.ld-library-results, .ld-library-sources ul { display: grid; gap: var(--ld-space-4); margin: 0; padding: 0; list-style: none; }
-.ld-library-results button { width: 100%; text-align: left; }
-.ld-library-results button[aria-pressed="true"] { border-color: var(--ld-accent); background: var(--ld-subtle); }
-.ld-library-results button span, .ld-library-results button small { margin-left: auto; }
-.ld-library-selection, .ld-library-plan { display: grid; gap: var(--ld-space-8); padding: var(--ld-space-12); border: var(--ld-borderWidth-default) solid var(--ld-line-subtle); border-radius: var(--ld-radius-md); background: var(--ld-subtle); }
-.ld-library-sources { display: grid; gap: var(--ld-space-8); }
-.ld-library-sources summary { cursor: pointer; font-weight: var(--ld-font-weight-semibold); }
-.ld-library-sources[open] { padding: var(--ld-space-8); border: var(--ld-borderWidth-default) solid var(--ld-line-subtle); border-radius: var(--ld-radius-md); }
-.ld-library-sources form { grid-template-columns: 1fr 1fr; }
-.ld-library-sources form button { align-self: end; }
 
 /* ---- Inspector sections ---------------------------------------------------- */
 .ld-inspector-section { border-bottom: var(--ld-borderWidth-default) solid var(--ld-line-subtle); padding: var(--ld-space-8) 0 var(--ld-space-12); }
@@ -334,7 +313,6 @@ body { background: var(--ld-background-canvas); }
   .ld-desktop-sidebar li { min-width: 9rem; }
   .ld-desktop-viewer { min-height: 24rem; }
   .ld-hub-header { flex-direction: column; }
-  .ld-library-panel form, .ld-library-sources form { grid-template-columns: 1fr; }
 }
 :root[data-zoomed="true"] .ld-desktop-workspace { display: block; }
 :root[data-zoomed="true"] .ld-desktop-sidebar { border-right: 0; border-bottom: var(--ld-borderWidth-default) solid var(--ld-line-subtle); overflow-x: auto; }
@@ -454,4 +432,3 @@ button.ld-settings-scope:disabled { cursor: not-allowed; opacity: var(--ld-opaci
 .ld-library-detail .ld-btn { align-self: flex-start; }
 .ld-library-empty { display: flex; flex-direction: column; align-items: center; gap: var(--ld-space-8); padding: var(--ld-space-32, 32px) var(--ld-space-16); border: 1px dashed var(--ld-line); border-radius: var(--ld-radius-lg); color: var(--ld-muted); text-align: center; }
 .ld-library-empty b { color: var(--ld-secondary); }
-.ld-library-select { padding: 5px 8px; border: var(--ld-borderWidth-default) solid var(--ld-line); border-radius: var(--ld-radius-sm); background: var(--ld-panel); color: var(--ld-ink); font: inherit; font-size: var(--ld-font-size-13, 13px); width: 220px; }
