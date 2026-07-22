@@ -127,6 +127,20 @@ export interface DesktopRecentProjectDTO {
   readonly [field: string]: unknown;
 }
 
+export interface DesktopSettingsDTO {
+  readonly schema_version: number;
+  readonly theme: "system" | "light" | "dark";
+  readonly zoom_percent: number;
+  readonly locale?: string;
+}
+
+/** Persisted application settings owned by the native shell; updates apply
+ * theme/zoom natively and return the stored value. */
+export interface DesktopSettingsPort {
+  load(): Promise<DesktopHostResult<DesktopSettingsDTO>>;
+  update(settings: DesktopSettingsDTO): Promise<DesktopHostResult<DesktopSettingsDTO>>;
+}
+
 export interface DesktopProjectDialogPort {
   create(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   open(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;

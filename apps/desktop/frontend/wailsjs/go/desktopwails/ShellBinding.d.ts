@@ -12,6 +12,8 @@ export function InvokeCommand(arg1:desktopcontract.CommandInvocation):Promise<de
 
 export function PackagedProbeMode():Promise<boolean>;
 
+export function Settings():Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopcontract_DesktopSettings_>;
+
 export function SubmitAccessibilityReport(arg1:string,arg2:desktopcontract.AccessibilityReport):Promise<void>;
 
 export function UpdateSettings(arg1:desktopcontract.DesktopSettings):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopcontract_DesktopSettings_>;

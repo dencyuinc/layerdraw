@@ -15,7 +15,7 @@ try {
   await page.addScriptTag({ content: bundled.outputFiles[0].text });
   await page.getByRole("heading", { name: "Desktop roadmap" }).waitFor();
 
-  await page.getByRole("navigation", { name: "Views" }).waitFor();
+  await page.getByRole("navigation", { name: "Editor mode" }).waitFor();
   await page.getByRole("region", { name: "Canvas" }).waitFor();
   const toolbar = page.getByRole("toolbar", { name: "Authoring commands" });
   await toolbar.waitFor();

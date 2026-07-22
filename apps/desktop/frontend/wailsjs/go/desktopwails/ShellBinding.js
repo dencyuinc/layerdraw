@@ -20,6 +20,10 @@ export function PackagedProbeMode() {
   return window['go']['desktopwails']['ShellBinding']['PackagedProbeMode']();
 }
 
+export function Settings() {
+  return window['go']['desktopwails']['ShellBinding']['Settings']();
+}
+
 export function SubmitAccessibilityReport(arg1, arg2) {
   return window['go']['desktopwails']['ShellBinding']['SubmitAccessibilityReport'](arg1, arg2);
 }

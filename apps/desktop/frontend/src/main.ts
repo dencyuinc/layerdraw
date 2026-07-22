@@ -8,7 +8,9 @@ import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "../../s
 import { createDesktopWailsProjectOwner } from "../../src/wails-project-owner.js";
 import type { DesktopProjectHostBinding, DesktopReviewHostBinding } from "../../src/wails-owner.js";
 import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CloseCurrentProject, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPStatus, NativeExportProfiles, OpenProjectDialog, OpenRecentProject, PlanExternalReconcile, PreviewEditor, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { Settings, UpdateSettings } from "../wailsjs/go/desktopwails/ShellBinding.js";
 import { EventsOff, EventsOn, LogError } from "../wailsjs/runtime/runtime.js";
+import type { DesktopSettingsDTO, DesktopSettingsPort } from "../../src/contracts.js";
 
 async function start(): Promise<void> {
   installAccessibilityProbe(EventsOn);
@@ -39,7 +41,12 @@ async function start(): Promise<void> {
       review: { ReviewSnapshot, ReviewComment, ReviewApproveAndApply, ReviewWithdraw } as unknown as DesktopReviewHostBinding,
     },
   );
+  const settingsPort: DesktopSettingsPort = {
+    load: async () => await Settings() as Awaited<ReturnType<DesktopSettingsPort["load"]>>,
+    update: async (value: DesktopSettingsDTO) => await UpdateSettings(value) as Awaited<ReturnType<DesktopSettingsPort["update"]>>,
+  };
   const mounted = mountDesktopShell(root, {
+    settings: settingsPort,
     lifecycle: composition.lifecycle,
 		viewer: composition.viewer,
 		mcp: composition.mcp,
@@ -52,6 +59,10 @@ async function start(): Promise<void> {
     viewSelectionCapability: "engine.materialize_view",
     editorCapabilities: { preview: "engine.preview_operations", apply: "runtime.commit_operations", history: "runtime.commit_operations" },
   });
+  void settingsPort.load().then((result) => {
+    const locale = result.outcome === "success" ? result.value?.locale : undefined;
+    if (locale !== undefined && locale !== "" && locale !== "system") mounted.setLocale(locale);
+  }, () => {});
   EventsOn("desktop:menu", (command: unknown) => {
     if (typeof command !== "string") return;
     if (command.startsWith("locale:")) {

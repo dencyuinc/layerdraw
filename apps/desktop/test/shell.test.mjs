@@ -50,7 +50,7 @@ test("Desktop shell exposes landmarks, authoritative context, view navigation, a
     controller, viewSelectionCapability: "engine.materialize_view", editorCapabilities,
   })); });
   assert.equal(renderer.root.findByType("h1").children.join(""), "Roadmap");
-  assert.equal(renderer.root.findByProps({ "aria-label": "Views" }).type, "nav");
+  assert.equal(renderer.root.findByProps({ "aria-label": "Editor mode" }).type, "nav");
   assert.equal(renderer.root.findByProps({ "aria-label": "Canvas" }).type, "section");
   assert.equal(renderer.root.findAllByProps({ "aria-label": "Project status" }).some((node) => node.type === "aside"), true);
   const details = renderer.root.findAllByType("button").find((button) => button.props["aria-label"] === "Details");

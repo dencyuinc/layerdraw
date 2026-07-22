@@ -40,10 +40,14 @@ type DesktopSettings struct {
 	SchemaVersion uint32 `json:"schema_version"`
 	Theme         Theme  `json:"theme"`
 	ZoomPercent   uint16 `json:"zoom_percent"`
+	// Locale overrides the OS UI language. Empty or "system" follows the OS;
+	// concrete values are catalog locales ("en", "ja").
+	Locale string `json:"locale,omitempty"`
 }
 
 func (s DesktopSettings) Validate() bool {
-	return s.SchemaVersion == SettingsSchemaVersion && s.Theme.Validate() && s.ZoomPercent >= 50 && s.ZoomPercent <= 300
+	localeValid := s.Locale == "" || s.Locale == "system" || s.Locale == "en" || s.Locale == "ja"
+	return s.SchemaVersion == SettingsSchemaVersion && s.Theme.Validate() && s.ZoomPercent >= 50 && s.ZoomPercent <= 300 && localeValid
 }
 
 type Rectangle struct {

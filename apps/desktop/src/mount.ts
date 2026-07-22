@@ -3,7 +3,7 @@
 import type { CapabilityID } from "@layerdraw/protocol/common";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopShellPorts } from "./contracts.js";
+import type { DesktopFeatureAvailability, DesktopMCPPort, DesktopProjectDialogPort, DesktopSettingsPort, DesktopShellPorts } from "./contracts.js";
 import { DesktopShellController } from "./controller.js";
 import type { DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import type { ReviewModel } from "@layerdraw/review";
@@ -22,6 +22,8 @@ export interface DesktopMountOptions extends DesktopShellPorts {
   readonly reviewAvailability?: DesktopFeatureAvailability;
   /** Returns to the project hub from an open workspace without a process restart. */
   readonly onReturnToProjects?: () => void;
+  /** Persisted application settings; enables the Settings window. */
+  readonly settings?: DesktopSettingsPort;
 }
 
 export interface MountedDesktopShell {
@@ -51,6 +53,7 @@ export function mountDesktopShell(element: Element, options: DesktopMountOptions
     ...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel }),
     ...(options.library === undefined ? {} : { library: options.library }),
     ...(options.onReturnToProjects === undefined ? {} : { onReturnToProjects: options.onReturnToProjects }),
+    ...(options.settings === undefined ? {} : { settings: options.settings, onLocaleChange: (locale: string) => render(locale === "system" ? null : locale) }),
     })));
   };
   render(null);

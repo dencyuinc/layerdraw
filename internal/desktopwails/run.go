@@ -64,7 +64,8 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 	}
 	probeOutput := os.Getenv("LAYERDRAW_DESKTOP_UI_PROBE_OUTPUT")
 	configured.Bind = append([]any{frontend, newShellBinding(native.Shell, bridge, probeOutput != "")}, configured.Bind...)
-	configured.Menu = nativeMenu(application, native.Shell, bridge, &menuLocaleState{})
+	localeState := &menuLocaleState{}
+	configured.Menu = nativeMenu(application, native.Shell, bridge, localeState)
 	configured.SingleInstanceLock = &options.SingleInstanceLock{
 		UniqueId: "dev.layerdraw.desktop",
 		OnSecondInstanceLaunch: func(data options.SecondInstanceData) {
@@ -78,6 +79,11 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 	configured.OnDomReady = func(ctx context.Context) {
 		if previousDOMReady != nil {
 			previousDOMReady(ctx)
+		}
+		// Startup Restore applies settings before the DOM exists; reapply so the
+		// persisted theme/zoom actually reach the loaded document.
+		if current := native.Shell.CurrentSettings(ctx); current.Outcome == protocolcommon.OutcomeSuccess {
+			_ = bridge.ApplySettings(ctx, current.Value)
 		}
 		if probeOutput != "" {
 			go func() {
@@ -114,6 +120,9 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 		}
 		if restored := native.Shell.Restore(ctx); restored.Outcome != protocolcommon.OutcomeSuccess && restored.Failure != nil {
 			WailsRuntime{}.Emit(ctx, recoveryEvent, *restored.Failure)
+		} else {
+			localeState.set(restored.Value.Settings.Locale)
+			wailsruntime.MenuSetApplicationMenu(ctx, nativeMenu(application, native.Shell, bridge, localeState))
 		}
 		openAssociatedProjects(ctx, native, selectionVault, application)
 		runtime.ShowWindow(ctx)
@@ -309,14 +318,20 @@ func nativeMenu(application *desktopapp.Application, shell *desktopapp.NativeShe
 		})
 	})
 	appMenu.AddSeparator()
-	settings := appMenu.AddText("Settings…", keys.CmdOrCtrl(","), nil)
-	settings.Disabled = true
+	appMenu.AddText("Settings…", keys.CmdOrCtrl(","), func(*menu.CallbackData) {
+		runtimeShell.Emit(bridge.context(), menuEvent, "settings")
+	})
 	language := appMenu.AddSubmenu("Language")
 	for _, locale := range []struct{ label, value string }{{"System", "system"}, {"English", "en"}, {"日本語", "ja"}} {
 		value := locale.value
 		language.Append(menu.Radio(locale.label, value == localeState.value(), nil, func(*menu.CallbackData) {
 			localeState.set(value)
 			ctx := bridge.context()
+			if current := shell.CurrentSettings(ctx); current.Outcome == protocolcommon.OutcomeSuccess {
+				next := current.Value
+				next.Locale = value
+				_ = shell.UpdateSettings(ctx, next)
+			}
 			runtimeShell.Emit(ctx, menuEvent, "locale:"+value)
 			wailsruntime.MenuSetApplicationMenu(ctx, nativeMenu(application, shell, bridge, localeState))
 		}))

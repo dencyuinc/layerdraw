@@ -965,6 +965,7 @@ export namespace desktopcontract {
 	    schema_version: number;
 	    theme: string;
 	    zoom_percent: number;
+	    locale?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DesktopSettings(source);
@@ -975,6 +976,7 @@ export namespace desktopcontract {
 	        this.schema_version = source["schema_version"];
 	        this.theme = source["theme"];
 	        this.zoom_percent = source["zoom_percent"];
+	        this.locale = source["locale"];
 	    }
 	}
 	export class Exchange {
