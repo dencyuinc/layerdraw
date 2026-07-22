@@ -75,7 +75,7 @@ test("Tabs compose as the segmented control with selected-state styling", async 
   });
   const tabs = renderer.root.findAllByProps({ role: "tab" });
   assert.equal(tabs.length, 2);
-  assert.match(tabs[0].props.className, /data-\[selected\]:bg-surface/);
+  assert.match(tabs[0].props.className, /aria-selected:bg-surface/);
   const list = renderer.root.findByProps({ role: "tablist" });
   assert.match(list.props.className, /bg-subtle/);
   await act(async () => renderer.unmount());

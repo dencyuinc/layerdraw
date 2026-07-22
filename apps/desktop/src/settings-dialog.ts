@@ -244,7 +244,7 @@ function AgentAccessPane({ t, mcp, projectID }: { readonly t: Translator; readon
         createElement("div", { className: "ld-settings-agent-row ld-settings-formrow" },
           createElement("b", null, t.t("settings.agentAccess.targets")),
           createElement("span", { className: "ld-settings-scopes" }, capabilityOptions.map((capability) =>
-            scopeChipButton(t.t(`settings.capability.${capability}`), draft.capabilities.includes(capability), busy,
+            scopeChipButton(t.t(`settings.capability.${capability.replace(":", "_")}`), draft.capabilities.includes(capability), busy,
               () => setDraft({ ...draft, capabilities: draft.capabilities.includes(capability) ? draft.capabilities.filter((value) => value !== capability) : [...draft.capabilities, capability] }))))),
         settingsRow(t.t("settings.agentAccess.expiry"), undefined,
           tokenSelect(t.t("settings.agentAccess.expiry"), String(draft.expiryHours), [
@@ -282,7 +282,7 @@ function AgentAccessPane({ t, mcp, projectID }: { readonly t: Translator; readon
               createElement("div", { className: "ld-settings-agent-row" },
                 createElement("b", null, t.t("settings.agentAccess.targets")),
                 createElement("span", { className: "ld-settings-scopes" }, connection.capabilities.map((capability) =>
-                  createElement("span", { key: capability, className: "ld-settings-scope", "data-granted": true }, t.t(`settings.capability.${capability}`))))),
+                  createElement("span", { key: capability, className: "ld-settings-scope", "data-granted": true }, t.t(`settings.capability.${capability.replace(":", "_")}`))))),
               connection.status !== "connected" ? null : createElement(ConnectionConfig, { t, mcp, connectionID: connection.connection_id }))))));
 }
 
