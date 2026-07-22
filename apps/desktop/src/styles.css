@@ -62,7 +62,7 @@ body { background: var(--ld-background-canvas); }
   padding: 0 var(--ld-space-12);
   border: var(--ld-borderWidth-default) solid transparent;
   border-radius: var(--ld-radius-md);
-  font-size: 13px; font-weight: var(--ld-font-weight-medium); line-height: 1;
+  font-size: 13px; font-weight: var(--ld-font-weight-semibold); line-height: 1;
   transition: background var(--ld-motion-duration-hover) var(--ld-motion-easing-standard), border-color var(--ld-motion-duration-hover) var(--ld-motion-easing-standard);
 }
 .ld-btn:disabled { cursor: not-allowed; opacity: var(--ld-opacity-disabled); }
