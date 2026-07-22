@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
@@ -63,7 +64,7 @@ func Run(base desktopapp.Config, assets fs.FS, providers map[string]ExternalProv
 	}
 	probeOutput := os.Getenv("LAYERDRAW_DESKTOP_UI_PROBE_OUTPUT")
 	configured.Bind = append([]any{frontend, newShellBinding(native.Shell, bridge, probeOutput != "")}, configured.Bind...)
-	configured.Menu = nativeMenu(application, native.Shell, bridge)
+	configured.Menu = nativeMenu(application, native.Shell, bridge, &menuLocaleState{})
 	configured.SingleInstanceLock = &options.SingleInstanceLock{
 		UniqueId: "dev.layerdraw.desktop",
 		OnSecondInstanceLaunch: func(data options.SecondInstanceData) {
@@ -260,6 +261,28 @@ func safeWindowSnapshot(ctx context.Context, bridge *WailsShellBridge) (window d
 // presentation state the items control.
 const menuEvent = "desktop:menu"
 
+// menuLocaleState tracks the Language radio selection so menu rebuilds render
+// exactly one checkmark; the frontend owns the actual catalog switch.
+type menuLocaleState struct {
+	mu     sync.Mutex
+	locale string
+}
+
+func (s *menuLocaleState) value() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.locale == "" {
+		return "system"
+	}
+	return s.locale
+}
+
+func (s *menuLocaleState) set(locale string) {
+	s.mu.Lock()
+	s.locale = locale
+	s.mu.Unlock()
+}
+
 // recentProjectsOf tolerates a nil application so the menu can be built (and
 // unit-tested) before the composition root finishes constructing one.
 func recentProjectsOf(application *desktopapp.Application) desktopcontract.Result[[]desktopapp.RecentProject] {
@@ -273,7 +296,7 @@ func recentProjectsOf(application *desktopapp.Application) desktopcontract.Resul
 // Language selection, File with recents and close, Edit, View toggles, Window,
 // and Help. Labels follow the approved (English) menu vocabulary; the Language
 // submenu switches the in-app catalog locale.
-func nativeMenu(application *desktopapp.Application, shell *desktopapp.NativeShell, bridge *WailsShellBridge) *menu.Menu {
+func nativeMenu(application *desktopapp.Application, shell *desktopapp.NativeShell, bridge *WailsShellBridge, localeState *menuLocaleState) *menu.Menu {
 	result := menu.NewMenu()
 	runtimeShell := WailsRuntime{}
 
@@ -291,8 +314,11 @@ func nativeMenu(application *desktopapp.Application, shell *desktopapp.NativeShe
 	language := appMenu.AddSubmenu("Language")
 	for _, locale := range []struct{ label, value string }{{"System", "system"}, {"English", "en"}, {"日本語", "ja"}} {
 		value := locale.value
-		language.Append(menu.Radio(locale.label, value == "system", nil, func(*menu.CallbackData) {
-			runtimeShell.Emit(bridge.context(), menuEvent, "locale:"+value)
+		language.Append(menu.Radio(locale.label, value == localeState.value(), nil, func(*menu.CallbackData) {
+			localeState.set(value)
+			ctx := bridge.context()
+			runtimeShell.Emit(ctx, menuEvent, "locale:"+value)
+			wailsruntime.MenuSetApplicationMenu(ctx, nativeMenu(application, shell, bridge, localeState))
 		}))
 	}
 	appMenu.AddSeparator()

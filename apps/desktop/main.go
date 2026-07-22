@@ -60,11 +60,16 @@ func run() error {
 			return err
 		}
 	}
-	configRoot, err := userConfigDir()
-	if err != nil {
-		return err
+	dataRoot := os.Getenv("LAYERDRAW_STATE_ROOT")
+	if dataRoot == "" {
+		configRoot, err := userConfigDir()
+		if err != nil {
+			return err
+		}
+		dataRoot = filepath.Join(configRoot, "LayerDraw")
+	} else if !filepath.IsAbs(dataRoot) || filepath.Clean(dataRoot) != dataRoot {
+		return errors.New("LAYERDRAW_STATE_ROOT must be a clean absolute path")
 	}
-	dataRoot := filepath.Join(configRoot, "LayerDraw")
 	if err := os.MkdirAll(dataRoot, 0o700); err != nil {
 		return err
 	}

@@ -81,7 +81,7 @@ body { background: var(--ld-background-canvas); }
 /* ---- Brand ----------------------------------------------------------------- */
 .ld-wordmark { display: inline-flex; align-items: center; }
 .ld-brand-icon { display: block; flex: 0 0 auto; border-radius: 5px; }
-.ld-wordmark-logo { display: block; height: 30px; width: auto; }
+.ld-wordmark-logo { display: block; height: 38px; width: auto; }
 .ld-wordmark-logo-dark { display: none; }
 :root[data-theme="dark"] .ld-wordmark-logo-light { display: none; }
 :root[data-theme="dark"] .ld-wordmark-logo-dark { display: block; }
@@ -103,7 +103,7 @@ body { background: var(--ld-background-canvas); }
 .ld-rail-spacer { flex: 1; }
 
 .ld-hub-main { min-width: 0; padding: var(--ld-space-32) var(--ld-space-40); overflow-y: auto; }
-.ld-hub-main > * { max-width: 62rem; }
+.ld-hub-main > * { max-width: 62rem; margin-inline: auto; }
 .ld-hub-header { display: flex; align-items: center; gap: var(--ld-space-12); margin-bottom: var(--ld-space-20); }
 .ld-hub-header h1 { flex: 1; margin: 0; font-size: var(--ld-font-size-20); font-weight: var(--ld-font-weight-semibold); line-height: var(--ld-font-lineHeight-28); }
 .ld-hub-actions { display: flex; gap: var(--ld-space-8); flex: 0 0 auto; }

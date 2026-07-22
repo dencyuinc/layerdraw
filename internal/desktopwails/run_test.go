@@ -53,7 +53,7 @@ func TestNativeMenuFileCommandsInvokeNativeCommandWithoutPublishingOnFailure(t *
 		t.Fatal(err)
 	}
 
-	built := nativeMenu(nil, native.Shell, bridge)
+	built := nativeMenu(nil, native.Shell, bridge, &menuLocaleState{})
 	for _, top := range []string{"LayerDraw", "File", "View", "Window", "Help"} {
 		findSubmenuItem(t, built, top)
 	}
