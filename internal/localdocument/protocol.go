@@ -121,6 +121,18 @@ func sameCommittedRevision(left, right runtimeprotocol.CommittedRevisionRef) boo
 	return *left.ProviderVersion == *right.ProviderVersion
 }
 
+// DocumentGenerationFor exposes the Engine document generation of a live
+// runtime session so hosts can bind Engine read operations (find_symbols and
+// friends) to the session's working document. The handle inside is opaque
+// endpoint identity, never a native location.
+func (h *Host) DocumentGenerationFor(ref runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error) {
+	session, err := h.SessionFor(ref)
+	if err != nil {
+		return engineprotocol.DocumentGeneration{}, err
+	}
+	return h.documentGeneration(session), nil
+}
+
 func (h *Host) documentGeneration(session *Session) engineprotocol.DocumentGeneration {
 	return engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: h.config.EndpointInstanceID, Value: session.working.Handle}, Value: protocolcommon.CanonicalUint64(session.working.Generation)}
 }

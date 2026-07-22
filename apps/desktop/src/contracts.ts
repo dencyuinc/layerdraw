@@ -35,6 +35,8 @@ export interface DesktopProjectContext {
   /** Full generated Engine read/author surface for this session (find_symbols,
    * read_declarations, …); authoring UI reads schema and outline through it. */
   readonly engine?: import("@layerdraw/engine-client").EngineClient;
+  /** Resolves the session-bound Engine document generation for read calls. */
+  readonly readDocumentGeneration?: () => Promise<import("@layerdraw/protocol/engine").DocumentGeneration>;
   readonly project_id: string;
   /** Monotonic host-issued generation; changes on close/reopen even for the same project. */
   readonly session_generation: number;

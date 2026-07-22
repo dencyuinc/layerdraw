@@ -125,7 +125,9 @@ export async function createDesktopWailsProjectOwner(host: DesktopProjectHostBin
       project = Object.freeze({
         project_id: dto.project.project_id, session_generation: dto.project.session_generation, display_name: dto.project.display_name,
         authoritative_revision_token: dto.project.authoritative_revision.revision_id, authoritative_revision_label: dto.project.authoritative_revision.revision_id,
-        engine: client.engine, editor, editor_session: editorSession, views: dto.project.views, access: { status: "allowed" as const, label: "Local owner" },
+        engine: client.engine,
+        ...(editorSession.authority === "runtime" ? { readDocumentGeneration: () => host.ProjectDocumentGeneration(editorSession.session.session) } : {}),
+        editor, editor_session: editorSession, views: dto.project.views, access: { status: "allowed" as const, label: "Local owner" },
         storage: { kind: "local" as const, status: "connected" as const, label: "Local project" }, persistence: dto.project.persistence, library_project: dto.project.library_project,
       }) satisfies DesktopProjectContext;
     } else {

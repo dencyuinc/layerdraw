@@ -7,7 +7,7 @@ import { createDesktopWailsComposition, waitForDesktopApplicationReady, type Des
 import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "../../src/wails-bindings.js";
 import { createDesktopWailsProjectOwner } from "../../src/wails-project-owner.js";
 import type { DesktopProjectHostBinding, DesktopReviewHostBinding } from "../../src/wails-owner.js";
-import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CloseCurrentProject, DeleteMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPClientConfig, MCPStatus, NativeExportProfiles, OpenProjectDialog, OpenRecentProject, PlanExternalReconcile, PreviewEditor, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CloseCurrentProject, DeleteMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPClientConfig, MCPStatus, NativeExportProfiles, OpenProjectDialog, OpenRecentProject, PlanExternalReconcile, PreviewEditor, ProjectDocumentGeneration, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { Settings, UpdateSettings } from "../wailsjs/go/desktopwails/ShellBinding.js";
 import { EventsOff, EventsOn, LogError } from "../wailsjs/runtime/runtime.js";
 import type { DesktopSettingsDTO, DesktopSettingsPort } from "../../src/contracts.js";
@@ -29,7 +29,7 @@ async function start(): Promise<void> {
   } as unknown as DesktopWailsApplicationBinding;
   await waitForDesktopApplicationReady(application);
   const generatedBindings = createDesktopGeneratedBindings(Invoke as unknown as DesktopWailsInvoke);
-  const project = await createDesktopWailsProjectOwner({ ProjectPublication, PreviewEditor, MaterializeProjectView } as unknown as DesktopProjectHostBinding, generatedBindings);
+  const project = await createDesktopWailsProjectOwner({ ProjectPublication, PreviewEditor, MaterializeProjectView, ProjectDocumentGeneration } as unknown as DesktopProjectHostBinding, generatedBindings);
   const composition = await createDesktopWailsComposition(
     application,
     { EventsOn, EventsOff, LogError },

@@ -48,6 +48,8 @@ export interface DesktopProjectHostBinding {
   ProjectPublication(): Promise<DesktopProjectPublicationDTO>;
   PreviewEditor(input: PreviewOperationsInput): Promise<DesktopEditorPreviewDTO>;
   MaterializeProjectView(session: PreviewOperationsInput["session"], address: string): Promise<Readonly<{ view_data: ViewData; view_data_hash: string }>>;
+  /** Session-bound Engine document generation for read operations (opaque). */
+  ProjectDocumentGeneration(session: PreviewOperationsInput["session"]): Promise<import("@layerdraw/protocol/engine").DocumentGeneration>;
 }
 
 export interface DesktopRegistryHostBinding {

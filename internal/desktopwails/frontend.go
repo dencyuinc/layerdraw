@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
@@ -41,6 +42,7 @@ type registryDispatcher interface {
 type editorPreviewDispatcher interface {
 	PreviewEditor(context.Context, runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error)
 	MaterializeProjectView(context.Context, runtimeprotocol.RuntimeSessionRef, string) (semantic.ViewData, error)
+	ProjectDocumentGeneration(context.Context, runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error)
 }
 
 func NewFrontendBridge(app *desktopapp.Application, dispatchers ...registryDispatcher) *FrontendBridge {
@@ -78,6 +80,15 @@ func (b *FrontendBridge) PreviewEditor(input runtimeprotocol.PreviewOperationsIn
 		return localdocument.EditorPreviewResult{}, errors.New("desktop editor preview is unavailable")
 	}
 	return b.preview.PreviewEditor(b.context(), input)
+}
+
+// ProjectDocumentGeneration binds Engine reads (find_symbols and friends) to
+// the session's working document; the frontend treats the value as opaque.
+func (b *FrontendBridge) ProjectDocumentGeneration(session runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error) {
+	if b.preview == nil {
+		return engineprotocol.DocumentGeneration{}, errors.New("desktop document generation is unavailable")
+	}
+	return b.preview.ProjectDocumentGeneration(b.context(), session)
 }
 
 type ProjectViewMaterialization struct {

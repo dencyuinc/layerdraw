@@ -14,6 +14,7 @@ import (
 	"testing/fstest"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
@@ -36,6 +37,9 @@ func (s previewDispatcherStub) PreviewEditor(context.Context, runtimeprotocol.Pr
 }
 func (s previewDispatcherStub) MaterializeProjectView(context.Context, runtimeprotocol.RuntimeSessionRef, string) (semantic.ViewData, error) {
 	return semantic.ViewData{}, s.err
+}
+func (s previewDispatcherStub) ProjectDocumentGeneration(context.Context, runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error) {
+	return engineprotocol.DocumentGeneration{}, s.err
 }
 
 func TestFrontendPreviewAndReviewContractEdges(t *testing.T) {

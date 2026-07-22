@@ -40,7 +40,7 @@ test("Desktop declares and packages its complete normative frontend closure", as
 
 test("normal packaged startup injects the DTO-only project, Registry, and Review owners", async () => {
 	const main = await readFile(new URL("../frontend/src/main.ts", import.meta.url), "utf8");
-	assert.match(main, /createDesktopWailsProjectOwner\(\{ ProjectPublication, PreviewEditor, MaterializeProjectView \}.*generatedBindings\)/);
+	assert.match(main, /createDesktopWailsProjectOwner\(\{ ProjectPublication, PreviewEditor, MaterializeProjectView, ProjectDocumentGeneration \}.*generatedBindings\)/);
 	assert.match(main, /project,\s*registry: \{ RegistryDispatch \},\s*review:/s);
 	assert.match(main, /if \(await isPackagedProbeMode\(\)\)/);
 });
