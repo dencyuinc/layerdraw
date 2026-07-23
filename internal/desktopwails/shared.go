@@ -441,6 +441,36 @@ func (o *sharedOwner) PreviewEditor(ctx context.Context, input runtimeprotocol.P
 	return local.PreviewEditor(ctx, input)
 }
 
+func (o *sharedOwner) ProjectSubjects(ctx context.Context, session runtimeprotocol.RuntimeSessionRef) ([]semantic.SemanticSubject, error) {
+	o.mu.RLock()
+	local := o.local
+	o.mu.RUnlock()
+	if local == nil {
+		return nil, errors.New("desktop subject listing is unavailable")
+	}
+	return local.ProjectSubjects(ctx, session)
+}
+
+func (o *sharedOwner) ProjectStructure(ctx context.Context, session runtimeprotocol.RuntimeSessionRef) (engineendpoint.BridgeStructure, error) {
+	o.mu.RLock()
+	local := o.local
+	o.mu.RUnlock()
+	if local == nil {
+		return engineendpoint.BridgeStructure{}, errors.New("desktop structure read is unavailable")
+	}
+	return local.ProjectStructure(ctx, session)
+}
+
+func (o *sharedOwner) ProjectDocumentGeneration(_ context.Context, session runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error) {
+	o.mu.RLock()
+	local := o.local
+	o.mu.RUnlock()
+	if local == nil {
+		return engineprotocol.DocumentGeneration{}, errors.New("desktop document generation is unavailable")
+	}
+	return local.DocumentGenerationFor(session)
+}
+
 func (o *sharedOwner) MaterializeProjectView(ctx context.Context, session runtimeprotocol.RuntimeSessionRef, address string) (semantic.ViewData, error) {
 	o.mu.RLock()
 	local := o.local

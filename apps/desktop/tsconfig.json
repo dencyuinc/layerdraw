@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "declaration": true,
+    "jsx": "react-jsx",
     "exactOptionalPropertyTypes": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -10,5 +11,5 @@
     "target": "ES2024",
     "verbatimModuleSyntax": true
   },
-  "include": ["src/**/*.ts", "frontend/src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "frontend/src/**/*.ts", "test/**/*.ts"]
 }

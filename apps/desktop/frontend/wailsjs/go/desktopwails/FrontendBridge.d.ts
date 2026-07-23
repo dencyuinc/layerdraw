@@ -7,6 +7,9 @@ import {desktopapp} from '../models.js';
 import {desktopcontract} from '../models.js';
 import {desktopwails} from '../models.js';
 import {localdocument} from '../models.js';
+import {engineprotocol} from '../models.js';
+import {endpoint} from '../models.js';
+import {semantic} from '../models.js';
 import {review} from '../models.js';
 import {exporter} from '../models.js';
 
@@ -14,11 +17,15 @@ export function AcquireExternalLease(arg1:runtimeprotocol.RuntimeSessionRef,arg2
 
 export function ApplyExternalReconcile(arg1:runtimeprotocol.RuntimeSessionRef,arg2:desktopapp.ExternalReconcilePlan,arg3:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ExternalReconcileResult_>;
 
+export function CloseCurrentProject():Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_gen_go_runtimeprotocol_CloseDocumentResult_>;
+
 export function ConnectExternal(arg1:desktopapp.ExternalConnectionRequest):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ExternalConnection_>;
 
 export function CreateMCPConnection(arg1:desktopapp.MCPConnectRequest):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_MCPConnection_>;
 
 export function CreateProjectDialog(arg1:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ProjectOpenResult_>;
+
+export function DeleteMCPConnection(arg1:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_MCPConnection_>;
 
 export function DisconnectExternal(arg1:string):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_ExternalConnection_>;
 
@@ -29,6 +36,8 @@ export function InspectExternal(arg1:string):Promise<desktopcontract.Result_gith
 export function Invoke(arg1:string,arg2:desktopcontract.Exchange):Promise<desktopapp.BindingResult>;
 
 export function ListMCPConnections():Promise<Array<desktopapp.MCPConnection>>;
+
+export function MCPClientConfig(arg1:string):Promise<string>;
 
 export function MCPStatus():Promise<desktopapp.MCPStatus>;
 
@@ -44,7 +53,15 @@ export function PlanExternalReconcile(arg1:runtimeprotocol.RuntimeSessionRef,arg
 
 export function PreviewEditor(arg1:runtimeprotocol.PreviewOperationsInput):Promise<localdocument.EditorPreviewResult>;
 
+export function ProjectDocumentGeneration(arg1:runtimeprotocol.RuntimeSessionRef):Promise<engineprotocol.DocumentGeneration>;
+
+export function ProjectOpenSession(arg1:runtimeprotocol.OpenRuntimeDocumentInput):Promise<runtimeprotocol.OpenRuntimeDocumentResult>;
+
 export function ProjectPublication():Promise<desktopapp.ProjectPublicationDTO>;
+
+export function ProjectStructure(arg1:runtimeprotocol.RuntimeSessionRef):Promise<endpoint.BridgeStructure>;
+
+export function ProjectSubjects(arg1:runtimeprotocol.RuntimeSessionRef):Promise<Array<semantic.SemanticSubject>>;
 
 export function PublishNativeExportDialog(arg1:desktopapp.NativePublishRequest):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_NativePublishResult_>;
 

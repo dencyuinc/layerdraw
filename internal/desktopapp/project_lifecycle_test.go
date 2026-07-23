@@ -654,7 +654,7 @@ func TestProjectCloseFenceDrainsThenReassessesAndRollsBack(t *testing.T) {
 	}
 	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_fence_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_fence", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_fence", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
-	if _, _, err := lifecycle.opened(ref, revision, false, ""); err != nil {
+	if _, _, err := lifecycle.opened(ref, revision, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	generation, err := lifecycle.begin(ref)
@@ -693,7 +693,7 @@ func TestRecoveryJournalTracksDirtyAutosaveAndProviderState(t *testing.T) {
 	}
 	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_recovery_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_recovery", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_recovery", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
-	if _, _, err := lifecycle.opened(ref, revision, false, ""); err != nil {
+	if _, _, err := lifecycle.opened(ref, revision, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := lifecycle.mutate(ref, 0, func(state *sessionLifecycle) {
@@ -747,7 +747,7 @@ func TestAutosaveCompletionOutcomesAreClosedAndGenerationBound(t *testing.T) {
 			}
 			ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: runtimeprotocol.RuntimeSessionID(fmt.Sprintf("session_autosave_%04d", index)), SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: runtimeprotocol.DocumentID(fmt.Sprintf("document_autosave_%d", index)), LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 			revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_autosave", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
-			if _, _, err := lifecycle.opened(ref, revision, false, ""); err != nil {
+			if _, _, err := lifecycle.opened(ref, revision, false, "", ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := lifecycle.mutate(ref, 0, func(state *sessionLifecycle) {
@@ -812,7 +812,7 @@ func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
 	}
 	ref := runtimeprotocol.RuntimeSessionRef{RuntimeSessionID: "session_failure_1234", SessionGeneration: "1", Scope: runtimeprotocol.RuntimeScope{DocumentID: "document_failure", LocalScopeID: "local", AccessFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	revision := runtimeprotocol.CommittedRevisionRef{DocumentID: ref.Scope.DocumentID, RevisionID: "revision_failure", DefinitionHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", GraphHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
-	if _, _, err := lifecycle.opened(ref, revision, false, ""); err != nil {
+	if _, _, err := lifecycle.opened(ref, revision, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	state, ok := lifecycle.session(ref)
@@ -847,7 +847,7 @@ func TestLifecycleSortingRestoreAndAutosavePersistenceFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	failing.saveFault = func() error { return errors.New("open journal unavailable") }
-	if _, _, err := failing.opened(ref, revision, false, ""); err == nil || len(failing.sessions) != 0 || len(failing.state.Projects) != 0 || len(failing.state.Recoveries) != 0 {
+	if _, _, err := failing.opened(ref, revision, false, "", ""); err == nil || len(failing.sessions) != 0 || len(failing.state.Projects) != 0 || len(failing.state.Recoveries) != 0 {
 		t.Fatalf("failed open leaked state: sessions=%d projects=%d recoveries=%d err=%v", len(failing.sessions), len(failing.state.Projects), len(failing.state.Recoveries), err)
 	}
 	lifecycle.saveFault = func() error { return errors.New("project metadata unavailable") }

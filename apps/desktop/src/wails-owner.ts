@@ -48,6 +48,14 @@ export interface DesktopProjectHostBinding {
   ProjectPublication(): Promise<DesktopProjectPublicationDTO>;
   PreviewEditor(input: PreviewOperationsInput): Promise<DesktopEditorPreviewDTO>;
   MaterializeProjectView(session: PreviewOperationsInput["session"], address: string): Promise<Readonly<{ view_data: ViewData; view_data_hash: string }>>;
+  /** Session-bound Engine document generation for read operations (opaque). */
+  ProjectDocumentGeneration(session: PreviewOperationsInput["session"]): Promise<import("@layerdraw/protocol/engine").DocumentGeneration>;
+  /** Engine-compiled semantic subjects of the session's working document. */
+  ProjectSubjects(session: PreviewOperationsInput["session"]): Promise<readonly import("@layerdraw/protocol/semantic").SemanticSubject[]>;
+  /** Hands the app-owned runtime session to the frontend for adoption. */
+  ProjectOpenSession(input: Readonly<{ document_id: string }>): Promise<import("@layerdraw/protocol/runtime").OpenRuntimeDocumentResult>;
+  /** Reads the master-document structure projection for the Structure editor. */
+  ProjectStructure(session: PreviewOperationsInput["session"]): Promise<import("./contracts.js").DesktopStructureDTO>;
 }
 
 export interface DesktopRegistryHostBinding {

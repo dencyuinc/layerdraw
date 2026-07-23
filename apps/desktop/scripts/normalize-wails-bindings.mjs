@@ -6,6 +6,8 @@ const header = "// SPDX-License-Identifier: LicenseRef-LayerDraw-1.0\n\n";
 const generated = [
   "frontend/wailsjs/go/desktopwails/FrontendBridge.d.ts",
   "frontend/wailsjs/go/desktopwails/FrontendBridge.js",
+  "frontend/wailsjs/go/desktopwails/ShellBinding.d.ts",
+  "frontend/wailsjs/go/desktopwails/ShellBinding.js",
   "frontend/wailsjs/go/models.ts",
   "frontend/wailsjs/runtime/runtime.d.ts",
   "frontend/wailsjs/runtime/runtime.js",

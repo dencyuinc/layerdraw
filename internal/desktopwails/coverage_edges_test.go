@@ -14,12 +14,14 @@ import (
 	"testing/fstest"
 
 	"github.com/dencyuinc/layerdraw/gen/go/accessprotocol"
+	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
 	"github.com/dencyuinc/layerdraw/internal/registry"
@@ -37,6 +39,16 @@ func (s previewDispatcherStub) PreviewEditor(context.Context, runtimeprotocol.Pr
 func (s previewDispatcherStub) MaterializeProjectView(context.Context, runtimeprotocol.RuntimeSessionRef, string) (semantic.ViewData, error) {
 	return semantic.ViewData{}, s.err
 }
+func (s previewDispatcherStub) ProjectDocumentGeneration(context.Context, runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error) {
+	return engineprotocol.DocumentGeneration{}, s.err
+}
+func (s previewDispatcherStub) ProjectSubjects(context.Context, runtimeprotocol.RuntimeSessionRef) ([]semantic.SemanticSubject, error) {
+	return nil, s.err
+}
+
+func (s previewDispatcherStub) ProjectStructure(context.Context, runtimeprotocol.RuntimeSessionRef) (engineendpoint.BridgeStructure, error) {
+	return engineendpoint.BridgeStructure{}, s.err
+}
 
 func TestFrontendPreviewAndReviewContractEdges(t *testing.T) {
 	bridge := NewFrontendBridge(nil)
@@ -49,6 +61,15 @@ func TestFrontendPreviewAndReviewContractEdges(t *testing.T) {
 	if _, err := bridge.MaterializeProjectView(runtimeprotocol.RuntimeSessionRef{}, "view"); err == nil {
 		t.Fatal("missing view dispatcher accepted")
 	}
+	if _, err := bridge.ProjectSubjects(runtimeprotocol.RuntimeSessionRef{}); err == nil {
+		t.Fatal("missing subject dispatcher accepted")
+	}
+	if _, err := bridge.ProjectDocumentGeneration(runtimeprotocol.RuntimeSessionRef{}); err == nil {
+		t.Fatal("missing generation dispatcher accepted")
+	}
+	if _, err := bridge.ProjectStructure(runtimeprotocol.RuntimeSessionRef{}); err == nil {
+		t.Fatal("missing structure dispatcher accepted")
+	}
 	sentinel := errors.New("preview failed")
 	bridge = NewFrontendBridge(nil, previewDispatcherStub{err: sentinel})
 	if _, err := bridge.PreviewEditor(runtimeprotocol.PreviewOperationsInput{}); !errors.Is(err, sentinel) {
@@ -59,6 +80,15 @@ func TestFrontendPreviewAndReviewContractEdges(t *testing.T) {
 	}
 	bridge = NewFrontendBridge(nil, previewDispatcherStub{})
 	_, _ = bridge.MaterializeProjectView(runtimeprotocol.RuntimeSessionRef{}, "view")
+	if _, err := bridge.ProjectSubjects(runtimeprotocol.RuntimeSessionRef{}); err != nil {
+		t.Fatalf("stub subjects err=%v", err)
+	}
+	if _, err := bridge.ProjectDocumentGeneration(runtimeprotocol.RuntimeSessionRef{}); err != nil {
+		t.Fatalf("stub generation err=%v", err)
+	}
+	if _, err := bridge.ProjectStructure(runtimeprotocol.RuntimeSessionRef{}); err != nil {
+		t.Fatalf("stub structure err=%v", err)
+	}
 
 	proposal := reviewapp.Proposal{ID: "proposal", Generation: 1}
 	if got, err := reviewProposal(proposal, nil); err != nil || got.ID != proposal.ID {
@@ -83,6 +113,12 @@ func TestRunPreservesExtensionCallbacksBeforeStartup(t *testing.T) {
 	runWails = func(config *options.App) error {
 		config.OnDomReady(context.Background())
 		config.Mac.OnFileOpen("associated.ldl")
+		if config.OnBeforeClose(context.Background()) {
+			// The un-started application cannot confirm a safe quit; the
+			// veto path is the expected fail-closed behaviour here.
+			_ = config.OnBeforeClose
+		}
+		config.OnShutdown(context.Background())
 		return nil
 	}
 	err = Run(base, fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("desktop")}}, nil, func(config *options.App) {
@@ -148,6 +184,27 @@ func TestFrontendReviewDelegatesTypedContracts(t *testing.T) {
 	if _, err := bridge.ReviewWithdraw(ReviewWithdrawRequest{ProposalID: "missing", Generation: 1}); err == nil {
 		t.Fatal("withdraw of missing proposal accepted")
 	}
+	if _, err := bridge.ProjectOpenSession(runtimeprotocol.OpenRuntimeDocumentInput{DocumentID: "doc_missing"}); err == nil {
+		t.Fatal("open session without an open project accepted")
+	}
+	if config := bridge.MCPClientConfig("connection-1"); config == "" {
+		t.Fatal("MCP client config was empty")
+	}
+	if result := bridge.DeleteMCPConnection("connection-missing"); result.Outcome == protocolcommon.OutcomeSuccess {
+		t.Fatal("deleting an unknown MCP connection succeeded")
+	}
+	if enabled := bridge.SetMCPEnabled(true, desktopapp.MCPTransportLocal); enabled.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("enable MCP=%+v", enabled)
+	}
+	if status := bridge.MCPStatus(); !status.Enabled {
+		t.Fatalf("MCP status=%+v", status)
+	}
+	if disabled := bridge.SetMCPEnabled(false, desktopapp.MCPTransportLocal); disabled.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("disable MCP=%+v", disabled)
+	}
+	if result := bridge.CloseCurrentProject(); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("close with no open project result=%+v", result)
+	}
 }
 
 type credentialPortFunc func(context.Context, desktopcontract.CredentialRef) desktopcontract.Result[[]byte]
@@ -195,6 +252,15 @@ func TestSharedRegistryAdaptersAndClosedOwnerEdges(t *testing.T) {
 	owner := &sharedOwner{}
 	if _, err := owner.PreviewEditor(context.Background(), runtimeprotocol.PreviewOperationsInput{}); err == nil {
 		t.Fatal("closed preview owner accepted")
+	}
+	if _, err := owner.ProjectSubjects(context.Background(), runtimeprotocol.RuntimeSessionRef{}); err == nil {
+		t.Fatal("closed subject owner accepted")
+	}
+	if _, err := owner.ProjectDocumentGeneration(context.Background(), runtimeprotocol.RuntimeSessionRef{}); err == nil {
+		t.Fatal("closed generation owner accepted")
+	}
+	if _, err := owner.ProjectStructure(context.Background(), runtimeprotocol.RuntimeSessionRef{}); err == nil {
+		t.Fatal("closed structure owner accepted")
 	}
 	if _, err := owner.MaterializeProjectView(context.Background(), runtimeprotocol.RuntimeSessionRef{}, "view"); err == nil {
 		t.Fatal("closed materialization owner accepted")

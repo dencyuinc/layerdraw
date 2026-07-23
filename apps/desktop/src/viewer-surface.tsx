@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
+
+import type { RenderBounds, RenderData } from "@layerdraw/render";
+import type { ViewerPublication, ViewerState } from "@layerdraw/viewer";
+import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { DesktopThreeViewer } from "./viewer-three.js";
+
+export interface DesktopViewerSurfaceProps {
+  readonly state: ViewerState;
+  readonly onSelectionChange: (keys: readonly string[]) => void;
+}
+
+function activate(event: KeyboardEvent, callback: () => void): void {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  callback();
+}
+
+function rect(key: string, bounds: RenderBounds, label: string, selected: boolean, onSelect: () => void): ReactNode {
+  return (
+    <g
+      key={key} role="button" tabIndex={0} aria-label={label} aria-pressed={selected}
+      className="ld-desktop-viewer-item" data-selected={selected}
+      onClick={onSelect} onKeyDown={(event: KeyboardEvent) => activate(event, onSelect)}
+    >
+      <rect x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height} rx={8} />
+      <text x={bounds.x + 10} y={bounds.y + 22}>{label}</text>
+    </g>
+  );
+}
+
+function path(key: string, points: readonly Readonly<{ x: number; y: number }>[]): ReactNode {
+  return <polyline key={key} points={points.map((point) => `${point.x},${point.y}`).join(" ")} className="ld-desktop-viewer-path" />;
+}
+
+function visualItems(data: Exclude<RenderData, { kind: "table" }>): readonly Readonly<{ key: string; bounds: RenderBounds; label: string }>[] {
+  if (data.kind === "diagram") return [
+    ...data.containers.map((item) => ({ key: item.render_key, bounds: item.bounds, label: item.render_key })),
+    ...data.occurrences.map((item) => ({ key: item.render_key, bounds: item.bounds, label: data.labels.find((label) => label.anchor.kind === "occurrence" && label.anchor.occurrence_key === item.render_key)?.text ?? item.render_key })),
+  ];
+  if (data.kind === "tree") return data.occurrences.map((item) => ({ key: item.render_key, bounds: item.bounds, label: item.label }));
+  if (data.kind === "flow") return [...data.lanes.map((item) => ({ key: item.render_key, bounds: item.bounds, label: item.label })), ...data.steps.map((item) => ({ key: item.render_key, bounds: item.bounds, label: item.label }))];
+  if (data.kind === "matrix") return [...data.row_axes, ...data.column_axes, ...data.cells, ...data.totals].map((item) => ({ key: item.render_key, bounds: item.bounds, label: "text" in item ? item.text : item.label }));
+  if (data.kind === "context") return [...data.groups, ...data.facts, ...data.relation_summaries, ...(data.truncation_markers ?? [])].map((item) => ({ key: item.render_key, bounds: item.bounds, label: "text" in item ? item.text : item.label }));
+  return [...data.before, ...data.after, ...data.changes, ...data.fields].map((item) => ({ key: item.render_key, bounds: item.bounds, label: "label" in item ? item.label : "field_path" in item ? item.field_path : item.change_kind }));
+}
+
+function table(publication: ViewerPublication, onSelectionChange: (keys: readonly string[]) => void): ReactNode {
+  const data = publication.render_data;
+  if (data.kind !== "table") return null;
+  const selected = new Set(publication.presentation.selection_keys);
+  return (
+    <div className="ld-desktop-table-scroll" tabIndex={0}>
+      <table>
+        <thead><tr>{data.columns.map((column) => <th key={column.render_key} scope="col">{column.label}</th>)}</tr></thead>
+        <tbody>
+          {data.rows.map((row) => (
+            <tr key={row.render_key}>
+              {data.columns.map((column) => {
+                const cell = data.cells.find((candidate) => candidate.row_key === row.render_key && candidate.column_key === column.render_key);
+                return (
+                  <td key={column.render_key}>
+                    {cell === undefined ? null : (
+                      <button type="button" aria-pressed={selected.has(cell.render_key)} onClick={() => onSelectionChange([cell.render_key])}>{cell.text}</button>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function publicationSurface(publication: ViewerPublication, mode: "2d" | "2.5d", onSelectionChange: (keys: readonly string[]) => void): ReactNode {
+  const data = publication.render_data;
+  if (data.kind === "table") return table(publication, onSelectionChange);
+  const selected = new Set(publication.presentation.selection_keys);
+  if (mode === "2.5d" && data.kind === "diagram") return <DesktopThreeViewer data={data} selected={selected} onSelectionChange={onSelectionChange} />;
+  const connections = data.kind === "diagram" ? data.edge_paths.map((item) => path(item.render_key, item.points))
+    : data.kind === "tree" ? [...data.duplicate_refs, ...data.cycle_refs].map((item) => path(item.render_key, item.points))
+      : data.kind === "flow" ? [...data.connectors, ...data.cycle_refs].map((item) => path(item.render_key, item.points)) : [];
+  return (
+    <svg
+      className="ld-desktop-viewer-canvas" role="group" aria-label={`${data.kind} view`}
+      viewBox={`${data.bounds.x} ${data.bounds.y} ${Math.max(data.bounds.width, 1)} ${Math.max(data.bounds.height, 1)}`}
+    >
+      {connections}
+      {visualItems(data).map((item) => rect(item.key, item.bounds, item.label, selected.has(item.key), () => onSelectionChange([item.key])))}
+    </svg>
+  );
+}
+
+const defaultViewerTranslator: Translator = createTranslator("en", baseShellCatalogs);
+
+export function DesktopViewerSurface({ state, onSelectionChange }: DesktopViewerSurfaceProps): ReactNode {
+  const s_translator = useOptionalI18n() ?? defaultViewerTranslator;
+  const [mode, setMode] = useState<"2d" | "2.5d">("2d");
+  if (state.status === "loading" || state.status === "cancelling") return <p role="status" aria-live="polite">{s_translator.t("workspace.viewer.loading")}</p>;
+  if (state.status === "empty") return <p className="ld-desktop-empty">{s_translator.t(state.reason === "view_empty" ? "workspace.empty.view" : "workspace.empty.select")}</p>;
+  if (state.status === "disposed") return <p role="status">{s_translator.t("workspace.viewer.closed")}</p>;
+  const publication = "publication" in state ? state.publication : state.previous;
+  return (
+    <div className="ld-desktop-viewer" data-viewer-state={state.status}>
+      {publication?.render_data.kind !== "diagram" ? null : (
+        <div className="ld-desktop-view-mode" role="toolbar" aria-label="Viewer dimension">
+          <button type="button" data-mode="2d" aria-pressed={mode === "2d"} onClick={() => setMode("2d")}>2D</button>
+          <button type="button" data-mode="2.5d" aria-pressed={mode === "2.5d"} onClick={() => setMode("2.5d")}>3D</button>
+        </div>
+      )}
+      {publication === undefined ? null : publicationSurface(publication, mode, onSelectionChange)}
+      {state.status === "ready" ? null : <p role="status" className="ld-desktop-viewer-status">{s_translator.t("workspace.attention")}</p>}
+    </div>
+  );
+}

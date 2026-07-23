@@ -138,7 +138,10 @@ the completed local Engine, Runtime, Access, and storage host in-process, starts
 registered capability adapters in dependency order, validates the effective
 generated handshake, starts MCP, and only then publishes `ready`. Its project
 storage port accepts opaque native-dialog tokens; trusted absolute locations
-remain backend-only. Shutdown changes admission to `draining` before joining
+remain backend-only for resolution. Recents entries may carry a backend-derived
+`location_label` (a human-readable location such as a `~`-abbreviated path) for
+hub display only; the frontend never sends it back and no open or storage
+operation accepts it as an address. Shutdown changes admission to `draining` before joining
 requests and releases adapters in reverse order. A cancelled shutdown remains
 draining and can be resumed without releasing resources still in use. MCP and
 the remaining registered adapters stop before the local Runtime releases its

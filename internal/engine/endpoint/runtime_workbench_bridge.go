@@ -72,6 +72,69 @@ func (w *RuntimeEngineBridge) Views(working BridgeWorking) ([]BridgeView, error)
 	return result, nil
 }
 
+// Preconditions derives the full optimistic-concurrency expectation set from
+// the working document's compiled snapshot (subject/subtree/child-set hashes
+// and source digests). Hosts use it when a client edits against "current
+// head" without holding compile evidence of its own.
+func (w *RuntimeEngineBridge) Preconditions(working BridgeWorking) (engineprotocol.EngineEditPreconditions, error) {
+	w.mu.Lock()
+	doc := w.docs[working.Handle]
+	if doc == nil || doc.working != working {
+		w.mu.Unlock()
+		return engineprotocol.EngineEditPreconditions{}, errors.New("stale working document")
+	}
+	snapshot := doc.snapshot
+	w.mu.Unlock()
+	pre := engineprotocol.EngineEditPreconditions{
+		ExpectedSubjectHashes: []engineprotocol.ExpectedHash{},
+		ExpectedSubtreeHashes: []engineprotocol.ExpectedHash{},
+		ExpectedChildSets:     []engineprotocol.ExpectedChildSet{},
+	}
+	for _, value := range snapshot.SubjectSemanticHashes {
+		pre.ExpectedSubjectHashes = append(pre.ExpectedSubjectHashes, engineprotocol.ExpectedHash{Address: semantic.StableAddress(value.Address), Hash: protocolcommon.Digest(value.Hash)})
+	}
+	for _, value := range snapshot.SubtreeHashes {
+		pre.ExpectedSubtreeHashes = append(pre.ExpectedSubtreeHashes, engineprotocol.ExpectedHash{Address: semantic.StableAddress(value.OwnerAddress), Hash: protocolcommon.Digest(value.Hash)})
+	}
+	for _, value := range snapshot.ChildSetHashes {
+		pre.ExpectedChildSets = append(pre.ExpectedChildSets, engineprotocol.ExpectedChildSet{OwnerAddress: semantic.StableAddress(value.OwnerAddress), ChildKind: semantic.SubjectKind(value.ChildKind), Hash: protocolcommon.Digest(value.Hash)})
+	}
+	sources := []engineprotocol.ExpectedSourceDigest{}
+	for _, file := range snapshot.SourceMap.Files {
+		origin := semantic.SourceOrigin{Kind: semantic.OriginKind(file.Origin.Kind)}
+		if file.Origin.PackAddress != "" {
+			value := semantic.PackRootAddress(file.Origin.PackAddress)
+			origin.PackAddress = &value
+		}
+		sources = append(sources, engineprotocol.ExpectedSourceDigest{Module: semantic.ModuleRef{Origin: origin, ModulePath: file.ModulePath}, Digest: protocolcommon.Digest(file.Digest)})
+	}
+	pre.ExpectedSourceDigests = &sources
+	return pre, nil
+}
+
+// Subjects exposes the Engine-compiled semantic index subjects of a working
+// document (address + kind). It is a serialization of Engine output; no
+// symbol semantics are computed here.
+func (w *RuntimeEngineBridge) Subjects(working BridgeWorking) ([]semantic.SemanticSubject, error) {
+	w.mu.Lock()
+	doc := w.docs[working.Handle]
+	if doc == nil || doc.working != working {
+		w.mu.Unlock()
+		return nil, errors.New("stale working document")
+	}
+	source := doc.snapshot.SemanticIndex.Subjects
+	subjects := make([]semantic.SemanticSubject, 0, len(source))
+	for _, subject := range source {
+		subjects = append(subjects, semantic.SemanticSubject{
+			Address: semantic.StableAddress(subject.Address),
+			Kind:    semantic.SubjectKind(subject.Kind),
+			OwnHash: protocolcommon.Digest(subject.OwnHash),
+		})
+	}
+	w.mu.Unlock()
+	return subjects, nil
+}
+
 func (w *RuntimeEngineBridge) MaterializeQueryView(ctx context.Context, working BridgeWorking, address string) (semantic.ViewData, error) {
 	w.mu.Lock()
 	doc := w.docs[working.Handle]

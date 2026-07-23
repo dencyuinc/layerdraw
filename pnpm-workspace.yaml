@@ -4,6 +4,9 @@ packages:
   - "integrations/*"
   - "packages/*"
 
+allowBuilds:
+  '@parcel/watcher': false
+
 minimumReleaseAge: 1440
 
 onlyBuiltDependencies: []

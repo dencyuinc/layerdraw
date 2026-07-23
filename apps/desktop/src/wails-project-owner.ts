@@ -26,7 +26,13 @@ function unwrap<T>(response: Readonly<{ outcome: string; payload?: T }>): T {
 function runtimeAdapter(client: WailsDesktopClient, host: DesktopProjectHostBinding): BrowserRuntimeClient {
   const adapter: BrowserRuntimeClient = {
     getCapabilities: () => client.getCapabilities(),
-    async openDocument(input, { signal }) { return unwrap(await client.openDocument(input, { signal })); },
+    async openDocument(input, { signal }) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      // Adopt the app-owned session (single tracked session per project);
+      // opening a parallel runtime session would fork the working document
+      // and durable commits against it fail closed.
+      return await host.ProjectOpenSession({ document_id: (input as Readonly<{ document_id: string }>).document_id });
+    },
     async previewEditor(edit: EditorEdit, session: OpenRuntimeDocumentResult, { signal }) {
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
       if (edit.kind !== "semantic_operations") throw new Error("Desktop Runtime supports semantic operation previews only");
@@ -51,7 +57,10 @@ function runtimeAdapter(client: WailsDesktopClient, host: DesktopProjectHostBind
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
       return (await host.MaterializeProjectView(session, input.view_address)).view_data;
     },
-    async closeDocument(session, { signal }) { unwrap(await client.closeDocument({ session }, { signal })); },
+    async closeDocument() {
+      // The adopted session belongs to the app lifecycle; the host closes it
+      // through CloseProject, never the frontend editor teardown.
+    },
   };
   return Object.freeze(adapter);
 }
@@ -125,6 +134,12 @@ export async function createDesktopWailsProjectOwner(host: DesktopProjectHostBin
       project = Object.freeze({
         project_id: dto.project.project_id, session_generation: dto.project.session_generation, display_name: dto.project.display_name,
         authoritative_revision_token: dto.project.authoritative_revision.revision_id, authoritative_revision_label: dto.project.authoritative_revision.revision_id,
+        engine: client.engine,
+        ...(editorSession.authority === "runtime" ? {
+          readDocumentGeneration: () => host.ProjectDocumentGeneration(editorSession.session.session),
+          readSubjects: () => host.ProjectSubjects(editorSession.session.session),
+          readStructure: () => host.ProjectStructure(editorSession.session.session),
+        } : {}),
         editor, editor_session: editorSession, views: dto.project.views, access: { status: "allowed" as const, label: "Local owner" },
         storage: { kind: "local" as const, status: "connected" as const, label: "Local project" }, persistence: dto.project.persistence, library_project: dto.project.library_project,
       }) satisfies DesktopProjectContext;

@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
 	"github.com/dencyuinc/layerdraw/gen/go/runtimeprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/registry"
@@ -29,6 +31,7 @@ type FrontendBridge struct {
 	mu       sync.RWMutex
 	ctx      context.Context
 	app      *desktopapp.Application
+	shell    *desktopapp.NativeShell
 	registry registryDispatcher
 	preview  editorPreviewDispatcher
 }
@@ -40,6 +43,9 @@ type registryDispatcher interface {
 type editorPreviewDispatcher interface {
 	PreviewEditor(context.Context, runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error)
 	MaterializeProjectView(context.Context, runtimeprotocol.RuntimeSessionRef, string) (semantic.ViewData, error)
+	ProjectDocumentGeneration(context.Context, runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error)
+	ProjectSubjects(context.Context, runtimeprotocol.RuntimeSessionRef) ([]semantic.SemanticSubject, error)
+	ProjectStructure(context.Context, runtimeprotocol.RuntimeSessionRef) (engineendpoint.BridgeStructure, error)
 }
 
 func NewFrontendBridge(app *desktopapp.Application, dispatchers ...registryDispatcher) *FrontendBridge {
@@ -77,6 +83,40 @@ func (b *FrontendBridge) PreviewEditor(input runtimeprotocol.PreviewOperationsIn
 		return localdocument.EditorPreviewResult{}, errors.New("desktop editor preview is unavailable")
 	}
 	return b.preview.PreviewEditor(b.context(), input)
+}
+
+// ProjectSubjects lists Engine-compiled semantic subjects for the session's
+// working document (authoring schema and outline listings).
+func (b *FrontendBridge) ProjectSubjects(session runtimeprotocol.RuntimeSessionRef) ([]semantic.SemanticSubject, error) {
+	if b.preview == nil {
+		return nil, errors.New("desktop subject listing is unavailable")
+	}
+	return b.preview.ProjectSubjects(b.context(), session)
+}
+
+// ProjectOpenSession hands the app-owned runtime session for the published
+// project to the trusted frontend; the frontend adopts it instead of opening
+// a parallel session.
+func (b *FrontendBridge) ProjectOpenSession(input runtimeprotocol.OpenRuntimeDocumentInput) (runtimeprotocol.OpenRuntimeDocumentResult, error) {
+	return b.app.ActiveProjectSession(input.DocumentID)
+}
+
+// ProjectStructure returns the master-document structure projection the
+// Desktop Structure editor renders (layers, types, entities, relations).
+func (b *FrontendBridge) ProjectStructure(session runtimeprotocol.RuntimeSessionRef) (engineendpoint.BridgeStructure, error) {
+	if b.preview == nil {
+		return engineendpoint.BridgeStructure{}, errors.New("desktop structure read is unavailable")
+	}
+	return b.preview.ProjectStructure(b.context(), session)
+}
+
+// ProjectDocumentGeneration binds Engine reads (find_symbols and friends) to
+// the session's working document; the frontend treats the value as opaque.
+func (b *FrontendBridge) ProjectDocumentGeneration(session runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error) {
+	if b.preview == nil {
+		return engineprotocol.DocumentGeneration{}, errors.New("desktop document generation is unavailable")
+	}
+	return b.preview.ProjectDocumentGeneration(b.context(), session)
 }
 
 type ProjectViewMaterialization struct {
@@ -213,6 +253,16 @@ func (b *FrontendBridge) RecentProjects() desktopcontract.Result[[]desktopapp.Re
 	return b.app.RecentProjects()
 }
 
+// CloseCurrentProject closes the active project session so the shell returns
+// to the hub without a process restart. Closing with no open session succeeds.
+func (b *FrontendBridge) CloseCurrentProject() desktopcontract.Result[runtimeprotocol.CloseDocumentResult] {
+	sessions := b.app.ActiveSessions()
+	if len(sessions) == 0 {
+		return desktopcontract.Result[runtimeprotocol.CloseDocumentResult]{Outcome: protocolcommon.OutcomeSuccess}
+	}
+	return b.app.CloseProject(b.context(), sessions[0])
+}
+
 func (b *FrontendBridge) OpenRecentProject(projectID string) desktopcontract.Result[desktopapp.ProjectOpenResult] {
 	return b.app.OpenRecentProject(b.context(), runtimeprotocol.DocumentID(projectID))
 }
@@ -267,8 +317,49 @@ func (b *FrontendBridge) ImportExternalDialog(input desktopapp.ExternalImportReq
 
 func (b *FrontendBridge) MCPStatus() desktopapp.MCPStatus { return b.app.MCPStatus() }
 
+// MCPClientConfig returns the copy-paste MCP client configuration for a
+// connection created in Settings (the Desktop binary as a stdio server).
+func (b *FrontendBridge) MCPClientConfig(connectionID string) string {
+	return MCPClientConfigJSON(connectionID)
+}
+
+func (b *FrontendBridge) DeleteMCPConnection(connectionID string) desktopcontract.Result[desktopapp.MCPConnection] {
+	return b.app.DeleteMCPConnection(connectionID)
+}
+
 func (b *FrontendBridge) SetMCPEnabled(enabled bool, transport desktopapp.MCPTransportKind) desktopcontract.Result[desktopapp.MCPStatus] {
-	return b.app.SetMCPEnabled(b.context(), enabled, transport)
+	result := b.app.SetMCPEnabled(b.context(), enabled, transport)
+	if result.Outcome == protocolcommon.OutcomeSuccess {
+		b.persistMCPEnabled(enabled)
+	}
+	return result
+}
+
+// persistMCPEnabled mirrors the AI-connection switch into native settings so
+// the next launch restores it; failures stay silent because the runtime state
+// already changed and remains authoritative for this session.
+func (b *FrontendBridge) persistMCPEnabled(enabled bool) {
+	b.mu.Lock()
+	shell := b.shell
+	b.mu.Unlock()
+	if shell == nil {
+		return
+	}
+	current := shell.CurrentSettings(b.context())
+	if current.Outcome != protocolcommon.OutcomeSuccess || current.Value.MCPEnabled == enabled {
+		return
+	}
+	next := current.Value
+	next.MCPEnabled = enabled
+	_ = shell.UpdateSettings(b.context(), next)
+}
+
+// AttachNativeShell hands the bridge the settings owner; production Run wires
+// it, probe compositions leave it absent.
+func (b *FrontendBridge) attachNativeShell(shell *desktopapp.NativeShell) {
+	b.mu.Lock()
+	b.shell = shell
+	b.mu.Unlock()
 }
 
 func (b *FrontendBridge) CreateMCPConnection(request desktopapp.MCPConnectRequest) desktopcontract.Result[desktopapp.MCPConnection] {

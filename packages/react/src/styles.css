@@ -53,6 +53,9 @@
 .ld-query-view-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .ld-query-view-field { display: grid; gap: 0.25rem; margin-block: 0.5rem; }
 .ld-query-view-field > :is(input, select) { box-sizing: border-box; inline-size: 100%; max-inline-size: 32rem; }
+.ld-query-view-chips { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
+.ld-query-view-chip { padding: 0.125rem 0.6rem; border: 1px solid var(--ld-border-default); border-radius: var(--ld-radius-full, 9999px); background: var(--ld-background-surface); color: var(--ld-text-secondary); font: inherit; font-size: 0.8125rem; cursor: pointer; }
+.ld-query-view-chip[aria-checked="true"] { background: var(--ld-color-violet-100); border-color: var(--ld-action-primary-background); color: var(--ld-text-link); }
 .ld-live-viewer { container-type: inline-size; min-block-size: 12rem; overflow: auto; }
 .ld-viewer-dense { display: grid; gap: 0.25rem; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); }
 

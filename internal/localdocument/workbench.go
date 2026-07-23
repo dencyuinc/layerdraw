@@ -5,6 +5,7 @@ package localdocument
 import (
 	"context"
 	"errors"
+	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"io"
 	"sort"
 	"strconv"
@@ -170,6 +171,18 @@ func (w *runtimeWorkbench) Preview(ctx context.Context, in port.PreviewWorkingDo
 
 func (w *runtimeWorkbench) views(document port.WorkingDocument) ([]engineendpoint.BridgeView, error) {
 	return w.bridge.Views(engineendpoint.BridgeWorking{Handle: document.Handle, Generation: string(document.Generation), DocumentID: string(document.BaseRevision.DocumentID), RevisionID: string(document.BaseRevision.RevisionID), DefinitionHash: document.DefinitionHash, GraphHash: document.GraphHash})
+}
+
+func (w *runtimeWorkbench) preconditions(document port.WorkingDocument) (engineprotocol.EngineEditPreconditions, error) {
+	return w.bridge.Preconditions(engineendpoint.BridgeWorking{Handle: document.Handle, Generation: string(document.Generation), DocumentID: string(document.BaseRevision.DocumentID), RevisionID: string(document.BaseRevision.RevisionID), DefinitionHash: document.DefinitionHash, GraphHash: document.GraphHash})
+}
+
+func (w *runtimeWorkbench) structure(document port.WorkingDocument) (engineendpoint.BridgeStructure, error) {
+	return w.bridge.Structure(engineendpoint.BridgeWorking{Handle: document.Handle, Generation: string(document.Generation), DocumentID: string(document.BaseRevision.DocumentID), RevisionID: string(document.BaseRevision.RevisionID), DefinitionHash: document.DefinitionHash, GraphHash: document.GraphHash})
+}
+
+func (w *runtimeWorkbench) subjects(document port.WorkingDocument) ([]semantic.SemanticSubject, error) {
+	return w.bridge.Subjects(engineendpoint.BridgeWorking{Handle: document.Handle, Generation: string(document.Generation), DocumentID: string(document.BaseRevision.DocumentID), RevisionID: string(document.BaseRevision.RevisionID), DefinitionHash: document.DefinitionHash, GraphHash: document.GraphHash})
 }
 
 func (w *runtimeWorkbench) materializeView(ctx context.Context, document port.WorkingDocument, address string) (semantic.ViewData, error) {

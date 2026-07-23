@@ -31,6 +31,10 @@ func (b *ShellBinding) InvokeCommand(input desktopcontract.CommandInvocation) de
 	return b.shell.InvokeCommand(b.bridge.context(), input)
 }
 
+func (b *ShellBinding) Settings() desktopcontract.Result[desktopcontract.DesktopSettings] {
+	return b.shell.CurrentSettings(b.bridge.context())
+}
+
 func (b *ShellBinding) UpdateSettings(settings desktopcontract.DesktopSettings) desktopcontract.Result[desktopcontract.DesktopSettings] {
 	return b.shell.UpdateSettings(b.bridge.context(), settings)
 }

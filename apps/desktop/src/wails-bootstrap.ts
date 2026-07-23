@@ -21,6 +21,7 @@ export interface DesktopWailsApplicationBinding {
   OpenProjectDialog(requestID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
   RecentProjects(): Promise<DesktopHostResult<readonly DesktopRecentProjectDTO[]>>;
   OpenRecentProject(projectID: string): Promise<DesktopHostResult<DesktopProjectOpenDTO>>;
+  CloseCurrentProject(): Promise<{ readonly outcome: string }>;
   ConnectExternal(input: JsonObject): Promise<DesktopHostResult<JsonObject>>;
   InspectExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
   RefreshExternal(connectionID: string): Promise<DesktopHostResult<JsonObject>>;
@@ -42,6 +43,8 @@ export interface DesktopWailsMCPBinding {
   ListMCPConnections(): Promise<readonly DesktopMCPConnection[]>;
   CreateMCPConnection(request: DesktopMCPConnectRequest): Promise<DesktopMCPResult<DesktopMCPConnection>>;
   RevokeMCPConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
+  MCPClientConfig(connectionID: string): Promise<string>;
+  DeleteMCPConnection(connectionID: string): Promise<DesktopMCPResult<DesktopMCPConnection>>;
 }
 
 export interface DesktopWailsRuntimeBinding {
@@ -57,7 +60,7 @@ export interface DesktopWailsOwnerBindings {
 }
 
 export interface DesktopWailsComposition {
-  readonly lifecycle: DesktopProjectLifecyclePort;
+  readonly lifecycle: RefreshableDesktopLifecycle;
   readonly viewer: Viewer;
   readonly generatedBindings: WailsGeneratedBindings;
   readonly projectDialogs: DesktopProjectDialogPort;
@@ -68,7 +71,7 @@ export interface DesktopWailsComposition {
   readonly mcp: DesktopMCPPort;
 }
 
-interface RefreshableDesktopLifecycle extends DesktopProjectLifecyclePort {
+export interface RefreshableDesktopLifecycle extends DesktopProjectLifecyclePort {
   refreshPublication(): Promise<void>;
 }
 
@@ -203,6 +206,8 @@ export async function createDesktopWailsComposition(
   const mcp: DesktopMCPPort = Object.freeze({
     status: () => mcpBinding.MCPStatus(),
     setEnabled: (enabled: boolean) => mcpBinding.SetMCPEnabled(enabled, "local"),
+    clientConfig: (connectionID: string) => mcpBinding.MCPClientConfig(connectionID),
+    deleteConnection: (connectionID: string) => mcpBinding.DeleteMCPConnection(connectionID),
     restart: () => mcpBinding.RestartMCP(),
     listConnections: () => mcpBinding.ListMCPConnections(),
     createConnection: (request: DesktopMCPConnectRequest) => mcpBinding.CreateMCPConnection(request),
@@ -218,6 +223,11 @@ export async function createDesktopWailsComposition(
   const projectDialogs: DesktopProjectDialogPort = Object.freeze({
     create: async (id: string) => refreshAfterOpen(await application.CreateProjectDialog(id)),
     open: async (id: string) => refreshAfterOpen(await application.OpenProjectDialog(id)),
+    close: async () => {
+      const result = await application.CloseCurrentProject();
+      await lifecycle.refreshPublication();
+      return result as never;
+    },
     recent: () => application.RecentProjects(),
     openRecent: async (projectID: string) => refreshAfterOpen(await application.OpenRecentProject(projectID)),
   });

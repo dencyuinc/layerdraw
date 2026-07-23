@@ -88,6 +88,17 @@ func TestMCPConnectionsConstrainApplyRevokeExpireAndFence(t *testing.T) {
 	if result := app.RevokeMCPConnection(context.Background(), created.Value.ConnectionID); result.Outcome != protocolcommon.OutcomeSuccess || result.Value.Status != MCPConnectionRevoked {
 		t.Fatalf("revoke=%+v", result)
 	}
+	if result := app.DeleteMCPConnection(created.Value.ConnectionID); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("delete revoked=%+v", result)
+	}
+	for _, connection := range app.ListMCPConnections() {
+		if connection.ConnectionID == created.Value.ConnectionID {
+			t.Fatalf("deleted connection still listed: %+v", connection)
+		}
+	}
+	if result := app.DeleteMCPConnection(created.Value.ConnectionID); result.Outcome != protocolcommon.OutcomeFailed {
+		t.Fatalf("double delete accepted: %+v", result)
+	}
 
 	request.AgentID = "agent-b"
 	request.Permissions.Apply, request.ConfirmApply = false, false
@@ -110,7 +121,7 @@ func TestMCPConnectionsConstrainApplyRevokeExpireAndFence(t *testing.T) {
 	for _, connection := range connections {
 		statuses[connection.ConnectionID] = connection
 	}
-	if len(connections) != 2 || statuses[proposal.Value.ConnectionID].Status != MCPConnectionExpired || statuses[proposal.Value.ConnectionID].Permissions.Apply {
+	if len(connections) != 1 || statuses[proposal.Value.ConnectionID].Status != MCPConnectionExpired || statuses[proposal.Value.ConnectionID].Permissions.Apply {
 		t.Fatalf("connections=%+v", connections)
 	}
 	metadata := filepath.Join(config.Root, mcpConnectionFilename)
@@ -118,8 +129,11 @@ func TestMCPConnectionsConstrainApplyRevokeExpireAndFence(t *testing.T) {
 		t.Fatalf("metadata mode: info=%v err=%v", info, err)
 	}
 	_, _, restored, err := loadMCPConnectionStore(config.Root, now)
-	if err != nil || restored[created.Value.ConnectionID].Status != MCPConnectionRevoked || restored[proposal.Value.ConnectionID].Status != MCPConnectionExpired {
+	if err != nil || restored[proposal.Value.ConnectionID].Status != MCPConnectionExpired {
 		t.Fatalf("restored=%+v err=%v", restored, err)
+	}
+	if _, present := restored[created.Value.ConnectionID]; present {
+		t.Fatalf("deleted connection persisted across restore: %+v", restored)
 	}
 }
 

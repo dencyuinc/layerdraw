@@ -115,6 +115,19 @@ func (s *NativeShell) Restore(ctx context.Context) (result desktopcontract.Resul
 	return desktopcontract.Result[desktopcontract.PersistedShellState]{Outcome: protocolcommon.OutcomeSuccess, Value: loaded}
 }
 
+// CurrentSettings returns the restored persisted settings; it fails before
+// Restore so callers cannot observe zero-value settings as authoritative.
+func (s *NativeShell) CurrentSettings(ctx context.Context) (result desktopcontract.Result[desktopcontract.DesktopSettings]) {
+	defer finishShellResult(s, ctx, &result)
+	defer containShellPanic(s, ctx, &result)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.restored {
+		return shellFailed[desktopcontract.DesktopSettings](desktopcontract.FailureSettings, true, desktopcontract.RecoveryRetry)
+	}
+	return desktopcontract.Result[desktopcontract.DesktopSettings]{Outcome: protocolcommon.OutcomeSuccess, Value: s.state.Settings}
+}
+
 func (s *NativeShell) UpdateSettings(ctx context.Context, settings desktopcontract.DesktopSettings) (result desktopcontract.Result[desktopcontract.DesktopSettings]) {
 	defer finishShellResult(s, ctx, &result)
 	defer containShellPanic(s, ctx, &result)

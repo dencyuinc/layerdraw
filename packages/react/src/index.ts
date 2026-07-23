@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
 export * from "./controls.js";
+export * from "./i18n.js";
 export * from "./layout.js";
 export * from "./navigation.js";
 export * from "./provider.js";
