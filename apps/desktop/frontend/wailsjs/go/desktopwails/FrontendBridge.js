@@ -84,8 +84,24 @@ export function PreviewEditor(arg1) {
   return window['go']['desktopwails']['FrontendBridge']['PreviewEditor'](arg1);
 }
 
+export function ProjectDocumentGeneration(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['ProjectDocumentGeneration'](arg1);
+}
+
+export function ProjectOpenSession(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['ProjectOpenSession'](arg1);
+}
+
 export function ProjectPublication() {
   return window['go']['desktopwails']['FrontendBridge']['ProjectPublication']();
+}
+
+export function ProjectStructure(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['ProjectStructure'](arg1);
+}
+
+export function ProjectSubjects(arg1) {
+  return window['go']['desktopwails']['FrontendBridge']['ProjectSubjects'](arg1);
 }
 
 export function PublishNativeExportDialog(arg1) {

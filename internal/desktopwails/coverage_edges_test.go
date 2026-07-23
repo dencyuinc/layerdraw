@@ -21,6 +21,7 @@ import (
 	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/mcphost"
 	"github.com/dencyuinc/layerdraw/internal/registry"
@@ -40,6 +41,13 @@ func (s previewDispatcherStub) MaterializeProjectView(context.Context, runtimepr
 }
 func (s previewDispatcherStub) ProjectDocumentGeneration(context.Context, runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error) {
 	return engineprotocol.DocumentGeneration{}, s.err
+}
+func (s previewDispatcherStub) ProjectSubjects(context.Context, runtimeprotocol.RuntimeSessionRef) ([]semantic.SemanticSubject, error) {
+	return nil, s.err
+}
+
+func (s previewDispatcherStub) ProjectStructure(context.Context, runtimeprotocol.RuntimeSessionRef) (engineendpoint.BridgeStructure, error) {
+	return engineendpoint.BridgeStructure{}, s.err
 }
 
 func TestFrontendPreviewAndReviewContractEdges(t *testing.T) {

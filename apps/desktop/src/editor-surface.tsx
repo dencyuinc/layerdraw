@@ -9,6 +9,7 @@ import {
   RestoreFocus,
   useEditorConflicts,
   useEditorDiagnostics,
+  useEditorState,
   baseShellCatalogs,
   createTranslator,
   useOptionalI18n,
@@ -26,6 +27,8 @@ export interface DesktopEditorCapabilityIDs {
 export interface DesktopEditorSurfaceProps {
   readonly project: DesktopProjectContext;
   readonly capabilities: DesktopEditorCapabilityIDs;
+  /** Authoring surfaces rendered inside the editor provider, above the command strip. */
+  readonly children?: ReactNode;
 }
 
 /**
@@ -56,15 +59,32 @@ function EditorInspector({ capabilities }: Readonly<{ capabilities: DesktopEdito
           </section>
         )}
         {conflicts.length === 0 ? null : <p role="status">{t.t("editor.conflicts", { count: conflicts.length })}</p>}
+        <EditorFailureNotice />
         <EditorLiveRegion />
       </div>
     </RestoreFocus>
   );
 }
 
-export function DesktopEditorSurface({ project, capabilities }: DesktopEditorSurfaceProps): ReactNode {
+function EditorFailureNotice(): ReactNode {
+  const t = useOptionalI18n() ?? defaultTranslator;
+  const state = useEditorState();
+  const failure = state.snapshot.failure;
+  const code = failure?.code ?? (state.error instanceof Error ? state.error.message : state.error === undefined ? undefined : String(state.error));
+  if (code === undefined || code === "") return null;
+  const detail = failure?.message;
+  return (
+    <p role="alert" className="ld-editor-failure">
+      {t.t("editor.failed", { code })}
+      {detail === undefined || detail === "" || detail === code ? null : <small>{detail}</small>}
+    </p>
+  );
+}
+
+export function DesktopEditorSurface({ project, capabilities, children }: DesktopEditorSurfaceProps): ReactNode {
   return (
     <EditorProvider editor={project.editor} session={project.editor_session}>
+      {children}
       <EditorInspector capabilities={capabilities} />
     </EditorProvider>
   );

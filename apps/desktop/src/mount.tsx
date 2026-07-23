@@ -21,6 +21,8 @@ export interface DesktopMountOptions extends DesktopShellPorts {
   readonly reviewAvailability?: DesktopFeatureAvailability;
   /** Returns to the project hub from an open workspace without a process restart. */
   readonly onReturnToProjects?: () => void;
+  /** Refreshes the host publication after a committed edit. */
+  readonly onEditCommitted?: () => void;
   /** Persisted application settings; enables the Settings window. */
   readonly settings?: DesktopSettingsPort;
 }
@@ -54,6 +56,7 @@ export function mountDesktopShell(element: Element, options: DesktopMountOptions
           {...(options.reviewModel === undefined ? {} : { reviewModel: options.reviewModel })}
           {...(options.library === undefined ? {} : { library: options.library })}
           {...(options.onReturnToProjects === undefined ? {} : { onReturnToProjects: options.onReturnToProjects })}
+          {...(options.onEditCommitted === undefined ? {} : { onEditCommitted: options.onEditCommitted })}
           {...(options.settings === undefined ? {} : { settings: options.settings, onLocaleChange: (locale: string) => render(locale === "system" ? null : locale) })}
         />
       </I18nProvider>

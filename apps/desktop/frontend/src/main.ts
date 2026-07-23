@@ -7,7 +7,7 @@ import { createDesktopWailsComposition, waitForDesktopApplicationReady, type Des
 import { createDesktopGeneratedBindings, type DesktopWailsInvoke } from "../../src/wails-bindings.js";
 import { createDesktopWailsProjectOwner } from "../../src/wails-project-owner.js";
 import type { DesktopProjectHostBinding, DesktopReviewHostBinding } from "../../src/wails-owner.js";
-import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CloseCurrentProject, DeleteMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPClientConfig, MCPStatus, NativeExportProfiles, OpenProjectDialog, OpenRecentProject, PlanExternalReconcile, PreviewEditor, ProjectDocumentGeneration, ProjectPublication, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
+import { AcquireExternalLease, ApplyExternalReconcile, ConnectExternal, CreateMCPConnection, CloseCurrentProject, DeleteMCPConnection, CreateProjectDialog, DisconnectExternal, ImportExternalDialog, InspectExternal, Invoke, ListMCPConnections, MaterializeProjectView, MCPClientConfig, MCPStatus, NativeExportProfiles, OpenProjectDialog, OpenRecentProject, PlanExternalReconcile, PreviewEditor, ProjectDocumentGeneration, ProjectOpenSession, ProjectPublication, ProjectStructure, ProjectSubjects, PublishNativeExportDialog, RecentProjects, RefreshExternal, RegistryDispatch, RestartMCP, RevokeMCPConnection, ReviewApproveAndApply, ReviewComment, ReviewSnapshot, ReviewWithdraw, SelectExternalRemote, SerializeNativeExport, SetMCPEnabled, State } from "../wailsjs/go/desktopwails/FrontendBridge.js";
 import { Settings, UpdateSettings } from "../wailsjs/go/desktopwails/ShellBinding.js";
 import { EventsOff, EventsOn, LogError } from "../wailsjs/runtime/runtime.js";
 import type { DesktopSettingsDTO, DesktopSettingsPort } from "../../src/contracts.js";
@@ -29,7 +29,7 @@ async function start(): Promise<void> {
   } as unknown as DesktopWailsApplicationBinding;
   await waitForDesktopApplicationReady(application);
   const generatedBindings = createDesktopGeneratedBindings(Invoke as unknown as DesktopWailsInvoke);
-  const project = await createDesktopWailsProjectOwner({ ProjectPublication, PreviewEditor, MaterializeProjectView, ProjectDocumentGeneration } as unknown as DesktopProjectHostBinding, generatedBindings);
+  const project = await createDesktopWailsProjectOwner({ ProjectPublication, PreviewEditor, MaterializeProjectView, ProjectDocumentGeneration, ProjectSubjects, ProjectStructure, ProjectOpenSession } as unknown as DesktopProjectHostBinding, generatedBindings);
   const composition = await createDesktopWailsComposition(
     application,
     { EventsOn, EventsOff, LogError },
@@ -52,6 +52,7 @@ async function start(): Promise<void> {
 		mcp: composition.mcp,
 		projectDialogs: composition.projectDialogs,
 		onReturnToProjects: () => { void composition.projectDialogs.close().catch(() => {}); },
+		onEditCommitted: () => { void composition.lifecycle.refreshPublication().catch(() => {}); },
 		libraryAvailability: composition.library.status === "available" ? { status: "available" } : composition.library.availability,
 		...(composition.library.status === "available" ? { library: composition.library.value } : {}),
 		reviewAvailability: composition.review.status === "available" ? { status: "available" } : composition.review.availability,

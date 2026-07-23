@@ -20,7 +20,7 @@ import { useEditor, useEditorCapabilities } from "./provider.js";
 
 export type QueryViewKind = "query" | "view";
 export type QueryViewActionKind = "create" | "edit" | "duplicate" | "remove";
-export type QueryViewFieldValue = string | number | boolean;
+export type QueryViewFieldValue = string | number | boolean | readonly string[];
 export type QueryViewDraft = Readonly<Record<string, QueryViewFieldValue>>;
 
 export type QueryViewAvailability =
@@ -38,6 +38,7 @@ export type QueryViewField = Readonly<{
   | Readonly<{ type: "number"; value?: number; min?: number; max?: number; step?: number }>
   | Readonly<{ type: "boolean"; value?: boolean }>
   | Readonly<{ type: "select"; value?: string; options: readonly Readonly<{ value: string; label: string }>[] }>
+  | Readonly<{ type: "multi_select"; value?: readonly string[]; options: readonly Readonly<{ value: string; label: string }>[] }>
 );
 
 export interface QueryViewDefinition {
@@ -62,7 +63,7 @@ export interface QueryViewIntent {
 
 function initialDraft(fields: readonly QueryViewField[]): QueryViewDraft {
   return Object.freeze(Object.fromEntries(fields.map((field) => [field.id,
-    field.value ?? (field.type === "boolean" ? false : field.type === "number" ? 0 : ""),
+    field.value ?? (field.type === "boolean" ? false : field.type === "number" ? 0 : field.type === "multi_select" ? [] : ""),
   ])));
 }
 
@@ -70,6 +71,26 @@ function fieldControl(field: QueryViewField, controlId: string, value: QueryView
   const common = { id: controlId, name: field.id, required: field.required, "aria-describedby": field.description === undefined ? undefined : `${controlId}-description` };
   if (field.type === "boolean") {
     return <input {...common} type="checkbox" checked={Boolean(value)} onChange={(event: ChangeEvent<HTMLInputElement>) => set(event.currentTarget.checked)} />;
+  }
+  if (field.type === "multi_select") {
+    const selected = Array.isArray(value) ? (value as readonly string[]) : [];
+    return (
+      <span className="ld-query-view-chips" role="group" id={controlId} aria-describedby={common["aria-describedby"]}>
+        {field.options.map((option) => {
+          const granted = selected.includes(option.value);
+          return (
+            <button
+              key={option.value}
+              type="button"
+              className="ld-query-view-chip"
+              role="checkbox"
+              aria-checked={granted}
+              onClick={() => set(granted ? selected.filter((entry) => entry !== option.value) : [...selected, option.value])}
+            >{option.label}</button>
+          );
+        })}
+      </span>
+    );
   }
   if (field.type === "select") {
     return (

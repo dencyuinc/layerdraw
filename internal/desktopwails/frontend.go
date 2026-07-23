@@ -17,6 +17,7 @@ import (
 	reviewapp "github.com/dencyuinc/layerdraw/internal/application/review"
 	"github.com/dencyuinc/layerdraw/internal/desktopapp"
 	"github.com/dencyuinc/layerdraw/internal/desktopcontract"
+	engineendpoint "github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	nativeexport "github.com/dencyuinc/layerdraw/internal/exporter"
 	"github.com/dencyuinc/layerdraw/internal/localdocument"
 	"github.com/dencyuinc/layerdraw/internal/registry"
@@ -43,6 +44,8 @@ type editorPreviewDispatcher interface {
 	PreviewEditor(context.Context, runtimeprotocol.PreviewOperationsInput) (localdocument.EditorPreviewResult, error)
 	MaterializeProjectView(context.Context, runtimeprotocol.RuntimeSessionRef, string) (semantic.ViewData, error)
 	ProjectDocumentGeneration(context.Context, runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error)
+	ProjectSubjects(context.Context, runtimeprotocol.RuntimeSessionRef) ([]semantic.SemanticSubject, error)
+	ProjectStructure(context.Context, runtimeprotocol.RuntimeSessionRef) (engineendpoint.BridgeStructure, error)
 }
 
 func NewFrontendBridge(app *desktopapp.Application, dispatchers ...registryDispatcher) *FrontendBridge {
@@ -80,6 +83,31 @@ func (b *FrontendBridge) PreviewEditor(input runtimeprotocol.PreviewOperationsIn
 		return localdocument.EditorPreviewResult{}, errors.New("desktop editor preview is unavailable")
 	}
 	return b.preview.PreviewEditor(b.context(), input)
+}
+
+// ProjectSubjects lists Engine-compiled semantic subjects for the session's
+// working document (authoring schema and outline listings).
+func (b *FrontendBridge) ProjectSubjects(session runtimeprotocol.RuntimeSessionRef) ([]semantic.SemanticSubject, error) {
+	if b.preview == nil {
+		return nil, errors.New("desktop subject listing is unavailable")
+	}
+	return b.preview.ProjectSubjects(b.context(), session)
+}
+
+// ProjectOpenSession hands the app-owned runtime session for the published
+// project to the trusted frontend; the frontend adopts it instead of opening
+// a parallel session.
+func (b *FrontendBridge) ProjectOpenSession(input runtimeprotocol.OpenRuntimeDocumentInput) (runtimeprotocol.OpenRuntimeDocumentResult, error) {
+	return b.app.ActiveProjectSession(input.DocumentID)
+}
+
+// ProjectStructure returns the master-document structure projection the
+// Desktop Structure editor renders (layers, types, entities, relations).
+func (b *FrontendBridge) ProjectStructure(session runtimeprotocol.RuntimeSessionRef) (engineendpoint.BridgeStructure, error) {
+	if b.preview == nil {
+		return engineendpoint.BridgeStructure{}, errors.New("desktop structure read is unavailable")
+	}
+	return b.preview.ProjectStructure(b.context(), session)
 }
 
 // ProjectDocumentGeneration binds Engine reads (find_symbols and friends) to

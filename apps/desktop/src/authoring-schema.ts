@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: LicenseRef-LayerDraw-1.0
 
-import type { EngineClient } from "@layerdraw/engine-client";
-import type { DocumentGeneration, FindSymbolsInput, SymbolReadItem, WorkbenchLimits } from "@layerdraw/protocol/engine";
+import type { SemanticSubject } from "@layerdraw/protocol/semantic";
 
 export class AuthoringSchemaError extends Error {}
 
 /** One listed subject: address plus the display metadata the authoring UI needs. */
 export interface AuthoringSubject {
-  readonly address: SymbolReadItem["address"];
+  readonly address: SemanticSubject["address"];
   readonly display_name: string;
-  readonly kind: SymbolReadItem["kind"];
+  readonly kind: SemanticSubject["kind"];
 }
 
 /** Schema snapshot the authoring surfaces render from (layers for placement,
@@ -23,38 +22,26 @@ export interface AuthoringSchema {
   readonly queries: readonly AuthoringSubject[];
 }
 
-const listLimits: WorkbenchLimits = Object.freeze({ max_items: "500", max_output_bytes: "1000000" });
-
-/** Every stable address begins with "ldl:", so an address-prefix query lists a
- * whole subject kind without reimplementing any Engine matching semantics. */
-async function listKind(engine: EngineClient, generation: DocumentGeneration, kinds: FindSymbolsInput["subject_kinds"]): Promise<readonly AuthoringSubject[]> {
-  const outcome = await engine.workbench.findSymbols({
-    query: "ldl:",
-    match_mode: "prefix",
-    case_mode: "sensitive",
-    document_generation: generation,
-    limits: listLimits,
-    ...(kinds === undefined ? {} : { subject_kinds: kinds }),
-  });
-  if (outcome.origin !== "engine") throw new AuthoringSchemaError("engine.find_symbols_cancelled");
-  const payload = outcome.response.payload;
-  if (outcome.response.outcome !== "success" || payload === undefined) {
-    throw new AuthoringSchemaError(outcome.response.failure?.code ?? "engine.find_symbols_failed");
-  }
-  return payload.items.map((item: SymbolReadItem) => Object.freeze({ address: item.address, display_name: item.display_name, kind: item.kind }));
+/** The trailing address segment names the subject; display-name enrichment
+ * arrives with declaration reads. */
+function labelOf(address: string): string {
+  const segment = address.split(":").at(-1) ?? address;
+  return segment;
 }
 
-/** Loads the authoring schema for the current document generation. Failures
- * propagate to the caller; surfaces render the closed failure state instead of
- * inventing defaults. */
-export async function loadAuthoringSchema(engine: EngineClient, generation: DocumentGeneration): Promise<AuthoringSchema> {
-  const [layers, entityTypes, relationTypes, entities, views, queries] = await Promise.all([
-    listKind(engine, generation, ["layer"]),
-    listKind(engine, generation, ["entity_type"]),
-    listKind(engine, generation, ["relation_type"]),
-    listKind(engine, generation, ["entity"]),
-    listKind(engine, generation, ["view"]),
-    listKind(engine, generation, ["query"]),
-  ]);
-  return Object.freeze({ layers, entityTypes, relationTypes, entities, views, queries });
+/** Groups Engine-compiled semantic subjects into the authoring schema. The
+ * subjects come straight from the Engine semantic index; nothing is derived
+ * client-side beyond grouping and labeling. */
+export function groupAuthoringSchema(subjects: readonly SemanticSubject[]): AuthoringSchema {
+  const byKind = (kind: SemanticSubject["kind"]): readonly AuthoringSubject[] =>
+    subjects.filter((subject) => subject.kind === kind)
+      .map((subject) => Object.freeze({ address: subject.address, display_name: labelOf(subject.address), kind: subject.kind }));
+  return Object.freeze({
+    layers: byKind("layer"),
+    entityTypes: byKind("entity_type"),
+    relationTypes: byKind("relation_type"),
+    entities: byKind("entity"),
+    views: byKind("view"),
+    queries: byKind("query"),
+  });
 }

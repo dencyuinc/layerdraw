@@ -1737,6 +1737,288 @@ export namespace desktopwails {
 
 }
 
+export namespace endpoint {
+	
+	export class BridgeCell {
+	    column_address: string;
+	    kind: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeCell(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.column_address = source["column_address"];
+	        this.kind = source["kind"];
+	        this.value = source["value"];
+	    }
+	}
+	export class BridgeAttributeRow {
+	    id: string;
+	    address: string;
+	    values: BridgeCell[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeAttributeRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.address = source["address"];
+	        this.values = this.convertValues(source["values"], BridgeCell);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class BridgeColumn {
+	    address: string;
+	    id: string;
+	    display_name: string;
+	    value_type: string;
+	    enum_values: string[];
+	    required: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.id = source["id"];
+	        this.display_name = source["display_name"];
+	        this.value_type = source["value_type"];
+	        this.enum_values = source["enum_values"];
+	        this.required = source["required"];
+	    }
+	}
+	export class BridgeEntity {
+	    address: string;
+	    id: string;
+	    display_name: string;
+	    type_address: string;
+	    layer_address: string;
+	    tags: string[];
+	    rows: BridgeAttributeRow[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeEntity(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.id = source["id"];
+	        this.display_name = source["display_name"];
+	        this.type_address = source["type_address"];
+	        this.layer_address = source["layer_address"];
+	        this.tags = source["tags"];
+	        this.rows = this.convertValues(source["rows"], BridgeAttributeRow);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class BridgeEntityType {
+	    address: string;
+	    id: string;
+	    display_name: string;
+	    columns: BridgeColumn[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeEntityType(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.id = source["id"];
+	        this.display_name = source["display_name"];
+	        this.columns = this.convertValues(source["columns"], BridgeColumn);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class BridgeLayer {
+	    address: string;
+	    id: string;
+	    display_name: string;
+	    order: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeLayer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.id = source["id"];
+	        this.display_name = source["display_name"];
+	        this.order = source["order"];
+	    }
+	}
+	export class BridgeRelation {
+	    address: string;
+	    id: string;
+	    display_name?: string;
+	    type_address: string;
+	    from_address: string;
+	    to_address: string;
+	    cross_layer: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeRelation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.id = source["id"];
+	        this.display_name = source["display_name"];
+	        this.type_address = source["type_address"];
+	        this.from_address = source["from_address"];
+	        this.to_address = source["to_address"];
+	        this.cross_layer = source["cross_layer"];
+	    }
+	}
+	export class BridgeRelationType {
+	    address: string;
+	    id: string;
+	    display_name: string;
+	    forward_label: string;
+	    from_entity_types: string[];
+	    to_entity_types: string[];
+	    columns: BridgeColumn[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeRelationType(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.id = source["id"];
+	        this.display_name = source["display_name"];
+	        this.forward_label = source["forward_label"];
+	        this.from_entity_types = source["from_entity_types"];
+	        this.to_entity_types = source["to_entity_types"];
+	        this.columns = this.convertValues(source["columns"], BridgeColumn);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class BridgeStructure {
+	    document_generation: engineprotocol.DocumentGeneration;
+	    project_address: string;
+	    layers: BridgeLayer[];
+	    entity_types: BridgeEntityType[];
+	    relation_types: BridgeRelationType[];
+	    entities: BridgeEntity[];
+	    relations: BridgeRelation[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BridgeStructure(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.document_generation = this.convertValues(source["document_generation"], engineprotocol.DocumentGeneration);
+	        this.project_address = source["project_address"];
+	        this.layers = this.convertValues(source["layers"], BridgeLayer);
+	        this.entity_types = this.convertValues(source["entity_types"], BridgeEntityType);
+	        this.relation_types = this.convertValues(source["relation_types"], BridgeRelationType);
+	        this.entities = this.convertValues(source["entities"], BridgeEntity);
+	        this.relations = this.convertValues(source["relations"], BridgeRelation);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace engineprotocol {
 	
 	export class ColumnCreateSubjectFields {
@@ -7931,6 +8213,46 @@ export namespace semantic {
 		}
 	}
 	
+	export class SemanticSubject {
+	    address: string;
+	    kind: string;
+	    module?: ModuleRef;
+	    own_hash: string;
+	    owner_address?: string;
+	    subtree_hash?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SemanticSubject(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.kind = source["kind"];
+	        this.module = this.convertValues(source["module"], ModuleRef);
+	        this.own_hash = source["own_hash"];
+	        this.owner_address = source["owner_address"];
+	        this.subtree_hash = source["subtree_hash"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	
 	export class StateQuerySubject {

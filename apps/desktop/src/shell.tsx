@@ -14,6 +14,9 @@ import { DesktopSettingsDialog } from "./settings-dialog.js";
 import { DesktopShellController } from "./controller.js";
 import type { DesktopEditorCapabilityIDs } from "./editor-surface.js";
 import { DesktopViewerSurface } from "./viewer-surface.js";
+import { DesktopViewAuthoring } from "./view-authoring.js";
+import { DesktopStructureCanvas, DesktopStructureInspector, DesktopStructureRail, useDesktopStructure } from "./structure-authoring.js";
+import { DesktopEditorSurface } from "./editor-surface.js";
 import { ReviewPanel } from "@layerdraw/react/review";
 import { baseShellCatalogs, createTranslator, useOptionalI18n, type Translator } from "@layerdraw/react/i18n";
 import { Button, Tab, TabsList, TabsRoot } from "@layerdraw/react/primitives";
@@ -64,6 +67,8 @@ export interface DesktopShellProps {
    * indicator (the host close binding is wired separately).
    */
   readonly onReturnToProjects?: () => void;
+  /** Refreshes the host publication after a committed edit (new views, renames). */
+  readonly onEditCommitted?: () => void;
 }
 
 function statusChip(kind: string, text: string): ReactNode {
@@ -85,7 +90,7 @@ function renderAbnormalStatuses(t: Translator, project: DesktopProjectContext): 
 
 type EditorMode = "structure" | "views";
 
-export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, library, libraryAvailability, reviewAvailability, mcp, projectDialogs, settings, onLocaleChange, onReturnToProjects }: DesktopShellProps): ReactNode {
+export function DesktopShell({ controller, viewSelectionCapability, editorCapabilities, reviewModel, library, libraryAvailability, reviewAvailability, mcp, projectDialogs, settings, onLocaleChange, onReturnToProjects, onEditCommitted }: DesktopShellProps): ReactNode {
   const contextTranslator = useOptionalI18n();
   const t = contextTranslator ?? defaultTranslator;
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
@@ -100,7 +105,9 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
   const [settingsPane, setSettingsPane] = useState<"general" | "mcp_defaults" | "agent_access">("general");
   const [hubPage, setHubPage] = useState<"projects" | "library">("projects");
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [creatingView, setCreatingView] = useState(false);
   const project = state.lifecycle.project;
+  const structureState = useDesktopStructure(project);
   const capability = state.lifecycle.capabilities[viewSelectionCapability];
   const viewSelectionAvailable = capability?.status === "available";
 
@@ -123,6 +130,19 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
   }, [settings, controller]);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [project?.project_id, project?.selected_view_address]);
   const hubVisible = project === undefined && state.lifecycle.phase === "ready";
+  const editor = project?.editor;
+  const selectedAddress = project?.selected_view_address;
+  useEffect(() => {
+    if (editor === undefined) return;
+    let lastCommit = -1;
+    return editor.subscribe((snapshot) => {
+      if (snapshot.apply_result === undefined || snapshot.sequence === lastCommit) return;
+      lastCommit = snapshot.sequence;
+      setCreatingView(false);
+      onEditCommitted?.();
+      if (selectedAddress !== undefined) void controller.selectView(selectedAddress);
+    });
+  }, [editor, controller, onEditCommitted, selectedAddress]);
   useEffect(() => {
     if (!hubVisible || projectDialogs === undefined) return;
     let cancelled = false;
@@ -227,7 +247,6 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
     </ul>
   );
 
-  const structurePlaceholder = <p className="ld-rail-empty">{t.t("workspace.structure.empty")}</p>;
   const selectedView = project.views.find((view) => view.address === project.selected_view_address);
   const persistenceLabel = t.t(`workspace.persistence.${project.persistence}`);
 
@@ -247,13 +266,18 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
       <div className="ld-desktop-workspace">
         <nav className="ld-desktop-sidebar" aria-label={t.t("workspace.mode.label")}>
           {renderModeSwitch(t, editorMode, setEditorMode)}
-          <h2 className="ld-panehead">{editorMode === "views" ? t.t("workspace.views") : t.t("workspace.pane.layers")}</h2>
-          {editorMode === "views" ? viewList : structurePlaceholder}
+          <div className="ld-panehead">
+            <h2>{editorMode === "views" ? t.t("workspace.views") : t.t("workspace.pane.layers")}</h2>
+            {editorMode === "views"
+              ? <button type="button" className="ld-panehead-add" aria-label={t.t("authoring.view.create")} title={t.t("authoring.view.create")} onClick={() => setCreatingView(true)}>＋</button>
+              : <button type="button" className="ld-panehead-add" aria-label={t.t("structure.layer.create")} title={t.t("structure.layer.create")} onClick={() => structureState.setIntent({ kind: "layer" })}>＋</button>}
+          </div>
+          {editorMode === "views" ? viewList : <DesktopStructureRail state={structureState} />}
         </nav>
         <section className="ld-desktop-canvas" aria-label={t.t("workspace.canvas")} data-mode={editorMode}>
           {editorMode === "views"
             ? <DesktopViewerSurface state={state.viewer} onSelectionChange={(keys) => controller.setViewerSelection(keys)} />
-            : <p className="ld-desktop-empty">{t.t("workspace.structure.empty")}</p>}
+            : <DesktopStructureCanvas state={structureState} />}
         </section>
         <aside className="ld-desktop-inspector" aria-label={t.t("workspace.inspector")}>
           {selectedView === undefined ? null : (
@@ -261,6 +285,16 @@ export function DesktopShell({ controller, viewSelectionCapability, editorCapabi
               <span className="ld-insp-kind">{t.t("workspace.kind.view")}</span>
               <h2>{selectedView.label}</h2>
             </header>
+          )}
+          {editorMode !== "views" ? null : (
+            <DesktopEditorSurface project={project} capabilities={editorCapabilities}>
+              <DesktopViewAuthoring project={project} creating={creatingView} onCloseCreate={() => setCreatingView(false)} />
+            </DesktopEditorSurface>
+          )}
+          {editorMode !== "structure" ? null : (
+            <DesktopEditorSurface project={project} capabilities={editorCapabilities}>
+              <DesktopStructureInspector project={project} state={structureState} />
+            </DesktopEditorSurface>
           )}
           {project.storage.kind === "external" ? inspectorSection(t.t("inspector.section.storage"), true, (
             <section className="ld-desktop-storage" aria-label={t.t("inspector.section.storage")}>

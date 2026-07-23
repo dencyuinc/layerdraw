@@ -7,6 +7,9 @@ import {desktopapp} from '../models.js';
 import {desktopcontract} from '../models.js';
 import {desktopwails} from '../models.js';
 import {localdocument} from '../models.js';
+import {engineprotocol} from '../models.js';
+import {endpoint} from '../models.js';
+import {semantic} from '../models.js';
 import {review} from '../models.js';
 import {exporter} from '../models.js';
 
@@ -50,7 +53,15 @@ export function PlanExternalReconcile(arg1:runtimeprotocol.RuntimeSessionRef,arg
 
 export function PreviewEditor(arg1:runtimeprotocol.PreviewOperationsInput):Promise<localdocument.EditorPreviewResult>;
 
+export function ProjectDocumentGeneration(arg1:runtimeprotocol.RuntimeSessionRef):Promise<engineprotocol.DocumentGeneration>;
+
+export function ProjectOpenSession(arg1:runtimeprotocol.OpenRuntimeDocumentInput):Promise<runtimeprotocol.OpenRuntimeDocumentResult>;
+
 export function ProjectPublication():Promise<desktopapp.ProjectPublicationDTO>;
+
+export function ProjectStructure(arg1:runtimeprotocol.RuntimeSessionRef):Promise<endpoint.BridgeStructure>;
+
+export function ProjectSubjects(arg1:runtimeprotocol.RuntimeSessionRef):Promise<Array<semantic.SemanticSubject>>;
 
 export function PublishNativeExportDialog(arg1:desktopapp.NativePublishRequest):Promise<desktopcontract.Result_github_com_dencyuinc_layerdraw_internal_desktopapp_NativePublishResult_>;
 

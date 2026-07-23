@@ -60,7 +60,7 @@ export interface DesktopWailsOwnerBindings {
 }
 
 export interface DesktopWailsComposition {
-  readonly lifecycle: DesktopProjectLifecyclePort;
+  readonly lifecycle: RefreshableDesktopLifecycle;
   readonly viewer: Viewer;
   readonly generatedBindings: WailsGeneratedBindings;
   readonly projectDialogs: DesktopProjectDialogPort;
@@ -71,7 +71,7 @@ export interface DesktopWailsComposition {
   readonly mcp: DesktopMCPPort;
 }
 
-interface RefreshableDesktopLifecycle extends DesktopProjectLifecyclePort {
+export interface RefreshableDesktopLifecycle extends DesktopProjectLifecyclePort {
   refreshPublication(): Promise<void>;
 }
 

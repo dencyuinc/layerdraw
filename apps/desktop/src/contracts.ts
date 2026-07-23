@@ -31,12 +31,92 @@ export interface DesktopViewChoice {
   readonly shape: "context" | "diagram" | "diff" | "flow" | "matrix" | "table" | "tree";
 }
 
+/** Master-document structure projection produced by the trusted Go owner. */
+export interface DesktopStructureColumnDTO {
+  readonly address: string;
+  readonly id: string;
+  readonly display_name: string;
+  readonly value_type: "string" | "integer" | "number" | "boolean" | "enum" | "date" | "datetime";
+  readonly enum_values: readonly string[];
+  readonly required: boolean;
+}
+
+export interface DesktopStructureLayerDTO {
+  readonly address: string;
+  readonly id: string;
+  readonly display_name: string;
+  readonly order: number;
+}
+
+export interface DesktopStructureEntityTypeDTO {
+  readonly address: string;
+  readonly id: string;
+  readonly display_name: string;
+  readonly columns: readonly DesktopStructureColumnDTO[];
+}
+
+export interface DesktopStructureRelationTypeDTO {
+  readonly address: string;
+  readonly id: string;
+  readonly display_name: string;
+  readonly forward_label: string;
+  readonly from_entity_types: readonly string[];
+  readonly to_entity_types: readonly string[];
+  readonly columns: readonly DesktopStructureColumnDTO[];
+}
+
+export interface DesktopStructureCellDTO {
+  readonly column_address: string;
+  readonly kind: string;
+  readonly value: string;
+}
+
+export interface DesktopStructureRowDTO {
+  readonly id: string;
+  readonly address: string;
+  readonly values: readonly DesktopStructureCellDTO[];
+}
+
+export interface DesktopStructureEntityDTO {
+  readonly address: string;
+  readonly id: string;
+  readonly display_name: string;
+  readonly type_address: string;
+  readonly layer_address: string;
+  readonly tags: readonly string[];
+  readonly rows: readonly DesktopStructureRowDTO[];
+}
+
+export interface DesktopStructureRelationDTO {
+  readonly address: string;
+  readonly id: string;
+  readonly display_name?: string;
+  readonly type_address: string;
+  readonly from_address: string;
+  readonly to_address: string;
+  readonly cross_layer: boolean;
+}
+
+export interface DesktopStructureDTO {
+  readonly document_generation: import("@layerdraw/protocol/engine").DocumentGeneration;
+  readonly project_address: string;
+  readonly layers: readonly DesktopStructureLayerDTO[];
+  readonly entity_types: readonly DesktopStructureEntityTypeDTO[];
+  readonly relation_types: readonly DesktopStructureRelationTypeDTO[];
+  readonly entities: readonly DesktopStructureEntityDTO[];
+  readonly relations: readonly DesktopStructureRelationDTO[];
+}
+
 export interface DesktopProjectContext {
   /** Full generated Engine read/author surface for this session (find_symbols,
    * read_declarations, …); authoring UI reads schema and outline through it. */
   readonly engine?: import("@layerdraw/engine-client").EngineClient;
   /** Resolves the session-bound Engine document generation for read calls. */
   readonly readDocumentGeneration?: () => Promise<import("@layerdraw/protocol/engine").DocumentGeneration>;
+  /** Lists the Engine-compiled semantic subjects of the working document. */
+  readonly readSubjects?: () => Promise<readonly import("@layerdraw/protocol/semantic").SemanticSubject[]>;
+  /** Reads the full master-document structure projection for the Structure editor. */
+  readonly readStructure?: () => Promise<DesktopStructureDTO>;
   readonly project_id: string;
   /** Monotonic host-issued generation; changes on close/reopen even for the same project. */
   readonly session_generation: number;
