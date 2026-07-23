@@ -41,11 +41,12 @@ const (
 )
 
 type RecentProject struct {
-	ProjectID    runtimeprotocol.DocumentID `json:"project_id"`
-	DisplayName  string                     `json:"display_name"`
-	Pinned       bool                       `json:"pinned"`
-	LastOpenedAt protocolcommon.Rfc3339Time `json:"last_opened_at"`
-	Availability ProjectAvailability        `json:"availability"`
+	ProjectID     runtimeprotocol.DocumentID `json:"project_id"`
+	DisplayName   string                     `json:"display_name"`
+	LocationLabel string                     `json:"location_label,omitempty"`
+	Pinned        bool                       `json:"pinned"`
+	LastOpenedAt  protocolcommon.Rfc3339Time `json:"last_opened_at"`
+	Availability  ProjectAvailability        `json:"availability"`
 }
 
 type CloseBlocker string
@@ -123,11 +124,12 @@ const (
 )
 
 type persistedProject struct {
-	ProjectID    runtimeprotocol.DocumentID `json:"project_id"`
-	DisplayName  string                     `json:"display_name,omitempty"`
-	Pinned       bool                       `json:"pinned"`
-	LastOpenedAt protocolcommon.Rfc3339Time `json:"last_opened_at"`
-	Missing      bool                       `json:"missing"`
+	ProjectID     runtimeprotocol.DocumentID `json:"project_id"`
+	DisplayName   string                     `json:"display_name,omitempty"`
+	LocationLabel string                     `json:"location_label,omitempty"`
+	Pinned        bool                       `json:"pinned"`
+	LastOpenedAt  protocolcommon.Rfc3339Time `json:"last_opened_at"`
+	Missing       bool                       `json:"missing"`
 }
 
 type persistedRecovery struct {
@@ -272,7 +274,7 @@ func validAutosaveOutcome(value AutosaveOutcome) bool {
 	}
 }
 
-func (l *projectLifecycle) opened(session runtimeprotocol.RuntimeSessionRef, revision runtimeprotocol.CommittedRevisionRef, providerPending bool, displayName string) (runtimeprotocol.RuntimeSessionRef, ProjectOpenDisposition, error) {
+func (l *projectLifecycle) opened(session runtimeprotocol.RuntimeSessionRef, revision runtimeprotocol.CommittedRevisionRef, providerPending bool, displayName string, locationLabel string) (runtimeprotocol.RuntimeSessionRef, ProjectOpenDisposition, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	projectID := session.Scope.DocumentID
@@ -288,6 +290,9 @@ func (l *projectLifecycle) opened(session runtimeprotocol.RuntimeSessionRef, rev
 	project.ProjectID, project.LastOpenedAt, project.Missing = projectID, now, false
 	if displayName != "" {
 		project.DisplayName = displayName
+	}
+	if locationLabel != "" {
+		project.LocationLabel = locationLabel
 	}
 	l.state.Projects[string(projectID)] = project
 	l.state.Recoveries[string(projectID)] = persistedRecovery{ProjectID: projectID, CommittedRevision: revision.RevisionID, InterruptedAt: now, ProviderPending: providerPending, Autosave: AutosaveIdle}
@@ -588,7 +593,7 @@ func (l *projectLifecycle) recent() []RecentProject {
 		if displayName == "" {
 			displayName = string(project.ProjectID)
 		}
-		result = append(result, RecentProject{ProjectID: project.ProjectID, DisplayName: displayName, Pinned: project.Pinned, LastOpenedAt: project.LastOpenedAt, Availability: availability})
+		result = append(result, RecentProject{ProjectID: project.ProjectID, DisplayName: displayName, LocationLabel: project.LocationLabel, Pinned: project.Pinned, LastOpenedAt: project.LastOpenedAt, Availability: availability})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Pinned != result[j].Pinned {

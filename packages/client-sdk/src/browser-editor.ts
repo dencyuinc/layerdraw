@@ -43,9 +43,11 @@ function aborted(error: unknown): boolean {
 
 function transportError(error: unknown): BrowserEditorError {
   if (error instanceof BrowserEditorError) return error;
+  if (aborted(error)) return new BrowserEditorError("editor.cancelled", "The Browser Editor operation was cancelled.");
+  const cause = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return new BrowserEditorError(
-    aborted(error) ? "editor.cancelled" : "editor.transport_failed",
-    aborted(error) ? "The Browser Editor operation was cancelled." : "The Browser Editor host operation failed.",
+    "editor.transport_failed",
+    cause === "" ? "The Browser Editor host operation failed." : `The Browser Editor host operation failed: ${cause}`,
   );
 }
 

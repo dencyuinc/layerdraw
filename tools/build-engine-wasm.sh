@@ -34,6 +34,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fi
   if [[ "$allow_dirty" != '1' && -n "$(git status --porcelain --untracked-files=all)" ]]; then
     printf 'engine WASM release build requires a clean source tree\n' >&2
+    git status --porcelain --untracked-files=all >&2
     exit 1
   fi
 else

@@ -6,8 +6,8 @@ import test from "node:test";
 
 test("package exposes composable React-only entrypoints and no product shell dependency", async () => {
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.deepEqual(Object.keys(manifest.exports), [".", "./provider", "./controls", "./layout", "./navigation", "./query-viewer", "./recovery", "./review", "./styles.css"]);
-  const files = (await readdir(new URL("../src", import.meta.url))).filter((name) => name.endsWith(".ts"));
+  assert.deepEqual(Object.keys(manifest.exports), [".", "./provider", "./controls", "./layout", "./navigation", "./query-viewer", "./recovery", "./review", "./i18n", "./primitives", "./primitives.css", "./tokens.css", "./styles.css"]);
+  const files = (await readdir(new URL("../src", import.meta.url))).filter((name) => name.endsWith(".ts") || name.endsWith(".tsx"));
   const source = (await Promise.all(files.map((name) => readFile(new URL(`../src/${name}`, import.meta.url), "utf8")))).join("\n");
   assert.doesNotMatch(source, /createBrowserEditor|@wails|native.file|from\s+["'](?:node:|@layerdraw\/(?:engine-client|registry-client|server-client|mcp-client))/);
   assert.doesNotMatch(source, /required_capabilities\.includes|missing_capabilities\.includes|schema:write|graph:write/);

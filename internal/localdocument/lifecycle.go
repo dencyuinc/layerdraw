@@ -775,6 +775,13 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 		input.IdempotencyKey = runtimeprotocol.IdempotencyKey("idem_" + value)
 	}
 	current := input.Session.Open.CommittedRevision
+	if len(input.Preconditions.ExpectedSubjectHashes) == 0 && len(input.Preconditions.ExpectedSubtreeHashes) == 0 && len(input.Preconditions.ExpectedChildSets) == 0 && input.Preconditions.ExpectedSourceDigests == nil {
+		derived, deriveErr := h.workbench.preconditions(input.Session.working)
+		if deriveErr != nil {
+			return runtimeprotocol.RuntimeCommitResult{}, deriveErr
+		}
+		input.Preconditions = derived
+	}
 	input.Preconditions.DocumentGeneration = engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: h.config.EndpointInstanceID, Value: input.Session.working.Handle}, Value: protocolcommon.CanonicalUint64(input.Session.working.Generation)}
 	prepared, err := h.workbench.Preview(ctx, port.PreviewWorkingDocumentInput{Document: input.Session.working, Batch: input.Operations, Preconditions: input.Preconditions, MaxOperations: "4096"})
 	if err != nil {

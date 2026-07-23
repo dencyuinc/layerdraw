@@ -126,6 +126,12 @@ func (a *Application) PinProject(projectID runtimeprotocol.DocumentID, pinned bo
 	return a.RecentProjects()
 }
 
+// ActiveSessions lists the currently open project sessions. The desktop shell
+// keeps at most one.
+func (a *Application) ActiveSessions() []runtimeprotocol.RuntimeSessionRef {
+	return a.projects.sessionRefs()
+}
+
 func (a *Application) OpenRecentProject(ctx context.Context, projectID runtimeprotocol.DocumentID) desktopcontract.Result[ProjectOpenResult] {
 	return a.openRecentProject(ctx, projectID, false)
 }

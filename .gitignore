@@ -21,3 +21,10 @@ tmp/
 # Wails emits upstream package metadata beside its generated runtime module.
 # The Desktop bundle consumes runtime.js directly and does not publish this file.
 apps/desktop/frontend/wailsjs/runtime/package.json
+
+# Locally installed third-party agent skills (npx skills); the repo's own
+# skill lives tracked at .claude/skills/layerdraw-ui.
+.agents/
+.claude/skills/*
+!.claude/skills/layerdraw-ui
+skills-lock.json

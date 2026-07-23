@@ -50,13 +50,12 @@ test("Desktop shell exposes landmarks, authoritative context, view navigation, a
     controller, viewSelectionCapability: "engine.materialize_view", editorCapabilities,
   })); });
   assert.equal(renderer.root.findByType("h1").children.join(""), "Roadmap");
-  assert.equal(renderer.root.findByProps({ "aria-label": "Views" }).type, "nav");
+  assert.equal(renderer.root.findByProps({ "aria-label": "Editor mode" }).type, "nav");
   assert.equal(renderer.root.findByProps({ "aria-label": "Canvas" }).type, "section");
   assert.equal(renderer.root.findAllByProps({ "aria-label": "Project status" }).some((node) => node.type === "aside"), true);
   const details = renderer.root.findAllByType("button").find((button) => button.props["aria-label"] === "Details");
   await act(async () => details.props.onClick());
   assert.deepEqual(controller.calls.at(-1), ["select", "view:table"]);
-  assert.equal(renderer.root.findByProps({ "aria-label": "Authoring commands" }).props.role, "toolbar");
   await act(async () => renderer.unmount());
   assert.deepEqual(controller.calls.at(-1), ["stop"]);
 });
@@ -106,7 +105,7 @@ test("startup, recovery, empty, draining, and stopped lifecycle states stay oper
   await act(async () => renderer.root.findByType("button").props.onClick());
   assert.deepEqual(controller.calls.at(-1), ["recovery-options"]);
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 2, phase: "ready", capabilities: {} } })));
-  assert.match(renderer.root.findByType("p").children.join(""), /Open or create/);
+  assert.equal(renderer.root.findByType("h1").children.join(""), "Projects");
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 3, phase: "draining", capabilities: {} } })));
   assert.match(renderer.root.findByProps({ role: "status" }).children.join(""), /closing/);
   await act(async () => controller.emit(shellState({ lifecycle: { sequence: 4, phase: "stopped", capabilities: {} } })));
@@ -128,7 +127,7 @@ test("empty Desktop exposes native create and open actions", async () => {
   const buttons = actions.findAllByType("button");
   await act(async () => buttons[0].props.onClick());
   await act(async () => buttons[1].props.onClick());
-  assert.deepEqual(calls.map(([kind]) => kind), ["create", "open"]);
+  assert.deepEqual(calls.map(([kind]) => kind), ["open", "create"]);
   assert.ok(calls.every(([, requestID]) => requestID.startsWith("desktop-shell-")));
   await act(async () => renderer.unmount());
 });
@@ -143,4 +142,31 @@ test("Viewer empty, loading, cancelling, disposed, and recoverable states have s
     assert.ok(renderer.toJSON());
     await act(async () => renderer.unmount());
   }
+});
+
+test("recent rows never surface internal identifiers and render mono location + relative time", async () => {
+  const controller = fakeController(shellState({ lifecycle: { sequence: 2, phase: "ready", capabilities: {} } }));
+  const projectDialogs = {
+    async create() { return { outcome: "cancelled" }; },
+    async open() { return { outcome: "cancelled" }; },
+    async recent() {
+      return { outcome: "success", value: [
+        { project_id: "p-legacy", display_name: "doc_65c7f00ddeadbeef", availability: "available", last_opened_at: new Date(Date.now() - 120000).toISOString() },
+        { project_id: "p-named", display_name: "Payments platform", availability: "available", location_label: "~/Projects/payments.layerdraw", last_opened_at: new Date(Date.now() - 86400000).toISOString() },
+      ] };
+    },
+    async openRecent() { return { outcome: "cancelled" }; },
+  };
+  let renderer;
+  await act(async () => { renderer = TestRenderer.create(React.createElement(DesktopShell, { controller, projectDialogs, viewSelectionCapability: "engine.materialize_view", editorCapabilities })); });
+  await act(async () => {});
+  const rows = renderer.root.findAllByProps({ className: "ld-recent-row" });
+  assert.equal(rows.length, 2);
+  const text = rows.map((row) => row.findAllByType("span").map((node) => node.children.filter((child) => typeof child === "string").join("")).join(" ")).join(" | ");
+  assert.doesNotMatch(text, /doc_65c7/);
+  assert.match(text, /\(Untitled project\)/);
+  assert.match(text, /~\/Projects\/payments\.layerdraw/);
+  const when = renderer.root.findAllByType("time").map((node) => node.children.join("")).join(" ");
+  assert.match(when, /2 minutes ago/);
+  await act(async () => renderer.unmount());
 });

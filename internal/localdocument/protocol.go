@@ -92,6 +92,13 @@ func (h *Host) PreviewEditor(ctx context.Context, input runtimeprotocol.PreviewO
 		return EditorPreviewResult{}, port.ErrConflict
 	}
 	preconditions := input.OperationBatch.Preconditions
+	if len(preconditions.ExpectedSubjectHashes) == 0 && len(preconditions.ExpectedSubtreeHashes) == 0 && len(preconditions.ExpectedChildSets) == 0 && preconditions.ExpectedSourceDigests == nil {
+		derived, deriveErr := h.workbench.preconditions(session.working)
+		if deriveErr != nil {
+			return EditorPreviewResult{}, deriveErr
+		}
+		preconditions = derived
+	}
 	preconditions.DocumentGeneration = h.documentGeneration(session)
 	prepared, err := h.workbench.Preview(ctx, port.PreviewWorkingDocumentInput{Document: session.working, Batch: input.OperationBatch.Operations, Preconditions: preconditions, MaxOperations: "4096"})
 	if err != nil {
@@ -121,6 +128,40 @@ func sameCommittedRevision(left, right runtimeprotocol.CommittedRevisionRef) boo
 	return *left.ProviderVersion == *right.ProviderVersion
 }
 
+// ProjectSubjects lists the Engine-compiled semantic subjects of the session's
+// working document for authoring surfaces (schema and outline listings).
+func (h *Host) ProjectSubjects(ctx context.Context, ref runtimeprotocol.RuntimeSessionRef) ([]semantic.SemanticSubject, error) {
+	session, err := h.SessionFor(ref)
+	if err != nil {
+		return nil, err
+	}
+	_ = ctx
+	return h.workbench.subjects(session.working)
+}
+
+// ProjectStructure returns the master-document structure projection (layers,
+// types, entities with rows, relations) the Desktop Structure editor renders.
+func (h *Host) ProjectStructure(ctx context.Context, ref runtimeprotocol.RuntimeSessionRef) (engineendpoint.BridgeStructure, error) {
+	session, err := h.SessionFor(ref)
+	if err != nil {
+		return engineendpoint.BridgeStructure{}, err
+	}
+	_ = ctx
+	return h.workbench.structure(session.working)
+}
+
+// DocumentGenerationFor exposes the Engine document generation of a live
+// runtime session so hosts can bind Engine read operations (find_symbols and
+// friends) to the session's working document. The handle inside is opaque
+// endpoint identity, never a native location.
+func (h *Host) DocumentGenerationFor(ref runtimeprotocol.RuntimeSessionRef) (engineprotocol.DocumentGeneration, error) {
+	session, err := h.SessionFor(ref)
+	if err != nil {
+		return engineprotocol.DocumentGeneration{}, err
+	}
+	return h.documentGeneration(session), nil
+}
+
 func (h *Host) documentGeneration(session *Session) engineprotocol.DocumentGeneration {
 	return engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: h.config.EndpointInstanceID, Value: session.working.Handle}, Value: protocolcommon.CanonicalUint64(session.working.Generation)}
 }
@@ -136,6 +177,14 @@ func (h *Host) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitIn
 		return runtimeprotocol.RuntimeCommitResult{}, detectErr
 	} else if change != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, port.ErrConflict
+	}
+	commitPre := input.OperationBatch.Preconditions
+	if len(commitPre.ExpectedSubjectHashes) == 0 && len(commitPre.ExpectedSubtreeHashes) == 0 && len(commitPre.ExpectedChildSets) == 0 && commitPre.ExpectedSourceDigests == nil {
+		derived, deriveErr := h.workbench.preconditions(session.working)
+		if deriveErr != nil {
+			return runtimeprotocol.RuntimeCommitResult{}, deriveErr
+		}
+		input.OperationBatch.Preconditions = derived
 	}
 	input.OperationBatch.Preconditions.DocumentGeneration = h.documentGeneration(session)
 	result, rejection := h.runtime.CommitOperations(ctx, input)

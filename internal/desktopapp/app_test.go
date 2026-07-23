@@ -921,6 +921,13 @@ func TestProjectCreateOpenReloadCloseAndRestartDurability(t *testing.T) {
 	if cancelled.Outcome != protocolcommon.OutcomeCancelled || !cancelled.Validate() {
 		t.Fatalf("dialog cancellation=%+v", cancelled)
 	}
+	adopted, err := app.ActiveProjectSession(documentID)
+	if err != nil || adopted.Session != created.Value.Open.Session {
+		t.Fatalf("adopted session=%+v err=%v", adopted.Session, err)
+	}
+	if _, err := app.ActiveProjectSession("doc_other"); err == nil {
+		t.Fatal("session adoption accepted a different document")
+	}
 	if closed := app.CloseProject(context.Background(), created.Value.Open.Session); closed.Outcome != protocolcommon.OutcomeSuccess {
 		t.Fatalf("close=%+v", closed)
 	}

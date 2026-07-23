@@ -84,3 +84,24 @@ func (a *Application) ProjectPublication(ctx context.Context) (ProjectPublicatio
 	}
 	return publication, nil
 }
+
+// ActiveProjectSession returns the app-owned runtime session result for the
+// requested document so the trusted frontend adopts it instead of opening a
+// second session. Durable commits then flow through the same session the app
+// lifecycle tracks.
+func (a *Application) ActiveProjectSession(documentID runtimeprotocol.DocumentID) (runtimeprotocol.OpenRuntimeDocumentResult, error) {
+	session, _, _, ok := a.projects.active()
+	if !ok || session.Scope.DocumentID != documentID {
+		return runtimeprotocol.OpenRuntimeDocumentResult{}, errors.New("the requested project session is not open")
+	}
+	done, host, failure := a.beginHost(desktopcontract.ComponentRuntime)
+	if failure != nil {
+		return runtimeprotocol.OpenRuntimeDocumentResult{}, errors.New("desktop project session is unavailable")
+	}
+	defer done()
+	opened, err := host.SessionFor(session)
+	if err != nil {
+		return runtimeprotocol.OpenRuntimeDocumentResult{}, err
+	}
+	return opened.Open, nil
+}

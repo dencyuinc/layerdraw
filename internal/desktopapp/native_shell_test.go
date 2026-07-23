@@ -626,3 +626,18 @@ func TestNativeShellEveryFailureProducesClosedRedactedLog(t *testing.T) {
 		t.Fatalf("failure log leaked adapter text: %s", encoded)
 	}
 }
+
+// TestCurrentSettingsFailsBeforeRestoreAndReturnsAfter pins the restore gate:
+// zero-value settings are never observable as authoritative.
+func TestCurrentSettingsFailsBeforeRestoreAndReturnsAfter(t *testing.T) {
+	shell, _ := newShellFixture(t, desktopcontract.PlatformMacOS)
+	if result := shell.CurrentSettings(context.Background()); result.Outcome == protocolcommon.OutcomeSuccess {
+		t.Fatalf("settings before restore=%+v", result)
+	}
+	if restored := shell.Restore(context.Background()); restored.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("restore=%+v", restored)
+	}
+	if result := shell.CurrentSettings(context.Background()); result.Outcome != protocolcommon.OutcomeSuccess {
+		t.Fatalf("settings after restore=%+v", result)
+	}
+}

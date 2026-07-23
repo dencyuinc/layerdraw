@@ -55,9 +55,10 @@ type Endpoint struct {
 	searchLifecycle  SearchDocumentLifecycle
 	searchOperations map[string]bool
 
-	mu         sync.Mutex
-	handshaken bool
-	manifest   runtimeprotocol.RuntimeCapabilityManifest
+	mu              sync.Mutex
+	handshaken      bool
+	handshakeResult runtimeprotocol.RuntimeHandshakeResult
+	manifest        runtimeprotocol.RuntimeCapabilityManifest
 }
 
 type Config struct {
@@ -131,8 +132,33 @@ func (e *Endpoint) Handshake(_ context.Context, control []byte) (engineendpoint.
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.handshaken {
-		response, encodeErr := e.runtimeResponse("runtime.handshake", request.RequestID, nil, protocolcommon.OutcomeRejected, nil)
-		return response, false, encodeErr
+		// Re-handshakes (frontend reloads, dev-server double loads) replay the
+		// negotiated result under the same validation as the first handshake so
+		// the runtime channel survives instead of dying permanently.
+		enabled := func(id protocolcommon.CapabilityID) bool {
+			capability, ok := e.manifest.Operations[string(id)]
+			return ok && capability.Enabled
+		}
+		result := e.handshakeResult
+		statuses := make([]protocolcommon.RequestedCapabilityStatus, 0, len(request.Payload.RequiredCapabilities)+len(request.Payload.OptionalCapabilities))
+		for _, id := range request.Payload.RequiredCapabilities {
+			if !enabled(id) {
+				response, encodeErr := e.runtimeResponse("runtime.handshake", request.RequestID, nil, protocolcommon.OutcomeRejected, nil)
+				return response, false, encodeErr
+			}
+			statuses = append(statuses, protocolcommon.RequestedCapabilityStatus{CapabilityID: id, Enabled: true, ProtocolVersion: "1.0"})
+		}
+		unsupported := protocolcommon.UnavailableReasonUnsupported
+		for _, id := range request.Payload.OptionalCapabilities {
+			status := protocolcommon.RequestedCapabilityStatus{CapabilityID: id, Enabled: enabled(id), ProtocolVersion: "1.0"}
+			if !status.Enabled {
+				status.UnavailableReason = &unsupported
+			}
+			statuses = append(statuses, status)
+		}
+		result.CapabilityStatuses = statuses
+		response, encodeErr := e.runtimeResponse("runtime.handshake", request.RequestID, result, protocolcommon.OutcomeSuccess, nil)
+		return response, encodeErr == nil, encodeErr
 	}
 	baseRequest := request.Payload
 	baseRequest.RequiredCapabilities = []protocolcommon.CapabilityID{}
@@ -184,6 +210,7 @@ func (e *Endpoint) Handshake(_ context.Context, control []byte) (engineendpoint.
 	response, err := e.runtimeResponse("runtime.handshake", request.RequestID, result, protocolcommon.OutcomeSuccess, nil)
 	if err == nil {
 		e.handshaken = true
+		e.handshakeResult = result
 	}
 	return response, err == nil, err
 }
