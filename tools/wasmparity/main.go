@@ -23,6 +23,7 @@ import (
 
 	"github.com/dencyuinc/layerdraw/gen/go/engineprotocol"
 	"github.com/dencyuinc/layerdraw/gen/go/protocolcommon"
+	"github.com/dencyuinc/layerdraw/gen/go/semantic"
 	"github.com/dencyuinc/layerdraw/internal/engine/endpoint"
 	wasmtransport "github.com/dencyuinc/layerdraw/internal/transport/wasm"
 )
@@ -183,7 +184,8 @@ func buildCorpus() (parityCorpus, error) {
 		EngineReleaseVariable: engineReleaseVariable,
 		RequiredFeatures: []string{
 			"asset", "cancellation", "deterministic_rejection", "installed_pack", "large_graph",
-			"multi_module", "project", "resource_limit", "root_pack", "all_declarations",
+			"multi_module", "project", "query_relation_where", "query_traverse", "query_where",
+			"resource_limit", "root_pack", "all_declarations",
 		},
 		Normalization: []string{
 			"engine_release is replaced by $engine_release because each artifact reports its linked release",
@@ -215,10 +217,18 @@ func buildCorpus() (parityCorpus, error) {
 		if err != nil {
 			return parityCorpus{}, fmt.Errorf("dispatch %s: %w", input.name, err)
 		}
+		if input.queryClauses != nil && response.Outcome != protocolcommon.OutcomeSuccess {
+			return parityCorpus{}, fmt.Errorf("%s query-clause compile outcome = %s", input.name, response.Outcome)
+		}
 		switch response.Outcome {
 		case protocolcommon.OutcomeSuccess:
 			if response.Payload == nil || len(response.Diagnostics) != 0 || response.Payload.DefinitionHash == "" || len(response.Payload.SubjectSemanticHashes) == 0 || len(sink.blobs) == 0 {
 				return parityCorpus{}, fmt.Errorf("%s did not produce a complete successful semantic response", input.name)
+			}
+			if input.queryClauses != nil {
+				if err := assertQueryClauseRecipe(input.name, sink.blobs, *input.queryClauses); err != nil {
+					return parityCorpus{}, err
+				}
 			}
 		case protocolcommon.OutcomeRejected:
 			if response.Payload != nil || len(response.Diagnostics) == 0 || len(sink.blobs) != 0 {
@@ -295,11 +305,18 @@ func validateCoverage(corpus parityCorpus) error {
 }
 
 type compileCase struct {
-	name      string
-	features  []string
-	execution string
-	request   engineprotocol.CompileRequestEnvelope
-	blobs     []parityInputBlob
+	name         string
+	features     []string
+	execution    string
+	request      engineprotocol.CompileRequestEnvelope
+	blobs        []parityInputBlob
+	queryClauses *queryClauseExpectation
+}
+
+type queryClauseExpectation struct {
+	where         bool
+	relationWhere bool
+	traverse      bool
 }
 
 func compileCases() ([]compileCase, error) {
@@ -330,6 +347,34 @@ func compileCases() ([]compileCase, error) {
 			"document.ldl": []byte(large),
 		}, []string{"project", "large_graph"}, nil, engineprotocol.ResourceLimits{}),
 	}
+	clauseMatrix := []queryClauseExpectation{
+		{where: true},
+		{relationWhere: true},
+		{traverse: true},
+		{where: true, relationWhere: true, traverse: true},
+	}
+	for _, expectation := range clauseMatrix {
+		parts := make([]string, 0, 3)
+		features := []string{"project"}
+		if expectation.where {
+			parts = append(parts, "where")
+			features = append(features, "query_where")
+		}
+		if expectation.relationWhere {
+			parts = append(parts, "relation_where")
+			features = append(features, "query_relation_where")
+		}
+		if expectation.traverse {
+			parts = append(parts, "traverse")
+			features = append(features, "query_traverse")
+		}
+		name := "query_" + strings.Join(parts, "_")
+		testCase := projectCase(name, "document.ldl", map[string][]byte{
+			"document.ldl": []byte(queryClauseSource(expectation)),
+		}, features, nil, engineprotocol.ResourceLimits{})
+		testCase.queryClauses = &expectation
+		cases = append(cases, testCase)
+	}
 	installed, root, err := packCases()
 	if err != nil {
 		return nil, err
@@ -341,6 +386,115 @@ func compileCases() ([]compileCase, error) {
 	cancelled.execution = "cancel"
 	cases = append(cases, cancelled)
 	return cases, nil
+}
+
+func queryClauseSource(expectation queryClauseExpectation) string {
+	clauses := make([]string, 0, 3)
+	if expectation.where {
+		clauses = append(clauses, "  where all {\n    field id == \"alpha\"\n  }")
+	}
+	if expectation.relationWhere {
+		clauses = append(clauses, "  relation_where all {\n    field type == link\n  }")
+	}
+	if expectation.traverse {
+		clauses = append(clauses, "  traverse outgoing 0..2 visit_once relations [link]")
+	}
+	return fmt.Sprintf(`project p "Project" {}
+layers {
+  app "Application" @1
+}
+entity_type service "Service" {
+  representation shape rect
+}
+relation_type link "Link" dependency {
+  from source types [service] layers [app]
+  to target types [service] layers [app]
+  label "links"
+}
+entities service @app {
+  alpha "Alpha"
+  beta "Beta"
+}
+relations link {
+  alpha_beta: alpha -> beta
+}
+query scope "Scope" {
+  select {
+    entity_types [service]
+    relation_types [link]
+    roots [alpha]
+  }
+%s
+  result [seed_entities, traversed_entities, path_relations]
+}
+`, strings.Join(clauses, "\n"))
+}
+
+func assertQueryClauseRecipe(name string, blobs []endpoint.OutputBlob, want queryClauseExpectation) error {
+	var document semantic.CompiledQueryRecipeDocument
+	found := false
+	for _, blob := range blobs {
+		if blob.Ref.MediaType != string(engineprotocol.QueryRecipeBlobRefMediaTypeValue) {
+			continue
+		}
+		decoded, err := semantic.DecodeCompiledQueryRecipeDocument(blob.Bytes)
+		if err != nil {
+			return fmt.Errorf("%s decode query recipe: %w", name, err)
+		}
+		document = decoded
+		found = true
+		break
+	}
+	if !found {
+		return fmt.Errorf("%s did not publish a query recipe", name)
+	}
+	if err := assertFieldPredicate(document.Recipe.Where, want.where, "id", "scalar", "string", "alpha"); err != nil {
+		return fmt.Errorf("%s where recipe: %w", name, err)
+	}
+	if err := assertFieldPredicate(document.Recipe.RelationWhere, want.relationWhere, "type", "address", "relation_type", "ldl:project:p:relation-type:link"); err != nil {
+		return fmt.Errorf("%s relation_where recipe: %w", name, err)
+	}
+	if !want.traverse {
+		if document.Recipe.Traverse != nil {
+			return fmt.Errorf("%s unexpected traverse recipe: %+v", name, document.Recipe.Traverse)
+		}
+		return nil
+	}
+	traversal := document.Recipe.Traverse
+	if traversal == nil || traversal.Direction != "outgoing" || traversal.MinDepth != "0" || traversal.MaxDepth != "2" || traversal.CyclePolicy != "visit_once" ||
+		traversal.RelationTypeAddresses == nil || len(*traversal.RelationTypeAddresses) != 1 || (*traversal.RelationTypeAddresses)[0] != "ldl:project:p:relation-type:link" {
+		return fmt.Errorf("%s traverse recipe does not preserve the authored traversal: %+v", name, traversal)
+	}
+	return nil
+}
+
+func assertFieldPredicate(predicate semantic.RecipePredicate, present bool, field, operandKind, operandType, value string) error {
+	if !present {
+		if predicate.Kind != "all" || predicate.Children == nil || len(*predicate.Children) != 0 {
+			return fmt.Errorf("omitted predicate did not compile to empty all: %+v", predicate)
+		}
+		return nil
+	}
+	if predicate.Kind != "all" || predicate.Children == nil || len(*predicate.Children) != 1 {
+		return fmt.Errorf("predicate tree = %+v", predicate)
+	}
+	child := (*predicate.Children)[0]
+	if child.Kind != "field" || child.Field == nil || *child.Field != field || child.Operator == nil || *child.Operator != "eq" || child.OperandType == nil || child.OperandType.Kind != operandKind || child.Value == nil {
+		return fmt.Errorf("field predicate = %+v", child)
+	}
+	switch operandKind {
+	case "scalar":
+		if child.OperandType.ScalarType == nil || string(*child.OperandType.ScalarType) != operandType || child.Value.Kind != "scalar" || child.Value.ScalarValue == nil || child.Value.ScalarValue.Kind != operandType || child.Value.ScalarValue.StringValue == nil || *child.Value.ScalarValue.StringValue != value {
+			return fmt.Errorf("scalar predicate = %+v", child)
+		}
+	case "address":
+		if child.OperandType.AddressKind == nil || string(*child.OperandType.AddressKind) != operandType || child.Value.Kind != "address" || child.Value.AddressValue == nil || string(*child.Value.AddressValue) != value {
+			return fmt.Errorf("address predicate = %+v", child)
+		}
+	default:
+		return fmt.Errorf("unsupported expected operand kind %q", operandKind)
+	}
+	return nil
 }
 
 type assetFixtureValue struct {
