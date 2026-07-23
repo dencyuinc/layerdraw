@@ -107,7 +107,6 @@ func (a *Application) openSelected(ctx context.Context, component desktopcontrac
 	return desktopcontract.Result[ProjectOpenResult]{Outcome: protocolcommon.OutcomeSuccess, Value: ProjectOpenResult{Open: opened.Session.Open, History: opened.History, ProjectID: opened.Session.Open.Session.Scope.DocumentID, Disposition: disposition, ReconcilePending: opened.ExternalChange != nil}}
 }
 
-
 // displayLocationLabel renders a project root for the hub's recents list. It is
 // display-only: shortened to the user's home where possible and never used to
 // resolve storage (opening still goes through the storage adapter's tokens).

@@ -44,9 +44,9 @@ type RecentProject struct {
 	ProjectID     runtimeprotocol.DocumentID `json:"project_id"`
 	DisplayName   string                     `json:"display_name"`
 	LocationLabel string                     `json:"location_label,omitempty"`
-	Pinned       bool                       `json:"pinned"`
-	LastOpenedAt protocolcommon.Rfc3339Time `json:"last_opened_at"`
-	Availability ProjectAvailability        `json:"availability"`
+	Pinned        bool                       `json:"pinned"`
+	LastOpenedAt  protocolcommon.Rfc3339Time `json:"last_opened_at"`
+	Availability  ProjectAvailability        `json:"availability"`
 }
 
 type CloseBlocker string
@@ -127,9 +127,9 @@ type persistedProject struct {
 	ProjectID     runtimeprotocol.DocumentID `json:"project_id"`
 	DisplayName   string                     `json:"display_name,omitempty"`
 	LocationLabel string                     `json:"location_label,omitempty"`
-	Pinned       bool                       `json:"pinned"`
-	LastOpenedAt protocolcommon.Rfc3339Time `json:"last_opened_at"`
-	Missing      bool                       `json:"missing"`
+	Pinned        bool                       `json:"pinned"`
+	LastOpenedAt  protocolcommon.Rfc3339Time `json:"last_opened_at"`
+	Missing       bool                       `json:"missing"`
 }
 
 type persistedRecovery struct {

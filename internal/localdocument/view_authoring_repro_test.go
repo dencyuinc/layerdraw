@@ -34,7 +34,7 @@ func TestPreviewCreatesQueryAndViewAtomically(t *testing.T) {
 	operationBatch := runtimeprotocol.RuntimeOperationBatch{
 		DocumentID: owner.Session.Open.CommittedRevision.DocumentID, BaseRevision: owner.Session.Open.CommittedRevision,
 		ExpectedDefinitionHash: owner.Session.Open.CommittedRevision.DefinitionHash,
-		Operations: batch, Preconditions: func() engineprotocol.EngineEditPreconditions {
+		Operations:             batch, Preconditions: func() engineprotocol.EngineEditPreconditions {
 			generation, err := host.DocumentGenerationFor(owner.Session.Open.Session)
 			if err != nil {
 				t.Fatal(err)
