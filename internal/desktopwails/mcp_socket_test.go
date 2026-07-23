@@ -6,7 +6,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +35,9 @@ func (f *fakeSocketApplication) MCPCallConnectionTool(_ context.Context, connect
 	f.lastCall = request
 	if request.Name == "layerdraw.get_capabilities" {
 		return mcphost.CallToolResult{Content: json.RawMessage(`{"operations":{}}`)}
+	}
+	if request.Name == "layerdraw.empty" {
+		return mcphost.CallToolResult{}
 	}
 	return mcphost.CallToolResult{Failure: &mcphost.Failure{Code: mcphost.ErrorCapabilityUnavailable}}
 }
@@ -142,5 +148,101 @@ func TestMCPClientConfigJSONNamesBridgeCommand(t *testing.T) {
 	config := MCPClientConfigJSON("mcp-connection-abc")
 	if !strings.Contains(config, `"--mcp-stdio"`) || !strings.Contains(config, "mcp-connection-abc") || !strings.Contains(config, `"mcpServers"`) {
 		t.Fatalf("unexpected client config: %s", config)
+	}
+}
+
+// TestMCPSocketEdgePaths covers the long-path socket fallback, listen
+// failures, malformed frames, notification skips, and tool-call failures.
+func TestMCPSocketEdgePaths(t *testing.T) {
+	long := filepath.Join(t.TempDir(), strings.Repeat("deep-state-root-", 8))
+	if path := mcpSocketPath(long); !strings.Contains(path, os.TempDir()) || !strings.HasSuffix(path, ".sock") {
+		t.Fatalf("long state root did not fall back to the temp socket: %q", path)
+	}
+	if err := os.MkdirAll(long, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fallback, err := startMCPSocket(&fakeSocketApplication{}, long)
+	if err != nil {
+		t.Fatalf("fallback socket failed: %v", err)
+	}
+	fallback.close()
+	if _, err := startMCPSocket(&fakeSocketApplication{}, "/nonexistent-layerdraw/x"); err == nil {
+		t.Fatal("listening inside a missing directory succeeded")
+	}
+
+	root := t.TempDir()
+	app := &fakeSocketApplication{}
+	server, err := startMCPSocket(app, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.close()
+	conn, reader := dialSocket(t, root)
+	writeLine(t, conn, `{"layerdraw_connection":"mcp-connection-valid"}`)
+	writeLine(t, conn, ``)
+	writeLine(t, conn, `{not json`)
+	response := readResponse(t, reader)
+	if response["error"] == nil {
+		t.Fatalf("malformed frame must return a parse error: %v", response)
+	}
+	writeLine(t, conn, `{"jsonrpc":"2.0","method":"tools/list"}`)
+	writeLine(t, conn, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"layerdraw.get_capabilities","arguments":{}}}`)
+	if response = readResponse(t, reader); response["result"] == nil && response["error"] == nil {
+		t.Fatalf("call after notification produced nothing: %v", response)
+	}
+	writeLine(t, conn, `{"jsonrpc":"2.0","id":10,"method":"ping"}`)
+	if response = readResponse(t, reader); response["result"] == nil {
+		t.Fatalf("ping must respond: %v", response)
+	}
+	writeLine(t, conn, `{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":""}}`)
+	if response = readResponse(t, reader); response["error"] == nil {
+		t.Fatalf("empty tool name must fail: %v", response)
+	}
+	writeLine(t, conn, `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"layerdraw.empty"}}`)
+	response = readResponse(t, reader)
+	if content := response["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]; content != "{}" {
+		t.Fatalf("empty tool content fallback=%v", content)
+	}
+
+	conn.Close()
+
+	// A connection the application refuses: list fails closed, calls report isError.
+	denied, deniedReader := dialSocket(t, root)
+	writeLine(t, denied, `{"layerdraw_connection":"mcp-connection-denied"}`)
+	writeLine(t, denied, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if response = readResponse(t, deniedReader); response["error"] == nil {
+		t.Fatalf("denied connection listed tools: %v", response)
+	}
+	writeLine(t, denied, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"layerdraw.unknown"}}`)
+	response = readResponse(t, deniedReader)
+	call, ok := response["result"].(map[string]any)
+	if !ok || call["isError"] != true {
+		t.Fatalf("denied call must surface isError: %v", response)
+	}
+	denied.Close()
+}
+
+// TestRunMCPStdioBridgePipesAndFailsClosed covers the --mcp-stdio subcommand:
+// dial failure without a running Desktop, and a full pipe teardown on stdin EOF.
+func TestRunMCPStdioBridgePipesAndFailsClosed(t *testing.T) {
+	if err := RunMCPStdioBridge(t.TempDir(), "mcp-connection-valid"); err == nil {
+		t.Fatal("bridging without a running Desktop succeeded")
+	}
+	root := t.TempDir()
+	server, err := startMCPSocket(&fakeSocketApplication{}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.close()
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdin := os.Stdin
+	os.Stdin = readEnd
+	t.Cleanup(func() { os.Stdin = originalStdin })
+	_ = writeEnd.Close()
+	if err := RunMCPStdioBridge(root, "mcp-connection-valid"); err != nil && err != io.EOF {
+		t.Fatalf("stdio bridge err=%v", err)
 	}
 }

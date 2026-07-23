@@ -52,6 +52,21 @@ func TestCommitLayerPersistsToDiskAndReopen(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
+	subjects, err := host.ProjectSubjects(context.Background(), owner.Session.Open.Session)
+	if err != nil || len(subjects) == 0 {
+		t.Fatalf("subjects after commit: %d err=%v", len(subjects), err)
+	}
+	bogus := owner.Session.Open.Session
+	bogus.RuntimeSessionID = "session_missing"
+	if _, err := host.ProjectSubjects(context.Background(), bogus); err == nil {
+		t.Fatal("unknown session listed subjects")
+	}
+	if _, err := host.ProjectStructure(context.Background(), bogus); err == nil {
+		t.Fatal("unknown session exposed structure")
+	}
+	if _, err := host.DocumentGenerationFor(bogus); err == nil {
+		t.Fatal("unknown session exposed a document generation")
+	}
 	structure, err := host.ProjectStructure(context.Background(), owner.Session.Open.Session)
 	if err != nil {
 		t.Fatalf("structure after commit: %v", err)
