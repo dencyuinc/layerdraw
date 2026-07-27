@@ -60,7 +60,7 @@ require (
 	github.com/rhysd/actionlint v1.7.12 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/wailsapp/wails/v2 v2.12.0
+	github.com/wailsapp/wails/v2 v2.13.0
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
