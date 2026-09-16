@@ -1065,7 +1065,7 @@ func TestEveryGeneratedCodecAndRecursivePredicateUsesBoundedPreflight(t *testing
 			if !strings.Contains(typeScript, predicatePrefix) {
 				t.Errorf("generated TypeScript predicate %s.%s lacks the total bounded preflight", document.Module, name)
 			}
-			if !strings.Contains(typeScript, "export function encode"+name+"(value: "+name+"): string {\n  validateProgrammaticWireValue(value);") {
+			if !strings.Contains(typeScript, "export function encode"+name+"(value: "+name+"): string {\n  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);\n  if (!matchesSchema"+name+"(owned))") {
 				t.Errorf("generated TypeScript encoder %s.%s lacks the bounded preflight", document.Module, name)
 			}
 			if !strings.Contains(goCodec, "func Encode"+name+"(value "+name+") ([]byte, error) {\n\tif err := validateGoWireValue(reflect.ValueOf(value), map[visit]bool{}, 0); err != nil {") {
@@ -1082,7 +1082,7 @@ func TestEveryGeneratedCodecAndRecursivePredicateUsesBoundedPreflight(t *testing
 		t.Fatalf("schema graph audit found no non-recursive definitions reaching recursion: recursive=%d reaching=%d", len(recursive), reachingCount)
 	}
 	commonTypeScript := byPath["packages/protocol/src/common.gen.ts"]
-	if !strings.Contains(commonTypeScript, "export function isJsonValue(value: unknown): value is JsonValue {\n  return isProgrammaticWireValue(value, () => isJSONCompatible(value));") {
+	if !strings.Contains(commonTypeScript, "function matchesSchemaJsonValue(value: unknown): value is JsonValue {\n  return isJSONCompatible(value);") || !strings.Contains(commonTypeScript, "return isProgrammaticWireValue(value, () => matchesSchemaJsonValue(value));") {
 		t.Error("generated JsonValue predicate no longer composes its specialized validator with the bounded preflight")
 	}
 }

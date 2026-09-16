@@ -4184,9 +4184,10 @@ func generateTypeScript(set schemaSet, document *schemaDocument) ([]byte, error)
 		if name == "JsonValue" {
 			predicate = "isJSONCompatible(value)"
 		}
-		fmt.Fprintf(&body, "\nexport function is%s(value: unknown): value is %s {\n  return isProgrammaticWireValue(value, () => %s);\n}\n", name, name, predicate)
+		fmt.Fprintf(&body, "\nfunction matchesSchema%s(value: unknown): value is %s {\n  return %s;\n}\n", name, name, predicate)
+		fmt.Fprintf(&body, "\nexport function is%s(value: unknown): value is %s {\n  return isProgrammaticWireValue(value, () => matchesSchema%s(value));\n}\n", name, name, name)
 		fmt.Fprintf(&body, "\nexport function decode%s(input: string): %s {\n  validateWireJSONText(input);\n  const value: unknown = JSON.parse(input);\n  if (!is%s(value)) throw new TypeError(%q);\n  return value;\n}\n", name, name, name, "invalid "+name)
-		fmt.Fprintf(&body, "\nexport function encode%s(value: %s): string {\n  validateProgrammaticWireValue(value);\n  if (!is%s(value)) throw new TypeError(%q);\n  const encoded = canonicalJSONStringify(value);\n  validateWireJSONText(encoded);\n  const emitted: unknown = JSON.parse(encoded);\n  if (!is%s(emitted)) throw new TypeError(%q);\n  return encoded;\n}\n", name, name, name, "invalid "+name, name, "encoded value is invalid "+name)
+		fmt.Fprintf(&body, "\nexport function encode%s(value: %s): string {\n  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);\n  if (!matchesSchema%s(owned)) throw new TypeError(%q);\n  const encoded = canonicalJSONStringify(owned);\n  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError(\"protocol JSON exceeds \" + maxWireJSONBytes + \" UTF-8 bytes\");\n  return encoded;\n}\n", name, name, name, "invalid "+name)
 		body.WriteString("\n")
 	}
 	if err := writeTSBlobCollectors(&body, set, document); err != nil {
@@ -4559,17 +4560,32 @@ const tsWirePreflight = `function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0): void {
-  if (value === null || typeof value === "boolean") return;
-  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return; }
-  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return; }
+// Capture encoder input during the same wire preflight. The schema validator and
+// writer then observe one owned value, even when the caller supplied a Proxy.
+// Predicates do not retain or copy input; their recursive shape checks are private.
+function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0, capture = false): unknown {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return value; }
+  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return value; }
   const array = isJSONArray(value); if (!array && !isObject(value)) throw new TypeError("unsupported protocol JSON value");
   if (active.has(value)) throw new TypeError("protocol value contains a cycle");
   if (depth >= maxWireJSONDepth) throw new TypeError("protocol value exceeds depth " + maxWireJSONDepth);
   active.add(value);
   try {
+    if (capture) {
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string" || !hasScalarUnicode(key))) throw new TypeError("unsupported protocol JSON value");
+      const owned: Record<string, unknown> = Object.create(null);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (array && key === "length") continue;
+        if (!descriptor.enumerable || !("value" in descriptor)) throw new TypeError("unsupported protocol JSON value");
+        owned[key] = validateProgrammaticWireValue(descriptor.value, active, depth + 1, true);
+      }
+      return array ? Object.assign([], owned) : owned;
+    }
     if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
     else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
+    return value;
   } finally { active.delete(value); }
 }
 
@@ -4659,8 +4675,12 @@ function parseHexCodeUnit(input: string, start: number): number {
 
 func tsPredicate(set schemaSet, document *schemaDocument, value *schemaType, expression string) (string, error) {
 	if value.Ref != "" {
-		_, name, err := resolveRef(set, document, value.Ref)
-		return "is" + name + "(" + expression + ")", err
+		target, name, err := resolveRef(set, document, value.Ref)
+		prefix := "is"
+		if target == document {
+			prefix = "matchesSchema"
+		}
+		return prefix + name + "(" + expression + ")", err
 	}
 	if len(value.OneOf) != 0 {
 		var branches []string

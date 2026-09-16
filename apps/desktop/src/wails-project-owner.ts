@@ -173,8 +173,7 @@ export async function createDesktopWailsProjectOwner(host: DesktopProjectHostBin
       const materialized = await host.MaterializeProjectView(project.editor_session.session.session, input.view_address);
       if (signal.aborted) return { outcome: "cancelled", failure: { code: "desktop.selection_cancelled", recoverable: true } };
       const snapshot: ViewerSnapshot = { viewer_snapshot_schema_version: 1, sequence: ++sequence, complete: true, view_address: materialized.view_data.view_address, revision: materialized.view_data.revision, view_data_hash: materialized.view_data_hash as Digest, state_input: materialized.view_data.state_input, view_data: materialized.view_data };
-      const result = await viewer.setViewData(snapshot);
-      if (!result.ok) return { outcome: result.outcome === "cancelled" ? "cancelled" : "rejected", failure: { code: result.error.code, recoverable: result.error.recoverable } };
+      // The controller consumes this frame and is the sole materialization owner.
       const revision = materialized.view_data.revision.revision_id ?? project.authoritative_revision_token;
       project = Object.freeze({ ...project, selected_view_address: input.view_address });
       viewerFrame = Object.freeze({ project_id: project.project_id, session_generation: project.session_generation, view_address: input.view_address, authoritative_revision_token: revision, kind: "snapshot", input: snapshot });

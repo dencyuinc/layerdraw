@@ -441,17 +441,32 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0): void {
-  if (value === null || typeof value === "boolean") return;
-  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return; }
-  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return; }
+// Capture encoder input during the same wire preflight. The schema validator and
+// writer then observe one owned value, even when the caller supplied a Proxy.
+// Predicates do not retain or copy input; their recursive shape checks are private.
+function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0, capture = false): unknown {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return value; }
+  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return value; }
   const array = isJSONArray(value); if (!array && !isObject(value)) throw new TypeError("unsupported protocol JSON value");
   if (active.has(value)) throw new TypeError("protocol value contains a cycle");
   if (depth >= maxWireJSONDepth) throw new TypeError("protocol value exceeds depth " + maxWireJSONDepth);
   active.add(value);
   try {
+    if (capture) {
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string" || !hasScalarUnicode(key))) throw new TypeError("unsupported protocol JSON value");
+      const owned: Record<string, unknown> = Object.create(null);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (array && key === "length") continue;
+        if (!descriptor.enumerable || !("value" in descriptor)) throw new TypeError("unsupported protocol JSON value");
+        owned[key] = validateProgrammaticWireValue(descriptor.value, active, depth + 1, true);
+      }
+      return array ? Object.assign([], owned) : owned;
+    }
     if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
     else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
+    return value;
   } finally { active.delete(value); }
 }
 
@@ -552,8 +567,12 @@ export interface ApplyToHandleInput {
   preview_id: PreviewID;
 }
 
+function matchesSchemaApplyToHandleInput(value: unknown): value is ApplyToHandleInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["base_generation", "preview_digest", "preview_id"])) && hasOwn(value, "base_generation") && (matchesSchemaDocumentGeneration(value["base_generation"])) && hasOwn(value, "preview_digest") && (isDigest(value["preview_digest"])) && hasOwn(value, "preview_id") && (matchesSchemaPreviewID(value["preview_id"])) && hasProtocolInvariant(value, "apply_input");
+}
+
 export function isApplyToHandleInput(value: unknown): value is ApplyToHandleInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["base_generation", "preview_digest", "preview_id"])) && hasOwn(value, "base_generation") && (isDocumentGeneration(value["base_generation"])) && hasOwn(value, "preview_digest") && (isDigest(value["preview_digest"])) && hasOwn(value, "preview_id") && (isPreviewID(value["preview_id"])) && hasProtocolInvariant(value, "apply_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaApplyToHandleInput(value));
 }
 
 export function decodeApplyToHandleInput(input: string): ApplyToHandleInput {
@@ -564,12 +583,10 @@ export function decodeApplyToHandleInput(input: string): ApplyToHandleInput {
 }
 
 export function encodeApplyToHandleInput(value: ApplyToHandleInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isApplyToHandleInput(value)) throw new TypeError("invalid ApplyToHandleInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isApplyToHandleInput(emitted)) throw new TypeError("encoded value is invalid ApplyToHandleInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaApplyToHandleInput(owned)) throw new TypeError("invalid ApplyToHandleInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -583,8 +600,12 @@ export interface ApplyToHandleRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaApplyToHandleRequestEnvelope(value: unknown): value is ApplyToHandleRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.apply_to_handle") && hasOwn(value, "payload") && (matchesSchemaApplyToHandleInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isApplyToHandleRequestEnvelope(value: unknown): value is ApplyToHandleRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.apply_to_handle") && hasOwn(value, "payload") && (isApplyToHandleInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaApplyToHandleRequestEnvelope(value));
 }
 
 export function decodeApplyToHandleRequestEnvelope(input: string): ApplyToHandleRequestEnvelope {
@@ -595,12 +616,10 @@ export function decodeApplyToHandleRequestEnvelope(input: string): ApplyToHandle
 }
 
 export function encodeApplyToHandleRequestEnvelope(value: ApplyToHandleRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isApplyToHandleRequestEnvelope(value)) throw new TypeError("invalid ApplyToHandleRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isApplyToHandleRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ApplyToHandleRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaApplyToHandleRequestEnvelope(owned)) throw new TypeError("invalid ApplyToHandleRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -615,8 +634,12 @@ export interface ApplyToHandleResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaApplyToHandleResponseEnvelope(value: unknown): value is ApplyToHandleResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaApplyToHandleResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isApplyToHandleResponseEnvelope(value: unknown): value is ApplyToHandleResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isApplyToHandleResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaApplyToHandleResponseEnvelope(value));
 }
 
 export function decodeApplyToHandleResponseEnvelope(input: string): ApplyToHandleResponseEnvelope {
@@ -627,12 +650,10 @@ export function decodeApplyToHandleResponseEnvelope(input: string): ApplyToHandl
 }
 
 export function encodeApplyToHandleResponseEnvelope(value: ApplyToHandleResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isApplyToHandleResponseEnvelope(value)) throw new TypeError("invalid ApplyToHandleResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isApplyToHandleResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ApplyToHandleResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaApplyToHandleResponseEnvelope(owned)) throw new TypeError("invalid ApplyToHandleResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -644,8 +665,12 @@ export interface ApplyToHandleResult {
   source_diff: SourceDiff;
 }
 
+function matchesSchemaApplyToHandleResult(value: unknown): value is ApplyToHandleResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["authoring_impact", "document_generation", "preview_digest", "resulting_hashes", "source_diff"])) && hasOwn(value, "authoring_impact") && (isAuthoringImpact(value["authoring_impact"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "preview_digest") && (isDigest(value["preview_digest"])) && hasOwn(value, "resulting_hashes") && (matchesSchemaResultingHashes(value["resulting_hashes"])) && hasOwn(value, "source_diff") && (matchesSchemaSourceDiff(value["source_diff"])) && hasProtocolInvariant(value, "apply_result");
+}
+
 export function isApplyToHandleResult(value: unknown): value is ApplyToHandleResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["authoring_impact", "document_generation", "preview_digest", "resulting_hashes", "source_diff"])) && hasOwn(value, "authoring_impact") && (isAuthoringImpact(value["authoring_impact"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "preview_digest") && (isDigest(value["preview_digest"])) && hasOwn(value, "resulting_hashes") && (isResultingHashes(value["resulting_hashes"])) && hasOwn(value, "source_diff") && (isSourceDiff(value["source_diff"])) && hasProtocolInvariant(value, "apply_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaApplyToHandleResult(value));
 }
 
 export function decodeApplyToHandleResult(input: string): ApplyToHandleResult {
@@ -656,12 +681,10 @@ export function decodeApplyToHandleResult(input: string): ApplyToHandleResult {
 }
 
 export function encodeApplyToHandleResult(value: ApplyToHandleResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isApplyToHandleResult(value)) throw new TypeError("invalid ApplyToHandleResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isApplyToHandleResult(emitted)) throw new TypeError("encoded value is invalid ApplyToHandleResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaApplyToHandleResult(owned)) throw new TypeError("invalid ApplyToHandleResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -674,8 +697,12 @@ export interface AssetInput {
   pack_id?: CanonicalPackSelector;
 }
 
+function matchesSchemaAssetInput(value: unknown): value is AssetInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob", "digest", "locator", "media_type", "origin", "pack_id"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "locator") && (typeof value["locator"] === "string" && hasScalarUnicode(value["locator"]) && Array.from(value["locator"]).length >= 1) && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && Array.from(value["media_type"]).length >= 1) && hasOwn(value, "origin") && (matchesSchemaSourceOriginKind(value["origin"])) && (!hasOwn(value, "pack_id") || (matchesSchemaCanonicalPackSelector(value["pack_id"]))) && ((value["origin"] === "pack" && hasOwn(value, "pack_id")) || (value["origin"] === "project" && !hasOwn(value, "pack_id")));
+}
+
 export function isAssetInput(value: unknown): value is AssetInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob", "digest", "locator", "media_type", "origin", "pack_id"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "locator") && (typeof value["locator"] === "string" && hasScalarUnicode(value["locator"]) && Array.from(value["locator"]).length >= 1) && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && Array.from(value["media_type"]).length >= 1) && hasOwn(value, "origin") && (isSourceOriginKind(value["origin"])) && (!hasOwn(value, "pack_id") || (isCanonicalPackSelector(value["pack_id"]))) && ((value["origin"] === "pack" && hasOwn(value, "pack_id")) || (value["origin"] === "project" && !hasOwn(value, "pack_id"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaAssetInput(value));
 }
 
 export function decodeAssetInput(input: string): AssetInput {
@@ -686,12 +713,10 @@ export function decodeAssetInput(input: string): AssetInput {
 }
 
 export function encodeAssetInput(value: AssetInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isAssetInput(value)) throw new TypeError("invalid AssetInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isAssetInput(emitted)) throw new TypeError("encoded value is invalid AssetInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaAssetInput(owned)) throw new TypeError("invalid AssetInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -703,8 +728,12 @@ export interface BoundedTextChunk {
   total_bytes: CanonicalUint64;
 }
 
+function matchesSchemaBoundedTextChunk(value: unknown): value is BoundedTextChunk {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob", "full_digest", "offset", "total_bytes"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "full_digest") && (isDigest(value["full_digest"])) && hasOwn(value, "offset") && (isCanonicalUint64(value["offset"])) && hasOwn(value, "total_bytes") && (isCanonicalUint64(value["total_bytes"])) && hasProtocolInvariant(value, "bounded_text_chunk");
+}
+
 export function isBoundedTextChunk(value: unknown): value is BoundedTextChunk {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob", "full_digest", "offset", "total_bytes"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "full_digest") && (isDigest(value["full_digest"])) && hasOwn(value, "offset") && (isCanonicalUint64(value["offset"])) && hasOwn(value, "total_bytes") && (isCanonicalUint64(value["total_bytes"])) && hasProtocolInvariant(value, "bounded_text_chunk"));
+  return isProgrammaticWireValue(value, () => matchesSchemaBoundedTextChunk(value));
 }
 
 export function decodeBoundedTextChunk(input: string): BoundedTextChunk {
@@ -715,20 +744,22 @@ export function decodeBoundedTextChunk(input: string): BoundedTextChunk {
 }
 
 export function encodeBoundedTextChunk(value: BoundedTextChunk): string {
-  validateProgrammaticWireValue(value);
-  if (!isBoundedTextChunk(value)) throw new TypeError("invalid BoundedTextChunk");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isBoundedTextChunk(emitted)) throw new TypeError("encoded value is invalid BoundedTextChunk");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaBoundedTextChunk(owned)) throw new TypeError("invalid BoundedTextChunk");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 /** A canonical nonempty publisher/pack-name selector. */
 export type CanonicalPackSelector = string;
 
+function matchesSchemaCanonicalPackSelector(value: unknown): value is CanonicalPackSelector {
+  return typeof value === "string" && hasScalarUnicode(value) && new RegExp("^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$").test(value);
+}
+
 export function isCanonicalPackSelector(value: unknown): value is CanonicalPackSelector {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && new RegExp("^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$").test(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaCanonicalPackSelector(value));
 }
 
 export function decodeCanonicalPackSelector(input: string): CanonicalPackSelector {
@@ -739,20 +770,22 @@ export function decodeCanonicalPackSelector(input: string): CanonicalPackSelecto
 }
 
 export function encodeCanonicalPackSelector(value: CanonicalPackSelector): string {
-  validateProgrammaticWireValue(value);
-  if (!isCanonicalPackSelector(value)) throw new TypeError("invalid CanonicalPackSelector");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCanonicalPackSelector(emitted)) throw new TypeError("encoded value is invalid CanonicalPackSelector");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCanonicalPackSelector(owned)) throw new TypeError("invalid CanonicalPackSelector");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 /** A canonical relative slash-separated source-tree path with no dot, dot-dot, empty, absolute, backslash, or NUL segment. */
 export type CanonicalSourcePath = string;
 
+function matchesSchemaCanonicalSourcePath(value: unknown): value is CanonicalSourcePath {
+  return typeof value === "string" && hasScalarUnicode(value) && Array.from(value).length >= 1 && matchesCanonicalSourcePath(value);
+}
+
 export function isCanonicalSourcePath(value: unknown): value is CanonicalSourcePath {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && Array.from(value).length >= 1 && matchesCanonicalSourcePath(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaCanonicalSourcePath(value));
 }
 
 export function decodeCanonicalSourcePath(input: string): CanonicalSourcePath {
@@ -763,12 +796,10 @@ export function decodeCanonicalSourcePath(input: string): CanonicalSourcePath {
 }
 
 export function encodeCanonicalSourcePath(value: CanonicalSourcePath): string {
-  validateProgrammaticWireValue(value);
-  if (!isCanonicalSourcePath(value)) throw new TypeError("invalid CanonicalSourcePath");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCanonicalSourcePath(emitted)) throw new TypeError("encoded value is invalid CanonicalSourcePath");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCanonicalSourcePath(owned)) throw new TypeError("invalid CanonicalSourcePath");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -779,8 +810,12 @@ export interface ClassifyAuthoringImpactInput {
   limits: WorkbenchLimits;
 }
 
+function matchesSchemaClassifyAuthoringImpactInput(value: unknown): value is ClassifyAuthoringImpactInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["after", "before", "limits"])) && hasOwn(value, "after") && (matchesSchemaCompileInput(value["after"])) && hasOwn(value, "before") && (matchesSchemaCompileInput(value["before"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"]));
+}
+
 export function isClassifyAuthoringImpactInput(value: unknown): value is ClassifyAuthoringImpactInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["after", "before", "limits"])) && hasOwn(value, "after") && (isCompileInput(value["after"])) && hasOwn(value, "before") && (isCompileInput(value["before"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaClassifyAuthoringImpactInput(value));
 }
 
 export function decodeClassifyAuthoringImpactInput(input: string): ClassifyAuthoringImpactInput {
@@ -791,12 +826,10 @@ export function decodeClassifyAuthoringImpactInput(input: string): ClassifyAutho
 }
 
 export function encodeClassifyAuthoringImpactInput(value: ClassifyAuthoringImpactInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isClassifyAuthoringImpactInput(value)) throw new TypeError("invalid ClassifyAuthoringImpactInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isClassifyAuthoringImpactInput(emitted)) throw new TypeError("encoded value is invalid ClassifyAuthoringImpactInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaClassifyAuthoringImpactInput(owned)) throw new TypeError("invalid ClassifyAuthoringImpactInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -810,8 +843,12 @@ export interface ClassifyAuthoringImpactRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaClassifyAuthoringImpactRequestEnvelope(value: unknown): value is ClassifyAuthoringImpactRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.classify_authoring_impact") && hasOwn(value, "payload") && (matchesSchemaClassifyAuthoringImpactInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isClassifyAuthoringImpactRequestEnvelope(value: unknown): value is ClassifyAuthoringImpactRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.classify_authoring_impact") && hasOwn(value, "payload") && (isClassifyAuthoringImpactInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaClassifyAuthoringImpactRequestEnvelope(value));
 }
 
 export function decodeClassifyAuthoringImpactRequestEnvelope(input: string): ClassifyAuthoringImpactRequestEnvelope {
@@ -822,12 +859,10 @@ export function decodeClassifyAuthoringImpactRequestEnvelope(input: string): Cla
 }
 
 export function encodeClassifyAuthoringImpactRequestEnvelope(value: ClassifyAuthoringImpactRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isClassifyAuthoringImpactRequestEnvelope(value)) throw new TypeError("invalid ClassifyAuthoringImpactRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isClassifyAuthoringImpactRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ClassifyAuthoringImpactRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaClassifyAuthoringImpactRequestEnvelope(owned)) throw new TypeError("invalid ClassifyAuthoringImpactRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -842,8 +877,12 @@ export interface ClassifyAuthoringImpactResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaClassifyAuthoringImpactResponseEnvelope(value: unknown): value is ClassifyAuthoringImpactResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaClassifyAuthoringImpactResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isClassifyAuthoringImpactResponseEnvelope(value: unknown): value is ClassifyAuthoringImpactResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isClassifyAuthoringImpactResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaClassifyAuthoringImpactResponseEnvelope(value));
 }
 
 export function decodeClassifyAuthoringImpactResponseEnvelope(input: string): ClassifyAuthoringImpactResponseEnvelope {
@@ -854,12 +893,10 @@ export function decodeClassifyAuthoringImpactResponseEnvelope(input: string): Cl
 }
 
 export function encodeClassifyAuthoringImpactResponseEnvelope(value: ClassifyAuthoringImpactResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isClassifyAuthoringImpactResponseEnvelope(value)) throw new TypeError("invalid ClassifyAuthoringImpactResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isClassifyAuthoringImpactResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ClassifyAuthoringImpactResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaClassifyAuthoringImpactResponseEnvelope(owned)) throw new TypeError("invalid ClassifyAuthoringImpactResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -867,8 +904,12 @@ export interface ClassifyAuthoringImpactResult {
   authoring_impact: AuthoringImpact;
 }
 
+function matchesSchemaClassifyAuthoringImpactResult(value: unknown): value is ClassifyAuthoringImpactResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["authoring_impact"])) && hasOwn(value, "authoring_impact") && (isAuthoringImpact(value["authoring_impact"]));
+}
+
 export function isClassifyAuthoringImpactResult(value: unknown): value is ClassifyAuthoringImpactResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["authoring_impact"])) && hasOwn(value, "authoring_impact") && (isAuthoringImpact(value["authoring_impact"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaClassifyAuthoringImpactResult(value));
 }
 
 export function decodeClassifyAuthoringImpactResult(input: string): ClassifyAuthoringImpactResult {
@@ -879,12 +920,10 @@ export function decodeClassifyAuthoringImpactResult(input: string): ClassifyAuth
 }
 
 export function encodeClassifyAuthoringImpactResult(value: ClassifyAuthoringImpactResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isClassifyAuthoringImpactResult(value)) throw new TypeError("invalid ClassifyAuthoringImpactResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isClassifyAuthoringImpactResult(emitted)) throw new TypeError("encoded value is invalid ClassifyAuthoringImpactResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaClassifyAuthoringImpactResult(owned)) throw new TypeError("invalid ClassifyAuthoringImpactResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -893,8 +932,12 @@ export interface CloseDocumentInput {
   document_handle: DocumentHandle;
 }
 
+function matchesSchemaCloseDocumentInput(value: unknown): value is CloseDocumentInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "document_handle"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "document_handle") && (matchesSchemaDocumentHandle(value["document_handle"])) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isCloseDocumentInput(value: unknown): value is CloseDocumentInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "document_handle"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "document_handle") && (isDocumentHandle(value["document_handle"])) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCloseDocumentInput(value));
 }
 
 export function decodeCloseDocumentInput(input: string): CloseDocumentInput {
@@ -905,12 +948,10 @@ export function decodeCloseDocumentInput(input: string): CloseDocumentInput {
 }
 
 export function encodeCloseDocumentInput(value: CloseDocumentInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isCloseDocumentInput(value)) throw new TypeError("invalid CloseDocumentInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCloseDocumentInput(emitted)) throw new TypeError("encoded value is invalid CloseDocumentInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCloseDocumentInput(owned)) throw new TypeError("invalid CloseDocumentInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -924,8 +965,12 @@ export interface CloseDocumentRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaCloseDocumentRequestEnvelope(value: unknown): value is CloseDocumentRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.close_document") && hasOwn(value, "payload") && (matchesSchemaCloseDocumentInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isCloseDocumentRequestEnvelope(value: unknown): value is CloseDocumentRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.close_document") && hasOwn(value, "payload") && (isCloseDocumentInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaCloseDocumentRequestEnvelope(value));
 }
 
 export function decodeCloseDocumentRequestEnvelope(input: string): CloseDocumentRequestEnvelope {
@@ -936,12 +981,10 @@ export function decodeCloseDocumentRequestEnvelope(input: string): CloseDocument
 }
 
 export function encodeCloseDocumentRequestEnvelope(value: CloseDocumentRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isCloseDocumentRequestEnvelope(value)) throw new TypeError("invalid CloseDocumentRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCloseDocumentRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid CloseDocumentRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCloseDocumentRequestEnvelope(owned)) throw new TypeError("invalid CloseDocumentRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -956,8 +999,12 @@ export interface CloseDocumentResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaCloseDocumentResponseEnvelope(value: unknown): value is CloseDocumentResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaCloseDocumentResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isCloseDocumentResponseEnvelope(value: unknown): value is CloseDocumentResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isCloseDocumentResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaCloseDocumentResponseEnvelope(value));
 }
 
 export function decodeCloseDocumentResponseEnvelope(input: string): CloseDocumentResponseEnvelope {
@@ -968,12 +1015,10 @@ export function decodeCloseDocumentResponseEnvelope(input: string): CloseDocumen
 }
 
 export function encodeCloseDocumentResponseEnvelope(value: CloseDocumentResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isCloseDocumentResponseEnvelope(value)) throw new TypeError("invalid CloseDocumentResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCloseDocumentResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid CloseDocumentResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCloseDocumentResponseEnvelope(owned)) throw new TypeError("invalid CloseDocumentResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -981,8 +1026,12 @@ export interface CloseDocumentResult {
   closed: boolean;
 }
 
+function matchesSchemaCloseDocumentResult(value: unknown): value is CloseDocumentResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["closed"])) && hasOwn(value, "closed") && (typeof value["closed"] === "boolean");
+}
+
 export function isCloseDocumentResult(value: unknown): value is CloseDocumentResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["closed"])) && hasOwn(value, "closed") && (typeof value["closed"] === "boolean"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCloseDocumentResult(value));
 }
 
 export function decodeCloseDocumentResult(input: string): CloseDocumentResult {
@@ -993,12 +1042,10 @@ export function decodeCloseDocumentResult(input: string): CloseDocumentResult {
 }
 
 export function encodeCloseDocumentResult(value: CloseDocumentResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isCloseDocumentResult(value)) throw new TypeError("invalid CloseDocumentResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCloseDocumentResult(emitted)) throw new TypeError("encoded value is invalid CloseDocumentResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCloseDocumentResult(owned)) throw new TypeError("invalid CloseDocumentResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1016,8 +1063,12 @@ export interface ColumnCreateSubjectFields {
   value_type: ValueType;
 }
 
+function matchesSchemaColumnCreateSubjectFields(value: unknown): value is ColumnCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["default", "display_name", "enum_values", "format", "max", "max_length", "min", "min_length", "required", "reserved_enum_values", "value_type"])) && (!hasOwn(value, "default") || (isRecipeScalar(value["default"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "enum_values") || (isJSONArray(value["enum_values"]) && value["enum_values"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && value["enum_values"].length >= 1 && hasUniqueItems(value["enum_values"]))) && (!hasOwn(value, "format") || (isStringFormat(value["format"]))) && (!hasOwn(value, "max") || (isCanonicalFiniteDecimal(value["max"]))) && (!hasOwn(value, "max_length") || (isCanonicalNonNegativeSafeInteger(value["max_length"]))) && (!hasOwn(value, "min") || (isCanonicalFiniteDecimal(value["min"]))) && (!hasOwn(value, "min_length") || (isCanonicalNonNegativeSafeInteger(value["min_length"]))) && (!hasOwn(value, "required") || (typeof value["required"] === "boolean")) && (!hasOwn(value, "reserved_enum_values") || (isJSONArray(value["reserved_enum_values"]) && value["reserved_enum_values"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && hasUniqueItems(value["reserved_enum_values"]) && hasUnicodeScalarOrder(value["reserved_enum_values"]))) && hasOwn(value, "value_type") && (isValueType(value["value_type"])) && hasDisjointArrays(value, "enum_values", "reserved_enum_values") && hasOrderedPair(value, "min", "max", "finite_binary64") && hasOrderedPair(value, "min_length", "max_length", "unsigned_decimal");
+}
+
 export function isColumnCreateSubjectFields(value: unknown): value is ColumnCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["default", "display_name", "enum_values", "format", "max", "max_length", "min", "min_length", "required", "reserved_enum_values", "value_type"])) && (!hasOwn(value, "default") || (isRecipeScalar(value["default"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "enum_values") || (isJSONArray(value["enum_values"]) && value["enum_values"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && value["enum_values"].length >= 1 && hasUniqueItems(value["enum_values"]))) && (!hasOwn(value, "format") || (isStringFormat(value["format"]))) && (!hasOwn(value, "max") || (isCanonicalFiniteDecimal(value["max"]))) && (!hasOwn(value, "max_length") || (isCanonicalNonNegativeSafeInteger(value["max_length"]))) && (!hasOwn(value, "min") || (isCanonicalFiniteDecimal(value["min"]))) && (!hasOwn(value, "min_length") || (isCanonicalNonNegativeSafeInteger(value["min_length"]))) && (!hasOwn(value, "required") || (typeof value["required"] === "boolean")) && (!hasOwn(value, "reserved_enum_values") || (isJSONArray(value["reserved_enum_values"]) && value["reserved_enum_values"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && hasUniqueItems(value["reserved_enum_values"]) && hasUnicodeScalarOrder(value["reserved_enum_values"]))) && hasOwn(value, "value_type") && (isValueType(value["value_type"])) && hasDisjointArrays(value, "enum_values", "reserved_enum_values") && hasOrderedPair(value, "min", "max", "finite_binary64") && hasOrderedPair(value, "min_length", "max_length", "unsigned_decimal"));
+  return isProgrammaticWireValue(value, () => matchesSchemaColumnCreateSubjectFields(value));
 }
 
 export function decodeColumnCreateSubjectFields(input: string): ColumnCreateSubjectFields {
@@ -1028,12 +1079,10 @@ export function decodeColumnCreateSubjectFields(input: string): ColumnCreateSubj
 }
 
 export function encodeColumnCreateSubjectFields(value: ColumnCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isColumnCreateSubjectFields(value)) throw new TypeError("invalid ColumnCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isColumnCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid ColumnCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaColumnCreateSubjectFields(owned)) throw new TypeError("invalid ColumnCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1050,8 +1099,12 @@ export interface CompileInput {
   root_pack_id?: CanonicalPackSelector;
 }
 
+function matchesSchemaCompileInput(value: unknown): value is CompileInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["entry_path", "extensions", "installed_pack_tree", "mode", "project_source_tree", "referenced_assets", "resolved_dependencies", "resource_limits", "root_pack_id"])) && hasOwn(value, "entry_path") && (matchesSchemaCanonicalSourcePath(value["entry_path"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "installed_pack_tree") && (isJSONArray(value["installed_pack_tree"]) && value["installed_pack_tree"].every((item) => matchesSchemaSourceFileInput(item))) && hasOwn(value, "mode") && (matchesSchemaCompileMode(value["mode"])) && hasOwn(value, "project_source_tree") && (isJSONArray(value["project_source_tree"]) && value["project_source_tree"].every((item) => matchesSchemaSourceFileInput(item))) && hasOwn(value, "referenced_assets") && (isJSONArray(value["referenced_assets"]) && value["referenced_assets"].every((item) => matchesSchemaAssetInput(item))) && hasOwn(value, "resolved_dependencies") && (matchesSchemaResolvedDependencies(value["resolved_dependencies"])) && hasOwn(value, "resource_limits") && (matchesSchemaResourceLimits(value["resource_limits"])) && (!hasOwn(value, "root_pack_id") || (matchesSchemaCanonicalPackSelector(value["root_pack_id"]))) && ((value["mode"] === "pack" && hasOwn(value, "root_pack_id") && isJSONArray(value["project_source_tree"]) && value["project_source_tree"].length === 0 && isJSONArray(value["installed_pack_tree"]) && value["installed_pack_tree"].length > 0) || (value["mode"] === "project" && !hasOwn(value, "root_pack_id") && isJSONArray(value["project_source_tree"]) && value["project_source_tree"].length > 0));
+}
+
 export function isCompileInput(value: unknown): value is CompileInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["entry_path", "extensions", "installed_pack_tree", "mode", "project_source_tree", "referenced_assets", "resolved_dependencies", "resource_limits", "root_pack_id"])) && hasOwn(value, "entry_path") && (isCanonicalSourcePath(value["entry_path"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "installed_pack_tree") && (isJSONArray(value["installed_pack_tree"]) && value["installed_pack_tree"].every((item) => isSourceFileInput(item))) && hasOwn(value, "mode") && (isCompileMode(value["mode"])) && hasOwn(value, "project_source_tree") && (isJSONArray(value["project_source_tree"]) && value["project_source_tree"].every((item) => isSourceFileInput(item))) && hasOwn(value, "referenced_assets") && (isJSONArray(value["referenced_assets"]) && value["referenced_assets"].every((item) => isAssetInput(item))) && hasOwn(value, "resolved_dependencies") && (isResolvedDependencies(value["resolved_dependencies"])) && hasOwn(value, "resource_limits") && (isResourceLimits(value["resource_limits"])) && (!hasOwn(value, "root_pack_id") || (isCanonicalPackSelector(value["root_pack_id"]))) && ((value["mode"] === "pack" && hasOwn(value, "root_pack_id") && isJSONArray(value["project_source_tree"]) && value["project_source_tree"].length === 0 && isJSONArray(value["installed_pack_tree"]) && value["installed_pack_tree"].length > 0) || (value["mode"] === "project" && !hasOwn(value, "root_pack_id") && isJSONArray(value["project_source_tree"]) && value["project_source_tree"].length > 0)));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompileInput(value));
 }
 
 export function decodeCompileInput(input: string): CompileInput {
@@ -1062,19 +1115,21 @@ export function decodeCompileInput(input: string): CompileInput {
 }
 
 export function encodeCompileInput(value: CompileInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompileInput(value)) throw new TypeError("invalid CompileInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompileInput(emitted)) throw new TypeError("encoded value is invalid CompileInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompileInput(owned)) throw new TypeError("invalid CompileInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type CompileMode = "pack" | "project";
 
+function matchesSchemaCompileMode(value: unknown): value is CompileMode {
+  return typeof value === "string" && hasScalarUnicode(value) && ["pack", "project"].includes(value);
+}
+
 export function isCompileMode(value: unknown): value is CompileMode {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["pack", "project"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompileMode(value));
 }
 
 export function decodeCompileMode(input: string): CompileMode {
@@ -1085,12 +1140,10 @@ export function decodeCompileMode(input: string): CompileMode {
 }
 
 export function encodeCompileMode(value: CompileMode): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompileMode(value)) throw new TypeError("invalid CompileMode");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompileMode(emitted)) throw new TypeError("encoded value is invalid CompileMode");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompileMode(owned)) throw new TypeError("invalid CompileMode");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1104,8 +1157,12 @@ export interface CompileRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaCompileRequestEnvelope(value: unknown): value is CompileRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.compile") && hasOwn(value, "payload") && (matchesSchemaCompileInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isCompileRequestEnvelope(value: unknown): value is CompileRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.compile") && hasOwn(value, "payload") && (isCompileInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompileRequestEnvelope(value));
 }
 
 export function decodeCompileRequestEnvelope(input: string): CompileRequestEnvelope {
@@ -1116,12 +1173,10 @@ export function decodeCompileRequestEnvelope(input: string): CompileRequestEnvel
 }
 
 export function encodeCompileRequestEnvelope(value: CompileRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompileRequestEnvelope(value)) throw new TypeError("invalid CompileRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompileRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid CompileRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompileRequestEnvelope(owned)) throw new TypeError("invalid CompileRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1136,8 +1191,12 @@ export interface CompileResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaCompileResponseEnvelope(value: unknown): value is CompileResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isProtocolFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaCompileResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isCompileResponseEnvelope(value: unknown): value is CompileResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isProtocolFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isCompileResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompileResponseEnvelope(value));
 }
 
 export function decodeCompileResponseEnvelope(input: string): CompileResponseEnvelope {
@@ -1148,12 +1207,10 @@ export function decodeCompileResponseEnvelope(input: string): CompileResponseEnv
 }
 
 export function encodeCompileResponseEnvelope(value: CompileResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompileResponseEnvelope(value)) throw new TypeError("invalid CompileResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompileResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid CompileResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompileResponseEnvelope(owned)) throw new TypeError("invalid CompileResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1173,8 +1230,12 @@ export interface CompileResult {
   subtree_hashes: ReadonlyArray<SubtreeHash>;
 }
 
+function matchesSchemaCompileResult(value: unknown): value is CompileResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["authoring_subject_classification", "child_set_hashes", "compiled_recipes", "definition_hash", "effective_limits", "extensions", "normalized_artifact", "semantic_index", "source_map", "stable_addresses", "subject_semantic_hashes", "subtree_hashes"])) && hasOwn(value, "authoring_subject_classification") && (isJSONArray(value["authoring_subject_classification"]) && value["authoring_subject_classification"].every((item) => isAuthoringSubjectClassification(item)) && hasStableAddressOrder(value["authoring_subject_classification"], "address")) && hasOwn(value, "child_set_hashes") && (isJSONArray(value["child_set_hashes"]) && value["child_set_hashes"].every((item) => isChildSetHash(item)) && hasCanonicalCollectionOrder(value["child_set_hashes"], "child_set")) && hasOwn(value, "compiled_recipes") && (matchesSchemaCompiledRecipes(value["compiled_recipes"])) && hasOwn(value, "definition_hash") && (isDigest(value["definition_hash"])) && hasOwn(value, "effective_limits") && (matchesSchemaEffectiveResourceLimits(value["effective_limits"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "normalized_artifact") && (matchesSchemaNormalizedArtifact(value["normalized_artifact"])) && hasOwn(value, "semantic_index") && (isSemanticIndex(value["semantic_index"])) && hasOwn(value, "source_map") && (isSourceMap(value["source_map"])) && hasOwn(value, "stable_addresses") && (isJSONArray(value["stable_addresses"]) && value["stable_addresses"].every((item) => isStableAddress(item)) && hasUniqueItems(value["stable_addresses"]) && hasStableAddressOrder(value["stable_addresses"], "$item")) && hasOwn(value, "subject_semantic_hashes") && (isJSONArray(value["subject_semantic_hashes"]) && value["subject_semantic_hashes"].every((item) => isSubjectHash(item)) && hasStableAddressOrder(value["subject_semantic_hashes"], "address")) && hasOwn(value, "subtree_hashes") && (isJSONArray(value["subtree_hashes"]) && value["subtree_hashes"].every((item) => isSubtreeHash(item)) && hasStableAddressOrder(value["subtree_hashes"], "owner_address"));
+}
+
 export function isCompileResult(value: unknown): value is CompileResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["authoring_subject_classification", "child_set_hashes", "compiled_recipes", "definition_hash", "effective_limits", "extensions", "normalized_artifact", "semantic_index", "source_map", "stable_addresses", "subject_semantic_hashes", "subtree_hashes"])) && hasOwn(value, "authoring_subject_classification") && (isJSONArray(value["authoring_subject_classification"]) && value["authoring_subject_classification"].every((item) => isAuthoringSubjectClassification(item)) && hasStableAddressOrder(value["authoring_subject_classification"], "address")) && hasOwn(value, "child_set_hashes") && (isJSONArray(value["child_set_hashes"]) && value["child_set_hashes"].every((item) => isChildSetHash(item)) && hasCanonicalCollectionOrder(value["child_set_hashes"], "child_set")) && hasOwn(value, "compiled_recipes") && (isCompiledRecipes(value["compiled_recipes"])) && hasOwn(value, "definition_hash") && (isDigest(value["definition_hash"])) && hasOwn(value, "effective_limits") && (isEffectiveResourceLimits(value["effective_limits"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "normalized_artifact") && (isNormalizedArtifact(value["normalized_artifact"])) && hasOwn(value, "semantic_index") && (isSemanticIndex(value["semantic_index"])) && hasOwn(value, "source_map") && (isSourceMap(value["source_map"])) && hasOwn(value, "stable_addresses") && (isJSONArray(value["stable_addresses"]) && value["stable_addresses"].every((item) => isStableAddress(item)) && hasUniqueItems(value["stable_addresses"]) && hasStableAddressOrder(value["stable_addresses"], "$item")) && hasOwn(value, "subject_semantic_hashes") && (isJSONArray(value["subject_semantic_hashes"]) && value["subject_semantic_hashes"].every((item) => isSubjectHash(item)) && hasStableAddressOrder(value["subject_semantic_hashes"], "address")) && hasOwn(value, "subtree_hashes") && (isJSONArray(value["subtree_hashes"]) && value["subtree_hashes"].every((item) => isSubtreeHash(item)) && hasStableAddressOrder(value["subtree_hashes"], "owner_address")));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompileResult(value));
 }
 
 export function decodeCompileResult(input: string): CompileResult {
@@ -1185,12 +1246,10 @@ export function decodeCompileResult(input: string): CompileResult {
 }
 
 export function encodeCompileResult(value: CompileResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompileResult(value)) throw new TypeError("invalid CompileResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompileResult(emitted)) throw new TypeError("encoded value is invalid CompileResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompileResult(owned)) throw new TypeError("invalid CompileResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1200,8 +1259,12 @@ export interface CompiledExportRecipeArtifact {
   canonical_json: ExportRecipeBlobRef;
 }
 
+function matchesSchemaCompiledExportRecipeArtifact(value: unknown): value is CompiledExportRecipeArtifact {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isViewExportAddress(value["address"])) && hasOwn(value, "canonical_json") && (matchesSchemaExportRecipeBlobRef(value["canonical_json"]));
+}
+
 export function isCompiledExportRecipeArtifact(value: unknown): value is CompiledExportRecipeArtifact {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isViewExportAddress(value["address"])) && hasOwn(value, "canonical_json") && (isExportRecipeBlobRef(value["canonical_json"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompiledExportRecipeArtifact(value));
 }
 
 export function decodeCompiledExportRecipeArtifact(input: string): CompiledExportRecipeArtifact {
@@ -1212,12 +1275,10 @@ export function decodeCompiledExportRecipeArtifact(input: string): CompiledExpor
 }
 
 export function encodeCompiledExportRecipeArtifact(value: CompiledExportRecipeArtifact): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompiledExportRecipeArtifact(value)) throw new TypeError("invalid CompiledExportRecipeArtifact");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompiledExportRecipeArtifact(emitted)) throw new TypeError("encoded value is invalid CompiledExportRecipeArtifact");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompiledExportRecipeArtifact(owned)) throw new TypeError("invalid CompiledExportRecipeArtifact");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1227,8 +1288,12 @@ export interface CompiledQueryRecipeArtifact {
   canonical_json: QueryRecipeBlobRef;
 }
 
+function matchesSchemaCompiledQueryRecipeArtifact(value: unknown): value is CompiledQueryRecipeArtifact {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isQueryAddress(value["address"])) && hasOwn(value, "canonical_json") && (matchesSchemaQueryRecipeBlobRef(value["canonical_json"]));
+}
+
 export function isCompiledQueryRecipeArtifact(value: unknown): value is CompiledQueryRecipeArtifact {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isQueryAddress(value["address"])) && hasOwn(value, "canonical_json") && (isQueryRecipeBlobRef(value["canonical_json"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompiledQueryRecipeArtifact(value));
 }
 
 export function decodeCompiledQueryRecipeArtifact(input: string): CompiledQueryRecipeArtifact {
@@ -1239,12 +1304,10 @@ export function decodeCompiledQueryRecipeArtifact(input: string): CompiledQueryR
 }
 
 export function encodeCompiledQueryRecipeArtifact(value: CompiledQueryRecipeArtifact): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompiledQueryRecipeArtifact(value)) throw new TypeError("invalid CompiledQueryRecipeArtifact");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompiledQueryRecipeArtifact(emitted)) throw new TypeError("encoded value is invalid CompiledQueryRecipeArtifact");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompiledQueryRecipeArtifact(owned)) throw new TypeError("invalid CompiledQueryRecipeArtifact");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1255,8 +1318,12 @@ export interface CompiledRecipes {
   views: ReadonlyArray<CompiledViewRecipeArtifact>;
 }
 
+function matchesSchemaCompiledRecipes(value: unknown): value is CompiledRecipes {
+  return isObject(value) && hasOnlyKeys(value, new Set(["exports", "queries", "views"])) && hasOwn(value, "exports") && (isJSONArray(value["exports"]) && value["exports"].every((item) => matchesSchemaCompiledExportRecipeArtifact(item)) && hasStableAddressOrder(value["exports"], "address")) && hasOwn(value, "queries") && (isJSONArray(value["queries"]) && value["queries"].every((item) => matchesSchemaCompiledQueryRecipeArtifact(item)) && hasStableAddressOrder(value["queries"], "address")) && hasOwn(value, "views") && (isJSONArray(value["views"]) && value["views"].every((item) => matchesSchemaCompiledViewRecipeArtifact(item)) && hasStableAddressOrder(value["views"], "address"));
+}
+
 export function isCompiledRecipes(value: unknown): value is CompiledRecipes {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["exports", "queries", "views"])) && hasOwn(value, "exports") && (isJSONArray(value["exports"]) && value["exports"].every((item) => isCompiledExportRecipeArtifact(item)) && hasStableAddressOrder(value["exports"], "address")) && hasOwn(value, "queries") && (isJSONArray(value["queries"]) && value["queries"].every((item) => isCompiledQueryRecipeArtifact(item)) && hasStableAddressOrder(value["queries"], "address")) && hasOwn(value, "views") && (isJSONArray(value["views"]) && value["views"].every((item) => isCompiledViewRecipeArtifact(item)) && hasStableAddressOrder(value["views"], "address")));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompiledRecipes(value));
 }
 
 export function decodeCompiledRecipes(input: string): CompiledRecipes {
@@ -1267,12 +1334,10 @@ export function decodeCompiledRecipes(input: string): CompiledRecipes {
 }
 
 export function encodeCompiledRecipes(value: CompiledRecipes): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompiledRecipes(value)) throw new TypeError("invalid CompiledRecipes");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompiledRecipes(emitted)) throw new TypeError("encoded value is invalid CompiledRecipes");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompiledRecipes(owned)) throw new TypeError("invalid CompiledRecipes");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1282,8 +1347,12 @@ export interface CompiledViewRecipeArtifact {
   canonical_json: ViewRecipeBlobRef;
 }
 
+function matchesSchemaCompiledViewRecipeArtifact(value: unknown): value is CompiledViewRecipeArtifact {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isViewAddress(value["address"])) && hasOwn(value, "canonical_json") && (matchesSchemaViewRecipeBlobRef(value["canonical_json"]));
+}
+
 export function isCompiledViewRecipeArtifact(value: unknown): value is CompiledViewRecipeArtifact {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "canonical_json"])) && hasOwn(value, "address") && (isViewAddress(value["address"])) && hasOwn(value, "canonical_json") && (isViewRecipeBlobRef(value["canonical_json"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaCompiledViewRecipeArtifact(value));
 }
 
 export function decodeCompiledViewRecipeArtifact(input: string): CompiledViewRecipeArtifact {
@@ -1294,12 +1363,10 @@ export function decodeCompiledViewRecipeArtifact(input: string): CompiledViewRec
 }
 
 export function encodeCompiledViewRecipeArtifact(value: CompiledViewRecipeArtifact): string {
-  validateProgrammaticWireValue(value);
-  if (!isCompiledViewRecipeArtifact(value)) throw new TypeError("invalid CompiledViewRecipeArtifact");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCompiledViewRecipeArtifact(emitted)) throw new TypeError("encoded value is invalid CompiledViewRecipeArtifact");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCompiledViewRecipeArtifact(owned)) throw new TypeError("invalid CompiledViewRecipeArtifact");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1307,8 +1374,12 @@ export interface ConstraintCreateSubjectFields {
   column_addresses: ReadonlyArray<ColumnAddress>;
 }
 
+function matchesSchemaConstraintCreateSubjectFields(value: unknown): value is ConstraintCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["column_addresses"])) && hasOwn(value, "column_addresses") && (isJSONArray(value["column_addresses"]) && value["column_addresses"].every((item) => isColumnAddress(item)) && value["column_addresses"].length >= 1 && hasUniqueItems(value["column_addresses"]) && hasStableAddressOrder(value["column_addresses"], "$item"));
+}
+
 export function isConstraintCreateSubjectFields(value: unknown): value is ConstraintCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["column_addresses"])) && hasOwn(value, "column_addresses") && (isJSONArray(value["column_addresses"]) && value["column_addresses"].every((item) => isColumnAddress(item)) && value["column_addresses"].length >= 1 && hasUniqueItems(value["column_addresses"]) && hasStableAddressOrder(value["column_addresses"], "$item")));
+  return isProgrammaticWireValue(value, () => matchesSchemaConstraintCreateSubjectFields(value));
 }
 
 export function decodeConstraintCreateSubjectFields(input: string): ConstraintCreateSubjectFields {
@@ -1319,12 +1390,10 @@ export function decodeConstraintCreateSubjectFields(input: string): ConstraintCr
 }
 
 export function encodeConstraintCreateSubjectFields(value: ConstraintCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isConstraintCreateSubjectFields(value)) throw new TypeError("invalid ConstraintCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isConstraintCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid ConstraintCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaConstraintCreateSubjectFields(owned)) throw new TypeError("invalid ConstraintCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1337,8 +1406,12 @@ export interface CreateEntityOperation {
   subject_kind: "entity";
 }
 
+function matchesSchemaCreateEntityOperation(value: unknown): value is CreateEntityOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaEntityCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "entity") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateEntityOperation(value: unknown): value is CreateEntityOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isEntityCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "entity") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateEntityOperation(value));
 }
 
 export function decodeCreateEntityOperation(input: string): CreateEntityOperation {
@@ -1349,12 +1422,10 @@ export function decodeCreateEntityOperation(input: string): CreateEntityOperatio
 }
 
 export function encodeCreateEntityOperation(value: CreateEntityOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateEntityOperation(value)) throw new TypeError("invalid CreateEntityOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateEntityOperation(emitted)) throw new TypeError("encoded value is invalid CreateEntityOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateEntityOperation(owned)) throw new TypeError("invalid CreateEntityOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1367,8 +1438,12 @@ export interface CreateEntityTypeColumnOperation {
   subject_kind: "entity_type_column";
 }
 
+function matchesSchemaCreateEntityTypeColumnOperation(value: unknown): value is CreateEntityTypeColumnOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaColumnCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isEntityTypeAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "entity_type_column") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateEntityTypeColumnOperation(value: unknown): value is CreateEntityTypeColumnOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isColumnCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isEntityTypeAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "entity_type_column") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateEntityTypeColumnOperation(value));
 }
 
 export function decodeCreateEntityTypeColumnOperation(input: string): CreateEntityTypeColumnOperation {
@@ -1379,12 +1454,10 @@ export function decodeCreateEntityTypeColumnOperation(input: string): CreateEnti
 }
 
 export function encodeCreateEntityTypeColumnOperation(value: CreateEntityTypeColumnOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateEntityTypeColumnOperation(value)) throw new TypeError("invalid CreateEntityTypeColumnOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateEntityTypeColumnOperation(emitted)) throw new TypeError("encoded value is invalid CreateEntityTypeColumnOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateEntityTypeColumnOperation(owned)) throw new TypeError("invalid CreateEntityTypeColumnOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1397,8 +1470,12 @@ export interface CreateEntityTypeConstraintOperation {
   subject_kind: "entity_type_constraint";
 }
 
+function matchesSchemaCreateEntityTypeConstraintOperation(value: unknown): value is CreateEntityTypeConstraintOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaConstraintCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isEntityTypeAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "entity_type_constraint") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateEntityTypeConstraintOperation(value: unknown): value is CreateEntityTypeConstraintOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isConstraintCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isEntityTypeAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "entity_type_constraint") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateEntityTypeConstraintOperation(value));
 }
 
 export function decodeCreateEntityTypeConstraintOperation(input: string): CreateEntityTypeConstraintOperation {
@@ -1409,12 +1486,10 @@ export function decodeCreateEntityTypeConstraintOperation(input: string): Create
 }
 
 export function encodeCreateEntityTypeConstraintOperation(value: CreateEntityTypeConstraintOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateEntityTypeConstraintOperation(value)) throw new TypeError("invalid CreateEntityTypeConstraintOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateEntityTypeConstraintOperation(emitted)) throw new TypeError("encoded value is invalid CreateEntityTypeConstraintOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateEntityTypeConstraintOperation(owned)) throw new TypeError("invalid CreateEntityTypeConstraintOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1427,8 +1502,12 @@ export interface CreateEntityTypeOperation {
   subject_kind: "entity_type";
 }
 
+function matchesSchemaCreateEntityTypeOperation(value: unknown): value is CreateEntityTypeOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaEntityTypeCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "entity_type") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateEntityTypeOperation(value: unknown): value is CreateEntityTypeOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isEntityTypeCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "entity_type") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateEntityTypeOperation(value));
 }
 
 export function decodeCreateEntityTypeOperation(input: string): CreateEntityTypeOperation {
@@ -1439,12 +1518,10 @@ export function decodeCreateEntityTypeOperation(input: string): CreateEntityType
 }
 
 export function encodeCreateEntityTypeOperation(value: CreateEntityTypeOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateEntityTypeOperation(value)) throw new TypeError("invalid CreateEntityTypeOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateEntityTypeOperation(emitted)) throw new TypeError("encoded value is invalid CreateEntityTypeOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateEntityTypeOperation(owned)) throw new TypeError("invalid CreateEntityTypeOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1457,8 +1534,12 @@ export interface CreateLayerOperation {
   subject_kind: "layer";
 }
 
+function matchesSchemaCreateLayerOperation(value: unknown): value is CreateLayerOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaLayerCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "layer") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateLayerOperation(value: unknown): value is CreateLayerOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isLayerCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "layer") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateLayerOperation(value));
 }
 
 export function decodeCreateLayerOperation(input: string): CreateLayerOperation {
@@ -1469,12 +1550,10 @@ export function decodeCreateLayerOperation(input: string): CreateLayerOperation 
 }
 
 export function encodeCreateLayerOperation(value: CreateLayerOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateLayerOperation(value)) throw new TypeError("invalid CreateLayerOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateLayerOperation(emitted)) throw new TypeError("encoded value is invalid CreateLayerOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateLayerOperation(owned)) throw new TypeError("invalid CreateLayerOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1487,8 +1566,12 @@ export interface CreateQueryOperation {
   subject_kind: "query";
 }
 
+function matchesSchemaCreateQueryOperation(value: unknown): value is CreateQueryOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaQueryCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "query") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateQueryOperation(value: unknown): value is CreateQueryOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isQueryCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "query") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateQueryOperation(value));
 }
 
 export function decodeCreateQueryOperation(input: string): CreateQueryOperation {
@@ -1499,12 +1582,10 @@ export function decodeCreateQueryOperation(input: string): CreateQueryOperation 
 }
 
 export function encodeCreateQueryOperation(value: CreateQueryOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateQueryOperation(value)) throw new TypeError("invalid CreateQueryOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateQueryOperation(emitted)) throw new TypeError("encoded value is invalid CreateQueryOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateQueryOperation(owned)) throw new TypeError("invalid CreateQueryOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1517,8 +1598,12 @@ export interface CreateQueryParameterOperation {
   subject_kind: "query_parameter";
 }
 
+function matchesSchemaCreateQueryParameterOperation(value: unknown): value is CreateQueryParameterOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaQueryParameterCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isQueryAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "query_parameter") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateQueryParameterOperation(value: unknown): value is CreateQueryParameterOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isQueryParameterCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isQueryAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "query_parameter") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateQueryParameterOperation(value));
 }
 
 export function decodeCreateQueryParameterOperation(input: string): CreateQueryParameterOperation {
@@ -1529,12 +1614,10 @@ export function decodeCreateQueryParameterOperation(input: string): CreateQueryP
 }
 
 export function encodeCreateQueryParameterOperation(value: CreateQueryParameterOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateQueryParameterOperation(value)) throw new TypeError("invalid CreateQueryParameterOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateQueryParameterOperation(emitted)) throw new TypeError("encoded value is invalid CreateQueryParameterOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateQueryParameterOperation(owned)) throw new TypeError("invalid CreateQueryParameterOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1547,8 +1630,12 @@ export interface CreateReferenceOperation {
   subject_kind: "reference";
 }
 
+function matchesSchemaCreateReferenceOperation(value: unknown): value is CreateReferenceOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaReferenceCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "reference") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateReferenceOperation(value: unknown): value is CreateReferenceOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isReferenceCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "reference") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateReferenceOperation(value));
 }
 
 export function decodeCreateReferenceOperation(input: string): CreateReferenceOperation {
@@ -1559,12 +1646,10 @@ export function decodeCreateReferenceOperation(input: string): CreateReferenceOp
 }
 
 export function encodeCreateReferenceOperation(value: CreateReferenceOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateReferenceOperation(value)) throw new TypeError("invalid CreateReferenceOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateReferenceOperation(emitted)) throw new TypeError("encoded value is invalid CreateReferenceOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateReferenceOperation(owned)) throw new TypeError("invalid CreateReferenceOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1577,8 +1662,12 @@ export interface CreateRelationTypeColumnOperation {
   subject_kind: "relation_type_column";
 }
 
+function matchesSchemaCreateRelationTypeColumnOperation(value: unknown): value is CreateRelationTypeColumnOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaColumnCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isRelationTypeAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "relation_type_column") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateRelationTypeColumnOperation(value: unknown): value is CreateRelationTypeColumnOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isColumnCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isRelationTypeAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "relation_type_column") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateRelationTypeColumnOperation(value));
 }
 
 export function decodeCreateRelationTypeColumnOperation(input: string): CreateRelationTypeColumnOperation {
@@ -1589,12 +1678,10 @@ export function decodeCreateRelationTypeColumnOperation(input: string): CreateRe
 }
 
 export function encodeCreateRelationTypeColumnOperation(value: CreateRelationTypeColumnOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateRelationTypeColumnOperation(value)) throw new TypeError("invalid CreateRelationTypeColumnOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateRelationTypeColumnOperation(emitted)) throw new TypeError("encoded value is invalid CreateRelationTypeColumnOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateRelationTypeColumnOperation(owned)) throw new TypeError("invalid CreateRelationTypeColumnOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1607,8 +1694,12 @@ export interface CreateRelationTypeConstraintOperation {
   subject_kind: "relation_type_constraint";
 }
 
+function matchesSchemaCreateRelationTypeConstraintOperation(value: unknown): value is CreateRelationTypeConstraintOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaConstraintCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isRelationTypeAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "relation_type_constraint") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateRelationTypeConstraintOperation(value: unknown): value is CreateRelationTypeConstraintOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isConstraintCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isRelationTypeAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "relation_type_constraint") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateRelationTypeConstraintOperation(value));
 }
 
 export function decodeCreateRelationTypeConstraintOperation(input: string): CreateRelationTypeConstraintOperation {
@@ -1619,12 +1710,10 @@ export function decodeCreateRelationTypeConstraintOperation(input: string): Crea
 }
 
 export function encodeCreateRelationTypeConstraintOperation(value: CreateRelationTypeConstraintOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateRelationTypeConstraintOperation(value)) throw new TypeError("invalid CreateRelationTypeConstraintOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateRelationTypeConstraintOperation(emitted)) throw new TypeError("encoded value is invalid CreateRelationTypeConstraintOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateRelationTypeConstraintOperation(owned)) throw new TypeError("invalid CreateRelationTypeConstraintOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1637,8 +1726,12 @@ export interface CreateRelationTypeOperation {
   subject_kind: "relation_type";
 }
 
+function matchesSchemaCreateRelationTypeOperation(value: unknown): value is CreateRelationTypeOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaRelationTypeCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "relation_type") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateRelationTypeOperation(value: unknown): value is CreateRelationTypeOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isRelationTypeCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "relation_type") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateRelationTypeOperation(value));
 }
 
 export function decodeCreateRelationTypeOperation(input: string): CreateRelationTypeOperation {
@@ -1649,20 +1742,22 @@ export function decodeCreateRelationTypeOperation(input: string): CreateRelation
 }
 
 export function encodeCreateRelationTypeOperation(value: CreateRelationTypeOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateRelationTypeOperation(value)) throw new TypeError("invalid CreateRelationTypeOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateRelationTypeOperation(emitted)) throw new TypeError("encoded value is invalid CreateRelationTypeOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateRelationTypeOperation(owned)) throw new TypeError("invalid CreateRelationTypeOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 /** Closed union of the generated Language 1 subject-specific authored field objects. */
 export type CreateSubjectFields = EntityTypeCreateSubjectFields | RelationTypeCreateSubjectFields | LayerCreateSubjectFields | EntityCreateSubjectFields | QueryCreateSubjectFields | ViewCreateSubjectFields | ReferenceCreateSubjectFields | ColumnCreateSubjectFields | ConstraintCreateSubjectFields | QueryParameterCreateSubjectFields | ViewTableColumnCreateSubjectFields | ViewExportCreateSubjectFields;
 
+function matchesSchemaCreateSubjectFields(value: unknown): value is CreateSubjectFields {
+  return (matchesSchemaEntityTypeCreateSubjectFields(value)) || (matchesSchemaRelationTypeCreateSubjectFields(value)) || (matchesSchemaLayerCreateSubjectFields(value)) || (matchesSchemaEntityCreateSubjectFields(value)) || (matchesSchemaQueryCreateSubjectFields(value)) || (matchesSchemaViewCreateSubjectFields(value)) || (matchesSchemaReferenceCreateSubjectFields(value)) || (matchesSchemaColumnCreateSubjectFields(value)) || (matchesSchemaConstraintCreateSubjectFields(value)) || (matchesSchemaQueryParameterCreateSubjectFields(value)) || (matchesSchemaViewTableColumnCreateSubjectFields(value)) || (matchesSchemaViewExportCreateSubjectFields(value));
+}
+
 export function isCreateSubjectFields(value: unknown): value is CreateSubjectFields {
-  return isProgrammaticWireValue(value, () => (isEntityTypeCreateSubjectFields(value)) || (isRelationTypeCreateSubjectFields(value)) || (isLayerCreateSubjectFields(value)) || (isEntityCreateSubjectFields(value)) || (isQueryCreateSubjectFields(value)) || (isViewCreateSubjectFields(value)) || (isReferenceCreateSubjectFields(value)) || (isColumnCreateSubjectFields(value)) || (isConstraintCreateSubjectFields(value)) || (isQueryParameterCreateSubjectFields(value)) || (isViewTableColumnCreateSubjectFields(value)) || (isViewExportCreateSubjectFields(value)));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateSubjectFields(value));
 }
 
 export function decodeCreateSubjectFields(input: string): CreateSubjectFields {
@@ -1673,19 +1768,21 @@ export function decodeCreateSubjectFields(input: string): CreateSubjectFields {
 }
 
 export function encodeCreateSubjectFields(value: CreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateSubjectFields(value)) throw new TypeError("invalid CreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid CreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateSubjectFields(owned)) throw new TypeError("invalid CreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type CreateSubjectOperation = CreateEntityTypeOperation | CreateRelationTypeOperation | CreateLayerOperation | CreateEntityOperation | CreateQueryOperation | CreateViewOperation | CreateReferenceOperation | CreateEntityTypeColumnOperation | CreateEntityTypeConstraintOperation | CreateRelationTypeColumnOperation | CreateRelationTypeConstraintOperation | CreateQueryParameterOperation | CreateViewTableColumnOperation | CreateViewExportOperation;
 
+function matchesSchemaCreateSubjectOperation(value: unknown): value is CreateSubjectOperation {
+  return (matchesSchemaCreateEntityTypeOperation(value)) || (matchesSchemaCreateRelationTypeOperation(value)) || (matchesSchemaCreateLayerOperation(value)) || (matchesSchemaCreateEntityOperation(value)) || (matchesSchemaCreateQueryOperation(value)) || (matchesSchemaCreateViewOperation(value)) || (matchesSchemaCreateReferenceOperation(value)) || (matchesSchemaCreateEntityTypeColumnOperation(value)) || (matchesSchemaCreateEntityTypeConstraintOperation(value)) || (matchesSchemaCreateRelationTypeColumnOperation(value)) || (matchesSchemaCreateRelationTypeConstraintOperation(value)) || (matchesSchemaCreateQueryParameterOperation(value)) || (matchesSchemaCreateViewTableColumnOperation(value)) || (matchesSchemaCreateViewExportOperation(value));
+}
+
 export function isCreateSubjectOperation(value: unknown): value is CreateSubjectOperation {
-  return isProgrammaticWireValue(value, () => (isCreateEntityTypeOperation(value)) || (isCreateRelationTypeOperation(value)) || (isCreateLayerOperation(value)) || (isCreateEntityOperation(value)) || (isCreateQueryOperation(value)) || (isCreateViewOperation(value)) || (isCreateReferenceOperation(value)) || (isCreateEntityTypeColumnOperation(value)) || (isCreateEntityTypeConstraintOperation(value)) || (isCreateRelationTypeColumnOperation(value)) || (isCreateRelationTypeConstraintOperation(value)) || (isCreateQueryParameterOperation(value)) || (isCreateViewTableColumnOperation(value)) || (isCreateViewExportOperation(value)));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateSubjectOperation(value));
 }
 
 export function decodeCreateSubjectOperation(input: string): CreateSubjectOperation {
@@ -1696,12 +1793,10 @@ export function decodeCreateSubjectOperation(input: string): CreateSubjectOperat
 }
 
 export function encodeCreateSubjectOperation(value: CreateSubjectOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateSubjectOperation(value)) throw new TypeError("invalid CreateSubjectOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateSubjectOperation(emitted)) throw new TypeError("encoded value is invalid CreateSubjectOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateSubjectOperation(owned)) throw new TypeError("invalid CreateSubjectOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1714,8 +1809,12 @@ export interface CreateViewExportOperation {
   subject_kind: "view_export";
 }
 
+function matchesSchemaCreateViewExportOperation(value: unknown): value is CreateViewExportOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaViewExportCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isViewAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "view_export") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateViewExportOperation(value: unknown): value is CreateViewExportOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isViewExportCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isViewAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "view_export") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateViewExportOperation(value));
 }
 
 export function decodeCreateViewExportOperation(input: string): CreateViewExportOperation {
@@ -1726,12 +1825,10 @@ export function decodeCreateViewExportOperation(input: string): CreateViewExport
 }
 
 export function encodeCreateViewExportOperation(value: CreateViewExportOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateViewExportOperation(value)) throw new TypeError("invalid CreateViewExportOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateViewExportOperation(emitted)) throw new TypeError("encoded value is invalid CreateViewExportOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateViewExportOperation(owned)) throw new TypeError("invalid CreateViewExportOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1744,8 +1841,12 @@ export interface CreateViewOperation {
   subject_kind: "view";
 }
 
+function matchesSchemaCreateViewOperation(value: unknown): value is CreateViewOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaViewCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "view") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateViewOperation(value: unknown): value is CreateViewOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isViewCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isProjectRootAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "view") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateViewOperation(value));
 }
 
 export function decodeCreateViewOperation(input: string): CreateViewOperation {
@@ -1756,12 +1857,10 @@ export function decodeCreateViewOperation(input: string): CreateViewOperation {
 }
 
 export function encodeCreateViewOperation(value: CreateViewOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateViewOperation(value)) throw new TypeError("invalid CreateViewOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateViewOperation(emitted)) throw new TypeError("encoded value is invalid CreateViewOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateViewOperation(owned)) throw new TypeError("invalid CreateViewOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1774,8 +1873,12 @@ export interface CreateViewTableColumnOperation {
   subject_kind: "view_table_column";
 }
 
+function matchesSchemaCreateViewTableColumnOperation(value: unknown): value is CreateViewTableColumnOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (matchesSchemaViewTableColumnCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isViewAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "view_table_column") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isCreateViewTableColumnOperation(value: unknown): value is CreateViewTableColumnOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fields", "id", "operation", "parent_address", "placement", "subject_kind"])) && hasOwn(value, "fields") && (isViewTableColumnCreateSubjectFields(value["fields"])) && hasOwn(value, "id") && (isLocalIdentifier(value["id"])) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "create_subject") && hasOwn(value, "parent_address") && (isViewAddress(value["parent_address"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && hasOwn(value, "subject_kind") && (typeof value["subject_kind"] === "string" && hasScalarUnicode(value["subject_kind"]) && value["subject_kind"] === "view_table_column") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaCreateViewTableColumnOperation(value));
 }
 
 export function decodeCreateViewTableColumnOperation(input: string): CreateViewTableColumnOperation {
@@ -1786,12 +1889,10 @@ export function decodeCreateViewTableColumnOperation(input: string): CreateViewT
 }
 
 export function encodeCreateViewTableColumnOperation(value: CreateViewTableColumnOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isCreateViewTableColumnOperation(value)) throw new TypeError("invalid CreateViewTableColumnOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isCreateViewTableColumnOperation(emitted)) throw new TypeError("encoded value is invalid CreateViewTableColumnOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaCreateViewTableColumnOperation(owned)) throw new TypeError("invalid CreateViewTableColumnOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1800,8 +1901,12 @@ export interface DeclarationCursor {
   value: string;
 }
 
+function matchesSchemaDeclarationCursor(value: unknown): value is DeclarationCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_declarations_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isDeclarationCursor(value: unknown): value is DeclarationCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_declarations_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaDeclarationCursor(value));
 }
 
 export function decodeDeclarationCursor(input: string): DeclarationCursor {
@@ -1812,12 +1917,10 @@ export function decodeDeclarationCursor(input: string): DeclarationCursor {
 }
 
 export function encodeDeclarationCursor(value: DeclarationCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isDeclarationCursor(value)) throw new TypeError("invalid DeclarationCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isDeclarationCursor(emitted)) throw new TypeError("encoded value is invalid DeclarationCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaDeclarationCursor(owned)) throw new TypeError("invalid DeclarationCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1828,8 +1931,12 @@ export interface DeclarationPageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaDeclarationPageInfo(value: unknown): value is DeclarationPageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaDeclarationCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isDeclarationPageInfo(value: unknown): value is DeclarationPageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isDeclarationCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaDeclarationPageInfo(value));
 }
 
 export function decodeDeclarationPageInfo(input: string): DeclarationPageInfo {
@@ -1840,12 +1947,10 @@ export function decodeDeclarationPageInfo(input: string): DeclarationPageInfo {
 }
 
 export function encodeDeclarationPageInfo(value: DeclarationPageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isDeclarationPageInfo(value)) throw new TypeError("invalid DeclarationPageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isDeclarationPageInfo(emitted)) throw new TypeError("encoded value is invalid DeclarationPageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaDeclarationPageInfo(owned)) throw new TypeError("invalid DeclarationPageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1856,8 +1961,12 @@ export interface DeclarationReadItem {
   source_range: SourceRange;
 }
 
+function matchesSchemaDeclarationReadItem(value: unknown): value is DeclarationReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "kind", "source_chunk", "source_range"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "kind") && (isSubjectKind(value["kind"])) && hasOwn(value, "source_chunk") && (matchesSchemaBoundedTextChunk(value["source_chunk"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"]));
+}
+
 export function isDeclarationReadItem(value: unknown): value is DeclarationReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "kind", "source_chunk", "source_range"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "kind") && (isSubjectKind(value["kind"])) && hasOwn(value, "source_chunk") && (isBoundedTextChunk(value["source_chunk"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaDeclarationReadItem(value));
 }
 
 export function decodeDeclarationReadItem(input: string): DeclarationReadItem {
@@ -1868,12 +1977,10 @@ export function decodeDeclarationReadItem(input: string): DeclarationReadItem {
 }
 
 export function encodeDeclarationReadItem(value: DeclarationReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isDeclarationReadItem(value)) throw new TypeError("invalid DeclarationReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isDeclarationReadItem(emitted)) throw new TypeError("encoded value is invalid DeclarationReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaDeclarationReadItem(owned)) throw new TypeError("invalid DeclarationReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1902,8 +2009,12 @@ export interface DocumentCapabilityState {
   replace_source_tree: boolean;
 }
 
+function matchesSchemaDocumentCapabilityState(value: unknown): value is DocumentCapabilityState {
+  return isObject(value) && hasOnlyKeys(value, new Set(["apply_to_handle", "execute_query", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "materialize_view", "organize_workspace", "plan_export", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_modules", "read_references", "read_rows", "read_scope", "replace_source_tree"])) && hasOwn(value, "apply_to_handle") && (typeof value["apply_to_handle"] === "boolean") && hasOwn(value, "execute_query") && (typeof value["execute_query"] === "boolean") && hasOwn(value, "find_symbols") && (typeof value["find_symbols"] === "boolean") && hasOwn(value, "find_usages") && (typeof value["find_usages"] === "boolean") && hasOwn(value, "format_scope") && (typeof value["format_scope"] === "boolean") && hasOwn(value, "get_neighbors") && (typeof value["get_neighbors"] === "boolean") && hasOwn(value, "inspect_subgraph") && (typeof value["inspect_subgraph"] === "boolean") && hasOwn(value, "list_modules") && (typeof value["list_modules"] === "boolean") && hasOwn(value, "list_references") && (typeof value["list_references"] === "boolean") && hasOwn(value, "materialize_view") && (typeof value["materialize_view"] === "boolean") && hasOwn(value, "organize_workspace") && (typeof value["organize_workspace"] === "boolean") && hasOwn(value, "plan_export") && (typeof value["plan_export"] === "boolean") && hasOwn(value, "preview_fragment") && (typeof value["preview_fragment"] === "boolean") && hasOwn(value, "preview_operations") && (typeof value["preview_operations"] === "boolean") && hasOwn(value, "preview_source_patch") && (typeof value["preview_source_patch"] === "boolean") && hasOwn(value, "read_declarations") && (typeof value["read_declarations"] === "boolean") && hasOwn(value, "read_modules") && (typeof value["read_modules"] === "boolean") && hasOwn(value, "read_references") && (typeof value["read_references"] === "boolean") && hasOwn(value, "read_rows") && (typeof value["read_rows"] === "boolean") && hasOwn(value, "read_scope") && (typeof value["read_scope"] === "boolean") && hasOwn(value, "replace_source_tree") && (typeof value["replace_source_tree"] === "boolean");
+}
+
 export function isDocumentCapabilityState(value: unknown): value is DocumentCapabilityState {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["apply_to_handle", "execute_query", "find_symbols", "find_usages", "format_scope", "get_neighbors", "inspect_subgraph", "list_modules", "list_references", "materialize_view", "organize_workspace", "plan_export", "preview_fragment", "preview_operations", "preview_source_patch", "read_declarations", "read_modules", "read_references", "read_rows", "read_scope", "replace_source_tree"])) && hasOwn(value, "apply_to_handle") && (typeof value["apply_to_handle"] === "boolean") && hasOwn(value, "execute_query") && (typeof value["execute_query"] === "boolean") && hasOwn(value, "find_symbols") && (typeof value["find_symbols"] === "boolean") && hasOwn(value, "find_usages") && (typeof value["find_usages"] === "boolean") && hasOwn(value, "format_scope") && (typeof value["format_scope"] === "boolean") && hasOwn(value, "get_neighbors") && (typeof value["get_neighbors"] === "boolean") && hasOwn(value, "inspect_subgraph") && (typeof value["inspect_subgraph"] === "boolean") && hasOwn(value, "list_modules") && (typeof value["list_modules"] === "boolean") && hasOwn(value, "list_references") && (typeof value["list_references"] === "boolean") && hasOwn(value, "materialize_view") && (typeof value["materialize_view"] === "boolean") && hasOwn(value, "organize_workspace") && (typeof value["organize_workspace"] === "boolean") && hasOwn(value, "plan_export") && (typeof value["plan_export"] === "boolean") && hasOwn(value, "preview_fragment") && (typeof value["preview_fragment"] === "boolean") && hasOwn(value, "preview_operations") && (typeof value["preview_operations"] === "boolean") && hasOwn(value, "preview_source_patch") && (typeof value["preview_source_patch"] === "boolean") && hasOwn(value, "read_declarations") && (typeof value["read_declarations"] === "boolean") && hasOwn(value, "read_modules") && (typeof value["read_modules"] === "boolean") && hasOwn(value, "read_references") && (typeof value["read_references"] === "boolean") && hasOwn(value, "read_rows") && (typeof value["read_rows"] === "boolean") && hasOwn(value, "read_scope") && (typeof value["read_scope"] === "boolean") && hasOwn(value, "replace_source_tree") && (typeof value["replace_source_tree"] === "boolean"));
+  return isProgrammaticWireValue(value, () => matchesSchemaDocumentCapabilityState(value));
 }
 
 export function decodeDocumentCapabilityState(input: string): DocumentCapabilityState {
@@ -1914,12 +2025,10 @@ export function decodeDocumentCapabilityState(input: string): DocumentCapability
 }
 
 export function encodeDocumentCapabilityState(value: DocumentCapabilityState): string {
-  validateProgrammaticWireValue(value);
-  if (!isDocumentCapabilityState(value)) throw new TypeError("invalid DocumentCapabilityState");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isDocumentCapabilityState(emitted)) throw new TypeError("encoded value is invalid DocumentCapabilityState");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaDocumentCapabilityState(owned)) throw new TypeError("invalid DocumentCapabilityState");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1929,8 +2038,12 @@ export interface DocumentGeneration {
   value: CanonicalUint64;
 }
 
+function matchesSchemaDocumentGeneration(value: unknown): value is DocumentGeneration {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_handle", "value"])) && hasOwn(value, "document_handle") && (matchesSchemaDocumentHandle(value["document_handle"])) && hasOwn(value, "value") && (isCanonicalUint64(value["value"]));
+}
+
 export function isDocumentGeneration(value: unknown): value is DocumentGeneration {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_handle", "value"])) && hasOwn(value, "document_handle") && (isDocumentHandle(value["document_handle"])) && hasOwn(value, "value") && (isCanonicalUint64(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaDocumentGeneration(value));
 }
 
 export function decodeDocumentGeneration(input: string): DocumentGeneration {
@@ -1941,12 +2054,10 @@ export function decodeDocumentGeneration(input: string): DocumentGeneration {
 }
 
 export function encodeDocumentGeneration(value: DocumentGeneration): string {
-  validateProgrammaticWireValue(value);
-  if (!isDocumentGeneration(value)) throw new TypeError("invalid DocumentGeneration");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isDocumentGeneration(emitted)) throw new TypeError("encoded value is invalid DocumentGeneration");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaDocumentGeneration(owned)) throw new TypeError("invalid DocumentGeneration");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1956,8 +2067,12 @@ export interface DocumentHandle {
   value: string;
 }
 
+function matchesSchemaDocumentHandle(value: unknown): value is DocumentHandle {
+  return isObject(value) && hasOnlyKeys(value, new Set(["endpoint_instance_id", "value"])) && hasOwn(value, "endpoint_instance_id") && (isEndpointInstanceID(value["endpoint_instance_id"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^document_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isDocumentHandle(value: unknown): value is DocumentHandle {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["endpoint_instance_id", "value"])) && hasOwn(value, "endpoint_instance_id") && (isEndpointInstanceID(value["endpoint_instance_id"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^document_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaDocumentHandle(value));
 }
 
 export function decodeDocumentHandle(input: string): DocumentHandle {
@@ -1968,12 +2083,10 @@ export function decodeDocumentHandle(input: string): DocumentHandle {
 }
 
 export function encodeDocumentHandle(value: DocumentHandle): string {
-  validateProgrammaticWireValue(value);
-  if (!isDocumentHandle(value)) throw new TypeError("invalid DocumentHandle");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isDocumentHandle(emitted)) throw new TypeError("encoded value is invalid DocumentHandle");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaDocumentHandle(owned)) throw new TypeError("invalid DocumentHandle");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -1990,8 +2103,12 @@ export interface EffectiveResourceLimits {
   max_raster_pixels: CanonicalPositiveInt64;
 }
 
+function matchesSchemaEffectiveResourceLimits(value: unknown): value is EffectiveResourceLimits {
+  return isObject(value) && hasOnlyKeys(value, new Set(["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"])) && hasOwn(value, "max_asset_bytes") && (isCanonicalPositiveInt64(value["max_asset_bytes"])) && hasOwn(value, "max_assets") && (isCanonicalPositiveInt64(value["max_assets"])) && hasOwn(value, "max_declarations") && (isCanonicalPositiveInt64(value["max_declarations"])) && hasOwn(value, "max_pack_bytes") && (isCanonicalPositiveInt64(value["max_pack_bytes"])) && hasOwn(value, "max_pack_files") && (isCanonicalPositiveInt64(value["max_pack_files"])) && hasOwn(value, "max_project_source_bytes") && (isCanonicalPositiveInt64(value["max_project_source_bytes"])) && hasOwn(value, "max_project_source_files") && (isCanonicalPositiveInt64(value["max_project_source_files"])) && hasOwn(value, "max_raster_dimension") && (isCanonicalPositiveInt64(value["max_raster_dimension"])) && hasOwn(value, "max_raster_pixels") && (isCanonicalPositiveInt64(value["max_raster_pixels"]));
+}
+
 export function isEffectiveResourceLimits(value: unknown): value is EffectiveResourceLimits {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"])) && hasOwn(value, "max_asset_bytes") && (isCanonicalPositiveInt64(value["max_asset_bytes"])) && hasOwn(value, "max_assets") && (isCanonicalPositiveInt64(value["max_assets"])) && hasOwn(value, "max_declarations") && (isCanonicalPositiveInt64(value["max_declarations"])) && hasOwn(value, "max_pack_bytes") && (isCanonicalPositiveInt64(value["max_pack_bytes"])) && hasOwn(value, "max_pack_files") && (isCanonicalPositiveInt64(value["max_pack_files"])) && hasOwn(value, "max_project_source_bytes") && (isCanonicalPositiveInt64(value["max_project_source_bytes"])) && hasOwn(value, "max_project_source_files") && (isCanonicalPositiveInt64(value["max_project_source_files"])) && hasOwn(value, "max_raster_dimension") && (isCanonicalPositiveInt64(value["max_raster_dimension"])) && hasOwn(value, "max_raster_pixels") && (isCanonicalPositiveInt64(value["max_raster_pixels"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaEffectiveResourceLimits(value));
 }
 
 export function decodeEffectiveResourceLimits(input: string): EffectiveResourceLimits {
@@ -2002,12 +2119,10 @@ export function decodeEffectiveResourceLimits(input: string): EffectiveResourceL
 }
 
 export function encodeEffectiveResourceLimits(value: EffectiveResourceLimits): string {
-  validateProgrammaticWireValue(value);
-  if (!isEffectiveResourceLimits(value)) throw new TypeError("invalid EffectiveResourceLimits");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isEffectiveResourceLimits(emitted)) throw new TypeError("encoded value is invalid EffectiveResourceLimits");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaEffectiveResourceLimits(owned)) throw new TypeError("invalid EffectiveResourceLimits");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2019,8 +2134,12 @@ export interface EngineEditPreconditions {
   expected_subtree_hashes: ReadonlyArray<ExpectedHash>;
 }
 
+function matchesSchemaEngineEditPreconditions(value: unknown): value is EngineEditPreconditions {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "expected_child_sets", "expected_source_digests", "expected_subject_hashes", "expected_subtree_hashes"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "expected_child_sets") && (isJSONArray(value["expected_child_sets"]) && value["expected_child_sets"].every((item) => matchesSchemaExpectedChildSet(item)) && hasCanonicalCollectionOrder(value["expected_child_sets"], "child_set")) && (!hasOwn(value, "expected_source_digests") || (isJSONArray(value["expected_source_digests"]) && value["expected_source_digests"].every((item) => matchesSchemaExpectedSourceDigest(item)) && hasCanonicalCollectionOrder(value["expected_source_digests"], "module_scope"))) && hasOwn(value, "expected_subject_hashes") && (isJSONArray(value["expected_subject_hashes"]) && value["expected_subject_hashes"].every((item) => matchesSchemaExpectedHash(item)) && hasStableAddressOrder(value["expected_subject_hashes"], "address")) && hasOwn(value, "expected_subtree_hashes") && (isJSONArray(value["expected_subtree_hashes"]) && value["expected_subtree_hashes"].every((item) => matchesSchemaExpectedHash(item)) && hasStableAddressOrder(value["expected_subtree_hashes"], "address"));
+}
+
 export function isEngineEditPreconditions(value: unknown): value is EngineEditPreconditions {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "expected_child_sets", "expected_source_digests", "expected_subject_hashes", "expected_subtree_hashes"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "expected_child_sets") && (isJSONArray(value["expected_child_sets"]) && value["expected_child_sets"].every((item) => isExpectedChildSet(item)) && hasCanonicalCollectionOrder(value["expected_child_sets"], "child_set")) && (!hasOwn(value, "expected_source_digests") || (isJSONArray(value["expected_source_digests"]) && value["expected_source_digests"].every((item) => isExpectedSourceDigest(item)) && hasCanonicalCollectionOrder(value["expected_source_digests"], "module_scope"))) && hasOwn(value, "expected_subject_hashes") && (isJSONArray(value["expected_subject_hashes"]) && value["expected_subject_hashes"].every((item) => isExpectedHash(item)) && hasStableAddressOrder(value["expected_subject_hashes"], "address")) && hasOwn(value, "expected_subtree_hashes") && (isJSONArray(value["expected_subtree_hashes"]) && value["expected_subtree_hashes"].every((item) => isExpectedHash(item)) && hasStableAddressOrder(value["expected_subtree_hashes"], "address")));
+  return isProgrammaticWireValue(value, () => matchesSchemaEngineEditPreconditions(value));
 }
 
 export function decodeEngineEditPreconditions(input: string): EngineEditPreconditions {
@@ -2031,12 +2150,10 @@ export function decodeEngineEditPreconditions(input: string): EngineEditPrecondi
 }
 
 export function encodeEngineEditPreconditions(value: EngineEditPreconditions): string {
-  validateProgrammaticWireValue(value);
-  if (!isEngineEditPreconditions(value)) throw new TypeError("invalid EngineEditPreconditions");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isEngineEditPreconditions(emitted)) throw new TypeError("encoded value is invalid EngineEditPreconditions");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaEngineEditPreconditions(owned)) throw new TypeError("invalid EngineEditPreconditions");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2046,8 +2163,12 @@ export interface EngineProtocolRef {
   version: "1.0";
 }
 
+function matchesSchemaEngineProtocolRef(value: unknown): value is EngineProtocolRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["name", "version"])) && hasOwn(value, "name") && (typeof value["name"] === "string" && hasScalarUnicode(value["name"]) && value["name"] === "engine") && hasOwn(value, "version") && (typeof value["version"] === "string" && hasScalarUnicode(value["version"]) && value["version"] === "1.0");
+}
+
 export function isEngineProtocolRef(value: unknown): value is EngineProtocolRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["name", "version"])) && hasOwn(value, "name") && (typeof value["name"] === "string" && hasScalarUnicode(value["name"]) && value["name"] === "engine") && hasOwn(value, "version") && (typeof value["version"] === "string" && hasScalarUnicode(value["version"]) && value["version"] === "1.0"));
+  return isProgrammaticWireValue(value, () => matchesSchemaEngineProtocolRef(value));
 }
 
 export function decodeEngineProtocolRef(input: string): EngineProtocolRef {
@@ -2058,12 +2179,10 @@ export function decodeEngineProtocolRef(input: string): EngineProtocolRef {
 }
 
 export function encodeEngineProtocolRef(value: EngineProtocolRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isEngineProtocolRef(value)) throw new TypeError("invalid EngineProtocolRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isEngineProtocolRef(emitted)) throw new TypeError("encoded value is invalid EngineProtocolRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaEngineProtocolRef(owned)) throw new TypeError("invalid EngineProtocolRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2076,8 +2195,12 @@ export interface EntityCreateSubjectFields {
   type_address: EntityTypeAddress;
 }
 
+function matchesSchemaEntityCreateSubjectFields(value: unknown): value is EntityCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["annotations", "description", "display_name", "layer_address", "tags", "type_address"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => matchesSchemaSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && hasOwn(value, "layer_address") && (isLayerAddress(value["layer_address"])) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasOwn(value, "type_address") && (isEntityTypeAddress(value["type_address"])) && hasUniqueArrayKey(value, "annotations", "key");
+}
+
 export function isEntityCreateSubjectFields(value: unknown): value is EntityCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["annotations", "description", "display_name", "layer_address", "tags", "type_address"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => isSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && hasOwn(value, "layer_address") && (isLayerAddress(value["layer_address"])) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasOwn(value, "type_address") && (isEntityTypeAddress(value["type_address"])) && hasUniqueArrayKey(value, "annotations", "key"));
+  return isProgrammaticWireValue(value, () => matchesSchemaEntityCreateSubjectFields(value));
 }
 
 export function decodeEntityCreateSubjectFields(input: string): EntityCreateSubjectFields {
@@ -2088,12 +2211,10 @@ export function decodeEntityCreateSubjectFields(input: string): EntityCreateSubj
 }
 
 export function encodeEntityCreateSubjectFields(value: EntityCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isEntityCreateSubjectFields(value)) throw new TypeError("invalid EntityCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isEntityCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid EntityCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaEntityCreateSubjectFields(owned)) throw new TypeError("invalid EntityCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2108,8 +2229,12 @@ export interface EntityTypeCreateSubjectFields {
   tags?: ReadonlyArray<string>;
 }
 
+function matchesSchemaEntityTypeCreateSubjectFields(value: unknown): value is EntityTypeCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["annotations", "color", "description", "display_name", "icon", "image", "representation", "tags"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => matchesSchemaSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "color") || (isColor(value["color"]))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "icon") || (typeof value["icon"] === "string" && hasScalarUnicode(value["icon"]) && Array.from(value["icon"]).length >= 1)) && (!hasOwn(value, "image") || (isAuthoredAssetRef(value["image"]))) && hasOwn(value, "representation") && (isAuthoredEntityRepresentation(value["representation"])) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasUniqueArrayKey(value, "annotations", "key");
+}
+
 export function isEntityTypeCreateSubjectFields(value: unknown): value is EntityTypeCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["annotations", "color", "description", "display_name", "icon", "image", "representation", "tags"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => isSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "color") || (isColor(value["color"]))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "icon") || (typeof value["icon"] === "string" && hasScalarUnicode(value["icon"]) && Array.from(value["icon"]).length >= 1)) && (!hasOwn(value, "image") || (isAuthoredAssetRef(value["image"]))) && hasOwn(value, "representation") && (isAuthoredEntityRepresentation(value["representation"])) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasUniqueArrayKey(value, "annotations", "key"));
+  return isProgrammaticWireValue(value, () => matchesSchemaEntityTypeCreateSubjectFields(value));
 }
 
 export function decodeEntityTypeCreateSubjectFields(input: string): EntityTypeCreateSubjectFields {
@@ -2120,12 +2245,10 @@ export function decodeEntityTypeCreateSubjectFields(input: string): EntityTypeCr
 }
 
 export function encodeEntityTypeCreateSubjectFields(value: EntityTypeCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isEntityTypeCreateSubjectFields(value)) throw new TypeError("invalid EntityTypeCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isEntityTypeCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid EntityTypeCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaEntityTypeCreateSubjectFields(owned)) throw new TypeError("invalid EntityTypeCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2137,8 +2260,12 @@ export interface ExecuteQueryInput {
   state_snapshot?: StateQuerySnapshot;
 }
 
+function matchesSchemaExecuteQueryInput(value: unknown): value is ExecuteQueryInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["arguments", "document_generation", "limits", "query_address", "state_snapshot"])) && hasOwn(value, "arguments") && (isObject(value["arguments"]) && Object.values(value["arguments"]).every((item) => isRecipeScalar(item)) && Object.keys(value["arguments"]).every((key) => isParameterAddress(key))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "query_address") && (isQueryAddress(value["query_address"])) && (!hasOwn(value, "state_snapshot") || (isStateQuerySnapshot(value["state_snapshot"]))) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isExecuteQueryInput(value: unknown): value is ExecuteQueryInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["arguments", "document_generation", "limits", "query_address", "state_snapshot"])) && hasOwn(value, "arguments") && (isObject(value["arguments"]) && Object.values(value["arguments"]).every((item) => isRecipeScalar(item)) && Object.keys(value["arguments"]).every((key) => isParameterAddress(key))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "query_address") && (isQueryAddress(value["query_address"])) && (!hasOwn(value, "state_snapshot") || (isStateQuerySnapshot(value["state_snapshot"]))) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaExecuteQueryInput(value));
 }
 
 export function decodeExecuteQueryInput(input: string): ExecuteQueryInput {
@@ -2149,12 +2276,10 @@ export function decodeExecuteQueryInput(input: string): ExecuteQueryInput {
 }
 
 export function encodeExecuteQueryInput(value: ExecuteQueryInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isExecuteQueryInput(value)) throw new TypeError("invalid ExecuteQueryInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isExecuteQueryInput(emitted)) throw new TypeError("encoded value is invalid ExecuteQueryInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaExecuteQueryInput(owned)) throw new TypeError("invalid ExecuteQueryInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2168,8 +2293,12 @@ export interface ExecuteQueryRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaExecuteQueryRequestEnvelope(value: unknown): value is ExecuteQueryRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.execute_query") && hasOwn(value, "payload") && (matchesSchemaExecuteQueryInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isExecuteQueryRequestEnvelope(value: unknown): value is ExecuteQueryRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.execute_query") && hasOwn(value, "payload") && (isExecuteQueryInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaExecuteQueryRequestEnvelope(value));
 }
 
 export function decodeExecuteQueryRequestEnvelope(input: string): ExecuteQueryRequestEnvelope {
@@ -2180,12 +2309,10 @@ export function decodeExecuteQueryRequestEnvelope(input: string): ExecuteQueryRe
 }
 
 export function encodeExecuteQueryRequestEnvelope(value: ExecuteQueryRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isExecuteQueryRequestEnvelope(value)) throw new TypeError("invalid ExecuteQueryRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isExecuteQueryRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ExecuteQueryRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaExecuteQueryRequestEnvelope(owned)) throw new TypeError("invalid ExecuteQueryRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2200,8 +2327,12 @@ export interface ExecuteQueryResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaExecuteQueryResponseEnvelope(value: unknown): value is ExecuteQueryResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaExecuteQueryResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isExecuteQueryResponseEnvelope(value: unknown): value is ExecuteQueryResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isExecuteQueryResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaExecuteQueryResponseEnvelope(value));
 }
 
 export function decodeExecuteQueryResponseEnvelope(input: string): ExecuteQueryResponseEnvelope {
@@ -2212,12 +2343,10 @@ export function decodeExecuteQueryResponseEnvelope(input: string): ExecuteQueryR
 }
 
 export function encodeExecuteQueryResponseEnvelope(value: ExecuteQueryResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isExecuteQueryResponseEnvelope(value)) throw new TypeError("invalid ExecuteQueryResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isExecuteQueryResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ExecuteQueryResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaExecuteQueryResponseEnvelope(owned)) throw new TypeError("invalid ExecuteQueryResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2228,8 +2357,12 @@ export interface ExecuteQueryResult {
   returned_items: CanonicalUint64;
 }
 
+function matchesSchemaExecuteQueryResult(value: unknown): value is ExecuteQueryResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "result", "returned_bytes", "returned_items"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "result") && (matchesSchemaQueryExecutionResultData(value["result"])) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasProtocolInvariant(value, "query_result");
+}
+
 export function isExecuteQueryResult(value: unknown): value is ExecuteQueryResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "result", "returned_bytes", "returned_items"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "result") && (isQueryExecutionResultData(value["result"])) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasProtocolInvariant(value, "query_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaExecuteQueryResult(value));
 }
 
 export function decodeExecuteQueryResult(input: string): ExecuteQueryResult {
@@ -2240,12 +2373,10 @@ export function decodeExecuteQueryResult(input: string): ExecuteQueryResult {
 }
 
 export function encodeExecuteQueryResult(value: ExecuteQueryResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isExecuteQueryResult(value)) throw new TypeError("invalid ExecuteQueryResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isExecuteQueryResult(emitted)) throw new TypeError("encoded value is invalid ExecuteQueryResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaExecuteQueryResult(owned)) throw new TypeError("invalid ExecuteQueryResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2255,8 +2386,12 @@ export interface ExpectedChildSet {
   owner_address: StableAddress;
 }
 
+function matchesSchemaExpectedChildSet(value: unknown): value is ExpectedChildSet {
+  return isObject(value) && hasOnlyKeys(value, new Set(["child_kind", "hash", "owner_address"])) && hasOwn(value, "child_kind") && (isSubjectKind(value["child_kind"])) && hasOwn(value, "hash") && (isDigest(value["hash"])) && hasOwn(value, "owner_address") && (isStableAddress(value["owner_address"]));
+}
+
 export function isExpectedChildSet(value: unknown): value is ExpectedChildSet {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["child_kind", "hash", "owner_address"])) && hasOwn(value, "child_kind") && (isSubjectKind(value["child_kind"])) && hasOwn(value, "hash") && (isDigest(value["hash"])) && hasOwn(value, "owner_address") && (isStableAddress(value["owner_address"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaExpectedChildSet(value));
 }
 
 export function decodeExpectedChildSet(input: string): ExpectedChildSet {
@@ -2267,12 +2402,10 @@ export function decodeExpectedChildSet(input: string): ExpectedChildSet {
 }
 
 export function encodeExpectedChildSet(value: ExpectedChildSet): string {
-  validateProgrammaticWireValue(value);
-  if (!isExpectedChildSet(value)) throw new TypeError("invalid ExpectedChildSet");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isExpectedChildSet(emitted)) throw new TypeError("encoded value is invalid ExpectedChildSet");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaExpectedChildSet(owned)) throw new TypeError("invalid ExpectedChildSet");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2281,8 +2414,12 @@ export interface ExpectedHash {
   hash: Digest;
 }
 
+function matchesSchemaExpectedHash(value: unknown): value is ExpectedHash {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "hash"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "hash") && (isDigest(value["hash"]));
+}
+
 export function isExpectedHash(value: unknown): value is ExpectedHash {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "hash"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "hash") && (isDigest(value["hash"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaExpectedHash(value));
 }
 
 export function decodeExpectedHash(input: string): ExpectedHash {
@@ -2293,12 +2430,10 @@ export function decodeExpectedHash(input: string): ExpectedHash {
 }
 
 export function encodeExpectedHash(value: ExpectedHash): string {
-  validateProgrammaticWireValue(value);
-  if (!isExpectedHash(value)) throw new TypeError("invalid ExpectedHash");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isExpectedHash(emitted)) throw new TypeError("encoded value is invalid ExpectedHash");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaExpectedHash(owned)) throw new TypeError("invalid ExpectedHash");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2307,8 +2442,12 @@ export interface ExpectedSourceDigest {
   module: ModuleRef;
 }
 
+function matchesSchemaExpectedSourceDigest(value: unknown): value is ExpectedSourceDigest {
+  return isObject(value) && hasOnlyKeys(value, new Set(["digest", "module"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "module") && (isModuleRef(value["module"]));
+}
+
 export function isExpectedSourceDigest(value: unknown): value is ExpectedSourceDigest {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["digest", "module"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "module") && (isModuleRef(value["module"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaExpectedSourceDigest(value));
 }
 
 export function decodeExpectedSourceDigest(input: string): ExpectedSourceDigest {
@@ -2319,12 +2458,10 @@ export function decodeExpectedSourceDigest(input: string): ExpectedSourceDigest 
 }
 
 export function encodeExpectedSourceDigest(value: ExpectedSourceDigest): string {
-  validateProgrammaticWireValue(value);
-  if (!isExpectedSourceDigest(value)) throw new TypeError("invalid ExpectedSourceDigest");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isExpectedSourceDigest(emitted)) throw new TypeError("encoded value is invalid ExpectedSourceDigest");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaExpectedSourceDigest(owned)) throw new TypeError("invalid ExpectedSourceDigest");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2337,8 +2474,12 @@ export interface ExportRecipeBlobRef {
   size: CanonicalUint64;
 }
 
+function matchesSchemaExportRecipeBlobRef(value: unknown): value is ExportRecipeBlobRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.export-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+}
+
 export function isExportRecipeBlobRef(value: unknown): value is ExportRecipeBlobRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.export-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaExportRecipeBlobRef(value));
 }
 
 export function decodeExportRecipeBlobRef(input: string): ExportRecipeBlobRef {
@@ -2349,12 +2490,10 @@ export function decodeExportRecipeBlobRef(input: string): ExportRecipeBlobRef {
 }
 
 export function encodeExportRecipeBlobRef(value: ExportRecipeBlobRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isExportRecipeBlobRef(value)) throw new TypeError("invalid ExportRecipeBlobRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isExportRecipeBlobRef(emitted)) throw new TypeError("encoded value is invalid ExportRecipeBlobRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaExportRecipeBlobRef(owned)) throw new TypeError("invalid ExportRecipeBlobRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2370,8 +2509,12 @@ export interface FindSymbolsInput {
   subject_kinds?: ReadonlyArray<SubjectKind>;
 }
 
+function matchesSchemaFindSymbolsInput(value: unknown): value is FindSymbolsInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["case_mode", "cursor", "document_generation", "limits", "match_mode", "owner_addresses", "query", "subject_kinds"])) && hasOwn(value, "case_mode") && (typeof value["case_mode"] === "string" && hasScalarUnicode(value["case_mode"]) && ["sensitive", "unicode_simple_fold"].includes(value["case_mode"])) && (!hasOwn(value, "cursor") || (matchesSchemaSymbolCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "match_mode") && (typeof value["match_mode"] === "string" && hasScalarUnicode(value["match_mode"]) && ["exact", "prefix", "substring"].includes(value["match_mode"])) && (!hasOwn(value, "owner_addresses") || (isJSONArray(value["owner_addresses"]) && value["owner_addresses"].every((item) => isStableAddress(item)) && value["owner_addresses"].length >= 1 && hasUniqueItems(value["owner_addresses"]) && hasStableAddressOrder(value["owner_addresses"], "$item"))) && hasOwn(value, "query") && (typeof value["query"] === "string" && hasScalarUnicode(value["query"]) && Array.from(value["query"]).length >= 1 && Array.from(value["query"]).length <= 1024) && (!hasOwn(value, "subject_kinds") || (isJSONArray(value["subject_kinds"]) && value["subject_kinds"].every((item) => isSubjectKind(item)) && value["subject_kinds"].length >= 1 && hasUniqueItems(value["subject_kinds"]) && hasCanonicalEnumOrder(value["subject_kinds"], ["entity", "entity_row", "entity_type", "entity_type_column", "entity_type_constraint", "layer", "pack", "project", "query", "query_parameter", "reference", "relation", "relation_row", "relation_type", "relation_type_column", "relation_type_constraint", "view", "view_export", "view_table_column"]))) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isFindSymbolsInput(value: unknown): value is FindSymbolsInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["case_mode", "cursor", "document_generation", "limits", "match_mode", "owner_addresses", "query", "subject_kinds"])) && hasOwn(value, "case_mode") && (typeof value["case_mode"] === "string" && hasScalarUnicode(value["case_mode"]) && ["sensitive", "unicode_simple_fold"].includes(value["case_mode"])) && (!hasOwn(value, "cursor") || (isSymbolCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "match_mode") && (typeof value["match_mode"] === "string" && hasScalarUnicode(value["match_mode"]) && ["exact", "prefix", "substring"].includes(value["match_mode"])) && (!hasOwn(value, "owner_addresses") || (isJSONArray(value["owner_addresses"]) && value["owner_addresses"].every((item) => isStableAddress(item)) && value["owner_addresses"].length >= 1 && hasUniqueItems(value["owner_addresses"]) && hasStableAddressOrder(value["owner_addresses"], "$item"))) && hasOwn(value, "query") && (typeof value["query"] === "string" && hasScalarUnicode(value["query"]) && Array.from(value["query"]).length >= 1 && Array.from(value["query"]).length <= 1024) && (!hasOwn(value, "subject_kinds") || (isJSONArray(value["subject_kinds"]) && value["subject_kinds"].every((item) => isSubjectKind(item)) && value["subject_kinds"].length >= 1 && hasUniqueItems(value["subject_kinds"]) && hasCanonicalEnumOrder(value["subject_kinds"], ["entity", "entity_row", "entity_type", "entity_type_column", "entity_type_constraint", "layer", "pack", "project", "query", "query_parameter", "reference", "relation", "relation_row", "relation_type", "relation_type_column", "relation_type_constraint", "view", "view_export", "view_table_column"]))) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaFindSymbolsInput(value));
 }
 
 export function decodeFindSymbolsInput(input: string): FindSymbolsInput {
@@ -2382,12 +2525,10 @@ export function decodeFindSymbolsInput(input: string): FindSymbolsInput {
 }
 
 export function encodeFindSymbolsInput(value: FindSymbolsInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isFindSymbolsInput(value)) throw new TypeError("invalid FindSymbolsInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFindSymbolsInput(emitted)) throw new TypeError("encoded value is invalid FindSymbolsInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFindSymbolsInput(owned)) throw new TypeError("invalid FindSymbolsInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2401,8 +2542,12 @@ export interface FindSymbolsRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaFindSymbolsRequestEnvelope(value: unknown): value is FindSymbolsRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.find_symbols") && hasOwn(value, "payload") && (matchesSchemaFindSymbolsInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isFindSymbolsRequestEnvelope(value: unknown): value is FindSymbolsRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.find_symbols") && hasOwn(value, "payload") && (isFindSymbolsInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaFindSymbolsRequestEnvelope(value));
 }
 
 export function decodeFindSymbolsRequestEnvelope(input: string): FindSymbolsRequestEnvelope {
@@ -2413,12 +2558,10 @@ export function decodeFindSymbolsRequestEnvelope(input: string): FindSymbolsRequ
 }
 
 export function encodeFindSymbolsRequestEnvelope(value: FindSymbolsRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isFindSymbolsRequestEnvelope(value)) throw new TypeError("invalid FindSymbolsRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFindSymbolsRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid FindSymbolsRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFindSymbolsRequestEnvelope(owned)) throw new TypeError("invalid FindSymbolsRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2433,8 +2576,12 @@ export interface FindSymbolsResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaFindSymbolsResponseEnvelope(value: unknown): value is FindSymbolsResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaFindSymbolsResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isFindSymbolsResponseEnvelope(value: unknown): value is FindSymbolsResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isFindSymbolsResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaFindSymbolsResponseEnvelope(value));
 }
 
 export function decodeFindSymbolsResponseEnvelope(input: string): FindSymbolsResponseEnvelope {
@@ -2445,12 +2592,10 @@ export function decodeFindSymbolsResponseEnvelope(input: string): FindSymbolsRes
 }
 
 export function encodeFindSymbolsResponseEnvelope(value: FindSymbolsResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isFindSymbolsResponseEnvelope(value)) throw new TypeError("invalid FindSymbolsResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFindSymbolsResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid FindSymbolsResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFindSymbolsResponseEnvelope(owned)) throw new TypeError("invalid FindSymbolsResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2460,8 +2605,12 @@ export interface FindSymbolsResult {
   page: SymbolPageInfo;
 }
 
+function matchesSchemaFindSymbolsResult(value: unknown): value is FindSymbolsResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaSymbolReadItem(item)) && hasStableAddressOrder(value["items"], "address")) && hasOwn(value, "page") && (matchesSchemaSymbolPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isFindSymbolsResult(value: unknown): value is FindSymbolsResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isSymbolReadItem(item)) && hasStableAddressOrder(value["items"], "address")) && hasOwn(value, "page") && (isSymbolPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaFindSymbolsResult(value));
 }
 
 export function decodeFindSymbolsResult(input: string): FindSymbolsResult {
@@ -2472,12 +2621,10 @@ export function decodeFindSymbolsResult(input: string): FindSymbolsResult {
 }
 
 export function encodeFindSymbolsResult(value: FindSymbolsResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isFindSymbolsResult(value)) throw new TypeError("invalid FindSymbolsResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFindSymbolsResult(emitted)) throw new TypeError("encoded value is invalid FindSymbolsResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFindSymbolsResult(owned)) throw new TypeError("invalid FindSymbolsResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2488,8 +2635,12 @@ export interface FindUsagesInput {
   target_addresses: ReadonlyArray<StableAddress>;
 }
 
+function matchesSchemaFindUsagesInput(value: unknown): value is FindUsagesInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits", "target_addresses"])) && (!hasOwn(value, "cursor") || (matchesSchemaUsageCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "target_addresses") && (isJSONArray(value["target_addresses"]) && value["target_addresses"].every((item) => isStableAddress(item)) && value["target_addresses"].length >= 1 && hasUniqueItems(value["target_addresses"]) && hasStableAddressOrder(value["target_addresses"], "$item")) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isFindUsagesInput(value: unknown): value is FindUsagesInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits", "target_addresses"])) && (!hasOwn(value, "cursor") || (isUsageCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "target_addresses") && (isJSONArray(value["target_addresses"]) && value["target_addresses"].every((item) => isStableAddress(item)) && value["target_addresses"].length >= 1 && hasUniqueItems(value["target_addresses"]) && hasStableAddressOrder(value["target_addresses"], "$item")) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaFindUsagesInput(value));
 }
 
 export function decodeFindUsagesInput(input: string): FindUsagesInput {
@@ -2500,12 +2651,10 @@ export function decodeFindUsagesInput(input: string): FindUsagesInput {
 }
 
 export function encodeFindUsagesInput(value: FindUsagesInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isFindUsagesInput(value)) throw new TypeError("invalid FindUsagesInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFindUsagesInput(emitted)) throw new TypeError("encoded value is invalid FindUsagesInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFindUsagesInput(owned)) throw new TypeError("invalid FindUsagesInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2519,8 +2668,12 @@ export interface FindUsagesRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaFindUsagesRequestEnvelope(value: unknown): value is FindUsagesRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.find_usages") && hasOwn(value, "payload") && (matchesSchemaFindUsagesInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isFindUsagesRequestEnvelope(value: unknown): value is FindUsagesRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.find_usages") && hasOwn(value, "payload") && (isFindUsagesInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaFindUsagesRequestEnvelope(value));
 }
 
 export function decodeFindUsagesRequestEnvelope(input: string): FindUsagesRequestEnvelope {
@@ -2531,12 +2684,10 @@ export function decodeFindUsagesRequestEnvelope(input: string): FindUsagesReques
 }
 
 export function encodeFindUsagesRequestEnvelope(value: FindUsagesRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isFindUsagesRequestEnvelope(value)) throw new TypeError("invalid FindUsagesRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFindUsagesRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid FindUsagesRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFindUsagesRequestEnvelope(owned)) throw new TypeError("invalid FindUsagesRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2551,8 +2702,12 @@ export interface FindUsagesResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaFindUsagesResponseEnvelope(value: unknown): value is FindUsagesResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaFindUsagesResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isFindUsagesResponseEnvelope(value: unknown): value is FindUsagesResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isFindUsagesResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaFindUsagesResponseEnvelope(value));
 }
 
 export function decodeFindUsagesResponseEnvelope(input: string): FindUsagesResponseEnvelope {
@@ -2563,12 +2718,10 @@ export function decodeFindUsagesResponseEnvelope(input: string): FindUsagesRespo
 }
 
 export function encodeFindUsagesResponseEnvelope(value: FindUsagesResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isFindUsagesResponseEnvelope(value)) throw new TypeError("invalid FindUsagesResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFindUsagesResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid FindUsagesResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFindUsagesResponseEnvelope(owned)) throw new TypeError("invalid FindUsagesResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2578,8 +2731,12 @@ export interface FindUsagesResult {
   page: UsagePageInfo;
 }
 
+function matchesSchemaFindUsagesResult(value: unknown): value is FindUsagesResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaUsageReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "semantic_reference")) && hasOwn(value, "page") && (matchesSchemaUsagePageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isFindUsagesResult(value: unknown): value is FindUsagesResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isUsageReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "semantic_reference")) && hasOwn(value, "page") && (isUsagePageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaFindUsagesResult(value));
 }
 
 export function decodeFindUsagesResult(input: string): FindUsagesResult {
@@ -2590,12 +2747,10 @@ export function decodeFindUsagesResult(input: string): FindUsagesResult {
 }
 
 export function encodeFindUsagesResult(value: FindUsagesResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isFindUsagesResult(value)) throw new TypeError("invalid FindUsagesResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFindUsagesResult(emitted)) throw new TypeError("encoded value is invalid FindUsagesResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFindUsagesResult(owned)) throw new TypeError("invalid FindUsagesResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2605,8 +2760,12 @@ export interface FormatScopeInput {
   scope_addresses: ReadonlyArray<StableAddress>;
 }
 
+function matchesSchemaFormatScopeInput(value: unknown): value is FormatScopeInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["limits", "preconditions", "scope_addresses"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "preconditions") && (matchesSchemaEngineEditPreconditions(value["preconditions"])) && hasOwn(value, "scope_addresses") && (isJSONArray(value["scope_addresses"]) && value["scope_addresses"].every((item) => isStableAddress(item)) && value["scope_addresses"].length >= 1 && hasUniqueItems(value["scope_addresses"]) && hasStableAddressOrder(value["scope_addresses"], "$item"));
+}
+
 export function isFormatScopeInput(value: unknown): value is FormatScopeInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["limits", "preconditions", "scope_addresses"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "preconditions") && (isEngineEditPreconditions(value["preconditions"])) && hasOwn(value, "scope_addresses") && (isJSONArray(value["scope_addresses"]) && value["scope_addresses"].every((item) => isStableAddress(item)) && value["scope_addresses"].length >= 1 && hasUniqueItems(value["scope_addresses"]) && hasStableAddressOrder(value["scope_addresses"], "$item")));
+  return isProgrammaticWireValue(value, () => matchesSchemaFormatScopeInput(value));
 }
 
 export function decodeFormatScopeInput(input: string): FormatScopeInput {
@@ -2617,12 +2776,10 @@ export function decodeFormatScopeInput(input: string): FormatScopeInput {
 }
 
 export function encodeFormatScopeInput(value: FormatScopeInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isFormatScopeInput(value)) throw new TypeError("invalid FormatScopeInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFormatScopeInput(emitted)) throw new TypeError("encoded value is invalid FormatScopeInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFormatScopeInput(owned)) throw new TypeError("invalid FormatScopeInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2636,8 +2793,12 @@ export interface FormatScopeRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaFormatScopeRequestEnvelope(value: unknown): value is FormatScopeRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.format_scope") && hasOwn(value, "payload") && (matchesSchemaFormatScopeInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isFormatScopeRequestEnvelope(value: unknown): value is FormatScopeRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.format_scope") && hasOwn(value, "payload") && (isFormatScopeInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaFormatScopeRequestEnvelope(value));
 }
 
 export function decodeFormatScopeRequestEnvelope(input: string): FormatScopeRequestEnvelope {
@@ -2648,12 +2809,10 @@ export function decodeFormatScopeRequestEnvelope(input: string): FormatScopeRequ
 }
 
 export function encodeFormatScopeRequestEnvelope(value: FormatScopeRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isFormatScopeRequestEnvelope(value)) throw new TypeError("invalid FormatScopeRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFormatScopeRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid FormatScopeRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFormatScopeRequestEnvelope(owned)) throw new TypeError("invalid FormatScopeRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2668,8 +2827,12 @@ export interface FormatScopeResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaFormatScopeResponseEnvelope(value: unknown): value is FormatScopeResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isFormatScopeResponseEnvelope(value: unknown): value is FormatScopeResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaFormatScopeResponseEnvelope(value));
 }
 
 export function decodeFormatScopeResponseEnvelope(input: string): FormatScopeResponseEnvelope {
@@ -2680,12 +2843,10 @@ export function decodeFormatScopeResponseEnvelope(input: string): FormatScopeRes
 }
 
 export function encodeFormatScopeResponseEnvelope(value: FormatScopeResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isFormatScopeResponseEnvelope(value)) throw new TypeError("invalid FormatScopeResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFormatScopeResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid FormatScopeResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFormatScopeResponseEnvelope(owned)) throw new TypeError("invalid FormatScopeResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2698,8 +2859,12 @@ export interface FragmentInput {
   replacement_target?: StableAddress;
 }
 
+function matchesSchemaFragmentInput(value: unknown): value is FragmentInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["allowed_kinds", "fragment_blob", "insertion_owner", "intent", "placement", "replacement_target"])) && hasOwn(value, "allowed_kinds") && (isJSONArray(value["allowed_kinds"]) && value["allowed_kinds"].every((item) => isSubjectKind(item)) && value["allowed_kinds"].length >= 1 && hasUniqueItems(value["allowed_kinds"]) && hasCanonicalEnumOrder(value["allowed_kinds"], ["entity", "entity_row", "entity_type", "entity_type_column", "entity_type_constraint", "layer", "pack", "project", "query", "query_parameter", "reference", "relation", "relation_row", "relation_type", "relation_type_column", "relation_type_constraint", "view", "view_export", "view_table_column"])) && hasOwn(value, "fragment_blob") && (isBlobRef(value["fragment_blob"])) && hasOwn(value, "insertion_owner") && (isStableAddress(value["insertion_owner"])) && hasOwn(value, "intent") && (typeof value["intent"] === "string" && hasScalarUnicode(value["intent"]) && ["insert", "replace"].includes(value["intent"])) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && (!hasOwn(value, "replacement_target") || (isStableAddress(value["replacement_target"]))) && ((value["intent"] === "insert" && !hasOwn(value, "replacement_target")) || (value["intent"] === "replace" && hasOwn(value, "replacement_target")));
+}
+
 export function isFragmentInput(value: unknown): value is FragmentInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["allowed_kinds", "fragment_blob", "insertion_owner", "intent", "placement", "replacement_target"])) && hasOwn(value, "allowed_kinds") && (isJSONArray(value["allowed_kinds"]) && value["allowed_kinds"].every((item) => isSubjectKind(item)) && value["allowed_kinds"].length >= 1 && hasUniqueItems(value["allowed_kinds"]) && hasCanonicalEnumOrder(value["allowed_kinds"], ["entity", "entity_row", "entity_type", "entity_type_column", "entity_type_constraint", "layer", "pack", "project", "query", "query_parameter", "reference", "relation", "relation_row", "relation_type", "relation_type_column", "relation_type_constraint", "view", "view_export", "view_table_column"])) && hasOwn(value, "fragment_blob") && (isBlobRef(value["fragment_blob"])) && hasOwn(value, "insertion_owner") && (isStableAddress(value["insertion_owner"])) && hasOwn(value, "intent") && (typeof value["intent"] === "string" && hasScalarUnicode(value["intent"]) && ["insert", "replace"].includes(value["intent"])) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && (!hasOwn(value, "replacement_target") || (isStableAddress(value["replacement_target"]))) && ((value["intent"] === "insert" && !hasOwn(value, "replacement_target")) || (value["intent"] === "replace" && hasOwn(value, "replacement_target"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaFragmentInput(value));
 }
 
 export function decodeFragmentInput(input: string): FragmentInput {
@@ -2710,12 +2875,10 @@ export function decodeFragmentInput(input: string): FragmentInput {
 }
 
 export function encodeFragmentInput(value: FragmentInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isFragmentInput(value)) throw new TypeError("invalid FragmentInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isFragmentInput(emitted)) throw new TypeError("encoded value is invalid FragmentInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaFragmentInput(owned)) throw new TypeError("invalid FragmentInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2728,8 +2891,12 @@ export interface GetNeighborsInput {
   limits: WorkbenchLimits;
 }
 
+function matchesSchemaGetNeighborsInput(value: unknown): value is GetNeighborsInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["cursor", "depth", "direction", "document_generation", "entity_addresses", "limits"])) && (!hasOwn(value, "cursor") || (matchesSchemaNeighborCursor(value["cursor"]))) && hasOwn(value, "depth") && (typeof value["depth"] === "number" && Number.isSafeInteger(value["depth"]) && !Object.is(value["depth"], -0) && value["depth"] >= 1 && value["depth"] <= 32) && hasOwn(value, "direction") && (typeof value["direction"] === "string" && hasScalarUnicode(value["direction"]) && ["both", "incoming", "outgoing"].includes(value["direction"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "entity_addresses") && (isJSONArray(value["entity_addresses"]) && value["entity_addresses"].every((item) => isEntityAddress(item)) && value["entity_addresses"].length >= 1 && hasUniqueItems(value["entity_addresses"]) && hasStableAddressOrder(value["entity_addresses"], "$item")) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isGetNeighborsInput(value: unknown): value is GetNeighborsInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["cursor", "depth", "direction", "document_generation", "entity_addresses", "limits"])) && (!hasOwn(value, "cursor") || (isNeighborCursor(value["cursor"]))) && hasOwn(value, "depth") && (typeof value["depth"] === "number" && Number.isSafeInteger(value["depth"]) && !Object.is(value["depth"], -0) && value["depth"] >= 1 && value["depth"] <= 32) && hasOwn(value, "direction") && (typeof value["direction"] === "string" && hasScalarUnicode(value["direction"]) && ["both", "incoming", "outgoing"].includes(value["direction"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "entity_addresses") && (isJSONArray(value["entity_addresses"]) && value["entity_addresses"].every((item) => isEntityAddress(item)) && value["entity_addresses"].length >= 1 && hasUniqueItems(value["entity_addresses"]) && hasStableAddressOrder(value["entity_addresses"], "$item")) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaGetNeighborsInput(value));
 }
 
 export function decodeGetNeighborsInput(input: string): GetNeighborsInput {
@@ -2740,12 +2907,10 @@ export function decodeGetNeighborsInput(input: string): GetNeighborsInput {
 }
 
 export function encodeGetNeighborsInput(value: GetNeighborsInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isGetNeighborsInput(value)) throw new TypeError("invalid GetNeighborsInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isGetNeighborsInput(emitted)) throw new TypeError("encoded value is invalid GetNeighborsInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaGetNeighborsInput(owned)) throw new TypeError("invalid GetNeighborsInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2759,8 +2924,12 @@ export interface GetNeighborsRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaGetNeighborsRequestEnvelope(value: unknown): value is GetNeighborsRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.get_neighbors") && hasOwn(value, "payload") && (matchesSchemaGetNeighborsInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isGetNeighborsRequestEnvelope(value: unknown): value is GetNeighborsRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.get_neighbors") && hasOwn(value, "payload") && (isGetNeighborsInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaGetNeighborsRequestEnvelope(value));
 }
 
 export function decodeGetNeighborsRequestEnvelope(input: string): GetNeighborsRequestEnvelope {
@@ -2771,12 +2940,10 @@ export function decodeGetNeighborsRequestEnvelope(input: string): GetNeighborsRe
 }
 
 export function encodeGetNeighborsRequestEnvelope(value: GetNeighborsRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isGetNeighborsRequestEnvelope(value)) throw new TypeError("invalid GetNeighborsRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isGetNeighborsRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid GetNeighborsRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaGetNeighborsRequestEnvelope(owned)) throw new TypeError("invalid GetNeighborsRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2791,8 +2958,12 @@ export interface GetNeighborsResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaGetNeighborsResponseEnvelope(value: unknown): value is GetNeighborsResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaGetNeighborsResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isGetNeighborsResponseEnvelope(value: unknown): value is GetNeighborsResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isGetNeighborsResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaGetNeighborsResponseEnvelope(value));
 }
 
 export function decodeGetNeighborsResponseEnvelope(input: string): GetNeighborsResponseEnvelope {
@@ -2803,12 +2974,10 @@ export function decodeGetNeighborsResponseEnvelope(input: string): GetNeighborsR
 }
 
 export function encodeGetNeighborsResponseEnvelope(value: GetNeighborsResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isGetNeighborsResponseEnvelope(value)) throw new TypeError("invalid GetNeighborsResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isGetNeighborsResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid GetNeighborsResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaGetNeighborsResponseEnvelope(owned)) throw new TypeError("invalid GetNeighborsResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2818,8 +2987,12 @@ export interface GetNeighborsResult {
   page: NeighborPageInfo;
 }
 
+function matchesSchemaGetNeighborsResult(value: unknown): value is GetNeighborsResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaNeighborReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "neighbor")) && hasOwn(value, "page") && (matchesSchemaNeighborPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isGetNeighborsResult(value: unknown): value is GetNeighborsResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isNeighborReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "neighbor")) && hasOwn(value, "page") && (isNeighborPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaGetNeighborsResult(value));
 }
 
 export function decodeGetNeighborsResult(input: string): GetNeighborsResult {
@@ -2830,12 +3003,10 @@ export function decodeGetNeighborsResult(input: string): GetNeighborsResult {
 }
 
 export function encodeGetNeighborsResult(value: GetNeighborsResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isGetNeighborsResult(value)) throw new TypeError("invalid GetNeighborsResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isGetNeighborsResult(emitted)) throw new TypeError("encoded value is invalid GetNeighborsResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaGetNeighborsResult(owned)) throw new TypeError("invalid GetNeighborsResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2849,8 +3020,12 @@ export interface HandshakeRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaHandshakeRequestEnvelope(value: unknown): value is HandshakeRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.handshake") && hasOwn(value, "payload") && (isHandshakeRequest(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isHandshakeRequestEnvelope(value: unknown): value is HandshakeRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.handshake") && hasOwn(value, "payload") && (isHandshakeRequest(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaHandshakeRequestEnvelope(value));
 }
 
 export function decodeHandshakeRequestEnvelope(input: string): HandshakeRequestEnvelope {
@@ -2861,12 +3036,10 @@ export function decodeHandshakeRequestEnvelope(input: string): HandshakeRequestE
 }
 
 export function encodeHandshakeRequestEnvelope(value: HandshakeRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isHandshakeRequestEnvelope(value)) throw new TypeError("invalid HandshakeRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isHandshakeRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid HandshakeRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaHandshakeRequestEnvelope(owned)) throw new TypeError("invalid HandshakeRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2881,8 +3054,12 @@ export interface HandshakeResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaHandshakeResponseEnvelope(value: unknown): value is HandshakeResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isProtocolDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isProtocolFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isHandshakeResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isHandshakeResponseEnvelope(value: unknown): value is HandshakeResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isProtocolDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isProtocolFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isHandshakeResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaHandshakeResponseEnvelope(value));
 }
 
 export function decodeHandshakeResponseEnvelope(input: string): HandshakeResponseEnvelope {
@@ -2893,12 +3070,10 @@ export function decodeHandshakeResponseEnvelope(input: string): HandshakeRespons
 }
 
 export function encodeHandshakeResponseEnvelope(value: HandshakeResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isHandshakeResponseEnvelope(value)) throw new TypeError("invalid HandshakeResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isHandshakeResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid HandshakeResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaHandshakeResponseEnvelope(owned)) throw new TypeError("invalid HandshakeResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2910,8 +3085,12 @@ export interface InspectSubgraphInput {
   root_addresses: ReadonlyArray<EntityAddress>;
 }
 
+function matchesSchemaInspectSubgraphInput(value: unknown): value is InspectSubgraphInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["cursor", "depth", "document_generation", "limits", "root_addresses"])) && (!hasOwn(value, "cursor") || (matchesSchemaSubgraphCursor(value["cursor"]))) && hasOwn(value, "depth") && (typeof value["depth"] === "number" && Number.isSafeInteger(value["depth"]) && !Object.is(value["depth"], -0) && value["depth"] >= 0 && value["depth"] <= 32) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "root_addresses") && (isJSONArray(value["root_addresses"]) && value["root_addresses"].every((item) => isEntityAddress(item)) && value["root_addresses"].length >= 1 && hasUniqueItems(value["root_addresses"]) && hasStableAddressOrder(value["root_addresses"], "$item")) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isInspectSubgraphInput(value: unknown): value is InspectSubgraphInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["cursor", "depth", "document_generation", "limits", "root_addresses"])) && (!hasOwn(value, "cursor") || (isSubgraphCursor(value["cursor"]))) && hasOwn(value, "depth") && (typeof value["depth"] === "number" && Number.isSafeInteger(value["depth"]) && !Object.is(value["depth"], -0) && value["depth"] >= 0 && value["depth"] <= 32) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "root_addresses") && (isJSONArray(value["root_addresses"]) && value["root_addresses"].every((item) => isEntityAddress(item)) && value["root_addresses"].length >= 1 && hasUniqueItems(value["root_addresses"]) && hasStableAddressOrder(value["root_addresses"], "$item")) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaInspectSubgraphInput(value));
 }
 
 export function decodeInspectSubgraphInput(input: string): InspectSubgraphInput {
@@ -2922,12 +3101,10 @@ export function decodeInspectSubgraphInput(input: string): InspectSubgraphInput 
 }
 
 export function encodeInspectSubgraphInput(value: InspectSubgraphInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isInspectSubgraphInput(value)) throw new TypeError("invalid InspectSubgraphInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isInspectSubgraphInput(emitted)) throw new TypeError("encoded value is invalid InspectSubgraphInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaInspectSubgraphInput(owned)) throw new TypeError("invalid InspectSubgraphInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2941,8 +3118,12 @@ export interface InspectSubgraphRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaInspectSubgraphRequestEnvelope(value: unknown): value is InspectSubgraphRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.inspect_subgraph") && hasOwn(value, "payload") && (matchesSchemaInspectSubgraphInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isInspectSubgraphRequestEnvelope(value: unknown): value is InspectSubgraphRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.inspect_subgraph") && hasOwn(value, "payload") && (isInspectSubgraphInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaInspectSubgraphRequestEnvelope(value));
 }
 
 export function decodeInspectSubgraphRequestEnvelope(input: string): InspectSubgraphRequestEnvelope {
@@ -2953,12 +3134,10 @@ export function decodeInspectSubgraphRequestEnvelope(input: string): InspectSubg
 }
 
 export function encodeInspectSubgraphRequestEnvelope(value: InspectSubgraphRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isInspectSubgraphRequestEnvelope(value)) throw new TypeError("invalid InspectSubgraphRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isInspectSubgraphRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid InspectSubgraphRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaInspectSubgraphRequestEnvelope(owned)) throw new TypeError("invalid InspectSubgraphRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -2973,8 +3152,12 @@ export interface InspectSubgraphResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaInspectSubgraphResponseEnvelope(value: unknown): value is InspectSubgraphResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaInspectSubgraphResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isInspectSubgraphResponseEnvelope(value: unknown): value is InspectSubgraphResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isInspectSubgraphResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaInspectSubgraphResponseEnvelope(value));
 }
 
 export function decodeInspectSubgraphResponseEnvelope(input: string): InspectSubgraphResponseEnvelope {
@@ -2985,12 +3168,10 @@ export function decodeInspectSubgraphResponseEnvelope(input: string): InspectSub
 }
 
 export function encodeInspectSubgraphResponseEnvelope(value: InspectSubgraphResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isInspectSubgraphResponseEnvelope(value)) throw new TypeError("invalid InspectSubgraphResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isInspectSubgraphResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid InspectSubgraphResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaInspectSubgraphResponseEnvelope(owned)) throw new TypeError("invalid InspectSubgraphResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3001,8 +3182,12 @@ export interface InspectSubgraphResult {
   relations: ReadonlyArray<SubgraphRelationFact>;
 }
 
+function matchesSchemaInspectSubgraphResult(value: unknown): value is InspectSubgraphResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page", "relations"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaSubgraphReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "subgraph")) && hasOwn(value, "page") && (matchesSchemaSubgraphPageInfo(value["page"])) && hasOwn(value, "relations") && (isJSONArray(value["relations"]) && value["relations"].every((item) => matchesSchemaSubgraphRelationFact(item)) && hasStableAddressOrder(value["relations"], "relation_address")) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isInspectSubgraphResult(value: unknown): value is InspectSubgraphResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page", "relations"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isSubgraphReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "subgraph")) && hasOwn(value, "page") && (isSubgraphPageInfo(value["page"])) && hasOwn(value, "relations") && (isJSONArray(value["relations"]) && value["relations"].every((item) => isSubgraphRelationFact(item)) && hasStableAddressOrder(value["relations"], "relation_address")) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaInspectSubgraphResult(value));
 }
 
 export function decodeInspectSubgraphResult(input: string): InspectSubgraphResult {
@@ -3013,12 +3198,10 @@ export function decodeInspectSubgraphResult(input: string): InspectSubgraphResul
 }
 
 export function encodeInspectSubgraphResult(value: InspectSubgraphResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isInspectSubgraphResult(value)) throw new TypeError("invalid InspectSubgraphResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isInspectSubgraphResult(emitted)) throw new TypeError("encoded value is invalid InspectSubgraphResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaInspectSubgraphResult(owned)) throw new TypeError("invalid InspectSubgraphResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3030,8 +3213,12 @@ export interface LayerCreateSubjectFields {
   tags?: ReadonlyArray<string>;
 }
 
+function matchesSchemaLayerCreateSubjectFields(value: unknown): value is LayerCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["annotations", "description", "display_name", "order", "tags"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => matchesSchemaSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && hasOwn(value, "order") && (isCanonicalSafeInteger(value["order"])) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasUniqueArrayKey(value, "annotations", "key");
+}
+
 export function isLayerCreateSubjectFields(value: unknown): value is LayerCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["annotations", "description", "display_name", "order", "tags"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => isSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && hasOwn(value, "order") && (isCanonicalSafeInteger(value["order"])) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasUniqueArrayKey(value, "annotations", "key"));
+  return isProgrammaticWireValue(value, () => matchesSchemaLayerCreateSubjectFields(value));
 }
 
 export function decodeLayerCreateSubjectFields(input: string): LayerCreateSubjectFields {
@@ -3042,12 +3229,10 @@ export function decodeLayerCreateSubjectFields(input: string): LayerCreateSubjec
 }
 
 export function encodeLayerCreateSubjectFields(value: LayerCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isLayerCreateSubjectFields(value)) throw new TypeError("invalid LayerCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isLayerCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid LayerCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaLayerCreateSubjectFields(owned)) throw new TypeError("invalid LayerCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3057,8 +3242,12 @@ export interface ListModulesInput {
   limits: WorkbenchLimits;
 }
 
+function matchesSchemaListModulesInput(value: unknown): value is ListModulesInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits"])) && (!hasOwn(value, "cursor") || (matchesSchemaModuleCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isListModulesInput(value: unknown): value is ListModulesInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits"])) && (!hasOwn(value, "cursor") || (isModuleCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaListModulesInput(value));
 }
 
 export function decodeListModulesInput(input: string): ListModulesInput {
@@ -3069,12 +3258,10 @@ export function decodeListModulesInput(input: string): ListModulesInput {
 }
 
 export function encodeListModulesInput(value: ListModulesInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isListModulesInput(value)) throw new TypeError("invalid ListModulesInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isListModulesInput(emitted)) throw new TypeError("encoded value is invalid ListModulesInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaListModulesInput(owned)) throw new TypeError("invalid ListModulesInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3088,8 +3275,12 @@ export interface ListModulesRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaListModulesRequestEnvelope(value: unknown): value is ListModulesRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.list_modules") && hasOwn(value, "payload") && (matchesSchemaListModulesInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isListModulesRequestEnvelope(value: unknown): value is ListModulesRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.list_modules") && hasOwn(value, "payload") && (isListModulesInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaListModulesRequestEnvelope(value));
 }
 
 export function decodeListModulesRequestEnvelope(input: string): ListModulesRequestEnvelope {
@@ -3100,12 +3291,10 @@ export function decodeListModulesRequestEnvelope(input: string): ListModulesRequ
 }
 
 export function encodeListModulesRequestEnvelope(value: ListModulesRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isListModulesRequestEnvelope(value)) throw new TypeError("invalid ListModulesRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isListModulesRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ListModulesRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaListModulesRequestEnvelope(owned)) throw new TypeError("invalid ListModulesRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3120,8 +3309,12 @@ export interface ListModulesResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaListModulesResponseEnvelope(value: unknown): value is ListModulesResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaListModulesResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isListModulesResponseEnvelope(value: unknown): value is ListModulesResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isListModulesResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaListModulesResponseEnvelope(value));
 }
 
 export function decodeListModulesResponseEnvelope(input: string): ListModulesResponseEnvelope {
@@ -3132,12 +3325,10 @@ export function decodeListModulesResponseEnvelope(input: string): ListModulesRes
 }
 
 export function encodeListModulesResponseEnvelope(value: ListModulesResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isListModulesResponseEnvelope(value)) throw new TypeError("invalid ListModulesResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isListModulesResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ListModulesResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaListModulesResponseEnvelope(owned)) throw new TypeError("invalid ListModulesResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3147,8 +3338,12 @@ export interface ListModulesResult {
   page: ModulePageInfo;
 }
 
+function matchesSchemaListModulesResult(value: unknown): value is ListModulesResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaModuleReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "module_scope")) && hasOwn(value, "page") && (matchesSchemaModulePageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isListModulesResult(value: unknown): value is ListModulesResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isModuleReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "module_scope")) && hasOwn(value, "page") && (isModulePageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaListModulesResult(value));
 }
 
 export function decodeListModulesResult(input: string): ListModulesResult {
@@ -3159,12 +3354,10 @@ export function decodeListModulesResult(input: string): ListModulesResult {
 }
 
 export function encodeListModulesResult(value: ListModulesResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isListModulesResult(value)) throw new TypeError("invalid ListModulesResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isListModulesResult(emitted)) throw new TypeError("encoded value is invalid ListModulesResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaListModulesResult(owned)) throw new TypeError("invalid ListModulesResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3174,8 +3367,12 @@ export interface ListReferencesInput {
   limits: WorkbenchLimits;
 }
 
+function matchesSchemaListReferencesInput(value: unknown): value is ListReferencesInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits"])) && (!hasOwn(value, "cursor") || (matchesSchemaReferenceSummaryCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isListReferencesInput(value: unknown): value is ListReferencesInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits"])) && (!hasOwn(value, "cursor") || (isReferenceSummaryCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaListReferencesInput(value));
 }
 
 export function decodeListReferencesInput(input: string): ListReferencesInput {
@@ -3186,12 +3383,10 @@ export function decodeListReferencesInput(input: string): ListReferencesInput {
 }
 
 export function encodeListReferencesInput(value: ListReferencesInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isListReferencesInput(value)) throw new TypeError("invalid ListReferencesInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isListReferencesInput(emitted)) throw new TypeError("encoded value is invalid ListReferencesInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaListReferencesInput(owned)) throw new TypeError("invalid ListReferencesInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3205,8 +3400,12 @@ export interface ListReferencesRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaListReferencesRequestEnvelope(value: unknown): value is ListReferencesRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.list_references") && hasOwn(value, "payload") && (matchesSchemaListReferencesInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isListReferencesRequestEnvelope(value: unknown): value is ListReferencesRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.list_references") && hasOwn(value, "payload") && (isListReferencesInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaListReferencesRequestEnvelope(value));
 }
 
 export function decodeListReferencesRequestEnvelope(input: string): ListReferencesRequestEnvelope {
@@ -3217,12 +3416,10 @@ export function decodeListReferencesRequestEnvelope(input: string): ListReferenc
 }
 
 export function encodeListReferencesRequestEnvelope(value: ListReferencesRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isListReferencesRequestEnvelope(value)) throw new TypeError("invalid ListReferencesRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isListReferencesRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ListReferencesRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaListReferencesRequestEnvelope(owned)) throw new TypeError("invalid ListReferencesRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3237,8 +3434,12 @@ export interface ListReferencesResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaListReferencesResponseEnvelope(value: unknown): value is ListReferencesResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaListReferencesResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isListReferencesResponseEnvelope(value: unknown): value is ListReferencesResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isListReferencesResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaListReferencesResponseEnvelope(value));
 }
 
 export function decodeListReferencesResponseEnvelope(input: string): ListReferencesResponseEnvelope {
@@ -3249,12 +3450,10 @@ export function decodeListReferencesResponseEnvelope(input: string): ListReferen
 }
 
 export function encodeListReferencesResponseEnvelope(value: ListReferencesResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isListReferencesResponseEnvelope(value)) throw new TypeError("invalid ListReferencesResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isListReferencesResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ListReferencesResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaListReferencesResponseEnvelope(owned)) throw new TypeError("invalid ListReferencesResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3264,8 +3463,12 @@ export interface ListReferencesResult {
   page: ReferenceSummaryPageInfo;
 }
 
+function matchesSchemaListReferencesResult(value: unknown): value is ListReferencesResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaReferenceSummaryReadItem(item)) && hasStableAddressOrder(value["items"], "address")) && hasOwn(value, "page") && (matchesSchemaReferenceSummaryPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isListReferencesResult(value: unknown): value is ListReferencesResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isReferenceSummaryReadItem(item)) && hasStableAddressOrder(value["items"], "address")) && hasOwn(value, "page") && (isReferenceSummaryPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaListReferencesResult(value));
 }
 
 export function decodeListReferencesResult(input: string): ListReferencesResult {
@@ -3276,20 +3479,22 @@ export function decodeListReferencesResult(input: string): ListReferencesResult 
 }
 
 export function encodeListReferencesResult(value: ListReferencesResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isListReferencesResult(value)) throw new TypeError("invalid ListReferencesResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isListReferencesResult(emitted)) throw new TypeError("encoded value is invalid ListReferencesResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaListReferencesResult(owned)) throw new TypeError("invalid ListReferencesResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 /** Exact logical response-payload bytes returned: canonical result JSON UTF-8 bytes with this field encoded as the string 0, excluding the outer Engine response envelope, plus each BlobRef attachment's declared size once per occurrence. This count uses the same rule as max_output_bytes. */
 export type LogicalResponseByteCount = CanonicalUint64;
 
+function matchesSchemaLogicalResponseByteCount(value: unknown): value is LogicalResponseByteCount {
+  return isCanonicalUint64(value);
+}
+
 export function isLogicalResponseByteCount(value: unknown): value is LogicalResponseByteCount {
-  return isProgrammaticWireValue(value, () => isCanonicalUint64(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaLogicalResponseByteCount(value));
 }
 
 export function decodeLogicalResponseByteCount(input: string): LogicalResponseByteCount {
@@ -3300,12 +3505,10 @@ export function decodeLogicalResponseByteCount(input: string): LogicalResponseBy
 }
 
 export function encodeLogicalResponseByteCount(value: LogicalResponseByteCount): string {
-  validateProgrammaticWireValue(value);
-  if (!isLogicalResponseByteCount(value)) throw new TypeError("invalid LogicalResponseByteCount");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isLogicalResponseByteCount(emitted)) throw new TypeError("encoded value is invalid LogicalResponseByteCount");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaLogicalResponseByteCount(owned)) throw new TypeError("invalid LogicalResponseByteCount");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3317,8 +3520,12 @@ export interface MaterializeDiffViewInput {
   recipe_generation: DocumentGeneration;
 }
 
+function matchesSchemaMaterializeDiffViewInput(value: unknown): value is MaterializeDiffViewInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["after_generation", "after_query_result", "before_generation", "before_query_result", "recipe_generation"])) && hasOwn(value, "after_generation") && (matchesSchemaDocumentGeneration(value["after_generation"])) && (!hasOwn(value, "after_query_result") || (matchesSchemaQueryExecutionResultData(value["after_query_result"]))) && hasOwn(value, "before_generation") && (matchesSchemaDocumentGeneration(value["before_generation"])) && (!hasOwn(value, "before_query_result") || (matchesSchemaQueryExecutionResultData(value["before_query_result"]))) && hasOwn(value, "recipe_generation") && (matchesSchemaDocumentGeneration(value["recipe_generation"]));
+}
+
 export function isMaterializeDiffViewInput(value: unknown): value is MaterializeDiffViewInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["after_generation", "after_query_result", "before_generation", "before_query_result", "recipe_generation"])) && hasOwn(value, "after_generation") && (isDocumentGeneration(value["after_generation"])) && (!hasOwn(value, "after_query_result") || (isQueryExecutionResultData(value["after_query_result"]))) && hasOwn(value, "before_generation") && (isDocumentGeneration(value["before_generation"])) && (!hasOwn(value, "before_query_result") || (isQueryExecutionResultData(value["before_query_result"]))) && hasOwn(value, "recipe_generation") && (isDocumentGeneration(value["recipe_generation"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaMaterializeDiffViewInput(value));
 }
 
 export function decodeMaterializeDiffViewInput(input: string): MaterializeDiffViewInput {
@@ -3329,12 +3536,10 @@ export function decodeMaterializeDiffViewInput(input: string): MaterializeDiffVi
 }
 
 export function encodeMaterializeDiffViewInput(value: MaterializeDiffViewInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isMaterializeDiffViewInput(value)) throw new TypeError("invalid MaterializeDiffViewInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isMaterializeDiffViewInput(emitted)) throw new TypeError("encoded value is invalid MaterializeDiffViewInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaMaterializeDiffViewInput(owned)) throw new TypeError("invalid MaterializeDiffViewInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3344,8 +3549,12 @@ export interface MaterializeQueryViewInput {
   state_snapshot?: StateQuerySnapshot;
 }
 
+function matchesSchemaMaterializeQueryViewInput(value: unknown): value is MaterializeQueryViewInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "query_result", "state_snapshot"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "query_result") && (matchesSchemaQueryExecutionResultData(value["query_result"])) && (!hasOwn(value, "state_snapshot") || (isStateQuerySnapshot(value["state_snapshot"])));
+}
+
 export function isMaterializeQueryViewInput(value: unknown): value is MaterializeQueryViewInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "query_result", "state_snapshot"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "query_result") && (isQueryExecutionResultData(value["query_result"])) && (!hasOwn(value, "state_snapshot") || (isStateQuerySnapshot(value["state_snapshot"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaMaterializeQueryViewInput(value));
 }
 
 export function decodeMaterializeQueryViewInput(input: string): MaterializeQueryViewInput {
@@ -3356,12 +3565,10 @@ export function decodeMaterializeQueryViewInput(input: string): MaterializeQuery
 }
 
 export function encodeMaterializeQueryViewInput(value: MaterializeQueryViewInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isMaterializeQueryViewInput(value)) throw new TypeError("invalid MaterializeQueryViewInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isMaterializeQueryViewInput(emitted)) throw new TypeError("encoded value is invalid MaterializeQueryViewInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaMaterializeQueryViewInput(owned)) throw new TypeError("invalid MaterializeQueryViewInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3373,8 +3580,12 @@ export interface MaterializeViewInput {
   view_address: ViewAddress;
 }
 
+function matchesSchemaMaterializeViewInput(value: unknown): value is MaterializeViewInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diff", "kind", "limits", "query", "view_address"])) && (!hasOwn(value, "diff") || (matchesSchemaMaterializeDiffViewInput(value["diff"]))) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["diff", "query"].includes(value["kind"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && (!hasOwn(value, "query") || (matchesSchemaMaterializeQueryViewInput(value["query"]))) && hasOwn(value, "view_address") && (isViewAddress(value["view_address"])) && ((value["kind"] === "diff" && hasOwn(value, "diff") && !hasOwn(value, "query")) || (value["kind"] === "query" && hasOwn(value, "query") && !hasOwn(value, "diff")));
+}
+
 export function isMaterializeViewInput(value: unknown): value is MaterializeViewInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diff", "kind", "limits", "query", "view_address"])) && (!hasOwn(value, "diff") || (isMaterializeDiffViewInput(value["diff"]))) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["diff", "query"].includes(value["kind"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && (!hasOwn(value, "query") || (isMaterializeQueryViewInput(value["query"]))) && hasOwn(value, "view_address") && (isViewAddress(value["view_address"])) && ((value["kind"] === "diff" && hasOwn(value, "diff") && !hasOwn(value, "query")) || (value["kind"] === "query" && hasOwn(value, "query") && !hasOwn(value, "diff"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaMaterializeViewInput(value));
 }
 
 export function decodeMaterializeViewInput(input: string): MaterializeViewInput {
@@ -3385,12 +3596,10 @@ export function decodeMaterializeViewInput(input: string): MaterializeViewInput 
 }
 
 export function encodeMaterializeViewInput(value: MaterializeViewInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isMaterializeViewInput(value)) throw new TypeError("invalid MaterializeViewInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isMaterializeViewInput(emitted)) throw new TypeError("encoded value is invalid MaterializeViewInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaMaterializeViewInput(owned)) throw new TypeError("invalid MaterializeViewInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3404,8 +3613,12 @@ export interface MaterializeViewRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaMaterializeViewRequestEnvelope(value: unknown): value is MaterializeViewRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.materialize_view") && hasOwn(value, "payload") && (matchesSchemaMaterializeViewInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isMaterializeViewRequestEnvelope(value: unknown): value is MaterializeViewRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.materialize_view") && hasOwn(value, "payload") && (isMaterializeViewInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaMaterializeViewRequestEnvelope(value));
 }
 
 export function decodeMaterializeViewRequestEnvelope(input: string): MaterializeViewRequestEnvelope {
@@ -3416,12 +3629,10 @@ export function decodeMaterializeViewRequestEnvelope(input: string): Materialize
 }
 
 export function encodeMaterializeViewRequestEnvelope(value: MaterializeViewRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isMaterializeViewRequestEnvelope(value)) throw new TypeError("invalid MaterializeViewRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isMaterializeViewRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid MaterializeViewRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaMaterializeViewRequestEnvelope(owned)) throw new TypeError("invalid MaterializeViewRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3436,8 +3647,12 @@ export interface MaterializeViewResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaMaterializeViewResponseEnvelope(value: unknown): value is MaterializeViewResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaMaterializeViewResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isMaterializeViewResponseEnvelope(value: unknown): value is MaterializeViewResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isMaterializeViewResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaMaterializeViewResponseEnvelope(value));
 }
 
 export function decodeMaterializeViewResponseEnvelope(input: string): MaterializeViewResponseEnvelope {
@@ -3448,12 +3663,10 @@ export function decodeMaterializeViewResponseEnvelope(input: string): Materializ
 }
 
 export function encodeMaterializeViewResponseEnvelope(value: MaterializeViewResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isMaterializeViewResponseEnvelope(value)) throw new TypeError("invalid MaterializeViewResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isMaterializeViewResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid MaterializeViewResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaMaterializeViewResponseEnvelope(owned)) throw new TypeError("invalid MaterializeViewResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3465,8 +3678,12 @@ export interface MaterializeViewResult {
   view_data: ViewData;
 }
 
+function matchesSchemaMaterializeViewResult(value: unknown): value is MaterializeViewResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "returned_bytes", "returned_items", "view_data"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "view_data") && (isViewData(value["view_data"])) && hasProtocolInvariant(value, "view_data_result");
+}
+
 export function isMaterializeViewResult(value: unknown): value is MaterializeViewResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "returned_bytes", "returned_items", "view_data"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "view_data") && (isViewData(value["view_data"])) && hasProtocolInvariant(value, "view_data_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaMaterializeViewResult(value));
 }
 
 export function decodeMaterializeViewResult(input: string): MaterializeViewResult {
@@ -3477,12 +3694,10 @@ export function decodeMaterializeViewResult(input: string): MaterializeViewResul
 }
 
 export function encodeMaterializeViewResult(value: MaterializeViewResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isMaterializeViewResult(value)) throw new TypeError("invalid MaterializeViewResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isMaterializeViewResult(emitted)) throw new TypeError("encoded value is invalid MaterializeViewResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaMaterializeViewResult(owned)) throw new TypeError("invalid MaterializeViewResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3491,8 +3706,12 @@ export interface ModuleContentCursor {
   value: string;
 }
 
+function matchesSchemaModuleContentCursor(value: unknown): value is ModuleContentCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_modules_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isModuleContentCursor(value: unknown): value is ModuleContentCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_modules_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaModuleContentCursor(value));
 }
 
 export function decodeModuleContentCursor(input: string): ModuleContentCursor {
@@ -3503,12 +3722,10 @@ export function decodeModuleContentCursor(input: string): ModuleContentCursor {
 }
 
 export function encodeModuleContentCursor(value: ModuleContentCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isModuleContentCursor(value)) throw new TypeError("invalid ModuleContentCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isModuleContentCursor(emitted)) throw new TypeError("encoded value is invalid ModuleContentCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaModuleContentCursor(owned)) throw new TypeError("invalid ModuleContentCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3519,8 +3736,12 @@ export interface ModuleContentPageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaModuleContentPageInfo(value: unknown): value is ModuleContentPageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaModuleContentCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isModuleContentPageInfo(value: unknown): value is ModuleContentPageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isModuleContentCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaModuleContentPageInfo(value));
 }
 
 export function decodeModuleContentPageInfo(input: string): ModuleContentPageInfo {
@@ -3531,12 +3752,10 @@ export function decodeModuleContentPageInfo(input: string): ModuleContentPageInf
 }
 
 export function encodeModuleContentPageInfo(value: ModuleContentPageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isModuleContentPageInfo(value)) throw new TypeError("invalid ModuleContentPageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isModuleContentPageInfo(emitted)) throw new TypeError("encoded value is invalid ModuleContentPageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaModuleContentPageInfo(owned)) throw new TypeError("invalid ModuleContentPageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3545,8 +3764,12 @@ export interface ModuleContentReadItem {
   source_chunk: BoundedTextChunk;
 }
 
+function matchesSchemaModuleContentReadItem(value: unknown): value is ModuleContentReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["module", "source_chunk"])) && hasOwn(value, "module") && (isModuleRef(value["module"])) && hasOwn(value, "source_chunk") && (matchesSchemaBoundedTextChunk(value["source_chunk"]));
+}
+
 export function isModuleContentReadItem(value: unknown): value is ModuleContentReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["module", "source_chunk"])) && hasOwn(value, "module") && (isModuleRef(value["module"])) && hasOwn(value, "source_chunk") && (isBoundedTextChunk(value["source_chunk"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaModuleContentReadItem(value));
 }
 
 export function decodeModuleContentReadItem(input: string): ModuleContentReadItem {
@@ -3557,12 +3780,10 @@ export function decodeModuleContentReadItem(input: string): ModuleContentReadIte
 }
 
 export function encodeModuleContentReadItem(value: ModuleContentReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isModuleContentReadItem(value)) throw new TypeError("invalid ModuleContentReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isModuleContentReadItem(emitted)) throw new TypeError("encoded value is invalid ModuleContentReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaModuleContentReadItem(owned)) throw new TypeError("invalid ModuleContentReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3571,8 +3792,12 @@ export interface ModuleCursor {
   value: string;
 }
 
+function matchesSchemaModuleCursor(value: unknown): value is ModuleCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^list_modules_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isModuleCursor(value: unknown): value is ModuleCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^list_modules_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaModuleCursor(value));
 }
 
 export function decodeModuleCursor(input: string): ModuleCursor {
@@ -3583,12 +3808,10 @@ export function decodeModuleCursor(input: string): ModuleCursor {
 }
 
 export function encodeModuleCursor(value: ModuleCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isModuleCursor(value)) throw new TypeError("invalid ModuleCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isModuleCursor(emitted)) throw new TypeError("encoded value is invalid ModuleCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaModuleCursor(owned)) throw new TypeError("invalid ModuleCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3599,8 +3822,12 @@ export interface ModulePageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaModulePageInfo(value: unknown): value is ModulePageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaModuleCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isModulePageInfo(value: unknown): value is ModulePageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isModuleCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaModulePageInfo(value));
 }
 
 export function decodeModulePageInfo(input: string): ModulePageInfo {
@@ -3611,12 +3838,10 @@ export function decodeModulePageInfo(input: string): ModulePageInfo {
 }
 
 export function encodeModulePageInfo(value: ModulePageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isModulePageInfo(value)) throw new TypeError("invalid ModulePageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isModulePageInfo(emitted)) throw new TypeError("encoded value is invalid ModulePageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaModulePageInfo(owned)) throw new TypeError("invalid ModulePageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3626,8 +3851,12 @@ export interface ModuleReadItem {
   module: ModuleRef;
 }
 
+function matchesSchemaModuleReadItem(value: unknown): value is ModuleReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["byte_length", "digest", "module"])) && hasOwn(value, "byte_length") && (isCanonicalUint64(value["byte_length"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "module") && (isModuleRef(value["module"]));
+}
+
 export function isModuleReadItem(value: unknown): value is ModuleReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["byte_length", "digest", "module"])) && hasOwn(value, "byte_length") && (isCanonicalUint64(value["byte_length"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "module") && (isModuleRef(value["module"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaModuleReadItem(value));
 }
 
 export function decodeModuleReadItem(input: string): ModuleReadItem {
@@ -3638,12 +3867,10 @@ export function decodeModuleReadItem(input: string): ModuleReadItem {
 }
 
 export function encodeModuleReadItem(value: ModuleReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isModuleReadItem(value)) throw new TypeError("invalid ModuleReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isModuleReadItem(emitted)) throw new TypeError("encoded value is invalid ModuleReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaModuleReadItem(owned)) throw new TypeError("invalid ModuleReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3652,8 +3879,12 @@ export interface NeighborCursor {
   value: string;
 }
 
+function matchesSchemaNeighborCursor(value: unknown): value is NeighborCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^get_neighbors_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isNeighborCursor(value: unknown): value is NeighborCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^get_neighbors_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaNeighborCursor(value));
 }
 
 export function decodeNeighborCursor(input: string): NeighborCursor {
@@ -3664,12 +3895,10 @@ export function decodeNeighborCursor(input: string): NeighborCursor {
 }
 
 export function encodeNeighborCursor(value: NeighborCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isNeighborCursor(value)) throw new TypeError("invalid NeighborCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNeighborCursor(emitted)) throw new TypeError("encoded value is invalid NeighborCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNeighborCursor(owned)) throw new TypeError("invalid NeighborCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3680,8 +3909,12 @@ export interface NeighborPageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaNeighborPageInfo(value: unknown): value is NeighborPageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaNeighborCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isNeighborPageInfo(value: unknown): value is NeighborPageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isNeighborCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaNeighborPageInfo(value));
 }
 
 export function decodeNeighborPageInfo(input: string): NeighborPageInfo {
@@ -3692,12 +3925,10 @@ export function decodeNeighborPageInfo(input: string): NeighborPageInfo {
 }
 
 export function encodeNeighborPageInfo(value: NeighborPageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isNeighborPageInfo(value)) throw new TypeError("invalid NeighborPageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNeighborPageInfo(emitted)) throw new TypeError("encoded value is invalid NeighborPageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNeighborPageInfo(owned)) throw new TypeError("invalid NeighborPageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3711,8 +3942,12 @@ export interface NeighborReadItem {
   traversal_index: CanonicalUint64;
 }
 
+function matchesSchemaNeighborReadItem(value: unknown): value is NeighborReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["depth", "direction", "entity_address", "relation_address", "source_entity_address", "traversal_index"])) && hasOwn(value, "depth") && (typeof value["depth"] === "number" && Number.isSafeInteger(value["depth"]) && !Object.is(value["depth"], -0) && value["depth"] >= 1 && value["depth"] <= 32) && hasOwn(value, "direction") && (typeof value["direction"] === "string" && hasScalarUnicode(value["direction"]) && ["incoming", "outgoing"].includes(value["direction"])) && hasOwn(value, "entity_address") && (isEntityAddress(value["entity_address"])) && hasOwn(value, "relation_address") && (isRelationAddress(value["relation_address"])) && hasOwn(value, "source_entity_address") && (isEntityAddress(value["source_entity_address"])) && hasOwn(value, "traversal_index") && (isCanonicalUint64(value["traversal_index"]));
+}
+
 export function isNeighborReadItem(value: unknown): value is NeighborReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["depth", "direction", "entity_address", "relation_address", "source_entity_address", "traversal_index"])) && hasOwn(value, "depth") && (typeof value["depth"] === "number" && Number.isSafeInteger(value["depth"]) && !Object.is(value["depth"], -0) && value["depth"] >= 1 && value["depth"] <= 32) && hasOwn(value, "direction") && (typeof value["direction"] === "string" && hasScalarUnicode(value["direction"]) && ["incoming", "outgoing"].includes(value["direction"])) && hasOwn(value, "entity_address") && (isEntityAddress(value["entity_address"])) && hasOwn(value, "relation_address") && (isRelationAddress(value["relation_address"])) && hasOwn(value, "source_entity_address") && (isEntityAddress(value["source_entity_address"])) && hasOwn(value, "traversal_index") && (isCanonicalUint64(value["traversal_index"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaNeighborReadItem(value));
 }
 
 export function decodeNeighborReadItem(input: string): NeighborReadItem {
@@ -3723,12 +3958,10 @@ export function decodeNeighborReadItem(input: string): NeighborReadItem {
 }
 
 export function encodeNeighborReadItem(value: NeighborReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isNeighborReadItem(value)) throw new TypeError("invalid NeighborReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNeighborReadItem(emitted)) throw new TypeError("encoded value is invalid NeighborReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNeighborReadItem(owned)) throw new TypeError("invalid NeighborReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3759,8 +3992,12 @@ export interface NonCreateSemanticOperation {
   values?: ReadonlyArray<RowCell>;
 }
 
+function matchesSchemaNonCreateSemanticOperation(value: unknown): value is NonCreateSemanticOperation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["action", "endpoint", "entity_address", "explicit_absent_column_addresses", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "operation", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"])) && (!hasOwn(value, "action") || (typeof value["action"] === "string" && hasScalarUnicode(value["action"]) && ["remove", "set"].includes(value["action"]))) && (!hasOwn(value, "endpoint") || (typeof value["endpoint"] === "string" && hasScalarUnicode(value["endpoint"]) && ["from", "to"].includes(value["endpoint"]))) && (!hasOwn(value, "entity_address") || (isEntityAddress(value["entity_address"]))) && (!hasOwn(value, "explicit_absent_column_addresses") || (isJSONArray(value["explicit_absent_column_addresses"]) && value["explicit_absent_column_addresses"].every((item) => isColumnAddress(item)) && hasUniqueItems(value["explicit_absent_column_addresses"]) && hasStableAddressOrder(value["explicit_absent_column_addresses"], "$item"))) && (!hasOwn(value, "fields") || (matchesSchemaRelationCreateFields(value["fields"]))) && (!hasOwn(value, "from_address") || (isEntityAddress(value["from_address"]))) && (!hasOwn(value, "id") || (isLocalIdentifier(value["id"]))) && (!hasOwn(value, "layer_address") || (isLayerAddress(value["layer_address"]))) && (!hasOwn(value, "new_id") || (isLocalIdentifier(value["new_id"]))) && (!hasOwn(value, "new_project_id") || (isLocalIdentifier(value["new_project_id"]))) && hasOwn(value, "operation") && (matchesSchemaNonCreateSemanticOperationKind(value["operation"])) && (!hasOwn(value, "owner_address") || (isStableAddress(value["owner_address"]))) && (!hasOwn(value, "parent_address") || (isProjectRootAddress(value["parent_address"]))) && (!hasOwn(value, "path") || (isJSONArray(value["path"]) && value["path"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && value["path"].length >= 1 && value["path"].length <= 2)) && (!hasOwn(value, "placement") || (matchesSchemaPlacementHint(value["placement"]))) && (!hasOwn(value, "project_address") || (isProjectRootAddress(value["project_address"]))) && (!hasOwn(value, "relation_address") || (isRelationAddress(value["relation_address"]))) && (!hasOwn(value, "row_address") || (isStableAddress(value["row_address"]))) && (!hasOwn(value, "row_id") || (isLocalIdentifier(value["row_id"]))) && (!hasOwn(value, "target_address") || (isStableAddress(value["target_address"]))) && (!hasOwn(value, "to_address") || (isEntityAddress(value["to_address"]))) && (!hasOwn(value, "type_address") || (isRelationTypeAddress(value["type_address"]))) && (!hasOwn(value, "value") || (matchesSchemaSemanticOperationValue(value["value"]))) && (!hasOwn(value, "values") || (isJSONArray(value["values"]) && value["values"].every((item) => matchesSchemaRowCell(item)) && hasStableAddressOrder(value["values"], "column_address"))) && ((value["operation"] === "create_relation" && hasOwn(value, "parent_address") && hasOwn(value, "id") && hasOwn(value, "type_address") && hasOwn(value, "from_address") && hasOwn(value, "to_address") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "path") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "delete_row" && hasOwn(value, "row_address") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "delete_subject" && hasOwn(value, "target_address") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "migrate_project_identity" && hasOwn(value, "project_address") && hasOwn(value, "new_project_id") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "move_entity_to_layer" && hasOwn(value, "entity_address") && hasOwn(value, "layer_address") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "rename_subject" && hasOwn(value, "target_address") && hasOwn(value, "new_id") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "update_relation_endpoint" && hasOwn(value, "relation_address") && hasOwn(value, "endpoint") && hasOwn(value, "entity_address") && !hasOwn(value, "action") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "update_subject_field" && hasOwn(value, "target_address") && hasOwn(value, "path") && hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "values")) || (value["operation"] === "upsert_row" && hasOwn(value, "owner_address") && hasOwn(value, "row_id") && hasOwn(value, "values") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value"))) && hasOperatorValueRule(value, "action", "value", new Set(["remove"])) && hasDisjointArrayKey(value, "values", "column_address", "explicit_absent_column_addresses") && hasProtocolInvariant(value, "semantic_operation");
+}
+
 export function isNonCreateSemanticOperation(value: unknown): value is NonCreateSemanticOperation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["action", "endpoint", "entity_address", "explicit_absent_column_addresses", "fields", "from_address", "id", "layer_address", "new_id", "new_project_id", "operation", "owner_address", "parent_address", "path", "placement", "project_address", "relation_address", "row_address", "row_id", "target_address", "to_address", "type_address", "value", "values"])) && (!hasOwn(value, "action") || (typeof value["action"] === "string" && hasScalarUnicode(value["action"]) && ["remove", "set"].includes(value["action"]))) && (!hasOwn(value, "endpoint") || (typeof value["endpoint"] === "string" && hasScalarUnicode(value["endpoint"]) && ["from", "to"].includes(value["endpoint"]))) && (!hasOwn(value, "entity_address") || (isEntityAddress(value["entity_address"]))) && (!hasOwn(value, "explicit_absent_column_addresses") || (isJSONArray(value["explicit_absent_column_addresses"]) && value["explicit_absent_column_addresses"].every((item) => isColumnAddress(item)) && hasUniqueItems(value["explicit_absent_column_addresses"]) && hasStableAddressOrder(value["explicit_absent_column_addresses"], "$item"))) && (!hasOwn(value, "fields") || (isRelationCreateFields(value["fields"]))) && (!hasOwn(value, "from_address") || (isEntityAddress(value["from_address"]))) && (!hasOwn(value, "id") || (isLocalIdentifier(value["id"]))) && (!hasOwn(value, "layer_address") || (isLayerAddress(value["layer_address"]))) && (!hasOwn(value, "new_id") || (isLocalIdentifier(value["new_id"]))) && (!hasOwn(value, "new_project_id") || (isLocalIdentifier(value["new_project_id"]))) && hasOwn(value, "operation") && (isNonCreateSemanticOperationKind(value["operation"])) && (!hasOwn(value, "owner_address") || (isStableAddress(value["owner_address"]))) && (!hasOwn(value, "parent_address") || (isProjectRootAddress(value["parent_address"]))) && (!hasOwn(value, "path") || (isJSONArray(value["path"]) && value["path"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && value["path"].length >= 1 && value["path"].length <= 2)) && (!hasOwn(value, "placement") || (isPlacementHint(value["placement"]))) && (!hasOwn(value, "project_address") || (isProjectRootAddress(value["project_address"]))) && (!hasOwn(value, "relation_address") || (isRelationAddress(value["relation_address"]))) && (!hasOwn(value, "row_address") || (isStableAddress(value["row_address"]))) && (!hasOwn(value, "row_id") || (isLocalIdentifier(value["row_id"]))) && (!hasOwn(value, "target_address") || (isStableAddress(value["target_address"]))) && (!hasOwn(value, "to_address") || (isEntityAddress(value["to_address"]))) && (!hasOwn(value, "type_address") || (isRelationTypeAddress(value["type_address"]))) && (!hasOwn(value, "value") || (isSemanticOperationValue(value["value"]))) && (!hasOwn(value, "values") || (isJSONArray(value["values"]) && value["values"].every((item) => isRowCell(item)) && hasStableAddressOrder(value["values"], "column_address"))) && ((value["operation"] === "create_relation" && hasOwn(value, "parent_address") && hasOwn(value, "id") && hasOwn(value, "type_address") && hasOwn(value, "from_address") && hasOwn(value, "to_address") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "path") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "delete_row" && hasOwn(value, "row_address") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "delete_subject" && hasOwn(value, "target_address") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "migrate_project_identity" && hasOwn(value, "project_address") && hasOwn(value, "new_project_id") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "move_entity_to_layer" && hasOwn(value, "entity_address") && hasOwn(value, "layer_address") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "rename_subject" && hasOwn(value, "target_address") && hasOwn(value, "new_id") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "update_relation_endpoint" && hasOwn(value, "relation_address") && hasOwn(value, "endpoint") && hasOwn(value, "entity_address") && !hasOwn(value, "action") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value") && !hasOwn(value, "values")) || (value["operation"] === "update_subject_field" && hasOwn(value, "target_address") && hasOwn(value, "path") && hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "explicit_absent_column_addresses") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "owner_address") && !hasOwn(value, "parent_address") && !hasOwn(value, "placement") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "row_id") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "values")) || (value["operation"] === "upsert_row" && hasOwn(value, "owner_address") && hasOwn(value, "row_id") && hasOwn(value, "values") && !hasOwn(value, "action") && !hasOwn(value, "endpoint") && !hasOwn(value, "entity_address") && !hasOwn(value, "fields") && !hasOwn(value, "from_address") && !hasOwn(value, "id") && !hasOwn(value, "layer_address") && !hasOwn(value, "new_id") && !hasOwn(value, "new_project_id") && !hasOwn(value, "parent_address") && !hasOwn(value, "path") && !hasOwn(value, "project_address") && !hasOwn(value, "relation_address") && !hasOwn(value, "row_address") && !hasOwn(value, "target_address") && !hasOwn(value, "to_address") && !hasOwn(value, "type_address") && !hasOwn(value, "value"))) && hasOperatorValueRule(value, "action", "value", new Set(["remove"])) && hasDisjointArrayKey(value, "values", "column_address", "explicit_absent_column_addresses") && hasProtocolInvariant(value, "semantic_operation"));
+  return isProgrammaticWireValue(value, () => matchesSchemaNonCreateSemanticOperation(value));
 }
 
 export function decodeNonCreateSemanticOperation(input: string): NonCreateSemanticOperation {
@@ -3771,19 +4008,21 @@ export function decodeNonCreateSemanticOperation(input: string): NonCreateSemant
 }
 
 export function encodeNonCreateSemanticOperation(value: NonCreateSemanticOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isNonCreateSemanticOperation(value)) throw new TypeError("invalid NonCreateSemanticOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNonCreateSemanticOperation(emitted)) throw new TypeError("encoded value is invalid NonCreateSemanticOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNonCreateSemanticOperation(owned)) throw new TypeError("invalid NonCreateSemanticOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type NonCreateSemanticOperationKind = "create_relation" | "delete_row" | "delete_subject" | "migrate_project_identity" | "move_entity_to_layer" | "rename_subject" | "update_relation_endpoint" | "update_subject_field" | "upsert_row";
 
+function matchesSchemaNonCreateSemanticOperationKind(value: unknown): value is NonCreateSemanticOperationKind {
+  return typeof value === "string" && hasScalarUnicode(value) && ["create_relation", "delete_row", "delete_subject", "migrate_project_identity", "move_entity_to_layer", "rename_subject", "update_relation_endpoint", "update_subject_field", "upsert_row"].includes(value);
+}
+
 export function isNonCreateSemanticOperationKind(value: unknown): value is NonCreateSemanticOperationKind {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["create_relation", "delete_row", "delete_subject", "migrate_project_identity", "move_entity_to_layer", "rename_subject", "update_relation_endpoint", "update_subject_field", "upsert_row"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaNonCreateSemanticOperationKind(value));
 }
 
 export function decodeNonCreateSemanticOperationKind(input: string): NonCreateSemanticOperationKind {
@@ -3794,12 +4033,10 @@ export function decodeNonCreateSemanticOperationKind(input: string): NonCreateSe
 }
 
 export function encodeNonCreateSemanticOperationKind(value: NonCreateSemanticOperationKind): string {
-  validateProgrammaticWireValue(value);
-  if (!isNonCreateSemanticOperationKind(value)) throw new TypeError("invalid NonCreateSemanticOperationKind");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNonCreateSemanticOperationKind(emitted)) throw new TypeError("encoded value is invalid NonCreateSemanticOperationKind");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNonCreateSemanticOperationKind(owned)) throw new TypeError("invalid NonCreateSemanticOperationKind");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3812,8 +4049,12 @@ export interface NormalizedArtifact {
   search_documents: ReadonlyArray<SearchDocument>;
 }
 
+function matchesSchemaNormalizedArtifact(value: unknown): value is NormalizedArtifact {
+  return isObject(value) && hasOnlyKeys(value, new Set(["graph_hash", "kind", "pack", "project", "search_documents"])) && (!hasOwn(value, "graph_hash") || (isDigest(value["graph_hash"]))) && hasOwn(value, "kind") && (matchesSchemaCompileMode(value["kind"])) && (!hasOwn(value, "pack") || (matchesSchemaNormalizedPackArtifact(value["pack"]))) && (!hasOwn(value, "project") || (matchesSchemaNormalizedProjectArtifact(value["project"]))) && hasOwn(value, "search_documents") && (isJSONArray(value["search_documents"]) && value["search_documents"].every((item) => isSearchDocument(item)) && hasStableAddressOrder(value["search_documents"], "subject_address")) && ((value["kind"] === "pack" && hasOwn(value, "pack") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project") && isJSONArray(value["search_documents"]) && value["search_documents"].length === 0) || (value["kind"] === "project" && hasOwn(value, "graph_hash") && hasOwn(value, "project") && !hasOwn(value, "pack")));
+}
+
 export function isNormalizedArtifact(value: unknown): value is NormalizedArtifact {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["graph_hash", "kind", "pack", "project", "search_documents"])) && (!hasOwn(value, "graph_hash") || (isDigest(value["graph_hash"]))) && hasOwn(value, "kind") && (isCompileMode(value["kind"])) && (!hasOwn(value, "pack") || (isNormalizedPackArtifact(value["pack"]))) && (!hasOwn(value, "project") || (isNormalizedProjectArtifact(value["project"]))) && hasOwn(value, "search_documents") && (isJSONArray(value["search_documents"]) && value["search_documents"].every((item) => isSearchDocument(item)) && hasStableAddressOrder(value["search_documents"], "subject_address")) && ((value["kind"] === "pack" && hasOwn(value, "pack") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project") && isJSONArray(value["search_documents"]) && value["search_documents"].length === 0) || (value["kind"] === "project" && hasOwn(value, "graph_hash") && hasOwn(value, "project") && !hasOwn(value, "pack"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaNormalizedArtifact(value));
 }
 
 export function decodeNormalizedArtifact(input: string): NormalizedArtifact {
@@ -3824,12 +4065,10 @@ export function decodeNormalizedArtifact(input: string): NormalizedArtifact {
 }
 
 export function encodeNormalizedArtifact(value: NormalizedArtifact): string {
-  validateProgrammaticWireValue(value);
-  if (!isNormalizedArtifact(value)) throw new TypeError("invalid NormalizedArtifact");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNormalizedArtifact(emitted)) throw new TypeError("encoded value is invalid NormalizedArtifact");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNormalizedArtifact(owned)) throw new TypeError("invalid NormalizedArtifact");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3840,8 +4079,12 @@ export interface NormalizedPackArtifact {
   pack_address: PackRootAddress;
 }
 
+function matchesSchemaNormalizedPackArtifact(value: unknown): value is NormalizedPackArtifact {
+  return isObject(value) && hasOnlyKeys(value, new Set(["artifact_json", "canonical_json", "pack_address"])) && hasOwn(value, "artifact_json") && (matchesSchemaNormalizedPackArtifactBlobRef(value["artifact_json"])) && hasOwn(value, "canonical_json") && (matchesSchemaNormalizedPackCanonicalBlobRef(value["canonical_json"])) && hasOwn(value, "pack_address") && (isPackRootAddress(value["pack_address"]));
+}
+
 export function isNormalizedPackArtifact(value: unknown): value is NormalizedPackArtifact {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["artifact_json", "canonical_json", "pack_address"])) && hasOwn(value, "artifact_json") && (isNormalizedPackArtifactBlobRef(value["artifact_json"])) && hasOwn(value, "canonical_json") && (isNormalizedPackCanonicalBlobRef(value["canonical_json"])) && hasOwn(value, "pack_address") && (isPackRootAddress(value["pack_address"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaNormalizedPackArtifact(value));
 }
 
 export function decodeNormalizedPackArtifact(input: string): NormalizedPackArtifact {
@@ -3852,12 +4095,10 @@ export function decodeNormalizedPackArtifact(input: string): NormalizedPackArtif
 }
 
 export function encodeNormalizedPackArtifact(value: NormalizedPackArtifact): string {
-  validateProgrammaticWireValue(value);
-  if (!isNormalizedPackArtifact(value)) throw new TypeError("invalid NormalizedPackArtifact");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNormalizedPackArtifact(emitted)) throw new TypeError("encoded value is invalid NormalizedPackArtifact");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNormalizedPackArtifact(owned)) throw new TypeError("invalid NormalizedPackArtifact");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3870,8 +4111,12 @@ export interface NormalizedPackArtifactBlobRef {
   size: CanonicalUint64;
 }
 
+function matchesSchemaNormalizedPackArtifactBlobRef(value: unknown): value is NormalizedPackArtifactBlobRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.pack.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+}
+
 export function isNormalizedPackArtifactBlobRef(value: unknown): value is NormalizedPackArtifactBlobRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.pack.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaNormalizedPackArtifactBlobRef(value));
 }
 
 export function decodeNormalizedPackArtifactBlobRef(input: string): NormalizedPackArtifactBlobRef {
@@ -3882,12 +4127,10 @@ export function decodeNormalizedPackArtifactBlobRef(input: string): NormalizedPa
 }
 
 export function encodeNormalizedPackArtifactBlobRef(value: NormalizedPackArtifactBlobRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isNormalizedPackArtifactBlobRef(value)) throw new TypeError("invalid NormalizedPackArtifactBlobRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNormalizedPackArtifactBlobRef(emitted)) throw new TypeError("encoded value is invalid NormalizedPackArtifactBlobRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNormalizedPackArtifactBlobRef(owned)) throw new TypeError("invalid NormalizedPackArtifactBlobRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3900,8 +4143,12 @@ export interface NormalizedPackCanonicalBlobRef {
   size: CanonicalUint64;
 }
 
+function matchesSchemaNormalizedPackCanonicalBlobRef(value: unknown): value is NormalizedPackCanonicalBlobRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.normalized-pack.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+}
+
 export function isNormalizedPackCanonicalBlobRef(value: unknown): value is NormalizedPackCanonicalBlobRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.normalized-pack.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaNormalizedPackCanonicalBlobRef(value));
 }
 
 export function decodeNormalizedPackCanonicalBlobRef(input: string): NormalizedPackCanonicalBlobRef {
@@ -3912,12 +4159,10 @@ export function decodeNormalizedPackCanonicalBlobRef(input: string): NormalizedP
 }
 
 export function encodeNormalizedPackCanonicalBlobRef(value: NormalizedPackCanonicalBlobRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isNormalizedPackCanonicalBlobRef(value)) throw new TypeError("invalid NormalizedPackCanonicalBlobRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNormalizedPackCanonicalBlobRef(emitted)) throw new TypeError("encoded value is invalid NormalizedPackCanonicalBlobRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNormalizedPackCanonicalBlobRef(owned)) throw new TypeError("invalid NormalizedPackCanonicalBlobRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3928,8 +4173,12 @@ export interface NormalizedProjectArtifact {
   project_address: ProjectRootAddress;
 }
 
+function matchesSchemaNormalizedProjectArtifact(value: unknown): value is NormalizedProjectArtifact {
+  return isObject(value) && hasOnlyKeys(value, new Set(["artifact_json", "canonical_json", "project_address"])) && hasOwn(value, "artifact_json") && (matchesSchemaNormalizedProjectArtifactBlobRef(value["artifact_json"])) && hasOwn(value, "canonical_json") && (matchesSchemaNormalizedProjectCanonicalBlobRef(value["canonical_json"])) && hasOwn(value, "project_address") && (isProjectRootAddress(value["project_address"]));
+}
+
 export function isNormalizedProjectArtifact(value: unknown): value is NormalizedProjectArtifact {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["artifact_json", "canonical_json", "project_address"])) && hasOwn(value, "artifact_json") && (isNormalizedProjectArtifactBlobRef(value["artifact_json"])) && hasOwn(value, "canonical_json") && (isNormalizedProjectCanonicalBlobRef(value["canonical_json"])) && hasOwn(value, "project_address") && (isProjectRootAddress(value["project_address"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaNormalizedProjectArtifact(value));
 }
 
 export function decodeNormalizedProjectArtifact(input: string): NormalizedProjectArtifact {
@@ -3940,12 +4189,10 @@ export function decodeNormalizedProjectArtifact(input: string): NormalizedProjec
 }
 
 export function encodeNormalizedProjectArtifact(value: NormalizedProjectArtifact): string {
-  validateProgrammaticWireValue(value);
-  if (!isNormalizedProjectArtifact(value)) throw new TypeError("invalid NormalizedProjectArtifact");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNormalizedProjectArtifact(emitted)) throw new TypeError("encoded value is invalid NormalizedProjectArtifact");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNormalizedProjectArtifact(owned)) throw new TypeError("invalid NormalizedProjectArtifact");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3958,8 +4205,12 @@ export interface NormalizedProjectArtifactBlobRef {
   size: CanonicalUint64;
 }
 
+function matchesSchemaNormalizedProjectArtifactBlobRef(value: unknown): value is NormalizedProjectArtifactBlobRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.project.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+}
+
 export function isNormalizedProjectArtifactBlobRef(value: unknown): value is NormalizedProjectArtifactBlobRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.project.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaNormalizedProjectArtifactBlobRef(value));
 }
 
 export function decodeNormalizedProjectArtifactBlobRef(input: string): NormalizedProjectArtifactBlobRef {
@@ -3970,12 +4221,10 @@ export function decodeNormalizedProjectArtifactBlobRef(input: string): Normalize
 }
 
 export function encodeNormalizedProjectArtifactBlobRef(value: NormalizedProjectArtifactBlobRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isNormalizedProjectArtifactBlobRef(value)) throw new TypeError("invalid NormalizedProjectArtifactBlobRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNormalizedProjectArtifactBlobRef(emitted)) throw new TypeError("encoded value is invalid NormalizedProjectArtifactBlobRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNormalizedProjectArtifactBlobRef(owned)) throw new TypeError("invalid NormalizedProjectArtifactBlobRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -3988,8 +4237,12 @@ export interface NormalizedProjectCanonicalBlobRef {
   size: CanonicalUint64;
 }
 
+function matchesSchemaNormalizedProjectCanonicalBlobRef(value: unknown): value is NormalizedProjectCanonicalBlobRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.normalized-project.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+}
+
 export function isNormalizedProjectCanonicalBlobRef(value: unknown): value is NormalizedProjectCanonicalBlobRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.normalized-project.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaNormalizedProjectCanonicalBlobRef(value));
 }
 
 export function decodeNormalizedProjectCanonicalBlobRef(input: string): NormalizedProjectCanonicalBlobRef {
@@ -4000,12 +4253,10 @@ export function decodeNormalizedProjectCanonicalBlobRef(input: string): Normaliz
 }
 
 export function encodeNormalizedProjectCanonicalBlobRef(value: NormalizedProjectCanonicalBlobRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isNormalizedProjectCanonicalBlobRef(value)) throw new TypeError("invalid NormalizedProjectCanonicalBlobRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isNormalizedProjectCanonicalBlobRef(emitted)) throw new TypeError("encoded value is invalid NormalizedProjectCanonicalBlobRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaNormalizedProjectCanonicalBlobRef(owned)) throw new TypeError("invalid NormalizedProjectCanonicalBlobRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4014,8 +4265,12 @@ export interface OpenDocumentInput {
   requested_limits: WorkbenchLimits;
 }
 
+function matchesSchemaOpenDocumentInput(value: unknown): value is OpenDocumentInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["compile_input", "requested_limits"])) && hasOwn(value, "compile_input") && (matchesSchemaCompileInput(value["compile_input"])) && hasOwn(value, "requested_limits") && (matchesSchemaWorkbenchLimits(value["requested_limits"]));
+}
+
 export function isOpenDocumentInput(value: unknown): value is OpenDocumentInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["compile_input", "requested_limits"])) && hasOwn(value, "compile_input") && (isCompileInput(value["compile_input"])) && hasOwn(value, "requested_limits") && (isWorkbenchLimits(value["requested_limits"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaOpenDocumentInput(value));
 }
 
 export function decodeOpenDocumentInput(input: string): OpenDocumentInput {
@@ -4026,12 +4281,10 @@ export function decodeOpenDocumentInput(input: string): OpenDocumentInput {
 }
 
 export function encodeOpenDocumentInput(value: OpenDocumentInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isOpenDocumentInput(value)) throw new TypeError("invalid OpenDocumentInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isOpenDocumentInput(emitted)) throw new TypeError("encoded value is invalid OpenDocumentInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaOpenDocumentInput(owned)) throw new TypeError("invalid OpenDocumentInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4045,8 +4298,12 @@ export interface OpenDocumentRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaOpenDocumentRequestEnvelope(value: unknown): value is OpenDocumentRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.open_document") && hasOwn(value, "payload") && (matchesSchemaOpenDocumentInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isOpenDocumentRequestEnvelope(value: unknown): value is OpenDocumentRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.open_document") && hasOwn(value, "payload") && (isOpenDocumentInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaOpenDocumentRequestEnvelope(value));
 }
 
 export function decodeOpenDocumentRequestEnvelope(input: string): OpenDocumentRequestEnvelope {
@@ -4057,12 +4314,10 @@ export function decodeOpenDocumentRequestEnvelope(input: string): OpenDocumentRe
 }
 
 export function encodeOpenDocumentRequestEnvelope(value: OpenDocumentRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isOpenDocumentRequestEnvelope(value)) throw new TypeError("invalid OpenDocumentRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isOpenDocumentRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid OpenDocumentRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaOpenDocumentRequestEnvelope(owned)) throw new TypeError("invalid OpenDocumentRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4077,8 +4332,12 @@ export interface OpenDocumentResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaOpenDocumentResponseEnvelope(value: unknown): value is OpenDocumentResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaOpenDocumentResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isOpenDocumentResponseEnvelope(value: unknown): value is OpenDocumentResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isOpenDocumentResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaOpenDocumentResponseEnvelope(value));
 }
 
 export function decodeOpenDocumentResponseEnvelope(input: string): OpenDocumentResponseEnvelope {
@@ -4089,12 +4348,10 @@ export function decodeOpenDocumentResponseEnvelope(input: string): OpenDocumentR
 }
 
 export function encodeOpenDocumentResponseEnvelope(value: OpenDocumentResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isOpenDocumentResponseEnvelope(value)) throw new TypeError("invalid OpenDocumentResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isOpenDocumentResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid OpenDocumentResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaOpenDocumentResponseEnvelope(owned)) throw new TypeError("invalid OpenDocumentResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4106,8 +4363,12 @@ export interface OpenDocumentResult {
   state: WorkingDocumentState;
 }
 
+function matchesSchemaOpenDocumentResult(value: unknown): value is OpenDocumentResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["capabilities", "document_generation", "document_handle", "effective_limits", "state"])) && hasOwn(value, "capabilities") && (matchesSchemaDocumentCapabilityState(value["capabilities"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "document_handle") && (matchesSchemaDocumentHandle(value["document_handle"])) && hasOwn(value, "effective_limits") && (matchesSchemaWorkbenchLimits(value["effective_limits"])) && hasOwn(value, "state") && (matchesSchemaWorkingDocumentState(value["state"])) && hasProtocolInvariant(value, "open_document_result");
+}
+
 export function isOpenDocumentResult(value: unknown): value is OpenDocumentResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["capabilities", "document_generation", "document_handle", "effective_limits", "state"])) && hasOwn(value, "capabilities") && (isDocumentCapabilityState(value["capabilities"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "document_handle") && (isDocumentHandle(value["document_handle"])) && hasOwn(value, "effective_limits") && (isWorkbenchLimits(value["effective_limits"])) && hasOwn(value, "state") && (isWorkingDocumentState(value["state"])) && hasProtocolInvariant(value, "open_document_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaOpenDocumentResult(value));
 }
 
 export function decodeOpenDocumentResult(input: string): OpenDocumentResult {
@@ -4118,12 +4379,10 @@ export function decodeOpenDocumentResult(input: string): OpenDocumentResult {
 }
 
 export function encodeOpenDocumentResult(value: OpenDocumentResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isOpenDocumentResult(value)) throw new TypeError("invalid OpenDocumentResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isOpenDocumentResult(emitted)) throw new TypeError("encoded value is invalid OpenDocumentResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaOpenDocumentResult(owned)) throw new TypeError("invalid OpenDocumentResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4133,8 +4392,12 @@ export interface OrganizeWorkspaceInput {
   strategy: "standard_layout";
 }
 
+function matchesSchemaOrganizeWorkspaceInput(value: unknown): value is OrganizeWorkspaceInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["limits", "preconditions", "strategy"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "preconditions") && (matchesSchemaEngineEditPreconditions(value["preconditions"])) && hasOwn(value, "strategy") && (typeof value["strategy"] === "string" && hasScalarUnicode(value["strategy"]) && ["standard_layout"].includes(value["strategy"]));
+}
+
 export function isOrganizeWorkspaceInput(value: unknown): value is OrganizeWorkspaceInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["limits", "preconditions", "strategy"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "preconditions") && (isEngineEditPreconditions(value["preconditions"])) && hasOwn(value, "strategy") && (typeof value["strategy"] === "string" && hasScalarUnicode(value["strategy"]) && ["standard_layout"].includes(value["strategy"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaOrganizeWorkspaceInput(value));
 }
 
 export function decodeOrganizeWorkspaceInput(input: string): OrganizeWorkspaceInput {
@@ -4145,12 +4408,10 @@ export function decodeOrganizeWorkspaceInput(input: string): OrganizeWorkspaceIn
 }
 
 export function encodeOrganizeWorkspaceInput(value: OrganizeWorkspaceInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isOrganizeWorkspaceInput(value)) throw new TypeError("invalid OrganizeWorkspaceInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isOrganizeWorkspaceInput(emitted)) throw new TypeError("encoded value is invalid OrganizeWorkspaceInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaOrganizeWorkspaceInput(owned)) throw new TypeError("invalid OrganizeWorkspaceInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4164,8 +4425,12 @@ export interface OrganizeWorkspaceRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaOrganizeWorkspaceRequestEnvelope(value: unknown): value is OrganizeWorkspaceRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.organize_workspace") && hasOwn(value, "payload") && (matchesSchemaOrganizeWorkspaceInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isOrganizeWorkspaceRequestEnvelope(value: unknown): value is OrganizeWorkspaceRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.organize_workspace") && hasOwn(value, "payload") && (isOrganizeWorkspaceInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaOrganizeWorkspaceRequestEnvelope(value));
 }
 
 export function decodeOrganizeWorkspaceRequestEnvelope(input: string): OrganizeWorkspaceRequestEnvelope {
@@ -4176,12 +4441,10 @@ export function decodeOrganizeWorkspaceRequestEnvelope(input: string): OrganizeW
 }
 
 export function encodeOrganizeWorkspaceRequestEnvelope(value: OrganizeWorkspaceRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isOrganizeWorkspaceRequestEnvelope(value)) throw new TypeError("invalid OrganizeWorkspaceRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isOrganizeWorkspaceRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid OrganizeWorkspaceRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaOrganizeWorkspaceRequestEnvelope(owned)) throw new TypeError("invalid OrganizeWorkspaceRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4196,8 +4459,12 @@ export interface OrganizeWorkspaceResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaOrganizeWorkspaceResponseEnvelope(value: unknown): value is OrganizeWorkspaceResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isOrganizeWorkspaceResponseEnvelope(value: unknown): value is OrganizeWorkspaceResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaOrganizeWorkspaceResponseEnvelope(value));
 }
 
 export function decodeOrganizeWorkspaceResponseEnvelope(input: string): OrganizeWorkspaceResponseEnvelope {
@@ -4208,12 +4475,10 @@ export function decodeOrganizeWorkspaceResponseEnvelope(input: string): Organize
 }
 
 export function encodeOrganizeWorkspaceResponseEnvelope(value: OrganizeWorkspaceResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isOrganizeWorkspaceResponseEnvelope(value)) throw new TypeError("invalid OrganizeWorkspaceResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isOrganizeWorkspaceResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid OrganizeWorkspaceResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaOrganizeWorkspaceResponseEnvelope(owned)) throw new TypeError("invalid OrganizeWorkspaceResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4223,8 +4488,12 @@ export interface PlacementHint {
   position: "before" | "after" | "end";
 }
 
+function matchesSchemaPlacementHint(value: unknown): value is PlacementHint {
+  return isObject(value) && hasOnlyKeys(value, new Set(["group_anchor_address", "module_path", "position"])) && (!hasOwn(value, "group_anchor_address") || (isStableAddress(value["group_anchor_address"]))) && (!hasOwn(value, "module_path") || (matchesSchemaCanonicalSourcePath(value["module_path"]))) && hasOwn(value, "position") && (typeof value["position"] === "string" && hasScalarUnicode(value["position"]) && ["before", "after", "end"].includes(value["position"])) && ((value["position"] === "after" && hasOwn(value, "group_anchor_address")) || (value["position"] === "before" && hasOwn(value, "group_anchor_address")) || (value["position"] === "end"));
+}
+
 export function isPlacementHint(value: unknown): value is PlacementHint {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["group_anchor_address", "module_path", "position"])) && (!hasOwn(value, "group_anchor_address") || (isStableAddress(value["group_anchor_address"]))) && (!hasOwn(value, "module_path") || (isCanonicalSourcePath(value["module_path"]))) && hasOwn(value, "position") && (typeof value["position"] === "string" && hasScalarUnicode(value["position"]) && ["before", "after", "end"].includes(value["position"])) && ((value["position"] === "after" && hasOwn(value, "group_anchor_address")) || (value["position"] === "before" && hasOwn(value, "group_anchor_address")) || (value["position"] === "end")));
+  return isProgrammaticWireValue(value, () => matchesSchemaPlacementHint(value));
 }
 
 export function decodePlacementHint(input: string): PlacementHint {
@@ -4235,12 +4504,10 @@ export function decodePlacementHint(input: string): PlacementHint {
 }
 
 export function encodePlacementHint(value: PlacementHint): string {
-  validateProgrammaticWireValue(value);
-  if (!isPlacementHint(value)) throw new TypeError("invalid PlacementHint");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPlacementHint(emitted)) throw new TypeError("encoded value is invalid PlacementHint");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPlacementHint(owned)) throw new TypeError("invalid PlacementHint");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4252,8 +4519,12 @@ export interface PlanExportInput {
   view_data: ViewData;
 }
 
+function matchesSchemaPlanExportInput(value: unknown): value is PlanExportInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["recipe", "resolved_requirements", "state_summary", "view_data"])) && hasOwn(value, "recipe") && (isExportRecipe(value["recipe"])) && hasOwn(value, "resolved_requirements") && (isResolvedExportProfileRequirements(value["resolved_requirements"])) && (!hasOwn(value, "state_summary") || (isExternalStateSummary(value["state_summary"]))) && hasOwn(value, "view_data") && (isViewData(value["view_data"]));
+}
+
 export function isPlanExportInput(value: unknown): value is PlanExportInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["recipe", "resolved_requirements", "state_summary", "view_data"])) && hasOwn(value, "recipe") && (isExportRecipe(value["recipe"])) && hasOwn(value, "resolved_requirements") && (isResolvedExportProfileRequirements(value["resolved_requirements"])) && (!hasOwn(value, "state_summary") || (isExternalStateSummary(value["state_summary"]))) && hasOwn(value, "view_data") && (isViewData(value["view_data"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaPlanExportInput(value));
 }
 
 export function decodePlanExportInput(input: string): PlanExportInput {
@@ -4264,12 +4535,10 @@ export function decodePlanExportInput(input: string): PlanExportInput {
 }
 
 export function encodePlanExportInput(value: PlanExportInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isPlanExportInput(value)) throw new TypeError("invalid PlanExportInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPlanExportInput(emitted)) throw new TypeError("encoded value is invalid PlanExportInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPlanExportInput(owned)) throw new TypeError("invalid PlanExportInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4283,8 +4552,12 @@ export interface PlanExportRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaPlanExportRequestEnvelope(value: unknown): value is PlanExportRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.plan_export") && hasOwn(value, "payload") && (matchesSchemaPlanExportInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isPlanExportRequestEnvelope(value: unknown): value is PlanExportRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.plan_export") && hasOwn(value, "payload") && (isPlanExportInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaPlanExportRequestEnvelope(value));
 }
 
 export function decodePlanExportRequestEnvelope(input: string): PlanExportRequestEnvelope {
@@ -4295,12 +4568,10 @@ export function decodePlanExportRequestEnvelope(input: string): PlanExportReques
 }
 
 export function encodePlanExportRequestEnvelope(value: PlanExportRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isPlanExportRequestEnvelope(value)) throw new TypeError("invalid PlanExportRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPlanExportRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid PlanExportRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPlanExportRequestEnvelope(owned)) throw new TypeError("invalid PlanExportRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4315,8 +4586,12 @@ export interface PlanExportResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaPlanExportResponseEnvelope(value: unknown): value is PlanExportResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaPlanExportResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isPlanExportResponseEnvelope(value: unknown): value is PlanExportResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isPlanExportResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaPlanExportResponseEnvelope(value));
 }
 
 export function decodePlanExportResponseEnvelope(input: string): PlanExportResponseEnvelope {
@@ -4327,12 +4602,10 @@ export function decodePlanExportResponseEnvelope(input: string): PlanExportRespo
 }
 
 export function encodePlanExportResponseEnvelope(value: PlanExportResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isPlanExportResponseEnvelope(value)) throw new TypeError("invalid PlanExportResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPlanExportResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid PlanExportResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPlanExportResponseEnvelope(owned)) throw new TypeError("invalid PlanExportResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4340,8 +4613,12 @@ export interface PlanExportResult {
   export_plan: ExportPlan;
 }
 
+function matchesSchemaPlanExportResult(value: unknown): value is PlanExportResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["export_plan"])) && hasOwn(value, "export_plan") && (isExportPlan(value["export_plan"]));
+}
+
 export function isPlanExportResult(value: unknown): value is PlanExportResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["export_plan"])) && hasOwn(value, "export_plan") && (isExportPlan(value["export_plan"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaPlanExportResult(value));
 }
 
 export function decodePlanExportResult(input: string): PlanExportResult {
@@ -4352,12 +4629,10 @@ export function decodePlanExportResult(input: string): PlanExportResult {
 }
 
 export function encodePlanExportResult(value: PlanExportResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isPlanExportResult(value)) throw new TypeError("invalid PlanExportResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPlanExportResult(emitted)) throw new TypeError("encoded value is invalid PlanExportResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPlanExportResult(owned)) throw new TypeError("invalid PlanExportResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4367,8 +4642,12 @@ export interface PreviewFragmentInput {
   preconditions: EngineEditPreconditions;
 }
 
+function matchesSchemaPreviewFragmentInput(value: unknown): value is PreviewFragmentInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["fragment", "limits", "preconditions"])) && hasOwn(value, "fragment") && (matchesSchemaFragmentInput(value["fragment"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "preconditions") && (matchesSchemaEngineEditPreconditions(value["preconditions"]));
+}
+
 export function isPreviewFragmentInput(value: unknown): value is PreviewFragmentInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["fragment", "limits", "preconditions"])) && hasOwn(value, "fragment") && (isFragmentInput(value["fragment"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "preconditions") && (isEngineEditPreconditions(value["preconditions"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewFragmentInput(value));
 }
 
 export function decodePreviewFragmentInput(input: string): PreviewFragmentInput {
@@ -4379,12 +4658,10 @@ export function decodePreviewFragmentInput(input: string): PreviewFragmentInput 
 }
 
 export function encodePreviewFragmentInput(value: PreviewFragmentInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewFragmentInput(value)) throw new TypeError("invalid PreviewFragmentInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewFragmentInput(emitted)) throw new TypeError("encoded value is invalid PreviewFragmentInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewFragmentInput(owned)) throw new TypeError("invalid PreviewFragmentInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4398,8 +4675,12 @@ export interface PreviewFragmentRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaPreviewFragmentRequestEnvelope(value: unknown): value is PreviewFragmentRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.preview_fragment") && hasOwn(value, "payload") && (matchesSchemaPreviewFragmentInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isPreviewFragmentRequestEnvelope(value: unknown): value is PreviewFragmentRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.preview_fragment") && hasOwn(value, "payload") && (isPreviewFragmentInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewFragmentRequestEnvelope(value));
 }
 
 export function decodePreviewFragmentRequestEnvelope(input: string): PreviewFragmentRequestEnvelope {
@@ -4410,12 +4691,10 @@ export function decodePreviewFragmentRequestEnvelope(input: string): PreviewFrag
 }
 
 export function encodePreviewFragmentRequestEnvelope(value: PreviewFragmentRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewFragmentRequestEnvelope(value)) throw new TypeError("invalid PreviewFragmentRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewFragmentRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid PreviewFragmentRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewFragmentRequestEnvelope(owned)) throw new TypeError("invalid PreviewFragmentRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4430,8 +4709,12 @@ export interface PreviewFragmentResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaPreviewFragmentResponseEnvelope(value: unknown): value is PreviewFragmentResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isPreviewFragmentResponseEnvelope(value: unknown): value is PreviewFragmentResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewFragmentResponseEnvelope(value));
 }
 
 export function decodePreviewFragmentResponseEnvelope(input: string): PreviewFragmentResponseEnvelope {
@@ -4442,12 +4725,10 @@ export function decodePreviewFragmentResponseEnvelope(input: string): PreviewFra
 }
 
 export function encodePreviewFragmentResponseEnvelope(value: PreviewFragmentResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewFragmentResponseEnvelope(value)) throw new TypeError("invalid PreviewFragmentResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewFragmentResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid PreviewFragmentResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewFragmentResponseEnvelope(owned)) throw new TypeError("invalid PreviewFragmentResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4457,8 +4738,12 @@ export interface PreviewID {
   value: string;
 }
 
+function matchesSchemaPreviewID(value: unknown): value is PreviewID {
+  return isObject(value) && hasOnlyKeys(value, new Set(["endpoint_instance_id", "value"])) && hasOwn(value, "endpoint_instance_id") && (isEndpointInstanceID(value["endpoint_instance_id"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^preview_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isPreviewID(value: unknown): value is PreviewID {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["endpoint_instance_id", "value"])) && hasOwn(value, "endpoint_instance_id") && (isEndpointInstanceID(value["endpoint_instance_id"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^preview_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewID(value));
 }
 
 export function decodePreviewID(input: string): PreviewID {
@@ -4469,12 +4754,10 @@ export function decodePreviewID(input: string): PreviewID {
 }
 
 export function encodePreviewID(value: PreviewID): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewID(value)) throw new TypeError("invalid PreviewID");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewID(emitted)) throw new TypeError("encoded value is invalid PreviewID");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewID(owned)) throw new TypeError("invalid PreviewID");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4484,8 +4767,12 @@ export interface PreviewOperationsInput {
   preconditions: EngineEditPreconditions;
 }
 
+function matchesSchemaPreviewOperationsInput(value: unknown): value is PreviewOperationsInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["batch", "limits", "preconditions"])) && hasOwn(value, "batch") && (matchesSchemaSemanticOperationBatch(value["batch"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "preconditions") && (matchesSchemaEngineEditPreconditions(value["preconditions"]));
+}
+
 export function isPreviewOperationsInput(value: unknown): value is PreviewOperationsInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["batch", "limits", "preconditions"])) && hasOwn(value, "batch") && (isSemanticOperationBatch(value["batch"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "preconditions") && (isEngineEditPreconditions(value["preconditions"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewOperationsInput(value));
 }
 
 export function decodePreviewOperationsInput(input: string): PreviewOperationsInput {
@@ -4496,12 +4783,10 @@ export function decodePreviewOperationsInput(input: string): PreviewOperationsIn
 }
 
 export function encodePreviewOperationsInput(value: PreviewOperationsInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewOperationsInput(value)) throw new TypeError("invalid PreviewOperationsInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewOperationsInput(emitted)) throw new TypeError("encoded value is invalid PreviewOperationsInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewOperationsInput(owned)) throw new TypeError("invalid PreviewOperationsInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4515,8 +4800,12 @@ export interface PreviewOperationsRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaPreviewOperationsRequestEnvelope(value: unknown): value is PreviewOperationsRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.preview_operations") && hasOwn(value, "payload") && (matchesSchemaPreviewOperationsInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isPreviewOperationsRequestEnvelope(value: unknown): value is PreviewOperationsRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.preview_operations") && hasOwn(value, "payload") && (isPreviewOperationsInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewOperationsRequestEnvelope(value));
 }
 
 export function decodePreviewOperationsRequestEnvelope(input: string): PreviewOperationsRequestEnvelope {
@@ -4527,12 +4816,10 @@ export function decodePreviewOperationsRequestEnvelope(input: string): PreviewOp
 }
 
 export function encodePreviewOperationsRequestEnvelope(value: PreviewOperationsRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewOperationsRequestEnvelope(value)) throw new TypeError("invalid PreviewOperationsRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewOperationsRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid PreviewOperationsRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewOperationsRequestEnvelope(owned)) throw new TypeError("invalid PreviewOperationsRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4547,8 +4834,12 @@ export interface PreviewOperationsResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaPreviewOperationsResponseEnvelope(value: unknown): value is PreviewOperationsResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isPreviewOperationsResponseEnvelope(value: unknown): value is PreviewOperationsResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewOperationsResponseEnvelope(value));
 }
 
 export function decodePreviewOperationsResponseEnvelope(input: string): PreviewOperationsResponseEnvelope {
@@ -4559,12 +4850,10 @@ export function decodePreviewOperationsResponseEnvelope(input: string): PreviewO
 }
 
 export function encodePreviewOperationsResponseEnvelope(value: PreviewOperationsResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewOperationsResponseEnvelope(value)) throw new TypeError("invalid PreviewOperationsResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewOperationsResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid PreviewOperationsResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewOperationsResponseEnvelope(owned)) throw new TypeError("invalid PreviewOperationsResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4574,8 +4863,12 @@ export interface PreviewSourcePatchInput {
   preconditions: EngineEditPreconditions;
 }
 
+function matchesSchemaPreviewSourcePatchInput(value: unknown): value is PreviewSourcePatchInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["limits", "patch", "preconditions"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "patch") && (matchesSchemaSourcePatchBatch(value["patch"])) && hasOwn(value, "preconditions") && (matchesSchemaEngineEditPreconditions(value["preconditions"]));
+}
+
 export function isPreviewSourcePatchInput(value: unknown): value is PreviewSourcePatchInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["limits", "patch", "preconditions"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "patch") && (isSourcePatchBatch(value["patch"])) && hasOwn(value, "preconditions") && (isEngineEditPreconditions(value["preconditions"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewSourcePatchInput(value));
 }
 
 export function decodePreviewSourcePatchInput(input: string): PreviewSourcePatchInput {
@@ -4586,12 +4879,10 @@ export function decodePreviewSourcePatchInput(input: string): PreviewSourcePatch
 }
 
 export function encodePreviewSourcePatchInput(value: PreviewSourcePatchInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewSourcePatchInput(value)) throw new TypeError("invalid PreviewSourcePatchInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewSourcePatchInput(emitted)) throw new TypeError("encoded value is invalid PreviewSourcePatchInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewSourcePatchInput(owned)) throw new TypeError("invalid PreviewSourcePatchInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4605,8 +4896,12 @@ export interface PreviewSourcePatchRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaPreviewSourcePatchRequestEnvelope(value: unknown): value is PreviewSourcePatchRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.preview_source_patch") && hasOwn(value, "payload") && (matchesSchemaPreviewSourcePatchInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isPreviewSourcePatchRequestEnvelope(value: unknown): value is PreviewSourcePatchRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.preview_source_patch") && hasOwn(value, "payload") && (isPreviewSourcePatchInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewSourcePatchRequestEnvelope(value));
 }
 
 export function decodePreviewSourcePatchRequestEnvelope(input: string): PreviewSourcePatchRequestEnvelope {
@@ -4617,12 +4912,10 @@ export function decodePreviewSourcePatchRequestEnvelope(input: string): PreviewS
 }
 
 export function encodePreviewSourcePatchRequestEnvelope(value: PreviewSourcePatchRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewSourcePatchRequestEnvelope(value)) throw new TypeError("invalid PreviewSourcePatchRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewSourcePatchRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid PreviewSourcePatchRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewSourcePatchRequestEnvelope(owned)) throw new TypeError("invalid PreviewSourcePatchRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4637,8 +4930,12 @@ export interface PreviewSourcePatchResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaPreviewSourcePatchResponseEnvelope(value: unknown): value is PreviewSourcePatchResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isPreviewSourcePatchResponseEnvelope(value: unknown): value is PreviewSourcePatchResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isWorkbenchPreviewResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaPreviewSourcePatchResponseEnvelope(value));
 }
 
 export function decodePreviewSourcePatchResponseEnvelope(input: string): PreviewSourcePatchResponseEnvelope {
@@ -4649,12 +4946,10 @@ export function decodePreviewSourcePatchResponseEnvelope(input: string): Preview
 }
 
 export function encodePreviewSourcePatchResponseEnvelope(value: PreviewSourcePatchResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isPreviewSourcePatchResponseEnvelope(value)) throw new TypeError("invalid PreviewSourcePatchResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPreviewSourcePatchResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid PreviewSourcePatchResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPreviewSourcePatchResponseEnvelope(owned)) throw new TypeError("invalid PreviewSourcePatchResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4671,8 +4966,12 @@ export interface QueryCreateSubjectFields {
   where?: RecipePredicate;
 }
 
+function matchesSchemaQueryCreateSubjectFields(value: unknown): value is QueryCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["annotations", "description", "display_name", "relation_where", "result", "select", "state_input", "tags", "traverse", "where"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => matchesSchemaSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "relation_where") || (isRecipePredicate(value["relation_where"]))) && (!hasOwn(value, "result") || (isJSONArray(value["result"]) && value["result"].every((item) => typeof item === "string" && hasScalarUnicode(item) && ["seed_entities", "traversed_entities", "path_relations", "induced_relations"].includes(item)) && hasUniqueItems(value["result"]) && hasCanonicalEnumOrder(value["result"], ["seed_entities", "traversed_entities", "path_relations", "induced_relations"]))) && hasOwn(value, "select") && (isQueryRecipeSelect(value["select"])) && (!hasOwn(value, "state_input") || (typeof value["state_input"] === "string" && hasScalarUnicode(value["state_input"]) && ["none", "optional", "required"].includes(value["state_input"]))) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && (!hasOwn(value, "traverse") || (isQueryRecipeTraversal(value["traverse"]))) && (!hasOwn(value, "where") || (isRecipePredicate(value["where"]))) && hasUniqueArrayKey(value, "annotations", "key");
+}
+
 export function isQueryCreateSubjectFields(value: unknown): value is QueryCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["annotations", "description", "display_name", "relation_where", "result", "select", "state_input", "tags", "traverse", "where"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => isSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "relation_where") || (isRecipePredicate(value["relation_where"]))) && (!hasOwn(value, "result") || (isJSONArray(value["result"]) && value["result"].every((item) => typeof item === "string" && hasScalarUnicode(item) && ["seed_entities", "traversed_entities", "path_relations", "induced_relations"].includes(item)) && hasUniqueItems(value["result"]) && hasCanonicalEnumOrder(value["result"], ["seed_entities", "traversed_entities", "path_relations", "induced_relations"]))) && hasOwn(value, "select") && (isQueryRecipeSelect(value["select"])) && (!hasOwn(value, "state_input") || (typeof value["state_input"] === "string" && hasScalarUnicode(value["state_input"]) && ["none", "optional", "required"].includes(value["state_input"]))) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && (!hasOwn(value, "traverse") || (isQueryRecipeTraversal(value["traverse"]))) && (!hasOwn(value, "where") || (isRecipePredicate(value["where"]))) && hasUniqueArrayKey(value, "annotations", "key"));
+  return isProgrammaticWireValue(value, () => matchesSchemaQueryCreateSubjectFields(value));
 }
 
 export function decodeQueryCreateSubjectFields(input: string): QueryCreateSubjectFields {
@@ -4683,12 +4982,10 @@ export function decodeQueryCreateSubjectFields(input: string): QueryCreateSubjec
 }
 
 export function encodeQueryCreateSubjectFields(value: QueryCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isQueryCreateSubjectFields(value)) throw new TypeError("invalid QueryCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isQueryCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid QueryCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaQueryCreateSubjectFields(owned)) throw new TypeError("invalid QueryCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4701,8 +4998,12 @@ export interface QueryCycleRef {
   to_entity_address: EntityAddress;
 }
 
+function matchesSchemaQueryCycleRef(value: unknown): value is QueryCycleRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["from_entity_address", "kind", "orientation", "relation_address", "retained_path", "to_entity_address"])) && hasOwn(value, "from_entity_address") && (isEntityAddress(value["from_entity_address"])) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["cycle", "merge"].includes(value["kind"])) && hasOwn(value, "orientation") && (typeof value["orientation"] === "string" && hasScalarUnicode(value["orientation"]) && ["incoming", "outgoing"].includes(value["orientation"])) && hasOwn(value, "relation_address") && (isRelationAddress(value["relation_address"])) && hasOwn(value, "retained_path") && (matchesSchemaQueryPath(value["retained_path"])) && hasOwn(value, "to_entity_address") && (isEntityAddress(value["to_entity_address"]));
+}
+
 export function isQueryCycleRef(value: unknown): value is QueryCycleRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["from_entity_address", "kind", "orientation", "relation_address", "retained_path", "to_entity_address"])) && hasOwn(value, "from_entity_address") && (isEntityAddress(value["from_entity_address"])) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["cycle", "merge"].includes(value["kind"])) && hasOwn(value, "orientation") && (typeof value["orientation"] === "string" && hasScalarUnicode(value["orientation"]) && ["incoming", "outgoing"].includes(value["orientation"])) && hasOwn(value, "relation_address") && (isRelationAddress(value["relation_address"])) && hasOwn(value, "retained_path") && (isQueryPath(value["retained_path"])) && hasOwn(value, "to_entity_address") && (isEntityAddress(value["to_entity_address"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaQueryCycleRef(value));
 }
 
 export function decodeQueryCycleRef(input: string): QueryCycleRef {
@@ -4713,12 +5014,10 @@ export function decodeQueryCycleRef(input: string): QueryCycleRef {
 }
 
 export function encodeQueryCycleRef(value: QueryCycleRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isQueryCycleRef(value)) throw new TypeError("invalid QueryCycleRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isQueryCycleRef(emitted)) throw new TypeError("encoded value is invalid QueryCycleRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaQueryCycleRef(owned)) throw new TypeError("invalid QueryCycleRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4741,8 +5040,12 @@ export interface QueryExecutionResultData {
   traversed_entity_addresses: ReadonlyArray<EntityAddress>;
 }
 
+function matchesSchemaQueryExecutionResultData(value: unknown): value is QueryExecutionResultData {
+  return isObject(value) && hasOnlyKeys(value, new Set(["arguments", "cycle_refs", "diagnostics", "induced_relation_addresses", "path_relation_addresses", "paths", "primary_entity_addresses", "query_address", "reached_entity_addresses", "seed_entity_addresses", "selected_relation_addresses", "state_input", "state_policy", "state_reads", "support_entity_addresses", "traversed_entity_addresses"])) && hasOwn(value, "arguments") && (isObject(value["arguments"]) && Object.values(value["arguments"]).every((item) => isRecipeScalar(item)) && Object.keys(value["arguments"]).every((key) => isParameterAddress(key))) && hasOwn(value, "cycle_refs") && (isJSONArray(value["cycle_refs"]) && value["cycle_refs"].every((item) => matchesSchemaQueryCycleRef(item))) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "induced_relation_addresses") && (isJSONArray(value["induced_relation_addresses"]) && value["induced_relation_addresses"].every((item) => isRelationAddress(item)) && hasUniqueItems(value["induced_relation_addresses"])) && hasOwn(value, "path_relation_addresses") && (isJSONArray(value["path_relation_addresses"]) && value["path_relation_addresses"].every((item) => isRelationAddress(item)) && hasUniqueItems(value["path_relation_addresses"])) && hasOwn(value, "paths") && (isJSONArray(value["paths"]) && value["paths"].every((item) => matchesSchemaQueryPath(item))) && hasOwn(value, "primary_entity_addresses") && (isJSONArray(value["primary_entity_addresses"]) && value["primary_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["primary_entity_addresses"]) && hasStableAddressOrder(value["primary_entity_addresses"], "$item")) && hasOwn(value, "query_address") && (isQueryAddress(value["query_address"])) && hasOwn(value, "reached_entity_addresses") && (isJSONArray(value["reached_entity_addresses"]) && value["reached_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["reached_entity_addresses"]) && hasStableAddressOrder(value["reached_entity_addresses"], "$item")) && hasOwn(value, "seed_entity_addresses") && (isJSONArray(value["seed_entity_addresses"]) && value["seed_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["seed_entity_addresses"]) && hasStableAddressOrder(value["seed_entity_addresses"], "$item")) && hasOwn(value, "selected_relation_addresses") && (isJSONArray(value["selected_relation_addresses"]) && value["selected_relation_addresses"].every((item) => isRelationAddress(item)) && hasUniqueItems(value["selected_relation_addresses"])) && hasOwn(value, "state_input") && (matchesSchemaQueryStateInputRef(value["state_input"])) && hasOwn(value, "state_policy") && (typeof value["state_policy"] === "string" && hasScalarUnicode(value["state_policy"]) && ["none", "optional", "required"].includes(value["state_policy"])) && hasOwn(value, "state_reads") && (isJSONArray(value["state_reads"]) && value["state_reads"].every((item) => matchesSchemaQueryStateReadRef(item))) && hasOwn(value, "support_entity_addresses") && (isJSONArray(value["support_entity_addresses"]) && value["support_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["support_entity_addresses"]) && hasStableAddressOrder(value["support_entity_addresses"], "$item")) && hasOwn(value, "traversed_entity_addresses") && (isJSONArray(value["traversed_entity_addresses"]) && value["traversed_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["traversed_entity_addresses"]) && hasStableAddressOrder(value["traversed_entity_addresses"], "$item"));
+}
+
 export function isQueryExecutionResultData(value: unknown): value is QueryExecutionResultData {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["arguments", "cycle_refs", "diagnostics", "induced_relation_addresses", "path_relation_addresses", "paths", "primary_entity_addresses", "query_address", "reached_entity_addresses", "seed_entity_addresses", "selected_relation_addresses", "state_input", "state_policy", "state_reads", "support_entity_addresses", "traversed_entity_addresses"])) && hasOwn(value, "arguments") && (isObject(value["arguments"]) && Object.values(value["arguments"]).every((item) => isRecipeScalar(item)) && Object.keys(value["arguments"]).every((key) => isParameterAddress(key))) && hasOwn(value, "cycle_refs") && (isJSONArray(value["cycle_refs"]) && value["cycle_refs"].every((item) => isQueryCycleRef(item))) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "induced_relation_addresses") && (isJSONArray(value["induced_relation_addresses"]) && value["induced_relation_addresses"].every((item) => isRelationAddress(item)) && hasUniqueItems(value["induced_relation_addresses"])) && hasOwn(value, "path_relation_addresses") && (isJSONArray(value["path_relation_addresses"]) && value["path_relation_addresses"].every((item) => isRelationAddress(item)) && hasUniqueItems(value["path_relation_addresses"])) && hasOwn(value, "paths") && (isJSONArray(value["paths"]) && value["paths"].every((item) => isQueryPath(item))) && hasOwn(value, "primary_entity_addresses") && (isJSONArray(value["primary_entity_addresses"]) && value["primary_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["primary_entity_addresses"]) && hasStableAddressOrder(value["primary_entity_addresses"], "$item")) && hasOwn(value, "query_address") && (isQueryAddress(value["query_address"])) && hasOwn(value, "reached_entity_addresses") && (isJSONArray(value["reached_entity_addresses"]) && value["reached_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["reached_entity_addresses"]) && hasStableAddressOrder(value["reached_entity_addresses"], "$item")) && hasOwn(value, "seed_entity_addresses") && (isJSONArray(value["seed_entity_addresses"]) && value["seed_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["seed_entity_addresses"]) && hasStableAddressOrder(value["seed_entity_addresses"], "$item")) && hasOwn(value, "selected_relation_addresses") && (isJSONArray(value["selected_relation_addresses"]) && value["selected_relation_addresses"].every((item) => isRelationAddress(item)) && hasUniqueItems(value["selected_relation_addresses"])) && hasOwn(value, "state_input") && (isQueryStateInputRef(value["state_input"])) && hasOwn(value, "state_policy") && (typeof value["state_policy"] === "string" && hasScalarUnicode(value["state_policy"]) && ["none", "optional", "required"].includes(value["state_policy"])) && hasOwn(value, "state_reads") && (isJSONArray(value["state_reads"]) && value["state_reads"].every((item) => isQueryStateReadRef(item))) && hasOwn(value, "support_entity_addresses") && (isJSONArray(value["support_entity_addresses"]) && value["support_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["support_entity_addresses"]) && hasStableAddressOrder(value["support_entity_addresses"], "$item")) && hasOwn(value, "traversed_entity_addresses") && (isJSONArray(value["traversed_entity_addresses"]) && value["traversed_entity_addresses"].every((item) => isEntityAddress(item)) && hasUniqueItems(value["traversed_entity_addresses"]) && hasStableAddressOrder(value["traversed_entity_addresses"], "$item")));
+  return isProgrammaticWireValue(value, () => matchesSchemaQueryExecutionResultData(value));
 }
 
 export function decodeQueryExecutionResultData(input: string): QueryExecutionResultData {
@@ -4753,12 +5056,10 @@ export function decodeQueryExecutionResultData(input: string): QueryExecutionRes
 }
 
 export function encodeQueryExecutionResultData(value: QueryExecutionResultData): string {
-  validateProgrammaticWireValue(value);
-  if (!isQueryExecutionResultData(value)) throw new TypeError("invalid QueryExecutionResultData");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isQueryExecutionResultData(emitted)) throw new TypeError("encoded value is invalid QueryExecutionResultData");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaQueryExecutionResultData(owned)) throw new TypeError("invalid QueryExecutionResultData");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4775,8 +5076,12 @@ export interface QueryParameterCreateSubjectFields {
   value_type: ValueType;
 }
 
+function matchesSchemaQueryParameterCreateSubjectFields(value: unknown): value is QueryParameterCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["default", "enum_values", "format", "max", "max_length", "min", "min_length", "required", "reserved_enum_values", "value_type"])) && (!hasOwn(value, "default") || (isRecipeScalar(value["default"]))) && (!hasOwn(value, "enum_values") || (isJSONArray(value["enum_values"]) && value["enum_values"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && value["enum_values"].length >= 1 && hasUniqueItems(value["enum_values"]))) && (!hasOwn(value, "format") || (isStringFormat(value["format"]))) && (!hasOwn(value, "max") || (isCanonicalFiniteDecimal(value["max"]))) && (!hasOwn(value, "max_length") || (isCanonicalNonNegativeSafeInteger(value["max_length"]))) && (!hasOwn(value, "min") || (isCanonicalFiniteDecimal(value["min"]))) && (!hasOwn(value, "min_length") || (isCanonicalNonNegativeSafeInteger(value["min_length"]))) && (!hasOwn(value, "required") || (typeof value["required"] === "boolean")) && (!hasOwn(value, "reserved_enum_values") || (isJSONArray(value["reserved_enum_values"]) && value["reserved_enum_values"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && hasUniqueItems(value["reserved_enum_values"]) && hasUnicodeScalarOrder(value["reserved_enum_values"]))) && hasOwn(value, "value_type") && (isValueType(value["value_type"])) && hasDisjointArrays(value, "enum_values", "reserved_enum_values") && hasOrderedPair(value, "min", "max", "finite_binary64") && hasOrderedPair(value, "min_length", "max_length", "unsigned_decimal");
+}
+
 export function isQueryParameterCreateSubjectFields(value: unknown): value is QueryParameterCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["default", "enum_values", "format", "max", "max_length", "min", "min_length", "required", "reserved_enum_values", "value_type"])) && (!hasOwn(value, "default") || (isRecipeScalar(value["default"]))) && (!hasOwn(value, "enum_values") || (isJSONArray(value["enum_values"]) && value["enum_values"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && value["enum_values"].length >= 1 && hasUniqueItems(value["enum_values"]))) && (!hasOwn(value, "format") || (isStringFormat(value["format"]))) && (!hasOwn(value, "max") || (isCanonicalFiniteDecimal(value["max"]))) && (!hasOwn(value, "max_length") || (isCanonicalNonNegativeSafeInteger(value["max_length"]))) && (!hasOwn(value, "min") || (isCanonicalFiniteDecimal(value["min"]))) && (!hasOwn(value, "min_length") || (isCanonicalNonNegativeSafeInteger(value["min_length"]))) && (!hasOwn(value, "required") || (typeof value["required"] === "boolean")) && (!hasOwn(value, "reserved_enum_values") || (isJSONArray(value["reserved_enum_values"]) && value["reserved_enum_values"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1) && hasUniqueItems(value["reserved_enum_values"]) && hasUnicodeScalarOrder(value["reserved_enum_values"]))) && hasOwn(value, "value_type") && (isValueType(value["value_type"])) && hasDisjointArrays(value, "enum_values", "reserved_enum_values") && hasOrderedPair(value, "min", "max", "finite_binary64") && hasOrderedPair(value, "min_length", "max_length", "unsigned_decimal"));
+  return isProgrammaticWireValue(value, () => matchesSchemaQueryParameterCreateSubjectFields(value));
 }
 
 export function decodeQueryParameterCreateSubjectFields(input: string): QueryParameterCreateSubjectFields {
@@ -4787,12 +5092,10 @@ export function decodeQueryParameterCreateSubjectFields(input: string): QueryPar
 }
 
 export function encodeQueryParameterCreateSubjectFields(value: QueryParameterCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isQueryParameterCreateSubjectFields(value)) throw new TypeError("invalid QueryParameterCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isQueryParameterCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid QueryParameterCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaQueryParameterCreateSubjectFields(owned)) throw new TypeError("invalid QueryParameterCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4801,8 +5104,12 @@ export interface QueryPath {
   relation_addresses: ReadonlyArray<RelationAddress>;
 }
 
+function matchesSchemaQueryPath(value: unknown): value is QueryPath {
+  return isObject(value) && hasOnlyKeys(value, new Set(["entity_addresses", "relation_addresses"])) && hasOwn(value, "entity_addresses") && (isJSONArray(value["entity_addresses"]) && value["entity_addresses"].every((item) => isEntityAddress(item)) && value["entity_addresses"].length >= 1) && hasOwn(value, "relation_addresses") && (isJSONArray(value["relation_addresses"]) && value["relation_addresses"].every((item) => isRelationAddress(item)));
+}
+
 export function isQueryPath(value: unknown): value is QueryPath {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["entity_addresses", "relation_addresses"])) && hasOwn(value, "entity_addresses") && (isJSONArray(value["entity_addresses"]) && value["entity_addresses"].every((item) => isEntityAddress(item)) && value["entity_addresses"].length >= 1) && hasOwn(value, "relation_addresses") && (isJSONArray(value["relation_addresses"]) && value["relation_addresses"].every((item) => isRelationAddress(item))));
+  return isProgrammaticWireValue(value, () => matchesSchemaQueryPath(value));
 }
 
 export function decodeQueryPath(input: string): QueryPath {
@@ -4813,12 +5120,10 @@ export function decodeQueryPath(input: string): QueryPath {
 }
 
 export function encodeQueryPath(value: QueryPath): string {
-  validateProgrammaticWireValue(value);
-  if (!isQueryPath(value)) throw new TypeError("invalid QueryPath");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isQueryPath(emitted)) throw new TypeError("encoded value is invalid QueryPath");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaQueryPath(owned)) throw new TypeError("invalid QueryPath");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4831,8 +5136,12 @@ export interface QueryRecipeBlobRef {
   size: CanonicalUint64;
 }
 
+function matchesSchemaQueryRecipeBlobRef(value: unknown): value is QueryRecipeBlobRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.query-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+}
+
 export function isQueryRecipeBlobRef(value: unknown): value is QueryRecipeBlobRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.query-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaQueryRecipeBlobRef(value));
 }
 
 export function decodeQueryRecipeBlobRef(input: string): QueryRecipeBlobRef {
@@ -4843,12 +5152,10 @@ export function decodeQueryRecipeBlobRef(input: string): QueryRecipeBlobRef {
 }
 
 export function encodeQueryRecipeBlobRef(value: QueryRecipeBlobRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isQueryRecipeBlobRef(value)) throw new TypeError("invalid QueryRecipeBlobRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isQueryRecipeBlobRef(emitted)) throw new TypeError("encoded value is invalid QueryRecipeBlobRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaQueryRecipeBlobRef(owned)) throw new TypeError("invalid QueryRecipeBlobRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4860,8 +5167,12 @@ export interface QueryStateInputRef {
   state_version?: string;
 }
 
+function matchesSchemaQueryStateInputRef(value: unknown): value is QueryStateInputRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["captured_at", "definition_hash", "kind", "snapshot_hash", "state_version"])) && (!hasOwn(value, "captured_at") || (isRfc3339Time(value["captured_at"]))) && (!hasOwn(value, "definition_hash") || (isDigest(value["definition_hash"]))) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["none", "snapshot"].includes(value["kind"])) && (!hasOwn(value, "snapshot_hash") || (isDigest(value["snapshot_hash"]))) && (!hasOwn(value, "state_version") || (typeof value["state_version"] === "string" && hasScalarUnicode(value["state_version"]) && Array.from(value["state_version"]).length >= 1)) && ((value["kind"] === "none" && !hasOwn(value, "captured_at") && !hasOwn(value, "definition_hash") && !hasOwn(value, "snapshot_hash") && !hasOwn(value, "state_version")) || (value["kind"] === "snapshot" && hasOwn(value, "captured_at") && hasOwn(value, "definition_hash") && hasOwn(value, "snapshot_hash") && hasOwn(value, "state_version")));
+}
+
 export function isQueryStateInputRef(value: unknown): value is QueryStateInputRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["captured_at", "definition_hash", "kind", "snapshot_hash", "state_version"])) && (!hasOwn(value, "captured_at") || (isRfc3339Time(value["captured_at"]))) && (!hasOwn(value, "definition_hash") || (isDigest(value["definition_hash"]))) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["none", "snapshot"].includes(value["kind"])) && (!hasOwn(value, "snapshot_hash") || (isDigest(value["snapshot_hash"]))) && (!hasOwn(value, "state_version") || (typeof value["state_version"] === "string" && hasScalarUnicode(value["state_version"]) && Array.from(value["state_version"]).length >= 1)) && ((value["kind"] === "none" && !hasOwn(value, "captured_at") && !hasOwn(value, "definition_hash") && !hasOwn(value, "snapshot_hash") && !hasOwn(value, "state_version")) || (value["kind"] === "snapshot" && hasOwn(value, "captured_at") && hasOwn(value, "definition_hash") && hasOwn(value, "snapshot_hash") && hasOwn(value, "state_version"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaQueryStateInputRef(value));
 }
 
 export function decodeQueryStateInputRef(input: string): QueryStateInputRef {
@@ -4872,12 +5183,10 @@ export function decodeQueryStateInputRef(input: string): QueryStateInputRef {
 }
 
 export function encodeQueryStateInputRef(value: QueryStateInputRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isQueryStateInputRef(value)) throw new TypeError("invalid QueryStateInputRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isQueryStateInputRef(emitted)) throw new TypeError("encoded value is invalid QueryStateInputRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaQueryStateInputRef(owned)) throw new TypeError("invalid QueryStateInputRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4886,8 +5195,12 @@ export interface QueryStateReadRef {
   subject_address: StableAddress;
 }
 
+function matchesSchemaQueryStateReadRef(value: unknown): value is QueryStateReadRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["field_path", "subject_address"])) && hasOwn(value, "field_path") && (isStateFieldPath(value["field_path"])) && hasOwn(value, "subject_address") && (isStableAddress(value["subject_address"]));
+}
+
 export function isQueryStateReadRef(value: unknown): value is QueryStateReadRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["field_path", "subject_address"])) && hasOwn(value, "field_path") && (isStateFieldPath(value["field_path"])) && hasOwn(value, "subject_address") && (isStableAddress(value["subject_address"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaQueryStateReadRef(value));
 }
 
 export function decodeQueryStateReadRef(input: string): QueryStateReadRef {
@@ -4898,12 +5211,10 @@ export function decodeQueryStateReadRef(input: string): QueryStateReadRef {
 }
 
 export function encodeQueryStateReadRef(value: QueryStateReadRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isQueryStateReadRef(value)) throw new TypeError("invalid QueryStateReadRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isQueryStateReadRef(emitted)) throw new TypeError("encoded value is invalid QueryStateReadRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaQueryStateReadRef(owned)) throw new TypeError("invalid QueryStateReadRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4914,8 +5225,12 @@ export interface ReadDeclarationsInput {
   limits: WorkbenchLimits;
 }
 
+function matchesSchemaReadDeclarationsInput(value: unknown): value is ReadDeclarationsInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["addresses", "cursor", "document_generation", "limits"])) && hasOwn(value, "addresses") && (isJSONArray(value["addresses"]) && value["addresses"].every((item) => isStableAddress(item)) && value["addresses"].length >= 1 && hasUniqueItems(value["addresses"]) && hasStableAddressOrder(value["addresses"], "$item")) && (!hasOwn(value, "cursor") || (matchesSchemaDeclarationCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isReadDeclarationsInput(value: unknown): value is ReadDeclarationsInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["addresses", "cursor", "document_generation", "limits"])) && hasOwn(value, "addresses") && (isJSONArray(value["addresses"]) && value["addresses"].every((item) => isStableAddress(item)) && value["addresses"].length >= 1 && hasUniqueItems(value["addresses"]) && hasStableAddressOrder(value["addresses"], "$item")) && (!hasOwn(value, "cursor") || (isDeclarationCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadDeclarationsInput(value));
 }
 
 export function decodeReadDeclarationsInput(input: string): ReadDeclarationsInput {
@@ -4926,12 +5241,10 @@ export function decodeReadDeclarationsInput(input: string): ReadDeclarationsInpu
 }
 
 export function encodeReadDeclarationsInput(value: ReadDeclarationsInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadDeclarationsInput(value)) throw new TypeError("invalid ReadDeclarationsInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadDeclarationsInput(emitted)) throw new TypeError("encoded value is invalid ReadDeclarationsInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadDeclarationsInput(owned)) throw new TypeError("invalid ReadDeclarationsInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4945,8 +5258,12 @@ export interface ReadDeclarationsRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaReadDeclarationsRequestEnvelope(value: unknown): value is ReadDeclarationsRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_declarations") && hasOwn(value, "payload") && (matchesSchemaReadDeclarationsInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isReadDeclarationsRequestEnvelope(value: unknown): value is ReadDeclarationsRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_declarations") && hasOwn(value, "payload") && (isReadDeclarationsInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadDeclarationsRequestEnvelope(value));
 }
 
 export function decodeReadDeclarationsRequestEnvelope(input: string): ReadDeclarationsRequestEnvelope {
@@ -4957,12 +5274,10 @@ export function decodeReadDeclarationsRequestEnvelope(input: string): ReadDeclar
 }
 
 export function encodeReadDeclarationsRequestEnvelope(value: ReadDeclarationsRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadDeclarationsRequestEnvelope(value)) throw new TypeError("invalid ReadDeclarationsRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadDeclarationsRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadDeclarationsRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadDeclarationsRequestEnvelope(owned)) throw new TypeError("invalid ReadDeclarationsRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -4977,8 +5292,12 @@ export interface ReadDeclarationsResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaReadDeclarationsResponseEnvelope(value: unknown): value is ReadDeclarationsResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaReadDeclarationsResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isReadDeclarationsResponseEnvelope(value: unknown): value is ReadDeclarationsResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isReadDeclarationsResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadDeclarationsResponseEnvelope(value));
 }
 
 export function decodeReadDeclarationsResponseEnvelope(input: string): ReadDeclarationsResponseEnvelope {
@@ -4989,12 +5308,10 @@ export function decodeReadDeclarationsResponseEnvelope(input: string): ReadDecla
 }
 
 export function encodeReadDeclarationsResponseEnvelope(value: ReadDeclarationsResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadDeclarationsResponseEnvelope(value)) throw new TypeError("invalid ReadDeclarationsResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadDeclarationsResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadDeclarationsResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadDeclarationsResponseEnvelope(owned)) throw new TypeError("invalid ReadDeclarationsResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5004,8 +5321,12 @@ export interface ReadDeclarationsResult {
   page: DeclarationPageInfo;
 }
 
+function matchesSchemaReadDeclarationsResult(value: unknown): value is ReadDeclarationsResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaDeclarationReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "bounded_text_chunk")) && hasOwn(value, "page") && (matchesSchemaDeclarationPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isReadDeclarationsResult(value: unknown): value is ReadDeclarationsResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isDeclarationReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "bounded_text_chunk")) && hasOwn(value, "page") && (isDeclarationPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadDeclarationsResult(value));
 }
 
 export function decodeReadDeclarationsResult(input: string): ReadDeclarationsResult {
@@ -5016,12 +5337,10 @@ export function decodeReadDeclarationsResult(input: string): ReadDeclarationsRes
 }
 
 export function encodeReadDeclarationsResult(value: ReadDeclarationsResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadDeclarationsResult(value)) throw new TypeError("invalid ReadDeclarationsResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadDeclarationsResult(emitted)) throw new TypeError("encoded value is invalid ReadDeclarationsResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadDeclarationsResult(owned)) throw new TypeError("invalid ReadDeclarationsResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5032,8 +5351,12 @@ export interface ReadModulesInput {
   modules: ReadonlyArray<ModuleRef>;
 }
 
+function matchesSchemaReadModulesInput(value: unknown): value is ReadModulesInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits", "modules"])) && (!hasOwn(value, "cursor") || (matchesSchemaModuleContentCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "modules") && (isJSONArray(value["modules"]) && value["modules"].every((item) => isModuleRef(item)) && value["modules"].length >= 1 && hasUniqueItems(value["modules"]) && hasCanonicalCollectionOrder(value["modules"], "source_file")) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isReadModulesInput(value: unknown): value is ReadModulesInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits", "modules"])) && (!hasOwn(value, "cursor") || (isModuleContentCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "modules") && (isJSONArray(value["modules"]) && value["modules"].every((item) => isModuleRef(item)) && value["modules"].length >= 1 && hasUniqueItems(value["modules"]) && hasCanonicalCollectionOrder(value["modules"], "source_file")) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadModulesInput(value));
 }
 
 export function decodeReadModulesInput(input: string): ReadModulesInput {
@@ -5044,12 +5367,10 @@ export function decodeReadModulesInput(input: string): ReadModulesInput {
 }
 
 export function encodeReadModulesInput(value: ReadModulesInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadModulesInput(value)) throw new TypeError("invalid ReadModulesInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadModulesInput(emitted)) throw new TypeError("encoded value is invalid ReadModulesInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadModulesInput(owned)) throw new TypeError("invalid ReadModulesInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5063,8 +5384,12 @@ export interface ReadModulesRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaReadModulesRequestEnvelope(value: unknown): value is ReadModulesRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_modules") && hasOwn(value, "payload") && (matchesSchemaReadModulesInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isReadModulesRequestEnvelope(value: unknown): value is ReadModulesRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_modules") && hasOwn(value, "payload") && (isReadModulesInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadModulesRequestEnvelope(value));
 }
 
 export function decodeReadModulesRequestEnvelope(input: string): ReadModulesRequestEnvelope {
@@ -5075,12 +5400,10 @@ export function decodeReadModulesRequestEnvelope(input: string): ReadModulesRequ
 }
 
 export function encodeReadModulesRequestEnvelope(value: ReadModulesRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadModulesRequestEnvelope(value)) throw new TypeError("invalid ReadModulesRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadModulesRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadModulesRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadModulesRequestEnvelope(owned)) throw new TypeError("invalid ReadModulesRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5095,8 +5418,12 @@ export interface ReadModulesResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaReadModulesResponseEnvelope(value: unknown): value is ReadModulesResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaReadModulesResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isReadModulesResponseEnvelope(value: unknown): value is ReadModulesResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isReadModulesResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadModulesResponseEnvelope(value));
 }
 
 export function decodeReadModulesResponseEnvelope(input: string): ReadModulesResponseEnvelope {
@@ -5107,12 +5434,10 @@ export function decodeReadModulesResponseEnvelope(input: string): ReadModulesRes
 }
 
 export function encodeReadModulesResponseEnvelope(value: ReadModulesResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadModulesResponseEnvelope(value)) throw new TypeError("invalid ReadModulesResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadModulesResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadModulesResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadModulesResponseEnvelope(owned)) throw new TypeError("invalid ReadModulesResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5122,8 +5447,12 @@ export interface ReadModulesResult {
   page: ModuleContentPageInfo;
 }
 
+function matchesSchemaReadModulesResult(value: unknown): value is ReadModulesResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaModuleContentReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "module_scope")) && hasOwn(value, "page") && (matchesSchemaModuleContentPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isReadModulesResult(value: unknown): value is ReadModulesResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isModuleContentReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "module_scope")) && hasOwn(value, "page") && (isModuleContentPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadModulesResult(value));
 }
 
 export function decodeReadModulesResult(input: string): ReadModulesResult {
@@ -5134,12 +5463,10 @@ export function decodeReadModulesResult(input: string): ReadModulesResult {
 }
 
 export function encodeReadModulesResult(value: ReadModulesResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadModulesResult(value)) throw new TypeError("invalid ReadModulesResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadModulesResult(emitted)) throw new TypeError("encoded value is invalid ReadModulesResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadModulesResult(owned)) throw new TypeError("invalid ReadModulesResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5150,8 +5477,12 @@ export interface ReadReferencesInput {
   limits: WorkbenchLimits;
 }
 
+function matchesSchemaReadReferencesInput(value: unknown): value is ReadReferencesInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["addresses", "cursor", "document_generation", "limits"])) && hasOwn(value, "addresses") && (isJSONArray(value["addresses"]) && value["addresses"].every((item) => isReferenceAddress(item)) && value["addresses"].length >= 1 && hasUniqueItems(value["addresses"]) && hasStableAddressOrder(value["addresses"], "$item")) && (!hasOwn(value, "cursor") || (matchesSchemaReferenceContentCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isReadReferencesInput(value: unknown): value is ReadReferencesInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["addresses", "cursor", "document_generation", "limits"])) && hasOwn(value, "addresses") && (isJSONArray(value["addresses"]) && value["addresses"].every((item) => isReferenceAddress(item)) && value["addresses"].length >= 1 && hasUniqueItems(value["addresses"]) && hasStableAddressOrder(value["addresses"], "$item")) && (!hasOwn(value, "cursor") || (isReferenceContentCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadReferencesInput(value));
 }
 
 export function decodeReadReferencesInput(input: string): ReadReferencesInput {
@@ -5162,12 +5493,10 @@ export function decodeReadReferencesInput(input: string): ReadReferencesInput {
 }
 
 export function encodeReadReferencesInput(value: ReadReferencesInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadReferencesInput(value)) throw new TypeError("invalid ReadReferencesInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadReferencesInput(emitted)) throw new TypeError("encoded value is invalid ReadReferencesInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadReferencesInput(owned)) throw new TypeError("invalid ReadReferencesInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5181,8 +5510,12 @@ export interface ReadReferencesRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaReadReferencesRequestEnvelope(value: unknown): value is ReadReferencesRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_references") && hasOwn(value, "payload") && (matchesSchemaReadReferencesInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isReadReferencesRequestEnvelope(value: unknown): value is ReadReferencesRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_references") && hasOwn(value, "payload") && (isReadReferencesInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadReferencesRequestEnvelope(value));
 }
 
 export function decodeReadReferencesRequestEnvelope(input: string): ReadReferencesRequestEnvelope {
@@ -5193,12 +5526,10 @@ export function decodeReadReferencesRequestEnvelope(input: string): ReadReferenc
 }
 
 export function encodeReadReferencesRequestEnvelope(value: ReadReferencesRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadReferencesRequestEnvelope(value)) throw new TypeError("invalid ReadReferencesRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadReferencesRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadReferencesRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadReferencesRequestEnvelope(owned)) throw new TypeError("invalid ReadReferencesRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5213,8 +5544,12 @@ export interface ReadReferencesResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaReadReferencesResponseEnvelope(value: unknown): value is ReadReferencesResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaReadReferencesResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isReadReferencesResponseEnvelope(value: unknown): value is ReadReferencesResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isReadReferencesResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadReferencesResponseEnvelope(value));
 }
 
 export function decodeReadReferencesResponseEnvelope(input: string): ReadReferencesResponseEnvelope {
@@ -5225,12 +5560,10 @@ export function decodeReadReferencesResponseEnvelope(input: string): ReadReferen
 }
 
 export function encodeReadReferencesResponseEnvelope(value: ReadReferencesResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadReferencesResponseEnvelope(value)) throw new TypeError("invalid ReadReferencesResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadReferencesResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadReferencesResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadReferencesResponseEnvelope(owned)) throw new TypeError("invalid ReadReferencesResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5240,8 +5573,12 @@ export interface ReadReferencesResult {
   page: ReferenceContentPageInfo;
 }
 
+function matchesSchemaReadReferencesResult(value: unknown): value is ReadReferencesResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaReferenceContentReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "bounded_text_chunk")) && hasOwn(value, "page") && (matchesSchemaReferenceContentPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isReadReferencesResult(value: unknown): value is ReadReferencesResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isReferenceContentReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "bounded_text_chunk")) && hasOwn(value, "page") && (isReferenceContentPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadReferencesResult(value));
 }
 
 export function decodeReadReferencesResult(input: string): ReadReferencesResult {
@@ -5252,12 +5589,10 @@ export function decodeReadReferencesResult(input: string): ReadReferencesResult 
 }
 
 export function encodeReadReferencesResult(value: ReadReferencesResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadReferencesResult(value)) throw new TypeError("invalid ReadReferencesResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadReferencesResult(emitted)) throw new TypeError("encoded value is invalid ReadReferencesResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadReferencesResult(owned)) throw new TypeError("invalid ReadReferencesResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5268,8 +5603,12 @@ export interface ReadRowsInput {
   owner_addresses: ReadonlyArray<StableAddress>;
 }
 
+function matchesSchemaReadRowsInput(value: unknown): value is ReadRowsInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits", "owner_addresses"])) && (!hasOwn(value, "cursor") || (matchesSchemaRowCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "owner_addresses") && (isJSONArray(value["owner_addresses"]) && value["owner_addresses"].every((item) => isStableAddress(item)) && value["owner_addresses"].length >= 1 && hasUniqueItems(value["owner_addresses"]) && hasStableAddressOrder(value["owner_addresses"], "$item")) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isReadRowsInput(value: unknown): value is ReadRowsInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits", "owner_addresses"])) && (!hasOwn(value, "cursor") || (isRowCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "owner_addresses") && (isJSONArray(value["owner_addresses"]) && value["owner_addresses"].every((item) => isStableAddress(item)) && value["owner_addresses"].length >= 1 && hasUniqueItems(value["owner_addresses"]) && hasStableAddressOrder(value["owner_addresses"], "$item")) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadRowsInput(value));
 }
 
 export function decodeReadRowsInput(input: string): ReadRowsInput {
@@ -5280,12 +5619,10 @@ export function decodeReadRowsInput(input: string): ReadRowsInput {
 }
 
 export function encodeReadRowsInput(value: ReadRowsInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadRowsInput(value)) throw new TypeError("invalid ReadRowsInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadRowsInput(emitted)) throw new TypeError("encoded value is invalid ReadRowsInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadRowsInput(owned)) throw new TypeError("invalid ReadRowsInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5299,8 +5636,12 @@ export interface ReadRowsRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaReadRowsRequestEnvelope(value: unknown): value is ReadRowsRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_rows") && hasOwn(value, "payload") && (matchesSchemaReadRowsInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isReadRowsRequestEnvelope(value: unknown): value is ReadRowsRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_rows") && hasOwn(value, "payload") && (isReadRowsInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadRowsRequestEnvelope(value));
 }
 
 export function decodeReadRowsRequestEnvelope(input: string): ReadRowsRequestEnvelope {
@@ -5311,12 +5652,10 @@ export function decodeReadRowsRequestEnvelope(input: string): ReadRowsRequestEnv
 }
 
 export function encodeReadRowsRequestEnvelope(value: ReadRowsRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadRowsRequestEnvelope(value)) throw new TypeError("invalid ReadRowsRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadRowsRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadRowsRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadRowsRequestEnvelope(owned)) throw new TypeError("invalid ReadRowsRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5331,8 +5670,12 @@ export interface ReadRowsResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaReadRowsResponseEnvelope(value: unknown): value is ReadRowsResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaReadRowsResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isReadRowsResponseEnvelope(value: unknown): value is ReadRowsResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isReadRowsResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadRowsResponseEnvelope(value));
 }
 
 export function decodeReadRowsResponseEnvelope(input: string): ReadRowsResponseEnvelope {
@@ -5343,12 +5686,10 @@ export function decodeReadRowsResponseEnvelope(input: string): ReadRowsResponseE
 }
 
 export function encodeReadRowsResponseEnvelope(value: ReadRowsResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadRowsResponseEnvelope(value)) throw new TypeError("invalid ReadRowsResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadRowsResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadRowsResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadRowsResponseEnvelope(owned)) throw new TypeError("invalid ReadRowsResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5358,8 +5699,12 @@ export interface ReadRowsResult {
   page: RowPageInfo;
 }
 
+function matchesSchemaReadRowsResult(value: unknown): value is ReadRowsResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaRowReadItem(item)) && hasStableAddressOrder(value["items"], "row_address")) && hasOwn(value, "page") && (matchesSchemaRowPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isReadRowsResult(value: unknown): value is ReadRowsResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isRowReadItem(item)) && hasStableAddressOrder(value["items"], "row_address")) && hasOwn(value, "page") && (isRowPageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadRowsResult(value));
 }
 
 export function decodeReadRowsResult(input: string): ReadRowsResult {
@@ -5370,12 +5715,10 @@ export function decodeReadRowsResult(input: string): ReadRowsResult {
 }
 
 export function encodeReadRowsResult(value: ReadRowsResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadRowsResult(value)) throw new TypeError("invalid ReadRowsResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadRowsResult(emitted)) throw new TypeError("encoded value is invalid ReadRowsResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadRowsResult(owned)) throw new TypeError("invalid ReadRowsResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5386,8 +5729,12 @@ export interface ReadScopeInput {
   owner_address: StableAddress;
 }
 
+function matchesSchemaReadScopeInput(value: unknown): value is ReadScopeInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits", "owner_address"])) && (!hasOwn(value, "cursor") || (matchesSchemaScopeCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (matchesSchemaWorkbenchLimits(value["limits"])) && hasOwn(value, "owner_address") && (isStableAddress(value["owner_address"])) && hasProtocolInvariant(value, "document_bound_input");
+}
+
 export function isReadScopeInput(value: unknown): value is ReadScopeInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["cursor", "document_generation", "limits", "owner_address"])) && (!hasOwn(value, "cursor") || (isScopeCursor(value["cursor"]))) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "limits") && (isWorkbenchLimits(value["limits"])) && hasOwn(value, "owner_address") && (isStableAddress(value["owner_address"])) && hasProtocolInvariant(value, "document_bound_input"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadScopeInput(value));
 }
 
 export function decodeReadScopeInput(input: string): ReadScopeInput {
@@ -5398,12 +5745,10 @@ export function decodeReadScopeInput(input: string): ReadScopeInput {
 }
 
 export function encodeReadScopeInput(value: ReadScopeInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadScopeInput(value)) throw new TypeError("invalid ReadScopeInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadScopeInput(emitted)) throw new TypeError("encoded value is invalid ReadScopeInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadScopeInput(owned)) throw new TypeError("invalid ReadScopeInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5417,8 +5762,12 @@ export interface ReadScopeRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaReadScopeRequestEnvelope(value: unknown): value is ReadScopeRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_scope") && hasOwn(value, "payload") && (matchesSchemaReadScopeInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isReadScopeRequestEnvelope(value: unknown): value is ReadScopeRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.read_scope") && hasOwn(value, "payload") && (isReadScopeInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadScopeRequestEnvelope(value));
 }
 
 export function decodeReadScopeRequestEnvelope(input: string): ReadScopeRequestEnvelope {
@@ -5429,12 +5778,10 @@ export function decodeReadScopeRequestEnvelope(input: string): ReadScopeRequestE
 }
 
 export function encodeReadScopeRequestEnvelope(value: ReadScopeRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadScopeRequestEnvelope(value)) throw new TypeError("invalid ReadScopeRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadScopeRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadScopeRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadScopeRequestEnvelope(owned)) throw new TypeError("invalid ReadScopeRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5449,8 +5796,12 @@ export interface ReadScopeResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaReadScopeResponseEnvelope(value: unknown): value is ReadScopeResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaReadScopeResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isReadScopeResponseEnvelope(value: unknown): value is ReadScopeResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isReadScopeResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadScopeResponseEnvelope(value));
 }
 
 export function decodeReadScopeResponseEnvelope(input: string): ReadScopeResponseEnvelope {
@@ -5461,12 +5812,10 @@ export function decodeReadScopeResponseEnvelope(input: string): ReadScopeRespons
 }
 
 export function encodeReadScopeResponseEnvelope(value: ReadScopeResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadScopeResponseEnvelope(value)) throw new TypeError("invalid ReadScopeResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadScopeResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ReadScopeResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadScopeResponseEnvelope(owned)) throw new TypeError("invalid ReadScopeResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5476,8 +5825,12 @@ export interface ReadScopeResult {
   page: ScopePageInfo;
 }
 
+function matchesSchemaReadScopeResult(value: unknown): value is ReadScopeResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => matchesSchemaScopeReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "bounded_text_chunk")) && hasOwn(value, "page") && (matchesSchemaScopePageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result");
+}
+
 export function isReadScopeResult(value: unknown): value is ReadScopeResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "items", "page"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "items") && (isJSONArray(value["items"]) && value["items"].every((item) => isScopeReadItem(item)) && hasCanonicalCollectionOrder(value["items"], "bounded_text_chunk")) && hasOwn(value, "page") && (isScopePageInfo(value["page"])) && hasProtocolInvariant(value, "paged_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaReadScopeResult(value));
 }
 
 export function decodeReadScopeResult(input: string): ReadScopeResult {
@@ -5488,12 +5841,10 @@ export function decodeReadScopeResult(input: string): ReadScopeResult {
 }
 
 export function encodeReadScopeResult(value: ReadScopeResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isReadScopeResult(value)) throw new TypeError("invalid ReadScopeResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReadScopeResult(emitted)) throw new TypeError("encoded value is invalid ReadScopeResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReadScopeResult(owned)) throw new TypeError("invalid ReadScopeResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5502,8 +5853,12 @@ export interface ReferenceContentCursor {
   value: string;
 }
 
+function matchesSchemaReferenceContentCursor(value: unknown): value is ReferenceContentCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_references_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isReferenceContentCursor(value: unknown): value is ReferenceContentCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_references_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaReferenceContentCursor(value));
 }
 
 export function decodeReferenceContentCursor(input: string): ReferenceContentCursor {
@@ -5514,12 +5869,10 @@ export function decodeReferenceContentCursor(input: string): ReferenceContentCur
 }
 
 export function encodeReferenceContentCursor(value: ReferenceContentCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isReferenceContentCursor(value)) throw new TypeError("invalid ReferenceContentCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReferenceContentCursor(emitted)) throw new TypeError("encoded value is invalid ReferenceContentCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReferenceContentCursor(owned)) throw new TypeError("invalid ReferenceContentCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5530,8 +5883,12 @@ export interface ReferenceContentPageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaReferenceContentPageInfo(value: unknown): value is ReferenceContentPageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaReferenceContentCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isReferenceContentPageInfo(value: unknown): value is ReferenceContentPageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isReferenceContentCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaReferenceContentPageInfo(value));
 }
 
 export function decodeReferenceContentPageInfo(input: string): ReferenceContentPageInfo {
@@ -5542,12 +5899,10 @@ export function decodeReferenceContentPageInfo(input: string): ReferenceContentP
 }
 
 export function encodeReferenceContentPageInfo(value: ReferenceContentPageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isReferenceContentPageInfo(value)) throw new TypeError("invalid ReferenceContentPageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReferenceContentPageInfo(emitted)) throw new TypeError("encoded value is invalid ReferenceContentPageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReferenceContentPageInfo(owned)) throw new TypeError("invalid ReferenceContentPageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5557,8 +5912,12 @@ export interface ReferenceContentReadItem {
   text_chunk: BoundedTextChunk;
 }
 
+function matchesSchemaReferenceContentReadItem(value: unknown): value is ReferenceContentReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "source_range", "text_chunk"])) && hasOwn(value, "address") && (isReferenceAddress(value["address"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"])) && hasOwn(value, "text_chunk") && (matchesSchemaBoundedTextChunk(value["text_chunk"]));
+}
+
 export function isReferenceContentReadItem(value: unknown): value is ReferenceContentReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "source_range", "text_chunk"])) && hasOwn(value, "address") && (isReferenceAddress(value["address"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"])) && hasOwn(value, "text_chunk") && (isBoundedTextChunk(value["text_chunk"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaReferenceContentReadItem(value));
 }
 
 export function decodeReferenceContentReadItem(input: string): ReferenceContentReadItem {
@@ -5569,12 +5928,10 @@ export function decodeReferenceContentReadItem(input: string): ReferenceContentR
 }
 
 export function encodeReferenceContentReadItem(value: ReferenceContentReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isReferenceContentReadItem(value)) throw new TypeError("invalid ReferenceContentReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReferenceContentReadItem(emitted)) throw new TypeError("encoded value is invalid ReferenceContentReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReferenceContentReadItem(owned)) throw new TypeError("invalid ReferenceContentReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5582,8 +5939,12 @@ export interface ReferenceCreateSubjectFields {
   text: string;
 }
 
+function matchesSchemaReferenceCreateSubjectFields(value: unknown): value is ReferenceCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["text"])) && hasOwn(value, "text") && (typeof value["text"] === "string" && hasScalarUnicode(value["text"]));
+}
+
 export function isReferenceCreateSubjectFields(value: unknown): value is ReferenceCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["text"])) && hasOwn(value, "text") && (typeof value["text"] === "string" && hasScalarUnicode(value["text"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaReferenceCreateSubjectFields(value));
 }
 
 export function decodeReferenceCreateSubjectFields(input: string): ReferenceCreateSubjectFields {
@@ -5594,12 +5955,10 @@ export function decodeReferenceCreateSubjectFields(input: string): ReferenceCrea
 }
 
 export function encodeReferenceCreateSubjectFields(value: ReferenceCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isReferenceCreateSubjectFields(value)) throw new TypeError("invalid ReferenceCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReferenceCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid ReferenceCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReferenceCreateSubjectFields(owned)) throw new TypeError("invalid ReferenceCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5608,8 +5967,12 @@ export interface ReferenceSummaryCursor {
   value: string;
 }
 
+function matchesSchemaReferenceSummaryCursor(value: unknown): value is ReferenceSummaryCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^list_references_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isReferenceSummaryCursor(value: unknown): value is ReferenceSummaryCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^list_references_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaReferenceSummaryCursor(value));
 }
 
 export function decodeReferenceSummaryCursor(input: string): ReferenceSummaryCursor {
@@ -5620,12 +5983,10 @@ export function decodeReferenceSummaryCursor(input: string): ReferenceSummaryCur
 }
 
 export function encodeReferenceSummaryCursor(value: ReferenceSummaryCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isReferenceSummaryCursor(value)) throw new TypeError("invalid ReferenceSummaryCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReferenceSummaryCursor(emitted)) throw new TypeError("encoded value is invalid ReferenceSummaryCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReferenceSummaryCursor(owned)) throw new TypeError("invalid ReferenceSummaryCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5636,8 +5997,12 @@ export interface ReferenceSummaryPageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaReferenceSummaryPageInfo(value: unknown): value is ReferenceSummaryPageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaReferenceSummaryCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isReferenceSummaryPageInfo(value: unknown): value is ReferenceSummaryPageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isReferenceSummaryCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaReferenceSummaryPageInfo(value));
 }
 
 export function decodeReferenceSummaryPageInfo(input: string): ReferenceSummaryPageInfo {
@@ -5648,12 +6013,10 @@ export function decodeReferenceSummaryPageInfo(input: string): ReferenceSummaryP
 }
 
 export function encodeReferenceSummaryPageInfo(value: ReferenceSummaryPageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isReferenceSummaryPageInfo(value)) throw new TypeError("invalid ReferenceSummaryPageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReferenceSummaryPageInfo(emitted)) throw new TypeError("encoded value is invalid ReferenceSummaryPageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReferenceSummaryPageInfo(owned)) throw new TypeError("invalid ReferenceSummaryPageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5663,8 +6026,12 @@ export interface ReferenceSummaryReadItem {
   text_digest: Digest;
 }
 
+function matchesSchemaReferenceSummaryReadItem(value: unknown): value is ReferenceSummaryReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "source_range", "text_digest"])) && hasOwn(value, "address") && (isReferenceAddress(value["address"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"])) && hasOwn(value, "text_digest") && (isDigest(value["text_digest"]));
+}
+
 export function isReferenceSummaryReadItem(value: unknown): value is ReferenceSummaryReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "source_range", "text_digest"])) && hasOwn(value, "address") && (isReferenceAddress(value["address"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"])) && hasOwn(value, "text_digest") && (isDigest(value["text_digest"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaReferenceSummaryReadItem(value));
 }
 
 export function decodeReferenceSummaryReadItem(input: string): ReferenceSummaryReadItem {
@@ -5675,12 +6042,10 @@ export function decodeReferenceSummaryReadItem(input: string): ReferenceSummaryR
 }
 
 export function encodeReferenceSummaryReadItem(value: ReferenceSummaryReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isReferenceSummaryReadItem(value)) throw new TypeError("invalid ReferenceSummaryReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReferenceSummaryReadItem(emitted)) throw new TypeError("encoded value is invalid ReferenceSummaryReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReferenceSummaryReadItem(owned)) throw new TypeError("invalid ReferenceSummaryReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5691,8 +6056,12 @@ export interface RelationCreateFields {
   tags?: ReadonlyArray<string>;
 }
 
+function matchesSchemaRelationCreateFields(value: unknown): value is RelationCreateFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["annotations", "description", "display_name", "tags"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => matchesSchemaSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && (!hasOwn(value, "display_name") || (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1)) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasUniqueArrayKey(value, "annotations", "key");
+}
+
 export function isRelationCreateFields(value: unknown): value is RelationCreateFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["annotations", "description", "display_name", "tags"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => isSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && (!hasOwn(value, "display_name") || (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1)) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasUniqueArrayKey(value, "annotations", "key"));
+  return isProgrammaticWireValue(value, () => matchesSchemaRelationCreateFields(value));
 }
 
 export function decodeRelationCreateFields(input: string): RelationCreateFields {
@@ -5703,12 +6072,10 @@ export function decodeRelationCreateFields(input: string): RelationCreateFields 
 }
 
 export function encodeRelationCreateFields(value: RelationCreateFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isRelationCreateFields(value)) throw new TypeError("invalid RelationCreateFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isRelationCreateFields(emitted)) throw new TypeError("encoded value is invalid RelationCreateFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaRelationCreateFields(owned)) throw new TypeError("invalid RelationCreateFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5731,8 +6098,12 @@ export interface RelationTypeCreateSubjectFields {
   traversal?: AuthoredRelationTraversalPolicy;
 }
 
+function matchesSchemaRelationTypeCreateSubjectFields(value: unknown): value is RelationTypeCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["allow_self", "annotations", "cardinality", "description", "display_name", "duplicate_policy", "export", "forward_label", "from", "projections", "render", "reverse_label", "semantic_kind", "tags", "to", "traversal"])) && (!hasOwn(value, "allow_self") || (typeof value["allow_self"] === "boolean")) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => matchesSchemaSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "cardinality") || (isAuthoredRelationCardinality(value["cardinality"]))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "duplicate_policy") || (typeof value["duplicate_policy"] === "string" && hasScalarUnicode(value["duplicate_policy"]) && ["allow", "deny_any_between_same_endpoints", "deny_same_type_between_same_endpoints"].includes(value["duplicate_policy"]))) && (!hasOwn(value, "export") || (isAuthoredRelationExport(value["export"]))) && hasOwn(value, "forward_label") && (typeof value["forward_label"] === "string" && hasScalarUnicode(value["forward_label"]) && Array.from(value["forward_label"]).length >= 1) && hasOwn(value, "from") && (isAuthoredRelationEndpointRule(value["from"])) && (!hasOwn(value, "projections") || (isAuthoredRelationProjectionSet(value["projections"]))) && (!hasOwn(value, "render") || (isAuthoredRelationRenderSet(value["render"]))) && (!hasOwn(value, "reverse_label") || (typeof value["reverse_label"] === "string" && hasScalarUnicode(value["reverse_label"]))) && hasOwn(value, "semantic_kind") && (typeof value["semantic_kind"] === "string" && hasScalarUnicode(value["semantic_kind"]) && ["containment", "control_flow", "data_flow", "dependency", "deployment", "governance", "impact", "network", "ownership", "reference", "security", "sequence"].includes(value["semantic_kind"])) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasOwn(value, "to") && (isAuthoredRelationEndpointRule(value["to"])) && (!hasOwn(value, "traversal") || (isAuthoredRelationTraversalPolicy(value["traversal"]))) && hasUniqueArrayKey(value, "annotations", "key");
+}
+
 export function isRelationTypeCreateSubjectFields(value: unknown): value is RelationTypeCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["allow_self", "annotations", "cardinality", "description", "display_name", "duplicate_policy", "export", "forward_label", "from", "projections", "render", "reverse_label", "semantic_kind", "tags", "to", "traversal"])) && (!hasOwn(value, "allow_self") || (typeof value["allow_self"] === "boolean")) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => isSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && (!hasOwn(value, "cardinality") || (isAuthoredRelationCardinality(value["cardinality"]))) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "duplicate_policy") || (typeof value["duplicate_policy"] === "string" && hasScalarUnicode(value["duplicate_policy"]) && ["allow", "deny_any_between_same_endpoints", "deny_same_type_between_same_endpoints"].includes(value["duplicate_policy"]))) && (!hasOwn(value, "export") || (isAuthoredRelationExport(value["export"]))) && hasOwn(value, "forward_label") && (typeof value["forward_label"] === "string" && hasScalarUnicode(value["forward_label"]) && Array.from(value["forward_label"]).length >= 1) && hasOwn(value, "from") && (isAuthoredRelationEndpointRule(value["from"])) && (!hasOwn(value, "projections") || (isAuthoredRelationProjectionSet(value["projections"]))) && (!hasOwn(value, "render") || (isAuthoredRelationRenderSet(value["render"]))) && (!hasOwn(value, "reverse_label") || (typeof value["reverse_label"] === "string" && hasScalarUnicode(value["reverse_label"]))) && hasOwn(value, "semantic_kind") && (typeof value["semantic_kind"] === "string" && hasScalarUnicode(value["semantic_kind"]) && ["containment", "control_flow", "data_flow", "dependency", "deployment", "governance", "impact", "network", "ownership", "reference", "security", "sequence"].includes(value["semantic_kind"])) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasOwn(value, "to") && (isAuthoredRelationEndpointRule(value["to"])) && (!hasOwn(value, "traversal") || (isAuthoredRelationTraversalPolicy(value["traversal"]))) && hasUniqueArrayKey(value, "annotations", "key"));
+  return isProgrammaticWireValue(value, () => matchesSchemaRelationTypeCreateSubjectFields(value));
 }
 
 export function decodeRelationTypeCreateSubjectFields(input: string): RelationTypeCreateSubjectFields {
@@ -5743,12 +6114,10 @@ export function decodeRelationTypeCreateSubjectFields(input: string): RelationTy
 }
 
 export function encodeRelationTypeCreateSubjectFields(value: RelationTypeCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isRelationTypeCreateSubjectFields(value)) throw new TypeError("invalid RelationTypeCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isRelationTypeCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid RelationTypeCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaRelationTypeCreateSubjectFields(owned)) throw new TypeError("invalid RelationTypeCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5758,8 +6127,12 @@ export interface ReplaceSourceTreeInput {
   expected_generation: DocumentGeneration;
 }
 
+function matchesSchemaReplaceSourceTreeInput(value: unknown): value is ReplaceSourceTreeInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["compile_input", "expected_generation"])) && hasOwn(value, "compile_input") && (matchesSchemaCompileInput(value["compile_input"])) && hasOwn(value, "expected_generation") && (matchesSchemaDocumentGeneration(value["expected_generation"]));
+}
+
 export function isReplaceSourceTreeInput(value: unknown): value is ReplaceSourceTreeInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["compile_input", "expected_generation"])) && hasOwn(value, "compile_input") && (isCompileInput(value["compile_input"])) && hasOwn(value, "expected_generation") && (isDocumentGeneration(value["expected_generation"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaReplaceSourceTreeInput(value));
 }
 
 export function decodeReplaceSourceTreeInput(input: string): ReplaceSourceTreeInput {
@@ -5770,12 +6143,10 @@ export function decodeReplaceSourceTreeInput(input: string): ReplaceSourceTreeIn
 }
 
 export function encodeReplaceSourceTreeInput(value: ReplaceSourceTreeInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isReplaceSourceTreeInput(value)) throw new TypeError("invalid ReplaceSourceTreeInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReplaceSourceTreeInput(emitted)) throw new TypeError("encoded value is invalid ReplaceSourceTreeInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReplaceSourceTreeInput(owned)) throw new TypeError("invalid ReplaceSourceTreeInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5789,8 +6160,12 @@ export interface ReplaceSourceTreeRequestEnvelope {
   trace_context?: JsonObject;
 }
 
+function matchesSchemaReplaceSourceTreeRequestEnvelope(value: unknown): value is ReplaceSourceTreeRequestEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.replace_source_tree") && hasOwn(value, "payload") && (matchesSchemaReplaceSourceTreeInput(value["payload"])) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"])));
+}
+
 export function isReplaceSourceTreeRequestEnvelope(value: unknown): value is ReplaceSourceTreeRequestEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["deadline_at", "extensions", "operation", "payload", "protocol", "request_id", "trace_context"])) && (!hasOwn(value, "deadline_at") || (isRfc3339Time(value["deadline_at"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "operation") && (typeof value["operation"] === "string" && hasScalarUnicode(value["operation"]) && value["operation"] === "engine.replace_source_tree") && hasOwn(value, "payload") && (isReplaceSourceTreeInput(value["payload"])) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && (!hasOwn(value, "trace_context") || (isJsonObject(value["trace_context"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaReplaceSourceTreeRequestEnvelope(value));
 }
 
 export function decodeReplaceSourceTreeRequestEnvelope(input: string): ReplaceSourceTreeRequestEnvelope {
@@ -5801,12 +6176,10 @@ export function decodeReplaceSourceTreeRequestEnvelope(input: string): ReplaceSo
 }
 
 export function encodeReplaceSourceTreeRequestEnvelope(value: ReplaceSourceTreeRequestEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReplaceSourceTreeRequestEnvelope(value)) throw new TypeError("invalid ReplaceSourceTreeRequestEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReplaceSourceTreeRequestEnvelope(emitted)) throw new TypeError("encoded value is invalid ReplaceSourceTreeRequestEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReplaceSourceTreeRequestEnvelope(owned)) throw new TypeError("invalid ReplaceSourceTreeRequestEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5821,8 +6194,12 @@ export interface ReplaceSourceTreeResponseEnvelope {
   request_id: string;
 }
 
+function matchesSchemaReplaceSourceTreeResponseEnvelope(value: unknown): value is ReplaceSourceTreeResponseEnvelope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (matchesSchemaWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (matchesSchemaReplaceSourceTreeResult(value["payload"]))) && hasOwn(value, "protocol") && (matchesSchemaEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value);
+}
+
 export function isReplaceSourceTreeResponseEnvelope(value: unknown): value is ReplaceSourceTreeResponseEnvelope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["diagnostics", "engine_release", "extensions", "failure", "outcome", "payload", "protocol", "request_id"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && hasOwn(value, "engine_release") && (isReleaseVersion(value["engine_release"])) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && (!hasOwn(value, "failure") || (isWorkbenchFailure(value["failure"]))) && hasOwn(value, "outcome") && (isOutcome(value["outcome"])) && (!hasOwn(value, "payload") || (isReplaceSourceTreeResult(value["payload"]))) && hasOwn(value, "protocol") && (isEngineProtocolRef(value["protocol"])) && hasOwn(value, "request_id") && (typeof value["request_id"] === "string" && hasScalarUnicode(value["request_id"]) && Array.from(value["request_id"]).length >= 1 && Array.from(value["request_id"]).length <= 128) && hasValidOutcomeEnvelope(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaReplaceSourceTreeResponseEnvelope(value));
 }
 
 export function decodeReplaceSourceTreeResponseEnvelope(input: string): ReplaceSourceTreeResponseEnvelope {
@@ -5833,12 +6210,10 @@ export function decodeReplaceSourceTreeResponseEnvelope(input: string): ReplaceS
 }
 
 export function encodeReplaceSourceTreeResponseEnvelope(value: ReplaceSourceTreeResponseEnvelope): string {
-  validateProgrammaticWireValue(value);
-  if (!isReplaceSourceTreeResponseEnvelope(value)) throw new TypeError("invalid ReplaceSourceTreeResponseEnvelope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReplaceSourceTreeResponseEnvelope(emitted)) throw new TypeError("encoded value is invalid ReplaceSourceTreeResponseEnvelope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReplaceSourceTreeResponseEnvelope(owned)) throw new TypeError("invalid ReplaceSourceTreeResponseEnvelope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5848,8 +6223,12 @@ export interface ReplaceSourceTreeResult {
   state: WorkingDocumentState;
 }
 
+function matchesSchemaReplaceSourceTreeResult(value: unknown): value is ReplaceSourceTreeResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["capabilities", "document_generation", "state"])) && hasOwn(value, "capabilities") && (matchesSchemaDocumentCapabilityState(value["capabilities"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "state") && (matchesSchemaWorkingDocumentState(value["state"]));
+}
+
 export function isReplaceSourceTreeResult(value: unknown): value is ReplaceSourceTreeResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["capabilities", "document_generation", "state"])) && hasOwn(value, "capabilities") && (isDocumentCapabilityState(value["capabilities"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "state") && (isWorkingDocumentState(value["state"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaReplaceSourceTreeResult(value));
 }
 
 export function decodeReplaceSourceTreeResult(input: string): ReplaceSourceTreeResult {
@@ -5860,12 +6239,10 @@ export function decodeReplaceSourceTreeResult(input: string): ReplaceSourceTreeR
 }
 
 export function encodeReplaceSourceTreeResult(value: ReplaceSourceTreeResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isReplaceSourceTreeResult(value)) throw new TypeError("invalid ReplaceSourceTreeResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isReplaceSourceTreeResult(emitted)) throw new TypeError("encoded value is invalid ReplaceSourceTreeResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaReplaceSourceTreeResult(owned)) throw new TypeError("invalid ReplaceSourceTreeResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5876,8 +6253,12 @@ export interface ResolvedDependencies {
   language: number;
 }
 
+function matchesSchemaResolvedDependencies(value: unknown): value is ResolvedDependencies {
+  return isObject(value) && hasOnlyKeys(value, new Set(["format", "format_version", "installs", "language"])) && hasOwn(value, "format") && (typeof value["format"] === "string" && hasScalarUnicode(value["format"]) && value["format"] === "layerdraw-resolved") && hasOwn(value, "format_version") && (typeof value["format_version"] === "number" && Number.isSafeInteger(value["format_version"]) && !Object.is(value["format_version"], -0) && value["format_version"] >= 1 && value["format_version"] <= 2.147483647e+09) && hasOwn(value, "installs") && (isJSONArray(value["installs"]) && value["installs"].every((item) => matchesSchemaResolvedPack(item))) && hasOwn(value, "language") && (typeof value["language"] === "number" && Number.isSafeInteger(value["language"]) && !Object.is(value["language"], -0) && value["language"] >= 1 && value["language"] <= 2.147483647e+09);
+}
+
 export function isResolvedDependencies(value: unknown): value is ResolvedDependencies {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["format", "format_version", "installs", "language"])) && hasOwn(value, "format") && (typeof value["format"] === "string" && hasScalarUnicode(value["format"]) && value["format"] === "layerdraw-resolved") && hasOwn(value, "format_version") && (typeof value["format_version"] === "number" && Number.isSafeInteger(value["format_version"]) && !Object.is(value["format_version"], -0) && value["format_version"] >= 1 && value["format_version"] <= 2.147483647e+09) && hasOwn(value, "installs") && (isJSONArray(value["installs"]) && value["installs"].every((item) => isResolvedPack(item))) && hasOwn(value, "language") && (typeof value["language"] === "number" && Number.isSafeInteger(value["language"]) && !Object.is(value["language"], -0) && value["language"] >= 1 && value["language"] <= 2.147483647e+09));
+  return isProgrammaticWireValue(value, () => matchesSchemaResolvedDependencies(value));
 }
 
 export function decodeResolvedDependencies(input: string): ResolvedDependencies {
@@ -5888,12 +6269,10 @@ export function decodeResolvedDependencies(input: string): ResolvedDependencies 
 }
 
 export function encodeResolvedDependencies(value: ResolvedDependencies): string {
-  validateProgrammaticWireValue(value);
-  if (!isResolvedDependencies(value)) throw new TypeError("invalid ResolvedDependencies");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isResolvedDependencies(emitted)) throw new TypeError("encoded value is invalid ResolvedDependencies");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaResolvedDependencies(owned)) throw new TypeError("invalid ResolvedDependencies");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5910,8 +6289,12 @@ export interface ResolvedPack {
   version: string;
 }
 
+function matchesSchemaResolvedPack(value: unknown): value is ResolvedPack {
+  return isObject(value) && hasOnlyKeys(value, new Set(["canonical_id", "dependencies", "digest", "entry", "files", "install_name", "manifest", "manifest_path", "path", "version"])) && hasOwn(value, "canonical_id") && (matchesSchemaCanonicalPackSelector(value["canonical_id"])) && hasOwn(value, "dependencies") && (isJSONArray(value["dependencies"]) && value["dependencies"].every((item) => matchesSchemaResolvedPackDependency(item))) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "entry") && (typeof value["entry"] === "string" && hasScalarUnicode(value["entry"])) && hasOwn(value, "files") && (isJSONArray(value["files"]) && value["files"].every((item) => matchesSchemaResolvedPackFile(item))) && hasOwn(value, "install_name") && (typeof value["install_name"] === "string" && hasScalarUnicode(value["install_name"])) && hasOwn(value, "manifest") && (isBlobRef(value["manifest"])) && hasOwn(value, "manifest_path") && (typeof value["manifest_path"] === "string" && hasScalarUnicode(value["manifest_path"])) && hasOwn(value, "path") && (typeof value["path"] === "string" && hasScalarUnicode(value["path"])) && hasOwn(value, "version") && (typeof value["version"] === "string" && hasScalarUnicode(value["version"]));
+}
+
 export function isResolvedPack(value: unknown): value is ResolvedPack {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["canonical_id", "dependencies", "digest", "entry", "files", "install_name", "manifest", "manifest_path", "path", "version"])) && hasOwn(value, "canonical_id") && (isCanonicalPackSelector(value["canonical_id"])) && hasOwn(value, "dependencies") && (isJSONArray(value["dependencies"]) && value["dependencies"].every((item) => isResolvedPackDependency(item))) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "entry") && (typeof value["entry"] === "string" && hasScalarUnicode(value["entry"])) && hasOwn(value, "files") && (isJSONArray(value["files"]) && value["files"].every((item) => isResolvedPackFile(item))) && hasOwn(value, "install_name") && (typeof value["install_name"] === "string" && hasScalarUnicode(value["install_name"])) && hasOwn(value, "manifest") && (isBlobRef(value["manifest"])) && hasOwn(value, "manifest_path") && (typeof value["manifest_path"] === "string" && hasScalarUnicode(value["manifest_path"])) && hasOwn(value, "path") && (typeof value["path"] === "string" && hasScalarUnicode(value["path"])) && hasOwn(value, "version") && (typeof value["version"] === "string" && hasScalarUnicode(value["version"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaResolvedPack(value));
 }
 
 export function decodeResolvedPack(input: string): ResolvedPack {
@@ -5922,12 +6305,10 @@ export function decodeResolvedPack(input: string): ResolvedPack {
 }
 
 export function encodeResolvedPack(value: ResolvedPack): string {
-  validateProgrammaticWireValue(value);
-  if (!isResolvedPack(value)) throw new TypeError("invalid ResolvedPack");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isResolvedPack(emitted)) throw new TypeError("encoded value is invalid ResolvedPack");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaResolvedPack(owned)) throw new TypeError("invalid ResolvedPack");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5936,8 +6317,12 @@ export interface ResolvedPackDependency {
   local_name: string;
 }
 
+function matchesSchemaResolvedPackDependency(value: unknown): value is ResolvedPackDependency {
+  return isObject(value) && hasOnlyKeys(value, new Set(["install_name", "local_name"])) && hasOwn(value, "install_name") && (typeof value["install_name"] === "string" && hasScalarUnicode(value["install_name"])) && hasOwn(value, "local_name") && (typeof value["local_name"] === "string" && hasScalarUnicode(value["local_name"]));
+}
+
 export function isResolvedPackDependency(value: unknown): value is ResolvedPackDependency {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["install_name", "local_name"])) && hasOwn(value, "install_name") && (typeof value["install_name"] === "string" && hasScalarUnicode(value["install_name"])) && hasOwn(value, "local_name") && (typeof value["local_name"] === "string" && hasScalarUnicode(value["local_name"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaResolvedPackDependency(value));
 }
 
 export function decodeResolvedPackDependency(input: string): ResolvedPackDependency {
@@ -5948,12 +6333,10 @@ export function decodeResolvedPackDependency(input: string): ResolvedPackDepende
 }
 
 export function encodeResolvedPackDependency(value: ResolvedPackDependency): string {
-  validateProgrammaticWireValue(value);
-  if (!isResolvedPackDependency(value)) throw new TypeError("invalid ResolvedPackDependency");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isResolvedPackDependency(emitted)) throw new TypeError("encoded value is invalid ResolvedPackDependency");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaResolvedPackDependency(owned)) throw new TypeError("invalid ResolvedPackDependency");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5962,8 +6345,12 @@ export interface ResolvedPackFile {
   path: string;
 }
 
+function matchesSchemaResolvedPackFile(value: unknown): value is ResolvedPackFile {
+  return isObject(value) && hasOnlyKeys(value, new Set(["digest", "path"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "path") && (typeof value["path"] === "string" && hasScalarUnicode(value["path"]));
+}
+
 export function isResolvedPackFile(value: unknown): value is ResolvedPackFile {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["digest", "path"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "path") && (typeof value["path"] === "string" && hasScalarUnicode(value["path"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaResolvedPackFile(value));
 }
 
 export function decodeResolvedPackFile(input: string): ResolvedPackFile {
@@ -5974,12 +6361,10 @@ export function decodeResolvedPackFile(input: string): ResolvedPackFile {
 }
 
 export function encodeResolvedPackFile(value: ResolvedPackFile): string {
-  validateProgrammaticWireValue(value);
-  if (!isResolvedPackFile(value)) throw new TypeError("invalid ResolvedPackFile");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isResolvedPackFile(emitted)) throw new TypeError("encoded value is invalid ResolvedPackFile");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaResolvedPackFile(owned)) throw new TypeError("invalid ResolvedPackFile");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -5996,8 +6381,12 @@ export interface ResourceLimits {
   max_raster_pixels?: CanonicalNonNegativeInt64;
 }
 
+function matchesSchemaResourceLimits(value: unknown): value is ResourceLimits {
+  return isObject(value) && hasOnlyKeys(value, new Set(["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"])) && (!hasOwn(value, "max_asset_bytes") || (isCanonicalNonNegativeInt64(value["max_asset_bytes"]))) && (!hasOwn(value, "max_assets") || (isCanonicalNonNegativeInt64(value["max_assets"]))) && (!hasOwn(value, "max_declarations") || (isCanonicalNonNegativeInt64(value["max_declarations"]))) && (!hasOwn(value, "max_pack_bytes") || (isCanonicalNonNegativeInt64(value["max_pack_bytes"]))) && (!hasOwn(value, "max_pack_files") || (isCanonicalNonNegativeInt64(value["max_pack_files"]))) && (!hasOwn(value, "max_project_source_bytes") || (isCanonicalNonNegativeInt64(value["max_project_source_bytes"]))) && (!hasOwn(value, "max_project_source_files") || (isCanonicalNonNegativeInt64(value["max_project_source_files"]))) && (!hasOwn(value, "max_raster_dimension") || (isCanonicalNonNegativeInt64(value["max_raster_dimension"]))) && (!hasOwn(value, "max_raster_pixels") || (isCanonicalNonNegativeInt64(value["max_raster_pixels"])));
+}
+
 export function isResourceLimits(value: unknown): value is ResourceLimits {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["max_asset_bytes", "max_assets", "max_declarations", "max_pack_bytes", "max_pack_files", "max_project_source_bytes", "max_project_source_files", "max_raster_dimension", "max_raster_pixels"])) && (!hasOwn(value, "max_asset_bytes") || (isCanonicalNonNegativeInt64(value["max_asset_bytes"]))) && (!hasOwn(value, "max_assets") || (isCanonicalNonNegativeInt64(value["max_assets"]))) && (!hasOwn(value, "max_declarations") || (isCanonicalNonNegativeInt64(value["max_declarations"]))) && (!hasOwn(value, "max_pack_bytes") || (isCanonicalNonNegativeInt64(value["max_pack_bytes"]))) && (!hasOwn(value, "max_pack_files") || (isCanonicalNonNegativeInt64(value["max_pack_files"]))) && (!hasOwn(value, "max_project_source_bytes") || (isCanonicalNonNegativeInt64(value["max_project_source_bytes"]))) && (!hasOwn(value, "max_project_source_files") || (isCanonicalNonNegativeInt64(value["max_project_source_files"]))) && (!hasOwn(value, "max_raster_dimension") || (isCanonicalNonNegativeInt64(value["max_raster_dimension"]))) && (!hasOwn(value, "max_raster_pixels") || (isCanonicalNonNegativeInt64(value["max_raster_pixels"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaResourceLimits(value));
 }
 
 export function decodeResourceLimits(input: string): ResourceLimits {
@@ -6008,12 +6397,10 @@ export function decodeResourceLimits(input: string): ResourceLimits {
 }
 
 export function encodeResourceLimits(value: ResourceLimits): string {
-  validateProgrammaticWireValue(value);
-  if (!isResourceLimits(value)) throw new TypeError("invalid ResourceLimits");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isResourceLimits(emitted)) throw new TypeError("encoded value is invalid ResourceLimits");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaResourceLimits(owned)) throw new TypeError("invalid ResourceLimits");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6029,8 +6416,12 @@ export interface ResultingHashes {
   subtree_hashes: ReadonlyArray<SubtreeHash>;
 }
 
+function matchesSchemaResultingHashes(value: unknown): value is ResultingHashes {
+  return isObject(value) && hasOnlyKeys(value, new Set(["child_set_hashes", "definition_hash", "graph_hash", "mode", "pack_address", "project_address", "subject_hashes", "subtree_hashes"])) && hasOwn(value, "child_set_hashes") && (isJSONArray(value["child_set_hashes"]) && value["child_set_hashes"].every((item) => isChildSetHash(item)) && hasCanonicalCollectionOrder(value["child_set_hashes"], "child_set")) && hasOwn(value, "definition_hash") && (isDigest(value["definition_hash"])) && (!hasOwn(value, "graph_hash") || (isDigest(value["graph_hash"]))) && hasOwn(value, "mode") && (matchesSchemaCompileMode(value["mode"])) && (!hasOwn(value, "pack_address") || (isPackRootAddress(value["pack_address"]))) && (!hasOwn(value, "project_address") || (isProjectRootAddress(value["project_address"]))) && hasOwn(value, "subject_hashes") && (isJSONArray(value["subject_hashes"]) && value["subject_hashes"].every((item) => isSubjectHash(item)) && hasStableAddressOrder(value["subject_hashes"], "address")) && hasOwn(value, "subtree_hashes") && (isJSONArray(value["subtree_hashes"]) && value["subtree_hashes"].every((item) => isSubtreeHash(item)) && hasStableAddressOrder(value["subtree_hashes"], "owner_address")) && ((value["mode"] === "pack" && hasOwn(value, "pack_address") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project_address")) || (value["mode"] === "project" && hasOwn(value, "project_address") && hasOwn(value, "graph_hash") && !hasOwn(value, "pack_address")));
+}
+
 export function isResultingHashes(value: unknown): value is ResultingHashes {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["child_set_hashes", "definition_hash", "graph_hash", "mode", "pack_address", "project_address", "subject_hashes", "subtree_hashes"])) && hasOwn(value, "child_set_hashes") && (isJSONArray(value["child_set_hashes"]) && value["child_set_hashes"].every((item) => isChildSetHash(item)) && hasCanonicalCollectionOrder(value["child_set_hashes"], "child_set")) && hasOwn(value, "definition_hash") && (isDigest(value["definition_hash"])) && (!hasOwn(value, "graph_hash") || (isDigest(value["graph_hash"]))) && hasOwn(value, "mode") && (isCompileMode(value["mode"])) && (!hasOwn(value, "pack_address") || (isPackRootAddress(value["pack_address"]))) && (!hasOwn(value, "project_address") || (isProjectRootAddress(value["project_address"]))) && hasOwn(value, "subject_hashes") && (isJSONArray(value["subject_hashes"]) && value["subject_hashes"].every((item) => isSubjectHash(item)) && hasStableAddressOrder(value["subject_hashes"], "address")) && hasOwn(value, "subtree_hashes") && (isJSONArray(value["subtree_hashes"]) && value["subtree_hashes"].every((item) => isSubtreeHash(item)) && hasStableAddressOrder(value["subtree_hashes"], "owner_address")) && ((value["mode"] === "pack" && hasOwn(value, "pack_address") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project_address")) || (value["mode"] === "project" && hasOwn(value, "project_address") && hasOwn(value, "graph_hash") && !hasOwn(value, "pack_address"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaResultingHashes(value));
 }
 
 export function decodeResultingHashes(input: string): ResultingHashes {
@@ -6041,12 +6432,10 @@ export function decodeResultingHashes(input: string): ResultingHashes {
 }
 
 export function encodeResultingHashes(value: ResultingHashes): string {
-  validateProgrammaticWireValue(value);
-  if (!isResultingHashes(value)) throw new TypeError("invalid ResultingHashes");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isResultingHashes(emitted)) throw new TypeError("encoded value is invalid ResultingHashes");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaResultingHashes(owned)) throw new TypeError("invalid ResultingHashes");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6055,8 +6444,12 @@ export interface RowCell {
   value: SemanticOperationValue;
 }
 
+function matchesSchemaRowCell(value: unknown): value is RowCell {
+  return isObject(value) && hasOnlyKeys(value, new Set(["column_address", "value"])) && hasOwn(value, "column_address") && (isColumnAddress(value["column_address"])) && hasOwn(value, "value") && (matchesSchemaSemanticOperationValue(value["value"]));
+}
+
 export function isRowCell(value: unknown): value is RowCell {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["column_address", "value"])) && hasOwn(value, "column_address") && (isColumnAddress(value["column_address"])) && hasOwn(value, "value") && (isSemanticOperationValue(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaRowCell(value));
 }
 
 export function decodeRowCell(input: string): RowCell {
@@ -6067,12 +6460,10 @@ export function decodeRowCell(input: string): RowCell {
 }
 
 export function encodeRowCell(value: RowCell): string {
-  validateProgrammaticWireValue(value);
-  if (!isRowCell(value)) throw new TypeError("invalid RowCell");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isRowCell(emitted)) throw new TypeError("encoded value is invalid RowCell");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaRowCell(owned)) throw new TypeError("invalid RowCell");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6081,8 +6472,12 @@ export interface RowCursor {
   value: string;
 }
 
+function matchesSchemaRowCursor(value: unknown): value is RowCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_rows_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isRowCursor(value: unknown): value is RowCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_rows_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaRowCursor(value));
 }
 
 export function decodeRowCursor(input: string): RowCursor {
@@ -6093,12 +6488,10 @@ export function decodeRowCursor(input: string): RowCursor {
 }
 
 export function encodeRowCursor(value: RowCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isRowCursor(value)) throw new TypeError("invalid RowCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isRowCursor(emitted)) throw new TypeError("encoded value is invalid RowCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaRowCursor(owned)) throw new TypeError("invalid RowCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6109,8 +6502,12 @@ export interface RowPageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaRowPageInfo(value: unknown): value is RowPageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaRowCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isRowPageInfo(value: unknown): value is RowPageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isRowCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaRowPageInfo(value));
 }
 
 export function decodeRowPageInfo(input: string): RowPageInfo {
@@ -6121,12 +6518,10 @@ export function decodeRowPageInfo(input: string): RowPageInfo {
 }
 
 export function encodeRowPageInfo(value: RowPageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isRowPageInfo(value)) throw new TypeError("invalid RowPageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isRowPageInfo(emitted)) throw new TypeError("encoded value is invalid RowPageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaRowPageInfo(owned)) throw new TypeError("invalid RowPageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6136,8 +6531,12 @@ export interface RowReadItem {
   values: ReadonlyArray<RowCell>;
 }
 
+function matchesSchemaRowReadItem(value: unknown): value is RowReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["owner_address", "row_address", "values"])) && hasOwn(value, "owner_address") && (isStableAddress(value["owner_address"])) && hasOwn(value, "row_address") && (isStableAddress(value["row_address"])) && hasOwn(value, "values") && (isJSONArray(value["values"]) && value["values"].every((item) => matchesSchemaRowCell(item)) && hasStableAddressOrder(value["values"], "column_address"));
+}
+
 export function isRowReadItem(value: unknown): value is RowReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["owner_address", "row_address", "values"])) && hasOwn(value, "owner_address") && (isStableAddress(value["owner_address"])) && hasOwn(value, "row_address") && (isStableAddress(value["row_address"])) && hasOwn(value, "values") && (isJSONArray(value["values"]) && value["values"].every((item) => isRowCell(item)) && hasStableAddressOrder(value["values"], "column_address")));
+  return isProgrammaticWireValue(value, () => matchesSchemaRowReadItem(value));
 }
 
 export function decodeRowReadItem(input: string): RowReadItem {
@@ -6148,12 +6547,10 @@ export function decodeRowReadItem(input: string): RowReadItem {
 }
 
 export function encodeRowReadItem(value: RowReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isRowReadItem(value)) throw new TypeError("invalid RowReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isRowReadItem(emitted)) throw new TypeError("encoded value is invalid RowReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaRowReadItem(owned)) throw new TypeError("invalid RowReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6162,8 +6559,12 @@ export interface ScopeCursor {
   value: string;
 }
 
+function matchesSchemaScopeCursor(value: unknown): value is ScopeCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_scope_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isScopeCursor(value: unknown): value is ScopeCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^read_scope_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaScopeCursor(value));
 }
 
 export function decodeScopeCursor(input: string): ScopeCursor {
@@ -6174,12 +6575,10 @@ export function decodeScopeCursor(input: string): ScopeCursor {
 }
 
 export function encodeScopeCursor(value: ScopeCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isScopeCursor(value)) throw new TypeError("invalid ScopeCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isScopeCursor(emitted)) throw new TypeError("encoded value is invalid ScopeCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaScopeCursor(owned)) throw new TypeError("invalid ScopeCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6190,8 +6589,12 @@ export interface ScopePageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaScopePageInfo(value: unknown): value is ScopePageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaScopeCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isScopePageInfo(value: unknown): value is ScopePageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isScopeCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaScopePageInfo(value));
 }
 
 export function decodeScopePageInfo(input: string): ScopePageInfo {
@@ -6202,12 +6605,10 @@ export function decodeScopePageInfo(input: string): ScopePageInfo {
 }
 
 export function encodeScopePageInfo(value: ScopePageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isScopePageInfo(value)) throw new TypeError("invalid ScopePageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isScopePageInfo(emitted)) throw new TypeError("encoded value is invalid ScopePageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaScopePageInfo(owned)) throw new TypeError("invalid ScopePageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6217,8 +6618,12 @@ export interface ScopeReadItem {
   source_range: SourceRange;
 }
 
+function matchesSchemaScopeReadItem(value: unknown): value is ScopeReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["owner_address", "source_chunk", "source_range"])) && hasOwn(value, "owner_address") && (isStableAddress(value["owner_address"])) && hasOwn(value, "source_chunk") && (matchesSchemaBoundedTextChunk(value["source_chunk"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"]));
+}
+
 export function isScopeReadItem(value: unknown): value is ScopeReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["owner_address", "source_chunk", "source_range"])) && hasOwn(value, "owner_address") && (isStableAddress(value["owner_address"])) && hasOwn(value, "source_chunk") && (isBoundedTextChunk(value["source_chunk"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaScopeReadItem(value));
 }
 
 export function decodeScopeReadItem(input: string): ScopeReadItem {
@@ -6229,12 +6634,10 @@ export function decodeScopeReadItem(input: string): ScopeReadItem {
 }
 
 export function encodeScopeReadItem(value: ScopeReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isScopeReadItem(value)) throw new TypeError("invalid ScopeReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isScopeReadItem(emitted)) throw new TypeError("encoded value is invalid ScopeReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaScopeReadItem(owned)) throw new TypeError("invalid ScopeReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6246,8 +6649,12 @@ export interface SemanticConflict {
   target_address?: StableAddress;
 }
 
+function matchesSchemaSemanticConflict(value: unknown): value is SemanticConflict {
+  return isObject(value) && hasOnlyKeys(value, new Set(["child_kind", "kind", "owner_address", "path", "target_address"])) && (!hasOwn(value, "child_kind") || (isSubjectKind(value["child_kind"]))) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["stale_revision", "subject_changed", "subtree_changed", "child_set_changed", "same_field_changed", "delete_vs_update", "duplicate_identity", "reference_broken", "schema_row_incompatible", "placement_changed", "project_identity_changed"].includes(value["kind"])) && (!hasOwn(value, "owner_address") || (isStableAddress(value["owner_address"]))) && (!hasOwn(value, "path") || (isJSONArray(value["path"]) && value["path"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1))) && (!hasOwn(value, "target_address") || (isStableAddress(value["target_address"])));
+}
+
 export function isSemanticConflict(value: unknown): value is SemanticConflict {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["child_kind", "kind", "owner_address", "path", "target_address"])) && (!hasOwn(value, "child_kind") || (isSubjectKind(value["child_kind"]))) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["stale_revision", "subject_changed", "subtree_changed", "child_set_changed", "same_field_changed", "delete_vs_update", "duplicate_identity", "reference_broken", "schema_row_incompatible", "placement_changed", "project_identity_changed"].includes(value["kind"])) && (!hasOwn(value, "owner_address") || (isStableAddress(value["owner_address"]))) && (!hasOwn(value, "path") || (isJSONArray(value["path"]) && value["path"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1))) && (!hasOwn(value, "target_address") || (isStableAddress(value["target_address"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaSemanticConflict(value));
 }
 
 export function decodeSemanticConflict(input: string): SemanticConflict {
@@ -6258,19 +6665,21 @@ export function decodeSemanticConflict(input: string): SemanticConflict {
 }
 
 export function encodeSemanticConflict(value: SemanticConflict): string {
-  validateProgrammaticWireValue(value);
-  if (!isSemanticConflict(value)) throw new TypeError("invalid SemanticConflict");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSemanticConflict(emitted)) throw new TypeError("encoded value is invalid SemanticConflict");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSemanticConflict(owned)) throw new TypeError("invalid SemanticConflict");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type SemanticOperation = CreateSubjectOperation | NonCreateSemanticOperation;
 
+function matchesSchemaSemanticOperation(value: unknown): value is SemanticOperation {
+  return (matchesSchemaCreateSubjectOperation(value)) || (matchesSchemaNonCreateSemanticOperation(value));
+}
+
 export function isSemanticOperation(value: unknown): value is SemanticOperation {
-  return isProgrammaticWireValue(value, () => (isCreateSubjectOperation(value)) || (isNonCreateSemanticOperation(value)));
+  return isProgrammaticWireValue(value, () => matchesSchemaSemanticOperation(value));
 }
 
 export function decodeSemanticOperation(input: string): SemanticOperation {
@@ -6281,12 +6690,10 @@ export function decodeSemanticOperation(input: string): SemanticOperation {
 }
 
 export function encodeSemanticOperation(value: SemanticOperation): string {
-  validateProgrammaticWireValue(value);
-  if (!isSemanticOperation(value)) throw new TypeError("invalid SemanticOperation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSemanticOperation(emitted)) throw new TypeError("encoded value is invalid SemanticOperation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSemanticOperation(owned)) throw new TypeError("invalid SemanticOperation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6294,8 +6701,12 @@ export interface SemanticOperationBatch {
   operations: ReadonlyArray<SemanticOperation>;
 }
 
+function matchesSchemaSemanticOperationBatch(value: unknown): value is SemanticOperationBatch {
+  return isObject(value) && hasOnlyKeys(value, new Set(["operations"])) && hasOwn(value, "operations") && (isJSONArray(value["operations"]) && value["operations"].every((item) => matchesSchemaSemanticOperation(item)) && value["operations"].length >= 1);
+}
+
 export function isSemanticOperationBatch(value: unknown): value is SemanticOperationBatch {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["operations"])) && hasOwn(value, "operations") && (isJSONArray(value["operations"]) && value["operations"].every((item) => isSemanticOperation(item)) && value["operations"].length >= 1));
+  return isProgrammaticWireValue(value, () => matchesSchemaSemanticOperationBatch(value));
 }
 
 export function decodeSemanticOperationBatch(input: string): SemanticOperationBatch {
@@ -6306,19 +6717,21 @@ export function decodeSemanticOperationBatch(input: string): SemanticOperationBa
 }
 
 export function encodeSemanticOperationBatch(value: SemanticOperationBatch): string {
-  validateProgrammaticWireValue(value);
-  if (!isSemanticOperationBatch(value)) throw new TypeError("invalid SemanticOperationBatch");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSemanticOperationBatch(emitted)) throw new TypeError("encoded value is invalid SemanticOperationBatch");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSemanticOperationBatch(owned)) throw new TypeError("invalid SemanticOperationBatch");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type SemanticOperationKind = "create_relation" | "create_subject" | "delete_row" | "delete_subject" | "migrate_project_identity" | "move_entity_to_layer" | "rename_subject" | "update_relation_endpoint" | "update_subject_field" | "upsert_row";
 
+function matchesSchemaSemanticOperationKind(value: unknown): value is SemanticOperationKind {
+  return typeof value === "string" && hasScalarUnicode(value) && ["create_relation", "create_subject", "delete_row", "delete_subject", "migrate_project_identity", "move_entity_to_layer", "rename_subject", "update_relation_endpoint", "update_subject_field", "upsert_row"].includes(value);
+}
+
 export function isSemanticOperationKind(value: unknown): value is SemanticOperationKind {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["create_relation", "create_subject", "delete_row", "delete_subject", "migrate_project_identity", "move_entity_to_layer", "rename_subject", "update_relation_endpoint", "update_subject_field", "upsert_row"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaSemanticOperationKind(value));
 }
 
 export function decodeSemanticOperationKind(input: string): SemanticOperationKind {
@@ -6329,12 +6742,10 @@ export function decodeSemanticOperationKind(input: string): SemanticOperationKin
 }
 
 export function encodeSemanticOperationKind(value: SemanticOperationKind): string {
-  validateProgrammaticWireValue(value);
-  if (!isSemanticOperationKind(value)) throw new TypeError("invalid SemanticOperationKind");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSemanticOperationKind(emitted)) throw new TypeError("encoded value is invalid SemanticOperationKind");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSemanticOperationKind(owned)) throw new TypeError("invalid SemanticOperationKind");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6343,8 +6754,12 @@ export interface SemanticOperationMapEntry {
   value: SemanticOperationValue;
 }
 
+function matchesSchemaSemanticOperationMapEntry(value: unknown): value is SemanticOperationMapEntry {
+  return isObject(value) && hasOnlyKeys(value, new Set(["key", "value"])) && hasOwn(value, "key") && (typeof value["key"] === "string" && hasScalarUnicode(value["key"]) && Array.from(value["key"]).length >= 1) && hasOwn(value, "value") && (matchesSchemaSemanticOperationValue(value["value"]));
+}
+
 export function isSemanticOperationMapEntry(value: unknown): value is SemanticOperationMapEntry {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["key", "value"])) && hasOwn(value, "key") && (typeof value["key"] === "string" && hasScalarUnicode(value["key"]) && Array.from(value["key"]).length >= 1) && hasOwn(value, "value") && (isSemanticOperationValue(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSemanticOperationMapEntry(value));
 }
 
 export function decodeSemanticOperationMapEntry(input: string): SemanticOperationMapEntry {
@@ -6355,12 +6770,10 @@ export function decodeSemanticOperationMapEntry(input: string): SemanticOperatio
 }
 
 export function encodeSemanticOperationMapEntry(value: SemanticOperationMapEntry): string {
-  validateProgrammaticWireValue(value);
-  if (!isSemanticOperationMapEntry(value)) throw new TypeError("invalid SemanticOperationMapEntry");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSemanticOperationMapEntry(emitted)) throw new TypeError("encoded value is invalid SemanticOperationMapEntry");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSemanticOperationMapEntry(owned)) throw new TypeError("invalid SemanticOperationMapEntry");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6377,8 +6790,12 @@ export interface SemanticOperationValue {
   string?: string;
 }
 
+function matchesSchemaSemanticOperationValue(value: unknown): value is SemanticOperationValue {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "array", "blob", "boolean", "decimal", "integer", "kind", "map", "string"])) && (!hasOwn(value, "address") || (isStableAddress(value["address"]))) && (!hasOwn(value, "array") || (isJSONArray(value["array"]) && value["array"].every((item) => matchesSchemaSemanticOperationValue(item)))) && (!hasOwn(value, "blob") || (isBlobRef(value["blob"]))) && (!hasOwn(value, "boolean") || (typeof value["boolean"] === "boolean")) && (!hasOwn(value, "decimal") || (isCanonicalFiniteDecimal(value["decimal"]))) && (!hasOwn(value, "integer") || (isCanonicalSafeInteger(value["integer"]))) && hasOwn(value, "kind") && (matchesSchemaSemanticOperationValueKind(value["kind"])) && (!hasOwn(value, "map") || (isJSONArray(value["map"]) && value["map"].every((item) => matchesSchemaSemanticOperationMapEntry(item)) && hasCanonicalCollectionOrder(value["map"], "semantic_map_entry"))) && (!hasOwn(value, "string") || (typeof value["string"] === "string" && hasScalarUnicode(value["string"]) && Array.from(value["string"]).length <= 4096)) && ((value["kind"] === "absent" && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "address" && hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "array" && hasOwn(value, "array") && !hasOwn(value, "address") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "blob" && hasOwn(value, "blob") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "boolean" && hasOwn(value, "boolean") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "decimal" && hasOwn(value, "decimal") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "integer" && hasOwn(value, "integer") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "map" && hasOwn(value, "map") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "string")) || (value["kind"] === "string" && hasOwn(value, "string") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map"))) && hasUniqueArrayKey(value, "map", "key");
+}
+
 export function isSemanticOperationValue(value: unknown): value is SemanticOperationValue {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "array", "blob", "boolean", "decimal", "integer", "kind", "map", "string"])) && (!hasOwn(value, "address") || (isStableAddress(value["address"]))) && (!hasOwn(value, "array") || (isJSONArray(value["array"]) && value["array"].every((item) => isSemanticOperationValue(item)))) && (!hasOwn(value, "blob") || (isBlobRef(value["blob"]))) && (!hasOwn(value, "boolean") || (typeof value["boolean"] === "boolean")) && (!hasOwn(value, "decimal") || (isCanonicalFiniteDecimal(value["decimal"]))) && (!hasOwn(value, "integer") || (isCanonicalSafeInteger(value["integer"]))) && hasOwn(value, "kind") && (isSemanticOperationValueKind(value["kind"])) && (!hasOwn(value, "map") || (isJSONArray(value["map"]) && value["map"].every((item) => isSemanticOperationMapEntry(item)) && hasCanonicalCollectionOrder(value["map"], "semantic_map_entry"))) && (!hasOwn(value, "string") || (typeof value["string"] === "string" && hasScalarUnicode(value["string"]) && Array.from(value["string"]).length <= 4096)) && ((value["kind"] === "absent" && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "address" && hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "array" && hasOwn(value, "array") && !hasOwn(value, "address") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "blob" && hasOwn(value, "blob") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "boolean" && hasOwn(value, "boolean") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "decimal" && hasOwn(value, "decimal") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "integer") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "integer" && hasOwn(value, "integer") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "map") && !hasOwn(value, "string")) || (value["kind"] === "map" && hasOwn(value, "map") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "string")) || (value["kind"] === "string" && hasOwn(value, "string") && !hasOwn(value, "address") && !hasOwn(value, "array") && !hasOwn(value, "blob") && !hasOwn(value, "boolean") && !hasOwn(value, "decimal") && !hasOwn(value, "integer") && !hasOwn(value, "map"))) && hasUniqueArrayKey(value, "map", "key"));
+  return isProgrammaticWireValue(value, () => matchesSchemaSemanticOperationValue(value));
 }
 
 export function decodeSemanticOperationValue(input: string): SemanticOperationValue {
@@ -6389,19 +6806,21 @@ export function decodeSemanticOperationValue(input: string): SemanticOperationVa
 }
 
 export function encodeSemanticOperationValue(value: SemanticOperationValue): string {
-  validateProgrammaticWireValue(value);
-  if (!isSemanticOperationValue(value)) throw new TypeError("invalid SemanticOperationValue");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSemanticOperationValue(emitted)) throw new TypeError("encoded value is invalid SemanticOperationValue");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSemanticOperationValue(owned)) throw new TypeError("invalid SemanticOperationValue");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type SemanticOperationValueKind = "absent" | "address" | "array" | "blob" | "boolean" | "decimal" | "integer" | "map" | "string";
 
+function matchesSchemaSemanticOperationValueKind(value: unknown): value is SemanticOperationValueKind {
+  return typeof value === "string" && hasScalarUnicode(value) && ["absent", "address", "array", "blob", "boolean", "decimal", "integer", "map", "string"].includes(value);
+}
+
 export function isSemanticOperationValueKind(value: unknown): value is SemanticOperationValueKind {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["absent", "address", "array", "blob", "boolean", "decimal", "integer", "map", "string"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaSemanticOperationValueKind(value));
 }
 
 export function decodeSemanticOperationValueKind(input: string): SemanticOperationValueKind {
@@ -6412,12 +6831,10 @@ export function decodeSemanticOperationValueKind(input: string): SemanticOperati
 }
 
 export function encodeSemanticOperationValueKind(value: SemanticOperationValueKind): string {
-  validateProgrammaticWireValue(value);
-  if (!isSemanticOperationValueKind(value)) throw new TypeError("invalid SemanticOperationValueKind");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSemanticOperationValueKind(emitted)) throw new TypeError("encoded value is invalid SemanticOperationValueKind");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSemanticOperationValueKind(owned)) throw new TypeError("invalid SemanticOperationValueKind");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6426,8 +6843,12 @@ export interface SemanticStringMapEntry {
   value: string;
 }
 
+function matchesSchemaSemanticStringMapEntry(value: unknown): value is SemanticStringMapEntry {
+  return isObject(value) && hasOnlyKeys(value, new Set(["key", "value"])) && hasOwn(value, "key") && (typeof value["key"] === "string" && hasScalarUnicode(value["key"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]));
+}
+
 export function isSemanticStringMapEntry(value: unknown): value is SemanticStringMapEntry {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["key", "value"])) && hasOwn(value, "key") && (typeof value["key"] === "string" && hasScalarUnicode(value["key"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSemanticStringMapEntry(value));
 }
 
 export function decodeSemanticStringMapEntry(input: string): SemanticStringMapEntry {
@@ -6438,12 +6859,10 @@ export function decodeSemanticStringMapEntry(input: string): SemanticStringMapEn
 }
 
 export function encodeSemanticStringMapEntry(value: SemanticStringMapEntry): string {
-  validateProgrammaticWireValue(value);
-  if (!isSemanticStringMapEntry(value)) throw new TypeError("invalid SemanticStringMapEntry");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSemanticStringMapEntry(emitted)) throw new TypeError("encoded value is invalid SemanticStringMapEntry");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSemanticStringMapEntry(owned)) throw new TypeError("invalid SemanticStringMapEntry");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6452,8 +6871,12 @@ export interface SourceDiff {
   edits: ReadonlyArray<SourceEdit>;
 }
 
+function matchesSchemaSourceDiff(value: unknown): value is SourceDiff {
+  return isObject(value) && hasOnlyKeys(value, new Set(["digest", "edits"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "edits") && (isJSONArray(value["edits"]) && value["edits"].every((item) => matchesSchemaSourceEdit(item)) && hasCanonicalCollectionOrder(value["edits"], "source_diff"));
+}
+
 export function isSourceDiff(value: unknown): value is SourceDiff {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["digest", "edits"])) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "edits") && (isJSONArray(value["edits"]) && value["edits"].every((item) => isSourceEdit(item)) && hasCanonicalCollectionOrder(value["edits"], "source_diff")));
+  return isProgrammaticWireValue(value, () => matchesSchemaSourceDiff(value));
 }
 
 export function decodeSourceDiff(input: string): SourceDiff {
@@ -6464,12 +6887,10 @@ export function decodeSourceDiff(input: string): SourceDiff {
 }
 
 export function encodeSourceDiff(value: SourceDiff): string {
-  validateProgrammaticWireValue(value);
-  if (!isSourceDiff(value)) throw new TypeError("invalid SourceDiff");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSourceDiff(emitted)) throw new TypeError("encoded value is invalid SourceDiff");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSourceDiff(owned)) throw new TypeError("invalid SourceDiff");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6483,8 +6904,12 @@ export interface SourceEdit {
   source_range?: SourceRange;
 }
 
+function matchesSchemaSourceEdit(value: unknown): value is SourceEdit {
+  return isObject(value) && hasOnlyKeys(value, new Set(["after_digest", "after_module", "before_digest", "before_module", "kind", "replacement_blob", "source_range"])) && (!hasOwn(value, "after_digest") || (isDigest(value["after_digest"]))) && (!hasOwn(value, "after_module") || (isModuleRef(value["after_module"]))) && (!hasOwn(value, "before_digest") || (isDigest(value["before_digest"]))) && (!hasOwn(value, "before_module") || (isModuleRef(value["before_module"]))) && hasOwn(value, "kind") && (matchesSchemaSourceEditKind(value["kind"])) && (!hasOwn(value, "replacement_blob") || (isBlobRef(value["replacement_blob"]))) && (!hasOwn(value, "source_range") || (isSourceRange(value["source_range"]))) && ((value["kind"] === "create" && hasOwn(value, "after_module") && hasOwn(value, "after_digest") && hasOwn(value, "replacement_blob") && !hasOwn(value, "before_module") && !hasOwn(value, "before_digest") && !hasOwn(value, "source_range")) || (value["kind"] === "delete" && hasOwn(value, "before_module") && hasOwn(value, "before_digest") && !hasOwn(value, "after_module") && !hasOwn(value, "after_digest") && !hasOwn(value, "replacement_blob") && !hasOwn(value, "source_range")) || (value["kind"] === "move" && hasOwn(value, "before_module") && hasOwn(value, "before_digest") && hasOwn(value, "after_module") && hasOwn(value, "after_digest") && !hasOwn(value, "replacement_blob") && !hasOwn(value, "source_range")) || (value["kind"] === "replace" && hasOwn(value, "before_digest") && hasOwn(value, "after_digest") && hasOwn(value, "source_range") && hasOwn(value, "replacement_blob") && !hasOwn(value, "before_module") && !hasOwn(value, "after_module"))) && hasProtocolInvariant(value, "source_edit");
+}
+
 export function isSourceEdit(value: unknown): value is SourceEdit {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["after_digest", "after_module", "before_digest", "before_module", "kind", "replacement_blob", "source_range"])) && (!hasOwn(value, "after_digest") || (isDigest(value["after_digest"]))) && (!hasOwn(value, "after_module") || (isModuleRef(value["after_module"]))) && (!hasOwn(value, "before_digest") || (isDigest(value["before_digest"]))) && (!hasOwn(value, "before_module") || (isModuleRef(value["before_module"]))) && hasOwn(value, "kind") && (isSourceEditKind(value["kind"])) && (!hasOwn(value, "replacement_blob") || (isBlobRef(value["replacement_blob"]))) && (!hasOwn(value, "source_range") || (isSourceRange(value["source_range"]))) && ((value["kind"] === "create" && hasOwn(value, "after_module") && hasOwn(value, "after_digest") && hasOwn(value, "replacement_blob") && !hasOwn(value, "before_module") && !hasOwn(value, "before_digest") && !hasOwn(value, "source_range")) || (value["kind"] === "delete" && hasOwn(value, "before_module") && hasOwn(value, "before_digest") && !hasOwn(value, "after_module") && !hasOwn(value, "after_digest") && !hasOwn(value, "replacement_blob") && !hasOwn(value, "source_range")) || (value["kind"] === "move" && hasOwn(value, "before_module") && hasOwn(value, "before_digest") && hasOwn(value, "after_module") && hasOwn(value, "after_digest") && !hasOwn(value, "replacement_blob") && !hasOwn(value, "source_range")) || (value["kind"] === "replace" && hasOwn(value, "before_digest") && hasOwn(value, "after_digest") && hasOwn(value, "source_range") && hasOwn(value, "replacement_blob") && !hasOwn(value, "before_module") && !hasOwn(value, "after_module"))) && hasProtocolInvariant(value, "source_edit"));
+  return isProgrammaticWireValue(value, () => matchesSchemaSourceEdit(value));
 }
 
 export function decodeSourceEdit(input: string): SourceEdit {
@@ -6495,19 +6920,21 @@ export function decodeSourceEdit(input: string): SourceEdit {
 }
 
 export function encodeSourceEdit(value: SourceEdit): string {
-  validateProgrammaticWireValue(value);
-  if (!isSourceEdit(value)) throw new TypeError("invalid SourceEdit");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSourceEdit(emitted)) throw new TypeError("encoded value is invalid SourceEdit");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSourceEdit(owned)) throw new TypeError("invalid SourceEdit");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type SourceEditKind = "create" | "delete" | "move" | "replace";
 
+function matchesSchemaSourceEditKind(value: unknown): value is SourceEditKind {
+  return typeof value === "string" && hasScalarUnicode(value) && ["create", "delete", "move", "replace"].includes(value);
+}
+
 export function isSourceEditKind(value: unknown): value is SourceEditKind {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["create", "delete", "move", "replace"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaSourceEditKind(value));
 }
 
 export function decodeSourceEditKind(input: string): SourceEditKind {
@@ -6518,12 +6945,10 @@ export function decodeSourceEditKind(input: string): SourceEditKind {
 }
 
 export function encodeSourceEditKind(value: SourceEditKind): string {
-  validateProgrammaticWireValue(value);
-  if (!isSourceEditKind(value)) throw new TypeError("invalid SourceEditKind");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSourceEditKind(emitted)) throw new TypeError("encoded value is invalid SourceEditKind");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSourceEditKind(owned)) throw new TypeError("invalid SourceEditKind");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6532,8 +6957,12 @@ export interface SourceFileInput {
   path: CanonicalSourcePath;
 }
 
+function matchesSchemaSourceFileInput(value: unknown): value is SourceFileInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob", "path"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "path") && (matchesSchemaCanonicalSourcePath(value["path"]));
+}
+
 export function isSourceFileInput(value: unknown): value is SourceFileInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob", "path"])) && hasOwn(value, "blob") && (isBlobRef(value["blob"])) && hasOwn(value, "path") && (isCanonicalSourcePath(value["path"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSourceFileInput(value));
 }
 
 export function decodeSourceFileInput(input: string): SourceFileInput {
@@ -6544,19 +6973,21 @@ export function decodeSourceFileInput(input: string): SourceFileInput {
 }
 
 export function encodeSourceFileInput(value: SourceFileInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isSourceFileInput(value)) throw new TypeError("invalid SourceFileInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSourceFileInput(emitted)) throw new TypeError("encoded value is invalid SourceFileInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSourceFileInput(owned)) throw new TypeError("invalid SourceFileInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type SourceOriginKind = "pack" | "project";
 
+function matchesSchemaSourceOriginKind(value: unknown): value is SourceOriginKind {
+  return typeof value === "string" && hasScalarUnicode(value) && ["pack", "project"].includes(value);
+}
+
 export function isSourceOriginKind(value: unknown): value is SourceOriginKind {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["pack", "project"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaSourceOriginKind(value));
 }
 
 export function decodeSourceOriginKind(input: string): SourceOriginKind {
@@ -6567,12 +6998,10 @@ export function decodeSourceOriginKind(input: string): SourceOriginKind {
 }
 
 export function encodeSourceOriginKind(value: SourceOriginKind): string {
-  validateProgrammaticWireValue(value);
-  if (!isSourceOriginKind(value)) throw new TypeError("invalid SourceOriginKind");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSourceOriginKind(emitted)) throw new TypeError("encoded value is invalid SourceOriginKind");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSourceOriginKind(owned)) throw new TypeError("invalid SourceOriginKind");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6581,8 +7010,12 @@ export interface SourcePatchBatch {
   patches: ReadonlyArray<SourcePatchInput>;
 }
 
+function matchesSchemaSourcePatchBatch(value: unknown): value is SourcePatchBatch {
+  return isObject(value) && hasOnlyKeys(value, new Set(["patches"])) && hasOwn(value, "patches") && (isJSONArray(value["patches"]) && value["patches"].every((item) => matchesSchemaSourcePatchInput(item)) && value["patches"].length >= 1 && hasCanonicalCollectionOrder(value["patches"], "source_patch"));
+}
+
 export function isSourcePatchBatch(value: unknown): value is SourcePatchBatch {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["patches"])) && hasOwn(value, "patches") && (isJSONArray(value["patches"]) && value["patches"].every((item) => isSourcePatchInput(item)) && value["patches"].length >= 1 && hasCanonicalCollectionOrder(value["patches"], "source_patch")));
+  return isProgrammaticWireValue(value, () => matchesSchemaSourcePatchBatch(value));
 }
 
 export function decodeSourcePatchBatch(input: string): SourcePatchBatch {
@@ -6593,12 +7026,10 @@ export function decodeSourcePatchBatch(input: string): SourcePatchBatch {
 }
 
 export function encodeSourcePatchBatch(value: SourcePatchBatch): string {
-  validateProgrammaticWireValue(value);
-  if (!isSourcePatchBatch(value)) throw new TypeError("invalid SourcePatchBatch");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSourcePatchBatch(emitted)) throw new TypeError("encoded value is invalid SourcePatchBatch");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSourcePatchBatch(owned)) throw new TypeError("invalid SourcePatchBatch");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6608,8 +7039,12 @@ export interface SourcePatchInput {
   source_range: SourceRange;
 }
 
+function matchesSchemaSourcePatchInput(value: unknown): value is SourcePatchInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["expected_source_digest", "replacement_blob", "source_range"])) && hasOwn(value, "expected_source_digest") && (isDigest(value["expected_source_digest"])) && hasOwn(value, "replacement_blob") && (isBlobRef(value["replacement_blob"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"]));
+}
+
 export function isSourcePatchInput(value: unknown): value is SourcePatchInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["expected_source_digest", "replacement_blob", "source_range"])) && hasOwn(value, "expected_source_digest") && (isDigest(value["expected_source_digest"])) && hasOwn(value, "replacement_blob") && (isBlobRef(value["replacement_blob"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSourcePatchInput(value));
 }
 
 export function decodeSourcePatchInput(input: string): SourcePatchInput {
@@ -6620,12 +7055,10 @@ export function decodeSourcePatchInput(input: string): SourcePatchInput {
 }
 
 export function encodeSourcePatchInput(value: SourcePatchInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isSourcePatchInput(value)) throw new TypeError("invalid SourcePatchInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSourcePatchInput(emitted)) throw new TypeError("encoded value is invalid SourcePatchInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSourcePatchInput(owned)) throw new TypeError("invalid SourcePatchInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6634,8 +7067,12 @@ export interface SubgraphCursor {
   value: string;
 }
 
+function matchesSchemaSubgraphCursor(value: unknown): value is SubgraphCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^inspect_subgraph_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isSubgraphCursor(value: unknown): value is SubgraphCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^inspect_subgraph_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSubgraphCursor(value));
 }
 
 export function decodeSubgraphCursor(input: string): SubgraphCursor {
@@ -6646,12 +7083,10 @@ export function decodeSubgraphCursor(input: string): SubgraphCursor {
 }
 
 export function encodeSubgraphCursor(value: SubgraphCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isSubgraphCursor(value)) throw new TypeError("invalid SubgraphCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSubgraphCursor(emitted)) throw new TypeError("encoded value is invalid SubgraphCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSubgraphCursor(owned)) throw new TypeError("invalid SubgraphCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6666,8 +7101,12 @@ export interface SubgraphGraphFacts {
   to_address?: EntityAddress;
 }
 
+function matchesSchemaSubgraphGraphFacts(value: unknown): value is SubgraphGraphFacts {
+  return isObject(value) && hasOnlyKeys(value, new Set(["entity_type_address", "from_address", "kind", "layer_address", "relation_type_address", "row_addresses", "to_address"])) && (!hasOwn(value, "entity_type_address") || (isEntityTypeAddress(value["entity_type_address"]))) && (!hasOwn(value, "from_address") || (isEntityAddress(value["from_address"]))) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["entity", "other", "relation"].includes(value["kind"])) && (!hasOwn(value, "layer_address") || (isLayerAddress(value["layer_address"]))) && (!hasOwn(value, "relation_type_address") || (isRelationTypeAddress(value["relation_type_address"]))) && hasOwn(value, "row_addresses") && (isJSONArray(value["row_addresses"]) && value["row_addresses"].every((item) => isStableAddress(item)) && hasUniqueItems(value["row_addresses"]) && hasStableAddressOrder(value["row_addresses"], "$item")) && (!hasOwn(value, "to_address") || (isEntityAddress(value["to_address"]))) && ((value["kind"] === "entity" && hasOwn(value, "entity_type_address") && hasOwn(value, "layer_address") && !hasOwn(value, "from_address") && !hasOwn(value, "relation_type_address") && !hasOwn(value, "to_address")) || (value["kind"] === "other" && !hasOwn(value, "entity_type_address") && !hasOwn(value, "from_address") && !hasOwn(value, "layer_address") && !hasOwn(value, "relation_type_address") && !hasOwn(value, "to_address")) || (value["kind"] === "relation" && hasOwn(value, "relation_type_address") && hasOwn(value, "from_address") && hasOwn(value, "to_address") && !hasOwn(value, "entity_type_address") && !hasOwn(value, "layer_address")));
+}
+
 export function isSubgraphGraphFacts(value: unknown): value is SubgraphGraphFacts {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["entity_type_address", "from_address", "kind", "layer_address", "relation_type_address", "row_addresses", "to_address"])) && (!hasOwn(value, "entity_type_address") || (isEntityTypeAddress(value["entity_type_address"]))) && (!hasOwn(value, "from_address") || (isEntityAddress(value["from_address"]))) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["entity", "other", "relation"].includes(value["kind"])) && (!hasOwn(value, "layer_address") || (isLayerAddress(value["layer_address"]))) && (!hasOwn(value, "relation_type_address") || (isRelationTypeAddress(value["relation_type_address"]))) && hasOwn(value, "row_addresses") && (isJSONArray(value["row_addresses"]) && value["row_addresses"].every((item) => isStableAddress(item)) && hasUniqueItems(value["row_addresses"]) && hasStableAddressOrder(value["row_addresses"], "$item")) && (!hasOwn(value, "to_address") || (isEntityAddress(value["to_address"]))) && ((value["kind"] === "entity" && hasOwn(value, "entity_type_address") && hasOwn(value, "layer_address") && !hasOwn(value, "from_address") && !hasOwn(value, "relation_type_address") && !hasOwn(value, "to_address")) || (value["kind"] === "other" && !hasOwn(value, "entity_type_address") && !hasOwn(value, "from_address") && !hasOwn(value, "layer_address") && !hasOwn(value, "relation_type_address") && !hasOwn(value, "to_address")) || (value["kind"] === "relation" && hasOwn(value, "relation_type_address") && hasOwn(value, "from_address") && hasOwn(value, "to_address") && !hasOwn(value, "entity_type_address") && !hasOwn(value, "layer_address"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaSubgraphGraphFacts(value));
 }
 
 export function decodeSubgraphGraphFacts(input: string): SubgraphGraphFacts {
@@ -6678,12 +7117,10 @@ export function decodeSubgraphGraphFacts(input: string): SubgraphGraphFacts {
 }
 
 export function encodeSubgraphGraphFacts(value: SubgraphGraphFacts): string {
-  validateProgrammaticWireValue(value);
-  if (!isSubgraphGraphFacts(value)) throw new TypeError("invalid SubgraphGraphFacts");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSubgraphGraphFacts(emitted)) throw new TypeError("encoded value is invalid SubgraphGraphFacts");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSubgraphGraphFacts(owned)) throw new TypeError("invalid SubgraphGraphFacts");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6694,8 +7131,12 @@ export interface SubgraphPageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaSubgraphPageInfo(value: unknown): value is SubgraphPageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaSubgraphCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isSubgraphPageInfo(value: unknown): value is SubgraphPageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isSubgraphCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaSubgraphPageInfo(value));
 }
 
 export function decodeSubgraphPageInfo(input: string): SubgraphPageInfo {
@@ -6706,12 +7147,10 @@ export function decodeSubgraphPageInfo(input: string): SubgraphPageInfo {
 }
 
 export function encodeSubgraphPageInfo(value: SubgraphPageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isSubgraphPageInfo(value)) throw new TypeError("invalid SubgraphPageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSubgraphPageInfo(emitted)) throw new TypeError("encoded value is invalid SubgraphPageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSubgraphPageInfo(owned)) throw new TypeError("invalid SubgraphPageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6724,8 +7163,12 @@ export interface SubgraphReadItem {
   traversal_index: CanonicalUint64;
 }
 
+function matchesSchemaSubgraphReadItem(value: unknown): value is SubgraphReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["adjacency", "depth", "facts", "subject", "traversal_index"])) && (!hasOwn(value, "adjacency") || (isAdjacencyRecord(value["adjacency"]))) && hasOwn(value, "depth") && (typeof value["depth"] === "number" && Number.isSafeInteger(value["depth"]) && !Object.is(value["depth"], -0) && value["depth"] >= 0 && value["depth"] <= 32) && hasOwn(value, "facts") && (matchesSchemaSubgraphGraphFacts(value["facts"])) && hasOwn(value, "subject") && (isSemanticSubject(value["subject"])) && hasOwn(value, "traversal_index") && (isCanonicalUint64(value["traversal_index"]));
+}
+
 export function isSubgraphReadItem(value: unknown): value is SubgraphReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["adjacency", "depth", "facts", "subject", "traversal_index"])) && (!hasOwn(value, "adjacency") || (isAdjacencyRecord(value["adjacency"]))) && hasOwn(value, "depth") && (typeof value["depth"] === "number" && Number.isSafeInteger(value["depth"]) && !Object.is(value["depth"], -0) && value["depth"] >= 0 && value["depth"] <= 32) && hasOwn(value, "facts") && (isSubgraphGraphFacts(value["facts"])) && hasOwn(value, "subject") && (isSemanticSubject(value["subject"])) && hasOwn(value, "traversal_index") && (isCanonicalUint64(value["traversal_index"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSubgraphReadItem(value));
 }
 
 export function decodeSubgraphReadItem(input: string): SubgraphReadItem {
@@ -6736,12 +7179,10 @@ export function decodeSubgraphReadItem(input: string): SubgraphReadItem {
 }
 
 export function encodeSubgraphReadItem(value: SubgraphReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isSubgraphReadItem(value)) throw new TypeError("invalid SubgraphReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSubgraphReadItem(emitted)) throw new TypeError("encoded value is invalid SubgraphReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSubgraphReadItem(owned)) throw new TypeError("invalid SubgraphReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6752,8 +7193,12 @@ export interface SubgraphRelationFact {
   type_address: RelationTypeAddress;
 }
 
+function matchesSchemaSubgraphRelationFact(value: unknown): value is SubgraphRelationFact {
+  return isObject(value) && hasOnlyKeys(value, new Set(["from_address", "relation_address", "to_address", "type_address"])) && hasOwn(value, "from_address") && (isEntityAddress(value["from_address"])) && hasOwn(value, "relation_address") && (isRelationAddress(value["relation_address"])) && hasOwn(value, "to_address") && (isEntityAddress(value["to_address"])) && hasOwn(value, "type_address") && (isRelationTypeAddress(value["type_address"]));
+}
+
 export function isSubgraphRelationFact(value: unknown): value is SubgraphRelationFact {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["from_address", "relation_address", "to_address", "type_address"])) && hasOwn(value, "from_address") && (isEntityAddress(value["from_address"])) && hasOwn(value, "relation_address") && (isRelationAddress(value["relation_address"])) && hasOwn(value, "to_address") && (isEntityAddress(value["to_address"])) && hasOwn(value, "type_address") && (isRelationTypeAddress(value["type_address"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSubgraphRelationFact(value));
 }
 
 export function decodeSubgraphRelationFact(input: string): SubgraphRelationFact {
@@ -6764,12 +7209,10 @@ export function decodeSubgraphRelationFact(input: string): SubgraphRelationFact 
 }
 
 export function encodeSubgraphRelationFact(value: SubgraphRelationFact): string {
-  validateProgrammaticWireValue(value);
-  if (!isSubgraphRelationFact(value)) throw new TypeError("invalid SubgraphRelationFact");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSubgraphRelationFact(emitted)) throw new TypeError("encoded value is invalid SubgraphRelationFact");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSubgraphRelationFact(owned)) throw new TypeError("invalid SubgraphRelationFact");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6778,8 +7221,12 @@ export interface SymbolCursor {
   value: string;
 }
 
+function matchesSchemaSymbolCursor(value: unknown): value is SymbolCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^find_symbols_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isSymbolCursor(value: unknown): value is SymbolCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^find_symbols_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSymbolCursor(value));
 }
 
 export function decodeSymbolCursor(input: string): SymbolCursor {
@@ -6790,12 +7237,10 @@ export function decodeSymbolCursor(input: string): SymbolCursor {
 }
 
 export function encodeSymbolCursor(value: SymbolCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isSymbolCursor(value)) throw new TypeError("invalid SymbolCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSymbolCursor(emitted)) throw new TypeError("encoded value is invalid SymbolCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSymbolCursor(owned)) throw new TypeError("invalid SymbolCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6806,8 +7251,12 @@ export interface SymbolPageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaSymbolPageInfo(value: unknown): value is SymbolPageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaSymbolCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isSymbolPageInfo(value: unknown): value is SymbolPageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isSymbolCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaSymbolPageInfo(value));
 }
 
 export function decodeSymbolPageInfo(input: string): SymbolPageInfo {
@@ -6818,12 +7267,10 @@ export function decodeSymbolPageInfo(input: string): SymbolPageInfo {
 }
 
 export function encodeSymbolPageInfo(value: SymbolPageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isSymbolPageInfo(value)) throw new TypeError("invalid SymbolPageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSymbolPageInfo(emitted)) throw new TypeError("encoded value is invalid SymbolPageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSymbolPageInfo(owned)) throw new TypeError("invalid SymbolPageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6837,8 +7284,12 @@ export interface SymbolReadItem {
   source_range: SourceRange;
 }
 
+function matchesSchemaSymbolReadItem(value: unknown): value is SymbolReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["address", "display_name", "kind", "matched_field", "matched_value", "source_range"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"])) && hasOwn(value, "kind") && (isSubjectKind(value["kind"])) && hasOwn(value, "matched_field") && (typeof value["matched_field"] === "string" && hasScalarUnicode(value["matched_field"]) && ["address", "id", "display_name"].includes(value["matched_field"])) && hasOwn(value, "matched_value") && (typeof value["matched_value"] === "string" && hasScalarUnicode(value["matched_value"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"]));
+}
+
 export function isSymbolReadItem(value: unknown): value is SymbolReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["address", "display_name", "kind", "matched_field", "matched_value", "source_range"])) && hasOwn(value, "address") && (isStableAddress(value["address"])) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"])) && hasOwn(value, "kind") && (isSubjectKind(value["kind"])) && hasOwn(value, "matched_field") && (typeof value["matched_field"] === "string" && hasScalarUnicode(value["matched_field"]) && ["address", "id", "display_name"].includes(value["matched_field"])) && hasOwn(value, "matched_value") && (typeof value["matched_value"] === "string" && hasScalarUnicode(value["matched_value"])) && hasOwn(value, "source_range") && (isSourceRange(value["source_range"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaSymbolReadItem(value));
 }
 
 export function decodeSymbolReadItem(input: string): SymbolReadItem {
@@ -6849,19 +7300,21 @@ export function decodeSymbolReadItem(input: string): SymbolReadItem {
 }
 
 export function encodeSymbolReadItem(value: SymbolReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isSymbolReadItem(value)) throw new TypeError("invalid SymbolReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isSymbolReadItem(emitted)) throw new TypeError("encoded value is invalid SymbolReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaSymbolReadItem(owned)) throw new TypeError("invalid SymbolReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type TruncationOutcome = "complete" | "item_limit" | "output_byte_limit";
 
+function matchesSchemaTruncationOutcome(value: unknown): value is TruncationOutcome {
+  return typeof value === "string" && hasScalarUnicode(value) && ["complete", "item_limit", "output_byte_limit"].includes(value);
+}
+
 export function isTruncationOutcome(value: unknown): value is TruncationOutcome {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["complete", "item_limit", "output_byte_limit"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaTruncationOutcome(value));
 }
 
 export function decodeTruncationOutcome(input: string): TruncationOutcome {
@@ -6872,12 +7325,10 @@ export function decodeTruncationOutcome(input: string): TruncationOutcome {
 }
 
 export function encodeTruncationOutcome(value: TruncationOutcome): string {
-  validateProgrammaticWireValue(value);
-  if (!isTruncationOutcome(value)) throw new TypeError("invalid TruncationOutcome");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isTruncationOutcome(emitted)) throw new TypeError("encoded value is invalid TruncationOutcome");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaTruncationOutcome(owned)) throw new TypeError("invalid TruncationOutcome");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6886,8 +7337,12 @@ export interface UsageCursor {
   value: string;
 }
 
+function matchesSchemaUsageCursor(value: unknown): value is UsageCursor {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (matchesSchemaDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^find_usages_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"]));
+}
+
 export function isUsageCursor(value: unknown): value is UsageCursor {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_generation", "value"])) && hasOwn(value, "document_generation") && (isDocumentGeneration(value["document_generation"])) && hasOwn(value, "value") && (typeof value["value"] === "string" && hasScalarUnicode(value["value"]) && new RegExp("^find_usages_cursor_[A-Za-z0-9_-]{16,128}$").test(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaUsageCursor(value));
 }
 
 export function decodeUsageCursor(input: string): UsageCursor {
@@ -6898,12 +7353,10 @@ export function decodeUsageCursor(input: string): UsageCursor {
 }
 
 export function encodeUsageCursor(value: UsageCursor): string {
-  validateProgrammaticWireValue(value);
-  if (!isUsageCursor(value)) throw new TypeError("invalid UsageCursor");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isUsageCursor(emitted)) throw new TypeError("encoded value is invalid UsageCursor");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaUsageCursor(owned)) throw new TypeError("invalid UsageCursor");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6914,8 +7367,12 @@ export interface UsagePageInfo {
   truncation: TruncationOutcome;
 }
 
+function matchesSchemaUsagePageInfo(value: unknown): value is UsagePageInfo {
+  return isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (matchesSchemaUsageCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (matchesSchemaLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (matchesSchemaTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor")));
+}
+
 export function isUsagePageInfo(value: unknown): value is UsagePageInfo {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["next_cursor", "returned_bytes", "returned_items", "truncation"])) && (!hasOwn(value, "next_cursor") || (isUsageCursor(value["next_cursor"]))) && hasOwn(value, "returned_bytes") && (isLogicalResponseByteCount(value["returned_bytes"])) && hasOwn(value, "returned_items") && (isCanonicalUint64(value["returned_items"])) && hasOwn(value, "truncation") && (isTruncationOutcome(value["truncation"])) && ((value["truncation"] === "complete" && !hasOwn(value, "next_cursor")) || (value["truncation"] === "item_limit" && hasOwn(value, "next_cursor")) || (value["truncation"] === "output_byte_limit" && hasOwn(value, "next_cursor"))));
+  return isProgrammaticWireValue(value, () => matchesSchemaUsagePageInfo(value));
 }
 
 export function decodeUsagePageInfo(input: string): UsagePageInfo {
@@ -6926,12 +7383,10 @@ export function decodeUsagePageInfo(input: string): UsagePageInfo {
 }
 
 export function encodeUsagePageInfo(value: UsagePageInfo): string {
-  validateProgrammaticWireValue(value);
-  if (!isUsagePageInfo(value)) throw new TypeError("invalid UsagePageInfo");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isUsagePageInfo(emitted)) throw new TypeError("encoded value is invalid UsagePageInfo");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaUsagePageInfo(owned)) throw new TypeError("invalid UsagePageInfo");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6943,8 +7398,12 @@ export interface UsageReadItem {
   via: string;
 }
 
+function matchesSchemaUsageReadItem(value: unknown): value is UsageReadItem {
+  return isObject(value) && hasOnlyKeys(value, new Set(["range", "source_address", "target_address", "target_kind", "via"])) && hasOwn(value, "range") && (isSourceRange(value["range"])) && hasOwn(value, "source_address") && (isStableAddress(value["source_address"])) && hasOwn(value, "target_address") && (isStableAddress(value["target_address"])) && hasOwn(value, "target_kind") && (isSubjectKind(value["target_kind"])) && hasOwn(value, "via") && (typeof value["via"] === "string" && hasScalarUnicode(value["via"]) && Array.from(value["via"]).length >= 1);
+}
+
 export function isUsageReadItem(value: unknown): value is UsageReadItem {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["range", "source_address", "target_address", "target_kind", "via"])) && hasOwn(value, "range") && (isSourceRange(value["range"])) && hasOwn(value, "source_address") && (isStableAddress(value["source_address"])) && hasOwn(value, "target_address") && (isStableAddress(value["target_address"])) && hasOwn(value, "target_kind") && (isSubjectKind(value["target_kind"])) && hasOwn(value, "via") && (typeof value["via"] === "string" && hasScalarUnicode(value["via"]) && Array.from(value["via"]).length >= 1));
+  return isProgrammaticWireValue(value, () => matchesSchemaUsageReadItem(value));
 }
 
 export function decodeUsageReadItem(input: string): UsageReadItem {
@@ -6955,12 +7414,10 @@ export function decodeUsageReadItem(input: string): UsageReadItem {
 }
 
 export function encodeUsageReadItem(value: UsageReadItem): string {
-  validateProgrammaticWireValue(value);
-  if (!isUsageReadItem(value)) throw new TypeError("invalid UsageReadItem");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isUsageReadItem(emitted)) throw new TypeError("encoded value is invalid UsageReadItem");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaUsageReadItem(owned)) throw new TypeError("invalid UsageReadItem");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -6977,8 +7434,12 @@ export interface ViewCreateSubjectFields {
   tags?: ReadonlyArray<string>;
 }
 
+function matchesSchemaViewCreateSubjectFields(value: unknown): value is ViewCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["annotations", "category", "description", "display_name", "intent", "relation_projection_overrides", "shape", "source", "state_input", "tags"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => matchesSchemaSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && hasOwn(value, "category") && (typeof value["category"] === "string" && hasScalarUnicode(value["category"]) && ["context", "dependency", "diff", "flow", "hierarchy", "impact", "inventory", "topology"].includes(value["category"])) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "intent") || (typeof value["intent"] === "string" && hasScalarUnicode(value["intent"]))) && (!hasOwn(value, "relation_projection_overrides") || (isJSONArray(value["relation_projection_overrides"]) && value["relation_projection_overrides"].every((item) => matchesSchemaViewProjectionOverrideEntry(item)) && hasCanonicalCollectionOrder(value["relation_projection_overrides"], "semantic_map_entry"))) && hasOwn(value, "shape") && (isAuthoredViewShape(value["shape"])) && hasOwn(value, "source") && (isAuthoredOperationSource(value["source"])) && (!hasOwn(value, "state_input") || (typeof value["state_input"] === "string" && hasScalarUnicode(value["state_input"]) && ["none", "optional", "required"].includes(value["state_input"]))) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasUniqueArrayKey(value, "annotations", "key") && hasUniqueArrayKey(value, "relation_projection_overrides", "key");
+}
+
 export function isViewCreateSubjectFields(value: unknown): value is ViewCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["annotations", "category", "description", "display_name", "intent", "relation_projection_overrides", "shape", "source", "state_input", "tags"])) && (!hasOwn(value, "annotations") || (isJSONArray(value["annotations"]) && value["annotations"].every((item) => isSemanticStringMapEntry(item)) && hasCanonicalCollectionOrder(value["annotations"], "semantic_map_entry"))) && hasOwn(value, "category") && (typeof value["category"] === "string" && hasScalarUnicode(value["category"]) && ["context", "dependency", "diff", "flow", "hierarchy", "impact", "inventory", "topology"].includes(value["category"])) && (!hasOwn(value, "description") || (typeof value["description"] === "string" && hasScalarUnicode(value["description"]))) && hasOwn(value, "display_name") && (typeof value["display_name"] === "string" && hasScalarUnicode(value["display_name"]) && Array.from(value["display_name"]).length >= 1) && (!hasOwn(value, "intent") || (typeof value["intent"] === "string" && hasScalarUnicode(value["intent"]))) && (!hasOwn(value, "relation_projection_overrides") || (isJSONArray(value["relation_projection_overrides"]) && value["relation_projection_overrides"].every((item) => isViewProjectionOverrideEntry(item)) && hasCanonicalCollectionOrder(value["relation_projection_overrides"], "semantic_map_entry"))) && hasOwn(value, "shape") && (isAuthoredViewShape(value["shape"])) && hasOwn(value, "source") && (isAuthoredOperationSource(value["source"])) && (!hasOwn(value, "state_input") || (typeof value["state_input"] === "string" && hasScalarUnicode(value["state_input"]) && ["none", "optional", "required"].includes(value["state_input"]))) && (!hasOwn(value, "tags") || (isJSONArray(value["tags"]) && value["tags"].every((item) => typeof item === "string" && hasScalarUnicode(item)) && hasUniqueItems(value["tags"]) && hasUnicodeScalarOrder(value["tags"]))) && hasUniqueArrayKey(value, "annotations", "key") && hasUniqueArrayKey(value, "relation_projection_overrides", "key"));
+  return isProgrammaticWireValue(value, () => matchesSchemaViewCreateSubjectFields(value));
 }
 
 export function decodeViewCreateSubjectFields(input: string): ViewCreateSubjectFields {
@@ -6989,12 +7450,10 @@ export function decodeViewCreateSubjectFields(input: string): ViewCreateSubjectF
 }
 
 export function encodeViewCreateSubjectFields(value: ViewCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isViewCreateSubjectFields(value)) throw new TypeError("invalid ViewCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isViewCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid ViewCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaViewCreateSubjectFields(owned)) throw new TypeError("invalid ViewCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -7007,8 +7466,12 @@ export interface ViewExportCreateSubjectFields {
   source_refs?: boolean;
 }
 
+function matchesSchemaViewExportCreateSubjectFields(value: unknown): value is ViewExportCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["exporter_profile", "fidelity", "filename", "format", "options", "source_refs"])) && (!hasOwn(value, "exporter_profile") || (isExporterProfileRef(value["exporter_profile"]))) && hasOwn(value, "fidelity") && (isExportFidelity(value["fidelity"])) && hasOwn(value, "filename") && (typeof value["filename"] === "string" && hasScalarUnicode(value["filename"]) && Array.from(value["filename"]).length >= 1) && hasOwn(value, "format") && (isExportFormat(value["format"])) && (!hasOwn(value, "options") || (isExportOptions(value["options"]))) && (!hasOwn(value, "source_refs") || (typeof value["source_refs"] === "boolean"));
+}
+
 export function isViewExportCreateSubjectFields(value: unknown): value is ViewExportCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["exporter_profile", "fidelity", "filename", "format", "options", "source_refs"])) && (!hasOwn(value, "exporter_profile") || (isExporterProfileRef(value["exporter_profile"]))) && hasOwn(value, "fidelity") && (isExportFidelity(value["fidelity"])) && hasOwn(value, "filename") && (typeof value["filename"] === "string" && hasScalarUnicode(value["filename"]) && Array.from(value["filename"]).length >= 1) && hasOwn(value, "format") && (isExportFormat(value["format"])) && (!hasOwn(value, "options") || (isExportOptions(value["options"]))) && (!hasOwn(value, "source_refs") || (typeof value["source_refs"] === "boolean")));
+  return isProgrammaticWireValue(value, () => matchesSchemaViewExportCreateSubjectFields(value));
 }
 
 export function decodeViewExportCreateSubjectFields(input: string): ViewExportCreateSubjectFields {
@@ -7019,12 +7482,10 @@ export function decodeViewExportCreateSubjectFields(input: string): ViewExportCr
 }
 
 export function encodeViewExportCreateSubjectFields(value: ViewExportCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isViewExportCreateSubjectFields(value)) throw new TypeError("invalid ViewExportCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isViewExportCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid ViewExportCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaViewExportCreateSubjectFields(owned)) throw new TypeError("invalid ViewExportCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -7033,8 +7494,12 @@ export interface ViewProjectionOverrideEntry {
   value: AuthoredViewProjectionOverride;
 }
 
+function matchesSchemaViewProjectionOverrideEntry(value: unknown): value is ViewProjectionOverrideEntry {
+  return isObject(value) && hasOnlyKeys(value, new Set(["key", "value"])) && hasOwn(value, "key") && (isRelationTypeAddress(value["key"])) && hasOwn(value, "value") && (isAuthoredViewProjectionOverride(value["value"]));
+}
+
 export function isViewProjectionOverrideEntry(value: unknown): value is ViewProjectionOverrideEntry {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["key", "value"])) && hasOwn(value, "key") && (isRelationTypeAddress(value["key"])) && hasOwn(value, "value") && (isAuthoredViewProjectionOverride(value["value"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaViewProjectionOverrideEntry(value));
 }
 
 export function decodeViewProjectionOverrideEntry(input: string): ViewProjectionOverrideEntry {
@@ -7045,12 +7510,10 @@ export function decodeViewProjectionOverrideEntry(input: string): ViewProjection
 }
 
 export function encodeViewProjectionOverrideEntry(value: ViewProjectionOverrideEntry): string {
-  validateProgrammaticWireValue(value);
-  if (!isViewProjectionOverrideEntry(value)) throw new TypeError("invalid ViewProjectionOverrideEntry");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isViewProjectionOverrideEntry(emitted)) throw new TypeError("encoded value is invalid ViewProjectionOverrideEntry");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaViewProjectionOverrideEntry(owned)) throw new TypeError("invalid ViewProjectionOverrideEntry");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -7063,8 +7526,12 @@ export interface ViewRecipeBlobRef {
   size: CanonicalUint64;
 }
 
+function matchesSchemaViewRecipeBlobRef(value: unknown): value is ViewRecipeBlobRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.view-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"]));
+}
+
 export function isViewRecipeBlobRef(value: unknown): value is ViewRecipeBlobRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["blob_id", "digest", "lifetime", "media_type", "size"])) && hasOwn(value, "blob_id") && (typeof value["blob_id"] === "string" && hasScalarUnicode(value["blob_id"]) && Array.from(value["blob_id"]).length >= 1) && hasOwn(value, "digest") && (isDigest(value["digest"])) && hasOwn(value, "lifetime") && (typeof value["lifetime"] === "string" && hasScalarUnicode(value["lifetime"]) && value["lifetime"] === "request") && hasOwn(value, "media_type") && (typeof value["media_type"] === "string" && hasScalarUnicode(value["media_type"]) && value["media_type"] === "application/vnd.layerdraw.view-recipe.v1+json") && hasOwn(value, "size") && (isCanonicalUint64(value["size"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaViewRecipeBlobRef(value));
 }
 
 export function decodeViewRecipeBlobRef(input: string): ViewRecipeBlobRef {
@@ -7075,12 +7542,10 @@ export function decodeViewRecipeBlobRef(input: string): ViewRecipeBlobRef {
 }
 
 export function encodeViewRecipeBlobRef(value: ViewRecipeBlobRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isViewRecipeBlobRef(value)) throw new TypeError("invalid ViewRecipeBlobRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isViewRecipeBlobRef(emitted)) throw new TypeError("encoded value is invalid ViewRecipeBlobRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaViewRecipeBlobRef(owned)) throw new TypeError("invalid ViewRecipeBlobRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -7090,8 +7555,12 @@ export interface ViewTableColumnCreateSubjectFields {
   source: AuthoredOperationSource;
 }
 
+function matchesSchemaViewTableColumnCreateSubjectFields(value: unknown): value is ViewTableColumnCreateSubjectFields {
+  return isObject(value) && hasOnlyKeys(value, new Set(["aggregate", "label", "source"])) && (!hasOwn(value, "aggregate") || (typeof value["aggregate"] === "string" && hasScalarUnicode(value["aggregate"]) && ["count", "count_distinct", "join_unique", "max", "min", "none"].includes(value["aggregate"]))) && (!hasOwn(value, "label") || (typeof value["label"] === "string" && hasScalarUnicode(value["label"]))) && hasOwn(value, "source") && (isAuthoredOperationSource(value["source"]));
+}
+
 export function isViewTableColumnCreateSubjectFields(value: unknown): value is ViewTableColumnCreateSubjectFields {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["aggregate", "label", "source"])) && (!hasOwn(value, "aggregate") || (typeof value["aggregate"] === "string" && hasScalarUnicode(value["aggregate"]) && ["count", "count_distinct", "join_unique", "max", "min", "none"].includes(value["aggregate"]))) && (!hasOwn(value, "label") || (typeof value["label"] === "string" && hasScalarUnicode(value["label"]))) && hasOwn(value, "source") && (isAuthoredOperationSource(value["source"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaViewTableColumnCreateSubjectFields(value));
 }
 
 export function decodeViewTableColumnCreateSubjectFields(input: string): ViewTableColumnCreateSubjectFields {
@@ -7102,12 +7571,10 @@ export function decodeViewTableColumnCreateSubjectFields(input: string): ViewTab
 }
 
 export function encodeViewTableColumnCreateSubjectFields(value: ViewTableColumnCreateSubjectFields): string {
-  validateProgrammaticWireValue(value);
-  if (!isViewTableColumnCreateSubjectFields(value)) throw new TypeError("invalid ViewTableColumnCreateSubjectFields");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isViewTableColumnCreateSubjectFields(emitted)) throw new TypeError("encoded value is invalid ViewTableColumnCreateSubjectFields");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaViewTableColumnCreateSubjectFields(owned)) throw new TypeError("invalid ViewTableColumnCreateSubjectFields");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -7124,8 +7591,12 @@ export interface WorkbenchFailure {
   workbench_category: WorkbenchFailureCategory;
 }
 
+function matchesSchemaWorkbenchFailure(value: unknown): value is WorkbenchFailure {
+  return isObject(value) && hasOnlyKeys(value, new Set(["category", "code", "correlation_id", "extensions", "message", "retry_after_ms", "retryable", "safe_details", "workbench_category"])) && hasOwn(value, "category") && (isProtocolFailureCategory(value["category"])) && hasOwn(value, "code") && (typeof value["code"] === "string" && hasScalarUnicode(value["code"]) && new RegExp("^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$").test(value["code"])) && (!hasOwn(value, "correlation_id") || (typeof value["correlation_id"] === "string" && hasScalarUnicode(value["correlation_id"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "message") && (typeof value["message"] === "string" && hasScalarUnicode(value["message"])) && (!hasOwn(value, "retry_after_ms") || (isCanonicalUint64(value["retry_after_ms"]))) && hasOwn(value, "retryable") && (typeof value["retryable"] === "boolean") && (!hasOwn(value, "safe_details") || (isJsonObject(value["safe_details"]))) && hasOwn(value, "workbench_category") && (matchesSchemaWorkbenchFailureCategory(value["workbench_category"])) && ((value["workbench_category"] === "cancelled" && (!hasOwn(value, "category") || new Set(["cancelled"]).has(value["category"] as string))) || (value["workbench_category"] === "execution_failed" && (!hasOwn(value, "category") || new Set(["adapter", "invariant", "io", "transport"]).has(value["category"] as string))) || (value["workbench_category"] === "limit_exceeded" && (!hasOwn(value, "category") || new Set(["resource"]).has(value["category"] as string))));
+}
+
 export function isWorkbenchFailure(value: unknown): value is WorkbenchFailure {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["category", "code", "correlation_id", "extensions", "message", "retry_after_ms", "retryable", "safe_details", "workbench_category"])) && hasOwn(value, "category") && (isProtocolFailureCategory(value["category"])) && hasOwn(value, "code") && (typeof value["code"] === "string" && hasScalarUnicode(value["code"]) && new RegExp("^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$").test(value["code"])) && (!hasOwn(value, "correlation_id") || (typeof value["correlation_id"] === "string" && hasScalarUnicode(value["correlation_id"]))) && (!hasOwn(value, "extensions") || (isExtensions(value["extensions"]))) && hasOwn(value, "message") && (typeof value["message"] === "string" && hasScalarUnicode(value["message"])) && (!hasOwn(value, "retry_after_ms") || (isCanonicalUint64(value["retry_after_ms"]))) && hasOwn(value, "retryable") && (typeof value["retryable"] === "boolean") && (!hasOwn(value, "safe_details") || (isJsonObject(value["safe_details"]))) && hasOwn(value, "workbench_category") && (isWorkbenchFailureCategory(value["workbench_category"])) && ((value["workbench_category"] === "cancelled" && (!hasOwn(value, "category") || new Set(["cancelled"]).has(value["category"] as string))) || (value["workbench_category"] === "execution_failed" && (!hasOwn(value, "category") || new Set(["adapter", "invariant", "io", "transport"]).has(value["category"] as string))) || (value["workbench_category"] === "limit_exceeded" && (!hasOwn(value, "category") || new Set(["resource"]).has(value["category"] as string)))));
+  return isProgrammaticWireValue(value, () => matchesSchemaWorkbenchFailure(value));
 }
 
 export function decodeWorkbenchFailure(input: string): WorkbenchFailure {
@@ -7136,20 +7607,22 @@ export function decodeWorkbenchFailure(input: string): WorkbenchFailure {
 }
 
 export function encodeWorkbenchFailure(value: WorkbenchFailure): string {
-  validateProgrammaticWireValue(value);
-  if (!isWorkbenchFailure(value)) throw new TypeError("invalid WorkbenchFailure");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isWorkbenchFailure(emitted)) throw new TypeError("encoded value is invalid WorkbenchFailure");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaWorkbenchFailure(owned)) throw new TypeError("invalid WorkbenchFailure");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 /** A stable execution-platform failure reason. Predictable handle, cursor, generation, input, not-found, preview, unsupported, and precondition conditions are rejected with lifecycle-safe diagnostics and never represented as WorkbenchFailure. */
 export type WorkbenchFailureCategory = "cancelled" | "execution_failed" | "limit_exceeded";
 
+function matchesSchemaWorkbenchFailureCategory(value: unknown): value is WorkbenchFailureCategory {
+  return typeof value === "string" && hasScalarUnicode(value) && ["cancelled", "execution_failed", "limit_exceeded"].includes(value);
+}
+
 export function isWorkbenchFailureCategory(value: unknown): value is WorkbenchFailureCategory {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["cancelled", "execution_failed", "limit_exceeded"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaWorkbenchFailureCategory(value));
 }
 
 export function decodeWorkbenchFailureCategory(input: string): WorkbenchFailureCategory {
@@ -7160,12 +7633,10 @@ export function decodeWorkbenchFailureCategory(input: string): WorkbenchFailureC
 }
 
 export function encodeWorkbenchFailureCategory(value: WorkbenchFailureCategory): string {
-  validateProgrammaticWireValue(value);
-  if (!isWorkbenchFailureCategory(value)) throw new TypeError("invalid WorkbenchFailureCategory");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isWorkbenchFailureCategory(emitted)) throw new TypeError("encoded value is invalid WorkbenchFailureCategory");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaWorkbenchFailureCategory(owned)) throw new TypeError("invalid WorkbenchFailureCategory");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -7175,8 +7646,12 @@ export interface WorkbenchLimits {
   max_output_bytes: CanonicalPositiveInt64;
 }
 
+function matchesSchemaWorkbenchLimits(value: unknown): value is WorkbenchLimits {
+  return isObject(value) && hasOnlyKeys(value, new Set(["max_items", "max_output_bytes"])) && hasOwn(value, "max_items") && (isCanonicalPositiveInt64(value["max_items"])) && hasOwn(value, "max_output_bytes") && (isCanonicalPositiveInt64(value["max_output_bytes"]));
+}
+
 export function isWorkbenchLimits(value: unknown): value is WorkbenchLimits {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["max_items", "max_output_bytes"])) && hasOwn(value, "max_items") && (isCanonicalPositiveInt64(value["max_items"])) && hasOwn(value, "max_output_bytes") && (isCanonicalPositiveInt64(value["max_output_bytes"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaWorkbenchLimits(value));
 }
 
 export function decodeWorkbenchLimits(input: string): WorkbenchLimits {
@@ -7187,12 +7662,10 @@ export function decodeWorkbenchLimits(input: string): WorkbenchLimits {
 }
 
 export function encodeWorkbenchLimits(value: WorkbenchLimits): string {
-  validateProgrammaticWireValue(value);
-  if (!isWorkbenchLimits(value)) throw new TypeError("invalid WorkbenchLimits");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isWorkbenchLimits(emitted)) throw new TypeError("encoded value is invalid WorkbenchLimits");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaWorkbenchLimits(owned)) throw new TypeError("invalid WorkbenchLimits");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -7213,8 +7686,12 @@ export interface WorkbenchPreviewResult {
   status: "invalid" | "valid";
 }
 
+function matchesSchemaWorkbenchPreviewResult(value: unknown): value is WorkbenchPreviewResult {
+  return isObject(value) && hasOnlyKeys(value, new Set(["authoring_impact", "authoring_impact_digest", "base_generation", "changed_source_files", "conflicts", "diagnostics", "preview_digest", "preview_id", "proposed_generation", "required_authoring_capabilities", "resulting_hashes", "semantic_diff", "source_diff", "status"])) && (!hasOwn(value, "authoring_impact") || (isAuthoringImpact(value["authoring_impact"]))) && (!hasOwn(value, "authoring_impact_digest") || (isDigest(value["authoring_impact_digest"]))) && hasOwn(value, "base_generation") && (matchesSchemaDocumentGeneration(value["base_generation"])) && hasOwn(value, "changed_source_files") && (isJSONArray(value["changed_source_files"]) && value["changed_source_files"].every((item) => isModuleRef(item)) && hasCanonicalCollectionOrder(value["changed_source_files"], "source_file")) && hasOwn(value, "conflicts") && (isJSONArray(value["conflicts"]) && value["conflicts"].every((item) => matchesSchemaSemanticConflict(item)) && hasCanonicalCollectionOrder(value["conflicts"], "conflict")) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && (!hasOwn(value, "preview_digest") || (isDigest(value["preview_digest"]))) && (!hasOwn(value, "preview_id") || (matchesSchemaPreviewID(value["preview_id"]))) && (!hasOwn(value, "proposed_generation") || (matchesSchemaDocumentGeneration(value["proposed_generation"]))) && (!hasOwn(value, "required_authoring_capabilities") || (isJSONArray(value["required_authoring_capabilities"]) && value["required_authoring_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["required_authoring_capabilities"]) && hasCanonicalEnumOrder(value["required_authoring_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"]))) && (!hasOwn(value, "resulting_hashes") || (matchesSchemaResultingHashes(value["resulting_hashes"]))) && hasOwn(value, "semantic_diff") && (isSemanticDiff(value["semantic_diff"])) && hasOwn(value, "source_diff") && (matchesSchemaSourceDiff(value["source_diff"])) && hasOwn(value, "status") && (typeof value["status"] === "string" && hasScalarUnicode(value["status"]) && ["invalid", "valid"].includes(value["status"])) && ((value["status"] === "invalid" && !hasOwn(value, "authoring_impact") && !hasOwn(value, "authoring_impact_digest") && !hasOwn(value, "preview_digest") && !hasOwn(value, "preview_id") && !hasOwn(value, "proposed_generation") && !hasOwn(value, "required_authoring_capabilities") && !hasOwn(value, "resulting_hashes") && (isJSONArray(value["conflicts"]) && value["conflicts"].length > 0 || isJSONArray(value["diagnostics"]) && value["diagnostics"].length > 0)) || (value["status"] === "valid" && hasOwn(value, "authoring_impact") && hasOwn(value, "authoring_impact_digest") && hasOwn(value, "preview_digest") && hasOwn(value, "preview_id") && hasOwn(value, "proposed_generation") && hasOwn(value, "required_authoring_capabilities") && hasOwn(value, "resulting_hashes") && isJSONArray(value["conflicts"]) && value["conflicts"].length === 0)) && hasProtocolInvariant(value, "preview_result");
+}
+
 export function isWorkbenchPreviewResult(value: unknown): value is WorkbenchPreviewResult {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["authoring_impact", "authoring_impact_digest", "base_generation", "changed_source_files", "conflicts", "diagnostics", "preview_digest", "preview_id", "proposed_generation", "required_authoring_capabilities", "resulting_hashes", "semantic_diff", "source_diff", "status"])) && (!hasOwn(value, "authoring_impact") || (isAuthoringImpact(value["authoring_impact"]))) && (!hasOwn(value, "authoring_impact_digest") || (isDigest(value["authoring_impact_digest"]))) && hasOwn(value, "base_generation") && (isDocumentGeneration(value["base_generation"])) && hasOwn(value, "changed_source_files") && (isJSONArray(value["changed_source_files"]) && value["changed_source_files"].every((item) => isModuleRef(item)) && hasCanonicalCollectionOrder(value["changed_source_files"], "source_file")) && hasOwn(value, "conflicts") && (isJSONArray(value["conflicts"]) && value["conflicts"].every((item) => isSemanticConflict(item)) && hasCanonicalCollectionOrder(value["conflicts"], "conflict")) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && (!hasOwn(value, "preview_digest") || (isDigest(value["preview_digest"]))) && (!hasOwn(value, "preview_id") || (isPreviewID(value["preview_id"]))) && (!hasOwn(value, "proposed_generation") || (isDocumentGeneration(value["proposed_generation"]))) && (!hasOwn(value, "required_authoring_capabilities") || (isJSONArray(value["required_authoring_capabilities"]) && value["required_authoring_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["required_authoring_capabilities"]) && hasCanonicalEnumOrder(value["required_authoring_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"]))) && (!hasOwn(value, "resulting_hashes") || (isResultingHashes(value["resulting_hashes"]))) && hasOwn(value, "semantic_diff") && (isSemanticDiff(value["semantic_diff"])) && hasOwn(value, "source_diff") && (isSourceDiff(value["source_diff"])) && hasOwn(value, "status") && (typeof value["status"] === "string" && hasScalarUnicode(value["status"]) && ["invalid", "valid"].includes(value["status"])) && ((value["status"] === "invalid" && !hasOwn(value, "authoring_impact") && !hasOwn(value, "authoring_impact_digest") && !hasOwn(value, "preview_digest") && !hasOwn(value, "preview_id") && !hasOwn(value, "proposed_generation") && !hasOwn(value, "required_authoring_capabilities") && !hasOwn(value, "resulting_hashes") && (isJSONArray(value["conflicts"]) && value["conflicts"].length > 0 || isJSONArray(value["diagnostics"]) && value["diagnostics"].length > 0)) || (value["status"] === "valid" && hasOwn(value, "authoring_impact") && hasOwn(value, "authoring_impact_digest") && hasOwn(value, "preview_digest") && hasOwn(value, "preview_id") && hasOwn(value, "proposed_generation") && hasOwn(value, "required_authoring_capabilities") && hasOwn(value, "resulting_hashes") && isJSONArray(value["conflicts"]) && value["conflicts"].length === 0)) && hasProtocolInvariant(value, "preview_result"));
+  return isProgrammaticWireValue(value, () => matchesSchemaWorkbenchPreviewResult(value));
 }
 
 export function decodeWorkbenchPreviewResult(input: string): WorkbenchPreviewResult {
@@ -7225,12 +7702,10 @@ export function decodeWorkbenchPreviewResult(input: string): WorkbenchPreviewRes
 }
 
 export function encodeWorkbenchPreviewResult(value: WorkbenchPreviewResult): string {
-  validateProgrammaticWireValue(value);
-  if (!isWorkbenchPreviewResult(value)) throw new TypeError("invalid WorkbenchPreviewResult");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isWorkbenchPreviewResult(emitted)) throw new TypeError("encoded value is invalid WorkbenchPreviewResult");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaWorkbenchPreviewResult(owned)) throw new TypeError("invalid WorkbenchPreviewResult");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -7246,8 +7721,12 @@ export interface WorkingDocumentState {
   state_kind: "pack_available" | "pack_unavailable" | "project_available" | "project_unavailable";
 }
 
+function matchesSchemaWorkingDocumentState(value: unknown): value is WorkingDocumentState {
+  return isObject(value) && hasOnlyKeys(value, new Set(["definition_hash", "diagnostics", "graph_hash", "mode", "pack_address", "project_address", "semantic_state", "state_kind"])) && (!hasOwn(value, "definition_hash") || (isDigest(value["definition_hash"]))) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && (!hasOwn(value, "graph_hash") || (isDigest(value["graph_hash"]))) && hasOwn(value, "mode") && (matchesSchemaCompileMode(value["mode"])) && (!hasOwn(value, "pack_address") || (isPackRootAddress(value["pack_address"]))) && (!hasOwn(value, "project_address") || (isProjectRootAddress(value["project_address"]))) && hasOwn(value, "semantic_state") && (typeof value["semantic_state"] === "string" && hasScalarUnicode(value["semantic_state"]) && ["available", "unavailable"].includes(value["semantic_state"])) && hasOwn(value, "state_kind") && (typeof value["state_kind"] === "string" && hasScalarUnicode(value["state_kind"]) && ["pack_available", "pack_unavailable", "project_available", "project_unavailable"].includes(value["state_kind"])) && ((value["state_kind"] === "pack_available" && hasOwn(value, "pack_address") && hasOwn(value, "definition_hash") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project_address") && (!hasOwn(value, "mode") || new Set(["pack"]).has(value["mode"] as string)) && (!hasOwn(value, "semantic_state") || new Set(["available"]).has(value["semantic_state"] as string))) || (value["state_kind"] === "pack_unavailable" && !hasOwn(value, "definition_hash") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project_address") && isJSONArray(value["diagnostics"]) && value["diagnostics"].some((item) => isObject(item) && item["severity"] === "error") && (!hasOwn(value, "mode") || new Set(["pack"]).has(value["mode"] as string)) && (!hasOwn(value, "semantic_state") || new Set(["unavailable"]).has(value["semantic_state"] as string))) || (value["state_kind"] === "project_available" && hasOwn(value, "project_address") && hasOwn(value, "definition_hash") && hasOwn(value, "graph_hash") && !hasOwn(value, "pack_address") && (!hasOwn(value, "mode") || new Set(["project"]).has(value["mode"] as string)) && (!hasOwn(value, "semantic_state") || new Set(["available"]).has(value["semantic_state"] as string))) || (value["state_kind"] === "project_unavailable" && !hasOwn(value, "definition_hash") && !hasOwn(value, "graph_hash") && !hasOwn(value, "pack_address") && isJSONArray(value["diagnostics"]) && value["diagnostics"].some((item) => isObject(item) && item["severity"] === "error") && (!hasOwn(value, "mode") || new Set(["project"]).has(value["mode"] as string)) && (!hasOwn(value, "semantic_state") || new Set(["unavailable"]).has(value["semantic_state"] as string))));
+}
+
 export function isWorkingDocumentState(value: unknown): value is WorkingDocumentState {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["definition_hash", "diagnostics", "graph_hash", "mode", "pack_address", "project_address", "semantic_state", "state_kind"])) && (!hasOwn(value, "definition_hash") || (isDigest(value["definition_hash"]))) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isDiagnostic(item))) && (!hasOwn(value, "graph_hash") || (isDigest(value["graph_hash"]))) && hasOwn(value, "mode") && (isCompileMode(value["mode"])) && (!hasOwn(value, "pack_address") || (isPackRootAddress(value["pack_address"]))) && (!hasOwn(value, "project_address") || (isProjectRootAddress(value["project_address"]))) && hasOwn(value, "semantic_state") && (typeof value["semantic_state"] === "string" && hasScalarUnicode(value["semantic_state"]) && ["available", "unavailable"].includes(value["semantic_state"])) && hasOwn(value, "state_kind") && (typeof value["state_kind"] === "string" && hasScalarUnicode(value["state_kind"]) && ["pack_available", "pack_unavailable", "project_available", "project_unavailable"].includes(value["state_kind"])) && ((value["state_kind"] === "pack_available" && hasOwn(value, "pack_address") && hasOwn(value, "definition_hash") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project_address") && (!hasOwn(value, "mode") || new Set(["pack"]).has(value["mode"] as string)) && (!hasOwn(value, "semantic_state") || new Set(["available"]).has(value["semantic_state"] as string))) || (value["state_kind"] === "pack_unavailable" && !hasOwn(value, "definition_hash") && !hasOwn(value, "graph_hash") && !hasOwn(value, "project_address") && isJSONArray(value["diagnostics"]) && value["diagnostics"].some((item) => isObject(item) && item["severity"] === "error") && (!hasOwn(value, "mode") || new Set(["pack"]).has(value["mode"] as string)) && (!hasOwn(value, "semantic_state") || new Set(["unavailable"]).has(value["semantic_state"] as string))) || (value["state_kind"] === "project_available" && hasOwn(value, "project_address") && hasOwn(value, "definition_hash") && hasOwn(value, "graph_hash") && !hasOwn(value, "pack_address") && (!hasOwn(value, "mode") || new Set(["project"]).has(value["mode"] as string)) && (!hasOwn(value, "semantic_state") || new Set(["available"]).has(value["semantic_state"] as string))) || (value["state_kind"] === "project_unavailable" && !hasOwn(value, "definition_hash") && !hasOwn(value, "graph_hash") && !hasOwn(value, "pack_address") && isJSONArray(value["diagnostics"]) && value["diagnostics"].some((item) => isObject(item) && item["severity"] === "error") && (!hasOwn(value, "mode") || new Set(["project"]).has(value["mode"] as string)) && (!hasOwn(value, "semantic_state") || new Set(["unavailable"]).has(value["semantic_state"] as string)))));
+  return isProgrammaticWireValue(value, () => matchesSchemaWorkingDocumentState(value));
 }
 
 export function decodeWorkingDocumentState(input: string): WorkingDocumentState {
@@ -7258,12 +7737,10 @@ export function decodeWorkingDocumentState(input: string): WorkingDocumentState 
 }
 
 export function encodeWorkingDocumentState(value: WorkingDocumentState): string {
-  validateProgrammaticWireValue(value);
-  if (!isWorkingDocumentState(value)) throw new TypeError("invalid WorkingDocumentState");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isWorkingDocumentState(emitted)) throw new TypeError("encoded value is invalid WorkingDocumentState");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaWorkingDocumentState(owned)) throw new TypeError("invalid WorkingDocumentState");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
