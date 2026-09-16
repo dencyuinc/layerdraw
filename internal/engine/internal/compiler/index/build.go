@@ -27,13 +27,14 @@ func Build(input Input) Result {
 		return Result{Diagnostics: diagnostics, HasErrors: true}
 	}
 	materialized := input.Materialized.Snapshot()
-	sourceMap, semantic, err := buildIndexes(stages, materialized)
+	order := materialize.NewStableAddressOrder(stages.Resolve)
+	sourceMap, semantic, err := buildIndexes(stages, materialized, order)
 	if err != nil {
 		diagnostics = append(diagnostics, indexDiagnostic(err.Error(), stages.Resolve.RootAddress))
 		resolve.SortDiagnostics(diagnostics)
 		return Result{Diagnostics: diagnostics, HasErrors: true}
 	}
-	search, err := buildSearchDocuments(materialized, sourceMap, stages.Resolve)
+	search, err := buildSearchDocuments(materialized, sourceMap, order)
 	if err != nil {
 		diagnostics = append(diagnostics, indexDiagnostic(err.Error(), stages.Resolve.RootAddress))
 		resolve.SortDiagnostics(diagnostics)
@@ -49,7 +50,7 @@ func stagesCoherent(input materialize.Input) bool {
 		!input.Resolve.HasErrors && !input.Definition.HasErrors && !input.Graph.HasErrors && !input.Query.HasErrors && !input.View.HasErrors && !input.View.ExportRecipes.HasErrors
 }
 
-func buildIndexes(input materialize.Input, snapshot materialize.Snapshot) (SourceMapV1, SemanticIndexV1, error) {
+func buildIndexes(input materialize.Input, snapshot materialize.Snapshot, order materialize.StableAddressOrder) (SourceMapV1, SemanticIndexV1, error) {
 	sourceMap := SourceMapV1{SchemaVersion: SourceMapSchemaVersion, Files: []SourceFileRecord{}, Subjects: []SourceSubjectRecord{}, Bindings: []SourceBindingRecord{}, Exports: []ExportBindingRecord{}, Assets: []SourceAssetRecord{}}
 	semantic := SemanticIndexV1{SchemaVersion: SemanticIndexSchemaVersion, Subjects: []SemanticSubject{}, References: []SemanticReference{}, Children: []OwnerMembers{}, Rows: []OwnerMembers{}, Columns: []OwnerMembers{}, TypeMembership: []OwnerMembers{}, LayerMembership: []OwnerMembers{}, ReferenceIDs: []ReferenceIDRecord{}, Adjacency: []AdjacencyRecord{}, Dependencies: []DependencyRecord{}}
 
@@ -152,16 +153,16 @@ func buildIndexes(input materialize.Input, snapshot materialize.Snapshot) (Sourc
 		sourceMap.Assets = append(sourceMap.Assets, SourceAssetRecord{SubjectAddress: entityType.Address, AuthoredPath: materialize.NormalizeString(entityType.Image.AuthoredPath), Locator: entityType.Image.Locator, Origin: module.Origin, ModulePath: module.ModulePath, Range: rangeValue, Digest: asset.ExpectedDigest, MediaType: asset.ExpectedMediaType, ByteLength: asset.ExpectedByteLength})
 	}
 
-	semantic.Children = ownerMembers(owners, publishedKinds, nil, input.Resolve)
-	semantic.Rows = ownerMembers(owners, publishedKinds, map[materialize.SubjectKind]bool{materialize.SubjectEntityRow: true, materialize.SubjectRelationRow: true}, input.Resolve)
-	semantic.Columns = ownerMembers(owners, publishedKinds, map[materialize.SubjectKind]bool{materialize.SubjectEntityTypeColumn: true, materialize.SubjectRelationTypeColumn: true}, input.Resolve)
-	semantic.TypeMembership, semantic.LayerMembership = memberships(snapshot, input.Resolve)
-	semantic.ReferenceIDs = referenceIDs(snapshot, input.Resolve)
-	semantic.Adjacency = adjacency(input)
-	semantic.Dependencies = dependencies(input)
-	sortSourceMap(&sourceMap, input.Resolve)
-	sortSemantic(&semantic, input.Resolve)
-	semantic.ScopedReads = scopedReads(semantic, input.Resolve)
+	semantic.Children = ownerMembers(owners, publishedKinds, nil, order)
+	semantic.Rows = ownerMembers(owners, publishedKinds, map[materialize.SubjectKind]bool{materialize.SubjectEntityRow: true, materialize.SubjectRelationRow: true}, order)
+	semantic.Columns = ownerMembers(owners, publishedKinds, map[materialize.SubjectKind]bool{materialize.SubjectEntityTypeColumn: true, materialize.SubjectRelationTypeColumn: true}, order)
+	semantic.TypeMembership, semantic.LayerMembership = memberships(snapshot, order)
+	semantic.ReferenceIDs = referenceIDs(snapshot, order)
+	semantic.Adjacency = adjacency(input, order)
+	semantic.Dependencies = dependencies(input, order)
+	sortSourceMap(&sourceMap, order)
+	sortSemantic(&semantic, order)
+	semantic.ScopedReads = scopedReads(semantic, order)
 	return sourceMap, semantic, nil
 }
 
@@ -180,7 +181,7 @@ type indexAssetKey struct {
 	Locator string
 }
 
-func ownerMembers(owners map[string]string, kinds map[string]materialize.SubjectKind, included map[materialize.SubjectKind]bool, resolved resolve.Result) []OwnerMembers {
+func ownerMembers(owners map[string]string, kinds map[string]materialize.SubjectKind, included map[materialize.SubjectKind]bool, order materialize.StableAddressOrder) []OwnerMembers {
 	grouped := map[string][]string{}
 	for address, owner := range owners {
 		if included != nil && !included[kinds[address]] {
@@ -190,10 +191,10 @@ func ownerMembers(owners map[string]string, kinds map[string]materialize.Subject
 	}
 	out := make([]OwnerMembers, 0, len(grouped))
 	for owner, addresses := range grouped {
-		sortAddresses(resolved, addresses)
+		order.Sort(addresses)
 		out = append(out, OwnerMembers{OwnerAddress: owner, Addresses: addresses})
 	}
-	sort.Slice(out, func(i, j int) bool { return lessAddress(resolved, out[i].OwnerAddress, out[j].OwnerAddress) })
+	sort.Slice(out, func(i, j int) bool { return order.Less(out[i].OwnerAddress, out[j].OwnerAddress) })
 	return out
 }
 
@@ -206,7 +207,7 @@ func sourceFileLength(files []SourceFileRecord, module ModuleRef) int {
 	return 0
 }
 
-func memberships(snapshot materialize.Snapshot, resolved resolve.Result) ([]OwnerMembers, []OwnerMembers) {
+func memberships(snapshot materialize.Snapshot, order materialize.StableAddressOrder) ([]OwnerMembers, []OwnerMembers) {
 	byType, byLayer := map[string][]string{}, map[string][]string{}
 	if snapshot.Document != nil {
 		for _, entity := range snapshot.Document.Entities {
@@ -217,10 +218,10 @@ func memberships(snapshot materialize.Snapshot, resolved resolve.Result) ([]Owne
 			byType[relation.TypeAddress] = append(byType[relation.TypeAddress], relation.Address)
 		}
 	}
-	return groupedMembers(byType, resolved), groupedMembers(byLayer, resolved)
+	return groupedMembers(byType, order), groupedMembers(byLayer, order)
 }
 
-func referenceIDs(snapshot materialize.Snapshot, resolved resolve.Result) []ReferenceIDRecord {
+func referenceIDs(snapshot materialize.Snapshot, order materialize.StableAddressOrder) []ReferenceIDRecord {
 	byID := map[string][]string{}
 	if snapshot.Document != nil {
 		for _, reference := range snapshot.Document.References {
@@ -234,14 +235,14 @@ func referenceIDs(snapshot materialize.Snapshot, resolved resolve.Result) []Refe
 	}
 	out := make([]ReferenceIDRecord, 0, len(byID))
 	for id, addresses := range byID {
-		sortAddresses(resolved, addresses)
+		order.Sort(addresses)
 		out = append(out, ReferenceIDRecord{ID: id, Addresses: addresses})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
-func adjacency(input materialize.Input) []AdjacencyRecord {
+func adjacency(input materialize.Input, order materialize.StableAddressOrder) []AdjacencyRecord {
 	if input.Graph.Graph == nil {
 		return []AdjacencyRecord{}
 	}
@@ -256,14 +257,14 @@ func adjacency(input materialize.Input) []AdjacencyRecord {
 	for _, entity := range input.Graph.Graph.Entities {
 		outgoingAddresses := emptySlice(outgoing[entity.Address])
 		incomingAddresses := emptySlice(incoming[entity.Address])
-		sortAddresses(input.Resolve, outgoingAddresses)
-		sortAddresses(input.Resolve, incomingAddresses)
+		order.Sort(outgoingAddresses)
+		order.Sort(incomingAddresses)
 		out = append(out, AdjacencyRecord{EntityAddress: entity.Address, Outgoing: outgoingAddresses, Incoming: incomingAddresses})
 	}
 	return out
 }
 
-func dependencies(input materialize.Input) []DependencyRecord {
+func dependencies(input materialize.Input, order materialize.StableAddressOrder) []DependencyRecord {
 	out := []DependencyRecord{}
 	for _, recipe := range input.Query.Recipes {
 		d := recipe.Dependencies
@@ -275,14 +276,14 @@ func dependencies(input materialize.Input) []DependencyRecord {
 	}
 	for index := range out {
 		for _, addresses := range [][]string{out[index].QueryAddresses, out[index].ParameterAddresses, out[index].LayerAddresses, out[index].EntityTypeAddresses, out[index].RelationTypeAddresses, out[index].EntityAddresses, out[index].RelationAddresses, out[index].ColumnAddresses, out[index].ExportAddresses} {
-			sortAddresses(input.Resolve, addresses)
+			order.Sort(addresses)
 		}
 		out[index].StateReads = query.CanonicalStateReads(out[index].StateReads)
 	}
 	return out
 }
 
-func scopedReads(semantic SemanticIndexV1, resolved resolve.Result) ScopedReadIndexes {
+func scopedReads(semantic SemanticIndexV1, order materialize.StableAddressOrder) ScopedReadIndexes {
 	byModule := map[ModuleRef][]string{}
 	byKind := map[materialize.SubjectKind][]string{}
 	for _, subject := range semantic.Subjects {
@@ -293,11 +294,11 @@ func scopedReads(semantic SemanticIndexV1, resolved resolve.Result) ScopedReadIn
 	}
 	out := ScopedReadIndexes{ChildrenByOwner: deepClone(semantic.Children), RowsByOwner: deepClone(semantic.Rows), ColumnsByOwner: deepClone(semantic.Columns), MembersByType: deepClone(semantic.TypeMembership), MembersByLayer: deepClone(semantic.LayerMembership), ReferencesByID: deepClone(semantic.ReferenceIDs), OutgoingByEntity: []OwnerMembers{}, IncomingByEntity: []OwnerMembers{}, UsagesByTarget: []OwnerMembers{}, QueriesByDependency: []OwnerMembers{}, ViewsByDependency: []OwnerMembers{}}
 	for module, addresses := range byModule {
-		sortAddresses(resolved, addresses)
+		order.Sort(addresses)
 		out.ByModule = append(out.ByModule, ScopeAddresses{Module: module, Addresses: addresses})
 	}
 	for kind, addresses := range byKind {
-		sortAddresses(resolved, addresses)
+		order.Sort(addresses)
 		out.ByKind = append(out.ByKind, KindAddresses{Kind: kind, Addresses: addresses})
 	}
 	for _, item := range semantic.Adjacency {
@@ -318,9 +319,9 @@ func scopedReads(semantic SemanticIndexV1, resolved resolve.Result) ScopedReadIn
 			}
 		}
 	}
-	out.UsagesByTarget = groupedMembers(usage, resolved)
-	out.QueriesByDependency = groupedMembers(queries, resolved)
-	out.ViewsByDependency = groupedMembers(views, resolved)
+	out.UsagesByTarget = groupedMembers(usage, order)
+	out.QueriesByDependency = groupedMembers(queries, order)
+	out.ViewsByDependency = groupedMembers(views, order)
 	sort.Slice(out.ByModule, func(i, j int) bool {
 		return lessModule(out.ByModule[i].Module.Origin, out.ByModule[i].Module.ModulePath, out.ByModule[j].Module.Origin, out.ByModule[j].Module.ModulePath)
 	})
@@ -336,25 +337,25 @@ func allDependencies(value DependencyRecord) []string {
 	return out
 }
 
-func groupedMembers(values map[string][]string, resolved resolve.Result) []OwnerMembers {
+func groupedMembers(values map[string][]string, order materialize.StableAddressOrder) []OwnerMembers {
 	out := make([]OwnerMembers, 0, len(values))
 	for owner, addresses := range values {
 		addresses = dedupe(addresses)
-		sortAddresses(resolved, addresses)
+		order.Sort(addresses)
 		out = append(out, OwnerMembers{OwnerAddress: owner, Addresses: addresses})
 	}
-	sort.Slice(out, func(i, j int) bool { return lessAddress(resolved, out[i].OwnerAddress, out[j].OwnerAddress) })
+	sort.Slice(out, func(i, j int) bool { return order.Less(out[i].OwnerAddress, out[j].OwnerAddress) })
 	return out
 }
 
-func sortSourceMap(value *SourceMapV1, resolved resolve.Result) {
+func sortSourceMap(value *SourceMapV1, order materialize.StableAddressOrder) {
 	sort.Slice(value.Subjects, func(i, j int) bool {
-		return lessAddress(resolved, value.Subjects[i].Address, value.Subjects[j].Address)
+		return order.Less(value.Subjects[i].Address, value.Subjects[j].Address)
 	})
 	sort.Slice(value.Bindings, func(i, j int) bool {
 		a, b := value.Bindings[i], value.Bindings[j]
 		if a.SourceAddress != b.SourceAddress {
-			return lessAddress(resolved, a.SourceAddress, b.SourceAddress)
+			return order.Less(a.SourceAddress, b.SourceAddress)
 		}
 		if a.Range.StartByte != b.Range.StartByte {
 			return a.Range.StartByte < b.Range.StartByte
@@ -363,13 +364,13 @@ func sortSourceMap(value *SourceMapV1, resolved resolve.Result) {
 			return a.Range.EndByte < b.Range.EndByte
 		}
 		if a.TargetAddress != b.TargetAddress {
-			return lessAddress(resolved, a.TargetAddress, b.TargetAddress)
+			return order.Less(a.TargetAddress, b.TargetAddress)
 		}
 		if a.TargetKind != b.TargetKind {
 			return subjectKindRank(a.TargetKind) < subjectKindRank(b.TargetKind)
 		}
 		if a.TargetOwnerAddress != b.TargetOwnerAddress {
-			return lessAddress(resolved, a.TargetOwnerAddress, b.TargetOwnerAddress)
+			return order.Less(a.TargetOwnerAddress, b.TargetOwnerAddress)
 		}
 		return a.Via < b.Via
 	})
@@ -391,26 +392,26 @@ func sortSourceMap(value *SourceMapV1, resolved resolve.Result) {
 			return a.PublicName < b.PublicName
 		}
 		if a.TargetAddress != b.TargetAddress {
-			return lessAddress(resolved, a.TargetAddress, b.TargetAddress)
+			return order.Less(a.TargetAddress, b.TargetAddress)
 		}
 		return !a.ReExport && b.ReExport
 	})
 	sort.Slice(value.Assets, func(i, j int) bool {
 		if value.Assets[i].SubjectAddress != value.Assets[j].SubjectAddress {
-			return lessAddress(resolved, value.Assets[i].SubjectAddress, value.Assets[j].SubjectAddress)
+			return order.Less(value.Assets[i].SubjectAddress, value.Assets[j].SubjectAddress)
 		}
 		return value.Assets[i].Locator < value.Assets[j].Locator
 	})
 }
 
-func sortSemantic(value *SemanticIndexV1, resolved resolve.Result) {
+func sortSemantic(value *SemanticIndexV1, order materialize.StableAddressOrder) {
 	sort.Slice(value.Subjects, func(i, j int) bool {
-		return lessAddress(resolved, value.Subjects[i].Address, value.Subjects[j].Address)
+		return order.Less(value.Subjects[i].Address, value.Subjects[j].Address)
 	})
 	sort.Slice(value.References, func(i, j int) bool {
 		a, b := value.References[i], value.References[j]
 		if a.SourceAddress != b.SourceAddress {
-			return lessAddress(resolved, a.SourceAddress, b.SourceAddress)
+			return order.Less(a.SourceAddress, b.SourceAddress)
 		}
 		if a.Range.StartByte != b.Range.StartByte {
 			return a.Range.StartByte < b.Range.StartByte
@@ -419,7 +420,7 @@ func sortSemantic(value *SemanticIndexV1, resolved resolve.Result) {
 			return a.Range.EndByte < b.Range.EndByte
 		}
 		if a.TargetAddress != b.TargetAddress {
-			return lessAddress(resolved, a.TargetAddress, b.TargetAddress)
+			return order.Less(a.TargetAddress, b.TargetAddress)
 		}
 		if a.TargetKind != b.TargetKind {
 			return subjectKindRank(a.TargetKind) < subjectKindRank(b.TargetKind)
@@ -427,11 +428,11 @@ func sortSemantic(value *SemanticIndexV1, resolved resolve.Result) {
 		return a.Via < b.Via
 	})
 	sort.Slice(value.Adjacency, func(i, j int) bool {
-		return lessAddress(resolved, value.Adjacency[i].EntityAddress, value.Adjacency[j].EntityAddress)
+		return order.Less(value.Adjacency[i].EntityAddress, value.Adjacency[j].EntityAddress)
 	})
 	sort.Slice(value.Dependencies, func(i, j int) bool {
 		if value.Dependencies[i].SubjectAddress != value.Dependencies[j].SubjectAddress {
-			return lessAddress(resolved, value.Dependencies[i].SubjectAddress, value.Dependencies[j].SubjectAddress)
+			return order.Less(value.Dependencies[i].SubjectAddress, value.Dependencies[j].SubjectAddress)
 		}
 		return value.Dependencies[i].Kind < value.Dependencies[j].Kind
 	})
@@ -536,13 +537,6 @@ func dedupe(values []string) []string {
 		}
 	}
 	return out
-}
-
-func sortAddresses(result resolve.Result, values []string) {
-	sort.SliceStable(values, func(i, j int) bool { return lessAddress(result, values[i], values[j]) })
-}
-func lessAddress(result resolve.Result, left, right string) bool {
-	return materialize.LessStableAddress(result, left, right)
 }
 
 func subjectKindRank(kind materialize.SubjectKind) int {

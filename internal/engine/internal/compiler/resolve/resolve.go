@@ -12,18 +12,20 @@ import (
 )
 
 type resolver struct {
-	input           Input
-	project         Origin
-	rootCanonicalID string
-	packs           map[string]packInfo
-	aliases         map[string]string
-	modules         map[ModuleKey]*moduleState
-	visiting        map[ModuleKey]bool
-	diagnostics     []Diagnostic
-	syntaxInvalid   bool
-	invalidInput    bool
-	symbols         map[string]DeclarationSymbol
-	selected        map[string]bool
+	input            Input
+	project          Origin
+	rootCanonicalID  string
+	packs            map[string]packInfo
+	aliases          map[string]string
+	modules          map[ModuleKey]*moduleState
+	visiting         map[ModuleKey]bool
+	diagnostics      []Diagnostic
+	syntaxInvalid    bool
+	invalidInput     bool
+	symbols          map[string]DeclarationSymbol
+	selected         map[string]bool
+	childrenByOwner  map[string][]DeclarationSymbol
+	bindingsBySource map[ModuleKey]map[string][]SourceBinding
 }
 
 type packInfo struct {
@@ -1640,6 +1642,7 @@ func moveScope(m Move) string {
 }
 
 func (r *resolver) selectProject(entry *moduleState) {
+	r.prepareSelection()
 	for _, decl := range entry.localByAddress {
 		if isTopKind(decl.Kind) || decl.Kind == KindProject {
 			r.selectDecl(decl)
@@ -1670,6 +1673,7 @@ func (r *resolver) selectProject(entry *moduleState) {
 }
 
 func (r *resolver) selectPack(entry *moduleState) {
+	r.prepareSelection()
 	if root, ok := entry.localByAddress[addressOf(StableSymbol{Origin: entry.key.Origin})]; ok {
 		r.selectDecl(root)
 	}
@@ -1693,39 +1697,46 @@ func (r *resolver) selectDecl(decl DeclarationSymbol) {
 	if decl.Symbol.Origin.Kind == OriginPack {
 		r.selected[addressOf(StableSymbol{Origin: decl.Symbol.Origin})] = true
 	}
-	for _, child := range r.childrenOf(decl.Symbol) {
+	for _, child := range r.childrenByOwner[decl.Address] {
 		r.selectDecl(child)
 	}
-	st := r.modules[decl.Module]
-	if st != nil {
-		for _, b := range st.bindings {
-			if b.Module == decl.Module && b.SourceAddress == decl.Address {
-				if target, ok := r.symbols[b.TargetAddress]; ok {
-					r.selectDecl(target)
-					if target.Owner != nil {
-						if owner, exists := r.symbols[addressOf(*target.Owner)]; exists {
-							r.selectDecl(owner)
-						}
-					}
+	for _, b := range r.bindingsBySource[decl.Module][decl.Address] {
+		if target, ok := r.symbols[b.TargetAddress]; ok {
+			r.selectDecl(target)
+			if target.Owner != nil {
+				if owner, exists := r.symbols[addressOf(*target.Owner)]; exists {
+					r.selectDecl(owner)
 				}
 			}
 		}
 	}
 }
 
-func (r *resolver) childrenOf(owner StableSymbol) []DeclarationSymbol {
-	if len(owner.Path) == 0 {
-		return nil
-	}
-	var out []DeclarationSymbol
-	prefix := addressOf(owner) + ":"
-	for addr, decl := range r.symbols {
-		if strings.HasPrefix(addr, prefix) && len(decl.Symbol.Path) == len(owner.Path)+1 {
-			out = append(out, decl)
+// Selection starts only after module bindings have been finalized. Index the
+// immutable closure once, instead of scanning all symbols and bindings for
+// each selected declaration. Roots deliberately do not select all children.
+func (r *resolver) prepareSelection() {
+	r.childrenByOwner = make(map[string][]DeclarationSymbol)
+	for _, decl := range r.symbols {
+		if len(decl.Symbol.Path) > 1 {
+			owner := StableSymbol{Origin: decl.Symbol.Origin, Path: decl.Symbol.Path[:len(decl.Symbol.Path)-1]}
+			address := addressOf(owner)
+			r.childrenByOwner[address] = append(r.childrenByOwner[address], decl)
 		}
 	}
-	sortDeclarations(out)
-	return out
+	for _, children := range r.childrenByOwner {
+		sortDeclarations(children)
+	}
+	r.bindingsBySource = make(map[ModuleKey]map[string][]SourceBinding, len(r.modules))
+	for key, st := range r.modules {
+		bySource := make(map[string][]SourceBinding)
+		for _, binding := range st.bindings {
+			if binding.Module == key {
+				bySource[binding.SourceAddress] = append(bySource[binding.SourceAddress], binding)
+			}
+		}
+		r.bindingsBySource[key] = bySource
+	}
 }
 
 func (r *resolver) result() Result {

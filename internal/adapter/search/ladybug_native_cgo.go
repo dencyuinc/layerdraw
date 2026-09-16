@@ -156,18 +156,8 @@ func (s *GoLadybugSession) ApplyIndex(ctx context.Context, statements []LadybugS
 			return err
 		}
 	}
-	for _, statement := range statements {
-		if statement.Query == "" {
-			return ErrInvalidPlan
-		}
-		if len(statement.Parameters) == 0 {
-			err = s.controlLocked(statement.Query)
-		} else {
-			err = s.executePreparedLocked(ctx, statement, limits, sink)
-		}
-		if err != nil {
-			return err
-		}
+	if err = s.applyIndexStatementsLocked(ctx, statements, limits, sink); err != nil {
+		return err
 	}
 	// Bind catalog, schema, index metadata, backend version, and actual ordered
 	// table content to the durable evidence row in one database transaction.
@@ -203,6 +193,59 @@ func (s *GoLadybugSession) ApplyIndex(ctx context.Context, statements []LadybugS
 	}
 	committed = true
 	return nil
+}
+
+// Engine index plans use parameterized statements for document/graph writes
+// and parameter-free statements for schema/extension operations. Commit each
+// contiguous write group once; extension DDL must remain in auto-transaction
+// mode. Evidence has already been invalidated before this helper is called.
+func (s *GoLadybugSession) applyIndexStatementsLocked(ctx context.Context, statements []LadybugStatement, limits port.ExecutionLimits, sink port.RowSink) error {
+	transaction := false
+	defer func() {
+		if transaction {
+			_ = s.controlLocked("ROLLBACK")
+		}
+	}()
+	commit := func() error {
+		if !transaction {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.controlLocked("COMMIT"); err != nil {
+			return err
+		}
+		transaction = false
+		return nil
+	}
+	for _, statement := range statements {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if statement.Query == "" {
+			return ErrInvalidPlan
+		}
+		if len(statement.Parameters) == 0 {
+			if err := commit(); err != nil {
+				return err
+			}
+			if err := s.controlLocked(statement.Query); err != nil {
+				return err
+			}
+			continue
+		}
+		if !transaction {
+			if err := s.controlLocked("BEGIN TRANSACTION"); err != nil {
+				return err
+			}
+			transaction = true
+		}
+		if err := s.executePreparedLocked(ctx, statement, limits, sink); err != nil {
+			return err
+		}
+	}
+	return commit()
 }
 
 func (s *GoLadybugSession) InspectIndex(ctx context.Context, ref port.PhysicalIndexRef) (err error) {

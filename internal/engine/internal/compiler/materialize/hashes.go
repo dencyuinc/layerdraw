@@ -355,8 +355,9 @@ type hashNode struct {
 }
 
 func computeHashes(input Input, document *NormalizedDocument, pack *NormalizedPackArtifact) (Hashes, error) {
+	order := NewStableAddressOrder(input.Resolve)
 	out := Hashes{generation: input.Resolve.Generation(), OwnSubjects: []SubjectHash{}, Subtrees: []SubtreeHash{}, ChildSets: []ChildSetHash{}}
-	definitionPayload, graphPayload, nodes, err := buildHashPayloads(input, document, pack)
+	definitionPayload, graphPayload, nodes, err := buildHashPayloads(input, document, pack, order)
 	if err != nil {
 		return Hashes{}, err
 	}
@@ -402,7 +403,7 @@ func computeHashes(input Input, document *NormalizedDocument, pack *NormalizedPa
 					addresses = append(addresses, childAddress)
 				}
 			}
-			sortAddresses(input.Resolve, addresses)
+			order.Sort(addresses)
 			payload := childSetPayload{OwnerAddress: node.address, ChildKind: kind, ChildAddresses: addresses}
 			hash, hashErr := SemanticHash(DomainChildSet, payload)
 			if hashErr != nil {
@@ -412,21 +413,21 @@ func computeHashes(input Input, document *NormalizedDocument, pack *NormalizedPa
 		}
 	}
 	sort.Slice(out.OwnSubjects, func(i, j int) bool {
-		return lessAddress(input.Resolve, out.OwnSubjects[i].Address, out.OwnSubjects[j].Address)
+		return order.Less(out.OwnSubjects[i].Address, out.OwnSubjects[j].Address)
 	})
 	sort.Slice(out.Subtrees, func(i, j int) bool {
-		return lessAddress(input.Resolve, out.Subtrees[i].OwnerAddress, out.Subtrees[j].OwnerAddress)
+		return order.Less(out.Subtrees[i].OwnerAddress, out.Subtrees[j].OwnerAddress)
 	})
 	sort.Slice(out.ChildSets, func(i, j int) bool {
 		if out.ChildSets[i].OwnerAddress != out.ChildSets[j].OwnerAddress {
-			return lessAddress(input.Resolve, out.ChildSets[i].OwnerAddress, out.ChildSets[j].OwnerAddress)
+			return order.Less(out.ChildSets[i].OwnerAddress, out.ChildSets[j].OwnerAddress)
 		}
 		return kindRank(out.ChildSets[i].ChildKind) < kindRank(out.ChildSets[j].ChildKind)
 	})
 	return out, nil
 }
 
-func buildHashPayloads(input Input, document *NormalizedDocument, pack *NormalizedPackArtifact) (any, *graphHashPayload, []*hashNode, error) {
+func buildHashPayloads(input Input, document *NormalizedDocument, pack *NormalizedPackArtifact, order StableAddressOrder) (any, *graphHashPayload, []*hashNode, error) {
 	if (document == nil) == (pack == nil) {
 		return nil, nil, nil, fmt.Errorf("hashing requires exactly one normalized envelope")
 	}
@@ -440,7 +441,7 @@ func buildHashPayloads(input Input, document *NormalizedDocument, pack *Normaliz
 	for _, dependency := range dependencies {
 		origins = append(origins, dependencyOrigin{Address: dependency.Address, CanonicalID: dependency.CanonicalID})
 	}
-	sort.Slice(origins, func(i, j int) bool { return lessAddress(input.Resolve, origins[i].Address, origins[j].Address) })
+	sort.Slice(origins, func(i, j int) bool { return order.Less(origins[i].Address, origins[j].Address) })
 	var graphPayload *graphHashPayload
 	var definitionPayload any
 	if document != nil {
@@ -450,7 +451,7 @@ func buildHashPayloads(input Input, document *NormalizedDocument, pack *Normaliz
 	} else {
 		definitionPayload = packDefinitionHashPayload{Pack: pack.Pack, DependencyOrigins: origins, EntityTypes: pack.EntityTypes, RelationTypes: pack.RelationTypes, Queries: pack.Queries, Views: pack.Views, References: pack.References, Assets: pack.Assets, Identity: pack.Identity}
 	}
-	nodes := buildHashNodes(input, document, pack)
+	nodes := buildHashNodes(input, document, pack, order)
 	return definitionPayload, graphPayload, nodes, nil
 }
 
@@ -479,7 +480,7 @@ func graphColumns(values []Column) []graphColumn {
 	return out
 }
 
-func buildHashNodes(input Input, document *NormalizedDocument, pack *NormalizedPackArtifact) []*hashNode {
+func buildHashNodes(input Input, document *NormalizedDocument, pack *NormalizedPackArtifact, order StableAddressOrder) []*hashNode {
 	nodes := []*hashNode{}
 	byAddress := map[string]*hashNode{}
 	add := func(node *hashNode) { nodes = append(nodes, node); byAddress[node.address] = node }
@@ -509,7 +510,7 @@ func buildHashNodes(input Input, document *NormalizedDocument, pack *NormalizedP
 		}
 	}
 	for _, node := range nodes {
-		sortAddresses(input.Resolve, node.children)
+		order.Sort(node.children)
 	}
 	return nodes
 }
@@ -739,9 +740,6 @@ func rootMoveClosure(values []MoveResolution, root string) []MoveResolution {
 	return out
 }
 
-func sortAddresses(result resolve.Result, values []string) {
-	sort.SliceStable(values, func(i, j int) bool { return lessAddress(result, values[i], values[j]) })
-}
 func lessAddress(result resolve.Result, left, right string) bool {
 	return LessStableAddress(result, left, right)
 }
@@ -749,18 +747,37 @@ func lessAddress(result resolve.Result, left, right string) bool {
 // LessStableAddress compares generated StableAddresses using the normative
 // structured StableSymbol order, including roots that have no declaration.
 func LessStableAddress(result resolve.Result, left, right string) bool {
-	symbols := map[string]resolve.StableSymbol{}
+	return NewStableAddressOrder(result).Less(left, right)
+}
+
+// StableAddressOrder prepares the declaration lookup once per compiler stage,
+// rather than rebuilding it for every comparison. It is read-only after creation
+// and is not retained across compilations or exposed in canonical output.
+type StableAddressOrder struct {
+	symbols map[string]resolve.StableSymbol
+}
+
+func NewStableAddressOrder(result resolve.Result) StableAddressOrder {
+	symbols := make(map[string]resolve.StableSymbol, len(result.Candidates)+len(result.Declarations))
 	for _, declaration := range result.Candidates {
 		symbols[declaration.Address] = declaration.Symbol
 	}
 	for _, declaration := range result.Declarations {
 		symbols[declaration.Address] = declaration.Symbol
 	}
-	a, aOK := symbols[left]
+	return StableAddressOrder{symbols: symbols}
+}
+
+func (order StableAddressOrder) Sort(values []string) {
+	sort.SliceStable(values, func(i, j int) bool { return order.Less(values[i], values[j]) })
+}
+
+func (order StableAddressOrder) Less(left, right string) bool {
+	a, aOK := order.symbols[left]
 	if !aOK {
 		a, aOK = stableSymbolFromAddress(left)
 	}
-	b, bOK := symbols[right]
+	b, bOK := order.symbols[right]
 	if !bOK {
 		b, bOK = stableSymbolFromAddress(right)
 	}

@@ -6,6 +6,7 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,6 +26,60 @@ func TestGoLadybugFTSReturnsIndexedRows(t *testing.T) {
 	err := session.ExecutePrepared(context.Background(), LadybugStatement{Query: "CALL QUERY_FTS_INDEX('SearchDoc', 'search_doc_fts', 'layer') RETURN node.id AS id, score AS score"}, port.ExecutionLimits{MaxRows: 10, MaxBytes: 4096}, rows)
 	if err != nil || len(rows.rows) != 1 || rows.rows[0]["id"].Value != "doc-1" {
 		t.Fatalf("rows=%v err=%v", rows.rows, err)
+	}
+}
+
+func TestGoLadybugBatchedIndexWritesRemainVerifiedAfterRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batch.lbug")
+	session := openFTSSession(t, path)
+	statements := []LadybugStatement{{Query: "CREATE NODE TABLE SearchDoc (id STRING, body STRING, PRIMARY KEY(id))"}}
+	for i := range 100 {
+		statements = append(statements, LadybugStatement{Query: "CREATE (n:SearchDoc {id: $id, body: $body})", Parameters: map[string]port.RawValue{
+			"id": {Kind: "string", Value: fmt.Sprint(i)}, "body": {Kind: "string", Value: "layer draw"},
+		}})
+	}
+	statements = append(statements, LadybugStatement{Query: testCreateFTS})
+	ref := port.PhysicalIndexRef{IdentityDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111", BackendVersion: GoLadybugBackendVersion}
+	err := session.ApplyIndex(context.Background(), statements, &ref, []LadybugIndexEvidence{testFTSEvidence()}, port.ExecutionLimits{MaxRows: 200, MaxBytes: 65536}, discardRowSink{})
+	session.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session = openFTSSession(t, path)
+	defer session.Close()
+	if err := session.InspectIndex(context.Background(), ref); err != nil {
+		t.Fatalf("restarted batch index is not valid: %v", err)
+	}
+	rows, err := session.queryLocked("CALL QUERY_FTS_INDEX('SearchDoc', 'search_doc_fts', 'layer') RETURN node.id AS id")
+	if err != nil || len(rows) != 100 {
+		t.Fatalf("search rows=%d err=%v", len(rows), err)
+	}
+}
+
+func TestGoLadybugFailedWriteBatchRollsBackAndInvalidatesEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "failed-batch.lbug")
+	ref := buildPhysicalFTSIndex(t, path)
+	session := openFTSSession(t, path)
+	defer session.Close()
+	statement := LadybugStatement{Query: "CREATE (n:SearchDoc {id: $id, body: $body})", Parameters: map[string]port.RawValue{
+		"id": {Kind: "string", Value: "new"}, "body": {Kind: "string", Value: "must roll back"},
+	}}
+	// The second insert violates the primary key after the first has run.
+	err := session.ApplyIndex(context.Background(), []LadybugStatement{statement, statement, {Query: testCreateFTS}}, &ref, []LadybugIndexEvidence{testFTSEvidence()}, port.ExecutionLimits{MaxRows: 16, MaxBytes: 4096}, discardRowSink{})
+	if err == nil {
+		t.Fatal("duplicate write unexpectedly succeeded")
+	}
+	rows, err := session.queryLocked("MATCH (n:SearchDoc) WHERE n.id = 'new' RETURN n.id AS id")
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("failed batch leaked writes: rows=%v err=%v", rows, err)
+	}
+	if err := session.InspectIndex(context.Background(), ref); !errors.Is(err, ErrPhysicalIndexMissing) {
+		t.Fatalf("failed batch left trusted evidence: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := session.applyIndexStatementsLocked(ctx, []LadybugStatement{statement}, port.ExecutionLimits{}, discardRowSink{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled batch was executed: %v", err)
 	}
 }
 
