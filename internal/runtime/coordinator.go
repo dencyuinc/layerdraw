@@ -508,8 +508,8 @@ func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.R
 		phase = runtimeprotocol.RecoveryPhaseExternalPending
 		receipt, externalErr := p.External.Publish(context.WithoutCancel(ctx), port.PublishExternalFileInput{Scope: in.Session.Scope, OperationID: in.OperationID, IdempotencyKey: in.IdempotencyKey, StageID: externalStage.StageID, ExpectedProviderVersion: *expectedExternal})
 		if externalErr != nil {
-			c.checkpointPublished(in, s, prepared, revision, s.state)
 			if !errors.Is(externalErr, port.ErrConflict) {
+				c.checkpointPublished(in, s, prepared, revision, s.state)
 				return c.externalPendingResult(in, revision, *externalStage, decision, prepared.AuthoringImpact), nil
 			}
 			failure := runtimeprotocol.ExternalMaterializationFailureConflict
@@ -557,6 +557,11 @@ func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.R
 	if _, rejection := c.advance(context.WithoutCancel(ctx), in, runtimeprotocol.RecoveryPhaseAuditPending, runtimeprotocol.RecoveryPhaseOutboxReady, &revision, &decision); rejection != nil {
 		status = committedStateStaleStatus()
 	}
+	// A rejected or evicted candidate cannot roll back the published revision.
+	// Persist the refresh-required result so retries report the same outcome.
+	if !c.checkpointPublished(in, s, prepared, revision, stateHead) {
+		status = committedStateStaleStatus()
+	}
 	resultStateVersion := &stateVersion
 	if status == runtimeprotocol.OperationResultStatusCommittedExternalFailed {
 		resultStateVersion = nil
@@ -576,7 +581,6 @@ func (c *Coordinator) afterPublication(ctx context.Context, in runtimeprotocol.R
 	// candidate is removed. A crash between these steps leaves an orphan that
 	// the local recovery driver can safely garbage-collect.
 	_ = p.Documents.AbortStagedRevision(context.WithoutCancel(ctx), port.AbortStagedRevisionInput{Scope: in.Session.Scope, StageID: stageID})
-	c.checkpointPublished(in, s, prepared, revision, stateHead)
 	commitResult.OperationResult = result
 	return commitResult, nil
 }
@@ -1150,21 +1154,22 @@ func (c *Coordinator) externalPendingResult(in runtimeprotocol.RuntimeCommitInpu
 	return runtimeprotocol.RuntimeCommitResult{OperationResult: result, PreviewEvaluation: &evaluation}
 }
 
-func (c *Coordinator) checkpointPublished(in runtimeprotocol.RuntimeCommitInput, previous sessionState, prepared port.PreparedRevision, revision runtimeprotocol.CommittedRevisionRef, state port.StateHead) {
+func (c *Coordinator) checkpointPublished(in runtimeprotocol.RuntimeCommitInput, previous sessionState, prepared port.PreparedRevision, revision runtimeprotocol.CommittedRevisionRef, state port.StateHead) bool {
 	working, err := c.runtime.config.Ports.Workbench.Checkpoint(context.Background(), port.CheckpointWorkingDocumentInput{Document: previous.working, Prepared: prepared, Revision: revision})
-	if err != nil {
-		return
+	if err != nil || !validWorkingDocument(working, revision) {
+		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	current := c.sessions[in.Session.RuntimeSessionID]
 	if current == nil || current.binding.CurrentRevision.RevisionID != previous.binding.CurrentRevision.RevisionID {
-		return
+		return false
 	}
 	current.binding.CurrentRevision = revision
 	current.working = working
 	current.state = state
 	current.state.SubjectHashes = cloneSubjectHashes(state.SubjectHashes)
+	return true
 }
 
 func committedStateStaleStatus() runtimeprotocol.OperationResultStatus {

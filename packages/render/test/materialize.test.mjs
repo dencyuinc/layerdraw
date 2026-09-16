@@ -183,6 +183,16 @@ function primitiveCounts(data) {
   );
 }
 
+test("materialization owns input before awaiting the render hash", async () => {
+  const request = input("diagram");
+  const expected = await materializeRenderData(structuredClone(request));
+  const pending = materializeRenderData(request);
+  request.view_data.diagram.occurrences.length = 0;
+  request.layout.item_width = 777;
+  request.resolved_fonts[0].default_advance = 1;
+  assert.deepEqual(await pending, expected);
+});
+
 async function jsonDigest(value) {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
   const hashed = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));

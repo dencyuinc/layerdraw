@@ -13,7 +13,7 @@ fi
 version="$VERSION"
 
 env \
-  GOTOOLCHAIN=go1.26.5 \
+  GOTOOLCHAIN=go1.26.6 \
   GOENV=off \
   GOWORK=off \
   GOEXPERIMENT= \

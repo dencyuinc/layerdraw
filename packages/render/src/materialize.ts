@@ -3,7 +3,6 @@
 import { type Digest, type JsonValue } from "@layerdraw/protocol/common";
 import {
   encodeViewData,
-  isViewData,
   type ContextAttribute,
   type ContextFact,
   type DiagramOccurrence,
@@ -248,11 +247,14 @@ class BuildContext {
 export async function materializeRenderData(
   input: RenderMaterializationInput
 ): Promise<RenderMaterializationResult> {
-  const diagnostics = validateInput(input);
+  const { diagnostics, viewDataCanonical } = validateInput(input);
   if (diagnostics.length > 0) return { ok: false, diagnostics };
   try {
+    // Own the value before the hash await: layout and hashing must observe the
+    // same input, even if the caller mutates its object while hashing runs.
+    input = structuredClone(input);
     preflight(input);
-    const renderInputHash = await hashMaterializationInput(input);
+    const renderInputHash = await hashPreparedInput(input, viewDataCanonical!);
     const selectedFamily = input.recipe.font_policy.families[0]!;
     const context = new BuildContext(
       input,
@@ -282,9 +284,18 @@ export async function materializeRenderData(
 export async function hashMaterializationInput(
   input: RenderMaterializationInput
 ): Promise<Digest> {
+  return hashPreparedInput(input, encodeViewData(input.view_data));
+}
+
+// Only the public entrypoints validate/encode ViewData. This private helper
+// consumes their canonical result without crossing a second public boundary.
+async function hashPreparedInput(
+  input: RenderMaterializationInput,
+  viewDataCanonical: string
+): Promise<Digest> {
   const payload = {
     view_data_hash: input.view_data_hash,
-    view_data_canonical: encodeViewData(input.view_data),
+    view_data_canonical: viewDataCanonical,
     recipe: input.recipe,
     resolved_profile: input.resolved_profile,
     resolved_fonts: input.resolved_fonts,
@@ -303,10 +314,10 @@ export async function hashMaterializationInput(
 
 function validateInput(
   input: RenderMaterializationInput
-): RenderMaterializationDiagnostic[] {
+): { diagnostics: RenderMaterializationDiagnostic[]; viewDataCanonical?: string } {
   const diagnostics: RenderMaterializationDiagnostic[] = [];
   if (input === null || typeof input !== "object")
-    return [diagnostic("render.input_invalid", { field: "input" })];
+    return { diagnostics: [diagnostic("render.input_invalid", { field: "input" })] };
   if (
     !closedObject(input, [
       "view_data",
@@ -319,7 +330,7 @@ function validateInput(
       "limits",
     ])
   )
-    return [diagnostic("render.input_invalid", { field: "input" })];
+    return { diagnostics: [diagnostic("render.input_invalid", { field: "input" })] };
   try {
     assertRenderRecipe(input.recipe);
   } catch (error) {
@@ -334,10 +345,14 @@ function validateInput(
       )
     );
   }
-  if (!isViewData(input.view_data))
+  let viewDataCanonical = "";
+  try {
+    viewDataCanonical = encodeViewData(input.view_data);
+  } catch {
     diagnostics.push(
       diagnostic("render.input_invalid", { field: "view_data" })
     );
+  }
   if (!isDigest(input.view_data_hash))
     diagnostics.push(
       diagnostic("render.input_invalid", { field: "view_data_hash" })
@@ -358,7 +373,7 @@ function validateInput(
     diagnostics.push(
       diagnostic("render.input_invalid", { field: "resolved_assets" })
     );
-  if (diagnostics.length > 0) return stableDiagnostics(diagnostics);
+  if (diagnostics.length > 0) return { diagnostics: stableDiagnostics(diagnostics) };
 
   const recipeProfile = canonical(input.recipe.renderer_profile);
   if (recipeProfile !== canonical(input.resolved_profile.renderer_profile)) {
@@ -427,7 +442,7 @@ function validateInput(
   for (const digest of [...requiredAssets].sort(compare))
     if (!assetDigests.has(digest as Digest))
       diagnostics.push(diagnostic("render.asset_missing", { digest }));
-  return stableDiagnostics(diagnostics);
+  return { diagnostics: stableDiagnostics(diagnostics), viewDataCanonical };
 }
 
 function validProfile(value: unknown): value is ResolvedRendererProfile {

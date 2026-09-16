@@ -9,7 +9,6 @@ import {
 import {
   encodeViewData,
   isViewDataStateInputRef,
-  isViewData,
   isViewRevision,
   type ViewData,
   type ViewDataItemKey,
@@ -882,10 +881,15 @@ function validateSnapshot(
     typeof raw.complete !== "boolean" ||
     !isDigest(raw.view_data_hash) ||
     !isViewRevision(raw.revision) ||
-    !isViewDataStateInputRef(raw.state_input) ||
-    !isViewData(raw.view_data)
+    !isViewDataStateInputRef(raw.state_input)
   )
     return invalidInput("snapshot_value");
+  let encoded: string;
+  try {
+    encoded = encodeViewData(raw.view_data);
+  } catch {
+    return invalidInput("snapshot_value");
+  }
   if (
     raw.view_address !== raw.view_data.view_address ||
     !same(raw.revision, raw.view_data.revision) ||
@@ -897,7 +901,6 @@ function validateSnapshot(
         reason: "snapshot_envelope",
       }),
     };
-  const encoded = encodeViewData(raw.view_data);
   const bytes = byteLength(encoded);
   if (bytes > limits.max_snapshot_bytes)
     return resource("snapshot_bytes", limits.max_snapshot_bytes, bytes);
@@ -922,8 +925,7 @@ function validateUpdate(
     !isViewRevision(raw.previous_revision) ||
     !isViewRevision(raw.revision) ||
     !isViewDataStateInputRef(raw.previous_state_input) ||
-    !isViewDataStateInputRef(raw.state_input) ||
-    !isViewData(raw.view_data)
+    !isViewDataStateInputRef(raw.state_input)
   )
     return invalidInput("update_value");
   const snapshot: ViewerSnapshot = {

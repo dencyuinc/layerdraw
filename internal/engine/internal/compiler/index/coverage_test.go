@@ -30,10 +30,10 @@ func TestBuildFailurePathsPublishNothing(t *testing.T) {
 		t.Fatalf("rejected materialization published=%+v", got.Snapshot())
 	}
 
-	if _, err := buildSearchDocuments(materialize.Snapshot{}, SourceMapV1{}, resolve.Result{}); err == nil {
+	if _, err := buildSearchDocuments(materialize.Snapshot{}, SourceMapV1{}, materialize.StableAddressOrder{}); err == nil {
 		t.Fatal("open Project search input accepted")
 	}
-	if documents, err := buildSearchDocuments(materialize.Snapshot{Pack: &materialize.NormalizedPackArtifact{}}, SourceMapV1{}, resolve.Result{}); err != nil || documents != nil {
+	if documents, err := buildSearchDocuments(materialize.Snapshot{Pack: &materialize.NormalizedPackArtifact{}}, SourceMapV1{}, materialize.StableAddressOrder{}); err != nil || documents != nil {
 		t.Fatalf("Pack search=%+v err=%v", documents, err)
 	}
 }
@@ -42,7 +42,7 @@ func TestIndexClosedHelperBranches(t *testing.T) {
 	if subjectKindRank("unknown") != 99 {
 		t.Fatal("unknown generated subject kind accepted")
 	}
-	if got := adjacency(materialize.Input{}); len(got) != 0 {
+	if got := adjacency(materialize.Input{}, materialize.StableAddressOrder{}); len(got) != 0 {
 		t.Fatalf("nil graph adjacency=%+v", got)
 	}
 	if emptySlice(nil) == nil || !reflect.DeepEqual(emptySlice([]string{"x"}), []string{"x"}) || cloneStrings(nil) == nil || !reflect.DeepEqual(cloneStrings([]string{"x"}), []string{"x"}) {
@@ -96,9 +96,9 @@ func TestIndexClosedHelperBranches(t *testing.T) {
 	}
 
 	sourceMap := SourceMapV1{Subjects: []SourceSubjectRecord{{Address: "b"}, {Address: "a"}}, Bindings: []SourceBindingRecord{{SourceAddress: "b", Range: resolve.SourceRange{StartByte: 2}}, {SourceAddress: "b", Range: resolve.SourceRange{StartByte: 1}}, {SourceAddress: "a"}}, Exports: []ExportBindingRecord{{Module: ModuleRef{ModulePath: "b"}}, {Module: ModuleRef{ModulePath: "a"}}}, Assets: []SourceAssetRecord{{SubjectAddress: "b", Locator: "b"}, {SubjectAddress: "a", Locator: "a"}}}
-	sortSourceMap(&sourceMap, resolve.Result{})
+	sortSourceMap(&sourceMap, materialize.StableAddressOrder{})
 	semantic := SemanticIndexV1{Subjects: []SemanticSubject{{Address: "b"}, {Address: "a"}}, References: []SemanticReference{{SourceAddress: "b", Range: resolve.SourceRange{StartByte: 2}}, {SourceAddress: "b", Range: resolve.SourceRange{StartByte: 1}}, {SourceAddress: "a"}}, Adjacency: []AdjacencyRecord{{EntityAddress: "b"}, {EntityAddress: "a"}}, Dependencies: []DependencyRecord{{SubjectAddress: "b"}, {SubjectAddress: "a"}}}
-	sortSemantic(&semantic, resolve.Result{})
+	sortSemantic(&semantic, materialize.StableAddressOrder{})
 	if sourceMap.Subjects[0].Address != "a" || semantic.Subjects[0].Address != "a" {
 		t.Fatal("fallback index ordering failed")
 	}
@@ -114,7 +114,7 @@ func TestIndexClosedHelperBranches(t *testing.T) {
 	}
 	sourceMap.Exports = []ExportBindingRecord{{PublicName: "z", Module: ModuleRef{ModulePath: "same"}, Range: resolve.SourceRange{StartByte: 1}}, {PublicName: "a", Module: ModuleRef{ModulePath: "same"}, Range: resolve.SourceRange{StartByte: 1}}}
 	sourceMap.Assets = []SourceAssetRecord{{SubjectAddress: projectAddress, Locator: "z"}, {SubjectAddress: projectAddress, Locator: "a"}}
-	sortSourceMap(&sourceMap, resolve.Result{})
+	sortSourceMap(&sourceMap, materialize.StableAddressOrder{})
 	semantic.References = []SemanticReference{
 		{SourceAddress: projectAddress, TargetAddress: packAddress, TargetKind: materialize.SubjectReference, Via: "z", Range: resolve.SourceRange{StartByte: 1, EndByte: 3}},
 		{SourceAddress: projectAddress, TargetAddress: projectAddress, TargetKind: materialize.SubjectReference, Via: "z", Range: resolve.SourceRange{StartByte: 1, EndByte: 3}},
@@ -122,7 +122,7 @@ func TestIndexClosedHelperBranches(t *testing.T) {
 		{SourceAddress: projectAddress, TargetAddress: projectAddress, TargetKind: materialize.SubjectEntity, Via: "a", Range: resolve.SourceRange{StartByte: 1, EndByte: 3}},
 		{SourceAddress: projectAddress, TargetAddress: projectAddress, TargetKind: materialize.SubjectEntity, Via: "a", Range: resolve.SourceRange{StartByte: 1, EndByte: 2}},
 	}
-	sortSemantic(&semantic, resolve.Result{})
+	sortSemantic(&semantic, materialize.StableAddressOrder{})
 
 	for _, scalar := range []materialize.Scalar{{Type: definition.ScalarInteger, Int: 4}, {Type: definition.ScalarBoolean, Bool: true}, {Type: "unknown"}} {
 		_ = scalarText(scalar)

@@ -102,6 +102,25 @@ func TestCoordinatorRaceHasExactlyOnePublicationPoint(t *testing.T) {
 	}
 }
 
+func TestCoordinatorCheckpointFailurePreservesDurableCommitAndRetry(t *testing.T) {
+	host, rt := newCoordinatorFixture(t)
+	opened := openCoordinatorFixture(t, rt)
+	host.checkpointErr = errors.New("prepared candidate was replaced")
+	input := commitFixture(opened.Session, host)
+	result, rejection := rt.CommitOperations(context.Background(), input)
+	if rejection != nil || result.OperationResult.Status != runtimeprotocol.OperationResultStatusCommittedStateStale || result.OperationResult.CommittedRevision == nil {
+		t.Fatalf("durable commit was lost: %+v / %v", result, rejection)
+	}
+	assertCommitResultEncodes(t, result)
+	if !samePublishedRevision(host.head.Revision, *result.OperationResult.CommittedRevision) || host.successfulPublishes != 1 {
+		t.Fatal("checkpoint failure changed durable head")
+	}
+	retry, rejection := rt.CommitOperations(context.Background(), input)
+	if rejection != nil || !reflect.DeepEqual(retry, result) || host.successfulPublishes != 1 {
+		t.Fatalf("retry changed the terminal outcome: %+v / %v", retry, rejection)
+	}
+}
+
 func TestCoordinatorCancellationConflictAndPortFailuresNeverPublishPartially(t *testing.T) {
 	tests := runtimePersistenceFaultCases(t, "in_memory")
 	for _, tc := range tests {
@@ -1652,6 +1671,7 @@ type coordinatorHost struct {
 	createPendingRelease                                                                             <-chan struct{}
 	closeCalls                                                                                       int
 	closeErr                                                                                         error
+	checkpointErr                                                                                    error
 	externalEnabled                                                                                  bool
 	externalMalformed                                                                                bool
 	externalPrepareCalls, externalPublishCalls, externalAbortCalls                                   int
@@ -2180,6 +2200,9 @@ func (h coordinatorExternalHost) Abort(context.Context, port.AbortExternalFileIn
 	return nil
 }
 func (h *coordinatorHost) Checkpoint(_ context.Context, input port.CheckpointWorkingDocumentInput) (port.WorkingDocument, error) {
+	if h.checkpointErr != nil {
+		return port.WorkingDocument{}, h.checkpointErr
+	}
 	result := input.Document
 	result.BaseRevision = input.Revision
 	result.DefinitionHash = input.Prepared.DefinitionHash

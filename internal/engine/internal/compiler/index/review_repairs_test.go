@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/materialize"
-	"github.com/dencyuinc/layerdraw/internal/engine/internal/compiler/resolve"
 )
 
 func TestGeneratedIndexesUseNormativeKindsAndMembershipIndexes(t *testing.T) {
@@ -85,7 +84,7 @@ func TestMixedGeneratedCollectionsUseStructuredStableSymbolOrder(t *testing.T) {
 		projectRoot + ":reference:z": materialize.SubjectReference,
 		packRoot + ":reference:a":    materialize.SubjectReference,
 	}
-	members := ownerMembers(owners, kinds, nil, resolve.Result{})
+	members := ownerMembers(owners, kinds, nil, materialize.StableAddressOrder{})
 	if len(members) != 2 || members[0].OwnerAddress != projectRoot || members[1].OwnerAddress != packRoot {
 		t.Fatalf("owner membership order=%+v", members)
 	}
@@ -101,14 +100,14 @@ func TestMixedGeneratedCollectionsUseStructuredStableSymbolOrder(t *testing.T) {
 			{ID: "same", Address: projectRoot + ":reference:same", Text: "Project"},
 		},
 	}
-	documents, err := buildSearchDocuments(materialize.Snapshot{Document: document}, SourceMapV1{}, resolve.Result{})
+	documents, err := buildSearchDocuments(materialize.Snapshot{Document: document}, SourceMapV1{}, materialize.StableAddressOrder{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(documents) != 4 || documents[0].SubjectAddress != projectRoot+":entity-type:project" || documents[2].SubjectAddress != packRoot+":entity-type:pack" {
 		t.Fatalf("SearchDocument StableSymbol order=%+v", searchAddresses(documents))
 	}
-	ids := referenceIDs(materialize.Snapshot{Document: document}, resolve.Result{})
+	ids := referenceIDs(materialize.Snapshot{Document: document}, materialize.StableAddressOrder{})
 	if len(ids) != 1 || !reflect.DeepEqual(ids[0].Addresses, []string{projectRoot + ":reference:same", packRoot + ":reference:same"}) {
 		t.Fatalf("Reference-ID StableSymbol order=%+v", ids)
 	}

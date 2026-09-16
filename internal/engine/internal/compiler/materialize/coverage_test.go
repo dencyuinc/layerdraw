@@ -176,7 +176,7 @@ func TestClosedResolvedTreeValidationBranches(t *testing.T) {
 }
 
 func TestInternalProjectionOrderingAndErrorHelpers(t *testing.T) {
-	if _, _, _, err := buildHashPayloads(Input{}, nil, nil); err == nil {
+	if _, _, _, err := buildHashPayloads(Input{}, nil, nil, StableAddressOrder{}); err == nil {
 		t.Fatal("open hash envelope accepted")
 	}
 	if _, err := appendCanonicalValue(struct{}{}); err == nil {

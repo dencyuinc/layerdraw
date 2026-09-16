@@ -139,9 +139,9 @@ func (w *runtimeWorkbench) Preview(ctx context.Context, in port.PreviewWorkingDo
 	kind, fileBacked := w.kinds[in.Document.BaseRevision.DocumentID]
 	w.mu.RUnlock()
 	if fileBacked {
-		source, err := w.engine.ReadEncodedInput(ctx, prepared.EncodedInput)
-		if err != nil {
-			return port.PreparedRevision{}, err
+		source, ok := prepared.Source()
+		if !ok {
+			return port.PreparedRevision{}, errors.New("prepared source projection unavailable")
 		}
 		switch kind {
 		case port.ExternalFileKindProject:
@@ -215,7 +215,7 @@ func (w *runtimeWorkbench) Close(_ context.Context, in port.WorkingDocument) err
 
 func (w *runtimeWorkbench) Working(handle string, revision runtimeprotocol.CommittedRevisionRef) (port.WorkingDocument, bool) {
 	value, ok := w.bridge.Working(handle)
-	if !ok {
+	if !ok || value.DocumentID != string(revision.DocumentID) || value.RevisionID != string(revision.RevisionID) || value.DefinitionHash != revision.DefinitionHash || value.GraphHash != revision.GraphHash {
 		return port.WorkingDocument{}, false
 	}
 	return workingFromBridge(value, revision), true

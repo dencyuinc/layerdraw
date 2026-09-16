@@ -381,17 +381,32 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0): void {
-  if (value === null || typeof value === "boolean") return;
-  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return; }
-  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return; }
+// Capture encoder input during the same wire preflight. The schema validator and
+// writer then observe one owned value, even when the caller supplied a Proxy.
+// Predicates do not retain or copy input; their recursive shape checks are private.
+function validateProgrammaticWireValue(value: unknown, active: Set<object> = new Set<object>(), depth = 0, capture = false): unknown {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") { if (!hasScalarUnicode(value)) throw new TypeError("protocol value contains malformed Unicode"); return value; }
+  if (typeof value === "number") { if (!Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("protocol numbers must be canonical safe integers"); return value; }
   const array = isJSONArray(value); if (!array && !isObject(value)) throw new TypeError("unsupported protocol JSON value");
   if (active.has(value)) throw new TypeError("protocol value contains a cycle");
   if (depth >= maxWireJSONDepth) throw new TypeError("protocol value exceeds depth " + maxWireJSONDepth);
   active.add(value);
   try {
+    if (capture) {
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string" || !hasScalarUnicode(key))) throw new TypeError("unsupported protocol JSON value");
+      const owned: Record<string, unknown> = Object.create(null);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (array && key === "length") continue;
+        if (!descriptor.enumerable || !("value" in descriptor)) throw new TypeError("unsupported protocol JSON value");
+        owned[key] = validateProgrammaticWireValue(descriptor.value, active, depth + 1, true);
+      }
+      return array ? Object.assign([], owned) : owned;
+    }
     if (array) { for (const item of value) validateProgrammaticWireValue(item, active, depth + 1); }
     else { for (const item of Object.values(value)) validateProgrammaticWireValue(item, active, depth + 1); }
+    return value;
   } finally { active.delete(value); }
 }
 
@@ -491,8 +506,12 @@ export interface ActorRef {
   kind: "agent" | "service" | "user";
 }
 
+function matchesSchemaActorRef(value: unknown): value is ActorRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["actor_id", "kind"])) && hasOwn(value, "actor_id") && (typeof value["actor_id"] === "string" && hasScalarUnicode(value["actor_id"]) && Array.from(value["actor_id"]).length >= 1 && Array.from(value["actor_id"]).length <= 256) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["agent", "service", "user"].includes(value["kind"]));
+}
+
 export function isActorRef(value: unknown): value is ActorRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["actor_id", "kind"])) && hasOwn(value, "actor_id") && (typeof value["actor_id"] === "string" && hasScalarUnicode(value["actor_id"]) && Array.from(value["actor_id"]).length >= 1 && Array.from(value["actor_id"]).length <= 256) && hasOwn(value, "kind") && (typeof value["kind"] === "string" && hasScalarUnicode(value["kind"]) && ["agent", "service", "user"].includes(value["kind"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaActorRef(value));
 }
 
 export function decodeActorRef(input: string): ActorRef {
@@ -503,12 +522,10 @@ export function decodeActorRef(input: string): ActorRef {
 }
 
 export function encodeActorRef(value: ActorRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isActorRef(value)) throw new TypeError("invalid ActorRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isActorRef(emitted)) throw new TypeError("encoded value is invalid ActorRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaActorRef(owned)) throw new TypeError("invalid ActorRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -526,8 +543,12 @@ export interface AuthoringDecision {
   required_capabilities: ReadonlyArray<AuthoringCapability>;
 }
 
+function matchesSchemaAuthoringDecision(value: unknown): value is AuthoringDecision {
+  return isObject(value) && hasOnlyKeys(value, new Set(["access_fingerprint", "approval_rule_refs", "authoring_impact_digest", "constraint_violations", "decision_digest", "diagnostics", "evaluation_digest", "host_operation_impact_digests", "missing_capabilities", "outcome", "required_capabilities"])) && hasOwn(value, "access_fingerprint") && (isDigest(value["access_fingerprint"])) && hasOwn(value, "approval_rule_refs") && (isJSONArray(value["approval_rule_refs"]) && value["approval_rule_refs"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1 && Array.from(item).length <= 256) && value["approval_rule_refs"].length <= 64 && hasUniqueItems(value["approval_rule_refs"]) && hasUnicodeScalarOrder(value["approval_rule_refs"])) && (!hasOwn(value, "authoring_impact_digest") || (isDigest(value["authoring_impact_digest"]))) && hasOwn(value, "constraint_violations") && (isJSONArray(value["constraint_violations"]) && value["constraint_violations"].every((item) => matchesSchemaConstraintViolation(item)) && value["constraint_violations"].length <= 256) && hasOwn(value, "decision_digest") && (isDigest(value["decision_digest"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isProtocolDiagnostic(item)) && value["diagnostics"].length <= 256) && hasOwn(value, "evaluation_digest") && (isDigest(value["evaluation_digest"])) && hasOwn(value, "host_operation_impact_digests") && (isJSONArray(value["host_operation_impact_digests"]) && value["host_operation_impact_digests"].every((item) => isDigest(item)) && value["host_operation_impact_digests"].length <= 64 && hasUniqueItems(value["host_operation_impact_digests"]) && hasUnicodeScalarOrder(value["host_operation_impact_digests"])) && hasOwn(value, "missing_capabilities") && (isJSONArray(value["missing_capabilities"]) && value["missing_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["missing_capabilities"]) && hasCanonicalEnumOrder(value["missing_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && hasOwn(value, "outcome") && (matchesSchemaAuthoringDecisionOutcome(value["outcome"])) && hasOwn(value, "required_capabilities") && (isJSONArray(value["required_capabilities"]) && value["required_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["required_capabilities"]) && hasCanonicalEnumOrder(value["required_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && ((value["outcome"] === "allow" && isJSONArray(value["missing_capabilities"]) && value["missing_capabilities"].length === 0 && isJSONArray(value["constraint_violations"]) && value["constraint_violations"].length === 0 && isJSONArray(value["approval_rule_refs"]) && value["approval_rule_refs"].length === 0) || (value["outcome"] === "approval_required" && isJSONArray(value["approval_rule_refs"]) && value["approval_rule_refs"].length > 0) || (value["outcome"] === "deny" && (isJSONArray(value["missing_capabilities"]) && value["missing_capabilities"].length > 0 || isJSONArray(value["constraint_violations"]) && value["constraint_violations"].length > 0)));
+}
+
 export function isAuthoringDecision(value: unknown): value is AuthoringDecision {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["access_fingerprint", "approval_rule_refs", "authoring_impact_digest", "constraint_violations", "decision_digest", "diagnostics", "evaluation_digest", "host_operation_impact_digests", "missing_capabilities", "outcome", "required_capabilities"])) && hasOwn(value, "access_fingerprint") && (isDigest(value["access_fingerprint"])) && hasOwn(value, "approval_rule_refs") && (isJSONArray(value["approval_rule_refs"]) && value["approval_rule_refs"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1 && Array.from(item).length <= 256) && value["approval_rule_refs"].length <= 64 && hasUniqueItems(value["approval_rule_refs"]) && hasUnicodeScalarOrder(value["approval_rule_refs"])) && (!hasOwn(value, "authoring_impact_digest") || (isDigest(value["authoring_impact_digest"]))) && hasOwn(value, "constraint_violations") && (isJSONArray(value["constraint_violations"]) && value["constraint_violations"].every((item) => isConstraintViolation(item)) && value["constraint_violations"].length <= 256) && hasOwn(value, "decision_digest") && (isDigest(value["decision_digest"])) && hasOwn(value, "diagnostics") && (isJSONArray(value["diagnostics"]) && value["diagnostics"].every((item) => isProtocolDiagnostic(item)) && value["diagnostics"].length <= 256) && hasOwn(value, "evaluation_digest") && (isDigest(value["evaluation_digest"])) && hasOwn(value, "host_operation_impact_digests") && (isJSONArray(value["host_operation_impact_digests"]) && value["host_operation_impact_digests"].every((item) => isDigest(item)) && value["host_operation_impact_digests"].length <= 64 && hasUniqueItems(value["host_operation_impact_digests"]) && hasUnicodeScalarOrder(value["host_operation_impact_digests"])) && hasOwn(value, "missing_capabilities") && (isJSONArray(value["missing_capabilities"]) && value["missing_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["missing_capabilities"]) && hasCanonicalEnumOrder(value["missing_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && hasOwn(value, "outcome") && (isAuthoringDecisionOutcome(value["outcome"])) && hasOwn(value, "required_capabilities") && (isJSONArray(value["required_capabilities"]) && value["required_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["required_capabilities"]) && hasCanonicalEnumOrder(value["required_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && ((value["outcome"] === "allow" && isJSONArray(value["missing_capabilities"]) && value["missing_capabilities"].length === 0 && isJSONArray(value["constraint_violations"]) && value["constraint_violations"].length === 0 && isJSONArray(value["approval_rule_refs"]) && value["approval_rule_refs"].length === 0) || (value["outcome"] === "approval_required" && isJSONArray(value["approval_rule_refs"]) && value["approval_rule_refs"].length > 0) || (value["outcome"] === "deny" && (isJSONArray(value["missing_capabilities"]) && value["missing_capabilities"].length > 0 || isJSONArray(value["constraint_violations"]) && value["constraint_violations"].length > 0))));
+  return isProgrammaticWireValue(value, () => matchesSchemaAuthoringDecision(value));
 }
 
 export function decodeAuthoringDecision(input: string): AuthoringDecision {
@@ -538,19 +559,21 @@ export function decodeAuthoringDecision(input: string): AuthoringDecision {
 }
 
 export function encodeAuthoringDecision(value: AuthoringDecision): string {
-  validateProgrammaticWireValue(value);
-  if (!isAuthoringDecision(value)) throw new TypeError("invalid AuthoringDecision");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isAuthoringDecision(emitted)) throw new TypeError("encoded value is invalid AuthoringDecision");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaAuthoringDecision(owned)) throw new TypeError("invalid AuthoringDecision");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type AuthoringDecisionOutcome = "allow" | "approval_required" | "deny";
 
+function matchesSchemaAuthoringDecisionOutcome(value: unknown): value is AuthoringDecisionOutcome {
+  return typeof value === "string" && hasScalarUnicode(value) && ["allow", "approval_required", "deny"].includes(value);
+}
+
 export function isAuthoringDecisionOutcome(value: unknown): value is AuthoringDecisionOutcome {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["allow", "approval_required", "deny"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaAuthoringDecisionOutcome(value));
 }
 
 export function decodeAuthoringDecisionOutcome(input: string): AuthoringDecisionOutcome {
@@ -561,12 +584,10 @@ export function decodeAuthoringDecisionOutcome(input: string): AuthoringDecision
 }
 
 export function encodeAuthoringDecisionOutcome(value: AuthoringDecisionOutcome): string {
-  validateProgrammaticWireValue(value);
-  if (!isAuthoringDecisionOutcome(value)) throw new TypeError("invalid AuthoringDecisionOutcome");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isAuthoringDecisionOutcome(emitted)) throw new TypeError("encoded value is invalid AuthoringDecisionOutcome");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaAuthoringDecisionOutcome(owned)) throw new TypeError("invalid AuthoringDecisionOutcome");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -586,8 +607,12 @@ export interface AuthoringGrantSnapshot {
   policy_refs: ReadonlyArray<PolicyRef>;
 }
 
+function matchesSchemaAuthoringGrantSnapshot(value: unknown): value is AuthoringGrantSnapshot {
+  return isObject(value) && hasOnlyKeys(value, new Set(["access_fingerprint", "actor_ref", "agent_delegation_digest", "entitlement_digest", "expires_at", "granted_capabilities", "host_document_id", "issued_at", "local_scope_id", "membership_version", "organization_scope_id", "policy_refs"])) && hasOwn(value, "access_fingerprint") && (isDigest(value["access_fingerprint"])) && hasOwn(value, "actor_ref") && (matchesSchemaActorRef(value["actor_ref"])) && (!hasOwn(value, "agent_delegation_digest") || (isDigest(value["agent_delegation_digest"]))) && (!hasOwn(value, "entitlement_digest") || (isDigest(value["entitlement_digest"]))) && (!hasOwn(value, "expires_at") || (isRfc3339Time(value["expires_at"]))) && hasOwn(value, "granted_capabilities") && (isJSONArray(value["granted_capabilities"]) && value["granted_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["granted_capabilities"]) && hasCanonicalEnumOrder(value["granted_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && hasOwn(value, "host_document_id") && (typeof value["host_document_id"] === "string" && hasScalarUnicode(value["host_document_id"]) && Array.from(value["host_document_id"]).length >= 1 && Array.from(value["host_document_id"]).length <= 256) && hasOwn(value, "issued_at") && (isRfc3339Time(value["issued_at"])) && hasOwn(value, "local_scope_id") && (typeof value["local_scope_id"] === "string" && hasScalarUnicode(value["local_scope_id"]) && Array.from(value["local_scope_id"]).length >= 1 && Array.from(value["local_scope_id"]).length <= 256) && hasOwn(value, "membership_version") && (isCanonicalUint64(value["membership_version"])) && (!hasOwn(value, "organization_scope_id") || (typeof value["organization_scope_id"] === "string" && hasScalarUnicode(value["organization_scope_id"]) && Array.from(value["organization_scope_id"]).length >= 1 && Array.from(value["organization_scope_id"]).length <= 256)) && hasOwn(value, "policy_refs") && (isJSONArray(value["policy_refs"]) && value["policy_refs"].every((item) => matchesSchemaPolicyRef(item)) && value["policy_refs"].length <= 64);
+}
+
 export function isAuthoringGrantSnapshot(value: unknown): value is AuthoringGrantSnapshot {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["access_fingerprint", "actor_ref", "agent_delegation_digest", "entitlement_digest", "expires_at", "granted_capabilities", "host_document_id", "issued_at", "local_scope_id", "membership_version", "organization_scope_id", "policy_refs"])) && hasOwn(value, "access_fingerprint") && (isDigest(value["access_fingerprint"])) && hasOwn(value, "actor_ref") && (isActorRef(value["actor_ref"])) && (!hasOwn(value, "agent_delegation_digest") || (isDigest(value["agent_delegation_digest"]))) && (!hasOwn(value, "entitlement_digest") || (isDigest(value["entitlement_digest"]))) && (!hasOwn(value, "expires_at") || (isRfc3339Time(value["expires_at"]))) && hasOwn(value, "granted_capabilities") && (isJSONArray(value["granted_capabilities"]) && value["granted_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["granted_capabilities"]) && hasCanonicalEnumOrder(value["granted_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && hasOwn(value, "host_document_id") && (typeof value["host_document_id"] === "string" && hasScalarUnicode(value["host_document_id"]) && Array.from(value["host_document_id"]).length >= 1 && Array.from(value["host_document_id"]).length <= 256) && hasOwn(value, "issued_at") && (isRfc3339Time(value["issued_at"])) && hasOwn(value, "local_scope_id") && (typeof value["local_scope_id"] === "string" && hasScalarUnicode(value["local_scope_id"]) && Array.from(value["local_scope_id"]).length >= 1 && Array.from(value["local_scope_id"]).length <= 256) && hasOwn(value, "membership_version") && (isCanonicalUint64(value["membership_version"])) && (!hasOwn(value, "organization_scope_id") || (typeof value["organization_scope_id"] === "string" && hasScalarUnicode(value["organization_scope_id"]) && Array.from(value["organization_scope_id"]).length >= 1 && Array.from(value["organization_scope_id"]).length <= 256)) && hasOwn(value, "policy_refs") && (isJSONArray(value["policy_refs"]) && value["policy_refs"].every((item) => isPolicyRef(item)) && value["policy_refs"].length <= 64));
+  return isProgrammaticWireValue(value, () => matchesSchemaAuthoringGrantSnapshot(value));
 }
 
 export function decodeAuthoringGrantSnapshot(input: string): AuthoringGrantSnapshot {
@@ -598,12 +623,10 @@ export function decodeAuthoringGrantSnapshot(input: string): AuthoringGrantSnaps
 }
 
 export function encodeAuthoringGrantSnapshot(value: AuthoringGrantSnapshot): string {
-  validateProgrammaticWireValue(value);
-  if (!isAuthoringGrantSnapshot(value)) throw new TypeError("invalid AuthoringGrantSnapshot");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isAuthoringGrantSnapshot(emitted)) throw new TypeError("encoded value is invalid AuthoringGrantSnapshot");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaAuthoringGrantSnapshot(owned)) throw new TypeError("invalid AuthoringGrantSnapshot");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -615,8 +638,12 @@ export interface AuthoringGrantSummary {
   policy_etag: Digest;
 }
 
+function matchesSchemaAuthoringGrantSummary(value: unknown): value is AuthoringGrantSummary {
+  return isObject(value) && hasOnlyKeys(value, new Set(["access_fingerprint", "constrained_capabilities", "expires_at", "granted_capabilities", "policy_etag"])) && hasOwn(value, "access_fingerprint") && (isDigest(value["access_fingerprint"])) && hasOwn(value, "constrained_capabilities") && (isJSONArray(value["constrained_capabilities"]) && value["constrained_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["constrained_capabilities"]) && hasCanonicalEnumOrder(value["constrained_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && (!hasOwn(value, "expires_at") || (isRfc3339Time(value["expires_at"]))) && hasOwn(value, "granted_capabilities") && (isJSONArray(value["granted_capabilities"]) && value["granted_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["granted_capabilities"]) && hasCanonicalEnumOrder(value["granted_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && hasOwn(value, "policy_etag") && (isDigest(value["policy_etag"]));
+}
+
 export function isAuthoringGrantSummary(value: unknown): value is AuthoringGrantSummary {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["access_fingerprint", "constrained_capabilities", "expires_at", "granted_capabilities", "policy_etag"])) && hasOwn(value, "access_fingerprint") && (isDigest(value["access_fingerprint"])) && hasOwn(value, "constrained_capabilities") && (isJSONArray(value["constrained_capabilities"]) && value["constrained_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["constrained_capabilities"]) && hasCanonicalEnumOrder(value["constrained_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && (!hasOwn(value, "expires_at") || (isRfc3339Time(value["expires_at"]))) && hasOwn(value, "granted_capabilities") && (isJSONArray(value["granted_capabilities"]) && value["granted_capabilities"].every((item) => isAuthoringCapability(item)) && hasUniqueItems(value["granted_capabilities"]) && hasCanonicalEnumOrder(value["granted_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && hasOwn(value, "policy_etag") && (isDigest(value["policy_etag"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaAuthoringGrantSummary(value));
 }
 
 export function decodeAuthoringGrantSummary(input: string): AuthoringGrantSummary {
@@ -627,12 +654,10 @@ export function decodeAuthoringGrantSummary(input: string): AuthoringGrantSummar
 }
 
 export function encodeAuthoringGrantSummary(value: AuthoringGrantSummary): string {
-  validateProgrammaticWireValue(value);
-  if (!isAuthoringGrantSummary(value)) throw new TypeError("invalid AuthoringGrantSummary");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isAuthoringGrantSummary(emitted)) throw new TypeError("encoded value is invalid AuthoringGrantSummary");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaAuthoringGrantSummary(owned)) throw new TypeError("invalid AuthoringGrantSummary");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -642,8 +667,12 @@ export interface ConstraintViolation {
   subject_address?: StableAddress;
 }
 
+function matchesSchemaConstraintViolation(value: unknown): value is ConstraintViolation {
+  return isObject(value) && hasOnlyKeys(value, new Set(["action", "code", "subject_address"])) && hasOwn(value, "action") && (typeof value["action"] === "string" && hasScalarUnicode(value["action"]) && Array.from(value["action"]).length >= 1 && Array.from(value["action"]).length <= 64) && hasOwn(value, "code") && (typeof value["code"] === "string" && hasScalarUnicode(value["code"]) && new RegExp("^authoring\\.[a-z][a-z0-9_]*$").test(value["code"])) && (!hasOwn(value, "subject_address") || (isStableAddress(value["subject_address"])));
+}
+
 export function isConstraintViolation(value: unknown): value is ConstraintViolation {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["action", "code", "subject_address"])) && hasOwn(value, "action") && (typeof value["action"] === "string" && hasScalarUnicode(value["action"]) && Array.from(value["action"]).length >= 1 && Array.from(value["action"]).length <= 64) && hasOwn(value, "code") && (typeof value["code"] === "string" && hasScalarUnicode(value["code"]) && new RegExp("^authoring\\.[a-z][a-z0-9_]*$").test(value["code"])) && (!hasOwn(value, "subject_address") || (isStableAddress(value["subject_address"]))));
+  return isProgrammaticWireValue(value, () => matchesSchemaConstraintViolation(value));
 }
 
 export function decodeConstraintViolation(input: string): ConstraintViolation {
@@ -654,12 +683,10 @@ export function decodeConstraintViolation(input: string): ConstraintViolation {
 }
 
 export function encodeConstraintViolation(value: ConstraintViolation): string {
-  validateProgrammaticWireValue(value);
-  if (!isConstraintViolation(value)) throw new TypeError("invalid ConstraintViolation");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isConstraintViolation(emitted)) throw new TypeError("encoded value is invalid ConstraintViolation");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaConstraintViolation(owned)) throw new TypeError("invalid ConstraintViolation");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -672,8 +699,12 @@ export interface EvaluateAuthoringInput {
   request_intent: "apply" | "preview" | "propose" | "publish";
 }
 
+function matchesSchemaEvaluateAuthoringInput(value: unknown): value is EvaluateAuthoringInput {
+  return isObject(value) && hasOnlyKeys(value, new Set(["authoring_impact", "base_revision_digest", "grant_snapshot", "host_operation_impacts", "request_intent"])) && (!hasOwn(value, "authoring_impact") || (isAuthoringImpact(value["authoring_impact"]))) && hasOwn(value, "base_revision_digest") && (isDigest(value["base_revision_digest"])) && hasOwn(value, "grant_snapshot") && (matchesSchemaAuthoringGrantSnapshot(value["grant_snapshot"])) && hasOwn(value, "host_operation_impacts") && (isJSONArray(value["host_operation_impacts"]) && value["host_operation_impacts"].every((item) => matchesSchemaHostOperationImpact(item)) && value["host_operation_impacts"].length <= 64) && hasOwn(value, "request_intent") && (typeof value["request_intent"] === "string" && hasScalarUnicode(value["request_intent"]) && ["apply", "preview", "propose", "publish"].includes(value["request_intent"])) && hasUniqueArrayKey(value, "host_operation_impacts", "impact_digest");
+}
+
 export function isEvaluateAuthoringInput(value: unknown): value is EvaluateAuthoringInput {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["authoring_impact", "base_revision_digest", "grant_snapshot", "host_operation_impacts", "request_intent"])) && (!hasOwn(value, "authoring_impact") || (isAuthoringImpact(value["authoring_impact"]))) && hasOwn(value, "base_revision_digest") && (isDigest(value["base_revision_digest"])) && hasOwn(value, "grant_snapshot") && (isAuthoringGrantSnapshot(value["grant_snapshot"])) && hasOwn(value, "host_operation_impacts") && (isJSONArray(value["host_operation_impacts"]) && value["host_operation_impacts"].every((item) => isHostOperationImpact(item)) && value["host_operation_impacts"].length <= 64) && hasOwn(value, "request_intent") && (typeof value["request_intent"] === "string" && hasScalarUnicode(value["request_intent"]) && ["apply", "preview", "propose", "publish"].includes(value["request_intent"])) && hasUniqueArrayKey(value, "host_operation_impacts", "impact_digest"));
+  return isProgrammaticWireValue(value, () => matchesSchemaEvaluateAuthoringInput(value));
 }
 
 export function decodeEvaluateAuthoringInput(input: string): EvaluateAuthoringInput {
@@ -684,12 +715,10 @@ export function decodeEvaluateAuthoringInput(input: string): EvaluateAuthoringIn
 }
 
 export function encodeEvaluateAuthoringInput(value: EvaluateAuthoringInput): string {
-  validateProgrammaticWireValue(value);
-  if (!isEvaluateAuthoringInput(value)) throw new TypeError("invalid EvaluateAuthoringInput");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isEvaluateAuthoringInput(emitted)) throw new TypeError("encoded value is invalid EvaluateAuthoringInput");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaEvaluateAuthoringInput(owned)) throw new TypeError("invalid EvaluateAuthoringInput");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -703,8 +732,12 @@ export interface HostOperationImpact {
   resource_scope: HostResourceScope;
 }
 
+function matchesSchemaHostOperationImpact(value: unknown): value is HostOperationImpact {
+  return isObject(value) && hasOnlyKeys(value, new Set(["action", "impact_digest", "operation_kind", "required_authoring_capabilities", "resource_refs", "resource_scope"])) && hasOwn(value, "action") && (typeof value["action"] === "string" && hasScalarUnicode(value["action"]) && ["create", "delete", "stage", "update"].includes(value["action"])) && hasOwn(value, "impact_digest") && (isDigest(value["impact_digest"])) && hasOwn(value, "operation_kind") && (matchesSchemaHostOperationKind(value["operation_kind"])) && hasOwn(value, "required_authoring_capabilities") && (isJSONArray(value["required_authoring_capabilities"]) && value["required_authoring_capabilities"].every((item) => isAuthoringCapability(item)) && value["required_authoring_capabilities"].length >= 1 && hasUniqueItems(value["required_authoring_capabilities"]) && hasCanonicalEnumOrder(value["required_authoring_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && hasOwn(value, "resource_refs") && (isJSONArray(value["resource_refs"]) && value["resource_refs"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1 && Array.from(item).length <= 512) && value["resource_refs"].length <= 256 && hasUniqueItems(value["resource_refs"]) && hasUnicodeScalarOrder(value["resource_refs"])) && hasOwn(value, "resource_scope") && (matchesSchemaHostResourceScope(value["resource_scope"]));
+}
+
 export function isHostOperationImpact(value: unknown): value is HostOperationImpact {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["action", "impact_digest", "operation_kind", "required_authoring_capabilities", "resource_refs", "resource_scope"])) && hasOwn(value, "action") && (typeof value["action"] === "string" && hasScalarUnicode(value["action"]) && ["create", "delete", "stage", "update"].includes(value["action"])) && hasOwn(value, "impact_digest") && (isDigest(value["impact_digest"])) && hasOwn(value, "operation_kind") && (isHostOperationKind(value["operation_kind"])) && hasOwn(value, "required_authoring_capabilities") && (isJSONArray(value["required_authoring_capabilities"]) && value["required_authoring_capabilities"].every((item) => isAuthoringCapability(item)) && value["required_authoring_capabilities"].length >= 1 && hasUniqueItems(value["required_authoring_capabilities"]) && hasCanonicalEnumOrder(value["required_authoring_capabilities"], ["asset:write", "graph:write", "package:manage", "project:configure", "query:write", "reference:write", "schema:write", "source:maintain", "view:write"])) && hasOwn(value, "resource_refs") && (isJSONArray(value["resource_refs"]) && value["resource_refs"].every((item) => typeof item === "string" && hasScalarUnicode(item) && Array.from(item).length >= 1 && Array.from(item).length <= 512) && value["resource_refs"].length <= 256 && hasUniqueItems(value["resource_refs"]) && hasUnicodeScalarOrder(value["resource_refs"])) && hasOwn(value, "resource_scope") && (isHostResourceScope(value["resource_scope"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaHostOperationImpact(value));
 }
 
 export function decodeHostOperationImpact(input: string): HostOperationImpact {
@@ -715,19 +748,21 @@ export function decodeHostOperationImpact(input: string): HostOperationImpact {
 }
 
 export function encodeHostOperationImpact(value: HostOperationImpact): string {
-  validateProgrammaticWireValue(value);
-  if (!isHostOperationImpact(value)) throw new TypeError("invalid HostOperationImpact");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isHostOperationImpact(emitted)) throw new TypeError("encoded value is invalid HostOperationImpact");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaHostOperationImpact(owned)) throw new TypeError("invalid HostOperationImpact");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
 export type HostOperationKind = "asset_delete" | "asset_persist" | "asset_stage" | "backend_configure" | "package_transaction" | "project_configure";
 
+function matchesSchemaHostOperationKind(value: unknown): value is HostOperationKind {
+  return typeof value === "string" && hasScalarUnicode(value) && ["asset_delete", "asset_persist", "asset_stage", "backend_configure", "package_transaction", "project_configure"].includes(value);
+}
+
 export function isHostOperationKind(value: unknown): value is HostOperationKind {
-  return isProgrammaticWireValue(value, () => typeof value === "string" && hasScalarUnicode(value) && ["asset_delete", "asset_persist", "asset_stage", "backend_configure", "package_transaction", "project_configure"].includes(value));
+  return isProgrammaticWireValue(value, () => matchesSchemaHostOperationKind(value));
 }
 
 export function decodeHostOperationKind(input: string): HostOperationKind {
@@ -738,12 +773,10 @@ export function decodeHostOperationKind(input: string): HostOperationKind {
 }
 
 export function encodeHostOperationKind(value: HostOperationKind): string {
-  validateProgrammaticWireValue(value);
-  if (!isHostOperationKind(value)) throw new TypeError("invalid HostOperationKind");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isHostOperationKind(emitted)) throw new TypeError("encoded value is invalid HostOperationKind");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaHostOperationKind(owned)) throw new TypeError("invalid HostOperationKind");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -753,8 +786,12 @@ export interface HostResourceScope {
   organization_scope_id?: string;
 }
 
+function matchesSchemaHostResourceScope(value: unknown): value is HostResourceScope {
+  return isObject(value) && hasOnlyKeys(value, new Set(["document_id", "local_scope_id", "organization_scope_id"])) && hasOwn(value, "document_id") && (typeof value["document_id"] === "string" && hasScalarUnicode(value["document_id"]) && Array.from(value["document_id"]).length >= 1 && Array.from(value["document_id"]).length <= 256) && hasOwn(value, "local_scope_id") && (typeof value["local_scope_id"] === "string" && hasScalarUnicode(value["local_scope_id"]) && Array.from(value["local_scope_id"]).length >= 1 && Array.from(value["local_scope_id"]).length <= 256) && (!hasOwn(value, "organization_scope_id") || (typeof value["organization_scope_id"] === "string" && hasScalarUnicode(value["organization_scope_id"]) && Array.from(value["organization_scope_id"]).length >= 1 && Array.from(value["organization_scope_id"]).length <= 256));
+}
+
 export function isHostResourceScope(value: unknown): value is HostResourceScope {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["document_id", "local_scope_id", "organization_scope_id"])) && hasOwn(value, "document_id") && (typeof value["document_id"] === "string" && hasScalarUnicode(value["document_id"]) && Array.from(value["document_id"]).length >= 1 && Array.from(value["document_id"]).length <= 256) && hasOwn(value, "local_scope_id") && (typeof value["local_scope_id"] === "string" && hasScalarUnicode(value["local_scope_id"]) && Array.from(value["local_scope_id"]).length >= 1 && Array.from(value["local_scope_id"]).length <= 256) && (!hasOwn(value, "organization_scope_id") || (typeof value["organization_scope_id"] === "string" && hasScalarUnicode(value["organization_scope_id"]) && Array.from(value["organization_scope_id"]).length >= 1 && Array.from(value["organization_scope_id"]).length <= 256)));
+  return isProgrammaticWireValue(value, () => matchesSchemaHostResourceScope(value));
 }
 
 export function decodeHostResourceScope(input: string): HostResourceScope {
@@ -765,12 +802,10 @@ export function decodeHostResourceScope(input: string): HostResourceScope {
 }
 
 export function encodeHostResourceScope(value: HostResourceScope): string {
-  validateProgrammaticWireValue(value);
-  if (!isHostResourceScope(value)) throw new TypeError("invalid HostResourceScope");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isHostResourceScope(emitted)) throw new TypeError("encoded value is invalid HostResourceScope");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaHostResourceScope(owned)) throw new TypeError("invalid HostResourceScope");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }
 
@@ -780,8 +815,12 @@ export interface PolicyRef {
   policy_version: CanonicalUint64;
 }
 
+function matchesSchemaPolicyRef(value: unknown): value is PolicyRef {
+  return isObject(value) && hasOnlyKeys(value, new Set(["policy_digest", "policy_id", "policy_version"])) && hasOwn(value, "policy_digest") && (isDigest(value["policy_digest"])) && hasOwn(value, "policy_id") && (typeof value["policy_id"] === "string" && hasScalarUnicode(value["policy_id"]) && Array.from(value["policy_id"]).length >= 1 && Array.from(value["policy_id"]).length <= 256) && hasOwn(value, "policy_version") && (isCanonicalUint64(value["policy_version"]));
+}
+
 export function isPolicyRef(value: unknown): value is PolicyRef {
-  return isProgrammaticWireValue(value, () => isObject(value) && hasOnlyKeys(value, new Set(["policy_digest", "policy_id", "policy_version"])) && hasOwn(value, "policy_digest") && (isDigest(value["policy_digest"])) && hasOwn(value, "policy_id") && (typeof value["policy_id"] === "string" && hasScalarUnicode(value["policy_id"]) && Array.from(value["policy_id"]).length >= 1 && Array.from(value["policy_id"]).length <= 256) && hasOwn(value, "policy_version") && (isCanonicalUint64(value["policy_version"])));
+  return isProgrammaticWireValue(value, () => matchesSchemaPolicyRef(value));
 }
 
 export function decodePolicyRef(input: string): PolicyRef {
@@ -792,11 +831,9 @@ export function decodePolicyRef(input: string): PolicyRef {
 }
 
 export function encodePolicyRef(value: PolicyRef): string {
-  validateProgrammaticWireValue(value);
-  if (!isPolicyRef(value)) throw new TypeError("invalid PolicyRef");
-  const encoded = canonicalJSONStringify(value);
-  validateWireJSONText(encoded);
-  const emitted: unknown = JSON.parse(encoded);
-  if (!isPolicyRef(emitted)) throw new TypeError("encoded value is invalid PolicyRef");
+  const owned = validateProgrammaticWireValue(value, new Set<object>(), 0, true);
+  if (!matchesSchemaPolicyRef(owned)) throw new TypeError("invalid PolicyRef");
+  const encoded = canonicalJSONStringify(owned);
+  if (utf8ByteLength(encoded) > maxWireJSONBytes) throw new TypeError("protocol JSON exceeds " + maxWireJSONBytes + " UTF-8 bytes");
   return encoded;
 }

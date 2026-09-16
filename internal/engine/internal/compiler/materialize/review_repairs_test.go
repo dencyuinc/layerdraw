@@ -116,7 +116,7 @@ func TestGeneratedSubjectKindConversionQualifiesIdentityChildren(t *testing.T) {
 func TestProjectDefinitionHashPayloadRequiresEmptyGraphCollections(t *testing.T) {
 	input := projectStages(t, `project empty "Empty" {}`)
 	document := Compile(input).Snapshot().Document
-	payload, _, _, err := buildHashPayloads(input, document, nil)
+	payload, _, _, err := buildHashPayloads(input, document, nil, NewStableAddressOrder(input.Resolve))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,7 +56,7 @@ type searchHashField struct {
 	IncludeInEmbedding bool   `json:"include_in_embedding"`
 }
 
-func buildSearchDocuments(snapshot materialize.Snapshot, sourceMap SourceMapV1, resolved resolve.Result) ([]SearchDocument, error) {
+func buildSearchDocuments(snapshot materialize.Snapshot, sourceMap SourceMapV1, order materialize.StableAddressOrder) ([]SearchDocument, error) {
 	if snapshot.Pack != nil {
 		return nil, nil
 	}
@@ -116,12 +116,12 @@ func buildSearchDocuments(snapshot materialize.Snapshot, sourceMap SourceMapV1, 
 		addSearchField(&doc, SearchFieldLayerAddress, item.LayerAddress, SearchWeightTaxonomy)
 		documents = append(documents, doc)
 		for _, row := range item.Rows {
-			documents = append(documents, rowSearchDocument(row, materialize.SubjectEntityRow, item.Address, item.TypeAddress, []string{item.LayerAddress}, []string{item.Address}, nil, nil, ranges[row.Address], resolved))
+			documents = append(documents, rowSearchDocument(row, materialize.SubjectEntityRow, item.Address, item.TypeAddress, []string{item.LayerAddress}, []string{item.Address}, nil, nil, ranges[row.Address], order))
 		}
 	}
 	for _, item := range document.Relations {
 		entries := dedupeOrdered([]string{item.FromAddress, item.ToAddress})
-		layers := endpointLayers(entries, entities, resolved)
+		layers := endpointLayers(entries, entities, order)
 		doc := newSearchDocument(item.Address, materialize.SubjectRelation, "", ranges[item.Address])
 		doc.GraphEntryAddresses, doc.TypeAddresses, doc.LayerAddresses = entries, []string{item.TypeAddress}, layers
 		addSearchField(&doc, SearchFieldID, item.ID, SearchWeightIdentity)
@@ -134,7 +134,7 @@ func buildSearchDocuments(snapshot materialize.Snapshot, sourceMap SourceMapV1, 
 		addRelationLabels(&doc, relationType, ranges[item.TypeAddress])
 		documents = append(documents, doc)
 		for _, row := range item.Rows {
-			documents = append(documents, rowSearchDocument(row, materialize.SubjectRelationRow, item.Address, item.TypeAddress, layers, entries, &relationType, ranges[item.TypeAddress], ranges[row.Address], resolved))
+			documents = append(documents, rowSearchDocument(row, materialize.SubjectRelationRow, item.Address, item.TypeAddress, layers, entries, &relationType, ranges[item.TypeAddress], ranges[row.Address], order))
 		}
 	}
 	for _, item := range document.Queries {
@@ -157,8 +157,8 @@ func buildSearchDocuments(snapshot materialize.Snapshot, sourceMap SourceMapV1, 
 		documents = append(documents, doc)
 	}
 	for i := range documents {
-		sortAddresses(resolved, documents[i].TypeAddresses)
-		sortAddresses(resolved, documents[i].LayerAddresses)
+		order.Sort(documents[i].TypeAddresses)
+		order.Sort(documents[i].LayerAddresses)
 		hash, err := searchContentHash(documents[i])
 		if err != nil {
 			return nil, err
@@ -166,7 +166,7 @@ func buildSearchDocuments(snapshot materialize.Snapshot, sourceMap SourceMapV1, 
 		documents[i].ContentHash = hash
 	}
 	sort.Slice(documents, func(i, j int) bool {
-		return lessAddress(resolved, documents[i].SubjectAddress, documents[j].SubjectAddress)
+		return order.Less(documents[i].SubjectAddress, documents[j].SubjectAddress)
 	})
 	return documents, nil
 }
@@ -198,17 +198,17 @@ func addSearchFieldAt(document *SearchDocument, path, text string, weight int, s
 	document.Fields = append(document.Fields, SearchField{FieldPath: path, SourceRef: cloneRange(source), Text: materialize.NormalizeString(text), LexicalWeight: weight, IncludeInEmbedding: SearchIncludeInEmbedding})
 }
 
-func rowSearchDocument(row materialize.AttributeRow, kind materialize.SubjectKind, owner, typeAddress string, layers, entries []string, relationType *materialize.RelationType, relationTypeSource, source *resolve.SourceRange, resolved resolve.Result) SearchDocument {
+func rowSearchDocument(row materialize.AttributeRow, kind materialize.SubjectKind, owner, typeAddress string, layers, entries []string, relationType *materialize.RelationType, relationTypeSource, source *resolve.SourceRange, order materialize.StableAddressOrder) SearchDocument {
 	doc := newSearchDocument(row.Address, kind, owner, source)
 	doc.GraphEntryAddresses, doc.TypeAddresses, doc.LayerAddresses = cloneStrings(entries), []string{typeAddress}, cloneStrings(layers)
-	sortAddresses(resolved, doc.TypeAddresses)
-	sortAddresses(resolved, doc.LayerAddresses)
+	order.Sort(doc.TypeAddresses)
+	order.Sort(doc.LayerAddresses)
 	addSearchField(&doc, SearchFieldID, row.ID, SearchWeightIdentity)
 	keys := make([]string, 0, len(row.Values))
 	for key := range row.Values {
 		keys = append(keys, key)
 	}
-	sortAddresses(resolved, keys)
+	order.Sort(keys)
 	for _, key := range keys {
 		addSearchField(&doc, valueFieldPath(key), scalarText(row.Values[key]), SearchWeightAttribute)
 	}
@@ -248,7 +248,7 @@ func scalarText(value materialize.Scalar) string {
 	}
 }
 
-func endpointLayers(addresses []string, entities map[string]materialize.Entity, resolved resolve.Result) []string {
+func endpointLayers(addresses []string, entities map[string]materialize.Entity, order materialize.StableAddressOrder) []string {
 	values := []string{}
 	for _, address := range addresses {
 		if entity, exists := entities[address]; exists {
@@ -256,7 +256,7 @@ func endpointLayers(addresses []string, entities map[string]materialize.Entity, 
 		}
 	}
 	values = dedupeOrdered(values)
-	sortAddresses(resolved, values)
+	order.Sort(values)
 	return values
 }
 
