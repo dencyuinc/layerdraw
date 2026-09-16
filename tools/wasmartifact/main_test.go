@@ -219,8 +219,8 @@ func TestSBOMRejectsEveryRuntimeModuleAndDependencyMutation(t *testing.T) {
 		{"runtime type", func(document map[string]any) { sbomRuntime(document)["type"] = "library" }},
 		{"runtime name", func(document map[string]any) { sbomRuntime(document)["name"] = "other" }},
 		{"runtime version", func(document map[string]any) { sbomRuntime(document)["version"] = "go9.9.9" }},
-		{"runtime purl", func(document map[string]any) { sbomRuntime(document)["purl"] = "pkg:generic/other@go1.26.5" }},
-		{"runtime bom ref", func(document map[string]any) { sbomRuntime(document)["bom-ref"] = "pkg:generic/other@go1.26.5" }},
+		{"runtime purl", func(document map[string]any) { sbomRuntime(document)["purl"] = "pkg:generic/other@go1.26.6" }},
+		{"runtime bom ref", func(document map[string]any) { sbomRuntime(document)["bom-ref"] = "pkg:generic/other@go1.26.6" }},
 		{"runtime scope", func(document map[string]any) { sbomRuntime(document)["scope"] = "optional" }},
 		{"runtime hash algorithm", func(document map[string]any) {
 			sbomRuntime(document)["hashes"].([]any)[0].(map[string]any)["alg"] = "SHA-512"

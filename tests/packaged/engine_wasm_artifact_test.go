@@ -64,7 +64,7 @@ func TestPackagedEngineWASMManifestHashesLegalAndSBOM(t *testing.T) {
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.ArtifactID != "@layerdraw/engine-wasm" || manifest.Build.GoVersion != "go1.26.5" || len(manifest.Build.SourceRevision) != 40 || !strings.HasPrefix(manifest.Protocol.SchemaDigest, "sha256:") {
+	if manifest.ArtifactID != "@layerdraw/engine-wasm" || manifest.Build.GoVersion != "go1.26.6" || len(manifest.Build.SourceRevision) != 40 || !strings.HasPrefix(manifest.Protocol.SchemaDigest, "sha256:") {
 		t.Fatalf("unexpected artifact authority: %+v", manifest)
 	}
 	const supportDigest = "sha256:0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14"
@@ -98,7 +98,7 @@ func TestPackagedEngineWASMManifestHashesLegalAndSBOM(t *testing.T) {
 		}
 	}
 	notices, err := os.ReadFile(filepath.Join(bundle, "THIRD_PARTY_NOTICES.txt"))
-	if err != nil || !bytes.Contains(notices, []byte("Go WebAssembly runtime support go1.26.5")) || !bytes.Contains(notices, []byte("BSD-3-Clause")) {
+	if err != nil || !bytes.Contains(notices, []byte("Go WebAssembly runtime support go1.26.6")) || !bytes.Contains(notices, []byte("BSD-3-Clause")) {
 		t.Fatalf("runtime support notice is incomplete: err=%v", err)
 	}
 	sbomBytes, err := os.ReadFile(filepath.Join(bundle, "engine-wasm.cdx.json"))

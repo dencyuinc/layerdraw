@@ -14,11 +14,11 @@ fi
 version="$VERSION"
 output="${ENGINE_WASM_OUTPUT_DIR:-$repo_root/dist/engine-wasm}"
 allow_dirty="${ENGINE_WASM_ALLOW_DIRTY:-0}"
-expected_go_version='go1.26.5'
+expected_go_version='go1.26.6'
 expected_wasm_exec_sha256='0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14'
 
 env \
-  GOTOOLCHAIN=go1.26.5 \
+  GOTOOLCHAIN=go1.26.6 \
   GOENV=off \
   GOWORK=off \
   GOEXPERIMENT= \
@@ -46,13 +46,13 @@ if [[ ! "$source_revision" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
-actual_go_version="$(env GOTOOLCHAIN=go1.26.5 "$go_command" version | awk '{print $3}')"
+actual_go_version="$(env GOTOOLCHAIN=go1.26.6 "$go_command" version | awk '{print $3}')"
 if [[ "$actual_go_version" != "$expected_go_version" ]]; then
   printf 'Go toolchain mismatch: got %s, want %s\n' "$actual_go_version" "$expected_go_version" >&2
   exit 1
 fi
 
-goroot="$(env GOTOOLCHAIN=go1.26.5 GOENV=off "$go_command" env GOROOT)"
+goroot="$(env GOTOOLCHAIN=go1.26.6 GOENV=off "$go_command" env GOROOT)"
 wasm_exec="$goroot/lib/wasm/wasm_exec.js"
 if [[ ! -f "$wasm_exec" ]]; then
   printf 'pinned wasm_exec.js is missing: %s\n' "$wasm_exec" >&2
@@ -71,7 +71,7 @@ cleanup() {
 trap cleanup EXIT
 
 env \
-  GOTOOLCHAIN=go1.26.5 \
+  GOTOOLCHAIN=go1.26.6 \
   GOENV=off \
   GOWORK=off \
   GOEXPERIMENT= \
@@ -79,7 +79,7 @@ env \
   "$go_command" mod verify
 
 sbom_authority_digest="$(env \
-  GOTOOLCHAIN=go1.26.5 \
+  GOTOOLCHAIN=go1.26.6 \
   GOENV=off \
   GOWORK=off \
   GOEXPERIMENT= \
@@ -87,7 +87,7 @@ sbom_authority_digest="$(env \
   "$go_command" run ./tools/wasmartifact sbom-authority -root "$repo_root" -output "$stage/engine-wasm.authority.json")"
 ldflags="-buildid= -s -w -X main.releaseVersion=$version -X main.sourceRevision=$source_revision -X main.sbomAuthorityDigest=$sbom_authority_digest"
 env \
-  GOTOOLCHAIN=go1.26.5 \
+  GOTOOLCHAIN=go1.26.6 \
   GOOS=js \
   GOARCH=wasm \
   CGO_ENABLED=0 \
@@ -106,7 +106,7 @@ cp "$wasm_exec" "$stage/wasm_exec.js"
 cp "$repo_root/tests/conformance/testdata/engine_wasm_worker_v1.json" "$stage/engine-wasm-worker-v1.json"
 
 env \
-  GOTOOLCHAIN=go1.26.5 \
+  GOTOOLCHAIN=go1.26.6 \
   GOENV=off \
   GOWORK=off \
   GOEXPERIMENT= \

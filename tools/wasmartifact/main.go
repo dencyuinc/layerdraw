@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	expectedGoVersion      = "go1.26.5"
+	expectedGoVersion      = "go1.26.6"
 	expectedWasmExecSHA256 = "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14"
 	manifestName           = "engine-wasm.manifest.json"
 	sbomName               = "engine-wasm.cdx.json"
@@ -655,7 +655,7 @@ func createLegalAndSBOM(root, output, version, goLicense string) ([]bundledModul
 		result.WriteByte('\n')
 	}
 	result.WriteString("\n================================================================================\n")
-	result.WriteString("Go WebAssembly runtime support go1.26.5\nLicense: BSD-3-Clause\n")
+	result.WriteString("Go WebAssembly runtime support go1.26.6\nLicense: BSD-3-Clause\n")
 	result.WriteString("Files: layerdraw-engine.wasm, wasm_exec.js\n")
 	result.WriteString("--------------------------------------------------------------------------------\n")
 	result.Write(bytes.TrimSpace(license))
@@ -685,7 +685,7 @@ func linkedModules(root string) ([]bundledModule, error) {
 	command := exec.Command("go", "list", "-deps", "-json", "./cmd/layerdraw-engine")
 	command.Dir = root
 	command.Env = append(os.Environ(),
-		"GOTOOLCHAIN=go1.26.5",
+		"GOTOOLCHAIN=go1.26.6",
 		"GOOS=js",
 		"GOARCH=wasm",
 		"CGO_ENABLED=0",
@@ -826,7 +826,7 @@ func verifyWasmExec(output string) error {
 		return err
 	}
 	if digest != expectedWasmExecSHA256 {
-		return fmt.Errorf("wasm_exec.js digest %s does not match pinned Go 1.26.5 support %s", digest, expectedWasmExecSHA256)
+		return fmt.Errorf("wasm_exec.js digest %s does not match pinned Go 1.26.6 support %s", digest, expectedWasmExecSHA256)
 	}
 	return nil
 }

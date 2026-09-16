@@ -2,7 +2,7 @@ module github.com/dencyuinc/layerdraw
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 tool (
 	github.com/rhysd/actionlint/cmd/actionlint
@@ -11,9 +11,9 @@ tool (
 
 require (
 	github.com/LadybugDB/go-ladybug v0.17.0
-	golang.org/x/image v0.44.0
+	golang.org/x/image v0.45.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.40.0
+	golang.org/x/text v0.41.0
 )
 
 require (
