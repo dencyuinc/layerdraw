@@ -45,6 +45,9 @@ func (h *Host) SessionFor(ref runtimeprotocol.RuntimeSessionRef) (*Session, erro
 	if session == nil || session.closed || session.Open.Session != ref {
 		return nil, errors.New("runtime session is closed or unknown")
 	}
+	if !sameCommittedRevision(session.working.BaseRevision, session.Open.CommittedRevision) {
+		return nil, errors.New("revision is committed; working document requires reopen")
+	}
 	return session, nil
 }
 
@@ -91,15 +94,10 @@ func (h *Host) PreviewEditor(ctx context.Context, input runtimeprotocol.PreviewO
 	if input.OperationBatch.DocumentID != current.DocumentID || !sameCommittedRevision(input.OperationBatch.BaseRevision, current) || input.OperationBatch.ExpectedDefinitionHash != current.DefinitionHash {
 		return EditorPreviewResult{}, port.ErrConflict
 	}
-	preconditions := input.OperationBatch.Preconditions
-	if len(preconditions.ExpectedSubjectHashes) == 0 && len(preconditions.ExpectedSubtreeHashes) == 0 && len(preconditions.ExpectedChildSets) == 0 && preconditions.ExpectedSourceDigests == nil {
-		derived, deriveErr := h.workbench.preconditions(session.working)
-		if deriveErr != nil {
-			return EditorPreviewResult{}, deriveErr
-		}
-		preconditions = derived
+	preconditions, err := h.editPreconditions(session, input.OperationBatch.Preconditions)
+	if err != nil {
+		return EditorPreviewResult{}, err
 	}
-	preconditions.DocumentGeneration = h.documentGeneration(session)
 	prepared, err := h.workbench.Preview(ctx, port.PreviewWorkingDocumentInput{Document: session.working, Batch: input.OperationBatch.Operations, Preconditions: preconditions, MaxOperations: "4096"})
 	if err != nil {
 		return EditorPreviewResult{}, err
@@ -166,6 +164,20 @@ func (h *Host) documentGeneration(session *Session) engineprotocol.DocumentGener
 	return engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: h.config.EndpointInstanceID, Value: session.working.Handle}, Value: protocolcommon.CanonicalUint64(session.working.Generation)}
 }
 
+// Normalize once at the host boundary, before Runtime validates its wire input.
+// Preview, direct save, and commit must bind the same effective edit evidence.
+func (h *Host) editPreconditions(session *Session, pre engineprotocol.EngineEditPreconditions) (engineprotocol.EngineEditPreconditions, error) {
+	if len(pre.ExpectedSubjectHashes) == 0 && len(pre.ExpectedSubtreeHashes) == 0 && len(pre.ExpectedChildSets) == 0 && pre.ExpectedSourceDigests == nil {
+		derived, err := h.workbench.preconditions(session.working)
+		if err != nil {
+			return engineprotocol.EngineEditPreconditions{}, err
+		}
+		pre = derived
+	}
+	pre.DocumentGeneration = h.documentGeneration(session)
+	return pre, nil
+}
+
 // Commit delegates an already previewed generated Runtime input to Runtime.
 func (h *Host) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitInput) (runtimeprotocol.RuntimeCommitResult, error) {
 	session, err := h.SessionFor(input.Session)
@@ -178,15 +190,10 @@ func (h *Host) Commit(ctx context.Context, input runtimeprotocol.RuntimeCommitIn
 	} else if change != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, port.ErrConflict
 	}
-	commitPre := input.OperationBatch.Preconditions
-	if len(commitPre.ExpectedSubjectHashes) == 0 && len(commitPre.ExpectedSubtreeHashes) == 0 && len(commitPre.ExpectedChildSets) == 0 && commitPre.ExpectedSourceDigests == nil {
-		derived, deriveErr := h.workbench.preconditions(session.working)
-		if deriveErr != nil {
-			return runtimeprotocol.RuntimeCommitResult{}, deriveErr
-		}
-		input.OperationBatch.Preconditions = derived
+	input.OperationBatch.Preconditions, err = h.editPreconditions(session, input.OperationBatch.Preconditions)
+	if err != nil {
+		return runtimeprotocol.RuntimeCommitResult{}, err
 	}
-	input.OperationBatch.Preconditions.DocumentGeneration = h.documentGeneration(session)
 	result, rejection := h.runtime.CommitOperations(ctx, input)
 	if rejection != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, rejection
@@ -249,13 +256,20 @@ func (h *Host) CommitProjectDisplayName(ctx context.Context, session *Session, n
 
 func (h *Host) applyCommit(session *Session, result runtimeprotocol.RuntimeCommitResult) error {
 	if result.OperationResult.CommittedRevision != nil {
+		h.mu.Lock()
 		revision := *result.OperationResult.CommittedRevision
 		session.Open.CommittedRevision = revision
-		session.Open.WorkingDocument.BaseRevision = revision
 		if working, ok := h.workbench.Working(session.working.Handle, revision); ok {
 			session.working = working
+			session.Open.WorkingDocument.BaseRevision = revision
 			session.Open.WorkingDocument.WorkingGeneration = runtimeprotocol.WorkingGeneration(working.Generation)
+		} else {
+			// Keep the committed identity, but never label the old working tree or
+			// source baseline as that revision. SessionFor requires a reopen.
+			h.mu.Unlock()
+			return nil
 		}
+		h.mu.Unlock()
 	}
 	if external := result.OperationResult.ExternalMaterialization; external != nil && external.State == runtimeprotocol.ExternalMaterializationStatePublished {
 		digest, ok := h.workbench.SourceDigest(session.working.Handle)

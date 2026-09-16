@@ -54,6 +54,42 @@ func TestAuthorizeHostOperationRevalidatesCurrentSessionRevisionAndImpact(t *tes
 	}
 }
 
+func TestCommittedRevisionWithoutCheckpointRequiresReopen(t *testing.T) {
+	root := t.TempDir()
+	project := writeProject(t, root, "project p \"P\" {}\n")
+	host := newTestHost(t, filepath.Join(root, "data"), nil)
+	opened, err := host.OpenProject(context.Background(), OpenProjectInput{Root: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := opened.Session
+	baseline, working := session.SourceDigest, session.working
+	revision := session.Open.CommittedRevision
+	revision.RevisionID = "revision_committed_without_checkpoint"
+	if _, ok := host.workbench.Working(working.Handle, revision); ok {
+		t.Fatal("old working tree was relabelled as the new revision")
+	}
+	result := runtimeprotocol.RuntimeCommitResult{OperationResult: runtimeprotocol.OperationResult{
+		Status: runtimeprotocol.OperationResultStatusCommittedStateStale, CommittedRevision: &revision,
+		ExternalMaterialization: &runtimeprotocol.ExternalMaterializationStatus{State: runtimeprotocol.ExternalMaterializationStatePublished},
+	}}
+	if err := host.applyCommit(session, result); err != nil {
+		t.Fatalf("durable commit was reported as a failed save: %v", err)
+	}
+	if session.Open.CommittedRevision != revision || session.working != working || session.SourceDigest != baseline {
+		t.Fatal("durable identity or working/source baseline was corrupted")
+	}
+	if _, err := host.SessionFor(session.Open.Session); err == nil || !strings.Contains(err.Error(), "requires reopen") {
+		t.Fatalf("stale working tree remained usable: %v", err)
+	}
+	if _, err := host.Save(context.Background(), SaveInput{Session: session}); err == nil || !strings.Contains(err.Error(), "requires reopen") {
+		t.Fatalf("save reused a stale working tree: %v", err)
+	}
+	if err := host.Close(context.Background(), session); err != nil {
+		t.Fatalf("stale session could not be closed: %v", err)
+	}
+}
+
 func TestProjectViewsListAndMaterializeQueryBackedViews(t *testing.T) {
 	root := t.TempDir()
 	project := writeProject(t, root, `project p "P" {}

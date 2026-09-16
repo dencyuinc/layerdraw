@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"strconv"
 	"sync"
 
@@ -22,20 +24,39 @@ import (
 const LocalCompileInputBlobID = "local-document-compile-input"
 
 type RuntimeEngineBridge struct {
-	engine   engine.Engine
-	endpoint protocolcommon.EndpointInstanceID
-	mu       sync.Mutex
-	next     uint64
-	docs     map[string]*bridgeDocument
-	latest   map[string]string
+	engine           runtimeBridgeEngine
+	endpoint         protocolcommon.EndpointInstanceID
+	mu               sync.Mutex
+	next             uint64
+	docs             map[string]*bridgeDocument
+	latest           map[string]string
+	preparedBytes    int64
+	maxPreparedBytes int64
+}
+
+// This private seam uses only Engine's facade; Runtime and storage never see
+// retained compiler values. It also permits operation-count regression tests.
+type runtimeBridgeEngine interface {
+	Compile(context.Context, engine.CompileInput) (engine.CompileResult, error)
+	PlanSemanticEdits(context.Context, engine.SemanticEditPlanInput) (engine.SemanticEditPlan, error)
+	ExecuteQuery(context.Context, engine.QueryExecutionInput) (engine.QueryExecutionResponse, error)
+	MaterializeView(context.Context, engine.ViewMaterializationInput) engine.ViewMaterializationResponse
 }
 
 type bridgeDocument struct {
-	input      engine.CompileInput
-	snapshot   engine.Snapshot
-	working    BridgeWorking
-	prepared   *BridgePrepared
-	preparedIn *engine.CompileInput
+	input    engine.CompileInput
+	snapshot engine.Snapshot
+	working  BridgeWorking
+	prepared *bridgeCandidate
+}
+
+type bridgeCandidate struct {
+	requestKey    [32]byte
+	reusable      bool
+	publication   BridgePrepared
+	input         engine.CompileInput
+	snapshot      engine.Snapshot
+	retainedBytes int64
 }
 
 type BridgeWorking struct {
@@ -49,6 +70,16 @@ type BridgePrepared struct {
 	GraphHash       protocolcommon.Digest
 	Preview         engineprotocol.WorkbenchPreviewResult
 	EncodedInput    []byte
+	source          *LocalSource
+}
+
+// Source returns a facade-owned source projection, never a mutable compiler
+// snapshot. LocalSource's accessors already return detached source bytes.
+func (p BridgePrepared) Source() (LocalSource, bool) {
+	if p.source == nil {
+		return LocalSource{}, false
+	}
+	return *p.source, true
 }
 
 type BridgeView struct {
@@ -180,7 +211,7 @@ func (w *RuntimeEngineBridge) MaterializeQueryView(ctx context.Context, working 
 }
 
 func NewRuntimeEngineBridge(instance engine.Engine, endpointID protocolcommon.EndpointInstanceID) *RuntimeEngineBridge {
-	return &RuntimeEngineBridge{engine: instance, endpoint: endpointID, docs: map[string]*bridgeDocument{}, latest: map[string]string{}}
+	return &RuntimeEngineBridge{engine: instance, endpoint: endpointID, docs: map[string]*bridgeDocument{}, latest: map[string]string{}, maxPreparedBytes: engine.DefaultWorkbenchConfig().MaxRetainedBytes}
 }
 
 func (w *RuntimeEngineBridge) Open(ctx context.Context, documentID, revisionID string, definitionHash, graphHash protocolcommon.Digest, encoded []byte) (BridgeWorking, error) {
@@ -207,11 +238,34 @@ func (w *RuntimeEngineBridge) Open(ctx context.Context, documentID, revisionID s
 }
 
 func (w *RuntimeEngineBridge) Preview(ctx context.Context, working BridgeWorking, batch engineprotocol.SemanticOperationBatch, preconditions engineprotocol.EngineEditPreconditions, maxOperations int64) (BridgePrepared, error) {
+	if err := ctx.Err(); err != nil {
+		return BridgePrepared{}, err
+	}
+	if maxOperations <= 0 || int64(len(batch.Operations)) > maxOperations {
+		return BridgePrepared{}, errors.New("semantic operation limit exceeded")
+	}
+	if preconditions.DocumentGeneration.DocumentHandle.EndpointInstanceID != w.endpoint || preconditions.DocumentGeneration.DocumentHandle.Value != working.Handle || string(preconditions.DocumentGeneration.Value) != working.Generation {
+		return BridgePrepared{}, errors.New("stale document generation")
+	}
+	request, err := json.Marshal(struct {
+		Batch         engineprotocol.SemanticOperationBatch
+		Preconditions engineprotocol.EngineEditPreconditions
+		Limit         int64
+	}{batch, preconditions, maxOperations})
+	if err != nil {
+		return BridgePrepared{}, err
+	}
+	key := sha256.Sum256(request)
 	w.mu.Lock()
 	doc := w.docs[working.Handle]
 	if doc == nil || doc.working != working {
 		w.mu.Unlock()
 		return BridgePrepared{}, errors.New("stale working document")
+	}
+	if retained := doc.prepared; retained != nil && retained.reusable && retained.requestKey == key {
+		publication := retained.publication
+		w.mu.Unlock()
+		return detachBridgePrepared(publication)
 	}
 	baseInput, baseSnapshot := cloneCompileInput(doc.input), doc.snapshot
 	w.mu.Unlock()
@@ -246,15 +300,26 @@ func (w *RuntimeEngineBridge) Preview(ctx context.Context, working BridgeWorking
 		return BridgePrepared{}, err
 	}
 	prepared := BridgePrepared{AuthoringImpact: *wire.AuthoringImpact, DefinitionHash: protocolcommon.Digest(plan.Result.DefinitionHash), GraphHash: protocolcommon.Digest(*plan.Result.GraphHash), Preview: wire, EncodedInput: encoded}
+	retained, err := makeBridgeCandidate(prepared, candidate, *plan.Result)
+	if err != nil {
+		return BridgePrepared{}, err
+	}
+	retained.requestKey, retained.reusable = key, true
+	if err := ctx.Err(); err != nil {
+		return BridgePrepared{}, err
+	}
 	w.mu.Lock()
 	doc = w.docs[working.Handle]
 	if doc == nil || doc.working != working {
 		w.mu.Unlock()
 		return BridgePrepared{}, errors.New("stale working document")
 	}
-	doc.prepared, doc.preparedIn = &prepared, &candidate
+	if err := w.retainCandidateLocked(doc, retained); err != nil {
+		w.mu.Unlock()
+		return BridgePrepared{}, err
+	}
 	w.mu.Unlock()
-	return prepared, nil
+	return detachBridgePrepared(retained.publication)
 }
 
 // RetainRegistryPrepared binds an Engine-produced Registry candidate to the
@@ -272,31 +337,48 @@ func (w *RuntimeEngineBridge) RetainRegistryPrepared(ctx context.Context, workin
 	if protocolcommon.Digest(snapshot.DefinitionHash) != prepared.DefinitionHash || snapshot.GraphHash == nil || protocolcommon.Digest(*snapshot.GraphHash) != prepared.GraphHash {
 		return errors.New("Registry prepared semantic identity mismatch")
 	}
+	retained, err := makeBridgeCandidate(prepared, input, snapshot)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	doc := w.docs[working.Handle]
 	if doc == nil || doc.working != working {
 		return errors.New("stale working document")
 	}
-	doc.prepared, doc.preparedIn = &prepared, &input
-	return nil
+	return w.retainCandidateLocked(doc, retained)
 }
 
 func (w *RuntimeEngineBridge) Checkpoint(ctx context.Context, working BridgeWorking, prepared BridgePrepared, revisionID string) (BridgeWorking, error) {
+	if err := ctx.Err(); err != nil {
+		return BridgeWorking{}, err
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	doc := w.docs[working.Handle]
-	if doc == nil || doc.prepared == nil || doc.preparedIn == nil || doc.working != working || doc.prepared.DefinitionHash != prepared.DefinitionHash || doc.prepared.GraphHash != prepared.GraphHash {
+	if doc == nil || doc.prepared == nil || doc.working != working {
 		return BridgeWorking{}, errors.New("stale prepared revision")
 	}
-	compiled, err := w.engine.Compile(ctx, *doc.preparedIn)
-	if err != nil {
-		return BridgeWorking{}, err
+	retained := doc.prepared
+	if retained.publication.DefinitionHash != prepared.DefinitionHash || retained.publication.GraphHash != prepared.GraphHash || !bytes.Equal(retained.publication.EncodedInput, prepared.EncodedInput) || !reflect.DeepEqual(retained.publication.AuthoringImpact, prepared.AuthoringImpact) {
+		return BridgeWorking{}, errors.New("stale prepared revision")
 	}
-	generation, _ := strconv.ParseUint(working.Generation, 10, 64)
-	doc.input, doc.snapshot = cloneCompileInput(*doc.preparedIn), compiled.Snapshot()
+	generation, err := strconv.ParseUint(working.Generation, 10, 64)
+	if err != nil || generation == math.MaxUint64 || revisionID == "" {
+		return BridgeWorking{}, errors.New("invalid checkpoint generation")
+	}
+	doc.input, doc.snapshot = retained.input, retained.snapshot
 	doc.working = BridgeWorking{Handle: working.Handle, Generation: strconv.FormatUint(generation+1, 10), DocumentID: working.DocumentID, RevisionID: revisionID, DefinitionHash: prepared.DefinitionHash, GraphHash: prepared.GraphHash}
-	doc.prepared, doc.preparedIn = nil, nil
+	w.preparedBytes -= retained.retainedBytes
+	doc.prepared = nil
+	if key := working.DocumentID + "\x00" + working.RevisionID; w.latest[key] == working.Handle {
+		delete(w.latest, key)
+	}
+	w.latest[working.DocumentID+"\x00"+revisionID] = working.Handle
 	return doc.working, nil
 }
 
@@ -306,8 +388,66 @@ func (w *RuntimeEngineBridge) Close(working BridgeWorking) error {
 	if doc := w.docs[working.Handle]; doc != nil && doc.working != working {
 		return errors.New("stale working document")
 	}
+	if doc := w.docs[working.Handle]; doc != nil && doc.prepared != nil {
+		w.preparedBytes -= doc.prepared.retainedBytes
+	}
+	if key := working.DocumentID + "\x00" + working.RevisionID; w.latest[key] == working.Handle {
+		delete(w.latest, key)
+	}
 	delete(w.docs, working.Handle)
 	return nil
+}
+
+func makeBridgeCandidate(prepared BridgePrepared, input engine.CompileInput, snapshot engine.Snapshot) (*bridgeCandidate, error) {
+	publication, err := detachBridgePrepared(prepared)
+	if err != nil {
+		return nil, err
+	}
+	source, err := sourceFromSnapshot(input, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	publication.source = &source
+	// Budget the new retained snapshot and both private source representations.
+	// This is done once when admitting a candidate, never on a cache hit.
+	metadata, err := json.Marshal(struct {
+		Snapshot engine.Snapshot
+		Preview  engineprotocol.WorkbenchPreviewResult
+	}{snapshot, publication.Preview})
+	if err != nil {
+		return nil, err
+	}
+	return &bridgeCandidate{publication: publication, input: input, snapshot: snapshot, retainedBytes: int64(len(metadata)) + 3*int64(len(publication.EncodedInput))}, nil
+}
+
+func (w *RuntimeEngineBridge) retainCandidateLocked(doc *bridgeDocument, candidate *bridgeCandidate) error {
+	previous := int64(0)
+	if doc.prepared != nil {
+		previous = doc.prepared.retainedBytes
+	}
+	if candidate.retainedBytes > w.maxPreparedBytes || w.preparedBytes-previous > w.maxPreparedBytes-candidate.retainedBytes {
+		return errors.New("prepared revision retention limit exceeded")
+	}
+	w.preparedBytes += candidate.retainedBytes - previous
+	doc.prepared = candidate
+	return nil
+}
+
+// Copy only the public projection at this ownership boundary. The retained AST
+// and source input never undergo a serialization round-trip for copying.
+func detachBridgePrepared(input BridgePrepared) (BridgePrepared, error) {
+	encoded, source := input.EncodedInput, input.source
+	input.EncodedInput = nil
+	data, err := json.Marshal(input)
+	if err != nil {
+		return BridgePrepared{}, err
+	}
+	var result BridgePrepared
+	if err := json.Unmarshal(data, &result); err != nil {
+		return BridgePrepared{}, err
+	}
+	result.EncodedInput, result.source = bytes.Clone(encoded), source
+	return result, nil
 }
 func (w *RuntimeEngineBridge) Working(handle string) (BridgeWorking, bool) {
 	w.mu.Lock()
@@ -351,7 +491,7 @@ func (w *RuntimeEngineBridge) Opened(documentID, revisionID string) (BridgeWorki
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	doc := w.docs[w.latest[documentID+"\x00"+revisionID]]
-	if doc == nil {
+	if doc == nil || doc.working.DocumentID != documentID || doc.working.RevisionID != revisionID {
 		return BridgeWorking{}, false
 	}
 	return doc.working, true

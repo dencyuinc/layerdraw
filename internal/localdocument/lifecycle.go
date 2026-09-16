@@ -725,6 +725,7 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 	h.mu.Lock()
 	tracked := h.sessions[input.Session.Open.Session.RuntimeSessionID]
 	closed := input.Session.closed || tracked != input.Session
+	workingStale := !sameCommittedRevision(input.Session.working.BaseRevision, input.Session.Open.CommittedRevision)
 	h.mu.Unlock()
 	if closed {
 		return runtimeprotocol.RuntimeCommitResult{}, errors.New("session is closed or unknown")
@@ -755,6 +756,9 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 			return runtimeprotocol.RuntimeCommitResult{}, err
 		}
 	}
+	if workingStale {
+		return runtimeprotocol.RuntimeCommitResult{}, errors.New("revision is committed; working document requires reopen")
+	}
 	if change, err := h.detectExternalChange(ctx, input.Session); err != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, err
 	} else if change != nil {
@@ -775,14 +779,11 @@ func (h *Host) Save(ctx context.Context, input SaveInput) (runtimeprotocol.Runti
 		input.IdempotencyKey = runtimeprotocol.IdempotencyKey("idem_" + value)
 	}
 	current := input.Session.Open.CommittedRevision
-	if len(input.Preconditions.ExpectedSubjectHashes) == 0 && len(input.Preconditions.ExpectedSubtreeHashes) == 0 && len(input.Preconditions.ExpectedChildSets) == 0 && input.Preconditions.ExpectedSourceDigests == nil {
-		derived, deriveErr := h.workbench.preconditions(input.Session.working)
-		if deriveErr != nil {
-			return runtimeprotocol.RuntimeCommitResult{}, deriveErr
-		}
-		input.Preconditions = derived
+	preconditions, err := h.editPreconditions(input.Session, input.Preconditions)
+	if err != nil {
+		return runtimeprotocol.RuntimeCommitResult{}, err
 	}
-	input.Preconditions.DocumentGeneration = engineprotocol.DocumentGeneration{DocumentHandle: engineprotocol.DocumentHandle{EndpointInstanceID: h.config.EndpointInstanceID, Value: input.Session.working.Handle}, Value: protocolcommon.CanonicalUint64(input.Session.working.Generation)}
+	input.Preconditions = preconditions
 	prepared, err := h.workbench.Preview(ctx, port.PreviewWorkingDocumentInput{Document: input.Session.working, Batch: input.Operations, Preconditions: input.Preconditions, MaxOperations: "4096"})
 	if err != nil {
 		return runtimeprotocol.RuntimeCommitResult{}, err
